@@ -38,7 +38,7 @@ func TestEnrollPodProvesTheKeyItKeeps(t *testing.T) {
 	tokenFile := writePodToken(t, rig.MintAccountPodToken(t, ciphertest.DaemonAccount, uuid.NewString(), time.Hour))
 	stdout.Reset()
 	stderr.Reset()
-	if code := cmdEnrollPod("legion-daemon", tokenFile, out, &stdout, &stderr); code != 0 {
+	if code := cmdEnrollPod("legion-daemon", tokenFile, out, podProjects{}, &stdout, &stderr); code != 0 {
 		t.Fatalf("enroll --pod over keygen's directory = exit %d, stderr %q", code, stderr.String())
 	}
 	id := strings.TrimSpace(stdout.String())

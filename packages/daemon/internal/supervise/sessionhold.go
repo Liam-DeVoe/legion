@@ -399,8 +399,9 @@ const (
 	// HoldSessionID is a session id: the one an agent registers, which the secrets broker enrolls
 	// as its wake address (ensureEnrolled), the one a Claude Code launch resumes, `--resume <id>`,
 	// read from its transcript's name (claudelaunch.ResumeSession), and the one an Oh My Pi launch
-	// in a pod that trades an exchange identity resumes, `--resume <id>`, the claim's recorded
-	// session (runtime/sandbox's ompSessionOf).
+	// resumes the claim's recorded session by (runtime/sandbox's ompSessionOf and agentArgv): the
+	// one word `--resume=<id>`, in any pod, where the claim records no file of the session, and
+	// `--resume <id>` beside a recorded file, in a pod that trades an exchange identity.
 	HoldSessionID HoldKind = "session"
 	// HoldFileName is a session file's base name (filepath.Base). It is every key a resume finds
 	// a session by its file with: an Oh My Pi launch that names no id resumes the recorded path

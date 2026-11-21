@@ -37,11 +37,13 @@ import (
 // probe's deadline sends one; otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
 // $LEGION_TEST_FALLBACK_FAIL. `--version` prints omp/18.18.6 on its first line, or fails under
-// $LEGION_TEST_VERSION_FAIL; `--help` prints a flags table that lists --session-id, or, under
+// $LEGION_TEST_VERSION_FAIL, or sleeps (`exec sleep 30`) under $LEGION_TEST_VERSION_SLOW, so only a
+// stop ends it; `--help` prints a flags table that lists --session-id, or, under
 // $LEGION_TEST_NO_SESSION_ID, one that lists no such flag but mentions it in a description, or
-// fails under $LEGION_TEST_HELP_FAIL. With $LEGION_TEST_SEEN set, each run appends the
-// environment it saw there: PI_CONFIG_FILES, whether the first overlay it names exists, and
-// OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
+// fails under $LEGION_TEST_HELP_FAIL, or sleeps the same way under $LEGION_TEST_HELP_SLOW. With
+// $LEGION_TEST_SEEN set, each run appends the environment it saw there: PI_CONFIG_FILES, whether
+// the first overlay it names exists, and OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the
+// provider key TEST_PROVIDER_KEY.
 func imageOmp(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")
@@ -85,9 +87,11 @@ case "$*" in
   printf '{"key":"retry.modelFallback","value":%s,"type":"boolean"}\n' "$value" ;;
 "--version")
   if [ -n "${LEGION_TEST_VERSION_FAIL:-}" ]; then echo "fake omp: --version failed" >&2; exit 1; fi
+  if [ -n "${LEGION_TEST_VERSION_SLOW:-}" ]; then exec sleep 30; fi
   printf 'omp/18.18.6\nthe fake omp of probe_image_test.go\n' ;;
 "--help")
   if [ -n "${LEGION_TEST_HELP_FAIL:-}" ]; then echo "fake omp: --help failed" >&2; exit 1; fi
+  if [ -n "${LEGION_TEST_HELP_SLOW:-}" ]; then exec sleep 30; fi
   printf 'omp v18.18.6\n\nFLAGS\n  -r, --resume=<value>      Resume a session (by ID prefix, path, or picker if omitted)\n'
   if [ -n "${LEGION_TEST_NO_SESSION_ID:-}" ]; then
     printf '      --fork=<value>        Start a session under a new id, as --session-id does\n'
@@ -823,6 +827,51 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 			if tc.refusal != "" {
 				if lines := tlsLines(stdout, "node", emSignTLSSite.name); len(lines) != 2 || !strings.HasPrefix(lines[1], "probe-image: TLS client node emSign: no verdict (") {
 					t.Errorf("node's emSign lines = %q, want a run with no verdict after the second run", lines)
+				}
+			}
+		})
+	}
+}
+
+// A read of the OK line's omp-version or omp-session-id mark that the probe's deadline cuts has no
+// verdict, like every other check: the deadline stops the read's process group, so its failure may
+// be the deadline's own doing, and an omp-session-id=unread would be refused for good by a daemon
+// that sets an exchange audience. The probe exits 75 naming the read, prints no OK line, and warns of no
+// unread mark. A help that sleeps past the budget is cut; a version that sleeps past it is cut,
+// and the help read after it is kept from starting, since ctx has ended. A read that fails before
+// the deadline is still unread on the OK line, exit 0
+// (TestProbeImageMarksTheOKLineWithWhetherOhMyPiTakesSessionID).
+func TestProbeImageJudgesTheOmpMarksReadsByTheDeadline(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	for _, tc := range []struct {
+		name, env string
+		// noVerdict are what the no-verdict line holds.
+		noVerdict []string
+	}{
+		{"a help read the deadline cuts", "LEGION_TEST_HELP_SLOW", []string{"omp-session-id: " + omp + " --help"}},
+		{"a version read the deadline cuts", "LEGION_TEST_VERSION_SLOW", []string{"omp-version: " + omp + " --version", "omp-session-id: "}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, "1")
+
+			code, stdout, stderr := probeImage(img.flags("--probe-budget", shortProbeBudget)...)
+
+			if code != bootprobe.NoVerdictExit || strings.Contains(stdout, bootprobe.OKPrefix) {
+				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, bootprobe.NoVerdictExit)
+			}
+			detail, hasNoVerdict := bootprobe.NoVerdict(stderr)
+			if !hasNoVerdict {
+				t.Fatalf("stderr %q carries no no-verdict line", stderr)
+			}
+			for _, want := range tc.noVerdict {
+				if !strings.Contains(detail, want) {
+					t.Errorf("the no-verdict line's detail = %q, want it to hold %q", detail, want)
+				}
+			}
+			for _, warning := range []string{"legion probe-image: Oh My Pi's version not read;", "legion probe-image: whether Oh My Pi takes --session-id not read;"} {
+				if strings.Contains(stderr, warning) {
+					t.Errorf("stderr = %q, want no warning %q of a mark the deadline cut", stderr, warning)
 				}
 			}
 		})

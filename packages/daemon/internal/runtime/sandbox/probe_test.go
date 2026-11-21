@@ -509,7 +509,7 @@ const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storag
 // reports none), the flag, the setting, why the setting needs the flag, and both remedies.
 func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *testing.T) {
 	why := []string{
-		"runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> and resumes one with --resume <id>, " +
+		"runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> and resumes one by its recorded file with --resume <id>, " +
 			"and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start",
 		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it, " +
 			"or unset runtime.kubernetes.agent_secrets.exchange_audience — log tail: probe-image: OK",

@@ -263,9 +263,11 @@ type IssuePodReader interface {
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
 // prepares the launch (claudeInputs), and an Oh My Pi role's whose pod trades an exchange
-// identity, whose `--session-id` or `--resume <id>` it decides the same way (ompInputs). It
-// answers for the incarnation loc records, and false for any other — an Oh My Pi launch that named
-// no id (one into a kept pod that trades nothing, whose agent mints its id and reports it at its
+// identity, which it decides the same way (ompInputs): `--session-id <id>` for a launch that
+// starts a session, `--resume <id>` for a resume by a recorded file, and the one word
+// `--resume=<id>` for a resume of a session the claim records with no file. It answers for the
+// incarnation loc records, and false for any other — an Oh My Pi launch that named no id (one
+// into a kept pod that trades nothing, whose agent mints its id and reports it at its
 // registration), a launch the runtime does not remember (a daemon restarted since), or an earlier
 // incarnation. It is what lets the daemon register a role's chosen session for its pod at the
 // shim's hello, before the agent registers (supervise's ensureRegistered). A runtime that names no
@@ -306,8 +308,10 @@ type IssueReleaser interface {
 // which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
 // mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
 // its update round is over, with the time the round opened, to tell the issue whether the work its
-// roles did not push is still on the volume. A runtime whose pods keep no volume implements
-// nothing here, and the daemon then reads no kept volume.
+// roles did not push is still on the volume, and in the rename pass's live-pod rules, at each boot
+// and each pod end, with the present time, to keep the issue on the name its workspace on the
+// volume is under. Every runtime that runs a pod per issue implements it, since the daemon's test
+// of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }

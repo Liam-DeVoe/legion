@@ -69,11 +69,7 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 	}
 	thumbprint := strings.TrimSpace(stdout.String())
 	keyPath := filepath.Join(keyDir, keyFile)
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fileKey, err := parseKeyPEM(keyPEM, keyPath)
+	fileKey, err := loadKey(keyPath, keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
