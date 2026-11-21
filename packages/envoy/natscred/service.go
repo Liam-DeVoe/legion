@@ -10,7 +10,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -222,36 +221,34 @@ func (f serviceFile) Read() (string, error) {
 const googleReadTimeout = 10 * time.Second
 
 // ServiceGoogle is this VM's Google identity token for audience, minted by its metadata server at
-// every Read (cipherclient.MetadataIdentity). setting is what the caller read audience from (a
-// variable or a flag), which a failed Read names: the audience is a value a person can paste a
-// credential into, so it prints whole only where internal/redact's allow-list prints it, a plain
-// http(s) URL, and by setting alone otherwise.
+// every Read (googleidentity.Token). setting is what the caller read audience from (a variable or
+// a flag), which a failed Read names: the audience is a value a person can paste a credential
+// into, so it prints whole only where internal/redact's allow-list prints it, a plain http(s) URL,
+// and by setting alone otherwise.
 func ServiceGoogle(audience, setting string) TokenReader {
-	return serviceGoogle{identity: cipherclient.NewMetadataIdentity(audience), setting: setting}
+	return serviceGoogle{audience: audience, setting: setting}
 }
 
 type serviceGoogle struct {
-	identity *cipherclient.MetadataIdentity
-	setting  string
+	audience, setting string
 }
 
 func (g serviceGoogle) Read() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), googleReadTimeout)
 	defer cancel()
-	token, _, err := g.identity.Token(ctx)
+	token, err := googleidentity.Token(ctx, g.audience)
 	if err != nil {
 		return "", fmt.Errorf("natscred: read %s: %w", g.describe(), err)
 	}
 	return token, nil
 }
 
-// describe names the token Read reads by the setting its audience came from. It is not
-// cipherclient.MetadataIdentity.Describe, which names AGENT_SECRETS_MACHINE_AUDIENCE, the setting
-// of agent-secrets' own identity.
+// describe names the token Read reads by the setting its audience came from, never
+// AGENT_SECRETS_MACHINE_AUDIENCE, the setting of agent-secrets' own Google identity.
 func (g serviceGoogle) describe() string {
 	audience := "the audience " + g.setting + " names"
-	if redact.Clean(g.identity.Audience) {
-		audience = g.identity.Audience + " (" + g.setting + ")"
+	if redact.Clean(g.audience) {
+		audience = g.audience + " (" + g.setting + ")"
 	}
 	return "this machine's Google identity token for " + audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
 }
