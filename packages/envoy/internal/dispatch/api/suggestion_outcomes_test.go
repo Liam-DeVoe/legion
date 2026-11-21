@@ -3,14 +3,19 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // createOutcomeIssue files an issue in project as alice and returns its key.
@@ -86,13 +91,29 @@ func sweepSuggestionOutcomes(t *testing.T, srv *server) error {
 // idleSweep is a sweep running as the server runs it - its woken loop on a real pglisten.Hub's
 // wake on EventsChannel - with a short gap between passes and the settle it is given, on a counted
 // pool, once its boot pass and the pass the hub's signal after its LISTEN earned have both run and
-// it has gone quiet.
+// it has gone quiet. startIdleSweep's waits for that end on those facts, each bounded only by the
+// test binary's deadline.
 type idleSweep struct {
 	handler        http.Handler
 	database       *store.Store
 	server         *server
-	counter        *storetest.StatementCounter
+	counter        *sweepStatements
 	target, source string
+}
+
+// sweepStatements counts the statements the idle sweep makes on its pool and, apart, the pages it
+// begins: every page first reads the outcome cursor for update (judgeSuggestionPage), so every pass
+// begins one page or more.
+type sweepStatements struct {
+	storetest.StatementCounter
+	pages atomic.Int64
+}
+
+func (s *sweepStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "from suggestion_outcome_cursor for update") {
+		s.pages.Add(1)
+	}
+	return s.StatementCounter.TraceQueryStart(ctx, conn, data)
 }
 
 // idleSweepGap is the idle sweep's gap between passes, far shorter than the server's minute so
@@ -110,6 +131,20 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	wake := hub.Wake(EventsChannel)
 	connected := make(chan struct{})
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
+
+	srv := directServer(deps)
+	counter := &sweepStatements{}
+	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	schedule := suggestionSchedule{minGap: idleSweepGap, settle: settle, page: suggestionOutcomePage}
+	// The sweep reads through the counted pool and observes the horizon through the server's own
+	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
+	runSweep(t, func(ctx context.Context) { runSuggestionOutcomeSweep(ctx, counted.Pool, srv.horizon(), wake, schedule) })
+	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
+	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
+	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
+	// The hub starts once the boot pass has set the cursor, so the signal it sends after its LISTEN
+	// earns a pass of its own, after the boot pass, rather than being taken while the boot pass is
+	// still owed.
 	hubCtx, stopHub := context.WithCancel(context.Background())
 	hubDone := make(chan struct{})
 	go func() {
@@ -120,27 +155,13 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 		stopHub()
 		<-hubDone
 	})
-
-	srv := directServer(deps)
-	counter := &storetest.StatementCounter{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	schedule := suggestionSchedule{minGap: idleSweepGap, settle: settle, page: suggestionOutcomePage}
-	started := time.Now()
-	// The sweep reads through the counted pool and observes the horizon through the server's own
-	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
-	runSweep(t, func(ctx context.Context) { runSuggestionOutcomeSweep(ctx, counted.Pool, srv.horizon(), wake, schedule) })
-	select {
-	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
-	}
-	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
-	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
-	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
-	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
-	// pass began; after it the loop is idle.
-	time.Sleep(time.Until(started.Add(idleSweepGap + 300*time.Millisecond)))
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	testwait.Receive(t, "the hub's connection", connected)
+	// The boot pass reads one page here, the log holding fewer events than a page, and every pass
+	// begins a page, so a second page is begun by the pass the hub's signal earned or by one the boot
+	// pass asked for. A pass still owed runs no later than the gap after the last one began, so the
+	// loop is idle once its statements have held still for longer than that gap.
+	waitUntil(t, "a second page of the sweep, after the boot pass's", func() bool { return counter.pages.Load() >= 2 })
+	awaitStill(t, "the idle sweep's statements", 500*time.Millisecond, counter.Count)
 	return idleSweep{handler: handler, database: database, server: srv, counter: counter, target: target, source: source}
 }
 

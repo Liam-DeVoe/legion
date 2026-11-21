@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,25 +72,26 @@ func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
 // A process that dies while a call waits for it takes its lock with its connection, and the call
 // stops waiting for it: it answers once the processes still holding the lock have acknowledged,
 // not at the timeout. Until then it does not answer, since that process was alive when the call
-// was sent.
+// was sent. Both are read off facts rather than a clock: the test marks the close before it
+// closes the connection, so an answer that came while the lock was still held finds no mark, and
+// a call that waited out its timeout answers 504 TEST_HOOK_TIMEOUT (testHookFanout.call), not 200.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 	handler, database := newTestHandlerWithTestHooks(t)
 	conn, _ := holdTestHookLock(t, database)
 	const alive = 500 * time.Millisecond
+	var closing atomic.Bool
 	go func() {
 		time.Sleep(alive)
+		closing.Store(true)
 		_ = conn.Close(context.Background())
 	}()
 
-	called := time.Now()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "alice")
-	waited := time.Since(called)
 	if response.Code != http.StatusOK {
 		t.Fatalf("disconnect hook after the silent process died: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
-	if waited < alive || waited >= testHookTimeout {
-		t.Fatalf("the hook answered after %v, want once the silent process's lock went (%v) and inside the %v timeout",
-			waited, alive, testHookTimeout)
+	if !closing.Load() {
+		t.Fatal("the hook answered while the silent process still held its lock, want it to wait for that process until its lock went")
 	}
 }
 
@@ -102,7 +104,8 @@ func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 // it, so a viewer here waits for a frame that never comes. The process takes its lock only once
 // it listens (testHookFanout.dial), so from then on every call reaches it and waits for its
 // acknowledgement. The wait is the one the caller makes for its own lock (awaitOwnLock), bounded
-// by the test binary's deadline: how long a loaded machine takes to connect is not under test.
+// by the test binary's deadline (testwait.Receive): how long a loaded machine takes to connect is
+// not under test.
 func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
@@ -125,9 +128,14 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(served.waitBackground)
-	listening, stop := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))
+	listening, stop := context.WithCancel(t.Context())
 	defer stop()
-	if _, err := served.testHooks.awaitOwnLock(listening); err != nil {
+	took := make(chan error, 1)
+	go func() {
+		_, err := served.testHooks.awaitOwnLock(listening)
+		took <- err
+	}()
+	if err := testwait.Receive(t, "the second process's test-hook listener to take its lock", took); err != nil {
 		t.Fatalf("the second process's test-hook listener did not take its lock: %v", err)
 	}
 	server := httptest.NewServer(mux)

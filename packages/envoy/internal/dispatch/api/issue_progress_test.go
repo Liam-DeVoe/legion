@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -236,9 +235,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	wantNull(t, "uncounted tasks before the pass", progressOf(t, handler, uncounted.Key).Tasks)
 	wantCount(t, "stale tasks before the pass", progressOf(t, handler, stale.Key).Tasks, 0, 1)
 
-	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	deps.Docs.(*docs.Service).ReconcileTaskProgress(ctx)
 
 	wantCount(t, "counted", progressOf(t, handler, counted.Key).Tasks, 1, 2)
 	wantCount(t, "uncounted", progressOf(t, handler, uncounted.Key).Tasks, 2, 3)
@@ -255,7 +252,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("drifted issues after the pass = %d, want 0", remaining)
 	}
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	deps.Docs.(*docs.Service).ReconcileTaskProgress(ctx)
 	wantCount(t, "uncounted after a second pass", progressOf(t, handler, uncounted.Key).Tasks, 2, 3)
 }
 
@@ -298,9 +295,7 @@ func TestIssueProgressReconciliationDrainsMoreThanOneBatch(t *testing.T) {
 		t.Fatalf("cleared rows = %d, want %d", drifted, issues)
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	deps.Docs.(*docs.Service).ReconcileTaskProgress(ctx)
 
 	var remaining int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from issues where project_key = 'MANY' and tasks_version is null`).Scan(&remaining); err != nil {

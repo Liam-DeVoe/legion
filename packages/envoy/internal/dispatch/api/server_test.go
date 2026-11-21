@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -356,12 +357,16 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	return mux, database, deps, served
 }
 
-// waitBackgroundOf waits out served's background work at a test's end. A test that has already
-// failed may have left a handler held on something only a later cleanup releases - one its own
-// heldUntilReleased registered before this server - so for it the wait is bounded and the cleanup
-// carries on, letting that release run, rather than hanging the package until its deadline.
+// waitBackgroundOf waits out served's background work at a test's end. A handler may be held on a
+// release only a later cleanup runs - one its test's heldUntilReleased registered before this
+// server, as a test that failed while the handler waited leaves it - so the test's releases run
+// first (releaseHeld): the test is over, and they would run next anyway. A test's wait has one
+// bound, the test binary's deadline less testwait's margin; a benchmark's waits as long as the
+// work runs.
 func waitBackgroundOf(t testing.TB, served *server) {
-	if !t.Failed() {
+	releaseHeld(t)
+	test, ok := t.(*testing.T)
+	if !ok {
 		served.waitBackground()
 		return
 	}
@@ -370,11 +375,7 @@ func waitBackgroundOf(t testing.TB, served *server) {
 		served.waitBackground()
 		close(waited)
 	}()
-	select {
-	case <-waited:
-	case <-time.After(5 * time.Second):
-		t.Log("the failed test left background work running; its later cleanups release it")
-	}
+	testwait.Receive(test, "the server's background work to end", waited)
 }
 
 // directServer is a server a test calls a handler or a delivery step on directly, without the
@@ -426,20 +427,14 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 // transaction owns (storetest.WaitForLockWaiters), and fails the test when they never do.
 func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
 	t.Helper()
-	if queued := storetest.WaitForLockWaiters(t, holder, want, 2*time.Second); queued < want {
-		t.Fatalf("waiting database locks: wanted at least %d operations queued behind the held lock, saw %d", want, queued)
-	}
+	storetest.WaitForLockWaiters(t, holder, want)
 }
 
+// awaitResponse is the next answer on responses, from a request the test started on a goroutine of
+// its own. Its one bound is the test binary's deadline less testwait's margin.
 func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
-	select {
-	case response := <-responses:
-		return response
-	case <-time.After(2 * time.Second):
-		t.Fatal("concurrent request did not complete")
-		return nil
-	}
+	return testwait.Receive(t, "the concurrent request's answer", responses)
 }
 
 func dispatchRequest(t testing.TB, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
@@ -541,7 +536,8 @@ func assertUnchanged(t *testing.T, request string, before, after map[string]stri
 // awaitBackgroundWrites waits for every write srv's earlier requests left running past their
 // answers: the term-statistics refresh a related-item check starts for a project with no statistics
 // yet (ensureSearchTermStats), which commits search_term_stats and search_term_totals rows when it
-// finishes, and every detached run (srv.detached), such as a related_checks record's retry.
+// finishes, and every detached run (srv.detached), such as a related_checks record's retry. Its one
+// bound is the test binary's deadline less testwait's margin.
 func awaitBackgroundWrites(t *testing.T, srv *server) {
 	t.Helper()
 	rows, err := srv.deps.Store.Pool.Query(context.Background(), `select key from projects`)
@@ -560,11 +556,7 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 		srv.detached.wait()
 		close(idle)
 	}()
-	select {
-	case <-idle:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the server's detached work did not end")
-	}
+	testwait.Receive(t, "the server's detached work to end", idle)
 }
 
 // assertRefusal checks an answer is 400 with code and an error naming field first.

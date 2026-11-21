@@ -1030,13 +1030,8 @@ func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the reopen: %v", err)
 	}
-	select {
-	case err := <-swept:
-		if err != nil {
-			t.Fatalf("the sweep: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the sweep never returned once the reopen committed")
+	if err := testwait.Receive(t, "the sweep's answer once the reopen committed", swept); err != nil {
+		t.Fatalf("the sweep: %v", err)
 	}
 	if writes := counted.writes.Load(); writes != 0 {
 		t.Fatalf("the sweep wrote the ask states of %s %d time(s) after a reopen committed while it waited: it "+

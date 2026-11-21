@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
@@ -69,19 +70,14 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 }
 
 // awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+// Its one bound is the test binary's deadline (testwait.UntilPolling): a request a loaded machine
+// runs late still ends the wait, and its failure prints the count last read.
 func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("%d request(s) to wait on a lock (the count waiting)", count), func() (int, bool) {
 		waiting := lockWaiters(t, database)
-		if waiting >= count {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d request(s) wait on a lock after 10s, want %d", waiting, count)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, waiting >= count
+	})
 }
 
 // putMappingAsync sends a mapping PUT from its own goroutine and returns where its answer arrives.
@@ -93,15 +89,12 @@ func putMappingAsync(t *testing.T, handler http.Handler, repo string, body map[s
 	return answered
 }
 
+// awaitAnswer waits for the answer of the request what names on answered. Its one bound is the
+// test binary's deadline (testwait.Receive): a request a loaded machine answers late passes, and
+// one that never answers fails the test by name.
 func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
 	t.Helper()
-	select {
-	case response := <-answered:
-		return response
-	case <-time.After(15 * time.Second):
-		t.Fatalf("%s never answered", what)
-		return nil
-	}
+	return testwait.Receive(t, what+" to answer", answered)
 }
 
 func createProjects(t *testing.T, handler http.Handler, keys ...string) {

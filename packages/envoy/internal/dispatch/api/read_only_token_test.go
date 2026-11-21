@@ -489,9 +489,10 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 
 	// The trees are stored beside the request, on a goroutine of the server's background work, so
 	// the statements are read once the rows it stores are back.
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
-		t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
-	}
+	testwait.UntilPolling(t, 20*time.Millisecond, "the read's background store of every one of the prose's trees (the count stored)", func() (int, bool) {
+		stored := storedTrees()
+		return stored, stored == len(sums)
+	})
 
 	statements := marked.take()
 	if !requireOnlyProofAndCaches(t, statements, sourcesRead) {

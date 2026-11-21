@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverRoute is a listener route a take-over listener's script names: the registry read, the
@@ -188,12 +189,13 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 		envoyURL: listener.server.URL, envoyTimeout: 300 * time.Millisecond, takeoverWindow: 3 * time.Second,
 	})
 
-	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, _ *http.Request, send resumeSend) {
-		// The listener publishes before it answers, and this answer misses the client's window.
+	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend) {
+		// The listener publishes before it answers, and answers only once the client has given up
+		// on the call, so this answer misses the client's window however late its timer fires.
 		l.mu.Lock()
 		l.sends = append(l.sends, send)
 		l.mu.Unlock()
-		time.Sleep(600 * time.Millisecond)
+		<-r.Context().Done()
 		_, _ = w.Write([]byte(`{"event_id":"takeover-late","recipient":"s1"}`))
 	}
 	for _, tc := range []struct {
@@ -276,11 +278,11 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 	}
 }
 
-// With no listener configured there is no take-over to wait out: the send settles failed at once,
-// well inside the production window the server runs.
+// With no listener configured there is no take-over to wait out: the send settles failed on its
+// one try, with the failure no take-over ends (retryableDeliveryFailure), so the sender never waits
+// out a backoff of the production window the server runs.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
-	started := time.Now()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
 		map[string]any{"body": "Nobody listens", "delivery": "steer"}, "alice")
 	if response.Code != http.StatusCreated {
@@ -290,8 +292,12 @@ func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" {
 		t.Fatalf("deliveries = %#v, want attempt 1 failed", message.Deliveries)
 	}
-	if took := time.Since(started); took > 3*time.Second {
-		t.Fatalf("the send took %v to fail, want it settled at once: no listener is no take-over", took)
+	failure := message.Deliveries[0].Error
+	if failure == nil {
+		t.Fatalf("attempt 1 failed with no error recorded, want %q", listenerNotConfiguredText)
+	}
+	if *failure != listenerNotConfiguredText || retryableDeliveryFailure(*failure) {
+		t.Fatalf("attempt 1 failed with %q, want %q, which no take-over ends: no listener is no take-over", *failure, listenerNotConfiguredText)
 	}
 }
 
@@ -367,20 +373,17 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				handler.ServeHTTP(response, request)
 				answered <- response
 			}()
-			// Two tries the sender made while holding the attempt.
-			deadline := time.Now().Add(10 * time.Second)
-			for {
+			// Two tries the sender made while holding the attempt. A request that answered first
+			// settled without them, and no try is left to come.
+			testwait.UntilPolling(t, 20*time.Millisecond, "two tries of the sender that found its attempt held (the tries seen)", func() (int, bool) {
 				claimsMu.Lock()
 				seen := len(claims)
 				claimsMu.Unlock()
-				if seen >= 2 {
-					break
+				if seen < 2 && len(answered) > 0 {
+					t.Fatalf("the request answered after %d tries holding its attempt, want 2 during the take-over", seen)
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("the sender made %d tries holding its attempt within 10s of the take-over, want 2", seen)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				return seen, seen >= 2
+			})
 
 			// The attempt is old enough for the delivery sweep, and only its live claim keeps it
 			// the waiting sender's.
@@ -402,12 +405,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			}
 
 			listener.refuse(false)
-			var response *httptest.ResponseRecorder
-			select {
-			case response = <-answered:
-			case <-time.After(15 * time.Second):
-				t.Fatal("the request never answered after the take-over ended")
-			}
+			response := testwait.Receive(t, "the request's answer once the take-over ended", answered)
 			if response.Code != http.StatusCreated {
 				t.Fatalf("send: status=%d body=%s", response.Code, response.Body.String())
 			}

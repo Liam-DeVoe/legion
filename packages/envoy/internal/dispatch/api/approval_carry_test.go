@@ -620,7 +620,8 @@ func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.S
 // settledWithoutVersion settles the document at once, for a document whose settlement is owed,
 // and waits until that settlement has committed: its pending-settlement row, which a live write
 // leaves and only a settlement's commit clears, is gone. It fails t when the document owes no
-// settlement, since then there would be nothing to wait for.
+// settlement, since then there would be nothing to wait for. The wait's one bound is the test
+// binary's deadline less testwait's margin.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
 	owed := func() bool {
@@ -634,11 +635,7 @@ func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
 	documents.SettleNow(artifactID)
-	for deadline := time.Now().Add(5 * time.Second); owed(); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the document's settlement never committed")
-		}
-	}
+	waitUntil(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool { return !owed() })
 }
 
 // The human changes his answer. The block's answered_at moves, so the block is newly answered

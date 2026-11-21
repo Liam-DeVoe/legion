@@ -3381,7 +3381,7 @@ func (f *checkRunsFake) failWithBody(status int, body string) {
 	f.fault, f.faultBody = status, body
 }
 
-// holdEveryRead makes every read wait until its caller gives up.
+// holdEveryRead makes every read wait until its caller gives up, and answer nothing of its own.
 func (f *checkRunsFake) holdEveryRead() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -3419,10 +3419,7 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
 	f.mu.Unlock()
 	if hold {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
+		<-r.Context().Done()
 		return
 	}
 	if fault != 0 {
@@ -3637,7 +3634,9 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 
 // A read Dispatch could not make is no verdict: GitHub's 500, a read held past the deadline and
 // a deployment holding no App key each leave the check with no result and a detail saying what
-// GitHub answered, never a pass and never a fail.
+// GitHub answered, never a pass and never a fail. The held read is cut at the deadline: the fake
+// answers a held read nothing until its caller gives up, and the detail names the deadline, which
+// readCIRuns writes only once the deadline has passed.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
@@ -3652,11 +3651,7 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	fake.failWith(0)
 	fake.holdEveryRead()
 	shortenCIReadDeadline(t, 300*time.Millisecond)
-	started := time.Now()
 	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
-	}
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {

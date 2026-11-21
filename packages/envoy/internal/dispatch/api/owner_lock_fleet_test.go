@@ -91,7 +91,7 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- race.send(handler) }()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, 10*time.Second); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered); early {
 		t.Fatalf("the request answered status=%d body=%s while the earlier build's writer held the issue's row; want it to wait for that row",
 			answer.Code, answer.Body.String())
 	}
@@ -304,7 +304,7 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
 					map[string]any{"labels_add": []string{"this-build"}}, "alice")
 			}()
-			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered, 10*time.Second); early {
+			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered); early {
 				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait at its update of the labels there",
 					answer.Code, answer.Body.String())
 			}

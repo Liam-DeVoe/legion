@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart: http.Server.Shutdown counts no
@@ -91,16 +92,12 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 		<-dialed
 	}
 	rig.stop()
-	select {
-	case <-returned:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown's wait for the sockets had not returned 10s after the signal")
-	}
+	testwait.Receive(t, "the shutdown's wait for the sockets to return after the signal", returned)
 	waitReturned()
 
 	opened, last := 0, make([]*gws.Conn, 0, pages)
 	for range pages {
-		run := <-runs
+		run := testwait.Receive(t, "each page's dials to end, every socket it opened ended by Dispatch", runs)
 		opened += run.opened
 		if run.last != nil {
 			last = append(last, run.last)
@@ -144,9 +141,9 @@ func dialLiveSocketAsAlice(url string) (*gws.Conn, error) {
 }
 
 // endsWithServiceRestart reads conn until Dispatch ends it, answering nil for a close with 1012
-// (service restart) and an error for any other end.
+// (service restart) and an error for any other end. It sets no read deadline of its own: the
+// test's wait for the page's run (testwait.Receive) bounds it by the test binary's deadline.
 func endsWithServiceRestart(conn *gws.Conn) error {
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			if gws.IsCloseError(err, gws.CloseServiceRestart) {

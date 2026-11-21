@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,12 +260,16 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 	}
 }
 
-// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT at about
-// that bound and gives its connection back. refs is locked in another connection, so the walk,
-// which reads refs, waits however fast it would run, and the bound is what ends it. The control
-// is the first read, before the lock: the same request answers 200.
+// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT naming that
+// bound, no sooner than it, and gives its connection back. refs is locked in another connection
+// until the test ends, so the walk, which reads refs, waits however fast it would run, and only the
+// bound can end it: a walk with no bound never answers, and the wait for the answer fails. How long
+// the request ran is read off the server's own statements (requestSpan), from its first read to the
+// statement the bound cut, so the test's own setup and a loaded machine's scheduling of the test
+// count for nothing. The control is the first read, before the lock: the same request answers 200.
 func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	span := &requestSpan{}
+	handler, database, _ := newTestServer(t, testServerOptions{tracer: span})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
@@ -272,26 +277,69 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	}
 	holdLock(t, database, "lock table refs in access exclusive mode")
 	acquired := database.Pool.Stat().AcquiredConns()
-	started := time.Now()
-	response := issueReferencesRequest(t, handler, issue.Key, "")
-	took := time.Since(started)
+	span.arm()
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- issueReferencesRequest(t, handler, issue.Key, "") }()
+	response := testwait.Receive(t, "the answer of references past the bound while refs stays locked", answered)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
-		t.Errorf("references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
+	if took, cut, err := span.read(); !cut {
+		t.Errorf("references past the bound answered with no statement on the server's pool cut by the bound")
+	} else if took < referencesClosureBound {
+		t.Errorf("references past the bound cut its statement (%v) %s after the request's first read, before its %s bound", err, took, referencesClosureBound)
 	}
-	var conns int32
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns = database.Pool.Stat().AcquiredConns()
-		return conns <= acquired
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the walk to give its connection back: the pool's acquired connections down to the %d it held before the request", acquired), func() (int32, bool) {
+		conns := database.Pool.Stat().AcquiredConns()
+		return conns, conns <= acquired
 	})
-	if conns > acquired {
-		t.Errorf("the pool holds %d acquired connections after the answer, more than the %d it held before the request: the walk kept its connection", conns, acquired)
+}
+
+// requestSpan is a tracer on the server's pool (testServerOptions.tracer) that times one request on
+// the server's own statements, from the hooks pgx calls as each starts and ends: from the start of
+// the first statement after arm, the request's first read, to the end of the first statement to
+// fail after it, the one the request's bound cut, with that statement's error.
+type requestSpan struct {
+	mu    sync.Mutex
+	armed bool
+	first time.Time
+	cut   time.Time
+	err   error
+}
+
+// arm starts the span at the next statement the server's pool starts.
+func (s *requestSpan) arm() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed = true
+}
+
+func (s *requestSpan) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.armed && s.first.IsZero() {
+		s.first = time.Now()
 	}
+	return ctx
+}
+
+func (s *requestSpan) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.first.IsZero() && s.cut.IsZero() && data.Err != nil {
+		s.cut, s.err = time.Now(), data.Err
+	}
+}
+
+// read answers how long the request ran from its first read to the statement its bound cut,
+// whether a statement failed at all, and that statement's error.
+func (s *requestSpan) read() (time.Duration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cut.Sub(s.first), !s.cut.IsZero(), s.err
 }
 
 func graphRequest(t *testing.T, handler http.Handler, query url.Values) *httptest.ResponseRecorder {

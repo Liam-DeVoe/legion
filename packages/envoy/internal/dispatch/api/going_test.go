@@ -316,7 +316,6 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)
 		return err == nil && state.Terminal > 0
 	})
-
 	deadline := fmt.Sprintf(`1 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
 	if frames := rig.frames(t, abandoned.ID); len(frames) != 1 || frames[0] != deadline {
 		t.Fatalf("the maintenance pass left %v, want %s", frames, deadline)

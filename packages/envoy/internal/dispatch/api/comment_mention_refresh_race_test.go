@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A refresh whose statement has committed but whose result is not yet recorded loses to a keyed
@@ -341,11 +343,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			a1 := postMentionOfS1(t, handler, issue.Key, "first")
 			key := mentionKey{comment: a1, target: "session:s1", attempt: 1}
 			if tc.between {
-				select {
-				case <-gate.arrived:
-				case <-time.After(30 * time.Second):
-					t.Fatal("A-1's park never reached the sender's lock after its try")
-				}
+				testwait.Receive(t, "A-1's park reaching the sender's lock after its try", gate.arrived)
 				sender.refreshHeldClaims(ctx)
 				recorded, unsure := recordedClaim(sender, key)
 				t.Logf("as park waits for the lock, the refresh leaves the sender recording %v (unsure %t), the row carrying %v",
@@ -592,25 +590,27 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 			sender.heldWarnAfter = time.Nanosecond
 			sender.mu.Unlock()
 			sender.enqueue(context.Background(), item)
-			var sent bool
-			select {
-			case <-triedHandOff:
-				sent = true
-			case <-time.After(3 * time.Second):
+			holds := func() bool {
+				sender.mu.Lock()
+				defer sender.mu.Unlock()
+				_, held := sender.held[item.key()]
+				return held
 			}
-			sender.mu.Lock()
-			_, holds := sender.held[item.key()]
-			sender.mu.Unlock()
+			testwait.Until(t, fmt.Sprintf("a try under the hand-off's claim %v, which a dropped hand-off never gets: the attempt is left pending under a claim nothing refreshes or sends until it lapses (whether the sender holds an entry for the key)", sweeps), func() (bool, bool) {
+				select {
+				case <-triedHandOff:
+					return holds(), true
+				default:
+					return holds(), false
+				}
+			})
+			held := holds()
 			stop()
 			sender.wait()
 			mu.Lock()
 			defer mu.Unlock()
 			t.Logf("handed off %t; tries carried %v; hand-off claim %v; sender still holds the key %t", handedOff.Load(),
-				tried, sweeps, holds)
-			if !sent {
-				t.Fatalf("the hand-off's claim %v was never tried, and the sender holds no entry for it (%t): the attempt is left pending under a claim nothing refreshes or sends until it lapses",
-					sweeps, holds)
-			}
+				tried, sweeps, held)
 		})
 	}
 }

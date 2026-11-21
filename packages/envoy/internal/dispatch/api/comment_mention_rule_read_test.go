@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -67,7 +68,6 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 			return len(state.bodiesTo("s1")) > 0
 		}
 	})
-
 	key := mentionKey{comment: first, target: "session:s1", attempt: 1}
 	recorded, unsure := recordedClaim(sender, key)
 	row := attemptClaimedAt(t, database, first, "session:s1")
@@ -173,7 +173,6 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 				defer sender.mu.Unlock()
 				return len(sender.lanes[held]) == 2
 			})
-
 			gauged("once the first send parked,")
 			publishIssueEvents(t, database, issue.Key)
 			failer.failing.Store(true)
@@ -183,11 +182,14 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			for try := 1; try <= 4; try++ {
 				failer.take()
 				unpark()
-				select {
-				case unpark = <-timers:
-				case <-time.After(20 * time.Second):
-					t.Fatalf("try %d: the first send neither parked again nor went", try)
-				}
+				waitUntil(t, fmt.Sprintf("try %d: the first send parked again, or a send reaching s1", try), func() bool {
+					select {
+					case unpark = <-timers:
+						return true
+					default:
+						return len(state.bodiesTo("s1")) > 0
+					}
+				})
 				reads, statements, writes := failer.take()
 				t.Logf("try %d with the rule's reads failing: %d reads of the rule, %d statements on comment_deliveries (%d writes); s1 took %q",
 					try, reads, statements, writes, state.bodiesTo("s1"))
@@ -216,7 +218,6 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 				defer sender.mu.Unlock()
 				return sender.serving == 0
 			})
-
 			states := attemptStates(t, database, "comment_deliveries", "comment_id", first)
 			bodies := state.bodiesTo("s1")
 			warned := strings.Count(logs.String(), warning)

@@ -235,13 +235,11 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 					attempts, _ := eventAttempts(t, database, first)
 					return attempts > 0
 				})
-
 			} else {
 				waitUntil(t, "event 1 published", func() bool {
 					_, published := eventAttempts(t, database, first)
 					return published
 				})
-
 			}
 
 			release := func() {}
@@ -262,7 +260,6 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 				waitUntil(t, "the mention's send held under a live claim", func() bool {
 					return claimedPending(t, database, mention.ID, "session:s1")
 				})
-
 				ageAttempts(t, database, mention.ID)
 				awaitHeldCopy(t, database, mention.ID, contracts.LegacyAgentSubject("s1"))
 				// The send fails while event 1 still backs off: here its attempt is written failed,
@@ -311,8 +308,10 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 	}
 }
 
-// awaitHeldCopy waits, for at most 30 s, until the outbox holds the copy of commentID at
-// destination as a comment_fallback_copies row.
+// awaitHeldCopy waits until the outbox holds the copy of commentID at destination as a
+// comment_fallback_copies row. Its one bound is the test binary's deadline (waitUntil): a
+// fallback pass a loaded machine runs late still ends the wait, and one that never holds the copy
+// fails the test by name.
 func awaitHeldCopy(t *testing.T, database *store.Store, commentID, destination string) {
 	t.Helper()
 	waitUntil(t, "the copy at "+destination+" held as a fallback row", func() bool {
@@ -320,5 +319,4 @@ func awaitHeldCopy(t *testing.T, database *store.Store, commentID, destination s
 			return row.destination == destination
 		})
 	})
-
 }

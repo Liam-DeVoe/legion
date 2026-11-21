@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // replayedMappings is the set of repositories the project's settings.repo_project.updated events
@@ -124,8 +125,11 @@ func TestSeedRepoProjectsRacingAPutOfTheSameRepositoryWaitsForIt(t *testing.T) {
 	awaitLockWaiters(t, database, 1)
 	seeded := make(chan error, 1)
 	go func() { seeded <- SeedRepoProjects(ctx, database, events.NewBroker(), "acme/new=CORE") }()
-	deadline := time.Now().Add(10 * time.Second)
-	for lockWaiters(t, database) < 2 {
+	testwait.UntilPolling(t, 5*time.Millisecond, "the seed to wait on a lock behind the PUT (the backends waiting)", func() (int, bool) {
+		waiting := lockWaiters(t, database)
+		if waiting >= 2 {
+			return waiting, true
+		}
 		select {
 		case err := <-seeded:
 			var project string
@@ -135,22 +139,14 @@ func TestSeedRepoProjectsRacingAPutOfTheSameRepositoryWaitsForIt(t *testing.T) {
 			t.Fatalf("the seed returned (err %v) while a PUT of acme/new was in flight, having put acme/new in %q; want it to wait for the PUT", err, project)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the seed neither returned nor waited on a lock after 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, false
+	})
 	release()
 	if response := awaitAnswer(t, put, "map acme/new to OTHER"); response.Code != http.StatusOK {
 		t.Fatalf("map acme/new to OTHER: status=%d body=%s", response.Code, response.Body.String())
 	}
-	select {
-	case err := <-seeded:
-		if err != nil {
-			t.Fatalf("seed acme/new=CORE after the PUT: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the seed never returned after the PUT committed")
+	if err := testwait.Receive(t, "the seed to return once the PUT committed", seeded); err != nil {
+		t.Fatalf("seed acme/new=CORE after the PUT: %v", err)
 	}
 	if other := tableMappings(t, database, "OTHER"); !other["acme/new"] {
 		t.Fatalf("OTHER's mappings = %v, want the PUT's acme/new kept", other)

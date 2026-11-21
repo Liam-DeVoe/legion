@@ -74,7 +74,7 @@ const liveHorizonHeartbeat = time.Second
 // awaitHeartbeat waits for client's next frame, which must be a heartbeat: the socket is open and
 // alive, and nothing of the subscription has arrived, since one still waiting for its relay
 // subscription is owed nothing yet, its events_start included.
-func awaitHeartbeat(t *testing.T, client *socketClient, within time.Duration, while string) {
+func awaitHeartbeat(t *testing.T, client *socketClient, while string) {
 	t.Helper()
 	data := client.take(t, "a heartbeat "+while)
 	if _, beat := decodeSocketFrame(t, data).(LiveHeartbeat); !beat {
@@ -169,13 +169,13 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
 
-	release := holdClusterTransactionID(t, 10*time.Second)
+	release := holdClusterTransactionID(t)
 	first := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, first, "events", &since)
-	awaitHeartbeat(t, first, eventFeedWait, "while the horizon is held")
+	awaitHeartbeat(t, first, "while the horizon is held")
 	second := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, second, "events", &since)
-	awaitHeartbeat(t, second, eventFeedWait, "while the first subscription waits on the held horizon")
+	awaitHeartbeat(t, second, "while the first subscription waits on the held horizon")
 
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the horizon is held")
 	committed := eventHead(t, rig.database)
@@ -241,7 +241,7 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	time.Sleep(eventRelayCoalesce + 500*time.Millisecond)
 
 	// The reset's first event wakes the relay's reset check, which then waits on the held horizon.
-	release := holdClusterTransactionID(t, 30*time.Second)
+	release := holdClusterTransactionID(t)
 	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("reset the event log: %v", err)
 	}
@@ -257,7 +257,7 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 
 	second := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, second, "events", since)
-	awaitHeartbeat(t, second, eventFeedWait, "while the relay still stood on the replaced log")
+	awaitHeartbeat(t, second, "while the relay still stood on the replaced log")
 	release()
 	if start := eventsStartID(t, second, "events"); start > afterReset {
 		t.Fatalf("the subscription starts after event %d, above the new log's newest id %d: it was served from the replaced log's cursor", start, afterReset)
@@ -294,7 +294,7 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 		},
 		func(read model.GraphReferences) bool { return len(read.Edges) == 1 })
 
-	release := holdClusterTransactionID(t, 30*time.Second)
+	release := holdClusterTransactionID(t)
 	// An event committed before the subscribe but above the proven horizon, which the hold keeps
 	// from being proven: a first cursor awaited after it must wait for the hold to end.
 	renameIssue(t, rig.handler, issue.Key, "Renamed before the subscribe")
@@ -320,7 +320,7 @@ func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRe
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 
-	release := holdClusterTransactionID(t, 30*time.Second)
+	release := holdClusterTransactionID(t)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
 	awaitRelayStart(t, rig.served.eventRelay)
@@ -542,10 +542,10 @@ func TestShutdownEndsAnEventsSubscriptionWaitingOnTheHorizon(t *testing.T) {
 	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
 
-	holdClusterTransactionID(t, 30*time.Second)
+	holdClusterTransactionID(t)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", &since)
-	awaitHeartbeat(t, client, eventFeedWait, "while the horizon is held")
+	awaitHeartbeat(t, client, "while the horizon is held")
 
 	rig.stop()
 	if code, _ := client.closeCode(t); code != 1012 {

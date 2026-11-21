@@ -159,7 +159,6 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 		serving, parked, onLane, _ := rig.state()
 		return parked && serving == 0 && onLane == 2
 	})
-
 	if stacks := serveStacks(); stacks != 0 {
 		t.Fatalf("%d goroutines are in the sender's lane loop while its one lane is parked, want none", stacks)
 	}
@@ -247,7 +246,6 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 		defer rig.mu.Unlock()
 		return len(rig.sent) == 12
 	})
-
 	rig.mu.Lock()
 	order := append([]string(nil), rig.sent[10:]...)
 	rig.mu.Unlock()

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every send that waits on a held lane past the warn threshold is reported, once: the one that
@@ -346,14 +347,16 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			sender.mu.Unlock()
 			sender.unpark(item.lane())
 
-			parked := false
-			select {
-			case <-tried:
-			case <-timers:
-				parked = true
-			case <-time.After(10 * time.Second):
-				t.Fatal("the send neither went nor parked")
-			}
+			parked := testwait.Until(t, "the send to go or to park (where it stands)", func() (string, bool) {
+				select {
+				case <-tried:
+					return "went", true
+				case <-timers:
+					return "parked", true
+				default:
+					return "neither went nor parked", false
+				}
+			}) == "parked"
 			if parked != tc.readFail {
 				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)
 			}
@@ -450,16 +453,15 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.unpark(item.lane())
 			joined := false
 			// Each park's timer is fired once the wait is past the threshold; the run ends when the
-			// sender holds no send, which is what the loop waits for. The two minutes are a hang
-			// guard, not a bound on how long the sends take: the row takes about a second and a
-			// quarter, so the deadline is reached only by a send that never goes or parks, which is
-			// a defect rather than a slow machine.
-			for deadline := time.After(2 * time.Minute); ; {
+			// sender holds no send, which is what the wait waits for, asking every Poll. Its one
+			// bound is the test binary's deadline: a send that never goes or parks fails it by name,
+			// and a slow machine only takes longer.
+			testwait.Until(t, "the sender to hold no send, each park's timer fired (the sends it still holds)", func() (int, bool) {
 				sender.mu.Lock()
-				done := len(sender.held) == 0
+				held := len(sender.held)
 				sender.mu.Unlock()
-				if done {
-					break
+				if held == 0 {
+					return 0, true
 				}
 				select {
 				case fire := <-timers:
@@ -481,11 +483,10 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 					time.Sleep(wait)
 					fire()
 				case <-tried:
-				case <-time.After(10 * time.Millisecond):
-				case <-deadline:
-					t.Fatal("the sends neither went nor parked")
+				default:
 				}
-			}
+				return held, false
+			})
 			if tc.second && !joined {
 				t.Fatal("the failed read parked no lane for a-second to join")
 			}

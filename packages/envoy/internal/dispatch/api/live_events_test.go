@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // eventFeedWait bounds a wait on the server's own work that does not wait on the event horizon -
@@ -561,16 +563,26 @@ func (stream *gatedStream) SendWait(ctx context.Context, frame any) error {
 
 func (stream *gatedStream) Holds(string) bool { return false }
 
-// next is the next frame the subscription sent, within eventFeedWait.
+// next is the next frame the subscription sent. Its one bound is the test binary's deadline less
+// testwait's margin.
 func (stream *gatedStream) next(t *testing.T, what string) any {
 	t.Helper()
+	return testwait.Receive(t, what, stream.frames)
+}
+
+// handedStream is a gatedStream that notes the moment the subscription hands it its first frame,
+// on the subscription's own goroutine (SendWait), rather than the moment the test reads it.
+type handedStream struct {
+	*gatedStream
+	handed chan time.Time
+}
+
+func (stream handedStream) SendWait(ctx context.Context, frame any) error {
 	select {
-	case frame := <-stream.frames:
-		return frame
-	case <-time.After(eventFeedWait):
-		t.Fatalf("no frame within %s, waiting for %s", eventFeedWait, what)
-		return nil
+	case stream.handed <- time.Now():
+	default:
 	}
+	return stream.gatedStream.SendWait(ctx, frame)
 }
 
 // feedNext is the next frame an events subscription on database's server sent: a frame of the
@@ -682,11 +694,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	if head := eventHead(t, database); last >= head {
 		t.Fatalf("the subscription sent through %d before it ended, want less than the head %d it could not catch up to", last, head)
 	}
-	select {
-	case <-running.(*runningSubscription).done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the dropped subscription's goroutine was still running 5s after its end")
-	}
+	testwait.Receive(t, "the dropped subscription's goroutine to return after its end", running.(*runningSubscription).done)
 
 	// The page's resubscribe, from the last id it applied, resolves its position - the backlog it
 	// missed is past the replay's bound, so it starts at the head and refreshes what it shows
@@ -709,7 +717,11 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // A subscription whose read fails (here, a database that no longer answers) ends with an ended
 // frame (behind), so its page subscribes again, rather than going silent; and it waits the relay's
 // retry first, so a read that keeps failing is asked again at that pace rather than as fast as the
-// page can resubscribe.
+// page can resubscribe. The retry is timed from the subscription's own two moments: its warning
+// that the read failed, which it logs before it waits (endEventsAfterFailure), and its hand of the
+// end frame to the stream. The test's setup and its read of the frame lie outside that span, so a
+// loaded machine lengthens neither end of it, and a subscription that skipped the retry fails
+// however long the rest took.
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	database.Pool.Close()
@@ -717,17 +729,29 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)
 	}
-	stream := newGatedStream()
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	stream := handedStream{gatedStream: newGatedStream(), handed: make(chan time.Time, 1)}
 	close(stream.gate)
-	began := time.Now()
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
 	t.Cleanup(running.stop)
 	ended, ok := stream.next(t, "feed's end").(LiveEnded)
 	if !ok || ended.Sub != "feed" || ended.Reason != "behind" {
 		t.Fatalf("the first frame of a subscription whose read failed = %+v, want its end, behind", ended)
 	}
-	if waited := time.Since(began); waited < eventRelayRetry {
-		t.Fatalf("the subscription ended %s after it started, before the relay's retry (%s)", waited, eventRelayRetry)
+	handed := <-stream.handed
+	var warned time.Time
+	for _, record := range records.Records() {
+		if strings.HasPrefix(record.Message, "dispatch: an events subscription could not ") {
+			warned = record.Time
+			break
+		}
+	}
+	if warned.IsZero() {
+		t.Fatal("the subscription whose read failed logged no warning that it could not read")
+	}
+	if waited := handed.Sub(warned); waited < eventRelayRetry {
+		t.Fatalf("the subscription handed on its end %s after it warned that its read failed, before the relay's retry (%s)", waited, eventRelayRetry)
 	}
 }
 

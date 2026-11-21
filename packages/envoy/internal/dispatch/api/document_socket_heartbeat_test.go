@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // documentSocketTokenRig is a server whose people sign in with a session cookie, as
@@ -166,12 +167,8 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 				t.Fatalf("sign out: %v", err)
 			}
 			ended := time.Now()
-			select {
-			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after its cookie's session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
-				t.Fatalf("the document socket stayed open %s after its cookie's session ended, kept by %s the broker holds live", time.Since(ended).Round(time.Millisecond), beside.name)
-			}
+			testwait.Receive(t, "the document socket's end once its cookie's session ended, with "+beside.name+" the broker holds live beside the cookie", peer.connection().Ended)
+			t.Logf("the document socket closed %s after its cookie's session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
 			// the socket without a close frame.
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {

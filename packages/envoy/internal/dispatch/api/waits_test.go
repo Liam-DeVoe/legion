@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -36,4 +40,42 @@ func awaitStill(t *testing.T, what string, still time.Duration, count func() int
 		}
 		return last, time.Since(since) >= still
 	})
+}
+
+// queuedWaiters is what releaseOnceQueued last read: the backends queued behind the held lock, or
+// the error that ended the reading.
+type queuedWaiters struct {
+	count int
+	err   error
+}
+
+// releaseOnceQueued runs release from a goroutine of its own once want backends queue behind the
+// lock holder's transaction owns (storetest.LockWaiters), and answers a channel that then receives
+// what it last read. It is for a row whose own goroutine is held until the calls it raced answer,
+// which they do only once the lock is released, so the wait cannot run on the test's goroutine.
+// That goroutine calls no t method: at the test binary's deadline less binaryDeadlineMargin
+// (binaryDeadlineGuard) it releases with the count it has, and the row's goroutine fails by name
+// on a count short of want.
+func releaseOnceQueued(t *testing.T, holder pgx.Tx, want int, release func()) <-chan queuedWaiters {
+	t.Helper()
+	guard := binaryDeadlineGuard(t)
+	queued := make(chan queuedWaiters, 1)
+	go func() {
+		defer release()
+		for {
+			count, err := storetest.LockWaiters(context.Background(), holder)
+			if err != nil || count >= want {
+				queued <- queuedWaiters{count: count, err: err}
+				return
+			}
+			select {
+			case <-guard:
+				queued <- queuedWaiters{count: count}
+				return
+			default:
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	return queued
 }

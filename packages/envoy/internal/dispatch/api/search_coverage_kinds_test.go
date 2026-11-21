@@ -15,19 +15,27 @@ import (
 // to "eventually" (dispatch://INFRA-1042, check k5).
 const searchFreshness = 60 * time.Second
 
-// within runs probe until it answers true, failing the test when searchFreshness has passed
-// since written. It polls rather than waits the whole time out, so a check that holds at once -
-// which every one of these does, since each kind is indexed in the write's own transaction and
-// the block-index tick these tests drive themselves has already run (INFRA-988) - costs
-// nothing.
-func within(t *testing.T, written time.Time, what string, probe func() bool) {
+// within runs probe until it answers true, and fails the test once probe has found the write
+// missing for searchFreshness: the span runs from the first answer that found it missing to the
+// start of the latest one, so it counts only time in which the write was seen unindexed, never more
+// than the write's own wait to be indexed. The time the test spends writing and seeding before it
+// looks counts against nobody, and a write found at the first look has met the wait. It polls
+// rather than waits the whole time out, so a check that holds at once - which every one of these
+// does, since each kind is indexed in the write's own transaction and the block-index tick these
+// tests drive themselves has already run (INFRA-988) - costs nothing.
+func within(t *testing.T, what string, probe func() bool) {
 	t.Helper()
+	if probe() {
+		return
+	}
+	missing := time.Now()
 	for {
+		asked := time.Now()
 		if probe() {
 			return
 		}
-		if waited := time.Since(written); waited > searchFreshness {
-			t.Fatalf("%s was still not there %s after the write, want it within %s", what, waited, searchFreshness)
+		if waited := asked.Sub(missing); waited > searchFreshness {
+			t.Fatalf("%s was still not there after it had been seen missing for %s, want it within %s of the write", what, waited, searchFreshness)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -53,7 +61,6 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 
-	written := time.Now()
 	corpus := seedSearchCorpus(t, handler)
 	// An item's and a document's windows are the block-index tick's to write, not the write's
 	// (INFRA-988), and no tick runs behind a test server, so the test runs the one the
@@ -67,7 +74,7 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 		{"compass", "message", corpus.messageID},
 		{"instruments", "issue", corpus.issueKey},
 	} {
-		within(t, written, "the "+item.kind+" searched for by its own word "+item.query, func() bool {
+		within(t, "the "+item.kind+" searched for by its own word "+item.query, func() bool {
 			return searchResultOf(searchResponse(t, handler, "q="+item.query), item.kind, item.id) != nil
 		})
 	}
@@ -78,11 +85,11 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 		{"ask_part", "ask/" + corpus.askID},
 		{"message_block", "message/" + corpus.messageID},
 	} {
-		within(t, written, "a "+window.kind+" window under "+window.owner, func() bool {
+		within(t, "a "+window.kind+" window under "+window.owner, func() bool {
 			return windowsUnder(t, database, window.kind, window.owner) > 0
 		})
 	}
-	within(t, written, "the issue's own embeddings row", func() bool {
+	within(t, "the issue's own embeddings row", func() bool {
 		return windowsUnder(t, database, "issue", corpus.issueKey) == 1
 	})
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener that answers delivers the mention to the session the comment's route or its author
@@ -231,8 +233,8 @@ func (claimedRole) LastSeen(string) int64 { return time.Now().UnixMilli() }
 func (claimedRole) TTL() time.Duration { return 5 * time.Minute }
 
 // runOutboxUntilSettled runs the outbox through publisher until every event of issueKey is
-// published and every copy of commentID it held back for a resent mention is settled, for at most
-// 10 s.
+// published and every copy of commentID it held back for a resent mention is settled. Its one
+// bound is the test binary's deadline (testwait.Until).
 func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, issueKey, commentID string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -249,8 +251,7 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the outbox to publish every event of %s and settle every copy of %s (unpublished, unsettled)", issueKey, commentID), func() ([2]int, bool) {
 		var unpublished, unsettled int
 		if err := deps.Store.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
@@ -258,14 +259,8 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		`, issueKey, commentID).Scan(&unpublished, &unsettled); err != nil {
 			t.Fatalf("count the outbox's work on %s: %v", issueKey, err)
 		}
-		if unpublished == 0 && unsettled == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished and %d copies of %s unsettled", unpublished, issueKey, unsettled, commentID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return [2]int{unpublished, unsettled}, unpublished == 0 && unsettled == 0
+	})
 }
 
 // recordingOutboxPublisher takes every envelope the outbox publishes and records it, a role
@@ -415,15 +410,15 @@ func fallbackCopiesOf(t *testing.T, database *store.Store, commentID string) []h
 	return copies
 }
 
-// awaitFallbackCopies waits, for at most 10 s, until the comment has a fallback row for every
-// destination in want and each of them reads settled, and answers the rows then. want is the
-// copies the outbox is to hold; settled says whether to wait for a pass to decide them.
+// awaitFallbackCopies waits until the comment has a fallback row for every destination in want
+// and each of them reads settled, and answers the rows then. want is the copies the outbox is to
+// hold; settled says whether to wait for a pass to decide them. Its one bound is the test
+// binary's deadline (testwait.Until).
 func awaitFallbackCopies(
 	t *testing.T, database *store.Store, commentID string, want []string, settled bool,
 ) []heldCopy {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("the fallback copies of %s to be one per %v, settled=%v", commentID, want, settled), func() ([]heldCopy, bool) {
 		copies := fallbackCopiesOf(t, database, commentID)
 		destinations := make([]string, 0, len(copies))
 		decided := true
@@ -431,22 +426,16 @@ func awaitFallbackCopies(
 			destinations = append(destinations, row.destination)
 			decided = decided && row.settled == settled
 		}
-		if slices.Equal(destinations, want) && decided {
-			return copies
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fallback copies of %s are %#v, want one per %v, settled=%v", commentID, copies, want, settled)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return copies, slices.Equal(destinations, want) && decided
+	})
 }
 
-// awaitPublishedCommentCreated waits, for at most 10 s, until the outbox has published the
-// comment.created event of commentID, and answers the destinations it reached.
+// awaitPublishedCommentCreated waits until the outbox has published the comment.created event of
+// commentID, and answers the destinations it reached. Its one bound is the test binary's deadline
+// (testwait.Until).
 func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, "the outbox to publish the comment.created of "+commentID+" (the destinations it reached)", func() ([]string, bool) {
 		var destinations []string
 		var publishedAt *time.Time
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -455,14 +444,8 @@ func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID
 		`, commentID).Scan(&publishedAt, &destinations); err != nil {
 			t.Fatalf("read comment.created of %s: %v", commentID, err)
 		}
-		if publishedAt != nil {
-			return destinations
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left the comment.created of %s unpublished", commentID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return destinations, publishedAt != nil
+	})
 }
 
 // heldLaneComment is a comment whose mention of s1 waits on a lane held longer than a claim

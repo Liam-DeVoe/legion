@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -26,6 +29,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeEmbedder is a deterministic, text-keyed stand-in for Cohere (LEGION-549's tests use a fake
@@ -341,9 +346,11 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
 	createInteractionIssue(t, handler, "SAT", "Other bulk content that never finishes embedding", "Body.")
 
-	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embed.NewRateLimitedEmbedder(embedder)}
+	backgroundEmbedder := embed.NewRateLimitedEmbedder(embedder)
+	floor := backgroundEmbedder.Interval()
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: backgroundEmbedder}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -353,20 +360,23 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			}
 		}
 	}()
-	// The drain runs until the searches below are done, then stops: waiting out bgCtx's own
-	// deadline would only idle the test.
+	// The drain runs until the searches below are done, then stops.
 	defer func() { cancel(); <-done }()
 
-	// Give the background goroutine a moment to actually hit a throttle and start backing off
-	// (its very first call is unpaced, at RateLimitedEmbedder's own floor interval).
-	time.Sleep(50 * time.Millisecond)
+	// The background drain is backing off once a call of it came back throttled, which lengthens
+	// its pacing interval past the floor it starts at (RateLimitedEmbedder).
+	testwait.Until(t, "the background drain to back off from a throttled call (its pacing interval)", func() (time.Duration, bool) {
+		select {
+		case <-done:
+			t.Fatal("the background drain stopped before any call of it was throttled")
+		default:
+		}
+		interval := backgroundEmbedder.Interval()
+		return interval, interval > floor
+	})
 
 	for i := range 5 {
-		started := time.Now()
 		response := searchResponse(t, handler, "q=wibbleflorp")
-		if elapsed := time.Since(started); elapsed > time.Second {
-			t.Errorf("search request %d took %v while embedqueue was throttled/backing off, want well under 1s - it must never wait behind background work", i, elapsed)
-		}
 		if response.Degraded != "" {
 			t.Errorf("search request %d: Degraded = %q, want empty - a live query must stay non-degraded while only background document traffic is throttled", i, response.Degraded)
 		}
@@ -1532,11 +1542,10 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // minute learning that, so the savepoint bounds its own wait
 // (embeddingProjectKeysFilledLockWait).
 //
-// The bound asserted here is far looser than the setting and far tighter than the one it
-// replaces: a search that answers inside it is one that gave up waiting, and a search that
-// waits the statement bound out cannot pass it however loaded the server is. The page is
-// asserted too, because a short answer that lost the project's rows would be no better than a
-// slow one.
+// The page is asserted too, because a short answer that lost the project's rows would be no
+// better than a slow one. Which bound ended the read is the one the read's own failure names: a
+// read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
+// waited the statement bound out with query_canceled (57014), however loaded the server is.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
 	const project = "LCKD"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
@@ -1554,12 +1563,30 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 	}
 
 	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
-	started := time.Now()
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
-	waited := time.Since(started)
-	if waited > 5*time.Second {
-		t.Errorf("the scoped search behind an ACCESS EXCLUSIVE lock on the fill's progress row took %s, want far less than the 15 s the server allows a meaning statement: the read waits out the statement bound instead of its own lock bound",
-			waited)
+	var ended []string
+	for _, record := range records.Records() {
+		if !strings.HasPrefix(record.Message, "dispatch: a project-scoped meaning search could not read the embeddings project_key fill's progress") {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key != "error" {
+				return true
+			}
+			var failure *pgconn.PgError
+			if err, ok := attr.Value.Any().(error); ok && errors.As(err, &failure) {
+				ended = append(ended, failure.Code)
+			} else {
+				ended = append(ended, attr.Value.String())
+			}
+			return true
+		})
+	}
+	if len(ended) == 0 || slices.ContainsFunc(ended, func(code string) bool { return code != "55P03" }) {
+		t.Errorf("the scoped search's reads of the fill's progress row behind an ACCESS EXCLUSIVE lock ended with %q, want each to end at its own lock bound (embeddingProjectKeysFilledLockWait), lock_not_available (55P03): a read the statement bound ends (57014) waited out the 15 s the server allows a meaning statement",
+			ended)
 	}
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
@@ -1573,13 +1600,12 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 // default). A deployment's connections hold such a plan after one search apiece; a database a
 // test has just opened holds none, and the failure
 // TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned covers is only raised
-// on a connection that does.
+// on a connection that does. The read's one bound is the test's own context, which ends only with
+// the test.
 func cacheTheProgressRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	var done bool
-	if err := database.Pool.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+	if err := database.Pool.QueryRow(t.Context(), embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
 		t.Fatalf("read the fill's progress to prepare its plan: %v", err)
 	}
 }

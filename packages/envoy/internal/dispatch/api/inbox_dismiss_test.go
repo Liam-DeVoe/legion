@@ -745,11 +745,9 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 		unreadAgain(t, database, threads)
 		gate, marks := raceGate(t, database, threads)
 		held := holdGateThread(t, database, gate)
-		queued := make(chan int, 1)
-		go func() {
-			queued <- storetest.WaitForLockWaiters(t, held.tx, 2, 10*time.Second)
-			held.release()
-		}()
+		// race holds the test's goroutine until both dismisses answer, and they answer only once
+		// the gate is released, so a goroutine of its own releases it (releaseOnceQueued).
+		queued := releaseOnceQueued(t, held.tx, 2, held.release)
 		mark := time.Now()
 		// One body for both presses: they name the same rows, so they carry the same versions,
 		// which the round's own state answers (dismissBody). Nobody writes in these threads
@@ -762,8 +760,8 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 			func() *httptest.ResponseRecorder {
 				return postInboxDismiss(t, byHeap, "alice", dismissing)
 			})
-		if waiters := <-queued; waiters != 2 {
-			t.Fatalf("round %d: %d dismisses queued on the gate row, want both of them", round, waiters)
+		if waiting := <-queued; waiting.err != nil || waiting.count != 2 {
+			t.Fatalf("round %d: %d dismisses queued on the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
 		}
 		if first.Code != http.StatusOK || second.Code != http.StatusOK {
 			t.Fatalf("round %d: the dismiss in thread_id order %d %s, the dismiss in heap order %d %s",

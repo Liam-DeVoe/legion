@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // answerSurvivesQuestion is the question a person answers, and answerSurvivesRemovedQuestion the
@@ -104,8 +105,14 @@ func TestAnUploadThatDropsAnAskBlockStillRetractsItsAsk(t *testing.T) {
 	fixture.await(t, "the settlement of the body the agent composed", func(state answerSurvivesState) bool {
 		return state.settled()
 	})
-	time.Sleep(answerSurvivesSettleMargin)
-	state := fixture.measure(t)
+	// The state a settlement writes on each opener goes into the room (writeLive) and the
+	// retraction into its transaction (nameVersion), two writes, so the case waits for the
+	// retraction itself rather than for a span after the state. A row that is gone gets none, and
+	// is reported below.
+	state := fixture.await(t, "the settlement's retraction of the ask whose block the body removed", func(state answerSurvivesState) bool {
+		removed, held := state.row(fixture.removedAsk)
+		return state.settled() && (!held || removed.Resolution != nil)
+	})
 
 	// Each measurement is reported, as above; the two readings the others stand on are fatal.
 	if slices.Contains(state.blocks, "rollout") {
@@ -198,18 +205,14 @@ func (f answerSurvivesFixture) upload(t *testing.T, content string) {
 
 // await polls the issue and its document until holds is true of what they read, and answers that
 // state, so a case waits for a settlement rather than for a duration. A settlement that never
-// reaches it fails the case with everything the wait read.
+// reaches it fails the case with everything the wait read. Its one bound is the test binary's
+// deadline (testwait.UntilPolling).
 func (f answerSurvivesFixture) await(t *testing.T, what string, holds func(answerSurvivesState) bool) answerSurvivesState {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	return testwait.UntilPolling(t, 20*time.Millisecond, "the server to show "+what+" (what it read last)", func() (answerSurvivesState, bool) {
 		state := f.measure(t)
-		if holds(state) {
-			return state
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server never showed %s; it reads\n%s", what, state)
-		}
-	}
+		return state, holds(state)
+	})
 }
 
 // measure reads what every assertion above is made of: every ask row of the issue, the ask block
