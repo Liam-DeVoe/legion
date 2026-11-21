@@ -49,6 +49,13 @@ import (
 // of an issue Legion runs: the first role of legionagents.Roles.
 const specWriterArchitectRole = "architect"
 
+// specDocumentName and verificationDocumentName are the names the check gives an issue's spec and
+// its Verification document (specWriterDocumentName).
+const (
+	specDocumentName         = "spec.md"
+	verificationDocumentName = "verification.md"
+)
+
 // specWriter is who writes, as the check judges it: actor is the actor the write records, and person
 // is that the check passes the write at once, because the request's credential holds the person
 // scope or because the writer is Dispatch's own system writer.
@@ -111,9 +118,10 @@ type specWrite struct {
 	// moves, closes, reopens or takes out of Legion. It is empty for a create, whose issue has no
 	// key yet.
 	issue string
-	// document is the name the refusal gives the document: spec.md or verification.md. A create, a
-	// move, a close, a reopen and a write that takes the issue out of Legion write no text of their
-	// own, and the refusal names the issue's spec.md for them.
+	// document is the name the refusal gives the document a document write writes: spec.md or
+	// verification.md. A create, a move, a close, a reopen and a write that takes the issue out of
+	// Legion write no text of their own and leave it empty: the refusal names the issue's spec.md
+	// for them (documentName).
 	document string
 	// under is the parent of a create or of a move, and labels are the labels the write leaves on
 	// the row: the check reads the row as the write leaves it. under is empty for every other
@@ -129,6 +137,15 @@ func (write specWrite) chainIssue() string {
 		return write.under
 	}
 	return write.issue
+}
+
+// documentName is the name the refusal gives the document of write: the document a document write
+// writes, and the issue's spec.md for every other act.
+func (write specWrite) documentName() string {
+	if write.act == specWriteDocument {
+		return write.document
+	}
+	return specDocumentName
 }
 
 // specWriterReadSQL is the check's one statement over the chain from the row start selects
@@ -203,7 +220,7 @@ func refuseSpecWriter(ctx context.Context, q queryer, writer specWriter, write s
 		issue = write.under
 	}
 	slog.Info("dispatch: refused a document write by a session that is not an architect of the issue",
-		"issue", issue, "document", write.document, "session", refusal.session,
+		"issue", issue, "document", write.documentName(), "session", refusal.session,
 		"reason", refusal.reason(), "architects", refusal.read.architects)
 	return errorf(http.StatusForbidden, "DOCUMENT_WRITER_NOT_ARCHITECT", "%s", refusal.message())
 }
@@ -214,10 +231,7 @@ func judgeSpecWriter(ctx context.Context, q queryer, writer specWriter, write sp
 	if writer.person {
 		return nil, nil
 	}
-	session := ""
-	if writer.actor.Kind == "session" {
-		session = writer.actor.ID
-	}
+	session := sessionOf(writer.actor)
 	statement, args := specWriterOfIssueSQL, []any{session, write.issue}
 	if write.under != "" {
 		statement, args = specWriterOfRowSQL, []any{session, write.under, write.labels}
@@ -253,26 +267,26 @@ func (refusal *specWriterRefusal) reason() string {
 // refusal names the project and says that the request's credential does not prove the session.
 func (refusal *specWriterRefusal) message() string {
 	write, session, read := refusal.write, refusal.session, refusal.read
-	chain := write.chainIssue()
+	chain, document := write.chainIssue(), write.documentName()
 	var act, why string
 	switch write.act {
 	case specWriteCreate:
 		act = "create an issue under " + chain
-		why = "Legion runs the new issue, and the create writes its " + write.document + "."
+		why = "Legion runs the new issue, and the create writes its " + document + "."
 	case specWriteMove:
 		act = "move " + write.issue + " under " + chain
-		why = "Legion runs " + write.issue + " under " + chain + ", and the move changes who can write its " + write.document + "."
+		why = "Legion runs " + write.issue + " under " + chain + ", and the move changes who can write its " + document + "."
 	case specWriteClose:
 		act = "close " + write.issue
-		why = "Legion runs " + write.issue + ", and the close writes the asks in its " + write.document + "."
+		why = "Legion runs " + write.issue + ", and the close writes the asks in its " + document + "."
 	case specWriteReopen:
 		act = "reopen " + write.issue
-		why = "Legion runs " + write.issue + ", and the reopen writes the asks in its " + write.document + "."
+		why = "Legion runs " + write.issue + ", and the reopen writes the asks in its " + document + "."
 	case specWriteOutOfLegion:
 		act = "take " + write.issue + " out of Legion"
-		why = "Legion runs " + write.issue + ". When Legion stops running it, any session can write its " + write.document + "."
+		why = "Legion runs " + write.issue + ". When Legion stops running it, any session can write its " + document + "."
 	default:
-		act = "write " + write.document + " of " + write.issue
+		act = "write " + document + " of " + write.issue
 		why = "Legion runs " + write.issue + "."
 	}
 	var message strings.Builder
@@ -314,9 +328,9 @@ func specWriterDocumentName(artifact model.Artifact) (string, bool) {
 	case artifact.IssueKey == nil:
 		return "", false
 	case isSpecDocument(artifact):
-		return "spec.md", true
+		return specDocumentName, true
 	case documentPlays(artifact, model.ArtifactRoleVerification):
-		return "verification.md", true
+		return verificationDocumentName, true
 	}
 	return "", false
 }
@@ -325,7 +339,7 @@ func specWriterDocumentName(artifact model.Artifact) (string, bool) {
 // passes for a document the check does not hold.
 func refuseSpecWriterOfDocument(ctx context.Context, q queryer, writer specWriter, artifact model.Artifact) error {
 	document, held := specWriterDocumentName(artifact)
-	if !held || writer.person {
+	if !held {
 		return nil
 	}
 	return refuseSpecWriter(ctx, q, writer, specWrite{issue: *artifact.IssueKey, document: document})
@@ -344,8 +358,8 @@ func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWrit
 		if err != nil {
 			return err
 		}
-		if _, held := specWriterDocumentName(artifact); held {
-			return refuseSpecWriterOfDocument(ctx, q, writer, artifact)
+		if document, held := specWriterDocumentName(artifact); held {
+			return refuseSpecWriter(ctx, q, writer, specWrite{issue: *artifact.IssueKey, document: document})
 		}
 	}
 	return nil
@@ -353,8 +367,10 @@ func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWrit
 
 // refuseSpecWriterOfAsk is the check of a write that settles a block ask's closed state into its
 // document and into each copy of the ask (writeClosedBlockState): the block's document first, then
-// the copies (docs.API.CopiesOf). ctx is joined to the caller's transaction tx, which holds the
-// ask's owner lock. An ask with no block writes no document.
+// the copies (docs.API.CopiesOf). The copies are read only when the block's document does not
+// decide: a document the check holds decides alone, and a copy is a document of the same owner, so
+// a block on a document of no issue has no copy the check holds. ctx is joined to the caller's
+// transaction tx, which holds the ask's owner lock. An ask with no block writes no document.
 func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer specWriter, ask model.Ask) error {
 	if writer.person || ask.BlockID == nil {
 		return nil
@@ -363,11 +379,18 @@ func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer sp
 	if err != nil {
 		return err
 	}
+	artifact, err := loadArtifactRowByID(ctx, tx, block)
+	if err != nil {
+		return err
+	}
+	if _, held := specWriterDocumentName(artifact); held || artifact.IssueKey == nil {
+		return refuseSpecWriterOfDocument(ctx, tx, writer, artifact)
+	}
 	copies, err := s.deps.Docs.CopiesOf(ctx, ask)
 	if err != nil {
 		return err
 	}
-	return refuseSpecWriterOfDocuments(ctx, tx, writer, append([]string{block}, copies...)...)
+	return refuseSpecWriterOfDocuments(ctx, tx, writer, copies...)
 }
 
 // refuseSpecWriterOfIssueWrite is the check of one write of an issue: a PATCH's (writeIssue) or a
@@ -396,7 +419,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 	}
 	if step.changesParent() && step.parentAfter != nil {
 		if err := refuseSpecWriter(ctx, tx, writer, specWrite{
-			act: specWriteMove, issue: step.key, document: "spec.md", under: *step.parentAfter, labels: labels,
+			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels,
 		}); err != nil {
 			return err
 		}
@@ -408,6 +431,11 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 	case step.statusAfter != nil && *step.statusAfter != "done" && step.statusBefore == "done":
 		act = specWriteReopen
 	case step.changesParent() || step.labelsAfter != nil:
+		// A row the write leaves carrying the label itself stays one Legion runs, wherever it sits:
+		// the walk starts at that row (legionOnChainSQL), so neither walk below can take it out.
+		if slices.Contains(labels, legionLabel) {
+			return nil
+		}
 		parent := step.parentBefore
 		if step.reparent {
 			parent = step.parentAfter
@@ -424,7 +452,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 	default:
 		return nil
 	}
-	return refuseSpecWriter(ctx, tx, writer, specWrite{act: act, issue: step.key, document: "spec.md"})
+	return refuseSpecWriter(ctx, tx, writer, specWrite{act: act, issue: step.key})
 }
 
 // spareSettlementOfARefusedClose reports whether the check refuses writer's close of the issue key,
@@ -437,6 +465,6 @@ func (s *server) spareSettlementOfARefusedClose(ctx context.Context, writer issu
 	if err != nil {
 		return false
 	}
-	refusal, err := judgeSpecWriter(ctx, pool, writer.specWriter(), specWrite{act: specWriteClose, issue: key, document: "spec.md"})
+	refusal, err := judgeSpecWriter(ctx, pool, writer.specWriter(), specWrite{act: specWriteClose, issue: key})
 	return err == nil && refusal != nil
 }

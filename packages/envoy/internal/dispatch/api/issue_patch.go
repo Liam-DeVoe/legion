@@ -288,8 +288,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// A close is checked once here too, on the pool and with no lock held, for who may close an
 	// issue Legion runs (judgeSpecWriter), so that a close the check refuses does not settle the
 	// issue's documents first. It only spares that settlement: the check under the owner locks
-	// below decides, after the write's other refusals, and answers the refusal.
-	if closes && !s.spareSettlementOfARefusedClose(ctx, call.writer, key) {
+	// below decides, after the write's other refusals, and answers the refusal. A step skips it:
+	// the status change's plan ran the check on each of its steps under its locks
+	// (planStatusChangeUnderLocks), and R25's fix closes no issue.
+	if closes && (call.step != nil || !s.spareSettlementOfARefusedClose(ctx, call.writer, key)) {
 		// Before the transaction, which settlement's own would queue behind on the issue's owner
 		// lock.
 		s.settleIssueBeforeClose(call.outliving, key)

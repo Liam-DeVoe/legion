@@ -231,39 +231,17 @@ func specWriterRoutes(t *testing.T, graph *lockGraph) map[string]specWriterReach
 	return specWriterReaches(graph, handlers)
 }
 
-// specWriterRouteHandlers is every row of graph's routes table (api.server.routes), by "<method>
-// <pattern>", with the handler bodies that row mounts, read from the source as
-// decisionBlockRouteHandlers reads its rows, and of every method: a route of any method may write
-// a document.
+// specWriterRouteHandlers is every row of graph's routes table, by "<method> <pattern>", with the
+// handler bodies that row mounts (routeTableHandlers), and of every method: a route of any method
+// may write a document.
 func specWriterRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
-	table := graph.named["api.server.routes"]
-	if table == nil {
-		t.Fatal("the guard finds no routes table (api.server.routes)")
+	routes := routeTableHandlers(t, graph, func(string) bool { return true })
+	for _, name := range slices.Sorted(maps.Keys(routes)) {
+		if len(routes[name]) == 0 {
+			t.Errorf("the guard cannot read the handler of %s off the table", name)
+		}
 	}
-	routes := map[string][]*lockFunction{}
-	ast.Inspect(table.body, func(node ast.Node) bool {
-		row, ok := node.(*ast.CompositeLit)
-		if !ok || len(row.Elts) != 5 {
-			return true
-		}
-		method, ok := ast.Unparen(row.Elts[0]).(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		pattern, ok := literalText(row.Elts[1], table.pkg, graph.constants)
-		if !ok {
-			t.Errorf("the guard cannot read the pattern of a %s row of the table", verb)
-			return false
-		}
-		handlers := graph.functionValue(row.Elts[4])
-		if len(handlers) == 0 {
-			t.Errorf("the guard cannot read the handler of %s %s off the table", verb, pattern)
-		}
-		routes[verb+" "+pattern] = handlers
-		return false
-	})
 	if len(routes) == 0 {
 		t.Fatal("the guard reads no row off the routes table")
 	}
@@ -282,9 +260,10 @@ func specWriterReaches(graph *lockGraph, routes map[string][]*lockFunction) map[
 }
 
 // specWriterWalk reads the path of a route inside package api, as decisionBlockChecked follows it:
-// every call each function makes, resolved as the copy-lock graph resolves it (lockGraph.callees),
-// and every function handed to a call as an argument, whatever the callee does with it. What one
-// function's own body calls is read once and kept, since most routes share most of their path.
+// every call each function makes, resolved as the copy-lock graph resolves it, and every function
+// handed to a call as an argument, whatever the callee does with it (lockGraph.calleesAndPassed).
+// What one function's own body calls is read once and kept, since most routes share most of their
+// path.
 type specWriterWalk struct {
 	graph *lockGraph
 	steps map[*lockFunction]*specWriterStep
@@ -346,11 +325,7 @@ func (w *specWriterWalk) step(fn *lockFunction) *specWriterStep {
 		if sink, isSink := specWriterSinkOf(name); isSink {
 			step.sinks[sink] = append(step.sinks[sink], w.graph.line(fn.source, call))
 		}
-		callees := w.graph.callees(call)
-		for _, argument := range call.Args {
-			callees = append(callees, w.graph.functionValue(argument)...)
-		}
-		for _, callee := range callees {
+		for _, callee := range w.graph.calleesAndPassed(call) {
 			if callee != nil && callee.pkg == specWriterGuardPkg && !slices.Contains(step.next, callee) {
 				step.next = append(step.next, callee)
 			}
@@ -451,8 +426,8 @@ func (plantedImports) Import(path string) (*types.Package, error) {
 
 // plantedSpecWriterGraph type-checks plantedSpecWriterSources, written into a directory of the
 // test's own, through the copy-lock guard's importer, and builds the graph over it as
-// buildCopyLockGraph builds the server's: the same functions, literals, stored functions and
-// interface targets, without the locks, which the spec-writer guard does not read.
+// buildCopyLockGraph builds the server's (newLockGraph): the same functions, literals, stored
+// functions and interface targets, without the locks, which the spec-writer guard does not read.
 func plantedSpecWriterGraph(t *testing.T) *lockGraph {
 	t.Helper()
 	root := t.TempDir()
@@ -488,32 +463,5 @@ func plantedSpecWriterGraph(t *testing.T) *lockGraph {
 	if err != nil {
 		t.Fatal(err)
 	}
-	graph := &lockGraph{
-		root:            root,
-		info:            modules.info,
-		constants:       constants,
-		named:           map[string]*lockFunction{},
-		declared:        map[*types.Func]*lockFunction{},
-		literals:        map[*ast.FuncLit]*lockFunction{},
-		stored:          map[*types.Var][]*lockFunction{},
-		implementations: map[*types.Func][]*lockFunction{},
-	}
-	for _, pkg := range modules.checked {
-		for _, name := range pkg.Scope().Names() {
-			typeName, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-			if !ok || typeName.IsAlias() || types.IsInterface(typeName.Type()) {
-				continue
-			}
-			if named, ok := typeName.Type().(*types.Named); ok && named.TypeParams().Len() == 0 {
-				graph.concrete = append(graph.concrete, named, types.NewPointer(named))
-			}
-		}
-	}
-	for _, source := range modules.sources {
-		graph.addFile(source)
-	}
-	for _, source := range modules.sources {
-		graph.addStored(source)
-	}
-	return graph
+	return newLockGraph(root, modules, constants)
 }

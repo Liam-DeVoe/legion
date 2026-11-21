@@ -293,7 +293,12 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	input.contentType = storedType
 	// Whether the credential is a person's, for the check of who writes an issue's spec or
 	// Verification document (refuseSpecWriter), read before storeArtifact opens its transaction.
-	s.storeArtifact(w, r, input, s.specWriterOf(r, actor), kind, target)
+	// An upload the check does not judge, one that is no document of an issue, reads nothing for it.
+	writer := specWriter{actor: actor}
+	if target.IssueKey != nil && kind == "doc" {
+		writer = s.specWriterOf(r, actor)
+	}
+	s.storeArtifact(w, r, input, writer, kind, target)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -1441,8 +1446,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		release = sync.OnceFunc(acquired)
 		defer release()
 	}
-	// Read before the transaction opens (specWriterOf), for the check below.
-	writer := s.specWriterOf(r, actor)
+	// Read before the transaction opens (specWriterOf), for the check below, and only for a document
+	// the check holds: the check passes every other document without reading the writer.
+	writer := specWriter{actor: actor}
+	if _, held := specWriterDocumentName(artifact); held {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -815,10 +816,7 @@ func (rig *specWriterRig) requireRefused(t *testing.T, attempts ...specWriteAtte
 // requireSpecWriteRefused fails t unless response is the check's refusal naming want.
 func requireSpecWriteRefused(t *testing.T, what string, response *httptest.ResponseRecorder, want specWriteRefusal) {
 	t.Helper()
-	var refusal struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
-	}
+	var refusal refusalAnswer
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if response.Code != http.StatusForbidden || refusal.Code != specWriterRefusalCode {
 		t.Errorf("%s: status=%d body=%s, want 403 %s", what, response.Code, clippedBody(response), specWriterRefusalCode)
@@ -946,16 +944,8 @@ func (rig *specWriterRig) issuesTitled(t *testing.T, title string) []string {
 	if err != nil {
 		t.Fatalf("rig: read the issues titled %q: %v", title, err)
 	}
-	defer rows.Close()
-	var keys []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			t.Fatalf("rig: read the issues titled %q: %v", title, err)
-		}
-		keys = append(keys, key)
-	}
-	if err := rows.Err(); err != nil {
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		t.Fatalf("rig: read the issues titled %q: %v", title, err)
 	}
 	return keys
@@ -1974,11 +1964,7 @@ func (rig *specWriterRig) requireRefusedWith(t *testing.T, status int, code stri
 // versionsOf is how many versions the document id holds.
 func (rig *specWriterRig) versionsOf(t *testing.T, id string) int {
 	t.Helper()
-	var count int
-	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from artifact_versions where artifact_id = $1`, id).Scan(&count); err != nil {
-		t.Fatalf("rig: count the versions of %s: %v", id, err)
-	}
-	return count
+	return specVersionCount(t, rig.database, id)
 }
 
 // commentState is a comment's row as it is stored: whether it is resolved, and, for a suggestion,

@@ -425,18 +425,11 @@ func documentOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactO
 // the source's block or appends an event: the copy lock and the copies' pending rows come before
 // the source's room lock, its own pending row and its events.
 func (s *Service) SettleCopiesOf(ctx context.Context, ask model.Ask) error {
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return errUnjoined
-	}
-	if ask.BlockID == nil || ask.BlockArtifactID == nil {
-		return fmt.Errorf("ask %q is not a block ask", ask.ID)
-	}
-	owner, err := documentOwner(ctx, tx, *ask.BlockArtifactID)
+	tx, document, err := blockAskDocument(ctx, ask)
 	if err != nil {
 		return err
 	}
-	copies, err := owedCopiesOf(ctx, tx, documentAsks{artifactID: *ask.BlockArtifactID, owner: owner, asks: []model.Ask{ask}})
+	copies, err := owedCopiesOf(ctx, tx, document)
 	if err != nil {
 		return err
 	}
@@ -453,18 +446,29 @@ func (s *Service) SettleCopiesOf(ctx context.Context, ask model.Ask) error {
 // lock is re-entrant. ask is a block ask, its BlockID and BlockArtifactID set, and the caller holds
 // its owner lock, under which it read the ask.
 func (s *Service) CopiesOf(ctx context.Context, ask model.Ask) ([]string, error) {
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return nil, errUnjoined
-	}
-	if ask.BlockID == nil || ask.BlockArtifactID == nil {
-		return nil, fmt.Errorf("ask %q is not a block ask", ask.ID)
-	}
-	owner, err := documentOwner(ctx, tx, *ask.BlockArtifactID)
+	tx, document, err := blockAskDocument(ctx, ask)
 	if err != nil {
 		return nil, err
 	}
-	return lockedCopiesOf(ctx, tx, documentAsks{artifactID: *ask.BlockArtifactID, owner: owner, asks: []model.Ask{ask}})
+	return lockedCopiesOf(ctx, tx, document)
+}
+
+// blockAskDocument is the transaction ctx joined and the document of ask, a block ask, with the
+// owner read in that transaction without locking it (documentOwner): what CopiesOf and
+// SettleCopiesOf read the copies of ask over.
+func blockAskDocument(ctx context.Context, ask model.Ask) (pgx.Tx, documentAsks, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return nil, documentAsks{}, errUnjoined
+	}
+	if ask.BlockID == nil || ask.BlockArtifactID == nil {
+		return nil, documentAsks{}, fmt.Errorf("ask %q is not a block ask", ask.ID)
+	}
+	owner, err := documentOwner(ctx, tx, *ask.BlockArtifactID)
+	if err != nil {
+		return nil, documentAsks{}, err
+	}
+	return tx, documentAsks{artifactID: *ask.BlockArtifactID, owner: owner, asks: []model.Ask{ask}}, nil
 }
 
 // likeLiteral escapes text for a LIKE pattern, under its default escape character.

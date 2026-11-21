@@ -28,10 +28,6 @@ import (
 // stops every architect write and every role-holder publication on the shared token, until a
 // person turns it off. That costs time and loses no data.
 
-// projectRowQuery reads one project as GET /api/v1/projects lists it (projectListQuery), so the
-// answer of the two routes carries the open-ask count the list shows, not a zero.
-const projectRowQuery = `select * from (` + projectListQuery + `) listed where listed.key = $1`
-
 // putProjectProvenSessions turns the project's setting on. A bearer names its session in actor;
 // a cookie caller sends no body.
 func (s *server) putProjectProvenSessions(w http.ResponseWriter, r *http.Request) {
@@ -65,10 +61,8 @@ func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	var project model.Project
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), projectRowQuery, key).Scan(
-		&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.ProvenSessions, &project.CreatedAt,
-	); err != nil {
+	project, err := scanListedProject(s.deps.Store.Pool.QueryRow(r.Context(), projectRowQuery, key))
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

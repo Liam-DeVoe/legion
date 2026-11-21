@@ -344,7 +344,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		// leaves it: its labels, and its parent's chain, whose architects pass. It runs before the
 		// project's owner lock and the spec's document call, and before the create's first write.
 		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
-			act: specWriteCreate, document: "spec.md", under: parentKey, labels: labels,
+			act: specWriteCreate, under: parentKey, labels: labels,
 		}); err != nil {
 			s.writeHandlerError(w, err)
 			return

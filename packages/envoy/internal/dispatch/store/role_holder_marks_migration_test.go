@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // roleHolderMarksVersion adds projects.proven_sessions and project_role_holder_marks, and marks
@@ -54,19 +56,12 @@ func TestTheRoleHolderMarksMigrationMarksEachProjectThatHasARoleHolder(t *testin
 		t.Fatalf("migrate to %d: %v", roleHolderMarksVersion, err)
 	}
 
-	marked := []string{}
 	rows, err := store.Pool.Query(ctx, `select project_key from project_role_holder_marks order by project_key`)
 	if err != nil {
 		t.Fatalf("read the marks after %d: %v", roleHolderMarksVersion, err)
 	}
-	for rows.Next() {
-		var project string
-		if err := rows.Scan(&project); err != nil {
-			t.Fatalf("scan a mark: %v", err)
-		}
-		marked = append(marked, project)
-	}
-	if err := rows.Err(); err != nil {
+	marked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		t.Fatalf("read the marks after %d: %v", roleHolderMarksVersion, err)
 	}
 	if !slices.Equal(marked, []string{"HELD"}) {

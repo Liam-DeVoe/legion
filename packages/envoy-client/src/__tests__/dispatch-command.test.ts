@@ -13,6 +13,7 @@ import {
   toolForCommand,
 } from "../dispatch-command";
 import { executeDispatchTool } from "../dispatch-execute";
+import { projectBody } from "./dispatch-command-surface-responses";
 
 const noFiles = {
   readText: (path: string): string => {
@@ -603,16 +604,6 @@ describe("dispatch project-update and the proven-sessions line of dispatch proje
     error: null,
   };
 
-  /** CORE as the two routes and the project list answer it, with the setting `provenSessions`. */
-  const core = (provenSessions: boolean) => ({
-    key: "CORE",
-    name: "Core",
-    open_asks: 0,
-    gated_steps: [],
-    proven_sessions: provenSessions,
-    created_at: "2026-09-01T00:00:00Z",
-  });
-
   /** `tool` with `args` over a fake Dispatch that answers every request with `answer()`. */
   function run(tool: string, args: Record<string, unknown>, answer: () => Response) {
     const dispatch = fakeDispatchFetch({ handler: answer });
@@ -636,7 +627,7 @@ describe("dispatch project-update and the proven-sessions line of dispatch proje
     const { result, requests } = run(
       "dispatch_project_update",
       { project: "CORE", proven_sessions: "on" },
-      () => Response.json(core(true))
+      () => Response.json(projectBody(true))
     );
 
     const answered = await result;
@@ -655,7 +646,7 @@ describe("dispatch project-update and the proven-sessions line of dispatch proje
     const { result, requests } = run(
       "dispatch_project_update",
       { project: "CORE", proven_sessions: "off" },
-      () => Response.json(core(false))
+      () => Response.json(projectBody(false))
     );
 
     const answered = await result;
@@ -684,7 +675,7 @@ describe("dispatch project-update and the proven-sessions line of dispatch proje
 
   test("dispatch projects prints proven sessions on only for a project whose row has it", async () => {
     const { result } = run("dispatch_projects", {}, () =>
-      Response.json([core(true), { ...core(false), key: "OPS", name: "Ops" }])
+      Response.json([projectBody(true), { ...projectBody(false), key: "OPS", name: "Ops" }])
     );
 
     const answered = await result;
