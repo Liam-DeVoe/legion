@@ -317,6 +317,42 @@ test("a link to a card beside its document opens Details on it, and a link to a 
   }
 });
 
+// Below `xl` the margin is a compact sheet, which draws no card until the reader opens it. On the
+// new issue page the same sheet is the body of the Details drawer, which the reader sees whenever
+// the drawer is open: there the margin draws its cards with no card named in the address, at a
+// width under `xl` that is no phone's as at every other.
+test("below xl, the margin in an open Details drawer draws its cards with no card named", async () => {
+  const tabletWidth = 1024;
+  const restoreMatchMedia = stubViewport(tabletWidth);
+  const scrollTo = stubScrollTo();
+  try {
+    const view = render(
+      <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "spec" })]}>
+        <QueryClientProvider client={landingClient([comment])}>
+          <MarginProvider>
+            <Details fills open>
+              <Margin />
+            </Details>
+          </MarginProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId(`margin-comment-${comment.id}`),
+          `the open Details drawer draws no card at ${tabletWidth} px`
+        ).not.toBeNull()
+      );
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    restoreMatchMedia();
+    scrollTo.mockRestore();
+  }
+});
+
 // R14: on a phone Details is a sheet over the whole page, so a link followed inside
 // it closes the sheet. The page draws its panels into the drawer through a portal, outside the
 // drawer's React tree, so the drawer must hear the link's click from the DOM.

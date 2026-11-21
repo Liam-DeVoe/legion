@@ -241,16 +241,23 @@ export function MarginSheet({
   // sheet over it (`useMarginListeners`, `e2e/deep-links.e2e.ts`, "an iPhone secondary-document
   // link scrolls its selected card after opening the review sheet"), and a card that is not
   // there yet is a landing that cannot happen.
+  //
+  // The new issue page's Details drawer is no shut sheet: the sheet is its body, which the
+  // reader sees whenever the drawer is open, at every width (`drawerOpen`), so the rule is the
+  // compact sheet's alone (`compactSheet`).
   const unnamedShutSheet =
-    isCompactViewport && !sheet.expanded && selection.selectedItemId === undefined;
+    compactSheet && !sheet.expanded && selection.selectedItemId === undefined;
   const covered = collapsed || unnamedShutSheet || (isPhoneViewport && phoneThread !== undefined);
   // The cards are laid out against the document's blocks and marks only while a reader can see
-  // them there: the desktop margin that is up, or a compact sheet the reader has opened. The open
-  // document measures where its blocks and marks sit for that alone
-  // (`features/doc/ProofDocument.tsx`, dispatch://INFRA-341 requirement R11); a margin with no
-  // owner shows nothing, and a covered one has given its room away.
+  // them there: the desktop margin that is up, a compact sheet the reader has opened, or the
+  // Details drawer open at a compact width. The open document measures where its blocks and marks
+  // sit for that alone (`features/doc/ProofDocument.tsx`, dispatch://INFRA-341 requirement R11);
+  // a margin with no owner shows nothing, and a covered one has given its room away.
   const { setPlacesItems } = useMargin();
-  const placesItems = owner !== undefined && !covered && (sheet.expanded || !isCompactViewport);
+  const placesItems =
+    owner !== undefined &&
+    !covered &&
+    (sheet.expanded || !isCompactViewport || (drawer && drawerOpen));
   useEffect(() => {
     setPlacesItems(placesItems);
     return () => setPlacesItems(false);
