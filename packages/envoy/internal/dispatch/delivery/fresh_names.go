@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -58,25 +59,90 @@ type IntakeNaming struct {
 // CheckNamingMode is what a process in mode checks of the selection table at its start, before
 // any intake runs. In the fixed mode it refuses a store the cutover converted: with the table's
 // sentinel reading done, every durable is a fresh generation behind its record, and the fixed
-// names must not run over it. A missing table or sentinel, a cutover not yet run or one rolled
-// back is a store the fixed names own, and the fixed mode starts. A sentinel it cannot read is an
-// error too: it cannot tell which. The fresh mode refuses nothing here; its take-over refuses
-// every call until the cutover is done (consumernames.Admit).
+// names must not run over it. A missing table or sentinel, a read Postgres refused (the process's
+// role may read nothing of a table no fixed build needs), a cutover not yet run or one rolled back
+// is a store the fixed names own, and the fixed mode starts. A database it cannot reach, one that
+// does not answer within markerReadWithin, or a row it cannot read it reads again every
+// namingMarkerRetry, saying so at WARN, until it can or ctx ends: a fixed process never runs over a
+// marker it has not read. The fresh mode refuses nothing here; its take-over refuses every call
+// until the cutover is done (consumernames.Admit).
 func CheckNamingMode(ctx context.Context, db consumernames.PGQuerier, mode consumernames.Mode) error {
 	if mode == consumernames.ModeFresh {
 		return nil
 	}
-	state, err := consumernames.NewPGStore(db).State(ctx)
-	switch {
-	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
-		return nil
-	case err != nil:
-		return fmt.Errorf("%s=%s: read the %s cutover row: %w", consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.IntakeConsumersTable, err)
-	case state.Cutover == consumernames.CutoverDone:
-		return fmt.Errorf("%s=%s, but the %s cutover row reads %q: the cutover converted the intakes' durables to fresh names, and the fixed names must not run over them; set %s=%s",
-			consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.IntakeConsumersTable, state.Cutover, consumernames.ModeEnvVar, consumernames.ModeFresh)
+	for {
+		converted, err := readFixedMarker(ctx, db)
+		switch {
+		case err == nil && converted:
+			return errConvertedStore()
+		case err == nil:
+			return nil
+		}
+		slog.Warn("dispatch delivery: the cutover row could not be read; the fixed consumer names wait to read it before they run",
+			"setting", consumernames.ModeEnvVar, "retry_in", namingMarkerRetry, "error", err)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s=%s: the %s cutover row was never read: %w (last: %w)", consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.IntakeConsumersTable, ctx.Err(), err)
+		case <-time.After(namingMarkerRetry):
+		}
 	}
-	return nil
+}
+
+// WatchFixedMarker reads a fixed process's cutover marker again each time reconnected fires -- its
+// database or NATS connection came back -- until ctx ends, and calls converted once, with the
+// refusal CheckNamingMode answers, when a read finds the cutover done: a converted store must not
+// keep running the fixed names, whichever process converted it while this one ran. A read that
+// fails changes nothing; the next reconnect reads again.
+func WatchFixedMarker(ctx context.Context, db consumernames.PGQuerier, reconnected <-chan struct{}, converted func(error)) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reconnected:
+		}
+		done, err := readFixedMarker(ctx, db)
+		if err != nil {
+			slog.Warn("dispatch delivery: read the cutover row after a reconnect", "error", err)
+			continue
+		}
+		if done {
+			converted(errConvertedStore())
+			return
+		}
+	}
+}
+
+// namingMarkerRetry is how long a fixed process waits between reads of a cutover row it could not
+// read at its start, and markerReadWithin bounds each read.
+var namingMarkerRetry = 2 * time.Second
+
+const markerReadWithin = 5 * time.Second
+
+// insufficientPrivilege is Postgres's SQLSTATE for a statement the role may not run.
+const insufficientPrivilege = "42501"
+
+// readFixedMarker reads whether the cutover converted the store: true for a sentinel reading done;
+// false for no marker -- no table, no sentinel row, a read Postgres refused -- and for any other
+// marker; an error for a read that did not answer what the row says.
+func readFixedMarker(ctx context.Context, db consumernames.PGQuerier) (bool, error) {
+	read, cancel := context.WithTimeout(ctx, markerReadWithin)
+	defer cancel()
+	state, err := consumernames.NewPGStore(db).State(read)
+	var pg *pgconn.PgError
+	switch {
+	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel),
+		errors.As(err, &pg) && pg.Code == insufficientPrivilege:
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return state.Cutover == consumernames.CutoverDone, nil
+}
+
+// errConvertedStore is the refusal of a fixed process over a converted store.
+func errConvertedStore() error {
+	return fmt.Errorf("%s=%s, but the %s cutover row reads %q: the cutover converted the intakes' durables to fresh names, and the fixed names must not run over them; set %s=%s",
+		consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.IntakeConsumersTable, consumernames.CutoverDone, consumernames.ModeEnvVar, consumernames.ModeFresh)
 }
 
 // freshNaming is one intake's durable in the fresh mode: its logical name's protocol, the

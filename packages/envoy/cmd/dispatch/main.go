@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -857,6 +858,26 @@ func main() {
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
+	// A fixed process reads its cutover row again each time its database or NATS connection comes
+	// back, and exits once it reads done (delivery.WatchFixedMarker, started once the intakes are):
+	// a store another process converted while this one ran must not keep running the fixed names.
+	var markerReconnected chan struct{}
+	if boot.ConsumerNames != consumernames.ModeFresh {
+		markerReconnected = make(chan struct{}, 1)
+		reconnected := func() {
+			select {
+			case markerReconnected <- struct{}{}:
+			default:
+			}
+		}
+		listenerHub.OnConnected(reconnected)
+		if natsClient != nil {
+			natsClient.AddReconnectHook(func(context.Context, *nats.Conn) error {
+				reconnected()
+				return nil
+			})
+		}
+	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
@@ -1090,6 +1111,12 @@ func main() {
 		cancel()
 		waitIntakes()
 		os.Exit(1)
+	}
+	if markerReconnected != nil {
+		go delivery.WatchFixedMarker(ctx, database.Pool, markerReconnected, func(err error) {
+			slog.Error("dispatch: consumer names", "error", err)
+			exitAfterIntakes()
+		})
 	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
 	// since its last pass, woken by every event commit whichever process made it. It reads the log
