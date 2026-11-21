@@ -46,20 +46,21 @@ service of this file starts on the same five settings, and
 .github/scripts/postgres-service-settings.sh holds each of them to all five
 (dispatch://INFRA-1075).
 
-## What the unit step runs, and why its nine calls run at once
+## What the unit step runs, and why nine of its ten calls run at once
 
 The step below runs the module's packages in the background and, beside them, eight other
 calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
 package, internal/dispatch/events, the shutdown feed test, the container-backed NATS
-matrix, the integration suite and the agentloop vet. The package list runs 104 test
+matrix, the integration suite and the agentloop vet. Once all nine have ended it runs a
+tenth, the outbox's NATS-loss row, alone. The package list runs 104 test
 binaries, beside 37 packages with no test files (both runs of the pair at 8cfd2682, read
 from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
 jobs 132732382594 and 132742525106) it took 519.5 s and 594.1 s from the first event of
-its stream to the last, and every other call of this step had ended before it did. All nine
+its stream to the last, and every other call of this step had ended before it did. The nine
 calls are started in the background at the step's head, the long ones first, so the
-step costs the longest of them rather than their sum. The short calls follow the long ones,
-and their order among themselves decides nothing: in run 2 the last of them ended at
-07:50:49 while the package list ran until 07:58:31.
+step costs the longest of them, and then the tenth, rather than their sum. The short
+calls follow the long ones, and their order among themselves decides nothing: in run 2
+the last of them ended at 07:50:49 while the package list ran until 07:58:31.
 The race-impossible call runs here since the measurement dispatch://INFRA-985 asked for
 was made; the comment on that call says what was measured and what it came back with,
 and why the tests of it whose assertion is a wall-clock time run alone, in envoy-go-race
@@ -67,6 +68,14 @@ and envoy-go-checks, rather than here.
 The shutdown feed test, internal/pgmigrate and internal/dispatch/events are each out of
 the package list on a Postgres service of its own, for the reasons their own calls and
 services give.
+TestAnOutboxThatLosesNATSReleasesThePublisher, of internal/dispatch/outbox, is out of the
+package list too, and runs alone after the other nine calls: its assertion is a wall-clock
+time measured in its own process, main's bound on how soon the cut process releases the
+publisher hold, and in the dispatch run 44939290502 at 3a4ffe0b (job 136952816413) it failed
+that bound in the package list while 106 tests of internal/dispatch/pmdoc ran beside it. The
+race lane's tests of that kind run alone in steps of their own; no race job runs this
+package, so its row runs at the end of this step instead (ci_job_reads.py's
+OUTBOX_ALONE_TESTS).
 
 Each call but the vet writes a `go test -json` stream to a file of its own under
 $RUNNER_TEMP/go-test-json - the natslive call's three go test commands write one between
@@ -80,8 +89,9 @@ output. -count=1 keeps the restored build cache from replaying a stored result a
 `(cached)`. What a background call prints outside its stream cannot be left to interleave
 with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
 replayed with its stream; the package list, which prints as it goes, writes no log of
-its own. The step waits for all nine, replays one group per call, and exits with the
-first non-zero status of the nine, each failing call named in an ::error:: of its own.
+its own. The step waits for all nine, runs the outbox row, replays one group per call, and
+exits with the first non-zero status of the ten, each failing call named in an ::error:: of
+its own.
 
 The API package used to run first and on its own in this job, because the per-test
 database clone and drop of every other package queued on the service's one checkpointer

@@ -73,6 +73,7 @@ jobs:
     #   natslive (cap)      bus                20.5 s    44657415021  136039517737    0.68     1m
     #   natslive (callout)  natscallout         5.1 s    44657415021  136039517737    0.17     1m
     #   integration         integration         7.7 s    44657415021  136039517737    0.26     1m
+    #   outbox alone        outbox              4.8 s    44939290502  136952816413    0.16     1m
     #   skip count          cmd/cipherd       263.2 s    44657322918  136026779841    8.77     9m
     #
     # The package list's reading is that of cmd/cipher, then cmd/agent-secrets, 555.3 s: run
@@ -84,6 +85,8 @@ jobs:
     # step limit of 19 minutes is its 9m -timeout plus 10, main's own rule for it, which the
     # comment on the step gives. The skip counter's test keeps main's step limit of 15 minutes, and
     # the callout check step main's 6.
+    # The outbox alone call's reading is its one test's, in the package list of run 44939290502
+    # at 3a4ffe0b, which it failed there; the pair read it at 4.55 s and 3.41 s.
     #
     # Seven of these calls read higher in a dispatch run since the pair than the table's reading,
     # each giving the table's limit again: race-impossible's docs 236.1 s (7.87), pgmigrate
@@ -125,9 +128,9 @@ jobs:
     # missed the Go build cache, on arm64: in each the restore found no go-envoy-test entry for
     # ARM64. The bound takes their times all the same. An attempt on x64 that missed it took
     # 1,502 s (run 44097184245, job 134098415747) against warm x64 ones of 737 s and 765 s (runs
-    # 44078406008 and 44175873364), and the bound covers it at 52 %. The nine calls of the unit
-    # step run at the same time, so the step's own worst case is the longest of them rather than
-    # their sum.
+    # 44078406008 and 44175873364), and the bound covers it at 52 %. Nine of the unit step's ten
+    # calls run at the same time, so the step's own worst case is the longest of them, then the
+    # tenth, the outbox's NATS-loss row alone, rather than the sum of all ten.
     # The API's claim model is not among them, running in envoy-go-claim-model.
     timeout-minutes: 48
     services:
@@ -365,14 +368,14 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # why: .github/ci-notes/ci-job-envoy-go.md#what-the-unit-step-runs-and-why-its-nine-calls-run-at-once
+      # why: .github/ci-notes/ci-job-envoy-go.md#what-the-unit-step-runs-and-why-nine-of-its-ten-calls-run-at-once
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
           # The three long calls first: the package list, then the race-impossible call, then the
           # pgmigrate call; the short calls after them, in any order.
-          # The nine calls share this runner's four cores, so the step is over
-          # when its longest call is, and a call that starts late ends as late as it started.
+          # The nine calls started in the background share this runner's four cores, so they are
+          # over when the longest of them is, and a call that starts late ends as late as it started.
           # Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
           # is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
           # 24.1 s, the race-impossible call 35.9 s to 397.2 s, the package list 76.4 s to
@@ -408,7 +411,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/cipher"
           rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestAnOutboxThatLosesNATSReleasesThePublisher|TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of them:
@@ -598,10 +601,26 @@ jobs:
           wait "$integration" || i=$?
           v=0
           wait "$vet" || v=$?
+          # The outbox's NATS-loss row, TestAnOutboxThatLosesNATSReleasesThePublisher, alone, once
+          # every other call of the step has ended. Its assertion is a wall-clock time measured in
+          # its own process, main's bound that the cut process releases the publisher hold within
+          # 500 ms of natsLossGrace, and beside the calls above the load moved it: in the dispatch
+          # run at 3a4ffe0b it timed out waiting for that release while 106 tests of
+          # internal/dispatch/pmdoc ran beside it in the package list (run 44939290502, job
+          # 136952816413). So it runs as main runs it, alone on the runner, as the race-impossible
+          # call's comment says the race lane's tests of that kind do; no race job runs
+          # internal/dispatch/outbox, so this step runs its row, after its waits. The package list
+          # skips the row by its name, which is unique in the module (ci_job_reads.py's
+          # OUTBOX_ALONE_TESTS), and this call, as that list does, names no server of its own and
+          # runs against 5432. -timeout 1m, by R6 from the row's own reading: its slowest is 4.75 s
+          # (run 44939290502 at 3a4ffe0b, job 136952816413), against 4.55 s and 3.41 s in the pair
+          # at 8cfd2682, and 4.75 / 30 = 0.16, so 1m, the smallest whole minute there is.
+          o=0
+          go test -json -count=1 -timeout 1m -run '^(TestAnOutboxThatLosesNATSReleasesThePublisher)$' ./internal/dispatch/outbox > "$RUNNER_TEMP/go-test-json/alone-outbox.json" 2> "$RUNNER_TEMP/go-test-logs/alone-outbox.log" || o=$?
           # One group per call, in the order the calls were started: the package list first,
           # then the rest. Each is its own log, then its stream - the package result lines
           # when it passed, the whole stream when it failed - and an ::error:: naming it when it
-          # failed. The step's status is the first non-zero of the nine, and the package list,
+          # failed. The step's status is the first non-zero of the ten, and the package list,
           # which prints as it goes, writes no log of its own.
           status=0
           replay() {
@@ -629,6 +648,7 @@ jobs:
           echo "::endgroup::"
           [ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
           [ "$status" -ne 0 ] || status=$v
+          replay "the outbox's NATS-loss row, alone" "$o" alone-outbox
           exit "$status"
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each

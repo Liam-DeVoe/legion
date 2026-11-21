@@ -590,7 +590,12 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // logger, which it swaps (logtest.SetDefault); and a holder whose renewals a parallel batch
 // starves for the 4 s from a confirmed renewal to the loss deadline (publisherHoldOptions, TTL
 // less Margin) reports the hold lost and ends its turn before the grace runs out, and the row
-// would then be reading that load rather than the product (docs/testing.md).
+// would then be reading that load rather than the product (docs/testing.md). For the same reason
+// it runs alone in envoy-go: the unit step's package list skips it, and the step runs it by itself
+// once every other call of the step has ended (.github/scripts/ci_job_reads.py,
+// OUTBOX_ALONE_TESTS). Beside those calls it failed the 500 ms bound in the dispatch run at
+// 3a4ffe0b (run 44939290502, job 136952816413), while 106 tests of internal/dispatch/pmdoc, whose
+// CPU-budget tests load the runner, ran beside it in the package list.
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
