@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 
+import { type Body, routePath } from "../web/src/api/paths";
 import type { Actor } from "../web/src/api/types";
 import { FOLD_AFTER } from "../web/src/features/issue-page/details-leaves";
 import type { MarginSection } from "../web/src/features/issue-page/page-structure";
@@ -21,12 +22,14 @@ import {
   putIssueState,
   putProjectDefaultAssignee,
   putRepoProject,
+  type RowKey,
   requestApproval,
   reviewArtifact,
   syncArchitectureSource,
   userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { rowKey, rowSessionId } from "./test";
 
 /**
  * What the browser rows of `issue-page-h.e2e.ts` read of Details: the locators of its panel and
@@ -81,25 +84,32 @@ export function filesList(page: Page): Locator {
   return marginSlot(page).getByTestId("issue-files");
 }
 
-/** The project every issue of the seed is in. */
-export const PROJECT = "DET";
-/** The repository ONE carries, which the fake GitHub serves with one pull request. Its name is
- *  twenty characters long, as long as a real repository's name that the box of Details'
- *  Repository row was found to cut. */
-export const REPOSITORY = "acme/details-of-rows";
+/** The logical key of the project every issue of the seed is in, which `seedDetailsIssue` makes
+ *  under the running row's own key for it (`rowKey`, e2e/test.ts), since the database is emptied
+ *  once per worker and not before each row. */
+const PROJECT = "DET";
+/** The repository ONE carries, which the fake GitHub serves with one pull request: the row's own,
+ *  `acme/detail-` and the project's key in lower case, since Dispatch links one address from one
+ *  issue alone (`EXTERNAL_LINK_TAKEN`) and ONE links its pull request and one of its issues. Its
+ *  name is twenty characters long (`rowKey` answers eight for `DET`), as long as a real
+ *  repository's name that the box of Details' Repository row was found to cut. */
+function detailsRepository(project: RowKey): string {
+  return `acme/detail-${project.toLowerCase()}`;
+}
 const ARCHITECTURE_REPO = "acme/details-architecture";
 export const PULL_NUMBER = 11;
-/** ONE's link out of Dispatch that is not a pull request. */
-export const OTHER_LINK = `https://github.com/${REPOSITORY}/issues/7`;
 /** The one component of the project's model, which ONE is attached to. */
 export const COMPONENT_TITLE = "Details panel";
-/** The agent that claims ONE, under the title the fake Envoy lists it by. */
-export const PLANNER = "details-planner";
+/** The logical name of the agent that claims ONE, whose session is the running row's own
+ *  (`rowSessionId`, e2e/test.ts): Dispatch keeps what a session said, and what it claimed, by its
+ *  id for every row of the worker at once. */
+const PLANNER = "planner";
+/** The title the fake Envoy lists the planner's session by. */
 export const PLANNER_TITLE = "Planner (details)";
-const planner: Actor = { id: PLANNER, kind: "session", origin: { session_title: PLANNER_TITLE } };
-const asPlanner = { actor: planner, as: "agent" as const };
-/** The priority ONE advances, which TWO inherits once ONE is its parent. */
-export const PRIORITY_TITLE = "Details hold every property";
+/** The words of the priority ONE advances, which TWO inherits once ONE is its parent. The seed
+ *  writes them followed by the project's key (`DetailsSeed.priorityTitle`): a priority belongs to
+ *  no project, and the picker lists every priority the rows of the worker wrote. */
+const PRIORITY_TITLE = "Details hold every property";
 /** ONE's twenty labels, Dispatch's limit, in the order the issue holds them. */
 export const TWENTY_LABELS = Array.from(
   { length: 20 },
@@ -128,15 +138,27 @@ export interface DetailsSeed {
     readonly three: string;
     readonly two: string;
   };
+  /** ONE's link out of Dispatch that is not a pull request: an issue of `repository`. */
+  readonly otherLink: string;
   readonly pinnedCommentId: string;
+  /** The session id of the agent that claims ONE, which the fake Envoy lists by `PLANNER_TITLE`. */
+  readonly planner: string;
   readonly priorityId: string;
+  /** The priority's title: `PRIORITY_TITLE` and the project's key. */
+  readonly priorityTitle: string;
+  /** The project every issue of the seed is in, the row's own key for `DET`. */
+  readonly project: RowKey;
+  /** The repository ONE carries (`detailsRepository`). */
+  readonly repository: string;
   /** The titles the rows read, each beside its key: `blocks[i]` is the title of `keys.blocks[i]`. */
   readonly titles: { readonly blocks: readonly string[]; readonly three: string };
 }
 
 /**
  * The issues the rows of `issue-page-h.e2e.ts` read, as alice, written through Dispatch with
- * `main`'s helpers.
+ * `main`'s helpers, in a project, a repository, a session and a priority of the row's own, beside
+ * what the rows before it wrote: the suite's `test` empties the database once per worker, not
+ * before each row.
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
  *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven
@@ -149,36 +171,46 @@ export interface DetailsSeed {
  * - **THREE**'s spec carries bob's request for changes with the reason `CHANGES_REASON`.
  */
 export async function seedDetailsIssue(): Promise<DetailsSeed> {
-  await createProject({ key: PROJECT, name: "Details" });
+  const project = rowKey(PROJECT);
+  const repository = detailsRepository(project);
+  const otherLink = `https://github.com/${repository}/issues/7`;
+  const planner = rowSessionId(PLANNER);
+  const plannerActor: Actor = {
+    id: planner,
+    kind: "session",
+    origin: { session_title: PLANNER_TITLE },
+  };
+  const asPlanner = { actor: plannerActor, as: "agent" as const };
+  await createProject({ key: project, name: "Details" });
   // An approval request or a question waits on its issue's assignee, and on the project's
   // default assignee where the issue has none: TWO has none, and its request waits on alice.
-  await putProjectDefaultAssignee(PROJECT, { assignee: "alice" }, { as: "user", login: "alice" });
+  await putProjectDefaultAssignee(project, { assignee: "alice" }, { as: "user", login: "alice" });
   await seedFakeGithub({
     [ARCHITECTURE_REPO]: {
       contents: "read",
       files: { "panel.md": `---\ntitle: ${COMPONENT_TITLE}\n---\nThe panel of properties.\n` },
       installation_id: 411,
     },
-    [REPOSITORY]: {
+    [repository]: {
       contents: "read",
       installation_id: 412,
       pull_requests: "read",
       pulls: { [PULL_NUMBER]: { head_sha: "a".repeat(40), state: "open", title: "ONE's work" } },
     },
   });
-  await putArchitectureSource(PROJECT, { branch: "main", repo: ARCHITECTURE_REPO });
-  const source = await syncArchitectureSource(PROJECT, ARCHITECTURE_REPO);
+  await putArchitectureSource(project, { branch: "main", repo: ARCHITECTURE_REPO });
+  const source = await syncArchitectureSource(project, ARCHITECTURE_REPO);
   if (source.last_error !== null) {
     throw new Error(`the component model did not import: ${source.last_error}`);
   }
-  await putRepoProject(REPOSITORY, { default: false, project: PROJECT });
-  await setLiveSessions([{ session_id: PLANNER, title: PLANNER_TITLE }]);
+  await putRepoProject(repository, { default: false, project });
+  await setLiveSessions([{ session_id: planner, title: PLANNER_TITLE }]);
 
   // `force` past the possible-duplicate guard: these titles are deliberately close.
-  const parent = await createIssue({ force: true, project: PROJECT, title: "ONE sits under it" });
+  const parent = await createIssue({ force: true, project, title: "ONE sits under it" });
   const three = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: "THREE's spec, which bob sends back.",
     title: "THREE is what ONE waits on",
   });
@@ -187,12 +219,15 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     { reason: CHANGES_REASON, state: "changes_requested" },
     { login: "bob" }
   );
-  const priority = await createPriority({ owner: "alice", title: PRIORITY_TITLE });
+  const priority = await createPriority({
+    owner: "alice",
+    title: `${PRIORITY_TITLE} (${project})`,
+  });
 
   const one = await createIssue({
     force: true,
     parent: parent.key,
-    project: PROJECT,
+    project,
     spec: "ONE's spec, which waits on bob's approval.\n\n- [x] Read it.\n- [ ] Approve it.\n",
     title: "ONE holds every property Details draws",
   });
@@ -202,11 +237,11 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     blocked_by: [three.key],
     components: { ids: ["panel"], mode: "explicit" },
     external_links: [
-      { kind: "github_pr", url: `https://github.com/${REPOSITORY}/pull/${PULL_NUMBER}` },
-      { kind: "github_issue", url: OTHER_LINK },
+      { kind: "github_pr", url: `https://github.com/${repository}/pull/${PULL_NUMBER}` },
+      { kind: "github_issue", url: otherLink },
     ],
     labels: [...TWENTY_LABELS],
-    repo: REPOSITORY,
+    repo: repository,
     route: "role:architect",
   });
   await claimIssue(one.key, asPlanner);
@@ -222,7 +257,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   for (let index = 1; index <= ONE_PAST_FOLD; index += 1) {
     const waiter = await createIssue({
       force: true,
-      project: PROJECT,
+      project,
       title: `Waits on ONE (${index})`,
     });
     await patchIssue(waiter.key, { blocked_by: [one.key] });
@@ -258,7 +293,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
 
   const two = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: "TWO's spec, which waits on alice's approval.",
     title: "TWO holds nothing yet",
   });
@@ -266,18 +301,26 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
 
   return {
     keys: { blocks, one: one.key, parent: parent.key, three: three.key, two: two.key },
+    otherLink,
     pinnedCommentId: pinned.id,
+    planner,
     priorityId: priority.id,
+    priorityTitle: priority.title,
+    project,
+    repository,
     titles: { blocks: blockTitles, three: three.title },
   };
 }
 
-/** Hands the open ask `id` to `login`, as alice does from its card. */
+/** Hands the open ask `id` to `login`, as alice does from its card, through the route's own path
+ *  and body (`routePath`, `Body`, web/src/api/paths.ts). */
 async function handOn(id: string, login: string): Promise<void> {
   // The person it is handed to has signed in, which the route requires of them.
   await userHeaders(login);
-  const response = await fetch(new URL(`/api/v1/asks/${id}/asked-of`, baseUrlOf()), {
-    body: JSON.stringify({ asked_of: login }),
+  const body: Body<"/api/v1/asks/{id}/asked-of", "put"> = { asked_of: login };
+  const path = routePath("put", "/api/v1/asks/{id}/asked-of", { id });
+  const response = await fetch(new URL(path, baseUrlOf()), {
+    body: JSON.stringify(body),
     headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
     method: "PUT",
   });

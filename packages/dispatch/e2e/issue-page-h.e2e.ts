@@ -37,6 +37,7 @@ import {
   addControl,
   CHANGES_REASON,
   COMPONENT_TITLE,
+  type DetailsSeed,
   detailsRow,
   FOLD_AFTER,
   filesList,
@@ -44,16 +45,11 @@ import {
   marginSectionDisclosure,
   marginSlot,
   ONE_PAST_FOLD,
-  OTHER_LINK,
   PINNED_FIRST_LINE,
-  PLANNER,
   PLANNER_TITLE,
-  PRIORITY_TITLE,
-  PROJECT,
   PULL_NUMBER,
   pinsList,
   QUESTION,
-  REPOSITORY,
   seedDetailsIssue,
   TWENTY_LABELS,
   UNPINNED_COMMENT,
@@ -65,7 +61,9 @@ import { assertWhole } from "./unclipped";
  * Details' properties and pins: the rows of the three sections and their controls, the one Add
  * control, the key `l`, the reader's pins, and no comment, question or message of the issue.
  * Every row reads `seedDetailsIssue` as alice with the new page on (`phase`), and writes through
- * Dispatch.
+ * Dispatch. The seed's project, repository, session and priority are the row's own, beside what
+ * the rows before it wrote, so a row finds its data by its own seed and holds whatever stood
+ * before it.
  */
 
 /** Development's rows, in the order the section is to draw them, as ONE holds them: ONE's spec
@@ -640,14 +638,17 @@ test("every property with a value is visible in Details at every width @phone", 
       // button whose press opens the box, named by the repository it shows and what it sets.
       const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: CONTROL_NAME_WORDS }),
+        name: repoTextControlName(one, {
+          resolvedRepo: seeded.repository,
+          words: CONTROL_NAME_WORDS,
+        }),
       });
       const values: readonly (readonly [string, Locator])[] = [
         ["the repository", repository],
         ["the pull request", pullRequest],
         [
           "the other link",
-          detailsRow(page, PROPERTY_LABELS.external_links).locator(`a[href="${OTHER_LINK}"]`),
+          detailsRow(page, PROPERTY_LABELS.external_links).locator(`a[href="${seeded.otherLink}"]`),
         ],
         ["the component", detailsRow(page, PROPERTY_LABELS.components).getByText(COMPONENT_TITLE)],
         [
@@ -660,6 +661,7 @@ test("every property with a value is visible in Details at every width @phone", 
         [
           "the release",
           detailsRow(page, PROPERTY_LABELS.claim).getByRole("button", {
+            exact: true,
             name: `Release the claim on ${one}`,
           }),
         ],
@@ -703,8 +705,8 @@ test("every property with a value is visible in Details at every width @phone", 
       }
       await expect(
         repository,
-        `the Repository row does not draw ${REPOSITORY} at ${width} px`
-      ).toHaveText(REPOSITORY);
+        `the Repository row does not draw ${seeded.repository} at ${width} px`
+      ).toHaveText(seeded.repository);
       // Enter on the text opens the box in its place, with the focus and the repository in it;
       // Escape draws the text again with the focus on it, so the next width starts from the
       // same row.
@@ -724,8 +726,8 @@ test("every property with a value is visible in Details at every width @phone", 
       ).toBeFocused();
       await expect(
         repositoryBox,
-        `the repository's box does not hold ${REPOSITORY} at ${width} px`
-      ).toHaveValue(REPOSITORY);
+        `the repository's box does not hold ${seeded.repository} at ${width} px`
+      ).toHaveValue(seeded.repository);
       // The open box is the row's value: as wide as the row's value column, the second of the
       // row's two columns (`details-leaves.tsx`'s `Row`), and wide enough to show the repository
       // whole. The box fills its list of suggestions from a read it starts when it takes the
@@ -734,9 +736,9 @@ test("every property with a value is visible in Details at every width @phone", 
       // Both are soft, so that a width the box fails at does not stop the widths after it.
       await expect(
         detailsRow(page, PROPERTY_LABELS.repository).locator(
-          `datalist > option[value="${REPOSITORY}"]`
+          `datalist > option[value="${seeded.repository}"]`
         ),
-        `the repository's box does not suggest ${REPOSITORY} at ${width} px`
+        `the repository's box does not suggest ${seeded.repository} at ${width} px`
       ).toHaveCount(1);
       const valueColumn = detailsRow(page, PROPERTY_LABELS.repository).locator(
         ":scope > div:last-child"
@@ -761,7 +763,7 @@ test("every property with a value is visible in Details at every width @phone", 
       expect
         .soft(
           scrollWidth,
-          `the repository's box cuts ${REPOSITORY}: its text takes ${scrollWidth} px and the box shows ${clientWidth} px of it at ${width} px`
+          `the repository's box cuts ${seeded.repository}: its text takes ${scrollWidth} px and the box shows ${clientWidth} px of it at ${width} px`
         )
         .toBeLessThanOrEqual(clientWidth);
       await page.keyboard.press("Escape");
@@ -1031,9 +1033,12 @@ test("a label of the most characters Dispatch takes is whole in Details at every
 });
 
 /** A repository whose name runs to 45 characters, which GitHub allows (a name of up to 100), with
- *  no space to break it at. A name of 32 characters, which a project of this deployment maps,
- *  already runs 14 px past the row at 1440 px. */
-const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
+ *  no space to break it at: the row's own, ending in its project's key in lower case, which
+ *  `rowKey` answers eight characters long for `DET`. A name of 32 characters, which a project of
+ *  this deployment maps, already runs 14 px past the row at 1440 px. */
+function longRepository(project: string): string {
+  return `acme/a-repository-name-of-forty-five-${project.toLowerCase()}`;
+}
 
 // Step (5) above, for a long repository: the repository is visible in its row, whole. A
 // repository of 44 characters ran 101 px past Details' Repository row at 1440 px and was cut at
@@ -1044,22 +1049,24 @@ test("a repository of a long name is whole in Details at every width @phone", as
   test.setTimeout(180_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { two } = seeded.keys;
-    await putRepoProject(LONG_REPOSITORY, { default: false, project: PROJECT });
-    await patchIssue(two, { repo: LONG_REPOSITORY });
+    const long = longRepository(seeded.project);
+    expect(long).toHaveLength(45);
+    await putRepoProject(long, { default: false, project: seeded.project });
+    await patchIssue(two, { repo: long });
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${two}`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.repository);
-      const repository = row.getByText(LONG_REPOSITORY, { exact: true }).first();
+      const repository = row.getByText(long, { exact: true }).first();
       await expect(repository).toBeVisible();
       const [repositoryBox, rowBox] = [await repository.boundingBox(), await row.boundingBox()];
       expect(repositoryBox, `the repository has no box at ${width} px`).not.toBeNull();
       expect(rowBox, `the Repository row has no box at ${width} px`).not.toBeNull();
       expect(
         (repositoryBox?.x ?? 0) + (repositoryBox?.width ?? 0),
-        `a repository of ${LONG_REPOSITORY.length} characters runs past the Repository row at ${width} px`
+        `a repository of ${long.length} characters runs past the Repository row at ${width} px`
       ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
       await assertWholeInDetails(page, [repository]);
     }
@@ -1090,6 +1097,7 @@ test("Add brings a control it reaches into view, so its popover opens under Deta
     await gotoIssue(page, `/issues/${two}`);
     await openDetails(page);
     const labelsControl = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+      exact: true,
       name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
     });
     await expect(labelsControl).toHaveCount(1);
@@ -1249,7 +1257,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(parentRow.getByRole("button").first()).toHaveText(CONTROL_LABELS.edit_parent);
     await expect(parentRow.getByRole("link", { exact: true, name: one })).toBeVisible();
     const advancesRow = detailsRow(page, PROPERTY_LABELS.advances);
-    await expect(advancesRow).toContainText(PRIORITY_TITLE);
+    await expect(advancesRow).toContainText(seeded.priorityTitle);
     await expect(advancesRow).toContainText(CONTROL_LABELS.advances_inherited);
     await expect(
       advancesRow.getByRole("button", { name: /^Remove / }),
@@ -1295,7 +1303,9 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     );
     await expect(page.getByTestId("issue-details-route-unreachable")).toHaveCount(1);
     // And a route that reaches someone draws no such marker: a live session takes the role.
-    await setLiveSessions([{ roles: ["implementer"], session_id: PLANNER, title: PLANNER_TITLE }]);
+    await setLiveSessions([
+      { roles: ["implementer"], session_id: seeded.planner, title: PLANNER_TITLE },
+    ]);
     await expect
       .poll(async () => (await getIssue(two)).route_status, {
         message: "role:implementer does not reach the live session that holds it",
@@ -1314,9 +1324,11 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
     await blockedBy.getByRole("button", { name: blockedByControlName(two, 0) }).click();
     const keys = blockedBy.getByLabel(`Issues ${two} waits on`, { exact: true });
-    await keys.fill(`${PROJECT}-9999`);
+    await keys.fill(`${seeded.project}-9999`);
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
-    await expect(blockedBy.getByRole("alert")).toHaveText(`There is no issue ${PROJECT}-9999.`);
+    await expect(blockedBy.getByRole("alert")).toHaveText(
+      `There is no issue ${seeded.project}-9999.`
+    );
     await expect(keys, "the refused list closed the editor").toBeVisible();
     await keys.fill(three);
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
@@ -1336,7 +1348,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await reopen(three);
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     await marginSlot(page)
-      .getByRole("button", { name: addPriorityControlName(three) })
+      .getByRole("button", { exact: true, name: addPriorityControlName(three) })
       .click();
     await marginSlot(page)
       .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
@@ -1378,7 +1390,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // (14) The claim, released.
     await reopen(one);
     await detailsRow(page, PROPERTY_LABELS.claim)
-      .getByRole("button", { name: `Release the claim on ${one}` })
+      .getByRole("button", { exact: true, name: `Release the claim on ${one}` })
       .click();
     await expect.poll(async () => (await getIssue(one)).claim).toBeNull();
     await reopen(one);
@@ -1434,6 +1446,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // TWO has no label, so its control is named for adding one.
     await expect(
       detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+        exact: true,
         name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
       }),
       "a closed issue's labels can be edited"
@@ -1450,8 +1463,12 @@ function priorityLine(page: Page): Locator {
 }
 
 /** A priority the rows below create for themselves, beside the seed's own: the second one an
- *  issue advances, or the one its parent advances and it inherits. */
-const SECOND_PRIORITY_TITLE = "Details hold a second priority";
+ *  issue advances, or the one its parent advances and it inherits. Its title ends in the row's
+ *  project key, as the seed's does: a priority belongs to no project, and the picker lists every
+ *  priority the rows of the worker wrote. */
+function secondPriorityTitle(seeded: DetailsSeed): string {
+  return `Details hold a second priority (${seeded.project})`;
+}
 
 /** What a row holds of the page's writes of one issue and of its reads of that issue after. */
 interface HeldIssue {
@@ -1590,12 +1607,15 @@ test.describe("the shared controls of Details keep the focus while their write l
       const { one, parent } = seeded.keys;
       // ONE's parent advances a second priority, which ONE inherits, so the Advances row is
       // still drawn once ONE's own priority is removed.
-      const inherited = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      const inherited = await createPriority({
+        owner: "alice",
+        title: secondPriorityTitle(seeded),
+      });
       await patchIssue(parent, { advances: [inherited.id] });
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
-      await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
+      await expect(advances).toContainText(inherited.title);
       const remove = advances.getByRole("button", { name: /^Remove / });
       await expect(remove).toHaveCount(1);
       const issue = await holdIssue(page, one, true);
@@ -1623,7 +1643,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       );
       await issue.releaseReads();
       await expect(advances.getByRole("button", { name: /^Remove / })).toHaveCount(0);
-      await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
+      await expect(advances).toContainText(inherited.title);
       await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
     });
   });
@@ -1634,19 +1654,24 @@ test.describe("the shared controls of Details keep the focus while their write l
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one } = seeded.keys;
-      const second = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      const second = await createPriority({ owner: "alice", title: secondPriorityTitle(seeded) });
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
-      const addPriority = advances.getByRole("button", { name: addPriorityControlName(one) });
+      const addPriority = advances.getByRole("button", {
+        exact: true,
+        name: addPriorityControlName(one),
+      });
       await addPriority.focus();
       await expect(addPriority).toBeFocused();
       await page.keyboard.press("Enter");
       const picker = advances.getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance });
       await expect(picker).toBeFocused();
-      await expect(picker.locator("option", { hasText: SECOND_PRIORITY_TITLE })).toHaveCount(1);
-      // The one priority ONE does not advance yet, the first after the picker's empty choice.
-      await page.keyboard.press("ArrowDown");
+      await expect(picker.locator("option", { hasText: second.title })).toHaveCount(1);
+      // This row's second priority, which ONE does not advance yet, by the End key: the picker
+      // lists every priority the rows of the worker wrote, in their one order, and a priority
+      // takes the last place of that order as it is written, so it is the picker's last choice.
+      await page.keyboard.press("End");
       await expect(picker).toHaveValue(second.id);
       const issue = await holdIssue(page, one, true);
       await page.keyboard.press("Tab");
@@ -1792,6 +1817,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await gotoIssue(page, `/issues/${three}`);
     await openDetails(page);
     const addPriority = priorityLine(page).getByRole("button", {
+      exact: true,
       name: addPriorityControlName(three),
     });
     await addPriority.focus();
@@ -1801,9 +1827,11 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
       name: CONTROL_LABELS.priority_to_advance,
     });
     await expect(picker).toBeFocused();
-    await expect(picker.locator("option", { hasText: PRIORITY_TITLE })).toHaveCount(1);
-    // The first priority after the picker's empty choice, by its arrow key.
-    await page.keyboard.press("ArrowDown");
+    await expect(picker.locator("option", { hasText: seeded.priorityTitle })).toHaveCount(1);
+    // This row's priority, the picker's last choice by its End key: the picker lists every
+    // priority the rows of the worker wrote, in their one order, and a priority takes the last
+    // place of that order as it is written.
+    await page.keyboard.press("End");
     await expect(picker).toHaveValue(seeded.priorityId);
     const issue = await holdIssue(page, three, false);
     await page.keyboard.press("Tab");
@@ -1832,6 +1860,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     );
     await expect(
       detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+        exact: true,
         name: addPriorityControlName(three),
       }),
       "once the new read moved the line into the Advances row, the focus is not on its add control"
@@ -1868,6 +1897,7 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     // ONE advances nothing now, so its line is the control beside Add.
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     const addPriority = priorityLine(page).getByRole("button", {
+      exact: true,
       name: addPriorityControlName(one),
     });
     await expect(addPriority).toBeVisible();
