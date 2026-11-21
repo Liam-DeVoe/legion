@@ -2481,6 +2481,16 @@ package api
 // And one App serves every role, each with its own token set: a GitHub credential's `app` names
 // the role's set (implementer, merger, architect, planner, tester, reviewer or controller) in
 // place of the two Apps' `implement` and `review`.
+// The same contract carries side reviews of a pull request no Legion tree opened, on a repository
+// whose verdict entry sets side_reviews: POST /legion/v1/pull-request-reviewer, from the controller's
+// session alone, names a running reviewer for the pull request at its current head, and
+// POST /legion/v1/pull-request-verdict takes that named reviewer's `approve` or `changes` at that
+// head. Each refuses another caller, a controller grant minted with the operator's bearer included
+// (VERDICT_CALLER_FORBIDDEN); the verdict route refuses a session not named for that pull request
+// and head (VERDICT_REVIEWER_NOT_NAMED); the naming route refuses a session that holds no running
+// reviewer claim (VERDICT_REVIEWER_NOT_LIVE); both refuse a malformed repository name
+// (INVALID_REPOSITORY), and answer GitHub's refusal of their pull request read as
+// GITHUB_RATE_LIMITED, GITHUB_READ_REFUSED or PULL_REQUEST_READ_FAILED.
 // (This entry takes 200: a reading of `const DaemonAPIVersion` at main and at refs/pull/<n>/head
 // for each open pull request of cybermonklabs/legion, made with
 // .github/scripts/check-daemon-api-contract.sh at 2026-11-20T21:14:22Z, found main at 193 and

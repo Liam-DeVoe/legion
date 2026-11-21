@@ -3,6 +3,7 @@ package workflow
 import (
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -15,7 +16,7 @@ import (
 func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
 	const given = "the review's whole body, which must not reach the issue a second time"
 	for _, trigger := range allWorkflowTriggers {
-		got := moveReason(trigger, phase.Testing, phase.Implementing, given)
+		got := moveReason(trigger, phase.Testing, phase.Implementing, claim.RoleTester, given)
 		if trigger == TriggerBackward {
 			want := "Legion moved this issue from testing back to implementing at the tester's request: " + given + "."
 			if got != want {
@@ -29,24 +30,28 @@ func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
 	}
 }
 
-// A backward move names the role that asked, the role running the phase it left, and gives that
-// role's words as they end, with one full stop added where they end in none; words that are only
-// space read as none.
+// A backward move names the role that asked and gives that role's words as they end, with one full
+// stop added where they end in none; words that are only space read as none. A worker's own move
+// is asked by the role running the phase it left. The carry's move back to testing is asked by the
+// reviewer, whose approve carried no tester's pass, from whichever phase the issue stood in.
 func TestABackwardMoveNamesWhoAskedAndGivesTheirWords(t *testing.T) {
 	for _, tc := range []struct {
 		from, to phase.Phase
+		by       claim.Role
 		reason   string
 		want     string
 	}{
-		{phase.Accepting, phase.Implementing, "the evidence does not cover the migration",
+		{phase.Accepting, phase.Implementing, claim.RoleArchitect, "the evidence does not cover the migration",
 			"Legion moved this issue from accepting back to implementing at the architect's request: the evidence does not cover the migration."},
-		{phase.Reviewing, phase.Planning, "the plan names the wrong table.",
+		{phase.Reviewing, phase.Planning, claim.RoleReviewer, "the plan names the wrong table.",
 			"Legion moved this issue from reviewing back to planning at the reviewer's request: the plan names the wrong table."},
-		{phase.Merging, phase.Testing, "  \n",
+		{phase.Merging, phase.Testing, claim.RoleMerger, "  \n",
 			"Legion moved this issue from merging back to testing at the merger's request, which gave no reason."},
+		{phase.Accepting, phase.Testing, claim.RoleReviewer, "its approve names no testedCommit",
+			"Legion moved this issue from accepting back to testing at the reviewer's request: its approve names no testedCommit."},
 	} {
-		if got := moveReason(TriggerBackward, tc.from, tc.to, tc.reason); got != tc.want {
-			t.Fatalf("%s to %s with %q posts %q, want %q", tc.from, tc.to, tc.reason, got, tc.want)
+		if got := moveReason(TriggerBackward, tc.from, tc.to, tc.by, tc.reason); got != tc.want {
+			t.Fatalf("%s to %s by the %s with %q posts %q, want %q", tc.from, tc.to, tc.by, tc.reason, got, tc.want)
 		}
 	}
 }

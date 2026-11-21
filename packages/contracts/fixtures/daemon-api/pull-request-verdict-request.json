@@ -1,0 +1,8 @@
+{
+  "grantId": "grant-for-one-command",
+  "repository": "acme/widgets",
+  "number": 7,
+  "head": "51de000000000000000000000000000000000a01",
+  "verdict": "approve",
+  "session": "ses_reviewer"
+}

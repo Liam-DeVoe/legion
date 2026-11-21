@@ -50,7 +50,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	var left string
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, row.Issue, payload.Step, payload.Head)
+		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, row.Issue, payload.Step, payload.Head, payload.Landed)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the issue and the pull request of %s: %w", row.Issue, err)

@@ -287,6 +287,17 @@ type Options struct {
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
 	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
 	Pause PauseService
+	// VerdictEntry is the verdict_repositories entry that names a repository, under the name a
+	// record keeps or the one GitHub serves it under now, and whether one does (the daemon's
+	// workflowRuntime.verdictEntry). The side-review routes take a call only on a repository whose
+	// entry takes side reviews (pull_request_verdicts.go). Nil names none, so they refuse every
+	// call: a daemon with no workflow writes no legion-verdict.
+	VerdictEntry func(repository ghrepo.Repository) (config.VerdictRepository, bool)
+	// WriteVerdict asks the daemon's writer of legion-verdict for a write on head of pull request
+	// number of repository, a pull request no Legion issue owns (the daemon's queueVerdictWrite).
+	// The side-review verdict route calls it once the verdict it recorded has committed, and it
+	// returns at once. Nil asks for nothing.
+	WriteVerdict func(repository string, number int, head string)
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -389,6 +400,9 @@ type server struct {
 	claimActivity      ClaimActivityStore
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
+	// verdictEntry and writeVerdict are Options.VerdictEntry and Options.WriteVerdict.
+	verdictEntry func(repository ghrepo.Repository) (config.VerdictRepository, bool)
+	writeVerdict func(repository string, number int, head string)
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -459,6 +473,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		pause:              opts.Pause,
+		verdictEntry:       opts.VerdictEntry,
+		writeVerdict:       opts.WriteVerdict,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -533,6 +549,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
 		{"POST /legion/v1/handoff/complete", s.handoffComplete},
 		{"POST /legion/v1/review-verdict", s.reviewVerdict},
+		{"POST /legion/v1/pull-request-reviewer", s.pullRequestReviewer},
+		{"POST /legion/v1/pull-request-verdict", s.pullRequestVerdict},
 		{"POST /legion/v1/issues/status", s.issueStatus},
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},

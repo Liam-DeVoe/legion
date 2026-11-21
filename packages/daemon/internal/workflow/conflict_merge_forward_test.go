@@ -687,14 +687,15 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 	}
 }
 
-// Once a merge forward lands on an issue past its review, the approval the issue stands on is of
-// the head the merge replaced, so the reviewer is asked to read the merge and approve the new head
-// or request changes (dispatch://INFRA-4374 R1), one review message naming both heads, and the
-// record keeps that the review was asked for. The merger, the worker of merging, is told the merge
-// landed; the architect in accepting and the implementer in retro are told nothing, since the
-// one asked for the merge and the other made it. A merger that enters merging while that review
-// stands for the head is told to merge the head only once the reviewer's approval of it is on the
-// pull request.
+// Once a merge forward lands on an issue past its review, the verdict the issue stands on is of
+// the head the merge replaced, so the round's recorded reviewer is asked to read the merge and send
+// its verdict at the new head (spec R5), one review message naming both
+// heads, and the record keeps that the verdict was asked for. The merger, the worker of merging, is
+// told the merge landed; the architect in accepting and the implementer in retro are told nothing,
+// since the one asked for the merge and the other made it. A later head is no landing of its own,
+// and asks the reviewer again as every push past review does. A merger that enters merging while
+// that verdict stands owed for the head is told to merge the head only once legion-verdict at that
+// head is success.
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
@@ -731,11 +732,14 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 				t.Fatalf("after the merge landed the issue is in %s, want %s", got, tc.at)
 			}
 
-			// A later head is no landing of its own: the review asked stands.
+			// A later head is no landing of its own: it asks the reviewer for its verdict at that
+			// head, as every push past review does, and names no merge.
 			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
 				Branch: "legion/LEGION-208", Base: "main", HeadSHA: headThree, Before: forwardHead, Sender: "legion-implementer[bot]"})
+			want = append(want, record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview, Head: forwardHead,
+				Landed: headThree, Base: "main", Phase: tc.at, PullRequest: 42})
 			if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
-				t.Fatalf("after a later head the landing messages are %+v, want still %+v", got, want)
+				t.Fatalf("after a later head the messages are %+v, want %+v", got, want)
 			}
 		})
 	}
@@ -749,8 +753,8 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 		if got := issuePhase(t, pool); got != phase.Merging {
 			t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 		}
-		if task := startTask(t, pool, claim.RoleMerger); !strings.Contains(task, "merge head "+forwardHead+" only once the reviewer's approval of it is on the pull request") {
-			t.Fatalf("the merger's task reads %q, want it to hold the merge of %s to the reviewer's approval", task, forwardHead)
+		if task := startTask(t, pool, claim.RoleMerger); !strings.Contains(task, "merge head "+forwardHead+" only once legion-verdict at that head is success") {
+			t.Fatalf("the merger's task reads %q, want it to hold the merge of %s to legion-verdict there", task, forwardHead)
 		}
 	})
 }

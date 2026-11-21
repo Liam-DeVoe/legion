@@ -305,6 +305,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
   "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
   "since each would start a turn. " +
+  "pull_request_reviewer (repository, number, head, session) names a running Legion reviewer's session the side reviewer " +
+  "of a pull request that no Legion issue owns, at its current head: name a reviewer whose tree did not write the change " +
+  "and is on the reviewed repository. pull_request_verdict (repository, number, head, verdict, session) relays that " +
+  "reviewer's verdict on that head, approve or changes, and the daemon writes legion-verdict from it: relay a verdict only " +
+  "when the Envoy delivery's sender session is the reviewer you named for that pull request and head. The daemon takes " +
+  "both only from the controller, only for an open pull request no Legion issue owns on a repository whose verdict entry " +
+  "takes side reviews, and only at the pull request's current head (VERDICT_CALLER_FORBIDDEN), and it refuses a verdict " +
+  "from a session not named for that pull request and head (VERDICT_REVIEWER_NOT_NAMED). " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
 
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
@@ -373,6 +381,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "compact",
         "pause",
         "resume",
+        "pull_request_reviewer",
+        "pull_request_verdict",
       ],
     },
     issue: { type: "string" },
@@ -429,6 +439,24 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     role: {
       type: "string",
       enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
+    },
+    repository: {
+      type: "string",
+      description: "pull_request_reviewer's and pull_request_verdict's repository, as owner/name",
+    },
+    number: {
+      type: "number",
+      description: "pull_request_reviewer's and pull_request_verdict's pull request number",
+    },
+    head: {
+      type: "string",
+      description:
+        "pull_request_reviewer's and pull_request_verdict's head: the pull request's current head commit",
+    },
+    session: {
+      type: "string",
+      description:
+        "pull_request_reviewer's and pull_request_verdict's reviewer session: the side reviewer you name, and whose verdict you relay",
     },
   },
   required: ["op"],
@@ -2228,6 +2256,170 @@ test("pause and resume are offered to no architect and no phase worker", async (
       session: () => session,
     });
     for (const parameters of [{ op: "pause", reason: "the provider is down" }, { op: "resume" }]) {
+      await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
+        content: [
+          {
+            type: "text",
+            text: `${parameters.op} is not available to ${KIND_WORDS[session.kind]} session`,
+          },
+        ],
+        details: {},
+        isError: true,
+      });
+    }
+  }
+  expect(posted).toEqual([]);
+});
+
+// C26. A side review: the controller names the reviewer of a pull request no Legion issue owns at
+// its head with pull_request_reviewer, and relays that reviewer's verdict with
+// pull_request_verdict. Each posts the controller's own grant and the pull request through the
+// real daemon client, so the answer is the golden the daemon's own test wrote, and each call the
+// tool can tell is wrong is refused before a grant is minted or a request sent.
+test("the controller names a side reviewer and relays its verdict, each through its daemon route", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/pull-request-reviewer": "pull-request-reviewer.json",
+    "/legion/v1/pull-request-verdict": "pull-request-verdict.json",
+  });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const head = "51de000000000000000000000000000000000a01";
+  const pullRequest = { repository: "acme/widgets", number: 7, head, session: "ses_reviewer" };
+
+  const named = await run({ op: "pull_request_reviewer", ...pullRequest });
+  expect(named.isError).toBeUndefined();
+  expect(named.details).toEqual(daemonFixture("pull-request-reviewer.json"));
+  expect(posted).toEqual([
+    ["/legion/v1/pull-request-reviewer", { grantId: "controller-grant-1", ...pullRequest }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+
+  const relayed = await run({ op: "pull_request_verdict", ...pullRequest, verdict: "changes" });
+  expect(relayed.isError).toBeUndefined();
+  expect(relayed.details).toEqual(daemonFixture("pull-request-verdict.json"));
+  expect(posted.at(-1)).toEqual([
+    "/legion/v1/pull-request-verdict",
+    { grantId: "controller-grant-1", ...pullRequest, verdict: "changes" },
+  ]);
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+
+  const refusals = [
+    [
+      { op: "pull_request_reviewer", ...pullRequest, head: "" },
+      "pull_request_reviewer requires head",
+    ],
+    [
+      { op: "pull_request_reviewer", ...pullRequest, repository: "acme" },
+      "pull_request_reviewer requires repository as owner/name, such as acme/widgets",
+    ],
+    [
+      { op: "pull_request_verdict", ...pullRequest, repository: "acme/..", verdict: "approve" },
+      "pull_request_verdict requires repository as owner/name, such as acme/widgets",
+    ],
+    [
+      { op: "pull_request_reviewer", ...pullRequest, number: 0 },
+      "pull_request_reviewer requires number, a pull request's number",
+    ],
+    [
+      { op: "pull_request_reviewer", ...pullRequest, verdict: "approve" },
+      'pull_request_reviewer does not accept field "verdict"; it takes repository, number, head, session',
+    ],
+    [
+      { op: "pull_request_verdict", ...pullRequest },
+      "pull_request_verdict requires verdict approve or changes",
+    ],
+    [
+      { op: "pull_request_verdict", ...pullRequest, verdict: "pass" },
+      "pull_request_verdict requires verdict approve or changes",
+    ],
+    [
+      { op: "pull_request_verdict", ...pullRequest, verdict: "approve", issue: "LEGION-208" },
+      'pull_request_verdict does not accept field "issue"; it takes repository, number, head, verdict, session',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(2);
+  expect(minted).toHaveLength(2);
+});
+
+// A refused side-review call reaches the controller as every other write's refusal does: the
+// daemon's code, then its sentence.
+test("a verdict from a session the controller did not name tells the controller the daemon's code and its sentence", async () => {
+  const sentence =
+    "this verdict on pull request #7 of acme/widgets at 51de000000000000000000000000000000000a01 is session ses_other's, and the reviewer the controller named of it at that head is session ses_reviewer: relay only the verdict of the reviewer you named for that pull request and head; nothing was recorded";
+  const stub = (async () =>
+    Response.json(
+      { code: "VERDICT_REVIEWER_NOT_NAMED", error: sentence },
+      { status: 403 }
+    )) as unknown as typeof fetch;
+  const client = createLegionDaemonClient("http://daemon.test", stub);
+  await expect(
+    controllerTool(() => client, []).execute(
+      "",
+      {
+        op: "pull_request_verdict",
+        repository: "acme/widgets",
+        number: 7,
+        head: "51de000000000000000000000000000000000a01",
+        verdict: "approve",
+        session: "ses_other",
+      },
+      undefined,
+      undefined,
+      context("ses_controller")
+    )
+  ).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: `POST /legion/v1/pull-request-verdict failed with 403 VERDICT_REVIEWER_NOT_NAMED: ${sentence}`,
+      },
+    ],
+    details: {},
+    isError: true,
+  });
+});
+
+// Neither side-review operation is a claim's: a root architect, a sub-architect and every phase
+// worker, the reviewer among them, are refused by the operation's name, before a grant is minted
+// or a request sent.
+test("pull_request_reviewer and pull_request_verdict are offered to no architect and no phase worker", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/pull-request-reviewer": "pull-request-reviewer.json",
+    "/legion/v1/pull-request-verdict": "pull-request-verdict.json",
+  });
+  const claims = EVERY_SESSION.filter((session) => session.kind !== "controller");
+  expect(claims).toHaveLength(7);
+  const pullRequest = {
+    repository: "acme/widgets",
+    number: 7,
+    head: "51de000000000000000000000000000000000a01",
+    session: "ses_reviewer",
+  };
+  for (const session of claims) {
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    });
+    for (const parameters of [
+      { op: "pull_request_reviewer", ...pullRequest },
+      { op: "pull_request_verdict", ...pullRequest, verdict: "approve" },
+    ]) {
       await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
         content: [
           {

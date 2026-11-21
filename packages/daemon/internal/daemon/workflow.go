@@ -1697,6 +1697,12 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		return nil
 	})
 	group.Go(func() error {
+		// The writers' sweep of legion-verdict, at boot and then every 10 minutes: it writes what a
+		// lost event, a failed write or a restart left unwritten.
+		w.tickVerdictSweep(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
 		// The start read is the daemon's one read of every issue in the workflow: it covers the
 		// deliveries GitHub made while the daemon was down, which nothing redelivers.
 		w.readIssuesAtStart(store.ForConcurrentWorker(running))

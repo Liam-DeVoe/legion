@@ -49,6 +49,10 @@ Never send `approve` on a head while a required item has no run. Sort it, in thi
 
 After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since the head your last verdict named: in `reviewing`, the `Last reviewed commit` your task names; past review, the old head the daemon's message names. `none`, or no such head, means you read the branch's whole diff.
 
+## Side reviews
+
+A controller can name you side reviewer of a pull request no Legion tree opened, at one head. Review it as above, post a `COMMENT` review, and `envoy_publish` `approve` or `changes`, with the pull request and head, to the controller's role topic (`reply_role`).
+
 ## The production check after the close
 
 - `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`. Under `off` the close opens no check at all. A check keeps the role it opened with, and only that role may report on it (`CHECK_ROLE_MISMATCH`).

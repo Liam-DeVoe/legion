@@ -2,18 +2,26 @@ package api
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // reviewedSHA is the head the round's recorded reviewer approved in reviewing, which the pull
@@ -53,6 +61,55 @@ func pastReviewIssue(t *testing.T, at phase.Phase) (*harness, *factRecorder, liv
 	return h, facts, reviewer
 }
 
+// newVerdictWritingHarness is the daemon's routes over a real Postgres with the workflow deciding
+// every fact they apply, as newWorkflowHandoffHarness serves them, and a writer of legion-verdict
+// that appends the head of each write the workflow asks for to asked, once the fact's transaction
+// commits (workflow.Config.WriteVerdict). The write itself is the daemon's (writeVerdict), which
+// its own TestAHeadThatMovesPastReviewAsksTheRecordedReviewer drives against a fake GitHub.
+func newVerdictWritingHarness(t *testing.T, asked *[]string) *harness {
+	t.Helper()
+	h := newHarness(t)
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+		ReviewRoundCap: 3, WriteVerdict: func(_, _ string, _ int, head string) { *asked = append(*asked, head) }},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.handoffs = &statusRecorder{}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{engine}, Dispatch: h.handoffs, Tokens: handoffTokens{}, GitHubAPI: newHandoffGitHub(t).url,
+	}).Handler
+	return h
+}
+
+// seedTesterPass records the tester's pass of key at commit, on its phases row.
+func seedTesterPass(t *testing.T, h *harness, key, commit string) {
+	t.Helper()
+	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: "test-claim",
+			Verdict: "pass", HandoffCommit: commit, HandoffRecord: "test-1", HandoffVersion: 1, Summary: "tested"})
+	})
+	if err != nil {
+		t.Fatalf("seed the tester's pass of %s: %v", key, err)
+	}
+}
+
+// storedVerdict is the verdict the store holds on acme/widgets#42 at head, the one the writer of
+// legion-verdict reads, and whether it holds one.
+func storedVerdict(t *testing.T, h *harness, head string) (store.Verdict, bool) {
+	t.Helper()
+	var given store.Verdict
+	var found bool
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) (err error) {
+		given, found, err = store.VerdictTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), 42, head)
+		return err
+	}); err != nil {
+		t.Fatalf("read the verdict at %s: %v", head, err)
+	}
+	return given, found
+}
+
 // The verdict past review. With the issue in accepting, retro or merging, no review round is
 // open, and the round's recorded reviewer sends its verdict on the head the pull request moved
 // to with `POST /legion/v1/review-verdict`. The route takes it only from that reviewer's claim
@@ -60,8 +117,9 @@ func pastReviewIssue(t *testing.T, at phase.Phase) (*harness, *factRecorder, liv
 // only at the head the daemon's record holds (VERDICT_HEAD_NOT_CURRENT), each refusal writing
 // nothing. A call it takes queues one intake.ReviewVerdict fact, with the verdict, the head and
 // the testedCommit as sent, and writes no handoff and no completion: the reviewer's row and the
-// issue's phase stand as they were. What the fact records at the head is the workflow's to
-// decide, which this route does not reach.
+// issue's phase stand as they were. Through the workflow, the fact records the round's decision at
+// that head and asks for the write of legion-verdict there, and moves the issue back to testing
+// only where an approve carries no tester's pass (the recording case below).
 func TestReviewVerdictPastReviewTakesOnlyTheRecordedReviewer(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Accepting, phase.Retro, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {
@@ -157,6 +215,70 @@ func TestReviewVerdictPastReviewTakesOnlyTheRecordedReviewer(t *testing.T) {
 				t.Fatalf("facts after the refusal = %#v, want none applied", got)
 			}
 		})
+	}
+
+	// The recording case, through the workflow: the recorded reviewer's verdict at the current head
+	// is the round's decision there and the verdict the writer of legion-verdict reads, whose write
+	// the same fact asks for on its commit, and no handoff is written. An approve carrying the
+	// commit of the tester's recorded pass, and a changes, leave the phase as it was; an approve
+	// naming no testedCommit carries no pass and moves the issue back to testing, with the tester's
+	// pass cleared, so nothing writes success on the head.
+	for _, tc := range []struct {
+		name  string
+		sent  ReviewVerdictRequest
+		state string
+		moves bool
+	}{
+		{name: "an approve carrying the tester's pass", sent: ReviewVerdictRequest{Verdict: "approve", Commit: headSHA, TestedCommit: testedSHA,
+			Summary: "read the push, which changes no code that runs"}, state: "approved"},
+		{name: "a changes", sent: ReviewVerdictRequest{Verdict: "changes", Commit: headSHA, Summary: "the push breaks the parser"}, state: "changes_requested"},
+		{name: "an approve naming no testedCommit", sent: ReviewVerdictRequest{Verdict: "approve", Commit: headSHA, Summary: "read the push"},
+			state: "approved", moves: true},
+	} {
+		for _, at := range []phase.Phase{phase.Accepting, phase.Retro, phase.Merging} {
+			t.Run("recorded through the workflow, "+string(at)+", "+tc.name, func(t *testing.T) {
+				var asked []string
+				h := newVerdictWritingHarness(t, &asked)
+				seedIssueAt(t, h, "LEGION-208", at)
+				seedPullRequest(t, h, "LEGION-208", headSHA)
+				seedTesterPass(t, h, "LEGION-208", testedSHA)
+				reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+				seedRecordedReviewer(t, h, "LEGION-208", reviewer.token)
+				before := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer)
+
+				tc.sent.GrantID = reviewer.grant(t)
+				if recorder := h.reviewVerdict(tc.sent); recorder.Code != http.StatusOK {
+					t.Fatalf("the recorded reviewer's %s = %d: %s", tc.sent.Verdict, recorder.Code, recorder.Body)
+				}
+				after := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer)
+				if decided := after.Decision; decided == nil || decided.State != tc.state || decided.Head != headSHA || decided.TestedCommit != tc.sent.TestedCommit {
+					t.Fatalf("the round's decision = %+v, want %s at %s carrying %q", decided, tc.state, headSHA, tc.sent.TestedCommit)
+				}
+				after.Decision = before.Decision
+				if !reflect.DeepEqual(after, before) {
+					t.Fatalf("the reviewer's row after its verdict = %+v, want it as it stood but for the decision, %+v: the call writes no handoff", after, before)
+				}
+				if given, found := storedVerdict(t, h, headSHA); !found || string(given.Verdict) != tc.sent.Verdict || given.TestedCommit != tc.sent.TestedCommit ||
+					given.Session != string(reviewer.token) {
+					t.Fatalf("the store's verdict at %s = %+v (found %t), want the reviewer's %s carrying %q", headSHA, given, found, tc.sent.Verdict, tc.sent.TestedCommit)
+				}
+				if !slices.Equal(asked, []string{headSHA}) {
+					t.Fatalf("the workflow asked for writes of legion-verdict on %v, want one on %s in the verdict's own pass", asked, headSHA)
+				}
+				tester := phaseRowOf(t, h, "LEGION-208", claim.RoleTester)
+				if !tc.moves {
+					assertIssuePhase(t, h, at)
+					if tester.Verdict != "pass" || tester.HandoffCommit != testedSHA {
+						t.Fatalf("the tester's row = %+v, want its pass at %s kept", tester, testedSHA)
+					}
+					return
+				}
+				assertIssuePhase(t, h, phase.Testing)
+				if tester.Verdict != "" || tester.HandoffCommit != "" {
+					t.Fatalf("the tester's row = %+v, want its pass cleared, so nothing writes success on %s", tester, headSHA)
+				}
+			})
+		}
 	}
 }
 
