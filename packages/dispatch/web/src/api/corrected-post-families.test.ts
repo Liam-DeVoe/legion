@@ -18,10 +18,9 @@ import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/co
 import { type GraphNode, graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
 import { ItemMatchList } from "../features/issue/ItemMatchList";
-import { ambiguousItems } from "../features/issue/useItemLanding";
 import { useMarginItems } from "../features/margin/useMarginItems";
 import { replyRow } from "../features/threads/replies-fixture";
-import { ApiError, api } from "./client";
+import { ApiError, ambiguousItems, api } from "./client";
 import {
   CORRECTED_POST_FAMILIES,
   markCorrectedPost,

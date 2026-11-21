@@ -7,12 +7,11 @@ import {
   replaceEqualDeep,
 } from "@tanstack/react-query";
 
-import { ambiguousItems } from "../features/issue/useItemLanding";
 import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
 import { parseNodeReference } from "../features/refs/routes";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { ApiError } from "./client";
+import { ApiError, ambiguousItems } from "./client";
 import { correctedPostAddresses, rowsOf } from "./event-refresh";
 import type { ReferenceTargetsAnswer } from "./queries";
 import { replaceQueryData } from "./query-client";

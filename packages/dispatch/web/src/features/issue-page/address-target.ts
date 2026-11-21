@@ -3,9 +3,9 @@ import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-qu
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { useLocation } from "react-router-dom";
 
+import { ambiguousItems } from "../../api/client";
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
 import {
-  ambiguousItems,
   type ItemLanding,
   type ItemRoute,
   isItemRoute,
