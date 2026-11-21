@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,11 +48,13 @@ func handlerErrorLines(logged *logBuffer) (closed, failures []string) {
 }
 
 // A route's error is answered as the route's outer layers serve it - the request line, then
-// compression - so the line reads what every layer did with the error. A request whose own
-// client closed it is answered nothing, its line says 499 and nothing calls it a fault; every
-// other failure, a cancel or a deadline the server made among them, is a 500 with its ERROR line
-// as before, and a keyed write's handler is answered a 500 the key does not keep.
-func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T) {
+// compression - so the line reads what every layer did with the error. Every failure is answered
+// its error, a request whose own client closed it among them, so a client still reading never
+// takes an empty answer for success. What a closed request changes is the log alone: its line
+// says 499, it logs one debug line, and nothing calls it a fault. Every other failure, a cancel
+// or a deadline the server made among them, logs its ERROR line as before, and a keyed write's
+// handler is answered a 500 the key does not keep.
+func TestWriteHandlerErrorAnswersARequestItsClientClosedWithItsErrorAndLogsItAs499(t *testing.T) {
 	canceled := fmt.Errorf("list projects: %w", context.Canceled)
 	for _, test := range []struct {
 		name string
@@ -59,8 +64,8 @@ func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T
 		err    error
 		// keyed answers through the keyed layer's writer, which hides the request's writer.
 		keyed bool
-		// want is the status on the request line, and fault whether a 500 and its ERROR line
-		// were written.
+		// want is the status on the request line, and fault whether the failure logged its ERROR
+		// line. Every row is answered 500 INTERNAL.
 		want  int
 		fault bool
 	}{
@@ -102,13 +107,15 @@ func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T
 					t.Errorf("request lines %q, want one with status=%d", lines, test.want)
 				}
 				closed, failures := handlerErrorLines(logged)
-				wroteFault := response.Code == http.StatusInternalServerError || strings.Contains(response.Body.String(), "internal server error")
+				if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"`+codeInternal+`"`) {
+					t.Errorf("answered %d %q, want the 500 %s it met, which a client still reading takes as the failure it is", response.Code, response.Body.String(), codeInternal)
+				}
 				if test.fault {
-					if len(failures) != 1 || len(closed) != 0 || !wroteFault {
-						t.Errorf("answered %d %q and logged %q and %q, want a 500, one ERROR line and no closed-request line", response.Code, response.Body.String(), failures, closed)
+					if len(failures) != 1 || len(closed) != 0 {
+						t.Errorf("logged %q and %q, want one ERROR line and no closed-request line", failures, closed)
 					}
-				} else if len(failures) != 0 || len(closed) != 1 || wroteFault || response.Body.Len() != 0 {
-					t.Errorf("answered %d %q and logged %q and %q, want no answer, no ERROR line and one debug line for a request nobody is left to read", response.Code, response.Body.String(), failures, closed)
+				} else if len(failures) != 0 || len(closed) != 1 {
+					t.Errorf("logged %q and %q, want no ERROR line and one debug line for a request its client closed", failures, closed)
 				}
 				if test.keyed && keyedStatus != http.StatusInternalServerError {
 					t.Errorf("the keyed layer read %d, want the 500 it releases its key on rather than an answer it keeps", keyedStatus)
@@ -119,9 +126,9 @@ func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T
 }
 
 // The project list a page cancels as it navigates away, as a browser does, while its statement
-// waits on the database: the request line says 499, no ERROR line calls it a server fault, and no
-// 500 is written. The statement waits on a lock this test holds, so the cancel lands while the
-// statement runs, which is when the browser's did.
+// waits on the database: the request line says 499 and no ERROR line calls it a server fault,
+// while the request is still answered the error it met. The statement waits on a lock this test
+// holds, so the cancel lands while the statement runs, which is when the browser's did.
 func TestAProjectListItsClientClosedMidStatementIsNoServerFault(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	logged := captureDebugLog(t)
@@ -168,7 +175,88 @@ func TestAProjectListItsClientClosedMidStatementIsNoServerFault(t *testing.T) {
 	if len(failures) != 0 || len(closed) != 1 {
 		t.Errorf("logged %q and %q, want no ERROR line and one debug line for a request its client closed", failures, closed)
 	}
-	if response.Code == http.StatusInternalServerError || strings.Contains(response.Body.String(), "internal server error") {
-		t.Errorf("answered %d %q, want no 500 for a request nobody is left to read", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"`+codeInternal+`"`) {
+		t.Errorf("answered %d %q, want the 500 %s it met", response.Code, response.Body.String(), codeInternal)
+	}
+}
+
+// A client that half-closes its side while its write waits is a client net/http counts as closed:
+// its read of the connection meets the end of the stream, which ends the request's context, and
+// the cancel rolls the write back. That client still reads, so it must read the error the write
+// met, not an empty 200 that says the write succeeded. The write waits on a lock this test holds,
+// so the half-close lands while its statement runs.
+func TestAHalfClosedClientWhoseWriteRolledBackReadsTheError(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	logged := captureDebugLog(t)
+	listener := httptest.NewServer(handler)
+	defer listener.Close()
+	lock, err := database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin the lock's transaction: %v", err)
+	}
+	defer func() { _ = lock.Rollback(context.Background()) }()
+	if _, err := lock.Exec(t.Context(), `lock table projects in access exclusive mode`); err != nil {
+		t.Fatalf("lock projects: %v", err)
+	}
+
+	conn, err := net.Dial("tcp", listener.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial the server: %v", err)
+	}
+	defer conn.Close()
+	body := `{"key":"HALF","name":"Half closed"}`
+	if _, err := fmt.Fprintf(conn, "POST /api/v1/projects HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nX-Dispatch-User: alice\r\nContent-Length: %d\r\n\r\n%s",
+		listener.Listener.Addr(), len(body), body); err != nil {
+		t.Fatalf("send the write: %v", err)
+	}
+	testwait.Until(t, "the project write's insert waiting on the lock", func() (int, bool) {
+		waiting, err := storetest.CountLockWaits(t.Context(), database, "%insert into projects%")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waiting, waiting == 1
+	})
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatalf("half-close the client's side: %v", err)
+	}
+	// The server's read meets the end of the stream and ends the request's context, which cancels
+	// the insert; the lock is released only then, so nothing can land first.
+	testwait.Until(t, "the half-closed write's insert to stop waiting", func() (int, bool) {
+		waiting, err := storetest.CountLockWaits(t.Context(), database, "%insert into projects%")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waiting, waiting == 0
+	})
+	if err := lock.Rollback(t.Context()); err != nil {
+		t.Fatalf("release the lock: %v", err)
+	}
+	answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read the answer on the half-closed connection: %v", err)
+	}
+	defer answer.Body.Close()
+	read, _ := io.ReadAll(answer.Body)
+	if answer.StatusCode != http.StatusInternalServerError || !strings.Contains(string(read), `"code":"`+codeInternal+`"`) {
+		t.Errorf("the half-closed client read %d %q, want the 500 %s its rolled-back write met, not a success", answer.StatusCode, read, codeInternal)
+	}
+	var stored int
+	if err := database.Pool.QueryRow(t.Context(), `select count(*) from projects where key = 'HALF'`).Scan(&stored); err != nil {
+		t.Fatalf("count the project: %v", err)
+	}
+	if stored != 0 {
+		t.Fatalf("the cancelled write stored %d projects, want 0: the row's premise is a write the cancel rolled back", stored)
+	}
+	var lines []string
+	for _, line := range accessLines(t, logged) {
+		if strings.Contains(line, " route=/api/v1/projects ") && strings.Contains(line, " method=POST ") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", accesslog.StatusClientClosed)) {
+		t.Errorf("request lines %q, want one with status=%d", lines, accesslog.StatusClientClosed)
+	}
+	if closed, failures := handlerErrorLines(logged); len(failures) != 0 || len(closed) != 1 {
+		t.Errorf("logged %q and %q, want no ERROR line and one debug line", failures, closed)
 	}
 }

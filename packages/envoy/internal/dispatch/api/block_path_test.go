@@ -194,7 +194,7 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 // A room fails with the cause that failed it, and a writer whose client went away during its
 // commit fails the room with a cause that holds context.Canceled. That cancellation is the
 // writer's, so a live read of the same document still answers 200 without the position, while a
-// read whose own request has gone away is answered nothing and its request line says 499
+// read whose own request has gone away fails with 500 INTERNAL, and its request line says 499
 // (writeHandlerError). The two reads meet the same error; only the request differs.
 func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 	writer, database, _ := newTestServer(t, testServerOptions{})
@@ -240,9 +240,10 @@ func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 		cancelled := httptest.NewRecorder()
 		gone.ServeHTTP(cancelled, request)
 		lines := accessLines(t, logged)
-		if cancelled.Body.Len() != 0 || len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", accesslog.StatusClientClosed)) {
-			t.Fatalf("cancelled GET %s: status=%d body=%s, request lines %q, want no answer and status=%d on its line",
-				read.path, cancelled.Code, cancelled.Body.String(), lines, accesslog.StatusClientClosed)
+		if cancelled.Code != http.StatusInternalServerError || !strings.Contains(cancelled.Body.String(), `"code":"`+codeInternal+`"`) ||
+			len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", accesslog.StatusClientClosed)) {
+			t.Fatalf("cancelled GET %s: status=%d body=%s, request lines %q, want 500 %s and status=%d on its line",
+				read.path, cancelled.Code, cancelled.Body.String(), lines, codeInternal, accesslog.StatusClientClosed)
 		}
 	}
 }

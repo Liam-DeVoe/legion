@@ -57,8 +57,9 @@ const Message = "dispatch: request"
 const fieldBytes = 256
 
 // StatusClientClosed is the status the line gives a request whose client closed it before its
-// answer (MarkClosedByClient): nginx's 499, which no answer carries, since nobody is left to read
-// one.
+// answer (MarkClosedByClient): nginx's 499. No answer carries it: the request is still answered
+// with the status its handler wrote, which reaches the client only where it half-closed and
+// still reads.
 const StatusClientClosed = 499
 
 // callerKey carries the request's recorder, which the authentication layer names the caller on.
@@ -207,12 +208,16 @@ func Detached(ctx context.Context) context.Context {
 }
 
 // MarkClosedByClient reports whether the client of the request that w answers closed it before
-// its answer, and when it did, gives the request's line StatusClientClosed in place of anything
-// written after, which reached nobody. It reads the request's own context, which only the client
+// its answer, and when it did, gives the request's line StatusClientClosed in place of the status
+// the request is answered with, whether that status was written before the close or after it.
+// It changes nothing the client is sent. It reads the request's own context, which only the client
 // ends while the handler runs. net/http cancels it when the connection fails a read or a write:
-// the client closed the connection or reset the stream, or a deadline set on the connection ran
-// out. No Dispatch route leaves a deadline set on its connection past the end of the body while
-// its handler works (api's readFor), and Dispatch shuts down without closing a connection under a
+// the client closed the connection, half-closed its side (a read that meets the end of the
+// stream), or reset the stream, or a deadline set on the connection ran out. A client that gives
+// up waiting - a page at its own deadline, a proxy at its timeout - closes the same way, so a 499
+// says the client left, and its line's elapsed_ms says how long it waited. No Dispatch route
+// leaves a deadline set on its connection past the end of the body while its handler works (api's
+// readFor), and Dispatch shuts down without closing a connection under a
 // request (cmd/dispatch's shutdown). A cancel that Dispatch makes - a handler's own context, the
 // server's lifetime - leaves it live. w is the writer a handler was given: the walk follows each
 // layer's Unwrap, as http.ResponseController does, and a writer this package did not wrap, or one
