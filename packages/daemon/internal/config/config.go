@@ -781,6 +781,15 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // envNameRule is the refusal's words for a name envVarName does not match.
 const envNameRule = "must be an environment variable name (letters, digits, and underscores, not starting with a digit)"
 
+// providerVarName is the variable a provider_keys entry names: an envVarName in upper case, as every
+// provider's variable is (ANTHROPIC_API_KEY, GEMINI_API_KEY). The variable is the entry's name in
+// every refusal, log line, settings answer and file name, so a provider's key pasted in its place,
+// most of which hold a lowercase letter, is refused rather than printed under that name.
+var providerVarName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// providerVarRule is the refusal's words for a name providerVarName does not match.
+const providerVarRule = "must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)"
+
 // spendAttributesRule is the refusal's words for an operator value of
 // runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
 // member is caught by the detector's caller with an empty hand, so it costs the launch the whole
@@ -835,10 +844,10 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		envNode, secretNode := value.Content[i], value.Content[i+1]
 		env := envNode.Value
-		if envNode.Kind != yaml.ScalarNode || !envVarName.MatchString(env) {
+		if envNode.Kind != yaml.ScalarNode || !providerVarName.MatchString(env) {
 			// By its position, not its text: what stands where a variable name goes can be a key
 			// pasted into the wrong place, and this refusal is printed as it is.
-			return nil, fmt.Errorf("%s entry %d: its key (the variable OMP reads) %s", key, i/2+1, envNameRule)
+			return nil, fmt.Errorf("%s entry %d: its key (the variable OMP reads) %s", key, i/2+1, providerVarRule)
 		}
 		if strings.HasPrefix(env, "AGENT_SECRETS_") {
 			return nil, fmt.Errorf("%s names %s: an AGENT_SECRETS_* variable is the runtime's (AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR) or the daemon's own agent-secrets machine login, and is never exported into an agent's environment", key, env)

@@ -1351,12 +1351,20 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "provider_keys with a variable that is not a variable name",
 			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, 1PASSWORD: ONEPASSWORD_TESTS}\n",
-			want: `provider_keys entry 2: its key (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "provider_keys with a provider's key pasted where the variable goes",
 			body: minimalFile + "provider_keys: {\"madeUp-provider-key-0123456789abcdef\": GEMINI_API_KEY_TESTS}\n",
-			want: `provider_keys entry 1: its key (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `provider_keys entry 1: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A key made only of letters, digits and underscores, which a shell takes as a variable
+			// name: it would become the entry's name in every line about it, so it is refused for its
+			// lowercase letters.
+			name: "provider_keys with a name-shaped provider's key pasted where the variable goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, MadeUpProviderKey0123456789abcdefXYZ: OPENAI_API_KEY_TESTS}\n",
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "provider_keys with a command where the secretsd key goes",
