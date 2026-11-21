@@ -632,7 +632,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 				return
 			}
 		}
-		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
+		consumerInfo, err := durableInfo(ctx, d.client, d.consumer)
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
 			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
