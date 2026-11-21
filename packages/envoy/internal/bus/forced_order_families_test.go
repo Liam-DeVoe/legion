@@ -71,7 +71,10 @@ func (r *forcedRig) pendingSession(t *testing.T, id string) *pendingSession {
 }
 
 // removeFromOutside deletes consumer name as the server's inactivity removal would, and confirms it
-// is gone: every row that removes a consumer reads its control here.
+// is gone: every row that removes a consumer reads its control here. On a cluster the delete answers
+// before every server has applied it, and for a moment the consumer's own replicas still answer its
+// info (the R3 topology of the lost-state row read one so at a load of 900), so the read is repeated
+// until the cluster answers that the consumer is gone, within removalApplied.
 func (r *forcedRig) removeFromOutside(t *testing.T, name string) {
 	t.Helper()
 	js, err := r.conn.JetStream()
@@ -81,10 +84,19 @@ func (r *forcedRig) removeFromOutside(t *testing.T, name string) {
 	if err := js.DeleteConsumer(Stream, name); err != nil {
 		t.Fatalf("remove %s from outside: %v", name, err)
 	}
-	if _, err := js.ConsumerInfo(Stream, name); !errors.Is(err, natsgo.ErrConsumerNotFound) {
-		t.Fatalf("control: %s read %v after its removal, want no consumer", name, err)
+	var last error
+	for deadline := time.Now().Add(removalApplied); ; time.Sleep(20 * time.Millisecond) {
+		if _, last = js.ConsumerInfo(Stream, name); errors.Is(last, natsgo.ErrConsumerNotFound) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("control: %s read %v %s after its removal, want no consumer", name, last, removalApplied)
+		}
 	}
 }
+
+// removalApplied bounds how long a consumer's removal may take to reach every server of a cluster.
+const removalApplied = 10 * time.Second
 
 // streamConsumerNames is every consumer name of the stream.
 func (r *forcedRig) streamConsumerNames(t *testing.T) []string {
