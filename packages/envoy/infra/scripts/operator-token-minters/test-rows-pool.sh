@@ -38,7 +38,10 @@
 #        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
 #        UNKNOWN;
 #   (bm) a fleet scope, whose namespaces and RBAC role bindings reach its bound members, and a
-#        refused scope listing each read UNKNOWN; a fleet with no scope says so.
+#        refused scope listing each read UNKNOWN; a fleet with no scope says so;
+#   (bp) legacy ABAC on the operator's cluster, the identity service on another cluster of the
+#        project, and legacy ABAC on a GKE fleet member in another project (from its describe) each
+#        read UNKNOWN on that cluster's step.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -411,4 +414,35 @@ scope_row() {
 if row bm; then
   each scope_row present refused none
   passed "(bm) a fleet scope, or a scope listing that is refused, reads UNKNOWN; a fleet with none says so"
+fi
+
+# --- (bp) Cluster settings that authorize or authenticate outside RBAC and Google: legacy ABAC
+# authorizes requests by its own policies, and the identity service for GKE takes users and groups
+# from an outside provider, so neither is seen by a review. ---
+settings_row() {
+  local want
+  base_world
+  case "$1" in
+    operator-abac)
+      edit "$world/clusters.json" 'map(if .name == "operator-cluster" then . + {legacyAbac: {enabled: true}} else . end)'
+      want="UNKNOWN live: RBAC on operator-cluster: legacy ABAC is on, so the cluster authorizes requests by its ABAC policies beside RBAC, which no review here sees"
+      ;;
+    other-identity)
+      add_cluster other-cluster us-east1
+      edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {identityServiceConfig: {enabled: true}} else . end)'
+      want="UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the identity service for GKE is on, so the cluster takes users and groups from an outside identity provider, whose members this check cannot list"
+      ;;
+    member-abac)
+      grade_member
+      edit "$world/fleet.json" '.memberships |= map(if .id == "grade" then . + {settings: {legacyAbac: {enabled: true}}} else . end)'
+      want="UNKNOWN $grade_step: legacy ABAC is on, so the cluster authorizes requests by its ABAC policies beside RBAC, which no review here sees"
+      ;;
+  esac
+  run
+  want_status 2 "a cluster setting outside RBAC ($1)"
+  want_line "$want" "a cluster setting outside RBAC ($1)"
+}
+if row bp; then
+  each settings_row operator-abac other-identity member-abac
+  passed "(bp) legacy ABAC or the identity service on the operator's cluster, another of the project, or a GKE fleet member reads UNKNOWN"
 fi

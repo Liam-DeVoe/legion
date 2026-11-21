@@ -189,7 +189,7 @@ readonly container_admin=(
   container.replicationControllers.create container.replicationControllers.update
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
-  container.certificateSigningRequests.approve container.certificateSigningRequests.create
+  container.certificateSigningRequests.approve container.certificateSigningRequests.create container.clusters.update
   container.roleBindings.create container.roleBindings.update container.roles.bind container.roles.escalate
   container.secrets.get container.secrets.list container.serviceAccounts.create container.serviceAccounts.createToken
   container.statefulSets.create container.statefulSets.update container.subjectAccessReviews.create

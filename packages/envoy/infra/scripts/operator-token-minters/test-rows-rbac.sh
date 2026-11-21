@@ -67,7 +67,10 @@
 #        signing requests, update their approval and approve the signer
 #        kubernetes.io/kube-apiserver-client (rv9, beside a person who may mint the operator's
 #        token), one that may approve for kubernetes.io/* without create, and ci/runner on another
-#        cluster each exit 1 naming the chain; create alone exits 0.
+#        cluster each exit 1 naming the chain; create alone exits 0;
+#   (bo) legion/worker that may impersonate, by name, a user whose power is IAM's (owner@example.com,
+#        who holds roles/owner on the organization, or admin@example.com, a member of a group holding
+#        roles/container.admin) exits 1 naming that user.
 
 # --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
 # (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
@@ -675,4 +678,18 @@ csr_row() {
 if row bj; then
   each csr_row rv9 wildcard other-cluster create-only
   passed "(bj) who may approve kubernetes.io/kube-apiserver-client certificate signing requests, with create (rv9) or without, on the operator's cluster or another, exits 1 naming the chain; create alone exits 0"
+fi
+
+# --- (bo) Impersonating, by name, a user whose power comes from IAM: GKE's IAM authorizer judges an
+# impersonated user by its own IAM, so whoever may impersonate an IAM holder takes what it holds. ---
+iam_user_row() {
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" users "" "" "$1"
+  run
+  want_status 1 "legion/worker may impersonate $1 by name"
+  want_line "FINDING system:serviceaccount:legion:worker: impersonate users $1 cluster-wide" "legion/worker may impersonate $1 by name"
+}
+if row bo; then
+  each iam_user_row owner@example.com admin@example.com
+  passed "(bo) a ServiceAccount that may impersonate, by name, a user holding the GKE IAM permissions exits 1 naming the user"
 fi

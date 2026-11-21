@@ -3,7 +3,7 @@
   "findings": [
     {
       "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
-      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update, container.certificateSigningRequests.approve on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update, container.certificateSigningRequests.approve, container.clusters.update on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
       "role": "roles/container.admin",
       "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
       "permissions": [
@@ -45,7 +45,8 @@
         "container.mutatingWebhookConfigurations.update",
         "container.validatingWebhookConfigurations.create",
         "container.validatingWebhookConfigurations.update",
-        "container.certificateSigningRequests.approve"
+        "container.certificateSigningRequests.approve",
+        "container.clusters.update"
       ],
       "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
     },
@@ -501,11 +502,51 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users admin@example.com cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users admin@example.com cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users admin@example.com cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users ci-runner@example-project.iam.gserviceaccount.com cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users ci-runner@example-project.iam.gserviceaccount.com cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users ci-runner@example-project.iam.gserviceaccount.com cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "impersonate users grade-ci@example-grade.iam.gserviceaccount.com cluster-wide on cluster example-grade/us-east1/grade-cluster",
       "role": "impersonate users grade-ci@example-grade.iam.gserviceaccount.com cluster-wide",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "impersonate users grade-ci@example-grade.iam.gserviceaccount.com cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users owner@example.com cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users owner@example.com cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users owner@example.com cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users service-123456789012@container-engine-robot.iam.gserviceaccount.com cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users service-123456789012@container-engine-robot.iam.gserviceaccount.com cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users service-123456789012@container-engine-robot.iam.gserviceaccount.com cluster-wide"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },

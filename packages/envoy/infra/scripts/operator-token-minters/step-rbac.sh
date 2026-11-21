@@ -69,6 +69,7 @@ else
   # Groups that are not Kubernetes' own, judged by where this cluster takes its groups from, and
   # every binding of system:masters but the bootstrap one.
   groups_verdict "$step" "${GROUPS_CONFIG["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+  settings_verdict "$step" "${CLUSTER_SETTINGS["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}"
   masters_bindings "$step" "" "cluster:$CLUSTER"
   # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
   # and user by name, bind and escalate every binding's role and patch and update every binding by

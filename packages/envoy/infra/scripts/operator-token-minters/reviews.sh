@@ -333,16 +333,40 @@ groups_verdict() {
       ;;
   esac
 }
+# settings_verdict STEP SETTINGS: a GKE cluster's settings that authorize or authenticate outside
+# RBAC and Google (CLUSTER_SETTINGS), each UNKNOWN: legacy ABAC authorizes requests by its own
+# policies beside RBAC, and the identity service for GKE takes users and groups from an outside
+# provider, so no review sees either. `unread:<why>` is UNKNOWN for both.
+settings_verdict() {
+  case "$2" in
+    unread:*)
+      unknown "$1" "whether legacy ABAC or the identity service for GKE is on is unknown (${2#unread:}), so who the cluster authorizes outside RBAC cannot be read"
+      return
+      ;;
+  esac
+  case ",$2," in *,abac,*)
+    unknown "$1" "legacy ABAC is on, so the cluster authorizes requests by its ABAC policies beside RBAC, which no review here sees" ;;
+  esac
+  case ",$2," in *,identity,*)
+    unknown "$1" "the identity service for GKE is on, so the cluster takes users and groups from an outside identity provider, whose members this check cannot list" ;;
+  esac
+}
 # named_rights: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster whose
 # bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate groups
-# and users by name; bind and escalate on every binding's role, and patch and update on every
-# binding, by name; and update and patch by name on each role bound to a reviewed principal. When
-# the bindings could not be read, it holds impersonate groups system:masters alone.
+# and users by name, the users being the bindings' User subjects and each user or Google service
+# account the GKE IAM step listed as a holder (GKE's IAM authorizer judges an impersonated user by
+# its own IAM); bind and escalate on every binding's role, and patch and update on every binding, by
+# name; and update and patch by name on each role bound to a reviewed principal. When the bindings
+# could not be read, it holds impersonate groups system:masters and the IAM holders alone.
 named_rights() {
-  local reviewed bindings='{"items": []}'
+  local reviewed bindings='{"items": []}' iam_users='[]'
   reviewed="$(cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
   [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
-  NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" -f "$LIB/named-rights.jq" <<<"$bindings")"
+  if [ -s "$WORK/gke-analysis.rec" ]; then
+    iam_users="$(awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "$WORK/gke-analysis.rec" |
+      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  fi
+  NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" --argjson iam_users "$iam_users" -f "$LIB/named-rights.jq" <<<"$bindings")"
 }
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
 # where both hold one, RIGHTS's label stays.

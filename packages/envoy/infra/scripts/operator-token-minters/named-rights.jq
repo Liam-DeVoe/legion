@@ -4,7 +4,9 @@
 # name-limited grant: one that may impersonate the group system:masters by name becomes
 # cluster-admin while the unnamed review says no. These rights name each name, as rights_json
 # writes rights: impersonate groups for system:masters and every Group subject the bindings name;
-# impersonate users for every User subject; for every binding, whoever its subjects are, bind and
+# impersonate users for every User subject and each user and Google service account the GKE IAM
+# step listed as a holder ($iam_users: GKE's IAM authorizer judges an impersonated user by its own
+# IAM); for every binding, whoever its subjects are, bind and
 # escalate on its role and patch and update on the binding itself, since RBAC lets one who may bind
 # a role, by name, write a binding to it (bind is asked in a RoleBinding's namespace, where RBAC
 # asks it); and update and patch on each role bound to a reviewed principal. $reviewed holds the
@@ -30,7 +32,7 @@ def right($verb; $group; $resource; $ns; $name):
     else false end;
   [.items[]?] as $bindings
   | ([$bindings[].subjects[]? | select(.kind == "Group") | .name] + ["system:masters"] | unique) as $groups
-  | ([$bindings[].subjects[]? | select(.kind == "User") | .name] | unique) as $users
+  | ([$bindings[].subjects[]? | select(.kind == "User") | .name] + $iam_users | unique) as $users
   | [ ($groups[] | right("impersonate"; ""; "groups"; ""; .)),
       ($users[] | right("impersonate"; ""; "users"; ""; .)),
       ($bindings[] | . as $b | (.metadata.namespace // "") as $bns

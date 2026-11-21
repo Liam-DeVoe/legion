@@ -57,6 +57,29 @@
 #                     UNKNOWN: a cluster there is neither read nor counted. With --pool-project
 #                     naming another project, that project's own clusters are listed too, and read
 #                     as other clusters of the pool; a refused or incomplete list is UNKNOWN.
+#   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
+#                     Policy Analyzer's holders of the container.* permission of each right, on the
+#                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
+#                     there, by which a holder grants itself any of them. It runs before the RBAC
+#                     steps, which ask who may impersonate each user and Google service account it
+#                     lists, by name: GKE's IAM authorizer judges an impersonated user by its own IAM.
+#   live: minters     Policy Analyzer's holders, on --gsa or above it, of
+#                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
+#                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. They must
+#                     be people and the Workload Identity member serviceAccount:<pool>.svc.id.goog[
+#                     <namespace>/<service account>], which is the witness: the answer must list it.
+#                     The broker needs roles/iam.serviceAccountTokenCreator on that account to mint
+#                     the secret ENVOY_OPERATOR's token, so --broker-account allows that one binding,
+#                     on that account and in that role alone, and then the broker account's own
+#                     minters are checked the same way, its Workload Identity member
+#                     (--broker-workload) the witness and the one non-person allowed.
+#   impersonation     Every IAM step analyses with --analyze-service-account-impersonation: who can
+#                     mint a holder's token, sign as it or act as it holds what the holder holds, so
+#                     the outermost principal of each such chain, through any number of service
+#                     accounts, is judged as a holder, its finding written as the chain
+#                     (serviceAccount:a -> impersonates serviceAccount:b (<role>) -> <b's role>).
+#                     The design's own links are no finding: a Workload Identity member acting as
+#                     the account it is bound to, and the broker minting --gsa's token.
 #   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
 #                     the principals being every ServiceAccount outside the system namespaces
 #                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
@@ -78,7 +101,8 @@
 #                     which every API server serves, is UNKNOWN. RBAC allows a request against a
 #                     rule with resourceNames only when the request names one, so the rights also
 #                     name each name: impersonate groups for system:masters and every Group subject
-#                     the bindings name, impersonate users for every User subject, bind and escalate
+#                     the bindings name, impersonate users for every User subject and each user and
+#                     Google service account the GKE IAM step lists, bind and escalate
 #                     on every binding's role and patch and update on every binding (RBAC lets one
 #                     who may bind a role by name write a binding to it), and update and patch on
 #                     each role bound to a reviewed principal (named-rights.jq); every other cluster
@@ -97,27 +121,6 @@
 #                     its name, create serviceaccounts/token or impersonate. A system namespace's
 #                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
 #                     a right asked, who can become it is followed the same way.
-#   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
-#                     Policy Analyzer's holders of the container.* permission of each right, on the
-#                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
-#                     there, by which a holder grants itself any of them.
-#   live: minters     Policy Analyzer's holders, on --gsa or above it, of
-#                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
-#                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. They must
-#                     be people and the Workload Identity member serviceAccount:<pool>.svc.id.goog[
-#                     <namespace>/<service account>], which is the witness: the answer must list it.
-#                     The broker needs roles/iam.serviceAccountTokenCreator on that account to mint
-#                     the secret ENVOY_OPERATOR's token, so --broker-account allows that one binding,
-#                     on that account and in that role alone, and then the broker account's own
-#                     minters are checked the same way, its Workload Identity member
-#                     (--broker-workload) the witness and the one non-person allowed.
-#   impersonation     Every IAM step analyses with --analyze-service-account-impersonation: who can
-#                     mint a holder's token, sign as it or act as it holds what the holder holds, so
-#                     the outermost principal of each such chain, through any number of service
-#                     accounts, is judged as a holder, its finding written as the chain
-#                     (serviceAccount:a -> impersonates serviceAccount:b (<role>) -> <b's role>).
-#                     The design's own links are no finding: a Workload Identity member acting as
-#                     the account it is bound to, and the broker minting --gsa's token.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
@@ -161,6 +164,11 @@
 #                     validatingWebhookConfigurations create and update) and of the IAM writers
 #                     (setIamPolicy, iam.roles.update) are judged as the GKE IAM step judges its own
 #                     (--project's are in that step).
+#   live: minters of  For each Google service account an RBAC finding names (on a cluster, a fleet
+#     an RBAC         member or in the renders), Policy Analyzer's holders on it of the minters
+#     finding's       step's permissions, judged as that step judges --gsa's: who can mint its token,
+#     account         sign as it or act as it holds what the finding gives it, so once the finding is
+#                     accepted, an agent that can become the account is still reported.
 #   live: fleet       Policy Analyzer's holders on the pool project of gkehub.memberships.create and
 #     registration    update, of gkehub.namespaces, rbacrolebindings and membershipbindings create
 #                     and update, of the scopes' create, update and setIamPolicy, and of the
@@ -220,6 +228,13 @@
 # step reads no cluster's setting and judges another Group as off; the live step of the cluster says
 # UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
 # allowed.
+#
+# Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
+# the identity service for GKE takes users and groups from an outside identity provider, so no
+# review sees who either lets in: on each GKE cluster of the pool, read from the cluster list
+# (legacyAbac, identityServiceConfig) or `gcloud container clusters describe`, either one on is
+# UNKNOWN on that cluster's step, and so is a describe that was refused. container.clusters.update,
+# by which a holder turns legacy ABAC on, is asked through IAM beside the rights' permissions.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; Google's own service agents
@@ -470,12 +485,12 @@ fi
 . "$LIB/step-clusters.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
 . "$LIB/reviews.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-rbac.sh
-. "$LIB/step-rbac.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh
 . "$LIB/step-gke-iam.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-rbac.sh
+. "$LIB/step-rbac.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-workload-identity.sh
 . "$LIB/step-workload-identity.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-live-iam.sh

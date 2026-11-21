@@ -83,13 +83,15 @@ case "${words[*]}" in
     ;;
   "container clusters describe "*)
     # A cluster of the project's own list, or a GKE member of the fleet (its `groups`, Google Groups
-    # for RBAC, from fleet.json), as GKE describes it: authenticatorGroupsConfig when it is set.
+    # for RBAC, and its `settings`, from fleet.json), as GKE describes it: authenticatorGroupsConfig
+    # when it is set.
     cluster="${words[3]}"
     [ ! -e "$world/refuse-describe-$cluster" ] ||
       refuse container.clusters.describe "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."
     jq -e --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" --slurpfile fleet "$world/fleet.json" '
       first((if $p == $project then .[] | select(.name == $c and .location == $l) else empty end),
-            ($fleet[0].memberships[] | select(.gke == {project: $p, location: $l, cluster: $c}) | {name: $c, location: $l} + (if .groups then {authenticatorGroupsConfig: .groups} else {} end)))
+            ($fleet[0].memberships[] | select(.gke == {project: $p, location: $l, cluster: $c})
+             | {name: $c, location: $l} + (if .groups then {authenticatorGroupsConfig: .groups} else {} end) + (.settings // {})))
       // error("no such cluster")' "$world/clusters.json" ||
       { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
     ;;

@@ -42,7 +42,11 @@
 #   (bl) each permission by which a holder makes a namespace or RBAC on the fleet's members
 #        (gkehub.namespaces, rbacrolebindings and membershipbindings create and update, the scopes'
 #        create, update and setIamPolicy, and the features' create and update), held alone on the
-#        pool project by an agent's Google service account, exits 1.
+#        pool project by an agent's Google service account, exits 1;
+#   (bn) grade-ci, bound to cluster-admin on a fleet member, is an RBAC finding, so an agent's
+#        Google service account that may mint its token is a finding too, naming grade-ci's account;
+#   (bq) container.clusters.update, by which a holder turns on legacy ABAC, held on the project by
+#        an agent's Google service account exits 1.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -244,7 +248,8 @@ member_iam_permissions=(container.clusters.impersonate container.clusterRoles.bi
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
   container.roleBindings.create container.roleBindings.update container.nodes.proxy container.mutatingWebhookConfigurations.create
   container.mutatingWebhookConfigurations.update container.validatingWebhookConfigurations.create
-  container.validatingWebhookConfigurations.update container.certificateSigningRequests.approve resourcemanager.projects.setIamPolicy
+  container.validatingWebhookConfigurations.update container.certificateSigningRequests.approve container.clusters.update
+  resourcemanager.projects.setIamPolicy
   resourcemanager.folders.setIamPolicy resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy
   secretmanager.secrets.setIamPolicy iam.roles.update)
 member_iam_row() {
@@ -322,4 +327,28 @@ if row bl; then
     gkehub.rbacrolebindings.update gkehub.membershipbindings.create gkehub.membershipbindings.update gkehub.scopes.create \
     gkehub.scopes.update gkehub.scopes.setIamPolicy gkehub.features.create gkehub.features.update
   passed "(bl) each fleet namespace, RBAC, scope and feature permission, held alone on the pool project by an agent's Google service account, exits 1"
+fi
+
+# --- (bn) Who can mint the token of a Google service account an RBAC finding names holds what the
+# finding gives it: once grade-ci's finding is accepted, an agent's account that may become grade-ci
+# must still be reported. ---
+if row bn; then
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+  grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
+  iam "$grade_ci_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$worker_gsa"
+  run
+  want_status 1 "an agent's account that may mint grade-ci's token"
+  want_text "FINDING serviceAccount:$worker_gsa: iam.serviceAccounts.getAccessToken," "an agent's account that may mint grade-ci's token"
+  want_text " on $grade_ci_res through roles/iam.serviceAccountTokenCreator, granted at $grade_ci_res" "an agent's account that may mint grade-ci's token"
+  ! has_prefix "PASS live: minters of $grade_ci, which an RBAC finding names: " || fail "the step that found worker's minting of grade-ci's token passed"
+  passed "(bn) an agent's Google service account that may mint the token of grade-ci, an RBAC finding, exits 1 naming it"
+fi
+
+# --- (bq) container.clusters.update, through IAM: a holder can turn on legacy ABAC, which authorizes
+# requests beside RBAC. ---
+if row bq; then
+  each new_container_row container.clusters.update
+  passed "(bq) container.clusters.update held by an agent's Google service account exits 1"
 fi

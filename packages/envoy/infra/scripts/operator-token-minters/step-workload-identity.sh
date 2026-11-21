@@ -8,7 +8,7 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE GROUPS: on the cluster KUBE names, no guarded pair's
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS]: on the cluster KUBE names, no guarded pair's
 # namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
 # cluster's system namespaces, none of Kubernetes' own groups, and no binding subject may hold a
 # right of GUARD_RIGHTS, a custom or admission resource's right from the cluster's discovery, or a
@@ -17,7 +17,7 @@ pool_name="the workload pool's project"
 # cluster takes its groups from (groups_verdict). The reviews carry the witness. PASS when it
 # recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" groups_mode="$4" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -55,6 +55,7 @@ read_other_cluster() {
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
   namespace_groups
   groups_verdict "$cstep" "$groups_mode"
+  settings_verdict "$cstep" "$settings"
   masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
   admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
@@ -101,7 +102,8 @@ else
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
-    read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+    read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
+      "${CLUSTER_SETTINGS["$label"]:-}"
   done 5<"$WORK/clusters.tsv"
 fi
 
@@ -119,7 +121,8 @@ while IFS=$'\t' read -r -u 5 cluster location _; do
     unknown "$cstep" "$KUBE_ERROR"
     continue
   fi
-  read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+  read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
+    "${CLUSTER_SETTINGS["$label"]:-}"
 done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
@@ -245,7 +248,7 @@ else
           continue
         fi
         groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
-        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE"
+        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}"
       else
         here=$((here + 1))
         label="$POOL_PROJECT/$location/$id"

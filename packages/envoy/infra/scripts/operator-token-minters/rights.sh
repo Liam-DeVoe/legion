@@ -107,7 +107,7 @@ CONTAINER_PERMISSIONS=(
   container.secrets.list container.namespaces.create container.serviceAccounts.create
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
-  container.certificateSigningRequests.approve
+  container.certificateSigningRequests.approve container.clusters.update
 )
 GSA_PERMISSIONS=(
   iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken iam.serviceAccounts.signJwt
@@ -129,7 +129,7 @@ MEMBER_PERMISSIONS=(container.namespaces.create container.serviceAccounts.create
   container.roles.escalate container.roleBindings.create container.roleBindings.update container.nodes.proxy
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
-  container.certificateSigningRequests.approve
+  container.certificateSigningRequests.approve container.clusters.update
   "${IAM_WRITE_PERMISSIONS[@]}")
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
