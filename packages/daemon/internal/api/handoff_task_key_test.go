@@ -16,46 +16,37 @@ import (
 // from 1, 0 for none) and its pass.
 type taskStanding struct {
 	task  string
-	state string
+	state record.TaskState
 	place int
 	pass  int
 }
 
-// seedTaskPlan gives key, at generation 1, an owner's plan whose tasks each run the steps
-// implementer and tester, and stands each task as its standing says, its pass on the task.
-func seedTaskPlan(t *testing.T, h *harness, key string, standings ...taskStanding) {
+// seedTaskPlan gives key, at generation 1, an owner's plan of one task, which runs the steps
+// implementer and tester, and stands it as s says, its pass on the task.
+func seedTaskPlan(t *testing.T, h *harness, key string, s taskStanding) {
 	t.Helper()
 	ctx, records := context.Background(), record.NewStore()
 	v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
 		GivenBy: "owner", GivenAt: time.Date(2026, 11, 17, 6, 0, 0, 0, time.UTC)}
-	var tasks []record.PlanTask
-	var steps []record.PlanStep
-	for _, s := range standings {
-		tasks = append(tasks, record.PlanTask{Issue: key, Generation: 1, Task: s.task, PlanVersion: 1, BlockText: "Task " + s.task + ".", State: record.TaskWaiting})
-		steps = append(steps,
-			record.PlanStep{Issue: key, Generation: 1, Task: s.task, Position: 1, Role: "implementer", Type: "implementation"},
-			record.PlanStep{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "testing"})
-	}
+	tasks := []record.PlanTask{{Issue: key, Generation: 1, Task: s.task, PlanVersion: 1, BlockText: "Task " + s.task + ".", State: record.TaskWaiting}}
+	steps := []record.PlanStep{
+		{Issue: key, Generation: 1, Task: s.task, Position: 1, Role: "implementer", Type: "implementation"},
+		{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "testing"}}
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}
-		for _, s := range standings {
-			if s.place > 0 {
-				if err := records.MoveTask(ctx, tx, key, 1, s.task, record.TaskPlace{Kind: record.PlaceStep, Position: s.place}, record.TaskRunning); err != nil {
-					return err
-				}
-			}
-			if s.state == record.TaskStopped {
-				if err := records.StopTask(ctx, tx, key, 1, s.task, "task "+s.task+" of "+key+" was stopped by its owner"); err != nil {
-					return err
-				}
-			}
-			if err := records.PutReturnCounts(ctx, tx, key, 1, s.task, record.ReturnCounts{Pass: s.pass}); err != nil {
+		if s.place > 0 {
+			if err := records.MoveTask(ctx, tx, key, 1, s.task, record.TaskPlace{Kind: record.PlaceStep, Position: s.place}, record.TaskRunning); err != nil {
 				return err
 			}
 		}
-		return nil
+		if s.state == record.TaskStopped {
+			if err := records.StopTask(ctx, tx, key, 1, s.task, "task "+s.task+" of "+key+" was stopped by its owner"); err != nil {
+				return err
+			}
+		}
+		return records.PutReturnCounts(ctx, tx, key, 1, s.task, record.ReturnCounts{Pass: s.pass})
 	}); err != nil {
 		t.Fatalf("seed the plan of %s: %v", key, err)
 	}
@@ -91,12 +82,12 @@ func holdForTheStop(t *testing.T, h *harness, key string) {
 	}
 }
 
-// The completion of an issue with plan rows names the issue's running task in its key, and its
-// pass is that task's count of returns, never the implementer's phases row's: a new task at pass 0
-// takes no key an earlier task of the issue used. The running task is the task whose state is
-// running, and the plan's only task while none runs (a stopped one, whose issue is held for the
-// stop). An issue with no plan rows keeps today's key byte for byte, its pass read from its
-// implementer's row (the control).
+// The completion of an issue with plan rows names the task of its plan in its key, and its pass is
+// that task's count of returns, never the implementer's phases row's: a new task at pass 0 takes no
+// key an earlier task of the issue used. The task is the plan's one task whatever its state
+// (record.StoredPlan.Task), a stopped one among them, whose issue is held for the stop. An issue
+// with no plan rows keeps today's key byte for byte, its pass read from its implementer's row (the
+// control).
 func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	for _, tc := range []struct {
@@ -127,19 +118,6 @@ func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 			want: func(record string) string { return "handoff:LEGION-210:1:1:1:tester:held:a:4:" + record + ":pass" },
 		},
 		{
-			// A plan of two tasks is one no plan of this release holds (plan.Supported refuses more
-			// than one), so this case holds runningTask's own rule, which reads every task, and no
-			// state production writes.
-			name:  "the running one of two tasks",
-			issue: "LEGION-211",
-			seed: func(t *testing.T) {
-				seedTaskPlan(t, h, "LEGION-211",
-					taskStanding{task: "a", state: record.TaskWaiting, pass: 7},
-					taskStanding{task: "b", state: record.TaskRunning, place: 2, pass: 1})
-			},
-			want: func(record string) string { return "handoff:LEGION-211:1:1:1:tester:testing:b:1:" + record + ":pass" },
-		},
-		{
 			name:  "control: no plan rows, today's key",
 			issue: "LEGION-209",
 			seed:  func(t *testing.T) { seedImplementerPass(t, h, "LEGION-209", 3) },
@@ -156,17 +134,5 @@ func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 				t.Fatalf("the completion keys of %s = %q, want [%q]", tc.issue, got, want)
 			}
 		})
-	}
-}
-
-// A plan of several tasks none of which runs names no task a completion could be of, so the route
-// reads no key for it: this release's plans hold one task, and the workflow walks no other.
-func TestAPlanOfSeveralTasksNoneRunningNamesNoTask(t *testing.T) {
-	stored := &record.StoredPlan{Version: record.PlanVersion{Issue: "LEGION-212", Generation: 1},
-		Tasks: []record.PlanTask{{Task: "a", State: record.TaskWaiting}, {Task: "b", State: record.TaskStopped}}}
-	task, err := runningTask(stored)
-	const want = "the plan of LEGION-212 at generation 1 holds 2 tasks and none of them runs, so no task is the one a completion is of"
-	if err == nil || err.Error() != want || task != "" {
-		t.Fatalf("runningTask = %q, %v; want no task and %q", task, err, want)
 	}
 }

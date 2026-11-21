@@ -30,7 +30,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
@@ -291,9 +290,7 @@ func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	addressing, err := daemon.AddressingFragment(project, c, repository, rigDefaultBranch, api.RepositoriesView{
-		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
-	})
+	addressing, err := daemon.AddressingFragment(project, c, repository, rigDefaultBranch, []string{rigOwner})
 	if err != nil {
 		return "", err
 	}

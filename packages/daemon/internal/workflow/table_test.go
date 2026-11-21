@@ -12,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict,
+	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward,
 }
 
 // testLines are the lines the table tests hold TableOf to: today's, which an issue with no plan
@@ -44,11 +44,6 @@ func todaysTable() []Row {
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Testing, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Reviewing, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Accepting, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Retro, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Merging, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 	}
 	for _, text := range phase.BackwardPairs() {
@@ -58,13 +53,14 @@ func todaysTable() []Row {
 	return rows
 }
 
-// An issue with no plan rows walks TableOf(phase.Order), so that table is today's, row for row and
-// in today's order: the same phases, trigger, target and effects, and a guard that answers every
-// snapshot as today's does (the one guard that reads anything reads the pull request).
-func TestTableOfTodaysOrderIsTodaysTable(t *testing.T) {
-	want, got := todaysTable(), TableOf(phase.Order)
+// An issue with no plan rows moves by the table its walk reads (todaysWalk, Walk.table), and that
+// table is today's, row for row and in today's order: the same phases, trigger, target and
+// effects, and a guard that answers every snapshot as today's does (the one guard that reads
+// anything reads the pull request).
+func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
+	want, got := todaysTable(), todaysWalk().table()
 	if len(got) != len(want) {
-		t.Fatalf("TableOf(phase.Order) has %d rows, want today's %d", len(got), len(want))
+		t.Fatalf("the table of a walk with no plan rows has %d rows, want today's %d", len(got), len(want))
 	}
 	snapshots := []Snapshot{{}, {HasOpenOrMergedPR: true}, {GateOpen: true}, {HasOpenOrMergedPR: true, GateOpen: true}}
 	for i := range want {
@@ -80,11 +76,6 @@ func TestTableOfTodaysOrderIsTodaysTable(t *testing.T) {
 				t.Fatalf("row %d (%s/%s) guards %+v %t, today's %t", i, g.From, g.Trigger, s, g.Guard(s), w.Guard(s))
 			}
 		}
-	}
-	if !slices.EqualFunc(Table, got, func(a, b Row) bool {
-		return a.From == b.From && a.Trigger == b.Trigger && a.To == b.To && slices.Equal(a.Effects, b.Effects)
-	}) {
-		t.Fatalf("Table is not TableOf(phase.Order): the walk of an issue with no plan rows reads Table")
 	}
 }
 
@@ -117,9 +108,9 @@ func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
 // For a line that keeps today's order (a subsequence of phase.Order) those are the pairs of
 // phase.BackwardPairs whose two phases it holds, in that list's order, so today's line holds them
 // all; for a line in another order they are its own pairs, later to earlier, whatever
-// phase.Order says of the two phases. Every row that moves an issue back by the line (the returns
-// and a conflict too) is one of those pairs, and the backward trigger carries them all: a worker
-// may ask for any move back the line allows.
+// phase.Order says of the two phases. Every row that moves an issue back by the line (a tester's
+// fail, a review's request for changes) is one of those pairs, and the backward trigger carries
+// them all: a worker may ask for any move back the line allows.
 func TestBackwardRowsOfEachLineAreItsOwnPairs(t *testing.T) {
 	for _, line := range testLines {
 		var want []string
@@ -188,9 +179,9 @@ func setOf(pairs []string) map[string]bool {
 // A line in another order than today's goes back by the line, not by phase.Order: the table of
 // `implementer reviewer tester` moves back from testing to reviewing, the review before it, and
 // holds no move back from reviewing to testing, which is its move on (review_approved). A planner
-// after the implementer moves on into retro, and goes back to implementing both on a backward
-// move and on a conflicting head. The control is the table of today's backward rows
-// (phase.BackwardPairs), which holds reviewing-testing and lacks testing-reviewing.
+// after the implementer moves on into retro, and goes back to implementing on a backward move.
+// The control is the table of today's backward rows (phase.BackwardPairs), which holds
+// reviewing-testing and lacks testing-reviewing.
 func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	rowsOf := func(line []phase.Phase, trigger TriggerKind) []string {
 		var pairs []string
@@ -220,9 +211,6 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	}
 	if !slices.Contains(rowsOf(plannerAfter, TriggerBackward), "planning-implementing") {
 		t.Fatalf("the table of %v has no backward row planning-implementing: %v", plannerAfter, rowsOf(plannerAfter, TriggerBackward))
-	}
-	if !slices.Contains(rowsOf(plannerAfter, TriggerConflict), "planning-implementing") {
-		t.Fatalf("the table of %v has no conflict row planning-implementing: %v", plannerAfter, rowsOf(plannerAfter, TriggerConflict))
 	}
 }
 
@@ -307,9 +295,6 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 		return in(phase.Testing)
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return in(phase.Reviewing)
-	case TriggerConflict:
-		at, implementing := slices.Index(line, from), slices.Index(line, phase.Implementing)
-		return at >= 0 && implementing >= 0 && at > implementing
 	case TriggerRetroCompleted:
 		return in(phase.Retro)
 	case TriggerPullRequestMerged:
@@ -330,7 +315,7 @@ func wantTarget(line []phase.Phase, from phase.Phase, trigger TriggerKind) (phas
 	switch trigger {
 	case TriggerGateOpened:
 		return line[0], true
-	case TriggerTesterFailed, TriggerReviewRejected, TriggerConflict:
+	case TriggerTesterFailed, TriggerReviewRejected:
 		return phase.Implementing, true
 	case TriggerPullRequestMerged:
 		return phase.Done, true

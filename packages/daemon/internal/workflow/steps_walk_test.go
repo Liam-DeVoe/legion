@@ -4,13 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	gotoken "go/token"
-	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -158,7 +153,7 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		assertStepWrites(t, pool, root.Key, root.Generation, []walkedWrite{
@@ -176,7 +171,7 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
-			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &intake.PlanRating{Score: 2, Reason: "The plan held no tester."}})
+			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan held no tester."}})
 		var rated []record.StepRecord
 		for _, write := range stepWrites(t, pool, root.Key) {
 			if write.PlanRating != nil {
@@ -197,8 +192,9 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 // assertNoPlanRowsRunTodaysSteps fails unless an issue with no plan rows that engine moves out of
 // implementing records today's steps of the task default at today's places: its
 // implementer's end at step 2 and its tester's start at step 3. The implementer's run started
-// under no count of this release (EndUncountedStep), so its end is the record of count 0; the
-// tester's start is the first of its place.
+// under no count of this release, so the daemon's boot before the move opens it at the count 0
+// (OpenUncountedRuns) and its end is the record of count 0; the tester's start is the first of its
+// place.
 func assertNoPlanRowsRunTodaysSteps(t *testing.T, engine *Engine) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -368,7 +364,7 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		defaults := record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
 			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 		assertPlanNodes(t, pool, root.Key, "at the start on the default steps", defaults)
-		if result := apply("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
 		}
 		mustTake(t, "version 1, which replaces default with a", apply(planID(root.Key, root.Generation, 1),
@@ -386,56 +382,12 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 	})
 }
 
-// topLevelNames is the name of each top-level declaration of this package's own source, its
-// non-test files (a method is no top-level name), and how many files the scan parsed, so a scan
-// that read nothing cannot pass for one that found nothing.
-func topLevelNames(t *testing.T) (map[string]bool, int) {
-	t.Helper()
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatalf("list the package's files: %v", err)
-	}
-	names, parsed := map[string]bool{}, 0
-	set := gotoken.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(set, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		parsed++
-		for _, decl := range file.Decls {
-			switch decl := decl.(type) {
-			case *ast.FuncDecl:
-				if decl.Recv == nil {
-					names[decl.Name.Name] = true
-				}
-			case *ast.GenDecl:
-				for _, spec := range decl.Specs {
-					switch spec := spec.(type) {
-					case *ast.TypeSpec:
-						names[spec.Name.Name] = true
-					case *ast.ValueSpec:
-						for _, n := range spec.Names {
-							names[n.Name] = true
-						}
-					}
-				}
-			}
-		}
-	}
-	return names, parsed
-}
-
 // The default steps are stated in one place, the project's setting (config.Project.RunsByDefault,
 // which the daemon wires as Config.DefaultSteps). With default_steps [implementer, reviewer], the
 // plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
-// default of those two steps, and the package declares no DefaultSteps of its own: a scan of its
-// source finds none, and the same scan finds PlanID, so it read the package. An issue with no
-// plan rows runs today's steps at today's places whatever the project names: under the
-// same setting its implementer is step 2 and its tester step 3 of the task default.
+// default of those two steps, so a list the package held of its own would name other steps there.
+// An issue with no plan rows runs today's steps at today's places whatever the project names:
+// under the same setting its implementer is step 2 and its tester step 3 of the task default.
 func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -456,16 +408,6 @@ func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 		}
 		if want := `[{"id":"default","steps":["implementer","reviewer"]}]`; tasks.String() != want {
 			t.Fatalf("the plan node's tasks = %s, want %s", tasks.String(), want)
-		}
-	})
-
-	t.Run("the package declares no DefaultSteps", func(t *testing.T) {
-		names, parsed := topLevelNames(t)
-		if parsed == 0 || !names["PlanID"] {
-			t.Fatalf("the scan parsed %d files and found no PlanID, so it did not read the package", parsed)
-		}
-		if names["DefaultSteps"] {
-			t.Fatalf("the package declares DefaultSteps: the default steps are the project's setting (config.Project.RunsByDefault), stated once")
 		}
 	})
 

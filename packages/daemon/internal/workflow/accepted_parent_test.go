@@ -26,8 +26,8 @@ func seedBeneath(t *testing.T, pool *pgxpool.Pool, key, tree, parent string, at 
 // signOffNow applies the architect's sign_off of key and answers what the daemon made of it.
 func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result {
 	t.Helper()
-	result, err := intake.ApplyFact(context.Background(), pool, "api", id, intake.SignOff{Issue: key},
-		testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	result, err := intake.ApplyFact(context.Background(), pool, "api", id, rootsSignOff(t, pool, engine, key), engine, admissionStub{})
 	if err != nil {
 		t.Fatalf("apply %s: %v", id, err)
 	}

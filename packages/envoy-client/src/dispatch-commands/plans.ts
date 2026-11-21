@@ -1,4 +1,5 @@
 import type { FinishedIssue, PlanRating, PlanRecord } from "@legion/contracts";
+import { LEGION_PLAN_RATING_MOST } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 import { optionalString, stringArg } from "./context";
 
@@ -25,12 +26,12 @@ function oneLineJson(text: string): string {
   );
 }
 
-/** Each retro's rating with its reason, in the order the retros ran. The reason is a JSON string
- *  with no line break in it, so a quotation mark or a line break of any kind in the reason keeps
- *  the issue on one line. */
+/** Each retro's rating out of the most of the contract's scale (`LEGION_PLAN_RATING_MOST`) with its
+ *  reason, in the order the retros ran. The reason is a JSON string with no line break in it, so a
+ *  quotation mark or a line break of any kind in the reason keeps the issue on one line. */
 function ratingsText(ratings: readonly PlanRating[] | null): string {
   if (ratings === null || ratings.length === 0) return "ratings none";
-  return `ratings ${ratings.map((rating) => `${rating.rating}/5 ${oneLineJson(rating.reason)}`).join(", ")}`;
+  return `ratings ${ratings.map((rating) => `${rating.rating}/${LEGION_PLAN_RATING_MOST} ${oneLineJson(rating.reason)}`).join(", ")}`;
 }
 
 /** The issue's time in whole hours and the minutes left, rounded down, or `-` where Dispatch counts
@@ -63,8 +64,6 @@ export async function plansCommand(context: CommandContext): Promise<DispatchToo
     since: optionalString(args, "since"),
     until: optionalString(args, "until"),
   });
-  // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same, here
-  // and in each part of an issue's line.
   const issues = read.issues ?? [];
   return {
     text: [`${read.project}: ${issues.length} finished issues`, ...issues.map(issueLine)].join(

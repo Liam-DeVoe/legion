@@ -28,16 +28,11 @@ if [ "$#" -ne 1 ] || ! [[ $1 =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
   exit 2
 fi
 issue=$1
-unknown() {
-  echo "UNKNOWN: $*"
-  exit 2
-}
-command -v dispatch >/dev/null || unknown "no dispatch command is on PATH, so nothing was read"
-
-code=0
-out=$(dispatch steps --issue "$issue" 2>&1) || code=$?
-[ "$code" -eq 0 ] || unknown "dispatch steps --issue $issue exited $code, so nothing was read: $out"
-printf '%s\n' "$out"
+case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-read.sh
+. "$here/lib/dispatch-read.sh"
+read_require_dispatch
+read_dispatch steps --issue "$issue"
 
 # Each line after the header is one run, as `dispatch steps` prints it:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
@@ -72,4 +67,4 @@ awk -v issue="$issue" '
     if (count) exit 1
     print "PASS: " issue ": " runs " records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model"
   }
-' <<<"$out"
+' <<<"$read_out"

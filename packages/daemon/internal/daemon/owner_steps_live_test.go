@@ -44,9 +44,6 @@ import (
 // are the implementer and then the reviewer.
 var ownerStepsPlan = []string{"implementer", "reviewer"}
 
-// ownerStepsDefault is the project's default steps, which the driver's project names none of.
-var ownerStepsDefault = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
-
 // ownerStepsAnyOrder is the plan the owner of the driver's fifth issue gives: one task a whose
 // tester runs after its reviewer, in another order than the default steps'.
 var ownerStepsAnyOrder = []string{"implementer", "reviewer", "tester"}

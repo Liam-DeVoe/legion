@@ -230,7 +230,7 @@ func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
 		walked.key).Scan(&state, &pass, &rounds, &moves); err != nil {
 		t.Fatalf("read the task a of %s: %v", walked.key, err)
 	}
-	if state != record.TaskDone || pass != 1 || rounds != 1 || moves != `{"reviewing-implementing": 1}` {
+	if state != string(record.TaskDone) || pass != 1 || rounds != 1 || moves != `{"reviewing-implementing": 1}` {
 		t.Fatalf("%s's task a is %s with pass %d, rounds %d and the moves back %s at done, want done with the 1, 1 and %s the release before left",
 			walked.key, state, pass, rounds, moves, `{"reviewing-implementing": 1}`)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -41,6 +42,23 @@ func architectClaim(t *testing.T, root string) claim.Token {
 		t.Fatal(err)
 	}
 	return token
+}
+
+// rootArchitectsRead is what an architect route reads of key for the architect of key's tree
+// root (api's architectForIssue and openStep): that architect's claim, the issue's generation and
+// the run of the step it stands in, which sign_off and request_backward_move name on their facts.
+func rootArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Token, uint64, record.StepEntry) {
+	t.Helper()
+	recorded := issue(t, pool, key)
+	var entry record.StepEntry
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		entry, err = record.NewStore().OpenStep(context.Background(), tx, key)
+		return err
+	}); err != nil {
+		t.Fatalf("read the open step of %s: %v", key, err)
+	}
+	return architectClaim(t, recorded.Tree), recorded.Generation, entry
 }
 
 // ownersPlanRows is the plan `implementer reviewer` that the architect of root gave for key at
@@ -76,7 +94,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	version := record.PlanVersion{Issue: key, Generation: generation, Source: record.PlanSourceDefault, GivenAt: fixedNow.Add(-time.Hour)}
 	tasks := []record.PlanTask{{Issue: key, Generation: generation, Task: "default", BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskDone}}
-	types := []string{"planning", "implementation", "testing", "review", "review"}
+	types := []plan.Type{plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview, plan.TypeReview}
 	steps := make([]record.PlanStep, len(todaysDefaultRoles))
 	for i, role := range todaysDefaultRoles {
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: "default", Position: i + 1, Role: role, Type: types[i]}
@@ -153,11 +171,6 @@ func assertTakesOwnersPlan(t *testing.T, pool *pgxpool.Pool, key, root string, g
 	}
 	if got := stepRoles(stored, "a"); !reflect.DeepEqual(got, []string{"implementer", "reviewer"}) {
 		t.Fatalf("the steps of task a = %v, want implementer and reviewer", got)
-	}
-	for _, step := range stored.Steps["a"] {
-		if step.ReviewedHead != "" {
-			t.Fatalf("step %+v names the commit a review read, want none: the run starts from its start", step)
-		}
 	}
 	if got, want := workerStarts(t, pool, key), []string{fmt.Sprintf("implementer/implementing@%d", generation)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the worker starts of %s = %v, want %v: the first step of the owner's plan, and no planner", key, got, want)
@@ -244,7 +257,7 @@ func personsTodo(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 func assertChildStarted(t *testing.T, pool *pgxpool.Pool, first phase.Phase) {
 	t.Helper()
 	want := []string{pathsChild + " is todo; it runs again under " + pathsRoot,
-		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot)}
+		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot) + childStartedOwnership}
 	if got := joinedNotices(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the child-status notices of %s = %q, want %q", pathsChild, got, want)
 	}

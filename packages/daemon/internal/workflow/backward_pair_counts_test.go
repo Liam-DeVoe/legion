@@ -77,6 +77,7 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 	standsIn(t, pool, phase.Reviewing, "needs_review")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
 		HandoffCommit: "review-" + round})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	applyRefusingNothing(t, pool, engine, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
 		State: "changes_requested", CommitID: head, HeadSHA: head, Author: testReviewApp,
 		Body: reviewBody("the round "+round+" findings", head)})
@@ -87,8 +88,7 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 func architectMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, to phase.Phase) {
 	t.Helper()
 	standsIn(t, pool, phase.Accepting, "needs_review")
-	applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: "LEGION-208",
-		Requester: claim.RoleArchitect, To: to, Reason: "the work does not stand"})
+	applyRefusingNothing(t, pool, engine, rootsMoveBack(t, pool, engine, "LEGION-208", to, "the work does not stand"))
 }
 
 // mergerMovesBack is the merger's own move of the issue out of merging, the one phase it holds,
@@ -102,15 +102,19 @@ func mergerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		Reason: "the head GitHub shows is not the head this merger read"})
 }
 
-// marksConflicting is the daemon's read of GitHub that judges head, the pull request's own
-// recorded head, conflicting with its base: the mark a conflict round is read against
-// (classify.ConflictRound). It is applied while the issue stands in implementing, the one phase
-// with no row for the conflict trigger, so it records the judgement and moves nothing
-// (workflow's mergeability).
+// marksConflicting is the daemon's two reads of GitHub, a minute apart, that judge head, the pull
+// request's own recorded head, conflicting with its base: the confirmed conflict a conflict round
+// is read against (record.PullRequest.ConflictingHead, classify.ConflictRound). The reads carry a
+// base that requires no check and is not strict, and the issue stands short of accepting, so the
+// conflict is recorded and nothing is asked or moved (workflow's mergeability,
+// classify.ConflictNeedsMerge).
 func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head string) {
 	t.Helper()
-	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-		Base: "main", HeadSHA: head, Mergeable: record.MergeabilityConflicting})
+	read := intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: head,
+		Mergeable: record.MergeabilityConflicting, Rules: &record.BaseRules{}}
+	applyRefusingNothing(t, pool, engine, read)
+	read.ReadAt = engine.now().Add(conflictConfirmWait)
+	applyRefusingNothing(t, pool, engine, read)
 }
 
 // Every move back is counted under its own "<from>-<to>" pair, and the pass the daemon has always
@@ -128,7 +132,7 @@ func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head str
 // The fifth move is made while the daemon's record holds the head conflicting with its base. It
 // raises no pair at all: nobody sent the work back, so the move is of no kind a hook or an
 // operator counts (recordPass). The pass rises on all five, because a phase completion's key is
-// built from it (record.PhaseRow.Pass, api/handoff.go's handoffPosition) and two passes through
+// built from it (record.PhaseRow.Pass, api's handoffPosition) and two passes through
 // one phase that carried the same number would collide.
 //
 // The review rounds review_round_cap bounds are counted apart from the pairs, and only a review
@@ -200,12 +204,12 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 
 // taskCounts is the counts of the returns of key's task a at generation, as recordPass keeps them
 // on its plan_tasks row (record.Store.ReturnCounts).
-func taskCounts(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) record.ReturnCounts {
+func taskCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64) record.ReturnCounts {
 	t.Helper()
 	var counts record.ReturnCounts
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		counts, err = record.NewStore().ReturnCounts(ctx, tx, key, generation, "a")
+		counts, err = engine.store.ReturnCounts(ctx, tx, key, generation, "a")
 		return err
 	})
 	return counts
@@ -233,16 +237,16 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
-	if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
+	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
 		t.Fatalf("after the approval of reviewing into testing the task counts %+v, want nothing: the approval moves it on", counts)
 	}
 	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
-	if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1}) {
+	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1}) {
 		t.Fatalf("after the tester's move back to reviewing the task counts %+v, want pass 1 and testing-reviewing 1", counts)
 	}
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
-	if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 2 ||
+	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 2 ||
 		!maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1, "testing-implementing": 1}) {
 		t.Fatalf("after the tester's fail the task counts %+v, want pass 2, testing-reviewing 1 and testing-implementing 1", counts)
 	}

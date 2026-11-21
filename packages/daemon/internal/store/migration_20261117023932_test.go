@@ -3,13 +3,15 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // planRecordKindVersion is the version of the migration this file tests, so the test can migrate
-// through everything before it whatever lands beside it.
+// through everything before it whatever lands beside it. Its header also carries the way back of
+// the release that rates each plan, which plan_ratings_way_back_test.go runs.
 const planRecordKindVersion = 20261117023932
 
 // A plan record is the row that writes the plan one run of an issue carries out onto Dispatch
@@ -51,13 +53,7 @@ func TestTheOutboxCheckTakesThePlanRecord(t *testing.T) {
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the plan record's kind: %v", err)
 	}
-	for _, kind := range []string{
-		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
-		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
-		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
-	} {
+	for _, kind := range append(slices.Clone(stepRecordReleaseKinds), "plan_record") {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}

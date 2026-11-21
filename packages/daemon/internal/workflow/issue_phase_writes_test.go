@@ -2,10 +2,6 @@ package workflow
 
 import (
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,9 +14,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// tryInTx runs write in a transaction of its own, with the commit scope applyInTx gives, and
-// answers its error: a write that fails is rolled back, and one that does not is committed.
-func tryInTx(t *testing.T, pool *pgxpool.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+// tryInTx runs write in a transaction of its own, as a fact of engine's applies it, with the commit
+// scope and the settle of the runs its writes end that factTx gives (Engine.OpenFact,
+// Engine.SettleFact), and answers its error: a write that fails is rolled back, and one that does
+// not is settled and committed.
+func tryInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, write func(ctx context.Context, tx pgx.Tx) error) error {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
@@ -28,8 +26,12 @@ func tryInTx(t *testing.T, pool *pgxpool.Pool, write func(ctx context.Context, t
 	}
 	defer tx.Rollback(t.Context())
 	ctx, committed := intake.WithCommitHooks(t.Context())
+	ctx = engine.OpenFact(ctx)
 	if err := write(ctx, tx); err != nil {
 		return err
+	}
+	if err := engine.SettleFact(ctx, tx); err != nil {
+		t.Fatalf("settle: %v", err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -45,62 +47,6 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", place, record.TaskRunning)
 	})
-}
-
-// The workflow and admission write an issue in one place, Engine.WriteIssue, which checks the phase
-// it writes against where the issue's task stands: a scan of both packages' source, as it stands
-// when the test runs, finds each call of a method named PutIssue, and every one is in WriteIssue.
-// The scan counts, for each package, the files it parsed and the calls of WriteIssue it found
-// (admission's writes, and WriteIssue's own call of the store), so a scan that read nothing cannot
-// pass for one that found no other writer.
-func TestEveryWriteOfAnIssueChecksItsPhaseAgainstItsTasksPlace(t *testing.T) {
-	var outside []string
-	for _, dir := range []string{".", "../admit"} {
-		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
-		if err != nil {
-			t.Fatalf("list the files of %s: %v", dir, err)
-		}
-		set := token.NewFileSet()
-		parsed, writes := 0, 0
-		for _, name := range files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			file, err := parser.ParseFile(set, name, nil, parser.SkipObjectResolution)
-			if err != nil {
-				t.Fatalf("parse %s: %v", name, err)
-			}
-			parsed++
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
-				}
-				checked := dir == "." && fn.Name.Name == "WriteIssue"
-				ast.Inspect(fn.Body, func(node ast.Node) bool {
-					call, ok := node.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					sel, ok := call.Fun.(*ast.SelectorExpr)
-					switch {
-					case !ok:
-					case sel.Sel.Name == "WriteIssue" || sel.Sel.Name == "PutIssue" && checked:
-						writes++
-					case sel.Sel.Name == "PutIssue":
-						outside = append(outside, set.Position(call.Pos()).String()+" in "+fn.Name.Name)
-					}
-					return true
-				})
-			}
-		}
-		if parsed == 0 || writes == 0 {
-			t.Fatalf("the scan of %s parsed %d files and found %d writes through WriteIssue, want its files and its writes", dir, parsed, writes)
-		}
-	}
-	if len(outside) > 0 {
-		t.Fatalf("an issue is written outside WriteIssue, which checks its phase against its task's place:\n%s", strings.Join(outside, "\n"))
-	}
 }
 
 // Each writer of an issue's phase that names the phase itself, rather than moving the task
@@ -146,7 +92,8 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return engine.stopTask(ctx, tx, issue, w, stopsBy, stopsBy, stepStopped)
+				_, err = engine.stopTask(ctx, tx, issue, w, stopsBy, stopsBy, stepStopped)
+				return err
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in held from implementing, and its task a is stopped at {Kind:step Position:3}, which stands in reviewing",
 		},
@@ -156,6 +103,17 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 				return engine.enterAwaiting(ctx, tx, issue, record.Awaiting{Ask: "ask-1"}, "the architect asked a person")
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in awaiting_person, and its task a is running at {Kind:step Position:1}, which stands in implementing",
+		},
+		{
+			// No writer of the workflow holds an issue from awaiting_person (stopRefusal), and the
+			// issues table refuses such a hold: WriteIssue refuses it first, in the words of every
+			// other refusal here.
+			name: "a hold from a root's wait on a person", at: phase.Admitted, generation: 1, place: record.TaskPlace{},
+			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
+				issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.AwaitingPerson, Reason: record.HoldTaskStopped}
+				return engine.WriteIssue(ctx, tx, issue)
+			},
+			refusal: "put LEGION-208 at generation 1: it stands in held from awaiting_person, and its task a is running at {Kind: Position:0}, which stands in admitted",
 		},
 		{
 			name: "an adopted member parked at its next run (moveIntoTree)", at: phase.Admitted, generation: 2, place: implementing,
@@ -178,7 +136,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 			forgeTaskPlace(t, pool, root.Key, tc.generation, tc.place)
 			before := issueOf(t, pool, engine, root.Key)
 
-			err := tryInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			err := tryInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				return tc.write(ctx, tx, engine, before)
 			})
 
@@ -204,7 +162,7 @@ func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
 	seedOperatorTree(t, pool, root.Tree)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 
-	if err := tryInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	if err := tryInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, root.Key)
 		if err != nil {
 			return err

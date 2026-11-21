@@ -37,7 +37,7 @@ func signsOff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) inta
 // lastStartOf is the newest start of role in key's outbox, failing where there is none.
 func lastStartOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) record.SuperviseRequest {
 	t.Helper()
-	starts := startsOf(t, pool, key, role)
+	starts := roleStartsOf(t, pool, key, role)
 	if len(starts) == 0 {
 		t.Fatalf("%s's outbox holds no start of the %s", key, role)
 	}

@@ -1,12 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import goUnicodeIsSpace from "../fixtures/go-unicode-isspace.json";
 import { goBlankPattern } from "./go-blank";
-
-/** The committed list of the scalars Go's `unicode.IsSpace` reports. */
-const goUnicodeIsSpace = JSON.parse(
-  readFileSync(path.join(import.meta.dir, "..", "fixtures", "go-unicode-isspace.json"), "utf8")
-) as { readonly scalars: readonly string[] };
 
 describe("goBlankPattern", () => {
   // The pattern writes Go's `unicode.IsSpace` set out, and the rows of its readers pin the two
