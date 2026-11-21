@@ -227,8 +227,10 @@ func TestClusteredNatsHubPinsTheRoutesPingBesideACallout(t *testing.T) {
 // TestClusteredNatsHubHashesTheRenderedCalloutBlock: the pods' roll annotation is the SHA-256 of
 // the callout's lines exactly as the hub's auth.conf holds them: the auth_callout block cut from
 // the rendered text (what follows the users' closing "  ]" line, up to the authorization block's
-// own "}" line), then the ping lines that end it. So the hash cannot drift from what the servers
-// read. For each hub shape it changes, the callout's own, another xkey and an added user.
+// own "}" line), then the ping lines and, beside privateProjects, the server tag's lines
+// (TestClusteredNatsHubRollsThePodsForACalloutChange), which end it. So the hash cannot drift from
+// what the servers read. For each hub shape it changes, the callout's own, another xkey and an
+// added user.
 //
 // Control: make core's Render write its own block and CalloutLines leave out the last user's key;
 // every row fails.

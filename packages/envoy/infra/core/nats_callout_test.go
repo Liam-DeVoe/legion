@@ -90,7 +90,8 @@ func renderedCalloutBlock(t *testing.T, text string) string {
 
 // CalloutLines is every line Render writes for the callout, which a component that reloads its
 // servers rolls them on: the auth_callout block exactly as Render writes it inside the
-// authorization block, then the ping lines that end the text. It is empty without a callout.
+// authorization block, then the ping lines and, beside privateProjects, the server tag's lines
+// (TestAPrivateHubCarriesTheServerTag), which end the text. It is empty without a callout.
 //
 // Control: make CalloutLines return the auth_callout block alone; the CutSuffix row fails, and
 // gcp's TestClusteredNatsHubRollsThePodsForACalloutChange fails on the digest.
