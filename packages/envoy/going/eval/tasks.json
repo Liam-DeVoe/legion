@@ -163,7 +163,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "DEMO-29, Notifications: digest sends twice on Mondays, is that issue, and it is done."
+        "DEMO-29, Notifications: digest sends twice on Mondays, is that issue, and it is in progress."
       ],
       "links": ["DEMO-29"]
     }
@@ -649,8 +649,8 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "DEMO-29, the digest that sent twice on Mondays, is done; it closed on 2026-11-17.",
-        "Eli was its assignee."
+        "DEMO-29, the digest that sends twice on Mondays, is not closed: it is in progress at P1.",
+        "Eli is its assignee."
       ],
       "links": ["DEMO-29"]
     }
@@ -904,7 +904,7 @@
     "mode": "ask",
     "level": "standard",
     "grade": {
-      "facts": ["The chart has one bar for each ISO week from 2026-W40 to 2026-W47."],
+      "facts": ["The chart has one bar for each ISO week from 2026-W40 to 2026-W46."],
       "chart": {
         "from": "issues",
         "where": { "project": "DEMO", "status": ["done"] },
@@ -915,9 +915,8 @@
           { "label": "2026-W42", "count": 1 },
           { "label": "2026-W43", "count": 2 },
           { "label": "2026-W44", "count": 2 },
-          { "label": "2026-W45", "count": 2 },
-          { "label": "2026-W46", "count": 2 },
-          { "label": "2026-W47", "count": 1 }
+          { "label": "2026-W45", "count": 1 },
+          { "label": "2026-W46", "count": 2 }
         ]
       }
     }
@@ -940,9 +939,9 @@
         "rows": [
           { "label": "ana@example.com", "count": 2 },
           { "label": "ben@example.com", "count": 2 },
-          { "label": "chen@example.com", "count": 4 },
+          { "label": "chen@example.com", "count": 5 },
           { "label": "dana@example.com", "count": 2 },
-          { "label": "eli@example.com", "count": 1 },
+          { "label": "eli@example.com", "count": 2 },
           { "label": "femi@example.com", "count": 3 },
           { "label": "none", "count": 14 }
         ]
@@ -988,8 +987,8 @@
         "where": { "project": "DEMO", "open": true, "labels": ["bug"] },
         "group_by": "priority",
         "rows": [
-          { "label": "P1", "count": 5 },
-          { "label": "P2", "count": 2 },
+          { "label": "P1", "count": 6 },
+          { "label": "P2", "count": 3 },
           { "label": "P3", "count": 1 }
         ]
       }
@@ -1066,7 +1065,7 @@
         "from": "issues",
         "where": { "open": true },
         "group_by": "project",
-        "rows": [{ "label": "DEMO", "count": 28 }, { "label": "OPS", "count": 21 }]
+        "rows": [{ "label": "DEMO", "count": 30 }, { "label": "OPS", "count": 21 }]
       }
     }
   },
@@ -1087,8 +1086,8 @@
         "group_by": "priority",
         "rows": [
           { "label": "P0", "count": 1 },
-          { "label": "P1", "count": 14 },
-          { "label": "P2", "count": 21 },
+          { "label": "P1", "count": 15 },
+          { "label": "P2", "count": 22 },
           { "label": "P3", "count": 7 },
           { "label": "none", "count": 6 }
         ]
@@ -1109,7 +1108,7 @@
         "where": { "status": ["in_progress"] },
         "group_by": "claim",
         "rows": [
-          { "label": "none", "count": 9 },
+          { "label": "none", "count": 10 },
           { "label": "session-impl-01", "count": 1 },
           { "label": "session-impl-02", "count": 1 },
           { "label": "session-impl-03", "count": 1 },
@@ -1169,9 +1168,8 @@
         "rows": [
           { "label": "ana@example.com", "count": 2 },
           { "label": "ben@example.com", "count": 4 },
-          { "label": "chen@example.com", "count": 1 },
           { "label": "dana@example.com", "count": 2 },
-          { "label": "eli@example.com", "count": 3 },
+          { "label": "eli@example.com", "count": 2 },
           { "label": "femi@example.com", "count": 2 }
         ]
       }
@@ -1289,7 +1287,7 @@
         "from": "issues",
         "where": { "open": true, "priorities": [0, 1] },
         "group_by": "project",
-        "rows": [{ "label": "DEMO", "count": 9 }, { "label": "OPS", "count": 6 }]
+        "rows": [{ "label": "DEMO", "count": 10 }, { "label": "OPS", "count": 6 }]
       }
     }
   },
@@ -1325,11 +1323,11 @@
         "group_by": "status",
         "rows": [
           { "label": "backlog", "count": 10 },
-          { "label": "done", "count": 24 },
-          { "label": "in_progress", "count": 14 },
+          { "label": "done", "count": 22 },
+          { "label": "in_progress", "count": 15 },
           { "label": "needs_review", "count": 3 },
           { "label": "testing", "count": 3 },
-          { "label": "todo", "count": 14 },
+          { "label": "todo", "count": 15 },
           { "label": "triage", "count": 5 }
         ]
       }

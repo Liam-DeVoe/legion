@@ -376,12 +376,11 @@
     {
       "key": "DEMO-29",
       "title": "Notifications: digest sends twice on Mondays",
-      "status": "done",
+      "status": "in_progress",
       "priority": 1,
       "labels": ["notifications", "bug"],
       "assignee": "eli@example.com",
-      "created_at": "2026-11-09T09:00:00Z",
-      "closed_at": "2026-11-17T09:00:00Z"
+      "created_at": "2026-11-09T09:00:00Z"
     },
     {
       "key": "DEMO-30",
@@ -476,12 +475,11 @@
     {
       "key": "DEMO-40",
       "title": "Login: remember me is ignored",
-      "status": "done",
+      "status": "todo",
       "priority": 2,
       "labels": ["auth", "bug"],
       "assignee": "chen@example.com",
-      "created_at": "2026-10-14T09:00:00Z",
-      "closed_at": "2026-11-05T11:00:00Z"
+      "created_at": "2026-10-14T09:00:00Z"
     },
     {
       "key": "DEMO-41",
