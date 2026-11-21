@@ -203,6 +203,13 @@ func ValidProjects(projects []string) error {
 // the empty string for none. ParseProjects reads it back to the same list.
 func JoinProjects(projects []string) string { return strings.Join(projects, " ") }
 
+// NotHeldUntilPassed is Introspection.NotHeldUntil for a person whose not-held answer the broker's
+// hold gate judged past its deadline: Unix second 1, which every reader's clock is past, so each
+// refuses the token as a deadline passed. The gate judges the deadline by its own clock, or as
+// passed whatever its clock says when it equals Dispatch's as_of (Dispatch's unavailable answer),
+// so the deadline itself could still lie ahead of a reader whose clock is behind.
+const NotHeldUntilPassed int64 = 1
+
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the
 // broker's introspection route serialises and a resource server reads a presented token back
 // through (internal/ciphertoken). The broker's tokens are opaque, so everything here comes from
@@ -263,8 +270,10 @@ type Introspection struct {
 	// Dispatch put on that answer (its not_held_until), which the broker's hold gate serves until
 	// and not at (hold.Gate.CheckUntil). The broker's introspection writes it beside a not-held
 	// answer that has one; Dispatch and the Envoy listener keep the answer no later than it
-	// (ciphertoken.Caller.NotHeldUntil), and refuse the token as unavailable once it has passed. It
-	// is 0, and absent, for a held answer, a token naming no person, and every answer outside IAP.
+	// (ciphertoken.Caller.NotHeldUntil), and refuse the token as unavailable once it has passed. A
+	// not-held answer the gate judged past its deadline is written NotHeldUntilPassed, 1, a moment
+	// every reader's clock is past. It is 0, and absent, for a held answer, a token naming no
+	// person, and every answer outside IAP.
 	NotHeldUntil int64 `json:"not_held_until,omitempty"`
 	// CredentialCreatedAt is when the credential behind a token naming a person was made, as Unix
 	// seconds from the broker database's own clock: the person's sign-in on a machine, or the

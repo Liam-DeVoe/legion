@@ -125,23 +125,16 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	return p.withHold(ctx, answer, session)
 }
 
-// passedDeadline is the not_held_until withHold answers for a person whose not-held answer the gate
-// judged past its deadline (hold.ErrDeadlinePassed): Unix second 1, which every reader's clock is
-// past. The gate judges the deadline by its own clock, or as passed whatever its clock says when it
-// equals Dispatch's as_of, so the deadline itself could still lie ahead of a reader whose clock is
-// behind, and that reader would serve the person until it.
-const passedDeadline int64 = 1
-
 // withHold is answer with Held set when Dispatch holds the person it names, its person or, for a
 // machine login's own token, which names none, the login's operator (session's extraOperator), and
 // with NotHeldUntil set to the deadline the gate serves a person it does not hold until, in Unix
 // seconds rounded down so no reader keeps the answer later than the gate serves it. A person whose
 // not-held answer has passed its deadline is answered active and not held, with NotHeldUntil
-// passedDeadline, so every reader refuses the token as a deadline passed, as it refuses one whose
-// kept answer lapsed: Dispatch and the Envoy listener 503 BROKER_UNAVAILABLE with Retry-After: 60,
-// and the NATS auth service under deadline_passed. Every other case the gate cannot tell
-// (hold.ErrUncheckable, tested after a passed deadline and before a hold, so a held answer it could
-// not keep is no answer either) is *HoldUncheckableError.
+// oauthwire.NotHeldUntilPassed, so every reader refuses the token as a deadline passed, as it
+// refuses one whose kept answer lapsed: Dispatch and the Envoy listener 503 BROKER_UNAVAILABLE
+// with Retry-After: 60, and the NATS auth service under deadline_passed. Every other case the gate
+// cannot tell (hold.ErrUncheckable, tested after a passed deadline and before a hold, so a held
+// answer it could not keep is no answer either) is *HoldUncheckableError.
 func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection, session *oauthstore.ExchangeSession) (oauthwire.Introspection, error) {
 	person := answer.Person
 	if person == "" {
@@ -157,7 +150,7 @@ func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection,
 			answer.NotHeldUntil = until.Unix()
 		}
 	case errors.Is(err, hold.ErrDeadlinePassed) && !errors.Is(err, hold.ErrHeld):
-		answer.NotHeldUntil = passedDeadline
+		answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
 	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
 		return oauthwire.Introspection{}, &HoldUncheckableError{Person: person, Err: err}
 	default:
