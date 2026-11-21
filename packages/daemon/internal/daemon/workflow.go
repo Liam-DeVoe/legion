@@ -1464,8 +1464,10 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
-// (outboxWake).
+// (queueMergeStateFollow). The outbox's hold is `gates.hold` as the configuration resolves it
+// (config.Gates.Holds), the engine's own (engineConfig), which its fence of every start of a
+// phase worker reads (startWaitsForTheHold). All are set before the records' wake can reach the
+// outbox (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1474,6 +1476,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.hold = supervision.cfg.Gates.Holds()
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)

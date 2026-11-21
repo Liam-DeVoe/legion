@@ -86,10 +86,11 @@ const (
 	// IdleHoldNoPod, whose name says there is no pod.
 	IdleHoldNoLiveClaim
 
-	// The nine holds below are the second rule's, the release of a pod no claim owns
-	// (UnownedPodRelease). Every one of their names carries the unowned_ prefix because a hold
-	// record holds the hold's name and nothing else, and a reader of one must be able to tell
-	// which of the two rules kept the pod.
+	// The ten holds below are the second rule's, the release of a pod no claim owns
+	// (UnownedPodRelease), from IdleHoldUnownedClaimLive to IdleHoldUnownedNotIdle, the work hold's
+	// IdleHoldUnownedWorkHeld among them. Every one of their names carries the unowned_ prefix
+	// because a hold record holds the hold's name and nothing else, and a reader of one must be
+	// able to tell which of the two rules kept the pod.
 
 	// IdleHoldUnownedClaimLive: a claim of the pod is still live, so the pod is a role's to use
 	// and the idle rule's to decide. This rule takes only a pod every claim of which has
@@ -134,7 +135,7 @@ const (
 	// IdleHoldPaused is both rules' (IdleRelease, UnownedPodRelease), and the daemon records it
 	// too for a release a pause cancelled at its save (releaseHold in internal/daemon);
 	// IdleHoldPauseHeld is the idle rule's; and IdleHoldUnownedPauseHeld is the second rule's,
-	// whose name carries the unowned_ prefix as the nine above do.
+	// whose name carries the unowned_ prefix as the ten above do.
 
 	// IdleHoldPaused: the daemon's project is paused (pods.IdleView.Paused), and a pause starts
 	// no release.

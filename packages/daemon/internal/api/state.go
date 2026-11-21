@@ -500,7 +500,7 @@ type Admission struct {
 	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
 	// while one past its review — a merger at work in merging, one in merging whose start a
-	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
+	// closed design gate holds (the outbox's startWaitsForTheHold) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
 	// An issue the daemon has started that waits on another issue before its review is missing

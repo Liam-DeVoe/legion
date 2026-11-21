@@ -323,6 +323,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
 		return e.podBackstopDue(ctx, tx, fact)
+	case intake.WorkHoldOpened:
+		return e.workHoldOpened(ctx, tx, fact)
 	case intake.VolumeNearFull:
 		return e.volumeNearFull(ctx, tx, fact)
 	case intake.WorkerSilent:

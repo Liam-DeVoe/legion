@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -76,8 +77,10 @@ func workCloseMessage(hold record.WorkHold, architect bool) string {
 	return gateClosedSentence(hold.Tree, hold.Step, hold.ArtifactID, hold.Version) + " " + workHoldSentence + " " + end
 }
 
-// bootOpenedSentence is what the boot says where a tree's hold ends with its gate still where it
-// stood: the deployment moved to `merge`, or turned the gate off (row H26).
+// bootOpenedSentence is what the hold's end says where no person's approval is to be named: the
+// boot's end of a tree's hold with its gate still where it stood, the deployment having moved to
+// `merge` or turned the gate off (row H26), and the start of a claim the hold stopped that no
+// opening covered (openStoppedClaims).
 func bootOpenedSentence(tree string) string {
 	return "The deployment no longer holds the work of " + tree + "'s tree."
 }
@@ -449,14 +452,50 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, issues []record.
 				return err
 			}
 		default:
-			claims, err := e.treeClaims(ctx, tx, root)
-			if err != nil {
-				return err
-			}
-			if err := e.openHeldClaims(ctx, tx, root, claims, openingSentences(nil, bootOpenedSentence(root.Key)), nil); err != nil {
+			if err := e.openStoppedClaims(ctx, tx, root); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// workHoldOpened is the work hold of a tree found ended under a claim it stopped
+// (intake.WorkHoldOpened): the outbox ran the hold's stop of a worker in a turn, the gate opened
+// again while the stop was held for that turn, and the turn ended after the opening committed,
+// which made the stop. The opening read the claim live and started nothing of it (openHeldClaims
+// starts only a claim stored stopped by the hold), so the claim is started now, as the boot starts
+// a claim the hold stopped in a tree that holds no work (openStoppedClaims): a stop not yet made
+// when the gate opens again is not made, and one made since is undone (row H32). A tree that holds
+// work again, one that lingers, and a root the record does not hold are left alone.
+func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.WorkHoldOpened) (intake.Result, error) {
+	root, err := e.store.Issue(ctx, tx, fact.Tree)
+	if err != nil || root == nil || !claim.IsTreeRoot(root.Key, root.Tree) {
+		return intake.Result{}, err
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
+		return intake.Result{}, err
+	}
+	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if closed, holds := (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).HoldsWork(e.holdsWork()); holds {
+		e.logOnCommit(ctx, "workflow: the work hold holds the tree again; a claim it stopped waits for the next opening", "tree", root.Key,
+			"step", closed.Step.OrSpec(), "version", closed.LatestVersion)
+		return intake.Result{}, nil
+	}
+	return intake.Result{}, e.openStoppedClaims(ctx, tx, *root)
+}
+
+// openStoppedClaims starts each claim of root's tree the hold stopped that no opening start
+// covers yet (openHeldClaims), with no message: the tree holds no work and keeps no record of a
+// hold, so the opening names the hold's own sentence in front, and that the deployment no longer
+// holds the tree's work.
+func (e *Engine) openStoppedClaims(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	claims, err := e.treeClaims(ctx, tx, root)
+	if err != nil {
+		return err
+	}
+	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(nil, bootOpenedSentence(root.Key)), nil)
 }

@@ -1134,7 +1134,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
 // holds by step: no step the deployment gates is closed with a row of its own
 // (classify.StandingGate). It is the one predicate the message and the merger's start hold both
-// read — the hold asks it as the outbox's designGateClosed — so a member is never told the gate
+// read — the hold asks it as the outbox's treeGate — so a member is never told the gate
 // opened while the hold still holds its merger, nor left untold when the hold lets it go. A step
 // the deployment gates that nothing has registered holds the tree's work (FirstClosedStep) but
 // names no document, so nobody can be asked about it and nothing can be said of it: it is why the
