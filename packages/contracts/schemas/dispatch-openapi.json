@@ -8232,7 +8232,7 @@
     },
     "/api/v1/machine-logins": {
       "get": {
-        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through their personal token or a person-scope broker token they are 403 RESTRICTED_MEMBER, and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED.",
+        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; a list through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token and any broker token of theirs do, and 403 RESTRICTED_MEMBER otherwise, as their personal token is.",
         "operationId": "getApiV1MachineLogins",
         "parameters": [
           {
