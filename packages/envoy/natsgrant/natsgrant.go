@@ -354,7 +354,15 @@ func Host(machineID string) Permissions {
 // publishes on its own cutover inbox, _INBOX_envoy_measure.cutover.>, under which a probe sends a
 // numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
 // changes and removes no stream: a create or an update carries a configuration of the caller's
-// choosing, and a source or a republish in it would read every stream of the account, so
+// choosing, and a source or a republish in it would read every stream of the account. The same
+// grant writes any KV bucket of the account: a RePublish whose destination is a KV subject
+// (Source envoy-measure.>, Destination $KV.envoy_session_consumers.>) is accepted, since
+// nats-server checks only that the destination does not loop into the stream itself (v2.15.1
+// stream.go:2479-2514, checkStreamCfgLocked; measured on 2.15.1 and 2.10.29), so its publishes
+// become chosen self-keyed records and the bucket's sentinel.
+// The streams change (#4687) removes those calls from every
+// callout answer but the held operator's (ForCallout) and narrows every static user on a callout
+// hub (core.Authorization.Render), so after the cutover the held operator is their only holder;
 // ENVOY_MEASURE is the operator's to make (envoy-infra streams update). It subscribes only its own
 // inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push
 // consumer deliveries and request replies arrive, so it reads no message of another client.
