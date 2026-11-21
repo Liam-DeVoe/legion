@@ -89,10 +89,11 @@ if [ "${DEV_STACK_CALLOUT:-}" != 1 ]; then
     exit 2
   fi
   # The banner's exports, from its own block of the log alone (lib/rig-banner.sh): the log holds the
-  # stack's processes' output too, and a line there that looks like an export runs nothing. Each
-  # line is read as the shell that sources it reads it, since dev-stack.sh prints each path with
-  # printf %q. scripts/e2e/nats-callout-sessions.sh reads the banner the same way.
-  rig_banner_read "$stack_log" "${DEV_STACK_BANNER[@]}"
+  # stack's processes' output too, and a line there that looks like an export runs nothing; a log
+  # that holds the banner's first line twice is refused, by name, and read not at all. Each line is
+  # read as the shell that sources it reads it, since dev-stack.sh prints each path with printf %q.
+  # scripts/e2e/nats-callout-sessions.sh reads the banner the same way.
+  rig_banner_read "$stack_log" "${DEV_STACK_BANNER[@]}" || exit 2
 fi
 for required in AGENT_SECRETS_URL NATS_URLS DEV_STACK_EXCHANGE_TOKEN_FILE DEV_STACK_EXCHANGE_SESSION \
   DEV_STACK_BROKER_PIDS DEV_STACK_NATS_MONITOR_URL; do

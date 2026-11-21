@@ -463,7 +463,7 @@ wait_for 1200 stack_ready || refuse "dev-stack.sh was not ready within 20 minute
 # the log holds the stack's processes' output too, and a line there that looks like an export runs
 # nothing. Each line is read as the shell that sources it reads it, since dev-stack.sh prints each
 # path with printf %q. packages/envoy/scripts/callout-check.sh reads the banner the same way.
-rig_banner_read "$stack_log" "${DEV_STACK_BANNER[@]}"
+rig_banner_read "$stack_log" "${DEV_STACK_BANNER[@]}" || refuse "the banner of $stack_log was not read"
 for required in AGENT_SECRETS_URL ENVOY_URL ENVOY_TOKEN NATS_URLS DEV_STACK_DIR DEV_STACK_PID \
   DEV_STACK_EXCHANGE_TOKEN_FILE DEV_STACK_POD_TOKEN_FILE DEV_STACK_REGISTRAR_TOKEN_FILE \
   DEV_STACK_NATS_MONITOR_URL; do

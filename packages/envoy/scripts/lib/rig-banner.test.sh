@@ -15,8 +15,10 @@
 #     exports nothing;
 #   - rig_banner_export sets the same and exports each;
 #   - rig_banner_value gives one value, and rig_banner_complete is true.
-# A first line again before the last starts the block again, so what came before it is not read;
-# and a banner whose last line is not written yet reads as no banner, nothing in it run.
+# A log that holds a whole fake block ahead of the real banner, the banner's first line twice, is
+# refused by name: nothing in it is read or run. Two rigs' banners in one log, as dev-airlock.sh's
+# log holds dev-broker.sh's and its own, are each read. And a banner whose last line is not written
+# yet reads as no banner, nothing in it run.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,20 +100,47 @@ for rig in dev-stack dev-broker dev-airlock; do
   expect "$rig: no export line after the banner was evaluated" test ! -e "$after"
 done
 
-# A first line again before the last starts the block again: the lines before it are not read.
+# A whole fake block ahead of the real banner: the log holds the banner's first line twice, so each
+# reader refuses it by name, returns 3 and reads nothing of it, and the wait for the banner ends.
 banner=("${DEV_STACK_BANNER[@]}")
-restarted="$work/restarted.log"
-early="$work/an export between two first lines ran"
+twice="$work/twice.log"
+faked="$work/an export of a fake banner block ran"
 {
   printf '%s\n' "${banner[0]}"
-  printf '  export DECOY_AHEAD=$(: >%s)\n' "$(printf %q "$early")"
-  printf '%s\n' "${banner[0]}"
-  printf '  export PLAIN=plain\n'
+  printf '  export DECOY_AHEAD=$(: >%s)\n' "$(printf %q "$faked")"
+  printf '  export NAMED=fake\n'
   printf '%s\n' "${banner[1]}"
-} >"$restarted"
-expect "a later first line starts the block again" test "$(read_in_child rig_banner_read "$restarted" "${banner[@]}")" = \
-  "unset|plain|unset|unset|unset|unset|child:unset"
-expect "nothing between the two first lines was evaluated" test ! -e "$early"
+  printf '%s\n' "${banner[0]}"
+  printf '  export NAMED=real\n'
+  printf '%s\n' "${banner[1]}"
+} >"$twice"
+# refused <how> <log> <first> <last>: <how> on <log> returns 3, prints nothing on standard output, and
+# names the twice-printed first line on standard error.
+refused() {
+  local out status=0
+  out="$("$@" 2>"$work/refused.err")" || status=$?
+  [ "$status" -eq 3 ] && [ -z "$out" ] && grep -qF "holds the line '$3' more than once" "$work/refused.err"
+}
+expect "rig_banner_read refuses a log holding the banner's first line twice, by name" \
+  refused rig_banner_read "$twice" "${banner[@]}"
+expect "rig_banner_export refuses it too" refused rig_banner_export "$twice" "${banner[@]}"
+expect "rig_banner_value refuses it too" refused rig_banner_value "$twice" "${banner[@]}" NAMED
+expect "nothing of the fake block was evaluated" test ! -e "$faked"
+expect "rig_banner_complete ends the wait on a refused log" rig_banner_complete "$twice" "${banner[@]}"
+
+# Two rigs' banners in one log, as dev-airlock.sh's log holds dev-broker.sh's banner and then its
+# own: each first line is there once, so each banner is read, the later one winning.
+both="$work/both.log"
+{
+  printf '%s\n' "${DEV_BROKER_BANNER[0]}" '  export NAMED=broker' '  export PLAIN=broker' "${DEV_BROKER_BANNER[1]}"
+  printf '%s\n' "${DEV_AIRLOCK_BANNER[0]}" '  export NAMED=airlock' "${DEV_AIRLOCK_BANNER[1]}"
+} >"$both"
+expect "two rigs' banners in one log are each read, the later one winning" test "$(
+  unset NAMED PLAIN
+  rig_banner_read "$both" "${DEV_BROKER_BANNER[@]}"
+  rig_banner_read "$both" "${DEV_AIRLOCK_BANNER[@]}"
+  printf '%s|%s' "$NAMED" "$PLAIN"
+)" = "airlock|broker"
 
 # A banner whose last line is not written yet reads as no banner, and nothing in it runs.
 partial="$work/partial.log"
@@ -126,7 +155,7 @@ expect "a banner whose last line is not written sets nothing" test "$(read_in_ch
   "unset|unset|unset|unset|unset|unset|child:unset"
 expect "nothing in a partial banner was evaluated" test ! -e "$inside"
 
-# 3 rigs of 10 rows each and 5 more; a run that held fewer read nothing it should have.
-want_rows=35
+# 3 rigs of 10 rows each and 9 more; a run that held fewer read nothing it should have.
+want_rows=39
 echo "rig-banner.test.sh: $passed passed, $failed failed of $want_rows"
 [ "$failed" -eq 0 ] && [ "$passed" -eq "$want_rows" ]

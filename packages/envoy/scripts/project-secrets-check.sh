@@ -424,7 +424,7 @@ for name in AGENT_SECRETS_URL AGENT_SECRETS_ACCOUNT_TOKEN_FILE DISPATCH_URL DEV_
   DEV_STACK_PRIV_PROJECT DEV_STACK_PRIV_OWNER DEV_STACK_PRIV_SERVICE DEV_STACK_PRIV_SESSION \
   DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE DEV_STACK_PRIV_POD_TOKEN_FILE DEV_STACK_PRIV_SECRET \
   DEV_STACK_AIRLOCK_PROXY_URL DEV_STACK_AIRLOCK_BOUND_URL DEV_STACK_AIRLOCK_CA_CERT_FILE; do
-  banner[$name]="$(exported "$name")"
+  banner[$name]="$(exported "$name")" || setup_fail "the banner of $STACK_LOG was not read"
   [ -n "${banner[$name]}" ] || unread+=("$name")
 done
 for name in "${unread[@]}"; do
