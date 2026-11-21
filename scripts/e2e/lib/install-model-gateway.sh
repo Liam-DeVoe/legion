@@ -190,9 +190,10 @@ margin=300
 window=300
 deadline_ms=9500
 # The fastest mint measured on the devbox (hawk-token's Python start and one refresh grant) took
-# 2006 ms, so a waiter left with less than this after its wait starts none: it could not finish,
-# and each attempt is another keyring read.
-min_mint_ms=2000
+# 2006 ms, and under load a process can take half a second more to start (below), so a waiter left
+# with less than 2600 ms after its wait starts none: even the fastest mint could not finish, and each
+# attempt is another keyring read. No slower mint has been measured, so the worst case is not known.
+min_mint_ms=2600
 case "${1-}" in
 "") preflight= ;;
 --preflight) preflight=1 ;;

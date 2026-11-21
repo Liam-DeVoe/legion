@@ -315,7 +315,7 @@ describe("the model gateway key command", () => {
     // lock at its deadline itself or after it (seen once in 20 runs, the next row); or its deadline
     // had passed before it asked for the lock at all.
     const gaveUpBehind =
-      /^timeout: (waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with \d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs| and took the lock at the call's 9500 ms deadline or after it)|reached the lock after \d+ ms, past the call's 9500 ms)$/;
+      /^timeout: (waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with \d+ ms of the call's 9500 ms left, under the 2600 ms a mint needs| and took the lock at the call's 9500 ms deadline or after it)|reached the lock after \d+ ms, past the call's 9500 ms)$/;
     const [firstEnd, ...moreFirst] = endOf("pane-1");
     const [secondEnd, ...moreSecond] = endOf("pane-2");
     expect({ moreFirst, moreSecond }).toEqual({ moreFirst: [], moreSecond: [] });
@@ -324,24 +324,27 @@ describe("the model gateway key command", () => {
     expect(secondEnd).toMatch(behind ? gaveUpBehind : ranPast);
     // One mint a call that minted: either the second gave up behind the first and minted nothing,
     // or it took the lock in time and minted once. Which of the two the second did is its own
-    // clock's, so each give-up is held on its own by a row below with a flock that hands the lock
-    // over at a moment the row names.
+    // clock's, so each way the key command gives up behind another call is held on its own below,
+    // by a row that makes it happen whatever the host's speed.
     expect(mintCount(mints)).toBe(behind ? 1 : 2);
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
   });
 
   // callWithFlock installs the key command, gives it a flock that runs SCRIPT (`$2` is the wait the
-  // call gives it, in seconds: the call's time left), makes one call, and answers how it ended and
-  // what the key command recorded of it.
-  async function callWithFlock(script: string) {
+  // call gives it, in seconds: the call's time left), sets each of SETTINGS (a line of the key
+  // command, `name=value`, that must be there as shipped, and the value the row gives it), makes
+  // one call, and answers how it ended and what the key command recorded of it.
+  async function callWithFlock(script: string, settings: [shipped: string, row: string][] = []) {
     const { run, dest, mints, keyCommand } = install();
     const flock = join(run, "stand-in-flock");
     writeFileSync(flock, `#!/usr/bin/env bash\n${script}\n`, { mode: 0o755 });
-    writeFileSync(
-      keyCommand,
-      readFileSync(keyCommand, "utf8").replace(/^flock=.*$/m, `flock=${flock}`)
-    );
+    let text = readFileSync(keyCommand, "utf8").replace(/^flock=.*$/m, `flock=${flock}`);
+    for (const [shipped, row] of settings) {
+      expect(text.split("\n").filter((line) => line === shipped)).toEqual([shipped]);
+      text = text.replace(`\n${shipped}\n`, `\n${row}\n`);
+    }
+    writeFileSync(keyCommand, text);
     const c = await call(keyCommand, join(run, "pane"), mints);
     const recorded = readFileSync(join(dest, "hawk-token.calls"), "utf8")
       .split("\n")
@@ -352,17 +355,45 @@ describe("the model gateway key command", () => {
   }
 
   test("gives up on a lock taken with less than a mint needs, and mints nothing", async () => {
-    // A flock that hands the lock over 1.5 s before the wait it was given ends: the call then
-    // holds the lock with about 1.5 s of its 9.5 s left, under the 2 s a mint needs, and must give
-    // up rather than start a mint it cannot finish. The fake hawk-token mints at once, so a key
-    // command that started the mint anyway would print a key here.
-    const ended = await callWithFlock(
-      `sleep "$(awk -v w="$2" 'BEGIN { s = w - 1.5; printf "%.3f", (s > 0 ? s : 0) }')"`
-    );
+    // A mint here needs the call's whole 9.5 s (the shipped 2.6 s is checked first), and the flock
+    // hands the lock over at once: any time the call has spent leaves it less than a mint needs, by
+    // construction and whatever the host's speed, so it must give up rather than start a mint it
+    // cannot finish. The fake hawk-token mints at once, so a key command that started the mint
+    // anyway would print a key here.
+    const ended = await callWithFlock("exit 0", [["min_mint_ms=2600", "min_mint_ms=9500"]]);
     expect(ended.recorded).toEqual([
       expect.stringMatching(
-        /^timeout: waited \d+ ms for another call's mint and took the lock with \d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs$/
+        /^timeout: waited \d+ ms for another call's mint and took the lock with \d+ ms of the call's 9500 ms left, under the 9500 ms a mint needs$/
       ),
+    ]);
+    expect([ended.c.code, ended.c.stdout]).toEqual([1, ""]);
+    expect(ended.mints).toBe(0);
+  });
+
+  test("gives up when its wait for the lock runs out, and mints nothing", async () => {
+    // A flock whose wait runs out (exit 1, as flock -w does): the call gives up behind the other
+    // call's mint, past its deadline.
+    const ended = await callWithFlock("exit 1");
+    expect(ended.recorded).toEqual([
+      expect.stringMatching(
+        /^timeout: waited \d+ ms for another call's mint, past the call's 9500 ms$/
+      ),
+    ]);
+    expect([ended.c.code, ended.c.stdout]).toEqual([1, ""]);
+    expect(ended.mints).toBe(0);
+  });
+
+  test("gives up before it asks for the lock when its deadline has passed, and mints nothing", async () => {
+    // The call's clock is read in 10 ms steps (its process start is in 1/100 s ticks, and
+    // /proc/uptime has two decimals), so a call can read itself as started a few milliseconds late:
+    // only a deadline already a second past at the call's start (the shipped 9500 is checked first)
+    // has passed by construction when the call reaches the lock. The call must then give up without
+    // asking for it.
+    const ended = await callWithFlock('echo "flock was asked for" >&2; exit 1', [
+      ["deadline_ms=9500", "deadline_ms=-1000"],
+    ]);
+    expect(ended.recorded).toEqual([
+      expect.stringMatching(/^timeout: reached the lock after -?\d+ ms, past the call's -1000 ms$/),
     ]);
     expect([ended.c.code, ended.c.stdout]).toEqual([1, ""]);
     expect(ended.mints).toBe(0);

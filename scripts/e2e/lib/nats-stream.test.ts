@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, type NatsConnection } from "nats";
-import { readLast } from "./nats-stream";
+import { type LastRead, readLast } from "./nats-stream";
 import { rowWaitMarginMs, rowWaits } from "./row-waits";
 
 // The NATS server these rows read is a container this file starts, so a host with no docker runs
@@ -109,19 +109,34 @@ function runLast(subject: string, seconds: number) {
 }
 
 // runReadLast reads with a client of its own. HOLD, when given, runs once the client has connected
-// and before the read, and what it answers runs once the read has ended, whatever its end.
+// and before the read, and what it answers runs once the read has ended, whatever its end. The
+// client is closed whatever fails, and a release that fails does not hide the read's own failure;
+// after a read that succeeded it fails the row, since the server it left held would fail the next.
 async function runReadLast(subject: string, seconds: number, hold?: () => () => void) {
   const client = await connect({
     servers: serverUrl,
     timeout: Math.max(1, Math.ceil(waits.end() - performance.now())),
     maxReconnectAttempts: 0,
   });
-  const release = hold?.();
+  let release: (() => void) | undefined;
   try {
-    const result = await readLast(client, stream, subject, seconds);
-    return { result };
+    let read: { result: LastRead } | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      release = hold?.();
+      const result = await readLast(client, stream, subject, seconds);
+      read = { result };
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      release?.();
+    } catch (error) {
+      failure ??= { error };
+    }
+    if (failure) throw failure.error;
+    return read as { result: LastRead };
   } finally {
-    release?.();
     void client.close();
   }
 }

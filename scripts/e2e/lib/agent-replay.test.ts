@@ -1,4 +1,5 @@
 import { afterEach, expect, jest, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 
 import {
@@ -129,18 +130,29 @@ test("a session that answers a re-arm after not responding still gives its repla
   expect(await read(dispatch.wsUrl)).toEqual(replay);
 });
 
+// uptimeSeconds is the kernel's own count of seconds since boot (/proc/uptime), the one clock
+// jest's fake timers do not freeze: under them Bun.nanoseconds(), performance.now(), Date.now() and
+// process.hrtime all stand still.
+const uptimeSeconds = () => Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+// nap blocks the thread for a real 10 ms, which the fake clock does not reach, so the wait below
+// looks about a hundred times a second rather than spinning.
+const napCell = new Int32Array(new SharedArrayBuffer(4));
+const nap = () => Atomics.wait(napCell, 0, 0, 10);
+
 // endedByTimeout reads with a 1 s timeout on jest's fake clock, so no wall clock races the
 // stand-in's frames to the reader. `verdict` waits until the reader has taken Dispatch's last
 // verdict, through `armed`: the reader arms its empty-replay timer on a responding verdict and
 // clears it on the next one, so whether that timer is pending, over the timers pending once the
 // read began, says which verdict it took last. Only then does the row move the clock past the
-// timeout. The empty-replay timer is given the end of the row's waits, past the 1 s the clock moves.
+// timeout. The empty-replay timer is given the end of the row's waits, past the 1 s the clock moves,
+// and each wait in `armed` gives up at that end, read on the kernel's clock, naming the verdict.
 async function endedByTimeout(
   url: string,
   verdict: (armed: (pending: boolean, what: string) => Promise<void>) => Promise<void>
 ) {
-  const endNs = Bun.nanoseconds() + Math.max(0, waits.end() - performance.now()) * 1e6;
-  const emptyAfterMs = Math.max(2_000, waits.end() - performance.now());
+  const left = Math.max(0, waits.end() - performance.now());
+  const end = uptimeSeconds() + left / 1000;
+  const emptyAfterMs = Math.max(2_000, left);
   jest.useFakeTimers();
   try {
     const reading = settled(inPage({ emptyAfterMs, sessionId: SESSION, timeoutMs: 1_000, url }));
@@ -148,11 +160,12 @@ async function endedByTimeout(
     const armed = async (pending: boolean, what: string) => {
       const want = base + (pending ? 1 : 0);
       while (jest.getTimerCount() !== want) {
-        if (Bun.nanoseconds() >= endNs) {
+        if (uptimeSeconds() >= end) {
           throw new Error(
             `by the end of the row's waits the reader had not taken ${what}: ${jest.getTimerCount()} timers pending, not ${want}`
           );
         }
+        nap();
         const tick = Promise.withResolvers<void>();
         setImmediate(tick.resolve);
         await tick.promise;
