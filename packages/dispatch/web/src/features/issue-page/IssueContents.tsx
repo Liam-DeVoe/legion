@@ -22,6 +22,7 @@ import {
 } from "../../theme/classes";
 import { isContentsEntry } from "./contents-entries";
 import { useFocusedNode } from "./focused-node";
+import { MenuMark } from "./IssuePresets";
 import {
   drawnLine,
   firstLineOf,
@@ -31,7 +32,7 @@ import {
   type TreeNode,
 } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { CAP, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -42,6 +43,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { pathTo } from "./tree-fold";
+import { CAP } from "./verification-filter/VerificationFilterBody";
 
 /** One entry of the list: a question, or a thread the reader began, with the entries under it,
  *  and what its own branch holds that its marks count (`CONTENTS_MARK_WORDS`). */
@@ -407,7 +409,19 @@ export function ContentsList({
                   tabIndex={-1}
                   type="button"
                 >
-                  <FoldMark folded={folded.has(node.id)} />
+                  {/* The view row's mark, turned a quarter to point right while the entry is
+                      folded. It is a shape and not text, as `StatusGlyph`'s are, because the
+                      page's typeface lacks ▸ and ▾: as text, they are drawn in a face of the
+                      reader's own machine, at that face's width. The control's own `aria-label`
+                      names the act, so the shape is hidden from assistive technology. */}
+                  <span
+                    aria-hidden="true"
+                    className={`inline-flex shrink-0 align-middle ${
+                      folded.has(node.id) ? "-rotate-90" : ""
+                    }`}
+                  >
+                    <MenuMark />
+                  </span>
                 </button>
               ) : (
                 <span aria-hidden="true" className="h-8 w-3 shrink-0" />
@@ -464,24 +478,6 @@ export function ContentsList({
         })}
       </div>
     </>
-  );
-}
-
-/** The fold control's mark, pointing right on an entry folded shut and down on an open one,
- *  drawn one em square so it takes the size of the control's text, in its colour. It is a shape
- *  and not text, as `StatusGlyph`'s are, because the page's typeface lacks ▸ and ▾: as text,
- *  they are drawn in a face of the reader's own machine, at that face's width. The control's own
- *  `aria-label` names the act, so the shape is hidden from assistive technology. */
-function FoldMark({ folded }: { folded: boolean }): ReactNode {
-  return (
-    <svg
-      aria-hidden="true"
-      className="inline-block size-[1em] shrink-0 align-middle"
-      focusable="false"
-      viewBox="0 0 16 16"
-    >
-      <path d={folded ? "M6.5 4.5v7l4-3.5z" : "M4.5 6.5h7L8 10.5z"} fill="currentColor" />
-    </svg>
   );
 }
 

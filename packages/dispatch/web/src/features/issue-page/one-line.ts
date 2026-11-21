@@ -1,7 +1,6 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import { pageQuietText } from "../../theme/classes";
 import { shortForm } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
@@ -10,10 +9,6 @@ import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { withoutDirectiveLines } from "./RowText";
 import { rowReferences } from "./row-references";
 import { treeContext } from "./tree-drafts";
-
-/** A small heading in capitals over the words it names, as the prototype's `.cap` draws one:
- *  the head's "In short", the Contents list's heading and the Spec view's column heads. */
-export const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its

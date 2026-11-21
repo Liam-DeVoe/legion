@@ -4,9 +4,10 @@ import type { DisplayTree } from "../../api/types";
 import { pageInkBg, pageInkText, pageLineBorder, pageMutedText } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, LEADING_LABEL, SENTENCE_END, type TreeNode } from "./issue-tree";
-import { CAP, referenceStandIns } from "./one-line";
+import { referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
+import { CAP } from "./verification-filter/VerificationFilterBody";
 
 /** Each sentence's label, in the order the summary holds them (R8). */
 const LABELS = [

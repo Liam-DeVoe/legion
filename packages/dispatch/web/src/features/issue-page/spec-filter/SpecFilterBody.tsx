@@ -49,7 +49,7 @@ import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { MoreWords, NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
-import { CAP, useIssueNames } from "../one-line";
+import { useIssueNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
@@ -74,6 +74,7 @@ import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueAsksQuery, type NamesFailure, standsFailed } from "../useIssueTree";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
+import { CAP } from "../verification-filter/VerificationFilterBody";
 import {
   type SpecDecision,
   type SpecGroup,
