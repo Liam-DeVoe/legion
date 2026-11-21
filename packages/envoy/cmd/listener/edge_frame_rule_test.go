@@ -49,6 +49,15 @@ type scopeRig struct {
 
 func newScopeRig(t *testing.T) *scopeRig {
 	t.Helper()
+	rig, _ := newScopeRigSocketReader(t, false)
+	return rig
+}
+
+// newScopeRigSocketReader is newScopeRig whose socket route, when cold is set, judges GitHub
+// frames by a repository reader of its own that has read no answer yet: the other replica of a
+// deployment, before its first read. It returns that reader, the relay's own when cold is unset.
+func newScopeRigSocketReader(t *testing.T, cold bool) (*scopeRig, *edgeRepositories) {
+	t.Helper()
 	projects := []string{scopeProject}
 	rig := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, true)
 	withPublishRoute(t, rig.deps)
@@ -76,17 +85,22 @@ func newScopeRig(t *testing.T) *scopeRig {
 	edge.caller = brokertokentest.NewCaller(t)
 	edge.handler = apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, edge.broker), edgeProjects: projects, logger: logger}, rig.mux)
 
+	socketReader := reader
+	if cold {
+		socketReader = newEdgeRepositories(stand.server.URL, listenerBrokerAccount(edgeAccountToken), projects, newEdgeWithheldCounter(metrics.New()), logger)
+		socketReader.now = clock.now
+	}
 	tokens := listenerBrokerTokens(t, edge.broker)
 	sockets := newRelaySockets(rig.harness.client, tokens, projects, logger)
 	routes := http.NewServeMux()
-	registerV1Routes(routes, &listenerDeps{client: rig.harness.client, relaySockets: sockets, repositories: reader}, "test-machine", logger)
+	registerV1Routes(routes, &listenerDeps{client: rig.harness.client, relaySockets: sockets, repositories: socketReader}, "test-machine", logger)
 	server := httptest.NewServer(apiAuth(listenerAPIAuth{brokers: tokens, edgeProjects: projects, logger: logger}, routes))
 	t.Cleanup(server.Close)
 	t.Cleanup(sockets.stop)
 	// One whole pass of the repository refresh, so a GitHub frame of the project's repository
 	// meets a fresh answer.
 	edge.tick(t)
-	return &scopeRig{edgeRig: edge, socketServer: server}
+	return &scopeRig{edgeRig: edge, socketServer: server}, socketReader
 }
 
 // openSocket opens session's relay socket with token, subscribes its relay subject and returns
@@ -406,4 +420,42 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		noScopeFrame(t, client, time.Second, "after the event of "+scopeProject)
 		requireWithheld(t, rig, 1)
 	})
+}
+
+// A relay socket on a replica that has read no repository answer yet cannot say whether a GitHub
+// event is its session's, so it answers the frame nak and the relay sends it again: once the
+// socket's replica reads the answer, the event reaches the session. Acking it away instead, as a
+// done answer does, loses it with no gap mark. The control is the socket whose replica has the
+// answer from the start: the event reaches it at once, ahead of the event stored after it.
+func TestARelaySocketWithNoFreshAnswerHoldsAGitHubEventForItsSession(t *testing.T) {
+	const ownIssue = "notifications.dispatch.issue." + scopeProject + ".PRIV-1.comment.created"
+	for _, cold := range []bool{false, true} {
+		name := "the socket's replica has the answer (control)"
+		if cold {
+			name = "the socket's replica has read no answer yet"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig, socketReader := newScopeRigSocketReader(t, cold)
+			const session = "ses_scope_cold_socket"
+			client, _ := registerScopeSession(t, rig, session, "notifications.github.acme.pub.>", "notifications.dispatch.issue."+scopeProject+".>")
+			github := storeScopeEvent(t, rig, "notifications.github.acme.pub.pr.1", `{"kind":"pr","action":"opened","repo":"acme/pub"}`)
+			issue := storeScopeEvent(t, rig, ownIssue, "")
+			if !cold {
+				requireFrames := takeScopeFrames(t, client, 2, 15*time.Second)
+				if requireFrames[0].item.EventID != github.EventID || requireFrames[1].item.EventID != issue.EventID {
+					t.Fatalf("the socket received %v, want the GitHub event %s and then the issue event %s", scopeFrameTopics(requireFrames), github.EventID, issue.EventID)
+				}
+				return
+			}
+			first := takeScopeFrames(t, client, 1, 15*time.Second)
+			if first[0].item.EventID != issue.EventID {
+				t.Fatalf("the cold socket's first frame is %s, want the issue event %s: it judged the GitHub event with no answer", first[0].raw, issue.EventID)
+			}
+			socketReader.refresh(context.Background())
+			again := takeScopeFrames(t, client, 1, 15*time.Second)
+			if again[0].item.EventID != github.EventID {
+				t.Fatalf("after the socket's replica read the answer, the socket received %s, want the GitHub event %s sent again", again[0].raw, github.EventID)
+			}
+		})
+	}
 }

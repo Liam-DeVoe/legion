@@ -42,6 +42,9 @@ package main
 // envelope give no project of the token the socket was opened with, whatever published it. Such
 // a frame is answered done on its receipt subject, so the relay that sent it acknowledges its
 // message undelivered, and counted in envoy_edge_github_withheld_total{reason="project_not_held"}.
+// A GitHub frame this replica has no fresh repository answer to judge by is answered nak instead,
+// so the relay sends it again after the nak delay and, when its own answer is no fresher, withholds
+// it itself with the gap mark (sessionRelays.edgeWithholds).
 //
 // While a socket is open it asks the broker again every relaySocketCheckEvery, on its ping tick
 // (watch), and closes with the code its client reopens by (relaySocketVerdict).
@@ -611,17 +614,24 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	}
 }
 
-// withhold answers a frame the edge's rule withholds done on its receipt subject, so the relay
-// that sent it acknowledges its message undelivered, counts it under reason and logs it. A frame
-// no relay sent has a receipt no relay awaits, and that answer reaches nobody.
+// withhold answers a frame the edge's rule withholds on its receipt subject, and logs it. A frame
+// withheld for want of a fresh repository answer (withheldAnswerUnknown) is answered nak, so the
+// relay that sent it delivers it again after the nak delay, when this replica may have the answer,
+// and marks the gap itself when it withholds it; it is not counted, since it is not yet withheld
+// for good. Every other is answered done, so the relay acknowledges its message undelivered, and
+// counted under reason. A frame no relay sent has a receipt no relay awaits, and that answer
+// reaches nobody.
 func (socket *relaySocket) withhold(msg *nats.Msg, subject, reason string) {
-	if socket.repositories != nil {
+	answer := relayReplyDone
+	if reason == withheldAnswerUnknown {
+		answer = relayReplyNak
+	} else if socket.repositories != nil {
 		socket.repositories.withheld.Inc([2]string{"reason", reason})
 	}
 	socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
-		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", reason))
-	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(relayReplyDone)); err != nil {
-		socket.sockets.logger.Warn("listener: the relay socket could not acknowledge a frame it withheld; the relay sends it again",
+		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", reason), slog.String("answer", answer))
+	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
+		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
 			slog.String("session_id", socket.session), slog.String("error", err.Error()))
 	}
 }
