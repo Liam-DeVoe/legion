@@ -178,16 +178,45 @@ func rolesOfProjects(roles, projects []string) []string {
 	return kept
 }
 
-// legionAgentOfProjects reports whether a Legion agent registry entry is one of projects': the
-// issue it works is.
-func legionAgentOfProjects(agent legionagents.Agent, projects []string) bool {
+// edgeLegionAgent is a Legion agent registry entry as the edge shows it to a session of projects,
+// and false when it shows it not: the issue the entry works is of one of projects, and the entry's
+// session is a session of that issue's project (sessionOfProjects, of the session's own entry in
+// sessions). An entry is a record any writer of the registry's bucket can store, naming any
+// session under any issue: the issue it names says nothing of whose session it names, and a chosen
+// entry naming an in-house session under an outside project's issue would otherwise show that
+// session's id, a title its writer chose and the session's live state to the outside session. Its
+// replacement (replaced_by, replaced_at) is read from the other entries of its role token, which
+// are records of the same kind, so it is shown only when it is a session of that project too, and
+// answered as none otherwise. A session of that project that is gone, or whose record an earlier
+// build wrote, is not shown either, as sessionOfProjects reads it.
+func edgeLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent, projects []string) (legionagents.Agent, bool) {
 	project, ok := contracts.IssueProject(agent.Issue)
-	return ok && projectHeld(projects, project)
+	if !ok || !projectHeld(projects, project) || !sessionOfProject(sessions, agent.SessionID, project) {
+		return legionagents.Agent{}, false
+	}
+	if agent.ReplacedBy != nil && !sessionOfProject(sessions, *agent.ReplacedBy, project) {
+		agent.ReplacedBy, agent.ReplacedAt = nil, nil
+	}
+	return agent, true
 }
 
-// legionAgentsOfProjects is agents with only projects' entries, in their order.
-func legionAgentsOfProjects(agents []legionagents.Agent, projects []string) []legionagents.Agent {
-	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !legionAgentOfProjects(agent, projects) })
+// sessionOfProject reports whether sessionID's entry in sessions is a session of project
+// (sessionOfProjects).
+func sessionOfProject(sessions *session.SessionRegistry, sessionID, project string) bool {
+	entry, state := sessions.Lookup(sessionID)
+	return sessionOfProjects(entry, state, []string{project})
+}
+
+// legionAgentsOfProjects is agents as the edge shows them to a session of projects
+// (edgeLegionAgent), in their order, without those it shows not.
+func legionAgentsOfProjects(sessions *session.SessionRegistry, agents []legionagents.Agent, projects []string) []legionagents.Agent {
+	shown := agents[:0]
+	for _, agent := range agents {
+		if agent, ok := edgeLegionAgent(sessions, agent, projects); ok {
+			shown = append(shown, agent)
+		}
+	}
+	return shown
 }
 
 // unknownSession is the 404 a session the edge does not show gets: the answer of a session no
