@@ -7,7 +7,8 @@ package writerhold_test
 // on holdtest's stack, through the caller-stack seams: writerhold.CommandOn (`envoy-infra hold`),
 // writerhold.StreamsCommandOn (`envoy-infra streams`, with consumernames' census readers),
 // consumernames.CommandOn (`envoy-infra consumer-names`) and buckets.CommandOn (`envoy-infra
-// buckets`).
+// buckets`). Beside them, TestAKillAfterAWriteNeverAnswersIt is a row of the rows' own harness, the
+// kill at a write to the broker's routes (killAt), and no row of the hold's list.
 
 import (
 	"bytes"
@@ -1012,6 +1013,73 @@ func rowTo(phase natsgrant.OperatorPhase) func(*http.Request, []byte) bool {
 		}
 		return r.Method == http.MethodPut && r.URL.Path == "/v1/nats-hold" && json.Unmarshal(body, &put) == nil && put.Phase == string(phase)
 	}
+}
+
+// killServedThenCancelled is killAt's after kill as it stood before it answered the command 503: at
+// the first request match picks, the routes serve that request into the command's own answer, and
+// only then is the command's context cancelled, so a command that sent the request on that context
+// reads the 200 or context.Canceled as the HTTP transport's race decides.
+// TestAKillAfterAWriteNeverAnswersIt runs it as its control.
+func (h *t7Stack) killServedThenCancelled(match func(r *http.Request, body []byte) bool) (context.Context, *t7Kill) {
+	h.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	h.t.Cleanup(cancel)
+	k := &t7Kill{}
+	h.s.Broker.Intercept(func(w http.ResponseWriter, r *http.Request) bool {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		k.mu.Lock()
+		hit := !k.fired && match(r, body)
+		k.fired = k.fired || hit
+		k.mu.Unlock()
+		if !hit {
+			return false
+		}
+		h.s.Broker.Routes().ServeHTTP(w, r)
+		cancel()
+		return true
+	})
+	return ctx, k
+}
+
+// TestAKillAfterAWriteNeverAnswersIt: killAt's after kill stores the write it matched and never
+// answers it with a success, whatever context the writer reads its answer on. The write is the hold
+// row's move from released to prepare, sent by the stack's client on a context the kill never
+// cancels (holdrecord.Client.exchange reads the answer on the request's context), so the client
+// reads whatever answer the routes send it, with no race against the cancel: the move is read back
+// stored, and the client's answer is the kill's 503. Control: the same move under the kill as it
+// stood before (killServedThenCancelled) is read back stored too, and the client reads the routes'
+// 200, which fails the row's assertion. It fails when an after kill lets the killed writer read its
+// write's success, which a killed process never reads: TestHoldCompletionPerWorkflow requires the
+// census killed after its done entry to exit nonzero.
+func TestAKillAfterAWriteNeverAnswersIt(t *testing.T) {
+	h := newT7Stack(t)
+	// move moves the row from released to prepare under id with kill armed at that move, reads the
+	// move back stored once the kill is removed, and answers the client's error.
+	move := func(kill func(func(*http.Request, []byte) bool) (context.Context, *t7Kill), id string) error {
+		t.Helper()
+		before := h.row()
+		require.Equal(t, natsgrant.OperatorPhaseReleased, before.Phase, "the row before the move")
+		killed, k := kill(rowTo(natsgrant.OperatorPhasePrepare))
+		_, err := h.s.Records.MoveRow(context.Background(), before.Gen, natsgrant.OperatorPhasePrepare, id, "the kill's move")
+		h.endKill()
+		require.True(t, k.Fired(), "the kill never matched the move")
+		require.ErrorIs(t, killed.Err(), context.Canceled, "the kill did not cancel the killed context")
+		after := h.row()
+		require.Equal(t, holdrecord.Row{Gen: before.Gen + 1, Phase: natsgrant.OperatorPhasePrepare, HoldID: id, SignedAt: after.SignedAt}, after,
+			"the move the kill fell after was not stored")
+		return err
+	}
+
+	// Control: the kill as it stood before answers the client the routes' 200.
+	err := move(h.killServedThenCancelled, "served")
+	require.NoError(t, err, "control: the client did not read the 200 the routes served it")
+	_, err = h.s.Records.MoveRow(context.Background(), h.row().Gen, natsgrant.OperatorPhaseReleased, "served", "the control's abort")
+	require.NoError(t, err, "the control's move back to released")
+
+	err = move(func(match func(*http.Request, []byte) bool) (context.Context, *t7Kill) { return h.killAt(match, true) }, "killed")
+	require.Error(t, err, "the client read a success to the write killAt killed after")
+	require.ErrorContains(t, err, "answered 503", "the client's answer is not the kill's 503")
 }
 
 // t7KillDialer dials the operator's connection of one consumer-names run and kills that run at its
