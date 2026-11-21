@@ -14,11 +14,12 @@ body: |-
   would pass the client's deadline. A write (POST, PATCH) is asked again by its keyed retry instead,
   under the one idempotency key of its call (the caller's own where it named one, `projectArtifact`
   and `docEdit`, and otherwise the one the call minted), after the longer of its scheduled pause
-  (1, 2, 4 and 8 s, none starting past 30 s) and the answer's `Retry-After`: a 429 at once, since
-  nothing of the write ran, and a 503 only against a Dispatch this process has seen run the keyed
-  layer, since it can follow an earlier commit of the write, so Dispatch runs the one write and
-  replays its answer. A write that runs out of asks ends with the 429 as Dispatch wrote it, or,
-  after a 503, unsettled with its key. A `500 COMMIT_OUTCOME_UNKNOWN` is never waited out: a read,
-  a PUT or a DELETE gets it back at once, and a write asks again only under its key, against a
-  Dispatch that runs the keyed layer. Every other answer comes back as before. The waits are taken
-  on the timer the constructor's `writeRetry` carries (`pause`), which a test replaces.
+  (1, 2, 4 and 8 s, none starting past 30 s) and the answer's `Retry-After`, with no `/healthz`
+  read first (every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route):
+  a 429, since nothing of the write ran, and a 503, which can follow an earlier commit of the
+  write, so Dispatch runs the one write and replays its answer. A write that runs out of asks ends
+  with the 429 as Dispatch wrote it, or, after a 503, unsettled with its key. A
+  `500 COMMIT_OUTCOME_UNKNOWN` is never waited out: a read, a PUT or a DELETE gets it back at
+  once, and a write asks again only under its key. Every other answer comes back as before. The
+  waits are taken on the timer the constructor's `writeRetry` carries (`pause`), which a test
+  replaces.

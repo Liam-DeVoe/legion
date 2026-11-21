@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   type ArchitectureSource,
   type IssueSummary,
@@ -17,7 +17,6 @@ import {
   DispatchNoRouteError,
   type DispatchWriteRetry,
   DispatchWriteUnsettledError,
-  forgetKeyedLayerMemory,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -1764,11 +1763,6 @@ describe("syncArchitectureSources against a server older than the every-source s
 // write-outcome.ts, reads a 429 as `try-later` and a 5xx as `server-error`), on its own pacing or
 // the longer Retry-After.
 describe("DispatchClient waits out Retry-After", () => {
-  // What a Dispatch runs is remembered per process and origin, and these rows drive one origin as
-  // Dispatches of their own.
-  beforeEach(forgetKeyedLayerMemory);
-  afterEach(forgetKeyedLayerMemory);
-
   // The client waits out `Retry-After`, and paces a write's asking, on the write retry's own clock
   // and timer, so here a wait moves `at` instead of sleeping. The schedule is the write's default
   // (1, 2, 4 and 8 s, none starting past 30 s), which a read's wait-out does not read.
@@ -1834,21 +1828,26 @@ describe("DispatchClient waits out Retry-After", () => {
 
   /**
    * A Dispatch whose every answer to the write is made from the key the request carries (an
-   * answer that throws is a failed fetch), and whose `/healthz` says `runsKeyedLayer` of its keyed
-   * layer. `requests` holds the write's sends alone.
+   * answer that throws is a failed fetch). `requests` holds the write's sends alone, and `probes`
+   * every read of `/healthz`, which the client makes none of: every Dispatch that carries
+   * `b1c42d1d7d` runs the keyed layer on every write route, so a write is asked again under its key
+   * without asking first. A probe is answered that the keyed layer does not run, so a client that
+   * asked and heeded it would not send the write again either.
    */
-  function keyedDispatch(answers: readonly ((key: string) => Response)[], runsKeyedLayer: boolean) {
+  function keyedDispatch(answers: readonly ((key: string) => Response)[]) {
     const requests: RecordedRequest[] = [];
+    const probes: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (String(input).endsWith("/healthz")) {
-        return jsonResponse({ idempotency_keys: runsKeyedLayer });
+        probes.push(String(input));
+        return jsonResponse({ idempotency_keys: false });
       }
       requests.push({ url: String(input), init: init ?? {} });
       const answer = answers[requests.length - 1];
       if (answer === undefined) throw new Error("unexpected request");
       return answer((init?.headers as Record<string, string>)["Idempotency-Key"] ?? "");
     }) as typeof fetch;
-    return { fetchImpl, requests };
+    return { fetchImpl, requests, probes };
   }
 
   /** What `call` threw, which must be `DispatchWriteUnsettledError`. */
@@ -1985,8 +1984,9 @@ describe("DispatchClient waits out Retry-After", () => {
   // (no key back), and 503 REQUEST_TIMEOUT, which it sends only to a read, read as any 5xx. The
   // write is asked again under its one key after the Retry-After and returns the 2xx, whether that
   // answer was the first (`nothing-sent`) or came after an attempt that may have landed
-  // (`may-have-landed`: a connection reset once the request went out). From there it asks only a
-  // Dispatch that runs the keyed layer, as the echo or `/healthz` says.
+  // (`may-have-landed`: a connection reset once the request went out). It asks no `/healthz` first,
+  // whatever the failure: every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every
+  // write route, so Dispatch runs the one write and answers a repeat from the key.
   test.each([
     [429, "OVERLOADED", false, "nothing-sent"],
     [429, "OVERLOADED", false, "may-have-landed"],
@@ -1999,14 +1999,11 @@ describe("DispatchClient waits out Retry-After", () => {
     [503, "REQUEST_TIMEOUT", true, "nothing-sent"],
     [503, "REQUEST_TIMEOUT", true, "may-have-landed"],
   ] as const)("a POST answered %d %s (key back: %p) from %s is asked again under its key and returns the 2xx", async (status, code, echoed, from) => {
-    const { fetchImpl, requests } = keyedDispatch(
-      [
-        ...(from === "may-have-landed" ? [reset] : []),
-        (key) => refusal(status, code, "5", echoed ? key : undefined),
-        created,
-      ],
-      true
-    );
+    const { fetchImpl, requests, probes } = keyedDispatch([
+      ...(from === "may-have-landed" ? [reset] : []),
+      (key) => refusal(status, code, "5", echoed ? key : undefined),
+      created,
+    ]);
     const { state, writeRetry } = fakeClock();
     const client = retryClient(fetchImpl, writeRetry);
 
@@ -2018,70 +2015,79 @@ describe("DispatchClient waits out Retry-After", () => {
     expect(keys).toHaveLength(from === "nothing-sent" ? 2 : 3);
     expect(keys[0]).toBeString();
     expect(new Set(keys).size).toBe(1);
+    expect(probes).toEqual([]);
     expect(state.waits.at(-1)).toBe(5_000);
   });
 
   // A write's 503 can come after an earlier statement of it committed, its key's claim among them,
-  // so its table reads it as `server-error` (`may-have-landed`): a Dispatch not known to run the
-  // keyed layer, which would run a repeat as a second write, is not sent it again, and the write
-  // ends unsettled, carrying its key.
+  // so its table reads it as `server-error` (`may-have-landed`). It is asked again under the key its
+  // first send carried, with no `/healthz` read first - Dispatch answers the repeat from what the key
+  // holds - after the longer of its schedule's pause and the Retry-After, and with no ask left the
+  // write ends unsettled, carrying that key.
   test.each([
     "DATABASE_BUSY",
     "REQUEST_TIMEOUT",
-  ])("a POST answered 503 %s is not sent again to a Dispatch not known to run the keyed layer", async (code) => {
-    const { fetchImpl, requests } = keyedDispatch([() => refusal(503, code, "1")], false);
+  ])("a POST answered 503 %s is asked again under its first send's key with no /healthz read, then ends unsettled", async (code) => {
+    const { fetchImpl, requests, probes } = keyedDispatch(
+      Array.from({ length: 5 }, () => () => refusal(503, code, "1"))
+    );
     const { state, writeRetry } = fakeClock();
     const client = retryClient(fetchImpl, writeRetry);
 
     const error = await unsettled(client.message("DSP-1", { body: "Shipped.", actor }));
 
-    expect(requests).toHaveLength(1);
-    expect(error.key).toBe(keysOf(requests)[0] ?? "");
+    const keys = keysOf(requests);
+    expect(keys).toHaveLength(5);
+    expect(keys[0]).toBeString();
+    expect(keys).toEqual(Array.from({ length: 5 }, () => keys[0]));
+    expect(probes).toEqual([]);
+    expect(error.key).toBe(keys[0] ?? "");
+    expect(error.attempts).toBe(5);
     expect(error.last).toMatchObject({ name: "DispatchServiceError", code, status: 503 });
-    expect(state.waits).toEqual([]);
+    expect(state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
   });
 
   // Dispatch answers `500 COMMIT_OUTCOME_UNKNOWN` when it sent the write's COMMIT and heard nothing
   // back, so the write may have landed. Its table reads it as `server-error`, which moves the write
-  // to `may-have-landed`, so it is never asked again as if nothing ran: a Dispatch not known to run
-  // the keyed layer is not sent it again at all, where its 429 is; one that runs it gets every
-  // repeat under the one key, which it answers from what the key holds; and with no ask left the
-  // write ends `DispatchWriteUnsettledError`, carrying that key.
+  // to `may-have-landed`, so it is never asked again as if nothing ran: every repeat goes under the
+  // key its first send carried, with no `/healthz` read first, and Dispatch answers it from what the
+  // key holds; and with no ask left the write ends `DispatchWriteUnsettledError`, carrying that key.
+  // Its 429, answered before anything ran, is asked again under the key as well.
   test("a POST answered 500 COMMIT_OUTCOME_UNKNOWN is never asked again as if nothing ran", async () => {
     const unknown = (key?: string) => refusal(500, "COMMIT_OUTCOME_UNKNOWN", undefined, key);
     const message = (client: DispatchClient) =>
       client.message("DSP-1", { body: "Shipped.", actor });
 
-    const bare = keyedDispatch([() => unknown()], false);
-    const bareClock = fakeClock();
-    const bareEnd = await unsettled(message(retryClient(bare.fetchImpl, bareClock.writeRetry)));
-    expect(bare.requests).toHaveLength(1);
-    expect(bareEnd.key).toBe(keysOf(bare.requests)[0] ?? "");
-    expect(bareEnd.last).toMatchObject({ code: "COMMIT_OUTCOME_UNKNOWN", status: 500 });
-    expect(bareClock.state.waits).toEqual([]);
-
-    const busy = keyedDispatch(
-      [() => refusal(429, "OVERLOADED", "1"), () => jsonResponse(posted, 201)],
-      false
-    );
+    const busy = keyedDispatch([
+      () => refusal(429, "OVERLOADED", "1"),
+      () => jsonResponse(posted, 201),
+    ]);
     await expect(
       message(retryClient(busy.fetchImpl, fakeClock().writeRetry))
     ).resolves.toMatchObject(posted);
-    expect(busy.requests).toHaveLength(2);
+    const busyKeys = keysOf(busy.requests);
+    expect(busyKeys).toHaveLength(2);
+    expect(busyKeys[1]).toBe(busyKeys[0]);
+    expect(busy.probes).toEqual([]);
 
-    const keyed = keyedDispatch(
-      Array.from({ length: 5 }, () => unknown),
-      true
-    );
-    const keyedClock = fakeClock();
-    const keyedEnd = await unsettled(message(retryClient(keyed.fetchImpl, keyedClock.writeRetry)));
-    const keys = keysOf(keyed.requests);
-    expect(keys).toHaveLength(5);
-    expect(new Set(keys).size).toBe(1);
-    expect(keyedEnd.key).toBe(keys[0] ?? "");
-    expect(keyedEnd.attempts).toBe(5);
-    expect(keyedEnd.last).toMatchObject({ code: "COMMIT_OUTCOME_UNKNOWN", status: 500 });
-    expect(keyedClock.state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
+    for (const echoed of [false, true]) {
+      const keyed = keyedDispatch(
+        Array.from({ length: 5 }, () => (key: string) => unknown(echoed ? key : undefined))
+      );
+      const keyedClock = fakeClock();
+      const keyedEnd = await unsettled(
+        message(retryClient(keyed.fetchImpl, keyedClock.writeRetry))
+      );
+      const keys = keysOf(keyed.requests);
+      expect(keys).toHaveLength(5);
+      expect(keys[0]).toBeString();
+      expect(keys).toEqual(Array.from({ length: 5 }, () => keys[0]));
+      expect(keyed.probes).toEqual([]);
+      expect(keyedEnd.key).toBe(keys[0] ?? "");
+      expect(keyedEnd.attempts).toBe(5);
+      expect(keyedEnd.last).toMatchObject({ code: "COMMIT_OUTCOME_UNKNOWN", status: 500 });
+      expect(keyedClock.state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
+    }
   });
 
   test("answers any other refusal at once, as before", async () => {
@@ -2220,7 +2226,8 @@ describe("DispatchClient waits out Retry-After", () => {
   // that attempt carried: Dispatch answers it `409 KEY_IN_FLIGHT` and the call collects that run's
   // answer (dispatch-keyed-writes.test.ts), where a new key could run the write a second time. The
   // 429 after it was answered before the keyed layer ran, so it carries no key back, and the
-  // client asks `/healthz` before it asks again; the 201 the keyed layer answers carries it.
+  // client asks again under the same key with no `/healthz` read first; the 201 the keyed layer
+  // answers carries it.
   test("repeats a write cut off for silence under the key its first attempt carried", async () => {
     // An answer that never comes: the request waits until its signal aborts, then fails with its
     // reason, as fetch does, which is how `#attempt`'s silence cut ends it.
@@ -2238,10 +2245,14 @@ describe("DispatchClient waits out Retry-After", () => {
       (_signal, key) => created(key),
     ];
     const keys: (string | undefined)[] = [];
+    const probes: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      // A silence cut is no answer at all, so the client asks `/healthz` whether this Dispatch
-      // runs the keyed layer before it asks again under the key.
-      if (String(input).endsWith("/healthz")) return jsonResponse({ idempotency_keys: true });
+      // A silence cut is no answer at all, and the client still asks no `/healthz` before it asks
+      // again under the key; a probe is recorded and answered that the keyed layer does not run.
+      if (String(input).endsWith("/healthz")) {
+        probes.push(String(input));
+        return jsonResponse({ idempotency_keys: false });
+      }
       const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
       keys.push(key);
       const answer = answers[keys.length - 1];
@@ -2265,7 +2276,8 @@ describe("DispatchClient waits out Retry-After", () => {
 
     expect(keys).toHaveLength(3);
     expect(keys[0]).toBeString();
-    expect(new Set(keys).size).toBe(1);
+    expect(keys).toEqual([keys[0], keys[0], keys[0]]);
+    expect(probes).toEqual([]);
     // The schedule's 1 s after the cut, then the in-flight pause of 3 s, longer than the 429's
     // Retry-After, since Dispatch may still be running the cut attempt.
     expect(state.waits).toEqual([1_000, 3_000]);
