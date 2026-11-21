@@ -182,8 +182,10 @@ GREP
 # case writes and otherwise as GitHub answers a repository with no such record: the commits that
 # touch the cutoff marker on the pull request's base branch, whichever it is
 # (`$work/cutoff-commits`, else none, so the rule is inactive); one
-# release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding
-# `HTTP 500` a server error); one commit's files (`$work/commit.<sha>`, else a refusal); and the
+# release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, a file holding
+# `HTTP 500` a server error, and a file holding `HTTP 504 saying 404` a gateway's 504 whose body
+# message carries `(HTTP 404)`, as gh 2.98.0 prints one: the body's message, then the status);
+# one commit's files (`$work/commit.<sha>`, else a refusal); and the
 # pull request's files (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints
 # them, else a refusal; read without --paginate, also a refusal). The repository's history and
 # tags, which the rule reads with git, are a bare repository under `$work/remote`, which
@@ -218,6 +220,7 @@ case "$1 $2" in
     file="$PR_TEXT_TEST_DIR/release.${2#repos/example/repo/releases/tags/}"
     if [ ! -e "$file" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
     if grep -q -x 'HTTP 500' "$file"; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    if grep -q -x 'HTTP 504 saying 404' "$file"; then echo "gh: upstream said (HTTP 404) (HTTP 504)" >&2; exit 1; fi
     cat "$file" ;;
   "api repos/example/repo/pulls/7/files?per_page=100")
     [[ " $* " == *" --paginate "* ]] || { echo "files route read without --paginate: $*" >&2; exit 3; }

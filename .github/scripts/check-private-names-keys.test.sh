@@ -206,6 +206,23 @@ key_run
 check "a server error on a release exits 2" "$(is "$status" 2)"
 check "names the release it could not read" \
   "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9.0.0 (gh: Server Error (HTTP 500))')"
+# A gateway's 504 whose body message says `(HTTP 404)`: gh 2.98.0 prints the body's message and
+# then the status, `gh: upstream said (HTTP 404) (HTTP 504)` (driven against a local server in an
+# issue pod, dispatch://INFRA-1545, round 52). That is a read that got no answer, not GitHub's
+# answer that the release does not exist: it is retried and then UNKNOWN, and never read as a
+# 404 that skips legion-v9.0.0 and takes the next release, legion-v9.1.0, as the cutoff.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+marker_on_main
+echo 'HTTP 504 saying 404' > "$work/release.legion-v9.0.0"
+release legion-v9.1.0 2026-11-20T06:00:00Z
+key_run
+check "a 504 whose message says (HTTP 404) exits 2" "$(is "$status" 2)"
+check "a 504 whose message says (HTTP 404) is read again, never once as a 404" \
+  "$(is "$(release_calls | grep -c -x 'legion-v9\.0\.0')" 5)"
+check "a 504 whose message says (HTTP 404) names the release it could not read, by gh's own line" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9.0.0 (gh: upstream said (HTTP 404) (HTTP 504))')"
+check "a 504 whose message says (HTTP 404) takes no later release as the cutoff" \
+  "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 mv "$work/remote" "$work/remote.held"
