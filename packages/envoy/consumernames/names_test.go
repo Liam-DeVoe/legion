@@ -1039,3 +1039,32 @@ func TestANativeAllFirstCreateIsKeptUnderTheBoundary(t *testing.T) {
 		}
 	}
 }
+
+// A replacement whose predecessor the server confirmed deleted keeps no record of it: a session
+// restarted many times keeps a record of one size. The control is a predecessor whose delete
+// failed, which stays retired for the cleanup.
+func TestAPredecessorTheReplacementDeletedIsRetiredNoLonger(t *testing.T) {
+	h := newHarness()
+	names := h.names("p1")
+	sel, _, err := names.Ensure(context.Background(), "ses-1", CreateRequest{Create: h.server.create("ses-1"), First: first(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := range 5 {
+		if sel, err = names.Replace(context.Background(), sel, 1, h.server.create("ses-1")); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+	if retired := h.store.record(t, "ses-1").Retired; len(retired) != 0 {
+		t.Fatalf("after five replacements whose predecessors were deleted the record retires %v, want none", retired)
+	}
+	// Control: a predecessor whose delete failed stays retired.
+	old := sel.Record.Current
+	names.cfg.Server = deleteFails{h.server, errors.New("the delete timed out")}
+	if _, err := names.Replace(context.Background(), sel, 1, h.server.create("ses-1")); err != nil {
+		t.Fatal(err)
+	}
+	if retired := h.store.record(t, "ses-1").Retired; !contains(retired, old) || len(retired) != 1 {
+		t.Fatalf("after a replacement whose predecessor's delete failed the record retires %v, want only %s", retired, old)
+	}
+}
