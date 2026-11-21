@@ -199,7 +199,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
   "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
-  "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
+  "handoff of its own, never this completion's record or commit), the implementer's completion of implementing with no open " +
   "pull request on `legion/<issue>` and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +

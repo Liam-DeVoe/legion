@@ -2481,7 +2481,9 @@ package api
 // the verdict, which no longer makes the completion's key, and any other role's verdict below it
 // is refused as above (`api.CheckStatesContract`). The reviewer's task no longer names `Tester's
 // verdict:`, and a `phase-finished` notice loses `verdict`: from the tester's phase its `reason`
-// names each check that does not pass at the tested head, or what the move waits for. No shape of
+// names each check that does not pass at the tested head, or what the move waits for. The
+// instruction a `HANDOFF_STALE_ENTRY` refusal ends with, which the `legion` tool's description
+// repeats, names no verdict: it ends "never this completion's record or commit". No shape of
 // `GET /legion/v1/state` moves.
 // (This entry takes 206, above main's 202: a reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on

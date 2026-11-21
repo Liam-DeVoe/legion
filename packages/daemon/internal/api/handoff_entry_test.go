@@ -185,7 +185,7 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
 		"nothing was recorded",
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session",
-		"complete it with a handoff of its own, never this completion's record, commit or verdict",
+		"complete it with a handoff of its own, never this completion's record or commit",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)

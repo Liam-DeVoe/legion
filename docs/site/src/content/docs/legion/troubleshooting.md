@@ -1543,8 +1543,8 @@ These arrive as messages on the Dispatch issue:
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
   task is work of its own, done at the head it names and completed with a handoff of its own,
-  never the refused completion's record, commit or verdict. A testing entry after such a move is
-  for the head the fix pushed, and the verdict on the head before it answers for nothing there.
+  never the refused completion's record or commit. A testing entry after such a move is for the
+  head the fix pushed, and what was tested at the head before it answers for nothing there.
   A completion at the head the record holds is taken rather than refused, where the phase ends
   with a handoff record this role writes and no move back raised the entry it is behind: the
   phase was handed out again at that same head, so the work the new entry's task asks for is the

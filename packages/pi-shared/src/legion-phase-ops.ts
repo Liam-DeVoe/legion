@@ -315,7 +315,7 @@ export const PHASE_OP_SENTENCES = {
 export const STALE_ENTRY_INSTRUCTION =
   "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. " +
   "That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's " +
-  "record, commit or verdict";
+  "record or commit";
 
 /**
  * The `legion` tool's description on every host, one template: what the tool is, then `before`,

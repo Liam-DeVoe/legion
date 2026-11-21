@@ -6,7 +6,8 @@ body: |-
   phase's, before the handoff record is read or a grant minted, with `handoff_complete carries no
   verdict on a phase completion: Dispatch's check states decide the testing phase`. `verdict`
   (pass, pending or fail) belongs to a production check report alone, and the tool's description
-  says so.
+  says so. The description's `HANDOFF_STALE_ENTRY` instruction names no verdict either: it ends
+  "never this completion's record or commit", as the daemon's refusal does.
 time: 2026-11-21T13:48:28Z
 custom:
     Issue: check-states-tool

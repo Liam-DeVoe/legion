@@ -172,6 +172,8 @@ test("the description gives HANDOFF_STALE_ENTRY the instruction the daemon's ref
   const sentence = description.slice(opens, description.indexOf("), ", opens));
   expect(sentence).toEndWith(`nothing was recorded. ${instruction}`);
   expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
+  // A phase completion carries no verdict, so the instruction names what one does carry alone.
+  expect(instruction).toEndWith("never this completion's record or commit");
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
