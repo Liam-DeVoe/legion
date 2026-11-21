@@ -80,7 +80,7 @@ type Source string
 
 const (
 	// SourceConfiguration is what legion.yaml alone decides: runtime.kubernetes.resources, and
-	// whether a broker is configured at all (runtime.kubernetes.agent_secrets).
+	// under tmux that no broker enrolls a pod.
 	SourceConfiguration Source = "configuration"
 	// SourceBoot is what boot measured: the probe's OK line, the plugin gate's read under tmux,
 	// the broker login, and the pool's room for the probe at boot.

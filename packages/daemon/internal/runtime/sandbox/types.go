@@ -440,35 +440,29 @@ type PodResources struct {
 // DISPATCH_TOKEN in its start command's Files, which the launcher writes into the generation's
 // private directory, and its role reads it through DISPATCH_TOKEN_FILE.
 //
-// Broker is dispatch_token_broker: a launch into a pod that carries an exchange identity
-// (launch.trades) carries no Dispatch token at all, and its role is told DISPATCH_TOKEN_BROKER=1,
-// under which its Dispatch client trades that identity at the secrets broker for a token of its
-// own session. Every pod a launch builds carries that identity, since New requires
-// AgentSecrets.ExchangeAudience. Transition, given only with Broker, is the shared token
-// dispatch_token_transition_file holds: a launch that keeps a live pod built before the identity
-// carries it as a launch carries Bearer, since a role of such a pod has no identity to trade until
-// its update round replaces the pod; with no Transition such a launch is refused, nothing of the
-// pod touched, and waits for that round (runtime.ErrAwaitingPodRound).
+// Broker is dispatch_token_broker: no launch carries a Dispatch token at all, and every role a
+// launch starts is told DISPATCH_TOKEN_BROKER=1, under which its Dispatch client trades its pod's
+// exchange identity at the secrets broker for a token of its own session. Every pod a launch
+// builds carries that identity, since New requires AgentSecrets.ExchangeAudience, and a launch that
+// keeps a live pod built before the identity is refused, nothing of the pod touched, and waits for
+// that pod's update round (runtime.ErrAwaitingPodRound), with or without Broker: its role would hold
+// no credential for the Envoy listener, which takes no shared bearer (relaunch's listenerCredential).
 type DispatchCredential struct {
-	Bearer     string
-	Broker     bool
-	Transition string
+	Bearer string
+	Broker bool
 }
 
 // DispatchTokens is what the runtime counts of the Dispatch tokens its launches hand out
-// (Runtime.DispatchTokens): the two counts a deployment under dispatch_token_broker reads before
-// it removes dispatch_token_transition_file (dispatch://INFRA-4425 R4).
+// (Runtime.DispatchTokens) under dispatch_token_broker.
 //
-// TransitionLaunches is how many launches since this runtime was built sent a start that carried
-// the transition token (DispatchCredential.Transition), and LastTransitionLaunch when the latest
-// of them was sent, zero before the first. LiveLaunches is how many claims' live generations
-// started with DISPATCH_TOKEN in their start command's Files, whichever daemon started them: the
-// launcher deletes those files with the generation, so a token handed to a role lives exactly as
-// long as the generation it was handed to.
+// LiveLaunches is how many claims' live generations started with DISPATCH_TOKEN in their start
+// command's Files, whichever daemon started them: the launcher deletes those files with the
+// generation, so a token handed to a role lives exactly as long as the generation it was handed
+// to. Under the setting no launch carries one, so the generations it counts are those a daemon
+// without the setting started with the shared bearer, which a deployment that moved to the setting
+// waits out before it revokes that bearer.
 type DispatchTokens struct {
-	TransitionLaunches   int
-	LastTransitionLaunch time.Time
-	LiveLaunches         int
+	LiveLaunches int
 }
 
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the

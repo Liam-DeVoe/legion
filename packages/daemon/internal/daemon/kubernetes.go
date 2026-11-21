@@ -337,8 +337,7 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 // credential is the launch's Dispatch credential (readBoot): the bearer dispatch_token_file holds,
-// or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker) and the
-// transition token.
+// or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker).
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, credential sandbox.DispatchCredential, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {

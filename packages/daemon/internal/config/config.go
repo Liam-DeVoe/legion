@@ -161,14 +161,9 @@ type Config struct {
 	// takes it, and only beside DispatchURL and runtime.kubernetes.agent_secrets.exchange_audience.
 	// The loader reads no environment, so it decides nothing about that trade: boot makes it.
 	DispatchTokenBroker bool
-	// DispatchTokenTransitionFile is `dispatch_token_transition_file`, a path like
-	// DispatchTokenFile and "" when the file names none: the file holding the shared Dispatch
-	// token a launch into a pod built before DispatchTokenBroker was on gets. The daemon never
-	// calls Dispatch with it, and the loader takes it only beside DispatchTokenBroker.
-	DispatchTokenTransitionFile string
-	Projects                    map[string]Project
-	Gates                       Gates
-	GitHubApps                  GitHubApps
+	Projects            map[string]Project
+	Gates               Gates
+	GitHubApps          GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -345,6 +340,8 @@ const (
 // would. `envoy_token_file`'s reason names what calls the listener in the shared bearer's place
 // under each runtime: the broker tokens traded under exchange_audience (checkKubernetesKeys), and
 // under tmux no credential to a loopback listener (checkLoopbackListener).
+// `dispatch_token_transition_file`'s names what a launch into a pod with no exchange identity does
+// in the transition token's place: it waits for that pod's update round.
 var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
 	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
@@ -353,6 +350,8 @@ var tossedKeys = map[string]string{
 	"envoy_token_file": "the Envoy listener takes no shared bearer any more: under runtime: kubernetes the daemon presents its own broker token (DPoP)" +
 		" and each pod's sessions trade their own, both under " + agentSecretsKey + ".exchange_audience; under runtime: tmux the daemon and its panes" +
 		" call a loopback listener (envoy_url's default, " + defaultEnvoyURL + "), which needs no credential; remove envoy_token_file from legion.yaml",
+	"dispatch_token_transition_file": "under runtime: kubernetes a launch into a pod with no exchange identity waits for that pod's update round," +
+		" because the Envoy listener takes no shared bearer, so no launch carries a transition token; remove dispatch_token_transition_file from legion.yaml",
 }
 
 // warnedKeys are the settings that no longer exist and that a file may carry all the same, mapped
@@ -413,17 +412,15 @@ type fileConfig struct {
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
 	DispatchTokenFile      *string
-	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
-	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
-	DispatchTokenBroker         *bool
-	DispatchTokenTransitionFile *string
-	Projects                    map[string]Project
-	Gates                       *Gates
-	GitHubApps                  *GitHubApps
-	Linger                      *time.Duration
-	ProductionCheckBound        *time.Duration
-	PodUpdateGrace              *time.Duration
-	StalledTreeNotice           *time.Duration
+	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out.
+	DispatchTokenBroker  *bool
+	Projects             map[string]Project
+	Gates                *Gates
+	GitHubApps           *GitHubApps
+	Linger               *time.Duration
+	ProductionCheckBound *time.Duration
+	PodUpdateGrace       *time.Duration
+	StalledTreeNotice    *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -836,12 +833,6 @@ const providerKeysShape = "provider_keys must be a mapping of the variable OMP r
 // stop every pane.
 var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"}
 
-// envoyBearerEnv are the variables an agent's Envoy client reads a shared listener bearer from,
-// ahead of the broker token its session trades (envoySettings, packages/envoy-client). The
-// listener takes no shared bearer, so a provider key of either name, which the shim exports into
-// every agent's environment, would have the listener refuse every call 401; the loader refuses it.
-var envoyBearerEnv = []string{"ENVOY_TOKEN", "ENVOY_TOKEN_FILE"}
-
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
@@ -868,10 +859,8 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 		if slices.Contains(paneGitHubEnv, env) {
 			return nil, fmt.Errorf("%s names %s, which the daemon sets on every pane and pod (the role's GitHub App tokens are the gh files under LEGION_GH_OWNERS_DIR, GH_CONFIG_DIR its issue's owner's and LEGION_GH_PATH the real gh `legion gh` runs; GH_TOKEN, GITHUB_TOKEN and GH_HOST are emptied so nothing outranks them), so a provider key may not use that name", key, env)
 		}
-		if slices.Contains(envoyBearerEnv, env) {
-			return nil, fmt.Errorf("%s names %s: the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE"+
-				" in its environment before the broker token its session trades under %s.exchange_audience, so the listener would refuse every call 401"+
-				" (under runtime: tmux an agent calls the loopback listener with no credential); remove the key", key, env, agentSecretsKey)
+		if slices.Contains(runtime.EnvoyBearerVariables, env) {
+			return nil, fmt.Errorf("%s names %s: %s; remove the key", key, env, runtime.EnvoyBearerRefusal)
 		}
 		if seen[env] {
 			return nil, fmt.Errorf("%s names %s twice", key, env)
@@ -1083,7 +1072,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		}
 		cfg.AdvertiseHost = *file.AdvertiseHost
 	}
-	if err := resolveDispatchTokenBroker(file, configDir, &cfg); err != nil {
+	if err := resolveDispatchTokenBroker(file, &cfg); err != nil {
 		return Config{}, err
 	}
 

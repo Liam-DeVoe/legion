@@ -91,7 +91,9 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 // `dispatch_url` whose file names neither of the two Dispatch credentials, a secrets broker that
 // refuses this machine's identity under `dispatch_token_broker` (controllerDispatchBroker) and a
 // blank or unreadable Dispatch token file under `dispatch_token_file`, an instructions file that
-// is missing or blank, and an Oh My Pi invocation that does not resolve;
+// is missing or blank, an Oh My Pi invocation that does not resolve, and an `envoy_url` off
+// loopback when the controller's environment names no secrets broker and machine identity
+// (ControllerConfig.CheckListener: the session would present that listener no credential);
 // then probe that Oh My Pi as the controller will run it — the launch prefix, the invocation, the
 // controller's whole environment, in
 // `<state_dir>/controller`, created for it, at the operator's terminal — and refuse a
@@ -205,7 +207,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// controller hears a project's mentions, and an inherited list is no project's word for this
 	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
 	// told: this controller resumes no recorded session, and an inherited value would stop it where
-	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
+	// Oh My Pi would otherwise move a held session to a new id. So are an inherited Envoy bearer's
+	// variables (runtime.EnvoyBearerVariables), which an operator shell or a pane of an older daemon
+	// may carry: the listener takes no shared bearer, and the session's Envoy client would present
+	// either before the broker token it trades with this machine's identity. A machine that holds its Dispatch
 	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
 	// would be presented in place of the traded token as a bearer Dispatch refuses
 	// (controllerDispatchBroker). The drop is not the whole of it — the
@@ -228,12 +233,18 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
 	delete(env, "LEGION_SLACK_CHANNELS")
 	delete(env, runtime.SessionExclusiveVariable)
+	for _, name := range runtime.EnvoyBearerVariables {
+		delete(env, name)
+	}
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
 	}
 	for _, pair := range controllerEnvironment(cfg, stateDir, runtime.SecretFilePath(stateDir, token), gh) {
 		env[pair[0]] = pair[1]
+	}
+	if err := cfg.CheckListener(env); err != nil {
+		return 0, err
 	}
 	created, err := makeDirs(controllerDir)
 	if err != nil {

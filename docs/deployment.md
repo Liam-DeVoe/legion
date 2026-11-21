@@ -430,11 +430,13 @@ A pane's Dispatch bearer is the daemon's own. The daemon reads `dispatch_token_f
 `packages/daemon/internal/runtime/tmux/spawn.go`). The value never enters tmux's argv or a pane's
 environment. So a pane holds the daemon's own credential, not one of its own.
 
-The Envoy listener bearer reaches a pane the same way. It is a launch secret, `ENVOY_TOKEN`
-(`launchSecrets`, `packages/daemon/internal/daemon/launchsecrets.go`), and the tmux runtime writes
-every launch secret to a 0600 file of its own under `<state_dir>/secrets` and tells the pane the
-matching `<NAME>_FILE` pointer, here `ENVOY_TOKEN_FILE` (`secretFiles`, `WriteSecretFiles` and
-`panePairs`, `packages/daemon/internal/runtime/tmux/spawn.go`).
+No Envoy listener bearer reaches a pane. The listener takes no shared bearer, so a daemon under
+`runtime: tmux` and its panes call a loopback listener with no credential, and the loader refuses
+an `envoy_url` whose host is not `localhost` or a loopback address (`checkLoopbackListener`,
+`packages/daemon/internal/config/config.go`). The one launch secret is the pane NATS nkey seed,
+which the tmux runtime writes to a 0600 file of its own under `<state_dir>/secrets` and points the
+pane at with `NATS_NKEY_SEED_FILE` (`secretFiles`, `WriteSecretFiles` and `panePairs`,
+`packages/daemon/internal/runtime/tmux/spawn.go`).
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens
 (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bearer against them (`MatchesSharedAgentToken`,
@@ -587,8 +589,9 @@ provider_keys:
   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
   resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
   session it resumes), the git
-  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
-  gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
+  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointer to the secret every launch
+  gets as a file of its own (`NATS_NKEY_SEED_FILE`), an Envoy bearer (`ENVOY_TOKEN`,
+  `ENVOY_TOKEN_FILE`), which the listener takes no shared one of, the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
   `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,

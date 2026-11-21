@@ -178,7 +178,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"LEGION_CONTROLLER": "1", "LEGION_ROLE": string(claim.RoleController), "LEGION_PROJECT": testProject,
 		"LEGION_DAEMON_URL": opts.DaemonURL, "LEGION_STATE_DIR": StateDir, "ENVOY_URL": opts.EnvoyURL,
 		"ENVOY_NATS_URL": opts.NATSURLs[0], "LEGION_BOOT_TOKEN_FILE": generationDir(2) + "/" + bootTokenKey,
-		"ENVOY_TOKEN_FILE": generationDir(2) + "/ENVOY_TOKEN", "LEGION_GENERATION": "2",
+		"NATS_NKEY_SEED_FILE": generationDir(2) + "/NATS_NKEY_SEED", "LEGION_GENERATION": "2",
 		"GH_CONFIG_DIR": GHConfigDir + "/sjawhar", "GH_TOKEN": "", "GITHUB_TOKEN": "", "GH_HOST": "",
 		"LEGION_GH_OWNERS_DIR": GHConfigDir, "LEGION_GH_PATH": opts.Tools.GH,
 		"AGENT_SECRETS_URL": opts.AgentSecrets.URL, "AGENT_SECRETS_KEY_DIR": AgentSecretsKeyDir,
@@ -256,7 +256,7 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 			started = &start
 		}
 	}
-	if started == nil || started.Files[bootTokenKey] != spec.BootToken || started.Files["ENVOY_TOKEN"] != "envoy-bearer" {
+	if started == nil || started.Files[bootTokenKey] != spec.BootToken || started.Files["NATS_NKEY_SEED"] != testPaneSeed {
 		t.Fatalf("the controller's launcher was started with %+v, want its boot token and launch secrets", started)
 	}
 }

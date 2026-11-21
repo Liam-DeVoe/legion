@@ -98,12 +98,10 @@ type launchedSession struct {
 }
 
 // nameSession records the session l's launch, starting as loc, runs under where prepare chose it:
-// a Claude Code launch's (claudeInputs), and an Oh My Pi launch's that trades an exchange identity
-// (ompInputs), which its `--session-id <id>`, `--resume <id>` or `--resume=<id>` names. An Oh My
-// Pi launch that trades nothing — a kept pod built before the exchange identity — has no chosen id,
-// since relaunch cleared it (l.omp is zero): its agent mints one and reports it at its
-// registration, and it leaves no record for the claim. The record goes when the process is let
-// go, with the watch's (forget, forgetIf).
+// a Claude Code launch's (claudeInputs), and an Oh My Pi launch's (ompInputs), which its
+// `--session-id <id>`, `--resume <id>` or `--resume=<id>` names. A launch whose session is none,
+// which no launch prepare built has, leaves no record for the claim. The record goes when the
+// process is let go, with the watch's (forget, forgetIf).
 func (r *Runtime) nameSession(loc runtime.Locator, l launch) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -131,39 +129,27 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 	return named.session, true
 }
 
-// DispatchTokens answers the two counts a deployment under dispatch_token_broker reads before it
-// removes dispatch_token_transition_file (DispatchTokens): the launches since this runtime was
-// built that carried the transition token, with the time of the last, and the claims whose live
-// generation started with a Dispatch token (dispatchTokenClaims). Without the setting nothing is
-// counted, and nothing reads them (the daemon's dispatchTokensOf).
+// DispatchTokens answers what the runtime counts of the Dispatch tokens its launches hand out under
+// dispatch_token_broker (DispatchTokens): the claims whose live generation started with a Dispatch
+// token (dispatchTokenClaims). Without the setting nothing is counted, and nothing reads it (the
+// daemon's dispatchTokensOf).
 func (r *Runtime) DispatchTokens() DispatchTokens {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return DispatchTokens{TransitionLaunches: r.transitionLaunches, LastTransitionLaunch: r.lastTransitionLaunch, LiveLaunches: len(r.dispatchTokenClaims)}
+	return DispatchTokens{LiveLaunches: len(r.dispatchTokenClaims)}
 }
 
 // launchedDispatchToken keeps, under dispatch_token_broker, once the start of a launch starting as
-// loc is sent, whether that start carried DISPATCH_TOKEN (carried): the transition token
-// dispatchCredential gave a launch that keeps a pod with no exchange identity, the one token a
-// launch carries under the setting. Such a launch is counted with the time its start was sent,
-// and logged naming the claim, the pod and both counts: those are the launches a deployment waits
-// out before it removes dispatch_token_transition_file.
+// loc is sent, whether that start carried DISPATCH_TOKEN (carried), which no start does under the
+// setting, so the claim's earlier generation, which may have carried the shared bearer, stops
+// being counted.
 func (r *Runtime) launchedDispatchToken(loc runtime.Locator, carried bool) {
 	if !r.dispatch.Broker {
 		return
 	}
 	r.mu.Lock()
 	live, moved := r.keepDispatchToken(loc.Claim, loc.Incarnation, carried)
-	if carried {
-		r.transitionLaunches++
-		r.lastTransitionLaunch = r.now()
-	}
-	launches := r.transitionLaunches
 	r.mu.Unlock()
-	if carried {
-		r.log.Warn("sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token",
-			"claim", loc.Claim, "pod", loc.Sandbox.Name, "transitionLaunches", launches, "liveLaunchesWithDispatchToken", live)
-	}
 	r.logLiveDispatchTokens(live, moved)
 }
 
@@ -207,8 +193,9 @@ func (r *Runtime) keepDispatchToken(token claim.Token, incarnation string, carri
 
 // logLiveDispatchTokens writes the number of live launches carrying a Dispatch token each time it
 // moved, which it does under dispatch_token_broker alone (keepDispatchToken): there it is the
-// number a deployment waits to see at zero before it removes dispatch_token_transition_file. It is
-// called once r.mu is let go, so no log write holds the runtime's lock.
+// number of generations still holding the shared bearer, which a deployment waits to see at zero
+// before it revokes that bearer. It is called once r.mu is let go, so no log write holds the
+// runtime's lock.
 func (r *Runtime) logLiveDispatchTokens(live int, moved bool) {
 	if moved {
 		r.log.Info("sandbox: live launches carrying a Dispatch token", "count", live)

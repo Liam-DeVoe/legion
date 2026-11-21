@@ -44,7 +44,7 @@ func addressesAnnotation(role claim.Role) string {
 // Dispatch token.
 //
 // DispatchToken is whether the generation's start command carried DISPATCH_TOKEN in its Files
-// (the shared bearer, or the transition token under dispatch_token_broker), which the launcher
+// (the shared bearer, which no launch carries under dispatch_token_broker), which the launcher
 // writes into the generation's private directory and deletes when the generation ends: what a
 // restarted daemon counts its live Dispatch tokens from (Runtime.DispatchTokens). No comparison
 // reads it — movedEnvironment compares Addresses alone — so it moves no generation to
@@ -104,14 +104,13 @@ func addressDigest(value string) string {
 }
 
 // recordFor is the record of the addresses a generation of role started now is handed, encoded as
-// its annotation holds it. enrolled is the launch's own enrollment decision for the pod that
-// generation runs in (launch.enrolls, Runtime.enrollsIn), so a generation started in a kept pod
-// that carries no enrollment is recorded as carrying no broker URL — which is what it was handed.
-// dispatchToken is whether the generation's start carries DISPATCH_TOKEN, the launch's own
-// Dispatch decision (prepare's bearer, dispatchCredential's transition token).
-func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled, dispatchToken bool) (string, error) {
+// its annotation holds it. Every generation a launch starts runs in a pod that carries the
+// secrets broker's enrollment (Runtime.enrollsIn, relaunch's listenerCredential), so it is
+// recorded as carrying the broker's URL. dispatchToken is whether the generation's start carries
+// DISPATCH_TOKEN, the launch's own Dispatch decision (prepare's bearer).
+func (r *Runtime) recordFor(role claim.Role, generation uint64, dispatchToken bool) (string, error) {
 	record := addressRecord{Generation: generation, DispatchToken: &dispatchToken}
-	for _, a := range r.environmentAddresses(role, enrolled) {
+	for _, a := range r.environmentAddresses(role, true) {
 		record.Addresses = append(record.Addresses, recordedAddress{Variable: a.name, Name: r.addressName(a), SHA256: addressDigest(a.value)})
 	}
 	encoded, err := json.Marshal(record)
@@ -122,14 +121,13 @@ func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled, dispat
 }
 
 // recordAddresses records on s, the issue Sandbox as read, the addresses a generation of role
-// started now with the enrollment decision enrolled is handed, and whether its start carries
-// DISPATCH_TOKEN (dispatchToken): a merge patch of role's one annotation, so the other roles'
-// records stand.
+// started now is handed, and whether its start carries DISPATCH_TOKEN (dispatchToken): a merge
+// patch of role's one annotation, so the other roles' records stand.
 // The patch carries s's uid, which the API server refuses to change on a live object, so a Sandbox
 // deleted and recreated in between is never written. It runs before the generation's start command
 // is sent, so a generation that runs has its record.
-func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Role, generation uint64, enrolled, dispatchToken bool) error {
-	record, err := r.recordFor(role, generation, enrolled, dispatchToken)
+func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Role, generation uint64, dispatchToken bool) error {
+	record, err := r.recordFor(role, generation, dispatchToken)
 	if err != nil {
 		return err
 	}
@@ -151,7 +149,7 @@ func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Ro
 // no record at all, were written by a daemon before the field, which gave every launch the token
 // whenever Dispatch was configured, so they read as carrying it exactly when this runtime has a
 // Dispatch URL. Read as carrying, a generation is counted until it ends, which keeps a deployment
-// waiting for it rather than removing the transition token under a role still holding one.
+// waiting for it rather than revoking the shared bearer under a role still holding it.
 func (r *Runtime) recordedDispatchToken(record *addressRecord) bool {
 	if record == nil || record.DispatchToken == nil {
 		return r.dispatchURL != ""
@@ -341,12 +339,12 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 
 // movedExchangeIdentity compares the exchange token a pod created now carries
 // (exchangeTokenProjection, for AgentSecrets.ExchangeAudience) with what pod carries; ok is whether
-// pod lacks it. A role started now in a pod that lacks it is told no identity (tradesIn), and so
-// trades nothing for as long as it runs there; a pod's volumes are fixed when it is created, so
-// turning the exchange on, or moving its audience, leaves every enrolled pod lacking it until the
-// pod is replaced, which is its update round's to do once its workers have pushed, as the
-// enrollment's is (movedEnrollment). It compares the three fields the token file depends on, as
-// movedEnrollment does.
+// pod lacks it. No role is started now in a pod that lacks it (relaunch's listenerCredential), and
+// one an earlier daemon started there trades nothing for as long as it runs; a pod's volumes are
+// fixed when it is created, so turning the exchange on, or moving its audience, leaves every
+// enrolled pod lacking it until the pod is replaced, which is its update round's to do once its
+// workers have pushed, as the enrollment's is (movedEnrollment). It compares the three fields the
+// token file depends on, as movedEnrollment does.
 func (r *Runtime) movedExchangeIdentity(pod *corev1.Pod) (movedAddress, bool) {
 	want := exchangeTokenProjection(r.agentSecrets)
 	held := heldExchangeToken(pod.Spec, want)
@@ -735,16 +733,15 @@ func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) (own, va
 // projected token volume, which holds the broker's audience token, and role's own key volume,
 // which its agent-secrets client keeps its key in (agentSecretsVolumes). They are the two the
 // shim's agent-secrets flags name, and it stats both and exits 1 when either is absent
-// (launcherCommand, shim.ReadAgentSecretsFlags), so a launch that keeps a pod carrying neither —
-// one created before the runtime enrolled — starts its role without those flags, and without the
-// two variables that would tell it it holds a broker. A pod's volumes are fixed when it is
-// created; the update round replaces such a pod. It reads the volumes alone, never where they are
-// mounted, so it reads the controller's pod in either of its layouts, which carry the same two
-// (controllerPod.launcherContainer).
+// (launcherCommand, shim.ReadAgentSecretsFlags). A launch never starts a role in a pod carrying
+// neither — one created before the runtime enrolled, which carries no exchange identity either —
+// since it waits for that pod's update round (relaunch's listenerCredential). A pod's volumes are
+// fixed when it is created; the update round replaces such a pod. It reads the volumes alone, never
+// where they are mounted, so it reads the controller's pod in either of its layouts, which carry
+// the same two (controllerPod.launcherContainer).
 //
 // It is the pod's half of the one enrollment decision, and is read through that decision alone
-// (Runtime.enrollsIn), never on its own: a caller that read it beside r.agentSecrets would be
-// free to disagree with the generation's argv, which is the split INFRA-484 closed.
+// (Runtime.enrollsIn), never on its own.
 func carriesEnrollment(pod corev1.PodSpec, role claim.Role) bool {
 	token, key := false, false
 	for _, volume := range pod.Volumes {

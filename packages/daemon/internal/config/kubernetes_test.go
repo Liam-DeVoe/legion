@@ -1479,6 +1479,20 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.pod.env sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
 		},
 		{
+			name: "an Envoy bearer in pod.env, which no route reaches",
+			body: kubernetesFileWith("    pod:\n      env: {ENVOY_TOKEN: acme-envoy}\n"),
+			want: "runtime.kubernetes.pod.env sets ENVOY_TOKEN: the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE" +
+				" in its environment before the broker token its session trades under runtime.kubernetes.agent_secrets.exchange_audience, so the listener would refuse every call 401" +
+				" (under runtime: tmux an agent calls the loopback listener with no credential); remove it",
+		},
+		{
+			name: "an Envoy bearer's pointer in pod.env",
+			body: kubernetesFileWith("    pod:\n      env: {ENVOY_TOKEN_FILE: /var/run/operator/envoy}\n"),
+			want: "runtime.kubernetes.pod.env sets ENVOY_TOKEN_FILE: the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE" +
+				" in its environment before the broker token its session trades under runtime.kubernetes.agent_secrets.exchange_audience, so the listener would refuse every call 401" +
+				" (under runtime: tmux an agent calls the loopback listener with no credential); remove it",
+		},
+		{
 			name: "pod volumes are not a sequence",
 			body: kubernetesFileWith("    pod:\n      volumes: {creds: {}}\n"),
 			want: "runtime.kubernetes.pod.volumes must be an array",

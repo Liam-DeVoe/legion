@@ -217,11 +217,6 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readBool, func(f *fileConfig, v *bool) { f.DispatchTokenBroker = v }),
 		},
 		{
-			Name: "dispatch_token_transition_file", Default: "none: a launch into a pod built before `dispatch_token_broker` was on is refused until its update round replaces the pod", RequiredBy: "no",
-			Description: "The file holding the shared Dispatch token a launch into a pod built before `dispatch_token_broker` was on gets, as every launch got it before, while that pod waits for the update round that replaces it; the daemon never calls Dispatch with it, only `dispatch_token_broker: true` takes it, and a deployment removes it once no live launch holds a Dispatch token.",
-			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenTransitionFile = v }),
-		},
-		{
 			Name: "envoy_url", Default: "`http://127.0.0.1:9020`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the loopback listener it defaults to",
 			Description: "The Envoy listener the daemon and every agent reach each other through. The listener takes no shared bearer: under `runtime: kubernetes` the daemon trades its own pod identity at the secrets broker (`AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`, `AGENT_SECRETS_URL`) for a token of its session `legion-daemon:<project>`, which it presents as `Authorization: DPoP` beside a proof of each request's URL, so `envoy_url` must be the listener's own `ENVOY_PUBLIC_URL`; under `runtime: tmux` the daemon presents no credential, so the host must be `localhost` or a loopback address.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.EnvoyURL = v }),

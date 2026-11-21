@@ -118,7 +118,7 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 			start = s
 		}
 	}
-	if start.Files["ENVOY_TOKEN"] != "envoy-bearer" || start.Files[bootTokenKey] != spec.BootToken {
+	if start.Files["NATS_NKEY_SEED"] != testPaneSeed || start.Files[bootTokenKey] != spec.BootToken {
 		t.Fatalf("the tester's start command carries files %v", slices.Sorted(maps.Keys(start.Files)))
 	}
 	if owner := secret.OwnerReferences; len(owner) != 1 || owner[0].UID != g.sandbox(name).UID || owner[0].Kind != "Sandbox" {

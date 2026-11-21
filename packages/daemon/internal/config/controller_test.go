@@ -27,6 +27,43 @@ envoy_url: http://envoy.test:9020
 nats_urls: [nats://a:4222]
 `
 
+// TestTheControllerNeedsALoopbackListenerOrAMachineIdentity: the controller's session presents its
+// Envoy listener the broker token it trades with this machine's identity where its environment
+// names a secrets broker and an identity, and otherwise nothing, which only a loopback listener
+// serves. So an envoy_url off loopback is refused when either variable is unset, naming the host
+// alone; with both set, or with a loopback listener, it is taken.
+func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
+	const refusal = "envoy_url names envoy.test, which is not a loopback host, and the environment names no secrets broker and machine identity" +
+		" (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY): the controller's session would present the Envoy listener no credential, which takes no shared bearer," +
+		" and a listener off loopback answers a caller that presents none 401; name a loopback listener, or start the controller where AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY are set"
+	identity := map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid", "AGENT_SECRETS_MACHINE_IDENTITY": "metadata"}
+	for _, tc := range []struct {
+		name, url string
+		env       map[string]string
+		want      string
+	}{
+		{"off loopback, no identity", "http://envoy.test:9020", nil, refusal},
+		{"off loopback, a broker and no identity", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid"}, refusal},
+		{"off loopback, an identity and no broker", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata"}, refusal},
+		{"control: off loopback with a broker and an identity", "http://envoy.test:9020", identity, ""},
+		{"control: a loopback listener with no identity", "http://127.0.0.1:9020", nil, ""},
+		{"control: localhost with no identity", "http://localhost:9020", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ControllerConfig{EnvoyURL: tc.url}.CheckListener(tc.env)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("CheckListener = %v, want it taken", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("CheckListener = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // Every path key resolves against the file's own directory, `~` included (no tilde expansion, the
 // daemon loader's rule); the Dispatch URL is a base URL; nats_urls is a set; the daemon URL loses
 // its trailing slash.

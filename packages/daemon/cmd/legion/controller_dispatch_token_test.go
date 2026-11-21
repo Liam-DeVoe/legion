@@ -389,7 +389,7 @@ func TestADispatchURLWithNoCredentialRefusesTheStart(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: " + controllerProject, "daemon_url: " + d.url, "operator_token_file: ./operator-token",
-		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]",
 		"dispatch_url: https://dispatch.test",
 	}})
 

@@ -120,6 +120,11 @@ interface Run {
   // the plain goldens carry no route or audience of, so each rule's tests keep only their own lines.
   route?: string;
   audience?: string;
+  // broker and exchange are the audiences of the broker's two projected tokens every enrolled pod
+  // carries: the agent_secrets block's audience and its exchange_audience. The defaults are the
+  // operator route golden's.
+  broker?: string;
+  exchange?: string;
   // account is pod_account, the ServiceAccount every pod of the run must run as: the run's own
   // under the operator route, or the block's own under LEGION_E2E_POD_FILE. The default is the
   // account the operator route's golden carries.
@@ -145,7 +150,7 @@ function shapeProblemLines(object: object, run: Run = {}): string[] {
       "bash",
       "-c",
       `set -Eeuo pipefail
-root=${JSON.stringify(root)} evidence=${JSON.stringify(evidence)} route_configmap=${run.route ?? "route"} gateway_audience=${run.audience ?? "audience"} pod_account=${run.account ?? "operator-account"} host=${host} port_worker_stream=${port}
+root=${JSON.stringify(root)} evidence=${JSON.stringify(evidence)} route_configmap=${run.route ?? "route"} gateway_audience=${run.audience ?? "audience"} broker_audience=${run.broker ?? "agent-secrets"} exchange_audience=${run.exchange ?? "legion-broker-exchange"} pod_account=${run.account ?? "operator-account"} host=${host} port_worker_stream=${port}
 run_resources=${JSON.stringify(JSON.stringify(run.resources ?? defaults))}
 ${shapeProblems}
 shape_problems`,
@@ -226,6 +231,31 @@ describe("the pod shape, whole, on the pod the runtime builds under the operator
     expect(shapeProblemLines(object, operatorRun).filter((line) => line !== "")).toEqual([
       "serviceAccountName another-account",
     ]);
+  });
+
+  // Under runtime: kubernetes every enrolled pod carries the broker's two projected tokens beside
+  // the gateway's: the agent_secrets audience, and the exchange audience each role trades for its
+  // broker token. A pod short of either, as a pod built before the exchange was set is, departs, and
+  // so does one whose tokens name an audience the run did not configure.
+  const projected =
+    "the projected token sources of the operator pod are not the three tokens for LEGION_E2E_MODEL_GATEWAY_AUDIENCE, the agent_secrets audience and LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE";
+  test.each([
+    "agent-secrets-exchange",
+    "agent-secrets-token",
+  ])("a pod without its %s volume departs", (volume) => {
+    const object = operatorPod();
+    object.spec.volumes = object.spec.volumes.filter((v: { name: string }) => v.name !== volume);
+    expect(shapeProblemLines(object, operatorRun).filter((line) => line === projected)).toEqual([
+      projected,
+    ]);
+  });
+
+  test("a run whose exchange audience the pod does not carry finds it departing", () => {
+    expect(
+      shapeProblemLines(operatorPod(), { ...operatorRun, exchange: "another-exchange" }).filter(
+        (line) => line !== ""
+      )
+    ).toEqual([projected]);
   });
 });
 
@@ -704,6 +734,22 @@ if absent=$(pod_connect absent); then echo "absent read: $absent"; fi`);
     );
   });
 
+  // The listener takes no shared token, and the daemon hands a role none: a role's one credential
+  // at the listener is the broker token it trades for its own session. A role that carries an Envoy
+  // bearer was handed a shared token from somewhere, named here by its variable, never its value.
+  test.each([
+    ["ENVOY_TOKEN_FILE", "/var/run/legion/providers/ENVOY_TOKEN"],
+    ["ENVOY_TOKEN", "shared-bearer-value"],
+  ])("a role that carries %s fails, naming the variable and not its value", (name, value) => {
+    const envs = { ...handed, "pod-a/tester": handedEnv({ [name]: value }) };
+    const { exitCode, out } = judge({ pods: { "pod-a": movedPod() }, envs, claims });
+    expect(exitCode).toBe(1);
+    expect(out).not.toContain(value);
+    expect(out).toEndWith(
+      `FAIL: claim-b's tester in pod pod-a has ${name} in its Oh My Pi's environment\n`
+    );
+  });
+
   test("after the respelling, a role still told the old spelling fails, naming the respelled input", () => {
     const respelled = "https://ENVOY.INTERNAL.EXAMPLE:8443";
     const envs = { ...handed, "pod-a/architect": handedEnv({ ENVOY_URL: respelled }) };
@@ -890,7 +936,7 @@ describe("the pod-shape checkpoint's wrong-runtime control", () => {
     );
     writeFileSync(join(evidence, "pod-watch.json"), watch.map((line) => `${line}\n`).join(""));
     const out =
-      runScript(`root=${JSON.stringify(root)} evidence=${JSON.stringify(evidence)} work=${JSON.stringify(evidence)} route_configmap=route gateway_audience=audience pod_account=operator-account
+      runScript(`root=${JSON.stringify(root)} evidence=${JSON.stringify(evidence)} work=${JSON.stringify(evidence)} route_configmap=route gateway_audience=audience broker_audience=agent-secrets exchange_audience=legion-broker-exchange pod_account=operator-account
 run_resources=${JSON.stringify(JSON.stringify(defaults))}
 ${shapeProblems}
 ${fn("pod_shape_verdict")}

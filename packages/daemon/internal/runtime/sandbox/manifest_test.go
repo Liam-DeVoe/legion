@@ -1421,13 +1421,6 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 			},
 			"Dispatch.Bearer is given beside Dispatch.Broker",
 		},
-		"transition without the broker": {
-			func(o *Options) {
-				o.DispatchURL = "https://dispatch.internal"
-				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Transition: "dispatch-transition"}
-			},
-			"Dispatch.Transition is given without Dispatch.Broker",
-		},
 		// The Envoy listener takes no shared bearer, so a role reaches it only by trading its pod's
 		// exchange identity: a runtime that would build pods without one is refused, with or
 		// without dispatch_token_broker.
@@ -1621,7 +1614,7 @@ func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 				}
 			}
 			handed := map[string]string{}
-			for _, a := range r.handedAddresses(l.enrolls(r)) {
+			for _, a := range r.handedAddresses(true) {
 				if a.value != "" {
 					handed[a.name] = a.value
 				}

@@ -89,8 +89,30 @@
 #   refusal names the variable, never its value: the check before the call, and Dispatch's own
 #   answer, which names the email as the operator spelled it and which scrub (below) prints with
 #   the variable's name in its place.
+# - LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_TOKEN_FILE and
+#   LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE (all required), and LEGION_E2E_AGENT_SECRETS_AUDIENCE
+#   (optional), are the pods' broker route, the run's runtime.kubernetes.agent_secrets block
+#   (lib/broker-route.sh says what each is): the daemon enrols every pod with the production
+#   secrets broker, and each role trades its pod's exchange token for a broker token naming its
+#   own session, its one credential at the production Envoy listener: the daemon hands a role no
+#   Envoy bearer. prerequisites refuses a missing or wrong one by name, before the run creates
+#   anything.
+# - LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE (required) is the daemon's own identity at that broker: a
+#   file only its owner can read, holding a token of the daemon's ServiceAccount for the exchange
+#   audience, of an account the broker's BROKER_EXCHANGE_ACCOUNTS names for the session
+#   legion-daemon:<project>, live for the whole run. The daemon trades it for the broker token it
+#   presents the listener (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY=kubernetes,
+#   AGENT_SECRETS_MACHINE_TOKEN_FILE, as a daemon pod is told them; docs/kubernetes.md), and
+#   prerequisites refuses it as lib/broker-route.sh refuses the daemon's login token.
+# - The operator's own AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY (required unless
+#   STAGE4B_SKIP_CONTROLLER) are this devbox's identity at the broker, which the controller
+#   `legion controller start` runs here trades for the broker token its session presents the
+#   listener: controller.yaml names no Envoy bearer, and `legion controller start` refuses an
+#   envoy_url off loopback without both. prerequisites refuses either unset, naming it.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
-#   listener's API token. The repository carries neither credential.
+#   listener's API token, which the run's own reads of that listener present (the interests sampler,
+#   the controller-role lookup); no legion.yaml or controller.yaml names it, so neither the daemon,
+#   its roles nor the controller holds it. The repository carries neither credential.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
 #   another deployment's two role Apps: each App's numeric id, and the name of the secrets broker
 #   github-app secret the `agent-secrets` client releases the implement App's installation tokens
@@ -150,10 +172,11 @@
 # The production bearers are copied, the Dispatch one from its file and the Envoy one read from
 # Secrets Manager with the devbox admin role, into 0600 files under the run's scratch directory.
 # They are never printed, never in an argv (curl reads them from header files), and never in the
-# evidence. One run at a time per identity (above): the NATS durable consumer names and the lock
-# path both derive from LEGION_E2E_PROJECT, so the run takes its own lock and refuses to start
-# while another run of the same identity holds it, or while that identity's project has pods,
-# Sandboxes or claims it did not create.
+# evidence. The Envoy one is the run's own reads' alone: the daemon and the controller present the
+# listener broker tokens. One run at a time per identity (above): the NATS durable consumer names
+# and the lock path both derive from LEGION_E2E_PROJECT, so the run takes its own lock and refuses
+# to start while another run of the same identity holds it, or while that identity's project has
+# pods, Sandboxes or claims it did not create.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -189,6 +212,14 @@ image=${LEGION_E2E_IMAGE:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
 dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
 envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
+# The daemon's own identity at the secrets broker, as a daemon pod is told it, which prerequisites
+# fills once lib/broker-route.sh has checked its inputs; empty until then.
+daemon_broker_env=()
+# The audiences of the two projected tokens every enrolled pod carries beside the gateway's
+# (shape_problems): the broker block's audience (the loader's default, agent-secrets, when
+# LEGION_E2E_AGENT_SECRETS_AUDIENCE is unset) and its exchange_audience. Set in prerequisites.
+broker_audience=
+exchange_audience=
 until=${STAGE4B_UNTIL:-}
 skip_controller=${STAGE4B_SKIP_CONTROLLER:-}
 design_gate=${STAGE4B_DESIGN_GATE:-}
@@ -1377,6 +1408,15 @@ pod_endpoint_mismatch() {
     printf "ANTHROPIC_API_KEY in its Oh My Pi's environment\n"
     return 0
   fi
+  # The daemon hands a role no Envoy bearer: its one credential at the listener is the broker token
+  # it trades for its own session (runtime.kubernetes.agent_secrets). A role that carries an Envoy
+  # bearer was handed one from somewhere; the variable is named, never its value.
+  for name in ENVOY_TOKEN_FILE ENVOY_TOKEN; do
+    if grep -q "^$name=" <<<"$env"; then
+      printf "%s in its Oh My Pi's environment\n" "$name"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -1450,7 +1490,6 @@ postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port
 state_dir: $state
 operator_token_file: $work/operator-token
 envoy_url: $handed_envoy_url
-envoy_token_file: $work/envoy-token
 nats_urls:
   - $nats_url
 dispatch_url: $dispatch_base
@@ -1495,6 +1534,7 @@ runtime:
     session_dsn_secret: $session_dsn_key
     kubeconfig: $runtime_kubeconfig
     context: $runtime_context
+$broker_block
     plugins:
       pi_legion: "$pi_legion_version"
       pi_envoy: "$pi_envoy_version"
@@ -1628,7 +1668,10 @@ start_daemon() {
   [ "$session_db_binding" = "$host:$port_session_db" ] ||
     fail "port $port_session_db is held by another process, not the run's session database $session_db_container (docker port ${session_db_binding:-is unpublished}, expected $host:$port_session_db): $(ss -Hltnp "sport = :$port_session_db")"
   record_stream
-  env -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+  # The daemon's own identity at the broker, as a daemon pod is told it (daemon_broker_env), in place
+  # of the operator's: AGENT_SECRETS_KEY_DIR is a pod role's key directory, which a trade under
+  # AGENT_SECRETS_MACHINE_IDENTITY=kubernetes proves the key in, so the daemon takes none.
+  env -u GH_PUBLIC_REPO_PAT -u AGENT_SECRETS_KEY_DIR "${app_key_unsets[@]}" "${daemon_broker_env[@]}" \
     "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 9>&- 7>&- &
   daemon_pid=$!
   daemon_started=1
@@ -2121,9 +2164,11 @@ block_account() {
 # ---- the pod-shape watcher (checkpoint pod-shape) --------------------------------------------------
 
 # check_pod_shape SPEC prints each way the pod object SPEC departs from the issue-pod shape, or
-# nothing, with its Secrets' values as they are now: gVisor; the operator's ServiceAccount and one
-# projected token; the one `roles` container, mounting the route ConfigMap where every role's
-# profile reads it; the pool; restricted security; every container, the init containers included,
+# nothing, with its Secrets' values as they are now: gVisor; the operator's ServiceAccount and its
+# three projected tokens, the gateway's and the broker's two (the broker block's audience and its
+# exchange audience, which every enrolled pod carries); the one `roles` container, mounting the
+# route ConfigMap where every role's profile reads it; the pool; restricted security; every
+# container, the init containers included,
 # reserving cpu and memory as both request and limit and ephemeral-storage as a request under its
 # limit, each the issue pod's one reservation under the run's override and the defaults
 # (run_resources), so the pod is Guaranteed and bounded on the node's disk, and no affinity
@@ -2138,7 +2183,7 @@ block_account() {
 # forked before a restart that moves the stream, holds each pod to the stream of its own creation as
 # the main shell does.
 shape_problems() {
-  jq -r -L "$root/scripts/e2e/lib" --arg route "$route_configmap" --arg audience "$gateway_audience" --arg account "$pod_account" --slurpfile streams "$evidence/worker-streams.jsonl" --argjson expected "$run_resources" '
+  jq -r -L "$root/scripts/e2e/lib" --arg route "$route_configmap" --arg audience "$gateway_audience" --arg broker "$broker_audience" --arg exchange "$exchange_audience" --arg account "$pod_account" --slurpfile streams "$evidence/worker-streams.jsonl" --argjson expected "$run_resources" '
     include "stage4b-pods";
     ["architect", "planner", "implementer", "tester", "reviewer", "merger"] as $roles
     | "/var/run/legion/roles" as $dir
@@ -2147,9 +2192,9 @@ shape_problems() {
     | (if $s.runtimeClassName != "gvisor" then "runtimeClassName \($s.runtimeClassName)" else empty end),
       (if $s.serviceAccountName != $account then "serviceAccountName \($s.serviceAccountName)" else empty end),
       (if $s.automountServiceAccountToken != false then "automountServiceAccountToken \($s.automountServiceAccountToken)" else empty end),
-      (if ([$s.volumes[] | select(.projected) | .projected.sources[] | select(.serviceAccountToken)] | length) != 1
-        or ([$s.volumes[] | select(.projected) | .projected.sources[] | select(.serviceAccountToken) | .serviceAccountToken.audience] != [$audience])
-        then "the projected token source of the operator pod is not the one token for LEGION_E2E_MODEL_GATEWAY_AUDIENCE" else empty end),
+      (if ([$s.volumes[] | select(.projected) | .projected.sources[] | select(.serviceAccountToken) | .serviceAccountToken.audience] | sort)
+        != ([$audience, $broker, $exchange] | sort)
+        then "the projected token sources of the operator pod are not the three tokens for LEGION_E2E_MODEL_GATEWAY_AUDIENCE, the agent_secrets audience and LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE" else empty end),
       (if ($s.containers | map(.name)) != ["roles"] then "pod containers \($s.containers | map(.name)), want only [\"roles\"]" else empty end),
       # The operator mounts models.yml at the image home; the roles container holds every mount
       # under the home at the same path under the home mounts directory instead (homeMountsView),
@@ -3323,6 +3368,25 @@ esac
   fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
+# The pods' broker route (lib/broker-route.sh) and the daemon's own exchange token, each missing or
+# wrong input named at once; the block goes into legion.yaml as it is printed. The daemon is told
+# its identity as a daemon pod is (daemon_broker_env), the variables it reads for its own trade.
+broker_block=$(bash "$root/scripts/e2e/lib/broker-route.sh" LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE) ||
+  fail "the pods' broker route is not one the daemon's runtime.kubernetes.agent_secrets takes (each input is named above)"
+daemon_broker_env=(AGENT_SECRETS_URL="${LEGION_E2E_AGENT_SECRETS_URL%/}" AGENT_SECRETS_MACHINE_IDENTITY=kubernetes
+  AGENT_SECRETS_MACHINE_TOKEN_FILE="$LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE")
+broker_audience=${LEGION_E2E_AGENT_SECRETS_AUDIENCE:-agent-secrets}
+exchange_audience=$LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE
+# The controller the run starts on the devbox presents the production listener the broker token this
+# devbox's own identity trades, and `legion controller start` refuses an envoy_url off loopback
+# without it: refused here, before the run creates anything, rather than at the controller
+# checkpoint hours in. The values are never printed.
+if [ -z "$skip_controller" ]; then
+  for name in AGENT_SECRETS_URL AGENT_SECRETS_MACHINE_IDENTITY; do
+    [ -n "${!name:-}" ] ||
+      fail "$name is unset: the controller this run starts on the devbox presents the production Envoy listener the broker token this devbox's identity trades (AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY), since controller.yaml names no Envoy bearer"
+  done
+fi
 # Legion's two role Apps proved against GitHub before the run's first write anywhere
 # (lib/github-apps.sh); legion.yaml's github_apps is the block proved. The review App's key
 # command runs once, here, in this shell's own environment, into $work/app-key, which the daemon
@@ -3620,15 +3684,17 @@ note "image probe: $(jq -c '{image, model, sandbox}' <<<"$probe")"
 # has reported yet (<citation>): <summary>", until a session reports, and boot starts its own empty
 # Postgres, so no session has reported here; the first report comes with the first admitted root's
 # architect (deployment-pod-block, or admitted-issue-cap), and full-agent reads the rows it renders.
-# The open rows are secrets, and pool-capacity when the pool scaled for the probe: the proof's
-# legion.yaml (write_legion_config) configures no runtime.kubernetes.agent_secrets and no
-# capabilities.decided, while model-fallback and resource-limits are present, since the operator
-# fixture's overlay turns retry.modelFallback on and its pod gives every role a reservation.
-# pool-capacity is the pool's to decide, not the configuration's: the row is open when the image
-# probe pod was Unschedulable before a node came up for it, which a run that starts on an empty pool
-# meets, so it is recorded either way, and the controller checkpoint holds every tick to the same two
-# lists, each tick on its own. A gap is reported, never refused: the daemon that reports secrets open
-# is the one that runs the rest.
+# No row is open but pool-capacity, when the pool scaled for the probe: the proof's legion.yaml
+# (write_legion_config) configures the pods' broker route (runtime.kubernetes.agent_secrets), so
+# secrets is present once the daemon's broker login is issued, and names no capabilities.decided,
+# while model-fallback and resource-limits are present, since the operator fixture's overlay turns
+# retry.modelFallback on and its pod gives every role a reservation. A secrets row open is the
+# daemon's broker login not issued, and every role's broker token, its one credential at the
+# listener, rests on that broker. pool-capacity is the pool's to decide, not the configuration's:
+# the row is open when the image probe pod was Unschedulable before a node came up for it, which a
+# run that starts on an empty pool meets, so it is recorded either way, and the controller
+# checkpoint holds every tick to the same two lists, each tick on its own. A gap is reported, never
+# refused: the daemon that reports pool-capacity open is the one that runs the rest.
 capabilities_probed() { daemon_state | jq -e '[.capabilities[] | select(.name | IN("eval-js", "eval-python", "browser", "lsp", "codegraph", "skills", "toolchain")) | select(.status == "unchecked")] | length == 0' >/dev/null; }
 until_true 60 "the capability report to carry the probe's verdict on every image row" capabilities_probed
 daemon_state | jq '.capabilities' >"$evidence/capabilities-at-boot.json"
@@ -3645,10 +3711,10 @@ for row in subagents web-search mcp repository-extensions dispatch-envoy-tools g
 done
 open_rows=$(jq -c '[.[] | select(.status == "open") | .name]' "$evidence/capabilities-at-boot.json")
 case $open_rows in
-  '["secrets"]' | '["secrets","pool-capacity"]') ;;
-  *) fail "the open capabilities are $open_rows, not [\"secrets\"] with or without pool-capacity: $(jq -c '[.[] | select(.status == "open") | {name, detail, configLine}]' "$evidence/capabilities-at-boot.json")" ;;
+  '[]' | '["pool-capacity"]') ;;
+  *) fail "the open capabilities are $open_rows, not [] or [\"pool-capacity\"]: $(jq -c '[.[] | select(.status == "open") | {name, detail, configLine}]' "$evidence/capabilities-at-boot.json")" ;;
 esac
-note "capabilities at boot ($evidence/capabilities-at-boot.json): every image row present, codegraph included; every live row unchecked, awaiting the first session's report; open: $(jq -r '[.[] | select(.status == "open") | .name] | join(", ")' "$evidence/capabilities-at-boot.json") (secrets: $(capability_row secrets))"
+note "capabilities at boot ($evidence/capabilities-at-boot.json): every image row present, codegraph included; every live row unchecked, awaiting the first session's report; open: $(jq -r '[.[] | select(.status == "open") | .name] | join(", ") | if . == "" then "none" else . end' "$evidence/capabilities-at-boot.json") (secrets: $(capability_row secrets))"
 note "model-fallback reads '$(capability_row model-fallback)'; resource-limits reads '$(capability_row resource-limits)'; pool-capacity reads '$(capability_row pool-capacity)'"
 [ ! -e "$state/workspaces" ] || fail "the daemon's state_dir has a workspaces/ directory under the Sandbox runtime"
 probe_pod=$(jq -r '.sandbox' <<<"$probe")
@@ -5742,7 +5808,6 @@ project: $project
 daemon_url: http://$host:$port_daemon
 operator_token_file: $work/operator-token
 envoy_url: $envoy_url
-envoy_token_file: $work/envoy-token
 nats_urls: [$nats_url]
 dispatch_url: $dispatch_base
 dispatch_token_file: $work/dispatch-token
@@ -5904,12 +5969,12 @@ note "the controller's session is under $profile_agent/sessions; $HOME/.omp/prof
 # with no gap), the one notice that carries the daemon's capability report to the controller
 # (skill://legion-controller). The pi-envoy plugin renders a delivery into the session as TOON
 # (envoy-client's renderInbound): the payload, parsed, is the card's `message` block, where a list
-# of one reads `openCapabilities[1]: secrets` and a list of two `openCapabilities[2]: a,b`, so the
-# list is read from that line, and a tick without it names no gap (lib/controller-ticks.jq). This
-# window is before full-agent-negative, the first checkpoint that opens a live row (web-search on
-# tree 3's planner), so every tick the controller has received so far names secrets, and
-# pool-capacity when the sending daemon's probe found the pool cold, and nothing else;
-# model-fallback and resource-limits are present, so the daemon names neither. The daemon that
+# of one reads `openCapabilities[1]: pool-capacity` and a list of two `openCapabilities[2]: a,b`, so
+# the list is read from that line, and a tick without it names no gap (lib/controller-ticks.jq).
+# This window is before full-agent-negative, the first checkpoint that opens a live row (web-search
+# on tree 3's planner), so every tick the controller has received so far names nothing, or
+# pool-capacity alone when the sending daemon's probe found the pool cold; secrets,
+# model-fallback and resource-limits are present, so the daemon names none of them. The daemon that
 # reported the gap keeps running: every checkpoint after this one is that evidence.
 # controller_ticks prints one object per tick delivery in the controller's sessions: the list, and
 # the delivery trimmed (the module's controller_ticks($tick), lib/controller-ticks.jq, over the
@@ -5924,7 +5989,7 @@ controller_ticked() { controller_ticks | jq -s -e 'length > 0' >/dev/null; }
 until_true 300 "'tick on $project' to reach the controller session $controller_session" controller_ticked
 controller_ticks | jq -s . >"$evidence/controller-ticks.json"
 # Each tick's list is judged alone, as a set, against the two lists the deployment can open:
-# ["secrets"] and ["secrets","pool-capacity"]. Each tick alone, not all against one set:
+# [] and ["pool-capacity"]. Each tick alone, not all against one set:
 # restart-mid-tree, address-moved-env-same-pod and address-moved-stream-new-pod each ran a new
 # `legion start`, every start re-probes the image, pool-capacity is that probe's own verdict
 # (packages/daemon/internal/capabilities/deployment.go), and a tick carries the sending daemon's
@@ -5935,8 +6000,8 @@ controller_ticks | jq -s . >"$evidence/controller-ticks.json"
 # tick here is an anomaly the proof fails on, with the tick quoted. Boot's set stays in the note for
 # context.
 jq -e -L "$root/scripts/e2e/lib" 'include "controller-ticks"; ticks_name_deployment_open' "$evidence/controller-ticks.json" >/dev/null ||
-  fail "a tick delivery in the controller session carries openCapabilities that are not [\"secrets\"] or [\"secrets\",\"pool-capacity\"] as a set, or no tick reached it: $(jq -c . "$evidence/controller-ticks.json")"
-note "every tick on $project the controller received ($(jq length "$evidence/controller-ticks.json")) carries openCapabilities among $(jq -c '[.[].open] | unique' "$evidence/controller-ticks.json"), each [\"secrets\"] or [\"secrets\",\"pool-capacity\"] as a set (boot's: $open_rows)"
+  fail "a tick delivery in the controller session carries openCapabilities that are not [] or [\"pool-capacity\"] as a set, or no tick reached it: $(jq -c . "$evidence/controller-ticks.json")"
+note "every tick on $project the controller received ($(jq length "$evidence/controller-ticks.json")) carries openCapabilities among $(jq -c '[.[].open] | unique' "$evidence/controller-ticks.json"), each [] or [\"pool-capacity\"] as a set (boot's: $open_rows)"
 pass
 
 begin full-agent-negative

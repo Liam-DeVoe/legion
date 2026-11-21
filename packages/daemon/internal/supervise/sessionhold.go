@@ -404,10 +404,10 @@ const (
 	// `--resume <id>` beside a recorded file, in a pod that trades an exchange identity.
 	HoldSessionID HoldKind = "session"
 	// HoldFileName is a session file's base name (filepath.Base). It is every key a resume finds
-	// a session by its file with: an Oh My Pi launch that names no id resumes the recorded path
-	// (`--resume=<file>`, runtime/sandbox's agentArgv and the tmux runtime's launcher), the launcher
-	// finds the session's row in the session table by that path (launcher's resumable and
-	// claudeKeeper), and where the path is missing the tmux runtime resumes a file of the same name
+	// a session by its file with: an Oh My Pi launch under the tmux runtime resumes the recorded
+	// path (`--resume=<file>`), the launcher finds the session's row in the session table by that
+	// path (launcher's resumable and claudeKeeper), and where the path is missing the tmux runtime
+	// resumes a file of the same name
 	// one folder below a sessions directory (sessionFileOf). Two paths that are one have one name,
 	// so holding the name holds the path too: no hold of the path alone is kept, since it could
 	// refuse nothing the name's hold does not.

@@ -53,6 +53,19 @@ const SessionExclusiveValue = "1"
 // the listener takes no shared one.
 var launchSecrets = []string{"NATS_NKEY_SEED"}
 
+// EnvoyBearerVariables are the variables an agent's Envoy client reads a shared listener bearer
+// from, ahead of the broker token its session trades (envoySettings, packages/envoy-client). The
+// listener takes no shared bearer, so no runtime sets either, and an operator's value of either —
+// a pane variable, a pod variable, a provider key — would have the listener refuse every call 401:
+// each is refused as Legion's own (PaneVariableRefusal, sandbox.CheckPod, config's provider_keys).
+var EnvoyBearerVariables = []string{"ENVOY_TOKEN", "ENVOY_TOKEN_FILE"}
+
+// EnvoyBearerRefusal is why an operator may not set one of EnvoyBearerVariables, the words every
+// refusal of one gives after naming it.
+const EnvoyBearerRefusal = "the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE" +
+	" in its environment before the broker token its session trades under runtime.kubernetes.agent_secrets.exchange_audience, so the listener would refuse every call 401" +
+	" (under runtime: tmux an agent calls the loopback listener with no credential)"
+
 // urlPassword is a URL whose userinfo carries a password, `scheme://user:password@`, anywhere in
 // a value: a database URL, a NATS URL with credentials, one of a comma-separated list of either.
 var urlPassword = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s/?#@]+@`)
@@ -67,10 +80,11 @@ var urlPassword = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s
 // is one the runtime sets after the operator's variables on every Claude Code pane, or on every
 // resumed Oh My Pi pane (SessionExclusiveVariable), where the operator's value would be overridden
 // without a word, and a launch secret's pointer, which every launch sets to a file of its own and
-// the runtime then refuses at every launch. A value that is a URL carrying a password is refused
-// too: a pane variable is a value on tmux's command line, which every process on the host can
-// read, and a secret reaches a pane as a file. The reason names the variable's role and never the
-// value.
+// the runtime then refuses at every launch. An Envoy bearer's variable (EnvoyBearerVariables) is
+// refused as Legion's own, since the listener takes no shared bearer. A value that is a URL
+// carrying a password is refused too: a pane variable is a value on tmux's command line, which
+// every process on the host can read, and a secret reaches a pane as a file. The reason names the
+// variable's role and never the value.
 func PaneVariableRefusal(name, value string) string {
 	switch {
 	case slices.Contains(sessionPlacing, name):
@@ -79,6 +93,8 @@ func PaneVariableRefusal(name, value string) string {
 		return "the runtime sets it on every Claude Code pane itself, after the operator's variables"
 	case name == SessionExclusiveVariable:
 		return "the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"
+	case slices.Contains(EnvoyBearerVariables, name):
+		return EnvoyBearerRefusal
 	}
 	for _, secret := range launchSecrets {
 		if name == secret+"_FILE" {

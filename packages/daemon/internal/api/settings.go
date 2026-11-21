@@ -70,8 +70,7 @@ type Settings struct {
 	DispatchURL string `json:"dispatch_url,omitempty"`
 	// DispatchTokenBroker is `dispatch_token_broker`, absent while it is false, so a deployment
 	// that never set it reads byte for byte as before the key existed. It says how the daemon and
-	// its roles reach Dispatch, never with what: the credential is a broker trade, and no path of
-	// a file holding one rides here (`dispatch_token_transition_file` stays out).
+	// its roles reach Dispatch, never with what: the credential is a broker trade.
 	DispatchTokenBroker bool `json:"dispatch_token_broker,omitempty"`
 	// Projects is `{}` while the file declares none.
 	Projects map[string]ProjectSettings `json:"projects"`

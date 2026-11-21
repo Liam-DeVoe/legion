@@ -1,8 +1,8 @@
 package daemon
 
-// The update round over a pod a claim's launch waits on (dispatch://INFRA-4425 R4). Under
-// dispatch_token_broker with no dispatch_token_transition_file, a launch that would keep a live
-// pod built before the exchange identity is refused (runtime.AwaitingPodRound), and the claim
+// The update round over a pod a claim's launch waits on. A launch that would keep a live pod built
+// before the exchange identity is refused (runtime.AwaitingPodRound), since its role would hold no
+// credential for the Envoy listener, and the claim
 // records no process while it waits: its machine keeps the pod the refusal named instead
 // (supervise.Claim.AwaitsPod). For each claim it groups that records no process, the sweep reads
 // that pod off the claim's machine (reconcilePodUpdates), so the round opens over it, waits on no
@@ -67,7 +67,7 @@ func (r *podUpdateRig) refuseUntilReplaced(role claim.Role) {
 		}
 		return fmt.Errorf("launch %s: %w", token, &runtime.AwaitingPodRound{
 			Pod:    awaitedLocator(token, podUpdatePod, spec.Generation),
-			Reason: "pod legion-legion-484 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+			Reason: "pod legion-legion-484 carries no exchange identity and its role would hold no credential for the Envoy listener, which takes no shared bearer; its update round replaces it",
 		})
 	}
 }

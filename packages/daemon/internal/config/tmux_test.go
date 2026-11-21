@@ -102,6 +102,10 @@ func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T)
 			"runtime.tmux.pane_env names CLAUDE_CONFIG_DIR: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
 		{"what holds a resumed Oh My Pi to its session", "runtime: {tmux: {pane_env: {OMP_SESSION_EXCLUSIVE: \"0\"}}}\n",
 			"runtime.tmux.pane_env names OMP_SESSION_EXCLUSIVE: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
+		{"the Envoy bearer's pointer, which no runtime sets", "runtime: {tmux: {pane_env: {ENVOY_TOKEN_FILE: /etc/acme/envoy}}}\n",
+			"runtime.tmux.pane_env names ENVOY_TOKEN_FILE: the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE" +
+				" in its environment before the broker token its session trades under runtime.kubernetes.agent_secrets.exchange_audience, so the listener would refuse every call 401" +
+				" (under runtime: tmux an agent calls the loopback listener with no credential)"},
 		{"the NATS nkey seed's pointer", "runtime: {tmux: {pane_env: {NATS_NKEY_SEED_FILE: /etc/acme/seed}}}\n",
 			"runtime.tmux.pane_env names NATS_NKEY_SEED_FILE: it points at the launch secret NATS_NKEY_SEED, which the runtime hands every launch as a file of the launch's own"},
 		{"a URL with a password", "runtime: {tmux: {pane_env: {WIDGETS_DATABASE_URL: \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",

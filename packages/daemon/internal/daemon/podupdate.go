@@ -241,15 +241,15 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // (dispatch://INFRA-3276, R5).
 //
 // A claim whose launch the runtime refused for want of its pod's update round records no process,
-// and the pod its launch waits on stands in for one (supervise.Claim.AwaitsPod, podLocator): under
-// dispatch_token_broker with no transition token, a launch that would keep a live pod built
-// before the exchange identity is refused at every try until that pod's round replaces it, and
-// such a claim may be the issue's only one. So that pod is the group's pod (groupPod), its drift
-// is read through that claim (groupDrift), and the round opens over it as over a pod a process
-// runs in. The round waits on no answer and no turn of such a claim, since it has no process
-// there (waitingClaims). Which such claims a gone pod names as having lost work is lostClaims'
-// question, and which ones a replacement's line names is unwaitedOnThePod's. Where no claim
-// records a process in the pod, the pod is replaced through it (podProcess), and its next try,
+// and the pod its launch waits on stands in for one (supervise.Claim.AwaitsPod, podLocator): a
+// launch that would keep a live pod built before the exchange identity is refused at every try
+// until that pod's round replaces it, since its role would hold no credential for the Envoy
+// listener, and such a claim may be the issue's only one. So that pod is the group's pod
+// (groupPod), its drift is read through that claim (groupDrift), and the round opens over it as
+// over a pod a process runs in. The round waits on no answer and no turn of such a claim, since
+// it has no process there (waitingClaims). Which such claims a gone pod names as having lost work
+// is lostClaims' question, and which ones a replacement's line names is unwaitedOnThePod's. Where
+// no claim records a process in the pod, the pod is replaced through it (podProcess), and its next try,
 // within a minute, comes up in the pod that replaced it (dispatch://INFRA-4425 R4).
 //
 // A group whose claims record no pod at all, neither a process nor a pod a launch waits on,

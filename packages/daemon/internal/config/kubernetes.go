@@ -72,8 +72,8 @@ type Kubernetes struct {
 	controllerNamed bool
 	// Pod is what the operator adds to every pod (runtime.kubernetes.pod).
 	Pod PodConfig
-	// AgentSecrets is the secrets broker every pod is enrolled with (runtime.kubernetes.agent_secrets);
-	// nil when the deployment enrolls none, in which case pods carry no token for it.
+	// AgentSecrets is the secrets broker every pod is enrolled with (runtime.kubernetes.agent_secrets),
+	// which the loader requires, with its exchange audience (checkKubernetesKeys).
 	AgentSecrets *AgentSecretsConfig
 	// SessionStore is `runtime.kubernetes.session_store`, settled: where every pod's Oh My Pi keeps
 	// its sessions. The database whose whole postgres:// URL the providers Secret key
@@ -431,7 +431,7 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
 // Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
 // second projected token every enrolled pod carries, the identity the broker's exchange trades for
-// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
+// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); the loader requires it (checkKubernetesKeys).
 type AgentSecretsConfig struct {
 	URL                string
 	TokenFile          string
@@ -1388,6 +1388,8 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 		switch _, twice := env[name]; {
 		case twice:
 			return nil, fmt.Errorf("%s names %s twice", key, name)
+		case slices.Contains(runtime.EnvoyBearerVariables, name):
+			return nil, fmt.Errorf("%s sets %s: %s; remove it", key, name, runtime.EnvoyBearerRefusal)
 		case runtime.HoldsSecretValue(name):
 			return nil, fmt.Errorf("%s sets %s, a credential-shaped name: a credential comes from a Secret, so mount one with %s.volumes or name its key in provider_keys",
 				key, name, podKey)
@@ -2309,8 +2311,7 @@ func checkKubernetesKeys(file fileConfig) error {
 // no credential, which only the loopback listener envoy_url must name takes
 // (checkLoopbackListener).
 func (c Config) ListenerPresentsBrokerToken() bool {
-	k := c.Runtime.Kubernetes
-	return k != nil && k.AgentSecrets != nil && k.AgentSecrets.ExchangeAudience != ""
+	return c.Runtime.Kubernetes != nil
 }
 
 // checkPodReachable refuses an address pods are handed that no pod can reach. Every pod's shim

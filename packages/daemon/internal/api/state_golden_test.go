@@ -241,9 +241,6 @@ func populatedState(t *testing.T) State {
 	// queued to its claim, and a turn of it confirmed that task.
 	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
 	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
-	// When the latest launch into a pod built before dispatch_token_broker sent its start with the
-	// transition token (DispatchCredentialView.LastTransitionLaunchAt).
-	lastTransitionLaunch := time.Date(2026, 9, 22, 9, 17, 3, 0, time.UTC)
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
@@ -944,12 +941,10 @@ func populatedState(t *testing.T) State {
 			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
 		},
 		AgentSecretsLogin: &AgentSecretsLoginView{State: "issued"},
-		// A deployment under dispatch_token_broker in its move (contract 207): two launches since
-		// this boot kept pods built before the setting and carried the transition token, and three
-		// live generations still hold a Dispatch token, one of them started before this boot.
+		// A deployment under dispatch_token_broker in its move (contract 207): three live
+		// generations, which a daemon before the setting started, still hold the shared bearer.
 		DispatchCredential: &DispatchCredentialView{
-			Session: "legion-daemon:LEGION", TransitionLaunches: 2, LastTransitionLaunchAt: &lastTransitionLaunch,
-			LiveLaunchesWithDispatchToken: 3,
+			Session: "legion-daemon:LEGION", LiveLaunchesWithDispatchToken: 3,
 		},
 		// A kubernetes deployment whose image passed the probe, with the broker's login failed and
 		// that gap decided, and one role unreserved, and no session's report yet, so the fixture

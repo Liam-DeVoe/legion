@@ -1057,17 +1057,13 @@ const legionAgentSecretsLoginView = z.object({
 
 /** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
  * (contract 207): `session`, the session its own Dispatch calls run under
- * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
- * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
- * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
- * the live launches whose start carried a Dispatch token, whichever daemon started them. A
- * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. No plugin
+ * (`legion-daemon:<PROJECT>`); and `liveLaunchesWithDispatchToken`, the live launches whose start
+ * carried a Dispatch token, whichever daemon started them: the shared bearer a daemon without the
+ * setting handed out, which a deployment revokes once the count is 0. Never a token. No plugin
  * code reads a field of it (`LEGION_ANSWER_READS` names none), so each is optional, and a value
  * that is present is still held to its type. */
 const legionDispatchCredentialView = z.object({
   session: nonEmptyString.optional(),
-  transitionLaunches: z.number().int().nonnegative().optional(),
-  lastTransitionLaunchAt: timestamp.nullable().optional(),
   liveLaunchesWithDispatchToken: z.number().int().nonnegative().optional(),
 });
 

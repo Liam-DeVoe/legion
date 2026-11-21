@@ -430,17 +430,19 @@ const (
 )
 
 // `dispatch_token_broker: true` makes the daemon's Dispatch credential its own pod identity,
-// traded at the secrets broker (dispatch://INFRA-4425 R1). Beside dispatch_token_file, without
-// dispatch_url, and without runtime.kubernetes.agent_secrets.exchange_audience it is each refused,
-// naming the key; with dispatch_url and the audience it loads, and that dispatch_url needs no
-// token file.
+// traded at the secrets broker. Beside dispatch_token_file and without dispatch_url it is each
+// refused, naming the key; without runtime.kubernetes.agent_secrets.exchange_audience the file is
+// refused for the audience every `runtime: kubernetes` file names (checkKubernetesKeys); with
+// dispatch_url and the audience it loads, and that dispatch_url needs no token file.
 func TestDispatchTokenBrokerNeedsThePodIdentity(t *testing.T) {
 	broker := kubernetesNoBrokerWith(dispatchTokenLine, brokerOn)
 	noURL := strings.Replace(broker, "dispatch_url: https://dispatch.internal.example\n", "", 1)
 	if noURL == broker {
 		t.Fatal("the broker file names no dispatch_url to take out")
 	}
-	const noAudience = "dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset"
+	const noAudience = "runtime.kubernetes.agent_secrets.exchange_audience is required when runtime is kubernetes:" +
+		" the Envoy listener takes no shared bearer, so each pod's sessions trade broker tokens of their own through the identity this audience projects" +
+		" and the daemon presents the listener its own"
 	for name, tc := range map[string]struct{ body, want string }{
 		"beside dispatch_token_file": {kubernetesNoBrokerWith(dispatchTokenLine, dispatchTokenLine+brokerOn) + exchangeAudienceBlock,
 			"dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both"},
@@ -461,23 +463,26 @@ func TestDispatchTokenBrokerNeedsThePodIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
-	if !cfg.DispatchTokenBroker || cfg.DispatchTokenFile != "" || cfg.DispatchTokenTransitionFile != "" || cfg.DispatchURL != "https://dispatch.internal.example" {
-		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenFile = %q, DispatchTokenTransitionFile = %q, DispatchURL = %q; want the setting on, no token file, no transition file and the URL",
-			cfg.DispatchTokenBroker, cfg.DispatchTokenFile, cfg.DispatchTokenTransitionFile, cfg.DispatchURL)
+	if !cfg.DispatchTokenBroker || cfg.DispatchTokenFile != "" || cfg.DispatchURL != "https://dispatch.internal.example" {
+		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenFile = %q, DispatchURL = %q; want the setting on, no token file and the URL",
+			cfg.DispatchTokenBroker, cfg.DispatchTokenFile, cfg.DispatchURL)
 	}
 }
 
-// `dispatch_token_transition_file` names the file holding the shared Dispatch token a launch into a
-// pod built before dispatch_token_broker gets (dispatch://INFRA-4425 R4), so the loader takes it
-// only beside `dispatch_token_broker: true`: without the setting, or with it false, the file is
-// refused naming both keys. Beside it the file loads, its path resolved against the
-// configuration's directory as dispatch_token_file's is.
-func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
+// `dispatch_token_transition_file` is gone: the Envoy listener takes no shared bearer, so a launch
+// into a pod with no exchange identity waits for that pod's update round, and no launch carries a
+// transition Dispatch token. A file that sets the key is refused naming it, beside
+// `dispatch_token_broker: true`, with the setting false, and under `runtime: tmux`. The control is
+// the same broker file without the key, which loads.
+func TestDispatchTokenTransitionFileIsRefused(t *testing.T) {
 	const transition = "dispatch_token_transition_file: tokens/DISPATCH_TOKEN\n"
-	const refusal = "dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting"
+	const refusal = "unknown key dispatch_token_transition_file: under runtime: kubernetes a launch into a pod with no exchange identity waits for that pod's update round," +
+		" because the Envoy listener takes no shared bearer, so no launch carries a transition token; remove dispatch_token_transition_file from legion.yaml"
+	broker := kubernetesNoBrokerWith(dispatchTokenLine, brokerOn) + exchangeAudienceBlock
 	for name, body := range map[string]string{
-		"without dispatch_token_broker":    kubernetesNoBrokerWith(dispatchTokenLine, dispatchTokenLine+transition) + exchangeAudienceBlock,
+		"beside dispatch_token_broker":     kubernetesNoBrokerWith(dispatchTokenLine, brokerOn+transition) + exchangeAudienceBlock,
 		"with dispatch_token_broker false": kubernetesNoBrokerWith(dispatchTokenLine, dispatchTokenLine+"dispatch_token_broker: false\n"+transition) + exchangeAudienceBlock,
+		"under runtime: tmux":              minimalFile + transition,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, body), noEnv)
@@ -486,15 +491,11 @@ func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
 			}
 		})
 	}
-
-	path := writeConfigFile(t, kubernetesNoBrokerWith(dispatchTokenLine, brokerOn+transition)+exchangeAudienceBlock)
-	cfg, err := LoadForValidation(path, noEnv)
-	if err != nil {
-		t.Fatalf("LoadForValidation: %v", err)
-	}
-	if want := filepath.Join(filepath.Dir(path), "tokens", "DISPATCH_TOKEN"); !cfg.DispatchTokenBroker || cfg.DispatchTokenTransitionFile != want {
-		t.Fatalf("DispatchTokenBroker = %t, DispatchTokenTransitionFile = %q; want the setting on and %q", cfg.DispatchTokenBroker, cfg.DispatchTokenTransitionFile, want)
-	}
+	t.Run("control: the broker file without the key", func(t *testing.T) {
+		if _, err := LoadForValidation(writeConfigFile(t, broker), noEnv); err != nil {
+			t.Fatalf("LoadForValidation: %v, want the file loaded", err)
+		}
+	})
 }
 
 // `gates.design` takes the steps a deployment gates, in the order it names them, and the two
@@ -1827,7 +1828,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "dispatch_url", line: "dispatch_url: https://dispatch.example", class: modelled},
 		{key: "dispatch_token_file", line: "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN", class: modelled},
 		{key: "dispatch_token_broker", line: "dispatch_token_broker: true", class: kubernetesOnly, want: "dispatch_token_broker is not used when runtime is tmux: a tmux daemon has no pod identity to trade at the secrets broker; remove dispatch_token_broker"},
-		{key: "dispatch_token_transition_file", line: "dispatch_token_transition_file: /var/run/legion/DISPATCH_TOKEN_TRANSITION", class: kubernetesOnly, want: "dispatch_token_transition_file is not used when runtime is tmux: it holds the shared Dispatch token a pod built before dispatch_token_broker gets, and a tmux daemon starts no pod; remove dispatch_token_transition_file"},
+		{key: "dispatch_token_transition_file", line: "dispatch_token_transition_file: /var/run/legion/DISPATCH_TOKEN_TRANSITION", class: tossed, wantPrefix: "unknown key dispatch_token_transition_file: under runtime: kubernetes a launch into a pod with no exchange identity waits for that pod's update round"},
 		{key: "projects", line: "projects: {DEMO: {}}", class: modelled},
 		{key: "gates", line: "gates: {design: off}", class: modelled},
 		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},

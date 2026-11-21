@@ -11,10 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// The two counts a deployment under dispatch_token_broker reads before it removes
-// dispatch_token_transition_file (dispatch://INFRA-4425 R4): the launches since the daemon's boot
-// that carried the transition token, with the time of the last, and the live launches whose start
-// carried a Dispatch token, whichever daemon started them (Runtime.DispatchTokens).
+// The count a deployment under dispatch_token_broker reads before it revokes the shared bearer:
+// the live launches whose start carried a Dispatch token, whichever daemon started them
+// (Runtime.DispatchTokens).
 
 // beforeTheBroker is a tester and an implementer of two issues, each in a pod of its own that a
 // daemon before dispatch_token_broker built (dispatchBearer), edited into pods built before the
@@ -137,21 +136,19 @@ func logged(t *testing.T, logs *lockedLog, msg string) []map[string]any {
 	return records
 }
 
-// Two launches into kept pods built before the exchange identity, under
-// dispatch_token_transition_file, wait for their pods' update rounds: dispatchCredential would hand
-// each the transition token, but listenerCredential refuses each after it, since the Envoy
-// listener takes no shared bearer and a role of a pod with no identity to trade would hold no
-// credential for it. A refused launch sends no start, so neither raises the transition count, the
-// live count stays 0 on the daemon that refused them, and neither the transition line nor a live
-// count line is logged. A daemon restarted over those pods counts the generations an earlier daemon
-// started with the shared bearer from the record each start wrote, while the pods still run, and
-// no transition launch of its own boot; replacing one pod by its update round lets its process go,
-// and the count falls to 1, then, with the other, to 0.
+// Two launches into kept pods built before the exchange identity, under dispatch_token_broker,
+// wait for their pods' update rounds: listenerCredential refuses each, since the Envoy listener
+// takes no shared bearer and a role of a pod with no identity to trade would hold no credential
+// for it. A refused launch sends no start, so the live count stays 0 on the daemon that refused
+// them, and no live count line is logged. A daemon restarted over those pods counts the
+// generations an earlier daemon started with the shared bearer from the record each start wrote,
+// while the pods still run; replacing one pod by its update round lets its process go, and the
+// count falls to 1, then, with the other, to 0.
 func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
 	g, tester, implementer := beforeTheBroker(t)
 	logs := &lockedLog{}
 	r2 := restartedUnder(t, g, func(o *Options) {
-		dispatchBroker(testTransitionToken)(o)
+		dispatchBroker(o)
 		o.Log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}, tester, implementer)
 	if got := r2.DispatchTokens(); got != (DispatchTokens{}) {
@@ -164,24 +161,16 @@ func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
 		}
 	}
 	if got := r2.DispatchTokens(); got != (DispatchTokens{}) {
-		t.Fatalf("after two refused launches into kept pods with no exchange identity the counts are %+v, want no transition launch and 0 live launches carrying a Dispatch token", got)
-	}
-	if lines := logged(t, logs, "sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token"); len(lines) != 0 {
-		t.Errorf("the runtime logged %d transition launches for two refused launches, want none: %s", len(lines), logs.String())
+		t.Fatalf("after two refused launches into kept pods with no exchange identity the counts are %+v, want 0 live launches carrying a Dispatch token", got)
 	}
 	if lines := logged(t, logs, "sandbox: live launches carrying a Dispatch token"); len(lines) != 0 {
 		t.Errorf("the runtime logged the live count %d times for two refused launches, want never: %s", len(lines), logs.String())
 	}
 
-	r3 := restartedUnder(t, g, dispatchBroker(testTransitionToken), tester, implementer)
+	r3 := restartedUnder(t, g, dispatchBroker, tester, implementer)
 	observations := adoptedAndObserved(t, g, r3, tester, implementer)
-	got := r3.DispatchTokens()
-	if got.LiveLaunches != 2 {
+	if got := r3.DispatchTokens(); got.LiveLaunches != 2 {
 		t.Fatalf("after a restart the live launches carrying a Dispatch token number %d while both kept pods still run, want 2: the record each start of the shared bearer wrote says it carried one", got.LiveLaunches)
-	}
-	if got.TransitionLaunches != 0 || !got.LastTransitionLaunch.IsZero() {
-		t.Errorf("a restarted daemon that launched nothing counts %d transition launches, the last at %s, want none of its own boot",
-			got.TransitionLaunches, got.LastTransitionLaunch)
 	}
 
 	replacedByItsRound(t, g, r3, observations, tester)
@@ -227,7 +216,7 @@ func TestARestartCountsGenerationsAnEarlierDaemonStarted(t *testing.T) {
 	rewriteRecord(t, g, tester, func(record map[string]any) { delete(record, "dispatchToken") })
 	rewriteRecord(t, g, implementer, func(record map[string]any) { record["dispatchToken"] = false })
 
-	r2 := restartedUnder(t, g, dispatchBroker(testTransitionToken), tester, implementer)
+	r2 := restartedUnder(t, g, dispatchBroker, tester, implementer)
 	adoptedAndObserved(t, g, r2, tester, implementer)
 	r2.mu.Lock()
 	_, testerCounted := r2.dispatchTokenClaims[tester.Claim]
@@ -239,7 +228,7 @@ func TestARestartCountsGenerationsAnEarlierDaemonStarted(t *testing.T) {
 	if implementerCounted {
 		t.Errorf("the implementer's generation, recorded as carrying no Dispatch token, is counted as carrying one")
 	}
-	if got := r2.DispatchTokens(); got.LiveLaunches != 1 || got.TransitionLaunches != 0 {
-		t.Errorf("the restarted daemon counts %+v, want 1 live launch carrying a Dispatch token and no transition launch", got)
+	if got := r2.DispatchTokens(); got.LiveLaunches != 1 {
+		t.Errorf("the restarted daemon counts %+v, want 1 live launch carrying a Dispatch token", got)
 	}
 }

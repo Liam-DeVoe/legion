@@ -217,22 +217,21 @@ trap 'exit 143' TERM
 # ---- the rig: copied from stage3-devbox-workflow.sh ------------------------------------------------
 # Each service serves on a port the kernel chose, held from that choice until the service serves on
 # it (lib/rig.sh's start_held); the daemon's, which its restart keeps, by a keeper for the whole run.
+# The sessions' listener is on loopback with no credential, so the daemon, every pane, Dispatch and
+# this script call it with none.
 start_listener() {
-  local token
-  token=$(cat "$work/envoy-token")
   # shellcheck disable=SC2154 # require_app_inputs sets it; this file sources its libs as source=/dev/null
-  ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
+  ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="legion-accept4b13b-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_API_TOKEN "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
+    curl -fsS "http://127.0.0.1:$port_listener/v1/sessions"
 }
 
 start_dispatch() {
-  local dispatch_token envoy_token pg_password
+  local dispatch_token pg_password
   dispatch_token=$(cat "$work/dispatch-token")
-  envoy_token=$(cat "$work/envoy-token")
   pg_password=$(cat "$work/postgres-password")
   mkdir -p "$work/dispatch-home"
   chmod 0700 "$work/dispatch-home"
@@ -240,13 +239,13 @@ start_dispatch() {
   # operator's: make_omp_home exports the operator's XDG_CONFIG_HOME. They are the server's alone,
   # set by its env, not the held-port helper's that runs it.
   DATABASE_URL="postgres://$pg_user:$pg_password@127.0.0.1:$port_pg/$dispatch_db?sslmode=disable" \
-    DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
+    DISPATCH_AGENT_TOKEN="$dispatch_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
     ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_held dispatch port_dispatch DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_TOKEN "${app_key_unsets[@]}" \
     HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
     curl -fsS "http://127.0.0.1:$port_dispatch/api/v1"
@@ -271,7 +270,6 @@ state_dir: $state
 operator_token_file: $work/operator-token
 omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
-envoy_token_file: $work/envoy-token
 nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
@@ -664,12 +662,10 @@ upstream_nats=${SMOKE_UPSTREAM_NATS:-}
 [ -n "$upstream_nats" ] || fail "SMOKE_UPSTREAM_NATS is unset: the production Envoy NATS the GitHub bridge subscribes on, by its fully-qualified name"
 nats_url='^([A-Za-z][A-Za-z0-9+.-]*://)?([^@/?#,[:space:]]+@)?[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+(:[0-9]+)?/?$'
 [[ "$upstream_nats" =~ $nats_url ]] || fail "SMOKE_UPSTREAM_NATS is not one NATS URL naming a fully-qualified host"
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header" &&
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
+(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
   printf 'ci' >"$work/postgres-password")
-chmod 0600 "$work"/*token "$work/envoy-auth-header" "$work/postgres-password"
+chmod 0600 "$work"/*token "$work/postgres-password"
 (cd "$root/packages/daemon" && go build -ldflags "-X main.revision=$head_commit" -o "$work/legion" ./cmd/legion)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch)
 {

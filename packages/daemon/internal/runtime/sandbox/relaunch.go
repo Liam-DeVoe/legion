@@ -302,27 +302,18 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			l.kept = &kept
 		}
 	}
-	// Whether this launch keeps its pod is settled now, so under dispatch_token_broker so is its
-	// Dispatch credential: none for a pod that carries an exchange identity, the transition token
-	// for a kept pod built before it, or a refusal, before anything of the pod is touched, that
-	// waits for that pod's update round (dispatchCredential). Its listener credential is settled
-	// the same way: a kept pod built before the identity waits for its round (listenerCredential).
-	if err := r.dispatchCredential(&l, pod); err != nil {
-		return runtime.Locator{}, err
-	}
+	// Whether this launch keeps its pod is settled now, so is whether its role has a credential
+	// for the Envoy listener and, under dispatch_token_broker, for Dispatch: a kept pod built
+	// before the exchange identity has none to trade, and the launch waits for that pod's update
+	// round, refused before anything of the pod is touched (listenerCredential).
 	if err := r.listenerCredential(&l, pod); err != nil {
 		return runtime.Locator{}, err
 	}
-	// So is whether its Oh My Pi starts under an id the runtime chose (trades): prepare chose one
-	// where the configuration trades, and a launch that keeps a pod that trades nothing drops it
-	// here, once, so each reader of l.omp reads it alone (ompInputs), save agentArgv's first case,
-	// which owns a resume of a session the claim records with no file (spec.ResumeSession) as the
-	// one word `--resume=<id>` and needs no l.omp.resume. A launch that resumes by id, with no id
-	// Oh My Pi can read as one, is refused here, before anything of the pod is touched, and a
-	// launch that trades nothing resumes by its file as before (ompResumeRefusal).
-	if !l.trades(r) {
-		l.omp = ompInputs{}
-	}
+	// Every launch past it trades an exchange identity (trades), so its Oh My Pi starts under the
+	// id prepare chose (ompInputs), save agentArgv's first case, which owns a resume of a session
+	// the claim records with no file (spec.ResumeSession) as the one word `--resume=<id>` and needs
+	// no l.omp.resume. A launch that resumes by id, with no id Oh My Pi can read as one, is refused
+	// here, before anything of the pod is touched (ompResumeRefusal).
 	if err := l.ompResumeRefusal(); err != nil {
 		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, err)
 	}
@@ -436,11 +427,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail(fmt.Sprintf("stop its earlier generation %d", stale), err)
 		}
 	}
-	// Whether the start carries a Dispatch token is the launch's own decision (prepare's bearer,
-	// dispatchCredential's transition token), recorded with the generation's addresses so a
-	// restarted daemon counts it too (Runtime.DispatchTokens).
+	// Whether the start carries a Dispatch token is the launch's own decision (prepare's bearer),
+	// recorded with the generation's addresses so a restarted daemon counts it too
+	// (Runtime.DispatchTokens).
 	carried := l.secrets[dispatchTokenKey] != ""
-	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r), carried); err != nil {
+	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, carried); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
 	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
@@ -480,19 +471,18 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 }
 
 // keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts
-// in it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
-// volumes the pod carries), which of the role's own overlays and of every declared variant's
+// in it: whether the pod trades for that role (tradesIn, which reads the broker's volumes and the
+// exchange token the pod carries), which of the role's own overlays and of every declared variant's
 // overlays its container holds (heldRoleOverlays), the session store it was built under
 // (heldSessionStore, the URL file its generation is pointed at), and the leak check digest the pod
 // records (recordedLeakChecker: its template's, else the one this daemon pushed into it, the one
-// its install hashes to). A launch that keeps such a pod
-// builds its start command from these rather than from the configuration as it now reads, so the
-// role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
-// runs degraded until the update round replaces the pod — able to do the steps of that round's
-// update message (supervise.UpdateTask) and answer it, where a start naming what its pod cannot
-// carry would refuse to run at all (keptPod, INFRA-484).
-// The same enrollment decision writes the generation's address record (recordAddresses), so the
-// record says what the start said.
+// its install hashes to). A launch into a pod that does not trade is refused for its round
+// (listenerCredential). A launch that keeps a pod that trades builds its start command from the
+// rest rather than from the configuration as it now reads, so the role is started as its pod was
+// built (launcherCommand, roleOperatorEnv, mainEnvironment) and runs degraded until the update
+// round replaces the pod — able to do the steps of that round's update message
+// (supervise.UpdateTask) and answer it, where a start naming what its pod cannot carry would
+// refuse to run at all (keptPod).
 //
 // It reads the Sandbox's stored pod template, the build of the pod the controller made from it,
 // and not the pod-shape annotation (podShapeAnnotation), which records the configuration the pod
@@ -508,73 +498,37 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 	}
 	kind, _, _ := heldSessionStore(spec)
 	checker, recorded := recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, podUID)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind,
+	return keptPod{trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind,
 		checker: checker, recorded: recorded}, true
 }
 
-// dispatchCredential settles, under dispatch_token_broker, the Dispatch credential l's generation
-// carries, once relaunch knows whether l keeps pod, the live pod it found (l.kept), whose name is
-// its Sandbox's (l.name). prepare gave no launch a Dispatch token under the setting. A launch whose
-// pod carries an exchange identity — every pod a launch builds, since configure takes the setting
-// only beside an exchange audience, and a kept pod built with that identity — keeps none, and its
-// role trades the identity for a token of its own (launch.brokersDispatch,
-// DISPATCH_TOKEN_BROKER). A launch that keeps a pod built before the identity has none to trade
-// until the pod's update round replaces the pod (keptPod.trades), so it carries the transition
-// token as a launch carries the bearer without the setting, the role reading it through
-// DISPATCH_TOKEN_FILE; with no transition token named, the launch is refused with
-// runtime.AwaitingPodRound, which is runtime.ErrAwaitingPodRound naming the pod, and the supervisor
-// waits for that round, charging nothing. The refusal names the pod by the locator this launch's
-// process in it would have had (locatorFor). The supervisor keeps that locator on the claim, and
-// the round opens over the pod and replaces it through that locator where no claim records a
-// process there. A launch never replaces a pod a round covers, and the controller's pod, which no
-// round covers, is never kept without the identity: its launch replaces it for that drift
-// (movedInPod).
-//
-// A launch that carries the transition token is counted, and logged naming the claim, the pod and
-// both counts, once its start is sent (launchedDispatchToken): those are the launches a deployment
-// waits out before it removes dispatch_token_transition_file, and a launch that fails before its
-// start never handed its role the token.
+// listenerCredential refuses a launch whose role would have no credential for the Envoy listener,
+// once relaunch knows whether the launch keeps pod, the live pod it found (l.kept), whose name is
+// its Sandbox's (l.name). The listener takes no shared bearer, so no launch carries ENVOY_TOKEN
+// (New, prepare), and each role trades its pod's exchange identity for a broker token of its own,
+// which every pod a launch builds carries (runtime.kubernetes.agent_secrets.exchange_audience,
+// which New requires); under dispatch_token_broker the role trades the same identity for its
+// Dispatch token (DISPATCH_TOKEN_BROKER, mainEnvironment). A launch that keeps a pod built before
+// that identity (keptPod.trades) has nothing to trade, so its role could reach neither the
+// listener nor, under the setting, Dispatch until the pod's update round replaced the pod. It is
+// refused with runtime.AwaitingPodRound, which is runtime.ErrAwaitingPodRound naming the pod, before anything
+// of the pod is touched, and the supervisor waits for that round, charging nothing. The refusal
+// names the pod by the locator this launch's process in it would have had (locatorFor). The
+// supervisor keeps that locator on the claim, and the round opens over the pod and replaces it
+// through that locator where no claim records a process there. A launch never replaces a pod a
+// round covers, and the controller's pod, which no round covers, is never kept without the
+// identity: its launch replaces it for that drift (movedInPod).
 //
 // pod is read only for a launch that keeps it, which is a launch that found it live: a launch
 // that replaces its pod, or finds none, trades the identity the pod it builds carries.
-func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
-	if !r.dispatch.Broker || l.trades(r) {
-		return nil
-	}
-	if r.dispatch.Transition == "" {
-		return r.awaitingPodRound(l, pod, "dispatch_token_transition_file is not set")
-	}
-	l.secrets[dispatchTokenKey] = r.dispatch.Transition
-	return nil
-}
-
-// listenerCredential refuses a launch whose role would have no credential for the Envoy listener.
-// The listener takes no shared bearer, so no launch carries ENVOY_TOKEN (New), and each role trades
-// its pod's exchange identity for a broker token of its own, which every pod a launch builds
-// carries (runtime.kubernetes.agent_secrets.exchange_audience, which New requires); a launch that
-// keeps a pod built before that identity (keptPod.trades) has nothing to trade, so its role could
-// reach the listener for nothing until the pod's update round replaced the pod. It is refused with
-// runtime.AwaitingPodRound naming the pod, before anything of the pod is touched, and the
-// supervisor waits for that round, charging nothing, as dispatchCredential's refusal is waited out.
-// There is no transition token for the listener, so a deployment waits for those rounds; this
-// refusal runs after dispatchCredential, so it holds such a launch even where that one handed it
-// the Dispatch transition token. As with dispatchCredential, pod is read only for a launch that
-// keeps it, and the controller's pod is never kept without the identity.
 func (r *Runtime) listenerCredential(l *launch, pod *corev1.Pod) error {
 	if l.trades(r) {
 		return nil
 	}
-	return r.awaitingPodRound(l, pod, "its role would hold no credential for the Envoy listener, which takes no shared bearer")
-}
-
-// awaitingPodRound is the refusal of a launch that keeps pod, which carries no exchange identity,
-// where its role would hold no credential for want of one: runtime.AwaitingPodRound, naming the pod
-// by the locator this launch's process in it would have had (locatorFor), and why the identity is
-// missed (missing) (dispatchCredential, listenerCredential).
-func (r *Runtime) awaitingPodRound(l *launch, pod *corev1.Pod, missing string) error {
 	return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
-		Pod:    r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
-		Reason: fmt.Sprintf("pod %s carries no exchange identity and %s; its update round replaces it", l.name, missing),
+		Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
+		Reason: fmt.Sprintf("pod %s carries no exchange identity and its role would hold no credential for the Envoy listener, which takes no shared bearer; its update round replaces it",
+			l.name),
 	})
 }
 

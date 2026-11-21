@@ -189,7 +189,7 @@ const claudeSession = "0b7c1d3e-5f60-4a72-8b94-c5d6e7f80912"
 // TestTheDaemonRegistersEachRoleSession: under a deployment that sets exchange_audience, the
 // daemon registers each role claim's session for the pod the claim's process runs in, once, bound
 // to the thumbprint of that role's own key, which the role's shim hello names. An Oh My Pi role
-// whose launch named no id (one into a kept pod that trades nothing) is registered under the
+// whose launch named no id (one from a runtime that names none) is registered under the
 // session its agent reports at its registration, after its hello, before that registration is
 // answered, so the agent holds no claim whose pod cannot trade. A Claude Code role's session is
 // the one the runtime chose for its launch, and it is registered at its shim's hello, before the

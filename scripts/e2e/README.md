@@ -706,7 +706,7 @@ What it stands up, all of it the run's own:
   — tmpfs rather than the image's anonymous volume, which a box whose docker volume subsystem stalls would hang on.
 
 - **NATS and the Envoy listener** on the host:
-  a JetStream container of the hub's nats-server (`legion-e2e2-nats-<pid>`; [`lib/nats-image.sh`](#libnats-imagesh) names the image), and `packages/envoy`'s `cmd/listener` built into the work directory and started with a fresh API bearer, which reaches every pane as the 0600 file `envoy_token_file` names, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
+  a JetStream container of the hub's nats-server (`legion-e2e2-nats-<pid>`; [`lib/nats-image.sh`](#libnats-imagesh) names the image), and `packages/envoy`'s `cmd/listener` built into the work directory and started on loopback with no credential, so the daemon, every pane and the script call it with none, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
 
 - **The plugins**: this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, each packed as the release packs it, installed into the OMP profile `legion-e2e2-<pid>-<epoch>` by `lib/install-plugin-profile.sh` (`--package pi-envoy`, then `--package pi-legion`), under the run's own Oh My Pi home `<work>/omp-home` ([`lib/omp-home.sh`](#libomp-homesh)).
   The daemons run with that `HOME` and with `OMP_PROFILE` naming the profile, so the gate and every pane load both, and the operator's `~/.omp/profiles` holds none of the run;
@@ -1129,10 +1129,14 @@ the alias its `GET /key/info` names for the key is noted (or that it names none)
 The run copies the pane's key once into its work directory, 0600, and writes the implementer's claim directory (`<state>/claude/<claim token>`, which the daemon creates only when missing) before the claim exists:
 a `settings.json` whose `apiKeyHelper` is a command that prints that copy, and whose `model` is `claude-sonnet-5`.
 So no pane's environment carries `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_FOUNDRY_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`, which the watcher checks for every agent process, and the key is in no argv and no transcript.
+The watcher holds every agent to carrying no Envoy bearer either (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`): the run's listener takes no credential, and the daemon hands a pane none.
 `CLAUDE_E2E_EVIDENCE_DIR` names the evidence directory; by default it is a fresh one under `/tmp`.
 
 The rig is Stage 3's without the GitHub ingress bridge:
 scratch Postgres, NATS, Envoy listener and native Dispatch from [`lib/rig.sh`](#librigsh), the workflow's vocabulary from [`lib/workflow.sh`](#libworkflowsh), the transcript checks from [`lib/claude-transcript.sh`](#libclaude-transcriptsh) over the transcript's file on the devbox, `admission_cap: 1`, and the design gate off, so the architect's gate registration starts planning with no approval.
+The sessions' Envoy listener is on loopback with no credential, so the daemon, every pane and the run call it with none.
+Dispatch calls a second listener of the run's own, on loopback and on the run's one NATS, which verifies Dispatch's own token (`lib/dispatch-identity.sh`'s issuer, of Dispatch's subject alone) and takes a send's role mark from it:
+a verifier closes `/v1` to a caller that presents no credential, on loopback as anywhere, so the sessions' listener cannot carry it, and the run requires Dispatch's listener to admit Dispatch's token and to answer a request with no credential 401.
 The daemon is started with the real `gh`, `jj`, `tmux` and `bun` that `mise which` names first on its `PATH`, which every pane inherits ([`real_bin_path`](#librigsh):
 the run's own `HOME` hides mise's global config from the box's shims, where a pane's `jj` shim hands the call back to itself, exit 127), so all four must be pinned in mise.
 `LEGION_CLAUDE_PATH` is set to the `claude` on the operator's `PATH`, `LEGION_BUN_PATH` to that real `bun`, and `LEGION_CLAUDE_PLUGIN_DIR` to the run's own copy of the claude-envoy plugin, which it builds from this checkout into its work directory (`packages/claude-envoy/scripts/build.ts --out`), with `dist/envoy-channel.js` and `legion/` fresh.
@@ -1164,6 +1168,9 @@ LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
 LEGION_E2E_SESSION_DB_PORT=<port> \
+LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE=<0600 file> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-sandbox.sh     # → "claude backend sandbox e2e: PASS", exit 0
 
@@ -1186,6 +1193,9 @@ LEGION_E2E_MODEL_ROUTE=key-file \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
 LEGION_E2E_SESSION_DB_PORT=<port> \
+LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE=<0600 file> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-sandbox.sh     # the same, through the bridge; needs docker
 ```
@@ -1274,6 +1284,15 @@ under `key-file`, `{pod,models}-key-file.yml`, which carry no projected token an
 `LEGION_E2E_POD_SERVICE_ACCOUNT` (required, under both routes) is the ServiceAccount the deployment's pods run as, checked by [`lib/pod-service-account.sh`](#libpod-service-accountsh).
 The run puts it in place of the `${POD_SERVICE_ACCOUNT}` placeholder in its copy of the chosen route's pod fixture, `pod.yml` or `pod-key-file.yml`.
 `LEGION_E2E_POD_REACHABILITY` (required, `aws-private-ip` or `bridge`) is how the pods reach the run's services on the devbox ([Pod reachability](#pod-reachability), below), and `LEGION_E2E_DAEMON_CONTAINER_MOUNTS` (optional, `bridge` only) the extra read-only mounts of the daemon's container there.
+`LEGION_E2E_AGENT_SECRETS_URL`, `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (required, with the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE`) are the pods' broker route, the run's `runtime.kubernetes.agent_secrets` block ([`lib/broker-route.sh`](#libbroker-routesh)):
+the daemon enrols every pod with the deployment's secrets broker, and each role trades its pod's exchange token for a broker token naming its own session, its one credential at the scratch Envoy listener, which takes no shared token; every role's pod is held to carrying no Envoy bearer (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`).
+`LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE` (required) is the scratch listener's own projected ServiceAccount token for the broker's audience, of an account the broker lets introspect, which the listener presents to check every broker token a pod sends it.
+`LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE` (required) is the daemon's own identity at the broker: a token of the daemon's ServiceAccount for the exchange audience, of an account the broker's `BROKER_EXCHANGE_ACCOUNTS` names for the session `legion-daemon:<project>`, which the daemon trades for the broker token it presents the listener.
+The daemon is told it as a daemon pod is (`AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`; `docs/kubernetes.md`), and takes no `AGENT_SECRETS_KEY_DIR` from the caller's shell.
+`prerequisites` refuses each of the three token files when it is unset, not absolute, not a readable file, readable by its group or others, or empty, naming the variable and never what the file holds.
+The listener binds the address the other services bind, its public origin (`ENVOY_PUBLIC_URL`) the address the pods and the daemon dial;
+it checks every broker token at the broker, and verifies Dispatch's own identity token (`lib/dispatch-identity.sh`), a verifier that also closes `/v1` to a caller that presents no credential, so its start is judged by `/healthz` and by a request with no credential, which it must answer 401.
+Under `bridge` the daemon's container also mounts, read-only, the directory of each of the daemon's two broker token files, so a file the operator rewrites before its token lapses is the file the container reads, and is given the three `AGENT_SECRETS_*` values, none of them a credential.
 The App inputs ([`lib/github-apps.sh`](#libgithub-appssh)) name the two role Apps:
 `LEGION_E2E_IMPLEMENT_APP_ID`, `LEGION_E2E_IMPLEMENT_APP_SECRET` and `LEGION_E2E_REVIEW_APP_ID` are optional, and a run here sets none of them and takes this deployment's own;
 `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, shell text that prints the review App's PEM private key on stdout, is required and has no default.
@@ -2204,6 +2223,8 @@ LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermo
   LEGION_E2E_DISPATCH_URL=https://<dispatch> LEGION_E2E_ENVOY_URL=http://<listener>:<port> LEGION_E2E_NATS_URL=nats://<nats>:4222 \
   LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE=<email of a person signed in to Dispatch> \
   LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> \
+  LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+  LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE=<0600 file> \
   LEGION_E2E_SESSION_DB_PORT=<port> \
   LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage4b-sandbox-tree.sh        # → "stage 4b e2e: PASS", exit 0
@@ -2221,7 +2242,7 @@ The repository names no production service.
 `prerequisites` refuses a value that is unset, names a bare alias, or carries a path, naming the variable and never its value.
 
 `LEGION_E2E_MODEL_GATEWAY_AUDIENCE` is the audience the model gateway accepts on a worker's projected ServiceAccount token.
-The run puts it in place of the placeholder in its copy of the operator route's `pod.yml`, which the daemon loads, and `pod-shape` holds every pod to exactly that one token.
+The run puts it in place of the placeholder in its copy of the operator route's `pod.yml`, which the daemon loads, and `pod-shape` holds every pod to that token and the broker's two, which every enrolled pod carries (the `agent_secrets` audience, `LEGION_E2E_AGENT_SECRETS_AUDIENCE` or the loader's default `agent-secrets`, and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE`), and no other projected token.
 `LEGION_E2E_POD_SERVICE_ACCOUNT` (required) is the ServiceAccount the deployment's pods run as, checked by [`lib/pod-service-account.sh`](#libpod-service-accountsh).
 The run puts it in place of the `${POD_SERVICE_ACCOUNT}` placeholder in that same copy of `pod.yml`, and `pod-shape` holds every pod to that account.
 `LEGION_E2E_DISPATCH_TOKEN_FILE` names a file only its owner can read (no group or other permission bits) holding a bearer of the Dispatch agents' client:
@@ -2233,10 +2254,17 @@ Every project names the person its unowned work lands on, and the agents' bearer
 `prerequisites` refuses the variable unset or not shaped as an email, naming the variable and never its value;
 the repository carries no person's email.
 `LEGION_E2E_ENVOY_TOKEN_SECRET_ID` is the Secrets Manager id of the production Envoy listener's API token, which `prerequisites` reads with the devbox admin role.
+Only the run's own reads of that listener present it (the interests sampler, the controller-role lookup): no `legion.yaml` or `controller.yaml` names it, so neither the daemon, its roles nor the controller holds it.
 Both bearers land in 0600 files under the run's scratch directory.
 `prerequisites` refuses the token file when the variable is unset, or names something that is not a readable regular file, whose group or others have any permission bit (read through a symlink, from the file it names), or that holds only whitespace;
 each refusal names the variable and the path, never what the file holds.
 It refuses the other three when they are unset or malformed (the audience through [`lib/model-gateway-audience.sh`](#libmodel-gateway-audiencesh)), naming the variable and never its value.
+`LEGION_E2E_AGENT_SECRETS_URL`, `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (and the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE`) are the pods' broker route, the run's `runtime.kubernetes.agent_secrets` block ([`lib/broker-route.sh`](#libbroker-routesh)):
+the daemon enrols every pod with the production secrets broker, and each role trades its pod's exchange token for a broker token naming its own session, its one credential at the production listener, since the daemon hands a role no Envoy bearer (each role's endpoint check, `assert_claim_endpoints` and the address-moved checkpoints, refuses a role that carries `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN`).
+`LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE` is the daemon's own identity at that broker, as in [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh): a token of the daemon's ServiceAccount for the exchange audience, of an account the broker's `BROKER_EXCHANGE_ACCOUNTS` names for the session `legion-daemon:<project>`, which the daemon, told it as a daemon pod is, trades for the broker token it presents the listener.
+`prerequisites` refuses each of these, and each token file that is not an absolute path to a non-empty file only its owner can read, naming the variable and never its value or what the file holds.
+The controller the run starts on the devbox presents the listener the broker token the operator's own `AGENT_SECRETS_URL` and `AGENT_SECRETS_MACHINE_IDENTITY` trade, since `controller.yaml` names no Envoy bearer and `legion controller start` refuses an `envoy_url` off loopback without both;
+`prerequisites` refuses either unset, unless `STAGE4B_SKIP_CONTROLLER` is set.
 `preflight` reads Dispatch's `whoami` with the run's bearer and requires an agent session;
 the same read with an invalid bearer, its negative control, must be refused 401.
 
@@ -2526,8 +2554,8 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   no image row `unchecked`): every image row (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`) is `present`, codegraph included;
   every live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `unchecked` with a detail starting `no session has reported yet (`, since the live rows render from the live sessions' reports (LEGION-663) and boot's own empty Postgres holds none yet
   — the first comes with the first admitted root's architect;
-  and the open rows are `secrets`, and `pool-capacity` when the pool scaled for the probe (the pool's to decide, not the configuration's:
-  the row is open when the image probe pod was Unschedulable before a node came up for it, which a run that starts on an empty pool meets), since the proof's `legion.yaml` configures no `runtime.kubernetes.agent_secrets` and decides nothing, while `model-fallback` and `resource-limits` read `present` (the fixture overlay's `retry.modelFallback` and the issue and controller pods' reservations);
+  and no row is open but `pool-capacity`, when the pool scaled for the probe (the pool's to decide, not the configuration's:
+  the row is open when the image probe pod was Unschedulable before a node came up for it, which a run that starts on an empty pool meets), since the proof's `legion.yaml` configures the pods' broker route (`runtime.kubernetes.agent_secrets`), so `secrets` reads `present` once the daemon's broker login is issued, and decides nothing, while `model-fallback` and `resource-limits` read `present` (the fixture overlay's `retry.modelFallback` and the issue and controller pods' reservations);
   `pool-capacity`'s row is recorded either way.
   A row that reads otherwise fails by name with its status and detail
 
@@ -2867,9 +2895,9 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - The daemon's tick (`controller_wake_interval_seconds: 60`) reaches that session too, and every tick delivery in it so far
   — this window is before `full-agent-negative`, the first checkpoint that opens a live row
-  — carries the daemon's capability report as its payload's `openCapabilities`, rendered by pi-envoy into the card's `message` block (`openCapabilities[1]: secrets`;
+  — carries the daemon's capability report as its payload's `openCapabilities`, rendered by pi-envoy into the card's `message` block (`openCapabilities[1]: pool-capacity`, or no such line;
   [`lib/controller-ticks.jq`](lib/controller-ticks.jq)), and each tick's list is judged on its own:
-  as a set it must be `["secrets"]` or `["secrets","pool-capacity"]`, the two lists the proof's deployment can leave open.
+  as a set it must be `[]` or `["pool-capacity"]`, the two lists the proof's deployment can leave open; a tick naming `secrets` says the daemon's broker login was not issued.
   Each tick alone, since every `legion start` between `boot` and here re-probes the image and `pool-capacity` is that probe's own verdict, so one session's ticks can carry either;
   any other name, a live row included, fails with the tick quoted.
   The ticks are kept as `controller-ticks.json`, and `boot`'s set is in the note for context;
@@ -3014,7 +3042,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `pod-shape`
 
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
-  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, the pool, Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
+  gVisor, the operator's ServiceAccount and its three projected tokens (the gateway's, and the broker's `agent_secrets` audience and exchange audience), the run's route ConfigMap mounted as every role's profile `models.yml`, the pool, Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
   the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
@@ -5950,6 +5978,19 @@ pod_service_account=$(bash scripts/e2e/lib/pod-service-account.sh)
 
 A ServiceAccount's name is a DNS-1123 subdomain, so the helper exits 1 when the variable is unset or holds anything else: lowercase letters, digits, `-` and `.` alone, beginning and ending with a letter or a digit, at most 253 characters.
 Its refusal names the variable on stderr and never prints the value.
+
+## lib/broker-route.sh
+
+Prints the `runtime.kubernetes.agent_secrets` block of a proof whose daemon runs the Kubernetes runtime ([`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), [`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh)), indented to sit under `kubernetes:`, from `LEGION_E2E_AGENT_SECRETS_URL` (an `https://` URL with no path), `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` (an absolute path to a file only its owner can read, holding the daemon's own projected ServiceAccount token for the broker's audience), the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (which must differ from the enrolment's audience).
+The block is the pods' broker route: every role trades its pod's exchange token for a broker token naming its own session, its one credential at the Envoy listener, since the daemon hands a role no Envoy bearer.
+
+```sh
+broker_block=$(bash scripts/e2e/lib/broker-route.sh [TOKEN_FILE_VARIABLE...])
+```
+
+Each variable named after it is another token file the proof needs, checked as the daemon's is and printed nowhere (`claude-backend-sandbox.sh`'s `LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE`, and both proofs' `LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE`).
+It exits 1 naming every missing or wrong input on stderr in one run, never a value or what a file holds, and prints nothing on stdout, so a proof calls it in `prerequisites`, before it creates anything.
+`lib/broker-route.test.ts` (`bun test scripts/e2e/lib`) runs it over every refusal and the block it prints.
 
 ## lib/install-model-gateway.sh
 

@@ -178,15 +178,13 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 var ErrSessionStore = errors.New("the session store could not be asked")
 
 // ErrAwaitingPodRound is a launch refused because the live pod it would keep cannot give its role a
-// credential it needs. Under dispatch_token_broker a launch carries no Dispatch token, and its role
-// trades its pod's exchange identity for one of its own; the Envoy listener takes no shared bearer,
-// so a launch carries no Envoy token, and its role trades that identity for its listener
-// credential too. This pod was built before that identity, and nothing stands in for it:
-// for Dispatch, dispatch_token_transition_file, the shared token such a pod's launch carries
-// instead, is not set; for the listener there is no such token. Only the pod's update round, which
-// replaces it with a pod that carries the identity, cures it, and a launch never replaces a pod a
-// round covers (the sandbox runtime's relaunch). It is not the claim's own failure: the caller
-// charges nothing and starts again every
+// credential it needs. The Envoy listener takes no shared bearer, so a launch carries no Envoy
+// token, and its role trades its pod's exchange identity for its listener credential; under
+// dispatch_token_broker a launch carries no Dispatch token either, and its role trades the same
+// identity for one of its own. This pod was built before that identity, and nothing stands in for
+// it. Only the pod's update round, which replaces it with a pod that carries the identity, cures
+// it, and a launch never replaces a pod a round covers (the sandbox runtime's relaunch). It is not
+// the claim's own failure: the caller charges nothing and starts again every
 // minute until the pod it finds carries the identity (supervise's startWaitsForPodRound). Nothing
 // of the pod was touched and nothing was started. The Sandbox runtime refuses with an
 // AwaitingPodRound, which names the pod the launch waits on.
@@ -262,13 +260,11 @@ type IssuePodReader interface {
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
-// prepares the launch (claudeInputs), and an Oh My Pi role's whose pod trades an exchange
-// identity, which it decides the same way (ompInputs): `--session-id <id>` for a launch that
-// starts a session, `--resume <id>` for a resume by a recorded file, and the one word
-// `--resume=<id>` for a resume of a session the claim records with no file. It answers for the
-// incarnation loc records, and false for any other — an Oh My Pi launch that named no id (one
-// into a kept pod that trades nothing, whose agent mints its id and reports it at its
-// registration), a launch the runtime does not remember (a daemon restarted since), or an earlier
+// prepares the launch (claudeInputs), and an Oh My Pi role's, which it decides the same way
+// (ompInputs): `--session-id <id>` for a launch that starts a session, `--resume <id>` for a
+// resume by a recorded file, and the one word `--resume=<id>` for a resume of a session the claim
+// records with no file. It answers for the incarnation loc records, and false for any other — a
+// launch the runtime does not remember (a daemon restarted since), or an earlier
 // incarnation. It is what lets the daemon register a role's chosen session for its pod at the
 // shim's hello, before the agent registers (supervise's ensureRegistered). A runtime that names no
 // session implements nothing here.

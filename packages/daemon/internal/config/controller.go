@@ -212,6 +212,36 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	return cfg, nil
 }
 
+// ControllerIdentityVariables are the variables that name the secrets broker and this machine's
+// identity at it, which the controller's session trades for the broker token its Envoy client
+// presents the listener (brokerCredential, packages/envoy-client).
+var ControllerIdentityVariables = []string{"AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY"}
+
+// CheckListener refuses envoy_url when the controller's session, whose environment is env, would
+// present the listener no credential and the listener is off loopback. The listener takes no
+// shared bearer, so the session presents the broker token it trades with this machine's identity
+// where env names both ControllerIdentityVariables, and otherwise nothing, which only a listener
+// bound to loopback serves, as the daemon under runtime: tmux is held to (checkLoopbackListener).
+// The host is judged as written, and the refusal names it alone, never the URL.
+func (c ControllerConfig) CheckListener(env map[string]string) error {
+	if !slices.ContainsFunc(ControllerIdentityVariables, func(name string) bool { return env[name] == "" }) {
+		return nil
+	}
+	parsed, err := endpointURL(c.EnvoyURL, "envoy_url")
+	if err != nil {
+		return err
+	}
+	host := parsed.Hostname()
+	if err := refuseNonASCIIHost("envoy_url host", host); err != nil {
+		return err
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("envoy_url names %s, which is not a loopback host, and the environment names no secrets broker and machine identity (%s): the controller's session would present the Envoy listener no credential, which takes no shared bearer, and a listener off loopback answers a caller that presents none 401; name a loopback listener, or start the controller where %s are set",
+		host, strings.Join(ControllerIdentityVariables, ", "), strings.Join(ControllerIdentityVariables, " and "))
+}
+
 // daemonBase is a daemon URL the command appends a route to: baseURL keeps an operator's path but
 // refuses a query or fragment, which would otherwise turn that route into request data.
 func daemonBase(value, key string) (string, error) {

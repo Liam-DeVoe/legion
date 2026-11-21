@@ -2981,24 +2981,21 @@ package api
 //
 // 207: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
-// that session, which moves three surfaces this number names. The agent's argv: in a pod that
-// carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
-// session id and starts it with `--session-id <id>`, or with `--resume <id>` when it resumes the
-// role by its recorded file, and no path (sandbox's agentArgv); a launch into a pod that carries no
-// exchange identity keeps `--resume=<file>`. A resume of a session the claim records with no file
-// keeps entry 189's one `--resume=<id>` in either pod, and a launch that trades runs under that
-// id. The worker environment: a role in a pod that carries the identity is told
+// that session, which moves three surfaces this number names. The agent's argv: the daemon
+// chooses each Oh My Pi role's session id and starts it with `--session-id <id>`, or with
+// `--resume <id>` when it resumes the role by its recorded file, and no path (sandbox's agentArgv);
+// a launch into a pod that carries no exchange identity waits for that pod's update round, since
+// its role would hold no credential for the Envoy listener. A resume of a session the claim
+// records with no file keeps entry 189's one `--resume=<id>`, and the launch runs under that id.
+// The worker environment: a role in a pod that carries the identity is told
 // `DISPATCH_TOKEN_BROKER=1` under the setting, which the image's Dispatch client reads as the
 // order to trade, and no `DISPATCH_TOKEN_FILE`, since its start carries no Dispatch token
-// (sandbox's mainEnvironment); a launch into a pod built before the identity carries the token of
-// `dispatch_token_transition_file` through `DISPATCH_TOKEN_FILE`, as every launch carried the
-// shared bearer before. The state: `GET /legion/v1/state` gains `dispatchCredential` under the
-// setting and nowhere else (api's DispatchCredentialView): the session the daemon's own Dispatch
-// calls run under, `legion-daemon:<project>`, the launches since the daemon's boot that carried the
-// transition token with the time of the last, and the live launches whose start carried a Dispatch
-// token, which a deployment waits to see at zero before it removes
-// `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
-// block the plugin parses loosely (35 above), and moves no number.
+// (sandbox's mainEnvironment). The state: `GET /legion/v1/state` gains `dispatchCredential` under
+// the setting and nowhere else (api's DispatchCredentialView): the session the daemon's own
+// Dispatch calls run under, `legion-daemon:<project>`, and the live launches whose start carried a
+// Dispatch token, the shared bearer a daemon without the setting handed out, which a deployment
+// waits to see at zero before it revokes that bearer. The settings block's `dispatch_token_broker`
+// is a key of the block the plugin parses loosely (35 above), and moves no number.
 // A caller below 207 is served the state without the key, by its row of shaping.go's
 // stateNarrowings (withoutDispatchCredential, the band of dispatchCredentialContract): a plugin
 // built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
@@ -3013,9 +3010,9 @@ package api
 // The skew is why the number moves. An Oh My Pi from before `--session-id` refuses a flag it does
 // not know and exits, and a Dispatch client from before `DISPATCH_TOKEN_BROKER` reads a role with
 // no `DISPATCH_TOKEN_FILE` as a role with no Dispatch credential at all, so the boot gate and
-// `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
-// of an older image carries no exchange identity, so it keeps the argv and the credential it had,
-// and its pod's update round replaces the pod.
+// `legion probe-image` hold the daemon to an image built from this contract. A kept pod of an
+// older image carries no exchange identity, so a launch into it waits for the pod's update round,
+// which replaces the pod.
 // (This change takes 207, the lowest number above main's 202 that no open pull request declared
 // when the forward merge of 2026-11-21 brought main in at 1cdf5b9ceb, which declares 202 (#4493,
 // the entry above); it had declared 165, then 175 from the merge that brought main in at

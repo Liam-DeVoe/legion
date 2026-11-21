@@ -33,13 +33,12 @@ func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 }
 
 // movedSince is what a runtime named now reads of a tester launched under launched: the stream its
-// issue pod's launcher dials, then its generation-1 record, written with that pod's own
-// enrollment decision (Runtime.enrollsIn) and compared against what a generation started in that
-// same pod would be handed now.
+// issue pod's launcher dials, then its generation-1 record, written as a launch writes it, and
+// compared against what a generation started in that same pod would be handed now.
 func movedSince(t *testing.T, launched, now *Runtime) []movedAddress {
 	t.Helper()
 	pod := &corev1.Pod{Spec: podOf(t, launched, workerSpec(t))}
-	record, err := launched.recordFor(claim.RoleTester, 1, launched.enrollsIn(&pod.Spec, claim.RoleTester), launched.dispatch.Bearer != "")
+	record, err := launched.recordFor(claim.RoleTester, 1, launched.dispatch.Bearer != "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +192,7 @@ func TestTheAddressRecordHoldsNoCredential(t *testing.T) {
 		o.DispatchURL = "https://legion:dispatch-password@dispatch.internal.example"
 		o.AgentSecrets.URL = "https://secrets.internal.example/?token=broker-query"
 	})
-	record, err := r.recordFor(claim.RoleTester, 7, r.enrollsIn(nil, claim.RoleTester), true)
+	record, err := r.recordFor(claim.RoleTester, 7, true)
 	if err != nil {
 		t.Fatal(err)
 	}

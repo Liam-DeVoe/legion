@@ -8,7 +8,6 @@
     "DISPATCH_TOKEN_BROKER": "1",
     "DISPATCH_URL": "https://dispatch.internal.example",
     "ENVOY_NATS_URL": "nats://192.0.2.250:4222",
-    "ENVOY_TOKEN_FILE": "/var/run/legion/private/g1/ENVOY_TOKEN",
     "ENVOY_URL": "http://192.0.2.250:9020",
     "GH_CONFIG_DIR": "/var/run/legion/gh/sjawhar",
     "GH_HOST": "",
@@ -42,6 +41,7 @@
     "LEGION_STATE_DIR": "/var/run/legion/state",
     "LEGION_TREE": "LEGION-208",
     "LEGION_WORKSPACE": "/legion/workspaces/sjawhar/legion-smoke/legion-208",
+    "NATS_NKEY_SEED_FILE": "/var/run/legion/private/g1/NATS_NKEY_SEED",
     "OMP_SESSION_SQL_DSN_FILE": "/var/run/legion/providers/OMP_SESSION_SQL_DSN",
     "OMP_SESSION_STORAGE": "sql",
     "OTEL_RESOURCE_ATTRIBUTES": "legion.issue=LEGION-208,legion.role=tester",
@@ -59,8 +59,8 @@
     "XDG_STATE_HOME": "/legion/scratch/state/tester"
   },
   "files": [
-    "ENVOY_TOKEN",
     "LEGION_BOOT_TOKEN",
+    "NATS_NKEY_SEED",
     "system-prompt.md"
   ]
 }

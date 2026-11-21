@@ -279,36 +279,29 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 	}
 }
 
-// TestTheDaemonNeverSendsTheTransitionToken: under dispatch_token_broker a transition file holds the
-// shared Dispatch token a launch into a pod built before the setting gets, and the daemon's own
-// client never presents it: boot plans no bearer for its own calls (plan.dispatchToken), which a
-// boot reading the transition file as the daemon's bearer would set and which no request shows,
-// since dispatchCredential reads no bearer under the setting; and every request the client sends
-// Dispatch, the boot's whoami and the workflow's reads and writes, carries the broker's token under
-// DPoP with a proof, and none carries the transition token's text, anywhere in it.
-func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
-	const transitionToken = "shared-transition-token-3a9f"
+// TestTheDaemonsOwnDispatchCallsPresentTheBrokerToken: under dispatch_token_broker the daemon's
+// own client presents no bearer: boot plans none for its own calls (plan.dispatchToken), and every
+// request the client sends Dispatch, the boot's whoami and the workflow's reads and writes, carries
+// the broker's token under DPoP with a proof.
+func TestTheDaemonsOwnDispatchCallsPresentTheBrokerToken(t *testing.T) {
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 	dispatchServer := newCredentialDispatch(t, daemonWhoami(cfg.Project))
 	cfg.DispatchURL, cfg.DispatchTokenBroker = dispatchServer.URL, true
-	cfg.DispatchTokenTransitionFile = writeSecret(t, "dispatch-transition-token", transitionToken)
 	env := podIdentity(t, broker.url)
 	var environ []string
 	for name, value := range env {
 		environ = append(environ, name+"="+value)
 	}
 
-	// The boot's own path: prepare reads the transition file (readBoot), and the credential is
-	// settled from what prepare planned.
+	// The boot's own path: the credential is settled from what prepare planned (readBoot).
 	p, err := prepare(cfg, quietLogger(), overrides{environ: environ})
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
 	if p.dispatchToken != "" {
-		t.Fatalf("boot planned a Dispatch bearer for the daemon's own calls under dispatch_token_broker (the transition token: %t), want none",
-			p.dispatchToken == transitionToken)
+		t.Fatal("boot planned a Dispatch bearer for the daemon's own calls under dispatch_token_broker, want none")
 	}
 	transport, err := settledDispatch(context.Background(), cfg, p.dispatchToken, getenvOf(env), quietLogger())
 	if err != nil {
@@ -335,25 +328,17 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 			t.Errorf("%s %s carried Authorization %q and DPoP %q, want the broker's token under DPoP beside a proof",
 				request.method, request.target, request.header.Get("Authorization"), request.header.Get("DPoP"))
 		}
-		carried := request.target + "\n" + request.body
-		for name, values := range request.header {
-			carried += "\n" + name + ": " + strings.Join(values, ", ")
-		}
-		if strings.Contains(carried, transitionToken) {
-			t.Errorf("%s %s carried the transition token:\n%s", request.method, request.target, carried)
-		}
 	}
 }
 
 // TestTheBootLogNamesTheDispatchCredential: the boot logs one line naming the credential the
 // daemon's Dispatch client presents, the file without the setting and the broker and the session
-// under it, the transition file beside it where one is named, and no token in either.
+// under it, and no token in either.
 func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 	const fileToken = "dispatch-file-token-4e7a"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 	tokenFile := writeSecret(t, "dispatch-token", fileToken)
-	transitionFile := writeSecret(t, "dispatch-transition-token", "shared-transition-token-3a9f")
 	for name, tc := range map[string]struct {
 		cfg  config.Config
 		want map[string]any
@@ -365,10 +350,6 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 		"dispatch_token_broker": {
 			cfg:  config.Config{Project: "EXAMPLE", DispatchURL: dispatchServer.URL, DispatchTokenBroker: true},
 			want: map[string]any{"credential": "broker", "session": "legion-daemon:EXAMPLE"},
-		},
-		"dispatch_token_broker with a transition file": {
-			cfg:  config.Config{Project: "EXAMPLE", DispatchURL: dispatchServer.URL, DispatchTokenBroker: true, DispatchTokenTransitionFile: transitionFile},
-			want: map[string]any{"credential": "broker", "session": "legion-daemon:EXAMPLE", "transitionFile": transitionFile},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -399,7 +380,7 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 			if got, _ := json.Marshal(lines[0]); string(got) != mustJSON(t, tc.want) {
 				t.Fatalf("the Dispatch credential line carries %s, want %s", got, mustJSON(t, tc.want))
 			}
-			for _, token := range []string{fileToken, daemonBrokerToken, daemonSubjectToken, "shared-transition-token-3a9f"} {
+			for _, token := range []string{fileToken, daemonBrokerToken, daemonSubjectToken} {
 				if strings.Contains(logged.String(), token) {
 					t.Fatalf("the boot log carries the token %q:\n%s", token, logged.String())
 				}

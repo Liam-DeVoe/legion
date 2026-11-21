@@ -405,6 +405,10 @@ func (s *fakeStore) close(tree string) {
 	s.closed[tree] = true
 }
 
+// testPaneSeed stands in for the pane NATS nkey seed, the launch secret every launch's spec
+// carries as the daemon names it (productionLaunchSecrets).
+const testPaneSeed = "pane-nkey-seed"
+
 // testSpec is a launch of the claim on the tree, with its prompt files under dir.
 func testSpec(t *testing.T, token claim.Token, role claim.Role, issue string) runtime.SpawnSpec {
 	t.Helper()
@@ -421,7 +425,7 @@ func testSpec(t *testing.T, token claim.Token, role claim.Role, issue string) ru
 		Claim: token, Project: "legion", Tree: testTree, Issue: issue, Role: role, Generation: 1,
 		BootToken: "boot-" + string(token) + "-g1",
 		Env:       map[string]string{"JJ_USER": "legion-implement[bot]", "JJ_EMAIL": "1+legion-implement[bot]@users.noreply.github.com"},
-		Secrets:   map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
+		Secrets:   map[string]string{"NATS_NKEY_SEED": testPaneSeed},
 		Prompt: runtime.PromptParts{
 			RolePromptPaths: []string{rolePrompt}, Addressing: "Legion addressing: your role topic is `notifications.role." + string(token) + "`.",
 			DeploymentInstructionsPath: instructions,

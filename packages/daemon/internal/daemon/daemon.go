@@ -945,8 +945,7 @@ func tradeBrokerCredential(ctx context.Context, cfg config.Config, getenv func(s
 
 // dispatchCredentialLine is the boot's one line naming the credential the daemon's Dispatch client
 // presents (dispatchCredential): credential=broker and the session its token names, or
-// credential=file and the file, beside transitionFile where the configuration names one. It names
-// no token.
+// credential=file and the file. It names no token.
 const dispatchCredentialLine = "legion daemon's Dispatch credential"
 
 // dispatchCredential is the transport every Dispatch call of the daemon's goes through, as
@@ -961,10 +960,6 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // that token, GET /api/v1/whoami, waited out as the boot waits out a Dispatch that does not answer
 // (dispatch.Unreachable), must name the daemon's session, its project and a person
 // (checkDaemonCaller).
-//
-// The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
-// is never this credential: it is the sandbox runtime's alone, for a launch into a pod built before
-// the setting.
 func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, broker *cipherclient.Client, log *slog.Logger) (http.RoundTripper, error) {
 	switch {
 	case cfg.DispatchURL == "":
@@ -987,11 +982,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	if err := checkDaemonCaller(caller, cfg.Project); err != nil {
 		return nil, err
 	}
-	attrs := []any{"credential", "broker", "session", dispatch.DaemonSession(cfg.Project)}
-	if cfg.DispatchTokenTransitionFile != "" {
-		attrs = append(attrs, "transitionFile", cfg.DispatchTokenTransitionFile)
-	}
-	log.Info(dispatchCredentialLine, attrs...)
+	log.Info(dispatchCredentialLine, "credential", "broker", "session", dispatch.DaemonSession(cfg.Project))
 	return transport, nil
 }
 
@@ -1287,10 +1278,10 @@ type plan struct {
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
 	stopBudget time.Duration
 	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
-	// (newSecretsLogin); nil when the deployment enrolls no pod.
+	// (newSecretsLogin); nil under runtime: tmux, which enrolls no pod.
 	secretsEnroller supervise.Enroller
-	// secretsRegistrar is the same login as the machines' Registrar (newRegistrar); nil when the
-	// deployment names no exchange_audience, and then no pod session is ever registered.
+	// secretsRegistrar is the same login as the machines' Registrar (newRegistrar), which registers
+	// each role's session for its pod; nil under runtime: tmux.
 	secretsRegistrar supervise.Registrar
 	// pluginRelaunchable is supervise.Deps.PluginRelaunchable: whether this daemon can relaunch a
 	// stale-plugin claim onto a plugin at all. True under tmux always; under Kubernetes, true iff
@@ -3742,16 +3733,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
 	if s.dispatchTokens != nil {
-		tokens := s.dispatchTokens()
-		credential := &api.DispatchCredentialView{
-			Session: s.dispatchSession, TransitionLaunches: tokens.TransitionLaunches,
-			LiveLaunchesWithDispatchToken: tokens.LiveLaunches,
+		state.DispatchCredential = &api.DispatchCredentialView{
+			Session: s.dispatchSession, LiveLaunchesWithDispatchToken: s.dispatchTokens().LiveLaunches,
 		}
-		if !tokens.LastTransitionLaunch.IsZero() {
-			at := tokens.LastTransitionLaunch.UTC()
-			credential.LastTransitionLaunchAt = &at
-		}
-		state.DispatchCredential = credential
 	}
 	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
 	if s.repositories != nil {

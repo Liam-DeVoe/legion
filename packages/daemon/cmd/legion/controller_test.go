@@ -338,7 +338,7 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 			"project: " + controllerProject,
 			"daemon_url: " + d.url,
 			"operator_token_file: ./operator-token",
-			"envoy_url: http://envoy.test:9020",
+			"envoy_url: http://127.0.0.1:9020",
 			"nats_urls: [nats://a:4222, nats://b:4222]",
 			"nats_nkey_seed_file: ./nats-seed",
 			"dispatch_url: https://dispatch.test",
@@ -706,6 +706,10 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
+	// An Envoy bearer the operator's shell carries, or a pane of an older daemon does: the start
+	// drops both, since the listener takes no shared bearer.
+	t.Setenv("ENVOY_TOKEN", "inherited-envoy-bearer")
+	t.Setenv("ENVOY_TOKEN_FILE", "/run/inherited/envoy-token")
 	baseline := map[string]string{}
 	for _, entry := range os.Environ() {
 		name, value, _ := strings.Cut(entry, "=")
@@ -775,7 +779,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		"LEGION_PROJECT":                  "demo",
 		"LEGION_STATE_DIR":                c.defaultDir,
 		"ENVOY_NATS_URL":                  "nats://a:4222,nats://b:4222",
-		"ENVOY_URL":                       "http://envoy.test:9020",
+		"ENVOY_URL":                       "http://127.0.0.1:9020",
 		"PATH":                            bin + ":/usr/bin:/bin",
 		"PI_SHELL_PREFIX":                 shellprefix.For(bin),
 		"GH_CONFIG_DIR":                   filepath.Join(c.defaultDir, "gh"),
@@ -819,11 +823,12 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 			t.Errorf("%s is set; only its _FILE pointer may be", name)
 		}
 	}
-	// The listener takes no shared bearer, so the controller's session is handed none: its Envoy
-	// client presents the broker token it trades with this machine's identity, or nothing.
+	// The listener takes no shared bearer, so the controller's session carries none, not even one
+	// the operator's environment holds: its Envoy client presents the broker token it trades with
+	// this machine's identity, or nothing.
 	for _, name := range []string{"ENVOY_TOKEN", "ENVOY_TOKEN_FILE"} {
-		if value, set := added[name]; set {
-			t.Errorf("%s = %q; the controller's session is handed no Envoy bearer", name, value)
+		if value, set := env[name]; set {
+			t.Errorf("%s = %q in the controller's environment; the session carries no Envoy bearer", name, value)
 		}
 	}
 	// Three lines: the probe, named before it runs so a prompt or a wait can be tied to it; the
@@ -1197,7 +1202,7 @@ func TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet(t *testing.T) 
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: demo", "daemon_url: " + d.url, "operator_token_file: ./operator-token",
-		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]",
 	}})
 	unsetRestored(t, startupRestored...)
 	if code, _, errb := c.run(); code != 0 {
@@ -1227,7 +1232,7 @@ func TestControllerStartDaemonURLOverridesTheFile(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: demo", "daemon_url: http://127.0.0.1:1", "operator_token_file: ./operator-token",
-		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]",
 	}})
 	if code, _, errb := c.run("--daemon-url", d.url+"/"); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
@@ -1283,7 +1288,7 @@ func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *t
 	t.Cleanup(old.Close)
 	c := newControllerStart(t, newControllerDaemon(t), controllerOptions{lines: []string{
 		"project: demo", "daemon_url: " + old.URL, "operator_token_file: ./operator-token",
-		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]",
 	}})
 	code, _, errb := c.run()
 	want := fmt.Sprintf("%s/legion/v1/controller/secret: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon\n", old.URL, api.DaemonAPIVersion)
@@ -1299,7 +1304,7 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 	unreachable := "http://127.0.0.1:1"
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: demo", "daemon_url: " + unreachable, "operator_token_file: ./operator-token",
-		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]",
 	}})
 	c.refused("could not reach the Legion daemon at " + unreachable + ": ")
 	c.refused("; is the port-forward running? (never falls back to another address)")
@@ -1361,6 +1366,21 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		c.write("envoy-token", "envoy-bearer\n", 0o600)
 		c.write("controller.yaml", string(written)+"envoy_token_file: ./envoy-token\n", 0o600)
 		c.refused("envoy_token_file is not read any more: the Envoy listener takes no shared bearer")
+		c.wantNoSecretRequest()
+		c.wantNothingLaunchedOrWritten(c.defaultDir)
+	})
+	// The controller's session presents its listener no credential where the environment names no
+	// secrets broker and machine identity, and a listener off loopback answers that 401, so the
+	// start refuses such an envoy_url before any probe or request, naming the host alone.
+	t.Run("an envoy_url off loopback with no machine identity, before any probe or request", func(t *testing.T) {
+		d := newControllerDaemon(t)
+		c := newControllerStart(t, d, controllerOptions{})
+		written, err := os.ReadFile(c.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.write("controller.yaml", strings.Replace(string(written), "envoy_url: http://127.0.0.1:9020", "envoy_url: http://envoy.example.invalid:9020", 1), 0o600)
+		c.refused("envoy_url names envoy.example.invalid, which is not a loopback host, and the environment names no secrets broker and machine identity (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY)")
 		c.wantNoSecretRequest()
 		c.wantNothingLaunchedOrWritten(c.defaultDir)
 	})
@@ -1481,7 +1501,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{lines: []string{
 			"project: demo", "daemon_url: " + d.url, "operator_token_file: ./operator-token",
-			"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]", "runtime: kubernetes",
+			"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]", "runtime: kubernetes",
 		}})
 		c.refused(`unknown key "runtime" in the controller configuration`)
 		c.refused("deploy/kubernetes/daemon/controller.yaml.example")
@@ -1704,7 +1724,7 @@ func TestControllerStartSanitizesTheProjectAsTheDaemonDoes(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: sjawhar/Legion", "daemon_url: " + d.url, "operator_token_file: ./operator-token",
-		"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]",
 	}})
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
@@ -1729,7 +1749,7 @@ func TestControllerStartStateDirectory(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{lines: []string{
 			"project: demo", "daemon_url: " + d.url, "operator_token_file: ./operator-token",
-			"envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]", "state_dir: ./state",
+			"envoy_url: http://127.0.0.1:9020", "nats_urls: [nats://a:4222]", "state_dir: ./state",
 		}})
 		if code, _, errb := c.run(); code != 0 {
 			t.Fatalf("legion controller start = %d, stderr %q", code, errb)

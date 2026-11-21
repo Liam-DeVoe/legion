@@ -11,8 +11,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// A start the runtime refuses because the live pod it would keep carries no exchange identity and
-// the deployment names no transition token (runtime.ErrAwaitingPodRound) is the pod's state, not
+// A start the runtime refuses because the live pod it would keep carries no exchange identity
+// (runtime.ErrAwaitingPodRound) is the pod's state, not
 // the claim's failing: the claim keeps its session, its failure budget stays as it was, and the
 // same session is started again a minute later, and every minute after that until the pod's update
 // round has replaced the pod. A round can take hours, so the wait logs one line, naming the pod, at
@@ -24,7 +24,7 @@ func TestAWaitForAPodRoundIsNotChargedToTheClaim(t *testing.T) {
 	h.store.PutClaim(h.ctx, queuedClaim())
 	h.start(queuedClaim())
 	h.reach(StateIdle)
-	waiting := fmt.Errorf("launch %s: %w: pod %s carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+	waiting := fmt.Errorf("launch %s: %w: pod %s carries no exchange identity and its role would hold no credential for the Envoy listener, which takes no shared bearer; its update round replaces it",
 		testToken, runtime.ErrAwaitingPodRound, pod)
 	h.rt.OnResume = func(context.Context) error { return waiting }
 	wantWaitLines := func(want int, when string) {
@@ -104,7 +104,7 @@ func TestAWaitForAPodRoundNamesThePodItWaitsOn(t *testing.T) {
 	const podUID = "6b0f2d4e-8a17-4c39-b5e2-1d9a7c3f0e58"
 	awaited := podProcess(podUID, 2)
 	refusal := fmt.Errorf("launch %s: %w", testToken, &runtime.AwaitingPodRound{Pod: awaited,
-		Reason: "pod legion-legion-209 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it"})
+		Reason: "pod legion-legion-209 carries no exchange identity and its role would hold no credential for the Envoy listener, which takes no shared bearer; its update round replaces it"})
 	h := newBareHarness(t)
 	h.store.PutClaim(h.ctx, queuedClaim())
 	h.start(queuedClaim())

@@ -186,7 +186,7 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 	}
 	// An operator may not point that name anywhere, whether or not this deployment serves one.
 	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, nil,
-		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore, false)
+		testOptions().Tools, productionLaunchSecrets, nil, postgresStore, false)
 	if refused == nil || !strings.Contains(refused.Error(), launcher.TestPGVariable) {
 		t.Errorf("CheckPod with %s in the pod env = %v, want it refused", launcher.TestPGVariable, refused)
 	}
@@ -477,7 +477,7 @@ func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		record, err := r.recordFor(claim.RoleTester, 1, r.enrollsIn(nil, claim.RoleTester), r.dispatch.Bearer != "")
+		record, err := r.recordFor(claim.RoleTester, 1, r.dispatch.Bearer != "")
 		if err != nil {
 			t.Fatal(err)
 		}

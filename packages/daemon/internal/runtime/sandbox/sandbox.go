@@ -193,11 +193,6 @@ type Runtime struct {
 	// the process is let go or the claim's next launch begins (forget, forgetIf). Kept under
 	// dispatch_token_broker alone (keepDispatchToken), the one setting it is read under.
 	dispatchTokenClaims map[claim.Token]string
-	// transitionLaunches counts the launches since this runtime was built whose start carried the
-	// transition token, and lastTransitionLaunch is when the latest was sent, zero before the first
-	// (launchedDispatchToken). Memory only: they count this daemon's own boot.
-	transitionLaunches   int
-	lastTransitionLaunch time.Time
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -352,8 +347,6 @@ func configureProber(opts Options) (*Runtime, error) {
 			opts.DispatchURL, opts.Dispatch.Bearer != "", opts.Dispatch.Broker)
 	case opts.Dispatch.Bearer != "" && opts.Dispatch.Broker:
 		return refuse("Dispatch.Bearer is given beside Dispatch.Broker: a launch's Dispatch credential is the shared bearer or its role's own trade at the secrets broker, never both")
-	case opts.Dispatch.Transition != "" && !opts.Dispatch.Broker:
-		return refuse("Dispatch.Transition is given without Dispatch.Broker: it is the shared token a launch into a pod built before the broker carries, which only Dispatch.Broker hands out")
 	case opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == "":
 		return refuse("AgentSecrets names no exchange audience: the Envoy listener takes no shared bearer, so a role reaches it only by trading its pod's exchange identity, which no pod carries without one")
 	case slices.Contains(opts.LaunchSecrets, envoyTokenKey):

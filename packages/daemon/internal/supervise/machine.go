@@ -1797,9 +1797,7 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		}
 		m.identity = &heldIdentity{incarnation: m.claim.Locator.Incarnation, AgentSecretsIdentity: identity}
 		m.enrollmentSent = false
-		if m.deps.Registrar != nil {
-			m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
-		}
+		m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
 	}
 	dropped := m.dropWakeFor(ev)
 	if err := m.runParkedLaunchNow(ctx, ev); err != nil {
@@ -3042,9 +3040,9 @@ const podRoundRetry = time.Minute
 const podRoundWaitLine = "supervise: this start waits for its pod's update round; trying it again every minute, charging nothing"
 
 // startWaitsForPodRound is a start the runtime refused because the live pod it would keep carries
-// no exchange identity, and its role would then have no credential it needs: under
-// dispatch_token_broker with no transition token for such a pod, none for Dispatch, and where the
-// daemon holds no Envoy bearer, none for the listener (runtime.ErrAwaitingPodRound). That is the
+// no exchange identity, and its role would then have no credential it needs: none for the Envoy
+// listener, which takes no shared bearer, and under dispatch_token_broker none for Dispatch
+// (runtime.ErrAwaitingPodRound). That is the
 // pod's state, not the claim's failing:
 // charging it would fail a claim whose agent is fine for a pod that only its round replaces, so
 // the same launch is started again every minute (relaunchLater) until the pod it finds carries the
@@ -3196,9 +3194,9 @@ const (
 // fresh agent on a claim that had one is what the same-agent refusal exists to catch.
 //
 // A resume runs under every name its record gives the session, so each is held to the claim
-// before anything starts (holdRecorded, plan E's t-e-54): an Oh My Pi launch continues the
-// recorded file (`--resume=<file>`), or, in a pod that trades an exchange identity, the session
-// by its id (`--resume <id>`: the claim's recorded session, which the resume's spec carries as
+// before anything starts (holdRecorded, plan E's t-e-54): an Oh My Pi launch under the tmux runtime
+// continues the recorded file (`--resume=<file>`), and one in a pod the session by its id
+// (`--resume <id>`: the claim's recorded session, which the resume's spec carries as
 // ResumeSessionID, else the id the file's name gives), the tmux runtime one of the file's name or
 // id where that path is missing (sessionFileOf), and a Claude Code launch the session the
 // transcript's name gives (claudelaunch.ResumeSession), any of which a claim recorded before the

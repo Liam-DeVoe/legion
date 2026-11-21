@@ -65,7 +65,9 @@ type setter struct {
 // that does not keeps the name the operator's, as it was before the setting existed.
 // OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session store's variables though
 // nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the config root the agent
-// directory and a session's path key sit under, so it is refused like them.
+// directory and a session's path key sit under, so it is refused like them. So are an Envoy
+// bearer's two variables (runtime.EnvoyBearerVariables), which no runtime sets: the listener takes
+// no shared bearer, and an agent's Envoy client would present either before its traded token.
 // The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string, dispatchBroker bool) map[string]setter {
 	set := map[string]setter{}
@@ -118,6 +120,9 @@ func podVariables(pod Pod, launchSecrets []string, dispatchBroker bool) map[stri
 	}
 	for _, name := range launchSecrets {
 		add(name+"_FILE", "every launch sets (the pointer to the launch secret "+name+")", false)
+	}
+	for _, name := range runtime.EnvoyBearerVariables {
+		add(name, "is Legion's own: "+runtime.EnvoyBearerRefusal, false)
 	}
 	for _, v := range podsafety.Variables() {
 		add(v.Name, "the pod baseline sets, and "+v.Reserved, false)

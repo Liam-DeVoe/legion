@@ -42,6 +42,16 @@ func operatorRouteFixture(t *testing.T) Pod {
 	return Pod(fixture)
 }
 
+// productionLaunchSecrets are the secrets every launch's spec carries as the daemon names them
+// (daemon.launchSecretNames): the pane NATS nkey seed alone, no Envoy bearer among them.
+var productionLaunchSecrets = []string{"NATS_NKEY_SEED"}
+
+// envoyBearer is runtime.EnvoyBearerRefusal as an operator reads it, spelled out here so a change
+// of its words shows in this test.
+const envoyBearer = "the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE" +
+	" in its environment before the broker token its session trades under runtime.kubernetes.agent_secrets.exchange_audience, so the listener would refuse every call 401" +
+	" (under runtime: tmux an agent calls the loopback listener with no credential)"
+
 // CheckPod refuses, naming both, an operator variable the runtime, the worker image, or every
 // launch sets, or one that places Oh My Pi's sessions; a volume Legion names; a mount at, under, or
 // above a path Legion mounts, the image owns, a tool runs from, or the state home Legion reserves
@@ -85,7 +95,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		byRuntime    = "Legion's runtime sets in every pod"
 		byImage      = "the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)"
 		byIdentity   = "every launch sets (the git identity the role's GitHub App commits as)"
-		byEnvoy      = "every launch sets (the pointer to the launch secret ENVOY_TOKEN)"
+		byNats       = "every launch sets (the pointer to the launch secret NATS_NKEY_SEED)"
 		bySessions   = "the pod baseline sets, and it decides where Oh My Pi keeps the session a resume reads"
 		byStore      = "Legion sets to place the sessions a resume reads (runtime.kubernetes.session_store)"
 		byOverlays   = "the runtime composes in every pod from the operator's own overlays and the role's own (role_config_files)"
@@ -138,7 +148,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "Oh My Pi's config root override", pod: env("OMP_CONFIG_ROOT", "/var/lib/operator/omp"),
 			want: envSets("OMP_CONFIG_ROOT", "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)")},
 		{name: "a variable of the App's git identity", pod: env("JJ_USER", "operator"), want: envSets("JJ_USER", byIdentity)},
-		{name: "a variable pointing at a launch secret", pod: env("ENVOY_TOKEN_FILE", "/etc/envoy"), want: envSets("ENVOY_TOKEN_FILE", byEnvoy)},
+		{name: "a variable pointing at a launch secret", pod: env("NATS_NKEY_SEED_FILE", "/etc/nats"), want: envSets("NATS_NKEY_SEED_FILE", byNats)},
 		// The daemon names its controller's Slack channels from the project's slack_channels alone: an
 		// operator's value would have the controller hear another project's mentions.
 		{name: "the controller's Slack channels", pod: env("LEGION_SLACK_CHANNELS", "C00000001"), want: envSets("LEGION_SLACK_CHANNELS", byController)},
@@ -231,8 +241,8 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: "provider_keys names OMP_SESSION_SQL_DSN, the file the providers volume mounts the session database's URL as (runtime.kubernetes.session_store): two of the volume's items would share that path"},
 		{name: "a provider key of the App's git identity", keys: map[string]string{"GIT_AUTHOR_NAME": "author"},
 			want: keyNames("GIT_AUTHOR_NAME", byIdentity)},
-		{name: "a provider key a launch secret's pointer names", keys: map[string]string{"ENVOY_TOKEN": "envoy"},
-			want: keyPointer("ENVOY_TOKEN", byEnvoy)},
+		{name: "a provider key a launch secret's pointer names", keys: map[string]string{"NATS_NKEY_SEED": "nats"},
+			want: keyPointer("NATS_NKEY_SEED", byNats)},
 		{name: "a provider key the pod's env also sets", pod: env("OPENAI_BASE_URL", "https://gateway.internal.example"),
 			keys: map[string]string{"OPENAI_BASE_URL": "openai_base_url"}, want: keyNames("OPENAI_BASE_URL", byOperator)},
 		{name: "a provider key whose pointer the pod's env sets", pod: env("GEMINI_API_KEY_FILE", "/var/run/operator/gemini"),
@@ -241,6 +251,12 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: "provider_keys names FOO from the providers Secret's key NATS_NKEY_SEED, which the pod mounts as the launch secret NATS_NKEY_SEED: the shim would export that secret into Oh My Pi's environment as FOO"},
 		{name: "a provider key reading the session database's URL", keys: map[string]string{"DATABASE_URL": "SESSION_DSN"},
 			want: "provider_keys names DATABASE_URL from the providers Secret's key SESSION_DSN, which holds the session database's URL (runtime.kubernetes.session_dsn_secret): the shim would export that URL into Oh My Pi's environment as DATABASE_URL"},
+		// An Envoy bearer, which no runtime sets: the listener takes no shared bearer, and an
+		// agent's Envoy client would present either before the token its session trades.
+		{name: "an Envoy bearer's pointer", pod: env("ENVOY_TOKEN_FILE", "/var/run/operator/envoy"),
+			want: "runtime.kubernetes.pod.env sets ENVOY_TOKEN_FILE, which is Legion's own: " + envoyBearer},
+		{name: "an Envoy bearer", pod: env("ENVOY_TOKEN", "acme-envoy"),
+			want: "runtime.kubernetes.pod.env sets ENVOY_TOKEN, which is Legion's own: " + envoyBearer},
 		{name: "the live harnesses' operator pod", pod: fixture, keys: map[string]string{"ANTHROPIC_API_KEY": "anthropic"}},
 		{name: "an operator's own overlays, which the role's are composed after",
 			pod: Pod{Env: map[string]string{"PI_CONFIG_FILES": "/etc/operator/overlay.yml"}}},
@@ -258,7 +274,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "ftp://dispatch.example.org", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, tc.broker)
+			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, productionLaunchSecrets, []string{"NATS_NKEY_SEED"}, postgresStore, tc.broker)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("CheckPod = %v, want no refusal", err)
@@ -285,7 +301,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	}
 	check := func(value string) error {
 		return CheckPod(Pod{Env: map[string]string{"DISPATCH_PUBLIC_URL": value}}, nil, testOptions().Tools,
-			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
+			productionLaunchSecrets, []string{"NATS_NKEY_SEED"}, postgresStore, false)
 	}
 	for _, value := range fixture.Valid {
 		if err := check(value); err != nil {

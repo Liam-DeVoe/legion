@@ -24,7 +24,7 @@ const recordedSessionID = "019a2b3c-4d5e-7f60-8a71-92b3c4d5e6f7"
 const unnamedSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/recorded.jsonl"
 
 // sessionWords are the words of an agent argv that name its session, in the argv's order:
-// `--session-id <id>`, `--resume <id>`, and `--resume=<file>` or `--resume=<id>`.
+// `--session-id <id>`, `--resume <id>`, and `--resume=<id>` or any other `--resume=` word.
 func sessionWords(argv []string) []string {
 	var words []string
 	for i, word := range argv {

@@ -861,8 +861,8 @@ const quietTimeContract = 111
 const shapedAnswersContract = 193
 
 // dispatchCredentialContract is the daemon contract that added `dispatchCredential` to the state,
-// the daemon's own Dispatch credential under dispatch_token_broker and the two counts of the
-// Dispatch tokens its launches hand out (version.go's 207, DispatchCredentialView). A caller below
+// the daemon's own Dispatch credential under dispatch_token_broker and the count of the live
+// launches that carry a Dispatch token (version.go's 207, DispatchCredentialView). A caller below
 // it is served the state without the key (withoutDispatchCredential, its row of stateNarrowings):
 // one built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
 // whole body for a key it does not name, and one built after strips the key instead, so the band

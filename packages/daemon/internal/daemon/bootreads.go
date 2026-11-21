@@ -46,8 +46,7 @@ type variantInstructions struct {
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
 // (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, or under dispatch_token_broker the transition token's file where the configuration names
-// one, and the runtime's own reads (readTmux, readSandbox).
+// file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
@@ -135,18 +134,11 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
-	// The loader takes dispatch_token_broker only beside dispatch_url, and the transition file only
-	// beside the broker, so the broker reads no bearer file. A launch's Dispatch credential is the
-	// bearer, or under the broker the role's own trade and the shared token
-	// dispatch_token_transition_file holds ("" with no such file), which a launch into a pod built
-	// before the setting carries and the daemon's own calls never present.
+	// The loader takes dispatch_token_broker only beside dispatch_url, so the broker reads no
+	// bearer file. A launch's Dispatch credential is the bearer, or under the broker the role's own
+	// trade.
 	credential := sandbox.DispatchCredential{Broker: cfg.DispatchTokenBroker}
-	switch {
-	case cfg.DispatchTokenBroker && cfg.DispatchTokenTransitionFile != "":
-		if credential.Transition, err = config.ReadSecretPointer("dispatch_token_transition_file", cfg.DispatchTokenTransitionFile); err != nil {
-			return bootReads{}, err
-		}
-	case cfg.DispatchURL != "" && !cfg.DispatchTokenBroker:
+	if cfg.DispatchURL != "" && !cfg.DispatchTokenBroker {
 		if r.dispatchToken, err = config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
 			return bootReads{}, err
 		}

@@ -220,7 +220,14 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	argv := withPromptFile(t, launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}}.agentArgv([]string{omp}), "The test's system prompt.")
+	// The launch's own resume of that file: `--resume <id>` on the id its name gives, as prepare
+	// chooses it (ompSessionOf).
+	resume := runtime.SpawnSpec{ResumeSessionFile: saved[0]}
+	session, err := ompSessionOf(resume)
+	if err != nil || !session.resume || session.session == "" {
+		t.Fatalf("ompSessionOf(%s) = %+v, %v; want a resume by the id the file's name gives", saved[0], session, err)
+	}
+	argv := withPromptFile(t, launch{spec: resume, omp: session}.agentArgv([]string{omp}), "The test's system prompt.")
 
 	// The control, and it runs first: the same launch with the flag taken out reads the session's
 	// own pin, which at this point is the one the saving turn wrote and nothing else.

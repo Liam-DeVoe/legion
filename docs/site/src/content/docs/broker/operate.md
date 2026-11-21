@@ -442,12 +442,13 @@ refuses that account `403 PERSON_ACCOUNT`, so a registrar that is to be mapped r
 registrations before it is mapped. A release is that account's, not the caller's pod's. So every pod
 of an account paired with itself can release every registration that account wrote, by session name
 alone (above). The Legion daemon calls this route from an operator's `legion claims release-names`
-when its `exchange_audience` is set: before it frees any of a claim's names, it sends the session
-ids among them in one call, tries it up to three times, a second and then two apart, and frees them
-only after a `200` whose `sessions` counts the distinct names it sent. Any other answer frees
-nothing: the daemon refuses the release `503`, which a run again can change, or `502` for a `4xx`
-other than `404`, `405` and `429`, which a run again answers the same. A daemon with no
-`exchange_audience` registers no pod session and makes no release call.
+under `runtime: kubernetes`, which requires `exchange_audience`: before it frees any of a claim's
+names, it sends the session ids among them in one call, tries it up to three times, a second and
+then two apart, and frees them only after a `200` whose `sessions` counts the distinct names it
+sent. Any other answer frees nothing: the daemon refuses the release `503`, which a run again can
+change, or `502` for a `4xx` other than `404`, `405` and `429`, which a run again answers the
+same. A daemon under `runtime: tmux` starts no pod, so it registers no pod session and makes no
+release call.
 
 The body is `{"sessions": ["<name>", ...]}`. A list that is missing, `null` or empty, or that holds
 more than 4096 entries counted as sent, is `400 SESSIONS_INVALID`, and a body over 1 MiB is
@@ -502,24 +503,25 @@ with the `pod_session_not_registered:` refusal. The next admitted write of its p
 it whole. Such a registration comes from before the migration, from a replica of an older build
 while the broker rolls, or from a rollback.
 
-Rolling the broker back past the release that brought migration 0032 drops the binding without a
-word: an older broker reads no key or generation, so it admits a trade for a bound session proved
-with any key of that pod, and its route refuses a body naming `thumbprint` or `generation` with
-`400`, so the daemon's registrations fail. Unset `exchange_audience` in every Legion daemon before
-you roll the broker back past this release.
+Rolling the broker back past the release that brought migration 0032, legion-envoy-v30.39.0, drops
+the binding without a word: an older broker reads no key or generation, so it admits a trade for a
+bound session proved with any key of that pod, and its route refuses a body naming `thumbprint` or
+`generation` with `400`, so the daemon's registrations fail. A Legion daemon under
+`runtime: kubernetes` cannot run against such a broker
+([Rolling the broker back under a Legion daemon](#rolling-the-broker-back-under-a-legion-daemon)).
 
-Rolling the broker back past the release that brought migrations 0038 and 0039 drops the
-session-name binding and the release without a word: an older broker reads neither the binding,
-the registrar nor the release mark, so its exchange honours a released registration and a
-registration of any registrar, and its route takes a registration from every account
-`BROKER_SERVICE_LOGINS` lists. The table
-`pod_session_registrars` stays, and an older broker neither reads nor writes it, so a roll forward
-finds each binding as it stood before the rollback. Unset `exchange_audience` in every Legion
-daemon before you roll the broker back past this release. In a roll either way, the binding holds
-only once no broker replica of an older build takes registrations, because such a replica's write
-neither checks the binding nor sets the registrar, and another daemon's write through it can
-extend a lapsed registration that the daemon a name is bound to wrote, which the newer replicas'
-exchange then honours.
+Rolling the broker back past the release that brought migrations 0038 and 0039,
+legion-envoy-v32.20.0, drops the session-name binding and the release without a word: an older
+broker reads neither the binding, the registrar nor the release mark, so its exchange honours a
+released registration and a registration of any registrar, and its route takes a registration from
+every account `BROKER_SERVICE_LOGINS` lists. The table `pod_session_registrars` stays, and an older
+broker neither reads nor writes it, so a roll forward finds each binding as it stood before the
+rollback. That release is the floor for a broker under a Legion daemon
+([Rolling the broker back under a Legion daemon](#rolling-the-broker-back-under-a-legion-daemon)).
+In a roll either way, the binding holds only once no broker replica of an older build takes
+registrations, because such a replica's write neither checks the binding nor sets the registrar,
+and another daemon's write through it can extend a lapsed registration that the daemon a name is
+bound to wrote, which the newer replicas' exchange then honours.
 Rolling the broker back past the release in which each key says who decides its requests leaves
 the column `requests.judge_until` in place, which an older broker never reads, so a request the
 newer broker held for the judge is an ordinary card on the older one. An older broker also refuses
@@ -1160,9 +1162,10 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 
 | Dependency | What the broker needs from it |
 | --- | --- |
-| Postgres | A database the broker owns (`BROKER_DATABASE_URL`). The broker applies its own migrations at startup; they only move forward, so never run an older broker against a database a newer one has migrated. Each process also holds one connection outside its pool, for as long as it runs, to hear what the other processes reread ([Running more than one pod](#running-more-than-one-pod)). On Amazon RDS it can sign in by IAM token instead of a password ([Signing in to RDS by IAM token](#signing-in-to-rds-by-iam-token)). |
+| Postgres | A database the broker owns (`BROKER_DATABASE_URL`). The broker applies its own migrations at startup, and no release undoes one. An image rolled back starts on a database a newer image migrated: it leaves each version it has no file for as it is, applies nothing, and its code then runs on the newer schema. So roll back only to an image the database ran, and only past migrations that leave in place what the older code reads and writes ([A migration recorded under another file](#a-migration-recorded-under-another-file)). Each process also holds one connection outside its pool, for as long as it runs, to hear what the other processes reread ([Running more than one pod](#running-more-than-one-pod)). On Amazon RDS it can sign in by IAM token instead of a password ([Signing in to RDS by IAM token](#signing-in-to-rds-by-iam-token)). |
 | Rolling back | Once any secret carries `type`, never roll the broker back past the first release that reads it, the first whose `GET /v1/settings` answers `secret_type_tag: true`: that release is the rollback floor. Every broker from legion-envoy-v16.0.0 to the release before the floor reads only the old `kind` tag, and serves a secret that carries `type` alone as a stored secret, releasing its stored GitHub App key or refresh token to every grant as its value. The `mint-service-account: type-secret` tag `agent-secrets secret` writes beside every type does not stop such a broker: only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read it, and refuse the secret as `mint-target-malformed`, while every broker from v16.0.0 to the release before the floor ignores it and one older than legion-envoy-v13.19.0 reads no such tag. A rolling deploy to the floor leaves the same hole while a pod of an earlier release still serves, so write no type until every pod runs the floor or later. To go back past the floor anyway, first disable every type secret's versions. |
 | Rolling back past the project tags | Never roll back past the release that reads `dispatch-project` and `project-channels` while any secret carries either tag without its rollback guard ([Rolling back past the project tags](#rolling-back-past-the-project-tags)). |
+| Rolling back under a Legion daemon | While a Legion daemon runs on Kubernetes, never roll the broker back past legion-envoy-v32.20.0 before every daemon is off the token exchange ([Rolling the broker back under a Legion daemon](#rolling-the-broker-back-under-a-legion-daemon)). |
 | The secret store | The agent secrets: every secret whose name starts with `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier` (AWS tags, or Secret Manager annotations), encrypted with the agent-secrets key, and holding a current value. A `type` tag makes the broker mint a release from that value. [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) describes the tags, the name each secret is asked for by, and how often the broker rereads them. `BROKER_SECRETS_STORE` names which store, and the two rows below say what each needs. |
 | AWS Secrets Manager (`aws-secrets-manager`) | The broker calls AWS with the SDK's default credential chain (environment, shared config, or the workload's role), in a region (`AWS_REGION`, `AWS_DEFAULT_REGION` or the shared config). It needs `secretsmanager:ListSecrets` (which takes no resource, so on `*`), `secretsmanager:DescribeSecret` (to reread one secret) and `secretsmanager:GetSecretValue` on the namespace's secrets, `kms:Decrypt` on the agent-secrets key (`BROKER_SECRETS_KMS_KEY_ARN`), `kms:ListAliases` (on `*`, called only when a secret names its key by an alias), and, when it signs in to RDS by IAM token, `rds-db:connect` on its database user; nothing else. |
 | Google Cloud Secret Manager (`gcp-secret-manager`) | The broker calls Secret Manager under [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials): on GKE, Workload Identity Federation for the pod's Kubernetes ServiceAccount, with no key file and no Google service account; the boot log's `secret store … credentials=application-default` line says so. Its principal needs `secretmanager.secrets.list` on the project (the listing takes the project as its parent) and `secretmanager.secrets.get`, `secretmanager.versions.get` and `secretmanager.versions.access` on the namespace's secrets: `roles/secretmanager.viewer` on the project and `roles/secretmanager.secretAccessor` with an IAM condition `resource.name.startsWith("projects/<number>/secrets/<id prefix>")` cover them. The condition narrows only the accessor binding, so the broker reads values from the namespace alone; the viewer role reaches every secret's metadata in the project (its annotations, its versions' state and its IAM policy), never a value. A secret is served while its `versions/latest` is `ENABLED`, encrypted with the key `BROKER_SECRETS_KMS_KEY_NAME` names (`replication.automatic.customerManagedEncryption`; a secret on Google's default encryption is refused `not-on-agent-secrets-key`); one with an `expire_time` is scheduled for deletion and left out, as a Secrets Manager secret in its recovery window is, and a grant made before it no longer reads its value, though Secret Manager still would until that time. Every Secret Manager call but reading a value counts against the project's read quota, [600 a minute, shared by everything in the project](https://docs.cloud.google.com/secret-manager/quotas) (reading a value has its own 90,000). The broker's worst case against it is the sum of: a reload every five minutes, one listing plus one call per secret (a 200-secret namespace, about 40 a minute); the public reread route, two each, bounded across all callers of **each process** at one reread every `N² × 1 second`, where `N` is the pods that process counted at its last beat and never fewer than two — one every 4 seconds at two pods, one every 9 at three, one every 16 at four — which holds the whole fleet at the same 120 metadata reads a minute whatever `N` is (see [Running more than one pod](#running-more-than-one-pod)); each session's rereads for names it was not served, two each, at most one per session every ten seconds; and value releases, a type secret's among them, one per distinct secret per 30 seconds (two for a secret whose latest version is disabled), since the broker trusts its last check of a secret, readable or not, for that long (so a delete made outside `agent-secrets secret` stops releases at most 30 seconds after Secret Manager's own metadata shows it, which Google documents as eventually consistent; `agent-secrets secret delete` rereads the name, and the broker then releases nothing more). A busy fleet of sessions requesting unknown names can still spend the quota, and other workloads in the same project draw on it too, so give the agent secrets a project of their own. On the metadata calls the broker retries an `UNAVAILABLE` answer and never a `RESOURCE_EXHAUSTED` one, which would only spend more of that quota; reading a value keeps the client library's own retry of both, against its separate quota. On Secret Manager the agent-secrets key gates no caller: Secret Manager's service agent makes the KMS calls, so writing a secret onto the key and reading it need no KMS permission, and being on the key is the namespace's convention, not a second permission check as it is on AWS. Secret Manager makes the KMS calls itself, so the broker needs no KMS permission; the Secret Manager service agent needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key. |
@@ -1211,6 +1214,99 @@ The first count must be more than 0, or the list read nothing. The second must b
 the second count finds, run `agent-secrets secret retag NAME --project <KEY>` (or
 `--project-channels slack`) to write the guard, or remove the tag. After the rollback, every guarded
 secret is refused, so no session gets one until the broker is rolled forward again.
+
+## Rolling the broker back under a Legion daemon
+
+A Legion daemon under `runtime: kubernetes` requires
+`runtime.kubernetes.agent_secrets.exchange_audience` and refuses to boot without it, so it cannot
+be told to stop using the token exchange. It needs three things of the broker. Its pods trade their
+exchange identity (`BROKER_EXCHANGE_K8S_AUDIENCE`) for broker tokens of their own. It registers
+each role's session at `POST /v1/oauth/exchange/pod-sessions`, naming the thumbprint of the role's
+key and the launch generation. And it trades its own pod identity, under its own
+`BROKER_EXCHANGE_ACCOUNTS` entry, for the token it presents to the Envoy listener and to Dispatch.
+
+**The floor is legion-envoy-v32.20.0.** It is the first release whose registration route binds each
+session name to the registrar that first registered it (migrations 0038 and 0039), and the first
+that serves `POST /v1/oauth/exchange/pod-sessions/release`. An older broker takes a registration
+from every account `BROKER_SERVICE_LOGINS` lists, and answers the release `404` or `405`, so
+`legion claims release-names` frees nothing. legion-envoy-v30.39.0 is the first release whose
+route takes `thumbprint` and `generation` (migration 0032): a broker before it refuses every
+registration the daemon sends with `400`.
+
+One later release raises the floor while its listener runs. From that release, the broker gives a
+session that opens `legion-daemon:` only as the fixed session of a `BROKER_EXCHANGE_ACCOUNTS`
+entry, and refuses a pod-session registration of one `400 SESSION_INVALID`. The Envoy listener of
+that release takes a token of such a session for a Legion daemon's own, which may remove the
+current registration of any session. An older broker lets a caller name such a session for itself.
+So while a listener of that release or a later one runs, roll the broker back no further than that
+release.
+
+**To the floor or later**, change nothing in the daemons:
+
+1. Roll the broker back to a release whose image the database ran, as any other roll
+   ([Running more than one pod](#running-more-than-one-pod)). First run `envoy-broker versions` with
+   that image: it prints `NO FILE` for each migration the newer image added, and it must refuse
+   none ([A migration recorded under another file](#a-migration-recorded-under-another-file)). Read
+   the migrations between the two releases, and the other rollback notes on this page for each
+   release you pass: the `Rolling back` row of [What it depends on](#what-it-depends-on),
+   [Rolling back past the project tags](#rolling-back-past-the-project-tags), and the notes beside
+   each setting.
+   - **Reversible:** yes. Roll the broker forward again. The rollback undoes no migration: the older
+     image applies nothing and runs on the newer schema. Up to migration 0040, the only one a
+     release from the floor on can lack is 0040, which adds a column with a default and two checks
+     on it, and an older broker never writes that column. Read any later migration before you roll
+     back past it. The table `pod_session_registrars` keeps every binding.
+   - **Takes:** one rolling deploy of the broker. This page gives no figure for it: it depends on
+     the Deployment's replica count and on how long each new pod takes to start. While it rolls,
+     both releases serve one database. An access token the newer broker minted stays good to its
+     own expiry, at most `BROKER_ACCESS_TOKEN_SECONDS` (900 seconds by default) after it was minted.
+
+**Past the floor**, a daemon of a release that requires `exchange_audience` cannot run. Take every
+daemon off the exchange first, in this order:
+
+1. Give the Envoy listener its shared bearer, `ENVOY_API_TOKEN`, again if the deployment removed it
+   ([Running the listener](/legion/dispatch/envoy/#running-the-listener)).
+   - **Reversible:** yes. Remove it again.
+   - **Takes:** one rollout of the listener, which reads the variable when it starts. How long
+     depends on the listener's Deployment.
+2. Roll every Legion daemon back to the release before the one that removes `envoy_token_file`. In
+   the same change, edit its `legion.yaml`: set `envoy_token_file` to a file that holds the
+   listener's bearer, and remove `runtime.kubernetes.agent_secrets.exchange_audience`. Where the
+   file sets `dispatch_token_broker`, which needs `exchange_audience` too, replace it with
+   `dispatch_token_file`. Run that release's `legion config check` on the file before the restart.
+   - **Reversible:** yes, once the broker is back at the floor or later. Roll the daemon forward and
+     undo the changes to its file: the release that removes `envoy_token_file` refuses a file that
+     names it. A pod built while `exchange_audience` was unset carries no exchange identity, so a
+     role relaunched into it waits for the pod's update round. A round ends at most
+     `pod_update_grace_minutes` (30 by default) after it opens, unless an operator's suspension
+     holds it, and `pod_update_rounds_per_minute` and `pod_update_max_open_rounds` pace how many
+     open ([legion.yaml](/legion/legion/running-legion/#legionyaml)).
+   - **Takes:** one daemon restart, whose boot probes the worker image before it serves. Running
+     agents carry on: the restarted daemon re-adopts every running pod and its session
+     ([Upgrade](/legion/legion/running-legion/#upgrade)).
+3. Move each running claim onto the bearer. A role that the newer daemon launched carries no bearer
+   and goes on trading its pod's exchange identity. Suspend and resume its claim, as
+   [Upgrade](/legion/legion/running-legion/#upgrade) shows: it resumes in a new pod, and its launch
+   carries the bearer. The new pod has a disk of its own, so let each agent push first.
+   - **Reversible:** no. The roll forward replaces each of these pods through its update round, as
+     step 2 says.
+   - **Takes:** for each claim, the end of its turn, at most `worker_stop_timeout_seconds`, then a
+     launch in a new pod, which can take minutes ([Upgrade](/legion/legion/running-legion/#upgrade)).
+     A role left running has its trades refused within 24 hours anyway: the earlier daemon writes
+     no registration, and the broker keeps one 24 hours past its last write.
+4. Restart each operator's `legion controller start` from that earlier release too, with
+   `envoy_token_file` in its `controller.yaml`. The newer controller reaches a listener off its own
+   machine only with a broker token.
+   - **Reversible:** yes. Restart it from the newer release, without that key.
+   - **Takes:** one restart of the controller.
+5. Roll the broker back, as step 1 above says.
+   - **Reversible:** the schema is. Roll forward in the other order: the broker to the floor or later
+     first, then the daemons. The roll forward finds the schema and `pod_session_registrars` as they
+     stood. A rollback past legion-envoy-v32.11.2, which brought migration 0037, also costs grants:
+     the older broker adopts none of the pod rows that migration rewrote, so their grants are swept
+     at the end of the carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), and their
+     sessions ask again ([A migration recorded under another file](#a-migration-recorded-under-another-file)).
+   - **Takes:** as step 1.
 
 ## Network and trust
 
@@ -2320,6 +2416,17 @@ rollout undo to the revision that was serving does. An image starts on a databas
 only filled, and an edited text a database ran before this check is not detected: the first start
 records its own file.
 
+A rollback undoes no migration. The older image's start leaves each version it has no file for as
+it is and applies nothing, so its code then runs on the schema and rows the newer image left. That
+works only where every migration between the two releases leaves in place what the older code
+reads and writes. Of the broker's migrations from 0027 to 0040, all but one only add a table, a
+column, an index or a check, and 0033 also fills the table it adds. The one is 0037, which rewrites
+each pod enrollment's carry principal to the pair of its account and its login: a broker before it
+adopts none of those rows, so their grants are swept at the carry window's end and their sessions
+ask again. Several migrations before 0027 drop a table, a column or an index, or change a check,
+and an image older than such a migration fails where it uses what that migration changed. Read the
+migrations between the two releases before you roll back past them.
+
 A start fills the rows that record no name as it judges them. `envoy-broker versions` makes the
 same judgment without changing the database, against the files of the image it runs: it reads the
 broker's settings, signs in to the database with the broker's login, and reads the version table
@@ -2332,6 +2439,9 @@ serving.
 It prints what the next start would do with each version, and exits 1 when a version would be
 refused or has no file in that release, or when the table records nothing, which it prints as
 `NOTHING CHECKED`: a check of the wrong database must not read as a clean one.
+A rollback's check therefore prints `NO FILE` for each version the newer image added, and exits 1
+on those lines alone: the start leaves such a version as it is, and only a refused version stops
+it.
 
 ## The audit record
 

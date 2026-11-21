@@ -2,9 +2,10 @@ kind: Added
 custom:
   Issue: pr4723
 body: |-
-  Under `runtime: kubernetes`, beside `runtime.kubernetes.agent_secrets.exchange_audience`, no pod is
-  handed an Envoy bearer, and each pod's sessions trade their own broker tokens. The daemon trades its own pod
-  identity at the secrets broker (`AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes`,
+  Under `runtime: kubernetes`, beside `runtime.kubernetes.agent_secrets.exchange_audience`, no pod
+  is handed an Envoy bearer, and each pod's sessions trade their own broker tokens. The daemon
+  trades its own pod identity at the secrets broker (`AGENT_SECRETS_URL`,
+  `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes`,
   `AGENT_SECRETS_MACHINE_TOKEN_FILE`) for a token of the session `legion-daemon:<PROJECT>`. Every
   call it makes of the listener carries `Authorization: DPoP <token>` and a proof of the call's URL:
   the outbox's publishes, the role lookups, the clean stops and the controller probe. `envoy_url`

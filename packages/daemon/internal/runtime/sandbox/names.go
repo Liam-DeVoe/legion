@@ -297,8 +297,8 @@ const (
 )
 
 // envoyTokenKey is the launch secret name of a shared Envoy bearer, which the listener no longer
-// takes: a daemon whose roles trade their own broker tokens (Options.ListenerBroker) names it in no
-// launch, and New refuses one that does.
+// takes: no daemon names it in a launch, since every role trades its pod's exchange identity for a
+// broker token of its own, and New and prepare refuse one that does.
 const envoyTokenKey = "ENVOY_TOKEN"
 
 // The keys of a role's Secret that carry its GitHub credential beside the launcher token: each

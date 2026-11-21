@@ -23,15 +23,12 @@ func dispatchCredentialServed(t *testing.T, body []byte) (map[string]any, bool) 
 }
 
 // The state route serves the daemon's Dispatch credential under dispatch_token_broker: the session
-// its own calls run under and the two counts a deployment reads before it removes
-// dispatch_token_transition_file, the time of the last transition launch null before the first.
+// its own calls run under and the count of the live launches that still hold a Dispatch token, and
+// nothing else.
 func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
 	credential, carried := dispatchCredentialServed(t, body)
-	want := map[string]any{
-		"session": "legion-daemon:LEGION", "transitionLaunches": float64(2),
-		"lastTransitionLaunchAt": "2026-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
-	}
+	want := map[string]any{"session": "legion-daemon:LEGION", "liveLaunchesWithDispatchToken": float64(3)}
 	if !carried || len(credential) != len(want) {
 		t.Fatalf("the state %s carries dispatchCredential %v (carried %v), want %v", body, credential, carried, want)
 	}
@@ -42,14 +39,6 @@ func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 	}
 
 	state := populatedState(t)
-	none := *state.DispatchCredential
-	none.TransitionLaunches, none.LastTransitionLaunchAt = 0, nil
-	state.DispatchCredential = &none
-	credential, _ = dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion)))
-	if at, written := credential["lastTransitionLaunchAt"]; !written || at != nil {
-		t.Errorf("a daemon that made no transition launch writes lastTransitionLaunchAt = %v (written %v), want null", at, written)
-	}
-
 	state.DispatchCredential = nil
 	if credential, carried := dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion))); carried {
 		t.Errorf("a daemon without the setting serves dispatchCredential %v, want no such key", credential)
