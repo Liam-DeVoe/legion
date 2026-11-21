@@ -102,7 +102,7 @@ A hold has one workflow. Its journal admits only that workflow's commands, in or
 | `rollback` | `restore --prepare`, `restore --key` (repeatable), `restore --finish` |
 | `selection-recovery` | `create-bucket --after-loss`, `replay` (repeatable), `replay --final` |
 | `buckets-create` | `buckets create` |
-| `buckets-recreate` | `buckets backup`, `buckets recreate`, which deletes only buckets the backup's manifest covers |
+| `buckets-recreate` | `buckets backup`, `buckets recreate`, which deletes only buckets the backup's signed done entry covers, each archive there and hashing to the sha256 it records |
 | `buckets-restore` | `buckets backup`, `buckets restore --from` |
 | `streams-update` | `streams update` |
 | `streams-census` | `streams census` |

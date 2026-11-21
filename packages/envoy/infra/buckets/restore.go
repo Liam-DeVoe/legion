@@ -100,56 +100,76 @@ func Backup(ctx context.Context, nc *nats.Conn, dir string, buckets []string, st
 	if err != nil {
 		return nil, err
 	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
+	}
+	sum, err := fileSHA256(path)
+	if err != nil {
+		return nil, err
+	}
 	outputs[BackupManifestOutput] = path
-	return outputs, os.Rename(tmp, path)
+	outputs[BackupManifestSHA256Output] = sum
+	return outputs, nil
 }
 
-// BackupManifestOutput is the output of `buckets backup`'s done entry that names its manifest.
-const BackupManifestOutput = "manifest"
+// BackupManifestOutput is the output of `buckets backup`'s done entry that names its manifest, and
+// BackupManifestSHA256Output the one that holds the manifest's sha256.
+const (
+	BackupManifestOutput       = "manifest"
+	BackupManifestSHA256Output = "manifest_sha256"
+)
 
-// backupCovers refuses, naming each bucket of buckets it does not cover, unless the latest done
-// `buckets backup` entry of the hold's journal d names a manifest that holds the bucket with its
-// stream's name (KV_<bucket>) and its last sequence. No such entry, and a manifest that is missing
-// or does not decode, refuse every bucket. `buckets recreate` runs it before its first delete, so
-// it deletes no bucket the hold's backup did not take.
+// backupCovers refuses, naming each bucket of buckets it does not cover, unless the hold's backup
+// covers it by its signed record, never by the manifest file alone: the latest done `buckets
+// backup` entry of the hold's journal d names a manifest that hashes to the sha256 the entry
+// records, the entry records the bucket's archive sha256, and the archive is there, readable, of
+// stream KV_<bucket>, and hashes to that sha256 and to the manifest's (ReadManifest). No such
+// entry, and a manifest that is missing or hashes to another sha256 (one edited to name a bucket
+// the backup never took), refuse every bucket. `buckets recreate` runs it before its first delete,
+// so it deletes no bucket whose only copy the hold's backup cannot restore.
 func backupCovers(d holdrecord.Done, buckets []string) error {
-	path := ""
-	if backup, ok := writerhold.LatestDone(d, CommandBackup); ok {
-		path = backup.Outputs[BackupManifestOutput]
+	refuse := func(format string, args ...any) error {
+		return &writerhold.Refusal{Step: writerhold.StepPreflight, What: "recreate deletes only what its hold's backup covered: " + fmt.Sprintf(format, args...)}
 	}
-	refuse := func(what string) error {
-		return &writerhold.Refusal{Step: writerhold.StepPreflight, What: "recreate deletes only what its hold's backup covered: " + what}
+	all := strings.Join(buckets, ", ")
+	backup, ok := writerhold.LatestDone(d, CommandBackup)
+	if !ok {
+		return refuse("the hold has no done buckets backup entry, so none of %s is covered", all)
 	}
-	if path == "" {
-		return refuse(fmt.Sprintf("the hold's done buckets backup entry names no manifest, so none of %s is covered", strings.Join(buckets, ", ")))
+	path, signed := backup.Outputs[BackupManifestOutput], backup.Outputs[BackupManifestSHA256Output]
+	if path == "" || signed == "" {
+		return refuse("the hold's done buckets backup entry names no manifest and its sha256, so none of %s is covered", all)
 	}
-	raw, err := os.ReadFile(path)
+	sum, err := fileSHA256(path)
 	if err != nil {
-		return refuse(fmt.Sprintf("read the backup's manifest %s: %v, so none of %s is covered", path, err, strings.Join(buckets, ", ")))
+		return refuse("read the backup's manifest %s: %v, so none of %s is covered", path, err, all)
 	}
-	var m struct {
-		Buckets map[string]struct {
-			Stream  string  `json:"stream"`
-			LastSeq *uint64 `json:"last_seq"`
-		} `json:"buckets"`
+	if sum != signed {
+		return refuse("the backup's manifest %s hashes to %s, not the sha256 its signed done entry records (%s), so none of %s is covered", path, sum, signed, all)
 	}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return refuse(fmt.Sprintf("the backup's manifest %s does not decode: %v, so none of %s is covered", path, err, strings.Join(buckets, ", ")))
-	}
-	var missing []string
+	var problems, recorded []string
 	for _, bucket := range buckets {
-		archive, ok := m.Buckets[bucket]
-		switch {
-		case !ok:
-			missing = append(missing, bucket+" is not in the backup's manifest")
-		case archive.Stream != "KV_"+bucket:
-			missing = append(missing, fmt.Sprintf("%s's archive is of stream %q, not KV_%s", bucket, archive.Stream, bucket))
-		case archive.LastSeq == nil:
-			missing = append(missing, bucket+"'s archive records no last sequence")
+		if backup.Outputs["sha256."+bucket] == "" {
+			problems = append(problems, bucket+" is not in the backup's signed done entry")
+			continue
+		}
+		recorded = append(recorded, bucket)
+	}
+	if m, err := ReadManifest(filepath.Dir(path), recorded); err != nil {
+		problems = append(problems, err.Error())
+	} else {
+		for _, bucket := range recorded {
+			archive := m.Buckets[bucket]
+			switch {
+			case archive.Stream != "KV_"+bucket:
+				problems = append(problems, fmt.Sprintf("%s's archive is of stream %q, not KV_%s", bucket, archive.Stream, bucket))
+			case archive.SHA256 != backup.Outputs["sha256."+bucket]:
+				problems = append(problems, fmt.Sprintf("%s's archive does not hash to the sha256 the backup's signed done entry records", bucket))
+			}
 		}
 	}
-	if len(missing) > 0 {
-		return refuse(fmt.Sprintf("%s (manifest %s)", strings.Join(missing, "; "), path))
+	if len(problems) > 0 {
+		return refuse("%s (manifest %s)", strings.Join(problems, "; "), path)
 	}
 	return nil
 }

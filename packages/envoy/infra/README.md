@@ -3376,6 +3376,10 @@ With no `--hold`, `create` and `restore` prepare and set a hold of their workflo
 `--probe-token-file` as `hold set` does; with `--hold ID` they run in that hold. `recreate` runs
 only with `--hold`: it deletes each bucket, so the hold's table admits it only after a done
 `buckets backup` of its hold, and `buckets backup --workflow recreate --to DIR` sets that hold.
+Before its first delete it takes what that backup covered from the backup's signed done entry,
+never from the manifest file alone: the manifest must hash to the sha256 the entry records, the
+entry must record each bucket's archive sha256, and each archive must be there, readable, and
+hash to it; anything less refuses, naming the bucket, and deletes nothing.
 Each command changes the buckets on the operator's one connection under the held grant, checks
 each protected stream against what it did (the postcheck) and writes its done entry. A command
 that fails after its intent writes a stop entry recording what it left: `unchanged`, or what it
@@ -3396,7 +3400,8 @@ bucket that exists as it is. `recreate` deletes each `--bucket` and creates it a
 deliver subject, which the server publishes to without checking the requester's publish rights, so
 no snapshot runs under the released grant. It snapshots each bucket's stream through jsm.go into
 `DIR/<bucket>`, writes `DIR/manifest.json`, each archive's sha256 and stream state, and names each
-sha256 in its done entry. A directory that already holds a manifest is refused. A backup that
+archive's sha256, the manifest's path and the manifest's sha256 in its done entry. A directory that
+already holds a manifest is refused. A backup that
 fails leaves the hub unchanged. `restore --from DIR` validates that manifest first,
 before any hold is set, then, for each bucket, deletes its stream and restores it; a restore cut
 part way runs once more from its first chunk after the cut's leftover stream is deleted, and a
