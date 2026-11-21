@@ -17,6 +17,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -265,7 +266,7 @@ type removedEvent struct {
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
-	// which settles.
+	// whose settlements run as that case moves their clock.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	spec := createInteractionIssue(t, handler, "TEST", "A spec of its own", "# Spec\n\nA passage.\n")
 	ctx := context.Background()
@@ -625,8 +626,11 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 	})
 
 	t.Run("the removal closes the document's room", func(t *testing.T) {
-		// A server that settles, so the version pass below is the one settlement makes.
-		roomHandler, roomDatabase, deps := newTestServer(t, testServerOptions{})
+		// A server whose settlements run on settles, a fake clock only this case moves, so the
+		// version pass below is the one settlement makes, and every settlement armed by the
+		// removal is run by the wait after it rather than by time passing.
+		settles := clocktest.New(time.Now())
+		roomHandler, roomDatabase, deps := newTestServer(t, testServerOptions{documentClock: settles})
 		documents, ok := deps.Docs.(*docs.Service)
 		if !ok {
 			t.Fatalf("the test server's document service is %T, which holds no rooms to read", deps.Docs)
@@ -655,14 +659,16 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("this process still holds the room of the removed document %s: %v", document.ID, rooms)
 		}
 		// Nothing settles against the row that has gone: the eviction ended what the room had
-		// armed, so a settle window passes with no room loaded again and nothing said about the
-		// document in the service's log. The log is taken from after the removal, so the
-		// request's own line is not one of the lines read.
+		// armed. Nothing has moved settles yet, so the settlement the document's creation armed
+		// (artifacts.go's ScheduleSettlement after the create's commit) was still armed when the
+		// removal evicted the room, as was the settlement of the issue's spec. The wait moves
+		// settles through every deadline armed within reach, each move returning once the
+		// settlement it fired has, and only then reads that no room of the document was loaded
+		// again and that nothing in the service's log names it. The log is taken from after the
+		// removal, so the request's own line is not one of the lines read.
 		logs := captureLogs(t)
-		testwait.Span(t, time.Second, "a settlement the evicted room had armed would run on that room's own "+
-			"settle timer (20 ms here) and read the removed row, and no state the service exposes says a "+
-			"timer is armed, the service does real PostgreSQL I/O (no synctest), and no later action of the "+
-			"test is ordered after that timer")
+		awaitSettledOn(t, "the document service to run every settlement armed when "+document.ID+" was removed",
+			func() ([]string, bool) { return documents.ResidentRooms(), true }, settles)
 		if rooms := documents.ResidentRooms(); slices.Contains(rooms, document.ID) || strings.Contains(logs.String(), document.ID) {
 			t.Fatalf("the service read the removed document %s again: rooms=%v log=%s",
 				document.ID, rooms, logs.Lines(document.ID))
@@ -765,17 +771,30 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 // which the test reads as the document's one empty version before it removes anything.
 func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	ctx := context.Background()
-	handler, database, deps := newTestServer(t, testServerOptions{})
+	// Each of the first two processes settles on a fake clock of its own, which nothing moves
+	// before both rooms have closed: the wait after the removal then moves each through every
+	// deadline armed within reach, which runs every settlement either process still had armed.
+	removingClock, holdingClock := clocktest.New(time.Now()), clocktest.New(time.Now())
+	handler, database, deps := newTestServer(t, testServerOptions{documentClock: removingClock})
 	removing, ok := deps.Docs.(*docs.Service)
 	if !ok {
 		t.Fatalf("the test server's document service is %T, which holds no rooms to read", deps.Docs)
 	}
 	runDocumentRoomSync(t, database, removing)
 	// The second process: a document service of its own on a second pool, as cmd/dispatch runs
-	// one, hearing the first's announcements over the database alone.
+	// one, hearing the first's announcements over the database alone. It settles a settle delay
+	// after a write, as the first does (newTestServer's 20 ms), on holdingClock, so no settlement
+	// of it runs before the wait after the removal moves that clock. Its shutdown's drain budget
+	// runs on that clock too, so the shared wait's context ends a shutdown that waits.
 	secondStore := storetest.SecondProcess(t, database)
-	holding := docs.New(docs.Deps{Store: secondStore, Identity: headerIdentity(secondStore), Settle: time.Hour})
-	t.Cleanup(func() { _ = holding.Shutdown(context.Background()) })
+	holding := docs.New(docs.Deps{
+		Store: secondStore, Identity: headerIdentity(secondStore), Settle: 20 * time.Millisecond, Clock: holdingClock,
+	})
+	t.Cleanup(func() {
+		if err := holding.Shutdown(testwait.Context(t)); err != nil {
+			t.Errorf("shutdown the second process's document service: %v", err)
+		}
+	})
 	runDocumentRoomSync(t, secondStore, holding)
 
 	issue := createInteractionIssue(t, handler, "ROOM", "A document two processes hold", "# Spec\n")
@@ -809,23 +828,34 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	t.Cleanup(func() { _ = connection.Close() })
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
-	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made.
+	// after the removal is said of rooms that existed. The second process's room loads as the
+	// socket opens, and the load arms there the settlement the document still owes - the one its
+	// creation armed on the removing process waits on removingClock - on holdingClock, which
+	// nothing moves before the removal; the read after the wait for the room waits for that load.
+	// The removing process loaded its own when the document was made, as the creation's
+	// settlement warmed it: the row runs that settlement next, moving removingClock, so the room
+	// the removal must close there is the one it warms.
 	for _, process := range []struct {
 		what    string
 		service *docs.Service
+		// settles is the clock the row runs the process's settlements on before it reads the room.
+		settles *clocktest.Fake
 	}{
-		{what: "the removing process", service: removing},
 		{what: "the second process", service: holding},
+		{what: "the removing process", service: removing, settles: removingClock},
 	} {
-		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
-			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
+		if process.settles != nil {
+			awaitSettledOn(t, process.what+" to run the settlements of the issue's and the document's creation",
+				func() ([]string, bool) { return process.service.ResidentRooms(), true }, process.settles)
 		}
 		testwait.Until(t, fmt.Sprintf("%s to hold a room of %s, whose room the removal must close", process.what, document.ID),
 			func() ([]string, bool) {
 				rooms := process.service.ResidentRooms()
 				return rooms, slices.Contains(rooms, document.ID)
 			})
+		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
+			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
+		}
 	}
 
 	removedDocument(t, handler, document.ID)
@@ -844,11 +874,20 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// takes their socket with it, and their browser reconnects to a document that has gone.
 	waitForDocumentConnectionClose(t, connection)
 	// No append of either room reached the database after the removal, and neither process takes
-	// the room up again: a settle window passes with doc_updates holding nothing of the document
-	// and no room of it resident anywhere.
-	testwait.Span(t, time.Second, "an append or a room loaded again would come from a room's own settle "+
-		"timer or a late notification on either process, which no state the services expose records, over "+
-		"real PostgreSQL (no synctest), with no later action of the test ordered after either")
+	// the room up again. What could take it up is a settlement. The removing process had none
+	// armed when the removal evicted its room, since the row ran them above, so one there is one
+	// armed since, which waits on removingClock. The second process's room had one armed on
+	// holdingClock, which its eviction ends, and which the close of its last socket would
+	// otherwise run at once (settleLastPeer). The wait moves both clocks through every deadline
+	// armed within reach, each move returning once the settlement it fired has, before the
+	// appends and the rooms are read. No notification loads a room here: each room-sync handler
+	// acts only on a room its process holds (catch-ups, the removal's close, room queries, the
+	// issue's open state), but for an awareness update relayed for a reader, which can load an
+	// absent room in the moment between its check and its apply (awarenessRelay.received), and
+	// which comes only from a process holding a reader of the document: no process but the second.
+	awaitSettledOn(t, "both processes to run every settlement armed when "+document.ID+" was removed",
+		func() ([][]string, bool) { return [][]string{removing.ResidentRooms(), holding.ResidentRooms()}, true },
+		removingClock, holdingClock)
 	if appends := documentAppendCount(t, database, document.ID); appends > 0 ||
 		slices.Contains(holding.ResidentRooms(), document.ID) ||
 		slices.Contains(removing.ResidentRooms(), document.ID) {

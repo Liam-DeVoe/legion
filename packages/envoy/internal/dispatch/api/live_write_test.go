@@ -18,6 +18,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -48,6 +49,9 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 		})
 	}
 	waitForDocumentUpdate(t, f.persistence)
+	// The document's settlement, armed on the fixture's clock, runs as the row moves the clock to
+	// it, and queues behind the held edit's transaction for the issue's owner lock.
+	settled := f.startArmedSettlement(t)
 	f.waitForLockWaiter(t)
 	f.assertArtifactKeyShareLockAvailable(t)
 	// A settlement pending when the transactional write starts must not version it either
@@ -60,6 +64,7 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 	f.assertVersionCount(t, 1)
 	closeTestGate(f.failure.release)
 	f.expectFailedResponse(t, responses)
+	testwait.Receive(t, "the settlement queued behind the held edit to end once the edit's rollback let the issue's owner lock go", settled)
 	f.assertLiveText(t, "before\n")
 	f.assertVersionCount(t, 1)
 	f.assertDurableText(t, "before\n")
@@ -265,7 +270,10 @@ func TestDocumentUploadRollbackNeverReachesTheRoom(t *testing.T) {
 // heldWriteFixture is an issue whose document edits fail after their live write, behind gates
 // the test opens.
 type heldWriteFixture struct {
-	settle      time.Duration
+	// settles is the document service's clock (docs.Deps.Clock), which moves only as
+	// waitOutSettlement, startArmedSettlement and waitForVersionHolding move it: a settlement the
+	// room arms runs once one of them moves the clock to it.
+	settles     *clocktest.Fake
 	handler     http.Handler
 	docs        *docs.Service
 	failure     *postApplyFailureDocs
@@ -283,7 +291,7 @@ type heldWriteFixture struct {
 
 func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*postApplyFailureDocs)) *heldWriteFixture {
 	t.Helper()
-	f := &heldWriteFixture{settle: settle, headers: http.Header{"X-Dispatch-User": []string{"alice"}}}
+	f := &heldWriteFixture{settles: clocktest.New(time.Now()), headers: http.Header{"X-Dispatch-User": []string{"alice"}}}
 	f.handler, f.database = newInteractionHandler(t, func(database *store.Store) docs.API {
 		f.persistence = &recordingVersionedStore{
 			PgVersioned: docs.NewPgVersioned(database),
@@ -294,8 +302,15 @@ func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*
 			Persistence: f.persistence,
 			Identity:    headerIdentity(database),
 			Settle:      settle,
+			Clock:       f.settles,
 		})
-		t.Cleanup(func() { _ = f.docs.Shutdown(context.Background()) })
+		// The shutdown's drain budget runs on f.settles too, which nothing moves past it, so the
+		// shared wait's context ends a shutdown that waits.
+		t.Cleanup(func() {
+			if err := f.docs.Shutdown(testwait.Context(t)); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
 		f.failure = &postApplyFailureDocs{
 			API:                f.docs,
 			beforeApply:        make(chan struct{}),
@@ -417,15 +432,34 @@ func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, wa
 	})
 }
 
-// waitOutSettlement gives a settlement armed by now time to run: three settle intervals, when
-// the fixture settles at all within the test.
+// waitOutSettlement runs every settlement the room has armed within reach of the fixture's clock
+// (awaitSettledOn): a settlement armed by now has run when it returns, and one armed a settle
+// interval of an hour ahead, in a fixture that does not settle within its test, has not.
 func (f *heldWriteFixture) waitOutSettlement(t *testing.T) {
 	t.Helper()
-	if f.settle < time.Second {
-		testwait.Span(t, 3*f.settle, "a settlement the room armed runs on the room's own goroutine once its settle "+
-			"interval passes on the real clock, and no state the test reads says no settlement is still due, the "+
-			"database is real I/O (no synctest), and no later action of the test is ordered after it")
+	awaitSettledOn(t, "every settlement armed on the held edit's document to have run",
+		func() ([]string, bool) { return f.versions(t), true }, f.settles)
+}
+
+// startArmedSettlement moves the fixture's clock, on a goroutine of its own, to the first deadline
+// armed on it, which runs the settlement armed for then, and answers a channel that closes once
+// the move has returned, which is once that settlement has (clocktest). It is for a settlement
+// that waits on what the test holds - the issue's owner lock, under a held edit's transaction -
+// for which a move on the test's own goroutine would wait for ever. The deadline must stand within
+// a settlement's reach (documentSettleReach).
+func (f *heldWriteFixture) startArmedSettlement(t *testing.T) <-chan struct{} {
+	t.Helper()
+	armed := f.settles.AwaitArmed(t, "the settlement the room armed", 1)
+	if ahead := armed[0].Sub(f.settles.Now()); ahead >= documentSettleReach {
+		t.Fatalf("the first deadline armed on the document service's clock stands %s ahead, past a settlement's reach of %s (every deadline armed: %v)",
+			ahead, documentSettleReach, armed)
 	}
+	moved := make(chan struct{})
+	go func() {
+		defer close(moved)
+		f.settles.Set(armed[0])
+	}()
+	return moved
 }
 
 // versions lists the document's versions as "number: markdown".
@@ -453,12 +487,14 @@ func (f *heldWriteFixture) versions(t *testing.T) []string {
 	return versions
 }
 
+// waitForVersionHolding waits until a version of the document holds text, moving the fixture's
+// clock through the settlements armed on it (awaitSettledOn): none runs but as the clock moves.
 func (f *heldWriteFixture) waitForVersionHolding(t *testing.T, text string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("a version holding %q", text), func() ([]string, bool) {
+	awaitSettledOn(t, fmt.Sprintf("a version holding %q", text), func() ([]string, bool) {
 		versions := f.versions(t)
 		return versions, slices.ContainsFunc(versions, func(version string) bool { return strings.Contains(version, text) })
-	})
+	}, f.settles)
 }
 
 // assertVersionCount waits out settlement, then counts the document's versions.

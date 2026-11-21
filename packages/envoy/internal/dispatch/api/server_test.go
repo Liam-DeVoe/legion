@@ -130,6 +130,11 @@ type testServerOptions struct {
 	// clock is the server's Deps.Clock, which its timers and the listener client's window run
 	// on: nil is clock.Real(), and a test that drives a timer passes a clocktest.Fake.
 	clock clock.Clock
+	// documentClock is the document service's Deps.Clock, which its settle timers run on (and its
+	// other timers: the compaction queue's checks, a mark's wait, a room query's wait, its
+	// shutdown's drain budget): nil is clock.Real(), and a test that waits for a settlement passes
+	// a clocktest.Fake it moves through the settlements armed on it (awaitSettledOn).
+	documentClock clock.Clock
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
 	// tracer is installed on every connection of the server's pool (storetest.Traced), so a test
@@ -275,9 +280,15 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentService := docs.New(docs.Deps{
+		Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle,
+		Clock: options.documentClock,
+	})
+	// The shutdown's drain budget runs on the service's clock, so on a fake no one moves past it
+	// nothing but the context ends a shutdown that waits: the shared wait's ends it, and the error
+	// it then answers names what it waited on.
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
+		if err := documentService.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -413,6 +424,58 @@ func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time)
 		armed := fake.Armed()
 		return armed, slices.ContainsFunc(armed, at.Equal)
 	})
+}
+
+// documentSettleReach is how far ahead of a document service's fake clock (docs.Deps.Clock) a
+// deadline may stand for awaitSettledOn to move the clock to it, as time passing would. The
+// service arms a room's settlement its settle delay ahead - 20 ms for newTestServer's, 50 ms for
+// the held-write fixture's - and a settlement that stops short, or that writes the document, arms
+// the next one as far again. Its other timers stand further ahead: a room query's wait for the
+// other processes' answers 500 ms (roomQueryWait), which the reach leaves out, and a mark's wait
+// and the compaction queue's checks a second at the least. A service whose settle delay is past
+// the reach (an hour) settles nothing in awaitSettledOn, as it settled nothing on the real clock
+// within its test.
+const documentSettleReach = 500 * time.Millisecond
+
+// settleReading is what one reading of awaitSettledOn saw: what its read answered, and how far
+// ahead of each clock, in the order awaitSettledOn was given them, every deadline armed on it
+// stood.
+type settleReading[T any] struct {
+	Read  T
+	Ahead [][]time.Duration
+}
+
+// awaitSettledOn waits until holds, what read answers beside its value, is true and no deadline
+// stands armed within documentSettleReach on any of clocks, the fake clocks of the document
+// services under test, and answers the value read last answered. Time passes for those services
+// only as this moves their clocks: at each reading, each clock on which a deadline stands armed
+// within reach is moved to the first such deadline, which runs the settlement armed for then. A
+// move returns once the function of each timer it fired has (clocktest), so the reading after it
+// sees what the settlement did. A settlement that never brings holds about, or one that arms the
+// next within reach for ever, fails the test at the shared wait's end with the last reading and
+// the deadlines armed on each clock.
+func awaitSettledOn[T any](t *testing.T, what string, read func() (T, bool), clocks ...*clocktest.Fake) T {
+	t.Helper()
+	last := testwait.Until(t, what+", with no settlement left within reach on the document services' clocks",
+		func() (settleReading[T], bool) {
+			value, holds := read()
+			reading := settleReading[T]{Read: value, Ahead: make([][]time.Duration, len(clocks))}
+			moved := false
+			for index, settles := range clocks {
+				_, moves := settles.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+					for _, at := range armed {
+						reading.Ahead[index] = append(reading.Ahead[index], at.Sub(now))
+					}
+					if len(armed) == 0 || armed[0].Sub(now) >= documentSettleReach {
+						return time.Time{}, false
+					}
+					return armed[0], true
+				})
+				moved = moved || moves
+			}
+			return reading, !moved && holds
+		})
+	return last.Read
 }
 
 // writeSessionRecord answers GET /v1/registry/{session_id} from the rows a stub listener also
