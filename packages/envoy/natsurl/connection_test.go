@@ -57,6 +57,8 @@ func TestConnectionClass(t *testing.T) {
 		{"the CONNECT handshake's error, quoting the line in place of PONG", fmt.Errorf("nats: expected '%s', got '%s'", "PONG", "XYZ "+host), ConnectionProtocolError},
 		{"a server's -ERR the client names no refusal for", errors.New("nats: Something Else " + host), ConnectionProtocolError},
 		{"a server's refusal with more after it", errors.New("nats: Authorization Violation " + host), ConnectionProtocolError},
+		{"the client's error naming a root certificate file", fmt.Errorf("nats: failed to parse root certificate from %q", "/madeUp/"+host), ConnectionProtocolError},
+		{"the JetStream consumer's asynchronous error", nats.ErrConsumerNotActive, "nats: consumer not active"},
 		{"a server's permissions violation, as the client relays it", fmt.Errorf("%w: %s", nats.ErrPermissionViolation, `Permissions Violation for Subscription to "legion.denied"`),
 			`nats: permissions violation: Permissions Violation for Subscription to "legion.denied"`},
 		{"the client's own error under words of another's", fmt.Errorf("subscribe %s: %w", host, nats.ErrTimeout), "nats: timeout"},

@@ -226,9 +226,11 @@ func socksClass(err error) string {
 	return "the SOCKS5 proxy failed the connection"
 }
 
-// natsErrors are the errors the NATS client defines that a connection can fail with, each a fixed
-// text that names no server (nats.go v1.55.0 nats.go:108-166). An error that wraps one under words
-// of its own prints as the one it wraps alone.
+// natsErrors are the errors the NATS client defines that a connection, or its asynchronous error
+// callback, can report, each a fixed text that names no server (nats.go v1.55.0 nats.go:108-166,
+// and the JetStream consumer's ErrConsumerNotActive and the bad header message it reports
+// asynchronously). An error that wraps one under words of its own prints as the one it wraps
+// alone.
 var natsErrors = []error{
 	nats.ErrConnectionClosed, nats.ErrConnectionDraining, nats.ErrDrainTimeout, nats.ErrConnectionReconnecting,
 	nats.ErrSecureConnRequired, nats.ErrSecureConnWanted, nats.ErrTimeout, nats.ErrBadTimeout,
@@ -241,4 +243,5 @@ var natsErrors = []error{
 	nats.ErrHeadersNotSupported, nats.ErrMaxConnectionsExceeded, nats.ErrMaxAccountConnectionsExceeded,
 	nats.ErrConnectionNotTLS, nats.ErrMaxSubscriptionsExceeded, nats.ErrWebSocketHeadersAlreadySet,
 	nats.ErrServerNotInPool, nats.ErrMixingWebsocketSchemes, nats.ErrSlowConsumer,
+	nats.ErrBadHeaderMsg, nats.ErrConsumerNotActive, nats.ErrNoResponders,
 }

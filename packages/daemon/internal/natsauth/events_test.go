@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/natsurl"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -179,10 +180,12 @@ func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 
 // A server's bytes the NATS client cannot parse end the connection with an error the client
 // formats from them - its parser's (`nats: Parse Error [0]: '…'`), processMsgArgs' for a MSG line
-// it cannot read, and the CONNECT handshake's for a line in place of PONG - and a made-up secret in
-// those bytes prints nowhere: not in the `NATS connection lost` line of a connection that
-// reconnects, not in the `NATS connection closed` line of one that does not, and not in Connect's
-// error; each names the failure as a protocol error from the server.
+// it cannot read, processErr's for a -ERR it names no refusal for, and the CONNECT handshake's for
+// a line in place of PONG - and a made-up secret in those bytes prints nowhere: not in the `NATS
+// connection lost` line of a connection that reconnects, not in the `NATS connection closed` line
+// of one that does not, and not in Connect's error; each names the failure as a protocol error from
+// the server. The control is the same server sending a valid PING after the handshake: the
+// connection stays up, and no line names a protocol error.
 func TestAServersUnreadableBytesPrintNoneOfThem(t *testing.T) {
 	const secret = "madeUpServerBytesSecret0123456789"
 	requireNoRun := func(t *testing.T, what, text string) {
@@ -193,9 +196,13 @@ func TestAServersUnreadableBytesPrintNoneOfThem(t *testing.T) {
 			}
 		}
 	}
-	for _, tc := range []struct{ name, bytes string }{
-		{"a protocol operation the parser does not know", "XYZ " + secret + "\r\n"},
-		{"a MSG line processMsgArgs cannot read", "MSG legion.x " + secret + "\r\n"},
+	for _, tc := range []struct {
+		name, bytes string
+		reconnects  bool // a connection that reconnects reports the error as the disconnect's cause
+	}{
+		{"a protocol operation the parser does not know", "XYZ " + secret + "\r\n", true},
+		{"a MSG line processMsgArgs cannot read", "MSG legion.x " + secret + "\r\n", true},
+		{"a -ERR nats.go names no refusal for", "-ERR 'Unknown Refusal " + secret + "'\r\n", false},
 	} {
 		t.Run(tc.name+", the connection closed", func(t *testing.T) {
 			var out lockedBuffer
@@ -214,6 +221,9 @@ func TestAServersUnreadableBytesPrintNoneOfThem(t *testing.T) {
 				t.Errorf("log = %s\nwant a line containing %s", out.String(), want)
 			}
 		})
+		if !tc.reconnects {
+			continue
+		}
 		t.Run(tc.name+", the connection lost", func(t *testing.T) {
 			var out lockedBuffer
 			lost := make(chan struct{}, 1)
@@ -232,6 +242,25 @@ func TestAServersUnreadableBytesPrintNoneOfThem(t *testing.T) {
 			}
 		})
 	}
+	t.Run("control: a valid PING after the handshake", func(t *testing.T) {
+		var out lockedBuffer
+		closed := make(chan struct{}, 1)
+		conn, err := natsauth.Connect([]string{fakeServer(t, "PING\r\n")}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect(),
+			natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
+			signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		t.Cleanup(conn.Close)
+		select {
+		case <-closed:
+			t.Fatalf("the connection closed on a valid PING: %s", out.String())
+		case <-time.After(time.Second):
+		}
+		if !conn.IsConnected() || strings.Contains(out.String(), "a protocol error from the server") {
+			t.Errorf("connected %t, log = %s; want connected and no protocol error", conn.IsConnected(), out.String())
+		}
+	})
 	t.Run("a line in place of PONG, Connect's error", func(t *testing.T) {
 		conn, err := natsauth.Connect([]string{fakeServerAnswering(t, "XYZ "+secret+"\r\n")}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect())
 		if err == nil {
@@ -294,6 +323,40 @@ func TestAConnectionLostWithoutReconnectLogsOneClose(t *testing.T) {
 	logged := out.String()
 	if strings.Count(logged, "NATS connection closed") != 1 || !strings.Contains(logged, `level=ERROR msg="NATS connection closed" error=`) {
 		t.Errorf("log = %s\nwant exactly one line containing the closed error line", logged)
+	}
+}
+
+// The asynchronous error lines name their error by its class (natsurl.ConnectionClass), as every
+// NATS line does: an error nats.go formatted from what the server sent (its parser's, quoting the
+// bytes), or any other it has no class for, prints none of its text; nats.go's own fixed words print
+// as they are. The control is the slow consumer's error, which prints whole.
+func TestAnAsynchronousErrorPrintsItsClass(t *testing.T) {
+	const marker = "madeUpAsyncErrorMarker0123456789"
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"the parser's error, quoting the bytes the server sent", errors.New("nats: Parse Error [0]: 'XYZ " + marker + "'"), "a protocol error from the server"},
+		{"an error with no class", errors.New("websocket read of " + marker + " failed"), natsurl.ConnectionUnprinted},
+		{"control: the slow consumer's error", nats.ErrSlowConsumer, nats.ErrSlowConsumer.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out lockedBuffer
+			var o nats.Options
+			if err := natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil)))(&o); err != nil {
+				t.Fatalf("LogEvents: %v", err)
+			}
+			o.AsyncErrorCB(nil, nil, tc.err)
+			for i := 0; i+10 <= len(marker); i++ {
+				if run := marker[i : i+10]; strings.Contains(out.String(), run) {
+					t.Fatalf("the log holds %q, a run of the made-up marker: %s", run, out.String())
+				}
+			}
+			if want := `msg="NATS reported an asynchronous error" subject="" error="` + tc.want + `"`; !strings.Contains(out.String(), want) {
+				t.Errorf("log = %s\nwant a line containing %s", out.String(), want)
+			}
+		})
 	}
 }
 
