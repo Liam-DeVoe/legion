@@ -17,8 +17,8 @@ import (
 // and every route that verifies a ServiceAccount token answers it 503 ISSUER_UNAVAILABLE, never
 // the 401 or 403 a refused token gets: a caller retries a 503 and stops on a refusal, so a live
 // token refused for an outage ended an enrolment, a login, a registration or a call that the next
-// attempt would have landed (review B4). Each token here is signed by a key published after the
-// broker read the set, so it sends the verifier to read the set again, which answers 500.
+// attempt would have landed. Each token here is signed by a key published after the broker read
+// the set, so it sends the verifier to read the set again, which answers 500.
 func TestATokenWhoseIssuerCannotBeReadIsUnavailableNotRefused(t *testing.T) {
 	ts := newTestServer(t)
 	// A token login before the outage: the set is read, and the launcher credential below enrols.

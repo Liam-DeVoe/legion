@@ -20,7 +20,7 @@ import (
 
 // A cold read of the cluster's key set slower than the listener's 3 s wait but inside its 10 s
 // timeout is waited out: the exchange answers the token, where a wait that gave up first would
-// have answered the pod a refusal it never trades past (review B4).
+// have answered the pod a refusal it never trades past.
 func TestAnExchangeWaitsOutASlowKeySetRead(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
@@ -36,8 +36,8 @@ func TestAnExchangeWaitsOutASlowKeySetRead(t *testing.T) {
 // A subject token the exchange cannot judge because its issuer's key set cannot be read is
 // answered 503 temporarily_unavailable, never invalid_request: cipherclient, which every pod and
 // daemon trades with, stops for good on a 4xx refusal (RefusedError.Permanent) and trades again
-// after a 5xx, so an outage answered as a refusal ended the trade where the next one lands
-// (review B4). The client here is cipherclient itself against this broker's token endpoint, and
+// after a 5xx, so an outage answered as a refusal ended the trade where the next one lands. The
+// client here is cipherclient itself against this broker's token endpoint, and
 // the first answer it was given is read back as it went out.
 func TestAKeySetOutageAtTheExchangeIsTradedAgain(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
@@ -117,7 +117,7 @@ func TestAKeySetOutageAtTheExchangeIsTradedAgain(t *testing.T) {
 // A subject token its own claims refuse is refused 400 invalid_request while its issuer's key set
 // cannot be read, naming the claim, as it is refused while the set reads: its issuer, audience and
 // expiry are decided before the outage, as the verifier's classify decides them
-// (internal/oidc/verifier.go), so brokerclient stops on a trade no read of the set could land,
+// (internal/oidc/verifier.go), so cipherclient stops on a trade no read of the set could land,
 // rather than trading it again until the outage ends. The sound token first is what shows the set
 // is down for every row: it is answered the outage.
 func TestAnExchangeRefusesATokenItsClaimsRefuseDuringAKeySetOutage(t *testing.T) {
@@ -151,7 +151,7 @@ func TestAnExchangeRefusesATokenItsClaimsRefuseDuringAKeySetOutage(t *testing.T)
 			form := exchangeForm(f.podToken(t, "pod-uid-1", row.change), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
 			status, body := f.exchange(t, form, key)
 			if status != http.StatusBadRequest || body["error"] != "invalid_request" {
-				t.Fatalf("%s while the key set answers 500 = %d %v, want 400 invalid_request: its own claims refuse it, and a 5xx sends brokerclient to trade it again for the whole outage", row.name, status, body)
+				t.Fatalf("%s while the key set answers 500 = %d %v, want 400 invalid_request: its own claims refuse it, and a 5xx sends cipherclient to trade it again for the whole outage", row.name, status, body)
 			}
 			if hint, _ := body["error_description"].(string); !strings.Contains(hint, row.names) {
 				t.Errorf("the refusal reads %q, which does not name %q, the claim that refused it", hint, row.names)

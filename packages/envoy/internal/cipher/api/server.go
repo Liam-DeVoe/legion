@@ -701,7 +701,7 @@ func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 
 // writeIssuerUnavailable answers a token the broker could not judge because its issuer's key set
 // could not be read (oidc.ErrIssuerUnavailable): 503 ISSUER_UNAVAILABLE, never the 401 or 403 a
-// refused token gets. A caller stops on a refusal and retries a 503 (brokerclient's
+// refused token gets. A caller stops on a refusal and retries a 503 (cipherclient's
 // RefusedError.Permanent, the helper's own retry), so a live token refused for an outage ended an
 // enrolment, a login or a call that the next attempt, once the issuer answers, would land.
 func writeIssuerUnavailable(w http.ResponseWriter, op string, err error) {
