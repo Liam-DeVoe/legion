@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -351,35 +352,78 @@ func TestThePodsRepositoryIsReadThroughTheSameClaimInAnyOrder(t *testing.T) {
 	}
 }
 
-// A gone pod's message names the old repository's workspace only on a round whose reasons end in
-// the reason repositoryDrift writes (podWentMessage). Every other text reads as no repository
-// round: no reason at all, the runtime's reasons alone, the reason's words inside another reason
-// or before one, and a reason whose names are not two repositories.
-func TestTheRepositoryReasonReadsBackOnlyAsItIsWritten(t *testing.T) {
-	written := repositoryReason(podUpdateRepo, podUpdateCorrectedRepo)
+// A gone pod's message reads the repository the round's pod was built from off the round itself
+// (supervise.Claim.UpdateRepository), never out of the round's reasons, which are text for a
+// reader. The round here was opened over a pod of podUpdateRepo, and its reasons name only the
+// image that the pod drifted on as well, while the record has moved to podUpdateCorrectedRepo. The
+// message still names the old repository's workspace and its issue branch, beside the repository
+// the record holds.
+func TestAPodGoneOnARepositoryRoundReadsThePodsRepositoryOffTheRound(t *testing.T) {
+	roles := []podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}
+	for i := range roles {
+		roles[i].round, roles[i].reasons, roles[i].repository = podUpdateRound, podUpdateDrift, podUpdateRepo
+	}
+	roles[1].signalled = true
+	rig := newPodUpdateRig(t, roles...)
+	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+	rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+
+	rig.tickBackIn(podUpdateReplacementPod)
+
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+	}
+	want := implementerLostWith(podUpdateDrift,
+		keptVolumeMovedTo(podUpdateCorrectedRepo), pushedMovedTo(podUpdateCorrectedRepo))
+	if messages[0] != want {
+		t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+	}
+}
+
+// A gone pod's message names the repository the round's pod was built from and the repository
+// the issue's record holds when the message is written, never the one the record held at the
+// round's open. Here Dispatch moves the issue twice: the first correction opens the round over the
+// pod of podUpdateRepo, and the second moves the record on while the round is open. The round's
+// reasons keep the record as it stood at the open, since a round's terms are fixed then, but the
+// next pod is built from the record as it stands now. So after a second move onto a third
+// repository the message names the old workspace and issue branch of podUpdateRepo, the pod's
+// own, and the third repository as the new pod's origin, and names podUpdateCorrectedRepo only in
+// the reasons. A second move back onto podUpdateRepo is no move at all: the next pod is built from
+// the repository the gone pod was, so the message is the one of a round no move opened, but for
+// its reasons.
+func TestAPodGoneAfterASecondCorrectionNamesThePodsRepositoryAndTheRecordsNow(t *testing.T) {
+	const third = "zeta/gadgets"
 	for _, tc := range []struct {
-		reasons string
-		want    bool
+		name string
+		// again and branch are the repository the second correction moves the record onto and
+		// that repository's default branch.
+		again, branch string
+		disk, pushed  string
 	}{
-		{written, true},
-		{podUpdateDrift + ", " + written, true},
-		{"", false},
-		{podUpdateDrift, false},
-		{podUpdateDrift + " " + written, false},
-		{written + ", " + podUpdateDrift, false},
-		{"repository " + podUpdateRepo, false},
-		{"repository acme widgets, now " + podUpdateCorrectedRepo, false},
+		{"a second move onto a third repository", third, "release/v10", keptVolumeMovedTo(third), pushedMovedTo(third)},
+		{"a second move back onto the pod's repository", podUpdateRepo, "main", podUpdateKeptVolumeStays, podUpdateAtOrigin},
 	} {
-		pod, recorded, ok := roundRepositories(tc.reasons)
-		if ok != tc.want {
-			t.Errorf("roundRepositories(%q) reads a repository round: %t, want %t",
-				tc.reasons, ok, tc.want)
-			continue
-		}
-		if ok && (pod.String() != podUpdateRepo || recorded.String() != podUpdateCorrectedRepo) {
-			t.Errorf("roundRepositories(%q) = %s, %s, want %s, %s",
-				tc.reasons, pod, recorded, podUpdateRepo, podUpdateCorrectedRepo)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			rig.awaitRound(claim.RoleTester, podUpdateRound)
+			rig.corrects(tc.again, tc.branch)
+			rig.signal(claim.RoleTester, "a1b2c3d")
+			rig.tickBackIn(podUpdateReplacementPod)
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+			}
+			if want := implementerLostWith(podUpdateRepositoryReason, tc.disk, tc.pushed); messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
 	}
 }
 

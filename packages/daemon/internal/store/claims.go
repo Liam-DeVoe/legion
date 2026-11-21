@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -48,8 +49,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
-	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
-	c.update_head, c.update_told_at,
+	c.update_round, c.update_reasons, c.update_repository, c.update_repository_round,
+	c.update_opened_at, c.update_tasked_at, c.update_signalled_at, c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
@@ -412,6 +413,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
+	repository, repositoryRound := roundRepositoryColumns(c)
 	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
@@ -424,10 +426,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		update_repository, update_repository_round,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59,
+		$55, $56, $57, $58, $59, $60, $61,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -463,6 +466,8 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_signalled_at = excluded.update_signalled_at, update_head = excluded.update_head,
 		update_told_at = excluded.update_told_at,
 		update_left_round = excluded.update_left_round,
+		update_repository = excluded.update_repository,
+		update_repository_round = excluded.update_repository_round,
 		provider_error_run = excluded.provider_error_run,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
@@ -515,6 +520,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		repository, repositoryRound,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -875,6 +881,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		endedWork                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
+		repository, repositoryRound string
 		kept                        []byte
 		retries                     *int64
 		note                        *string
@@ -896,7 +903,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
-		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
+		&c.UpdateRound, &c.UpdateReasons, &repository, &repositoryRound, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
@@ -951,6 +958,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
+	if c.UpdateRepository, err = roundRepositoryOf(repository, repositoryRound, c.UpdateRound); err != nil {
+		return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
+	}
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
 	// Both activity moments are nullable (migration 20261101214123_claim_session_activity): a
@@ -1009,6 +1019,33 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	return c, nil
+}
+
+// roundRepositoryColumns is the repository the claim's update round was opened for
+// (supervise.Claim.UpdateRepository) as claims.update_repository and update_repository_round
+// hold it: its name and the round it was written with, both empty for no repository
+// (20261112012123_issue_repository_correction).
+func roundRepositoryColumns(c supervise.Claim) (repository, round string) {
+	if c.UpdateRepository.IsZero() {
+		return "", ""
+	}
+	return c.UpdateRepository.String(), c.UpdateRound
+}
+
+// roundRepositoryOf is the repository the two columns hold for round, the round the claim
+// records now, and the zero Repository where they hold none for it: an empty name, and a name
+// written with another round. A daemon of an earlier release names neither column, so its write
+// of the claim leaves both standing through the end of the round they were written with and the
+// open of the next, and that next round was opened for no repository this release knows of. A
+// name written with round that is no repository is an error rather than no repository, as a
+// locator that does not validate is (Claims): the daemon writes only a name it parsed, so such a
+// value is a row somebody edited, and read as none it would send the roles of a gone pod to the
+// issue branch at origin, which is not where their work is.
+func roundRepositoryOf(repository, written, round string) (ghrepo.Repository, error) {
+	if repository == "" || written != round {
+		return ghrepo.Repository{}, nil
+	}
+	return ghrepo.Parse("its update round's repository", repository)
 }
 
 // storedResume is pending_task_deliveries.resume (20261112215432_delivery_resume): the wait a

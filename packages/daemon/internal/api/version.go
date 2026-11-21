@@ -3018,9 +3018,10 @@ package api
 //
 // The daemon ships four store migrations with it.
 // `20261112012123_issue_repository_correction.up.sql` adds the four `issues` columns the keys are
-// read from, `workspace_bundles.repo`, the third restore outcome `refused_repository`, and the
-// table `workspace_bundles_refused` a bundle of that outcome is moved to. An older daemon binary
-// put back on this schema writes none of them and reads none of them, and it carries the
+// read from, `workspace_bundles.repo`, the third restore outcome `refused_repository`, the table
+// `workspace_bundles_refused` a bundle of that outcome is moved to, and the two `claims` columns
+// of the repository an update round's pod was built from, which no route serves. An older daemon
+// binary put back on this schema writes none of them and reads none of them, and it carries the
 // write-once guard this change removes, so it refuses a corrected repository as it always did
 // while a correction this release applied stands.
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held

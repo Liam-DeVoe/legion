@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -262,19 +263,22 @@ type StallBackstop struct {
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
-// (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
+// (Claim.UpdateRound), Reasons the drift the daemon read of the pod it runs in, and Repository
+// the repository that pod was built from where the issue's record has left it
+// (Claim.UpdateRepository), the zero Repository on every other round.
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
-// so the action is idempotent: the first post of a round records the round, its reasons and its
-// clock, and each later post of the same round changes nothing. The round's terms are fixed when
-// it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
-// (Machine.PublishUpdateAsk).
+// so the action is idempotent: the first post of a round records the round, its reasons, its
+// repository and its clock, and each later post of the same round changes nothing. The round's
+// terms are fixed when it opens, so the ask a role reads and the record an operator reads name
+// the same reasons. The machine asks the role nothing: the sweep enqueues the round's ask to the
+// role's own Envoy topic (record.UpdateAsk), and the outbox marks it on the claim once it reached
+// a session (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
-	Claim   claim.Token
-	Round   string
-	Reasons string
+	Claim      claim.Token
+	Round      string
+	Reasons    string
+	Repository ghrepo.Repository
 }
 
 // UpdateTask is the text a pod's update round asks each role with. round is the round, which the
@@ -3005,8 +3009,9 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // and the reasons the post carries, as the store keeps them, as every event's text is (Handle: the
 // reasons quote what the runtime read of the pod, so the claim the operator's answers read holds
 // the reasons the store holds), and clears what an earlier round left: the ask it published, the
-// signal it got, the head that signal reported, and the notice it wrote. The same round again
-// changes nothing, its reasons included: the round's terms are fixed when it opens
+// signal it got, the head that signal reported, and the notice it wrote. The repository the post
+// carries is recorded beside the reasons (Claim.UpdateRepository). The same round again changes
+// nothing, its reasons and its repository included: the round's terms are fixed when it opens
 // (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
@@ -3046,6 +3051,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
+	m.claim.UpdateRepository = open.Repository
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -3258,6 +3264,7 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 // restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
+	m.claim.UpdateRepository = ghrepo.Repository{}
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
 	m.claim.UpdateLeftRound = ""
