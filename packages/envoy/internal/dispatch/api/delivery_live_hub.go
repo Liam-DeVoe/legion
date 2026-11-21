@@ -293,16 +293,21 @@ func (deliveryHubClock) At(at time.Time, f func()) hubTimer {
 type deliveryView struct {
 	spec deliveryLiveSpec
 	subs map[*deliverySub]struct{}
-	// dirty is set when a change can have moved the view's answer; immediate when a sub waits for
-	// its first answer, which no quiet delays. firstDirty and lastDirty time the coalescing, and
-	// notBefore holds a failed read's retry back. A recompute clears dirty and immediate once its
-	// read holds its change position (deliveryHub.read), not when it begins: whatever marked the
-	// view until then was committed before the reads that follow, which answer it.
+	// dirty is set when a change can have moved the view's answer; immediate when the mark waits
+	// for no quiet: a sub waits for its first answer, or a settings rewrite's day rows arrived
+	// (markDirtyLocked). firstDirty and lastDirty time the coalescing, and notBefore holds a failed
+	// read's retry back. A recompute clears dirty and immediate once its read holds its change
+	// position (deliveryHub.read), not when it begins: whatever marked the view until then was
+	// committed before the reads that follow, which answer it.
 	dirty, immediate      bool
 	firstDirty, lastDirty time.Time
 	notBefore             time.Time
 	cause                 string
 	computing             bool
+	// settingsAt is when a change of the delivery settings row last marked an evals view, whose
+	// refresher rewrite may follow; the next eval_days change that marks the view clears it
+	// (markChangesLocked).
+	settingsAt time.Time
 	// reading is set once recompute's read holds its change position and takes the view's marks
 	// over, and until it installs that read's answer. heardIssues and heardSessions record what
 	// the events applied meanwhile acted on (applyEventLocked): each issue with whether it was a
@@ -396,9 +401,19 @@ type deliveryHubNote struct {
 
 const (
 	// A dirty view is recomputed once no change has marked it for viewQuiet, or viewMaxWait after
-	// the first did, whichever comes first.
+	// the first did, whichever comes first, but for a mark that waits for no quiet
+	// (markDirtyLocked).
 	viewQuiet   = 250 * time.Millisecond
 	viewMaxWait = 2 * time.Second
+	// settingsRewriteWithin is how long after a change of the delivery settings row marks an evals
+	// view an eval_days change of the view's project is still taken as the refresher's rewrite of
+	// what the settings moved, and recomputed at once (markChangesLocked). A whole rewrite commits
+	// 1.2-3.1 s after the settings write at ten times INFRA's size on the farm, well inside it. A
+	// settings change that moves no day row (a job name no run holds, a move of the deploy
+	// repository) leaves a record that the next day write inside the bound takes, which is then
+	// recomputed at once too, or that lapses here, so no day write much later is taken for its
+	// rewrite.
+	settingsRewriteWithin = 30 * time.Second
 	// deliveryLiveRetry is how long a view whose read failed waits before the next.
 	deliveryLiveRetry = 5 * time.Second
 	// deliveryLivePage is how many changes one catch-up read takes.
@@ -407,9 +422,10 @@ const (
 	// names them stale: freshness.ts's three missed five-minute intervals.
 	deliveryStaleAfter = 3 * delivery.ReconcileInterval
 
-	deliveryCauseSubscribe = "subscribe"
-	deliveryCauseChange    = "change"
-	deliveryCauseExpiry    = "expiry"
+	deliveryCauseSubscribe       = "subscribe"
+	deliveryCauseChange          = "change"
+	deliveryCauseSettingsRewrite = "settings-rewrite"
+	deliveryCauseExpiry          = "expiry"
 )
 
 // deliveryLivePresets are the preset windows a page offers, in days.

@@ -216,13 +216,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 		}
 		now := h.clock.Now()
 		h.mu.Lock()
-		for _, change := range changes {
-			for _, view := range g.views {
-				if change.Seq > max(view.seq, view.readingSeq) && view.touchedBy(change, now) {
-					h.markDirtyLocked(g, view, now, deliveryCauseChange)
-				}
-			}
-		}
+		h.markChangesLocked(g, changes, now)
 		g.change = g.change.Through(changes, deliveryLivePage, checked)
 		h.mu.Unlock()
 		if len(changes) < deliveryLivePage {
@@ -369,17 +363,63 @@ func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
 	}
 }
 
-// markDirtyLocked marks view for a recompute and wakes g's worker. A subscribe's mark waits for no
-// quiet.
+// markChangesLocked marks, for each change, the views it can touch (touchedBy) whose answer does
+// not already hold it: a change at or before a view's last answer, or the position of the read
+// under way, marks nothing.
+//
+// A change of the delivery settings row that marks an evals view is recorded on it (settingsAt),
+// and the first eval_days change of the view's project that marks it after that, inside
+// settingsRewriteWithin, is taken for the refresher's rewrite of what the settings moved: its mark
+// waits for no quiet (deliveryCauseSettingsRewrite, markDirtyLocked). That change takes the
+// record, inside the bound or not. The rewrite's other changes come in the same drain, since the
+// rewrite is one transaction, and the recompute the first one made due answers them; a day write
+// after them waits the quiet, as any change does.
+func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) {
+	for _, change := range changes {
+		for _, view := range g.views {
+			if change.Seq <= max(view.seq, view.readingSeq) || !view.touchedBy(change, now) {
+				continue
+			}
+			cause := deliveryCauseChange
+			switch {
+			case view.spec.kind == evalsView && settingsRowChange(change):
+				view.settingsAt = now
+			case change.Kind == delivery.ChangeKindEvalDays && !view.settingsAt.IsZero():
+				if !now.After(view.settingsAt.Add(settingsRewriteWithin)) {
+					cause = deliveryCauseSettingsRewrite
+				}
+				view.settingsAt = time.Time{}
+			}
+			h.markDirtyLocked(g, view, now, cause)
+		}
+	}
+}
+
+// markDirtyLocked marks view for a recompute and wakes g's worker. Marks coalesce on the view
+// whatever their cause, so one recompute answers every mark made before its read takes them over
+// (deliveryHub.read). Two marks wait for no quiet (immediate): a subscribe's, whose sub waits for
+// its first answer, and a settings rewrite's (markChangesLocked). The quiet gathers a burst of
+// changes into one recompute, and a rewrite has no burst left to gather, since the refresher
+// writes every eval's rows of it in one transaction, whose changes arrive in one drain. Its page
+// has meanwhile waited for the pass itself: at ten times INFRA's size on c3d nodes the pass
+// commits 1.2-1.7 s after the settings write, and a quiet of 250 ms after it, with a recompute of
+// about 40 ms, brought a change of production_job_names to the page in 1.49-1.93 s, against the
+// 2 s R14 bounds it to.
 func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, cause string) {
 	if !view.dirty {
 		view.dirty, view.firstDirty, view.cause = true, now, cause
 	}
 	view.lastDirty = now
-	if cause == deliveryCauseSubscribe {
+	if cause == deliveryCauseSubscribe || cause == deliveryCauseSettingsRewrite {
 		view.immediate, view.cause = true, cause
 	}
 	signal(g.wakeWork)
+}
+
+// settingsRowChange is whether change is one of the delivery settings row: a settings change that
+// names no repository, where one that names a repository is a change of its mapping.
+func settingsRowChange(change delivery.Change) bool {
+	return change.Kind == delivery.ChangeKindSettings && change.Repo == ""
 }
 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
@@ -392,13 +432,18 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // measures and the Pipeline read the current versions of the evals that judge or rank their
 // figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
-	// A change of the delivery settings row (a settings change that names no repository) can move
-	// the deploy repository, whose rows of the evals that read it an evals view reads
-	// (evals.DeployRepoOf), and a move of it writes no day row, so no eval_days change follows it:
-	// the change itself marks every evals view, and a recompute that reads the same figures sends
-	// nothing. A change of a repository's mapping begins the delivery walk again, whose eval_days
-	// changes mark the views.
-	if view.spec.kind == evalsView && change.Kind == delivery.ChangeKindSettings && change.Repo == "" {
+	// A change of the delivery settings row can move the deploy repository, whose rows of the
+	// evals that read it an evals view reads (evals.DeployRepoOf), and a move of it writes no day
+	// row, so no eval_days change follows it: the change itself marks every evals view, and a
+	// recompute that reads the same figures sends nothing. A change of a judged name
+	// (production_job_names and its kin) is answered instead by the refresher's rewrite of the
+	// days it moved, one transaction whose eval_days changes arrive together 1.2-1.7 s after the
+	// settings write at ten times INFRA's size, after this mark's own recompute has read the old
+	// figures: so the mark is recorded on the view (markChangesLocked), and the rewrite's first
+	// change recomputes it at once rather than after a second quiet of 250 ms, with which the
+	// change reached the page 1.49-1.93 s after the write, against R14's 2 s. A change of a
+	// repository's mapping begins the delivery walk again, whose eval_days changes mark the views.
+	if view.spec.kind == evalsView && settingsRowChange(change) {
 		return true
 	}
 	switch change.Kind {
