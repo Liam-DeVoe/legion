@@ -504,6 +504,12 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			want:     "oidc https://oidc.eks.example/id/CLUSTER for system:serviceaccount:dispatch:envoy-broker, system:serviceaccount:dispatch:dispatch",
 		},
 		{
+			// A made-up user name and password in ENVOY_OIDC_ISSUER: the line holds neither.
+			name:   "an issuer with userinfo is not printed",
+			issuer: "https://madeUpIssuerUser0123:" + "madeUpIssuerPassword0123@oidc.eks.example/id/CLUSTER",
+			want:   "oidc " + redact.NotPrinted,
+		},
+		{
 			name:   "Google identities name their audience and accounts",
 			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
 			want:   "google https://listener.example for example-sink@example-project.iam.gserviceaccount.com",
@@ -515,7 +521,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 				AccountTokenFile: "/var/run/secrets/broker/token",
 				Origin:           "https://listener.example",
 			}),
-			want: "broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
+			want: "broker tokens at https://broker.example as the projected token ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names",
+		},
+		{
+			// A made-up token pasted where the token file's path goes: the line names the setting.
+			name: "a token pasted as the projected token's path is not printed",
+			brokers: newBrokerTokens(listenerBrokerConfig{
+				BrokerURL:        "https://broker.example",
+				AccountTokenFile: "madeUpPastedAccountToken0123456789",
+				Origin:           "https://listener.example",
+			}),
+			want: "broker tokens at https://broker.example as the projected token ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names",
 		},
 		{
 			name: "a listener on a VM names the audience it mints its machine identity for",
@@ -546,7 +562,7 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 				AccountTokenFile: "/var/run/secrets/broker/token",
 				Origin:           "https://listener.example",
 			}),
-			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
+			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as the projected token ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names",
 		},
 		{
 			name:   "every credential names itself, the bearers first",

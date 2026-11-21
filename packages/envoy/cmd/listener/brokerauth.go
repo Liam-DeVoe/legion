@@ -200,14 +200,15 @@ func (b *brokerTokens) retryAfter() int {
 }
 
 // describeBrokerTokens names this credential for the boot line: the broker it asks, through
-// redact.URL, and the identity it asks as, and nothing of either credential's bytes.
+// redact.URL, and the identity it asks as, the token file by the setting that names it, and nothing
+// of either credential's bytes or of the file's path, where a token pasted in its place would be.
 func (b *brokerTokens) describe() string {
 	if b == nil {
 		return ""
 	}
 	identity := "google audience " + b.config.GoogleAudience
 	if b.config.AccountTokenFile != "" {
-		identity = "projected token " + b.config.AccountTokenFile
+		identity = "the projected token " + EnvBrokerAccountTokenFile + " names"
 	}
 	return "broker tokens at " + redact.URL(b.config.BrokerURL) + " as " + identity
 }
