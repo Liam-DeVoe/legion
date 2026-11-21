@@ -390,6 +390,14 @@ Each item below names a script, then what it proves.
   a step write that names another session is refused `403 STEP_WRITER`, and the same body as the daemon's own session is taken.
   No GitHub, no cluster
 
+- `agents.sh`
+
+  one key of an owner's plan is one agent in one session across roles (slice 6a), driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two issues whose owners give their plans:
+  `implementer:a tester:a reviewer` runs steps 1 and 2 in one agent and one session, the tester's step and the retro each a relaunch of the implementer's claim that resumes its session, and step 3 in another;
+  `dispatch steps --issue <KEY>`, run as a person with their personal token, prints the same agents the records name;
+  the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own.
+  No GitHub, no cluster
+
 - `step-records-read.sh`
 
   the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
@@ -5089,6 +5097,47 @@ the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in
 the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
 and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
 `STEP_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## agents.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/agents.sh     # → "agents e2e: PASS in <n>s", exit 0
+```
+
+The live proof that one key of an owner's plan is one agent in one session across roles (slice 6a), run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestAgentsLive` (`internal/daemon/agents_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the key's path is stood in for.
+The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`OS<6 hex>`), maps `acme/widgets` to it, and creates two issues, each in progress with the `legion` label and a spec.
+It seeds each issue in the daemon's store at `admitted` with no design gate, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server.
+Each issue's architect writes its plan on the issue and gives it to Legion (`POST /legion/v1/plans/register`), a person approves the spec, and the architect registers it as the gate (`POST /legion/v1/gates/register`).
+The issue then walks as the package's whole-daemon test of a key walks it (`walkOneKey`, `internal/daemon/agents_test.go`):
+each role over the daemon's worker stream and its own routes, and each relaunch of a claim on another role met by its pane registering again in the session its claim recorded (`relaunchedAs`), as the plugin does.
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts steps --issue <KEY>`), run as a person's own shell runs it, with the personal token Dispatch minted for the person who set the project up.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `one-key-two-roles` | the plan `implementer:a tester:a reviewer`; the implementer's completion; the tester's step, a relaunch of `…-implementer` with the role tester that resumes its session file, its task naming `Step 1 (implementer:a) reported:`; a person's approving review; the retro, a relaunch of `…-implementer` with its first role; GitHub's merge | the step records of steps 1 and 2 naming the agent `…-implementer` and one session, and step 3 `…-reviewer` in a session of its own; `dispatch steps --issue <KEY>` printing those same agents |
+| `control-no-key-on-step-2` | the plan `implementer:a tester reviewer`, walked the same way, with `…-implementer` launched once | step 2's record naming `…-tester` in a session of its own, and `dispatch steps` printing it |
+
+What the proof stands in for lies outside the key:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the one pull request;
+the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
+`AGENTS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## step-records-read.sh
 
