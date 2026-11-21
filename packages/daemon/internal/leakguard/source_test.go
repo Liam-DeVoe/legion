@@ -537,7 +537,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 // the machine can take it and answer the redirect, as one can take a port a test lets go of.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := testport.Refused(t)
-	const download = "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + theTag
+	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
 	for _, tc := range []struct {
 		name, redirect string
 		// transport is what Go's client writes of the credential into the read's own error.
