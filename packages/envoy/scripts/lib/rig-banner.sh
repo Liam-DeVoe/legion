@@ -13,6 +13,12 @@
 # export line is read as the shell that sources it reads it: evaluated, in a subshell, rather than
 # cut at its "=".
 #
+# What this does not close: a process that prints a whole fake block, the banner's exact first
+# line, its exports and the banner's exact last line, before the rig prints its own banner. A reader
+# that reads between the fake block's last line and the real banner's first sees one whole block,
+# the fake one, and reads it; once the real banner is written, the log holds the first line twice
+# and is refused.
+#
 # The callers: callout-check.sh, project-secrets-check.sh and scripts/e2e/nats-callout-sessions.sh
 # read dev-stack.sh's banner; airlock-check.sh, judge-check.sh and dev-airlock-lease.test.sh read
 # dev-broker.sh's and then dev-airlock.sh's; github-narrowing-check.sh and dev-airlock.sh read
