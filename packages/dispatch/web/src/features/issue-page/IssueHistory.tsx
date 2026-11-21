@@ -9,6 +9,7 @@ import { Link, useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
+import { issueResultsQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {
@@ -30,6 +31,7 @@ import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
 import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -40,9 +42,11 @@ import { DetailsErrorLine } from "./details-error";
 import { HistoryHandoff } from "./HistoryHandoff";
 import {
   buildHistory,
+  type HistoryBlock,
   type HistoryDay,
   type HistoryEntry,
   type HistoryTurn,
+  historyBlocks,
 } from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
 import { useOutlineWriter } from "./outline-writer";
@@ -168,6 +172,19 @@ export function IssueHistory({
   });
   const issueState = stateForIssue(state, issueKey);
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);
+  // Whether the log holds a refused check's line, the one line that names a check's block.
+  const refusesCheck = events.some(
+    (event) => event.type === "block.invalid" && event.payload.block_type === "check"
+  );
+  // The outline's own read of the issue's checks, under its key and with its options
+  // (`useIssueTree.ts`), so the cache answers it wherever the outline has read it: a refused
+  // check's line names the check's block by the check's words instead of its id
+  // (`historyBlocks`). A history that holds no such line sends no read of it.
+  const results = useQuery({
+    ...issueResultsQuery(issueKey),
+    ...EVENT_FRESH,
+    enabled: refusesCheck,
+  });
   // When the oldest event read so far was made, while older pages remain: a thread that began
   // before it waits for its page (`HistoryInput.loadedFrom`).
   const older = log.hasNextPage;
@@ -184,31 +201,38 @@ export function IssueHistory({
   // The day the reader is in, read every render so a midnight rollover moves the `Today` label;
   // the model is rebuilt only when one of its reads changes.
   const today = dateKey(new Date().toISOString());
-  const days = useMemo(
-    () =>
-      buildHistory({
-        artifacts: issue.artifacts ?? [],
-        // The outline's own ask input (`tree-drafts.ts`), so no turn is in both or neither.
-        asks: [...(issue.open_asks ?? []), ...(asks.data ?? [])],
-        comments: comments.data,
-        events,
-        lastReadSeq: visitMark,
-        ...(loadedFrom === undefined ? {} : { loadedFrom }),
-        messages: messages.data,
-        today,
-      }),
-    [
-      asks.data,
-      comments.data,
+  const days = useMemo(() => {
+    // The outline's own ask input (`tree-drafts.ts`), so no turn is in both or neither.
+    const issueAsks = [...(issue.open_asks ?? []), ...(asks.data ?? [])];
+    // The blocks are known once every read they come from has answered: the asks read, and the
+    // results read where a line names a check's block. A read that failed before it answered
+    // holds no answer, so until it does no line says that a block is gone.
+    const answered = asks.data !== undefined && (!refusesCheck || results.data !== undefined);
+    return buildHistory({
+      artifacts: issue.artifacts ?? [],
+      asks: issueAsks,
+      blocks: answered ? historyBlocks(issueKey, issueAsks, results.data?.checks ?? []) : undefined,
+      comments: comments.data,
       events,
-      issue.artifacts,
-      issue.open_asks,
-      loadedFrom,
-      messages.data,
+      lastReadSeq: visitMark,
+      ...(loadedFrom === undefined ? {} : { loadedFrom }),
+      messages: messages.data,
       today,
-      visitMark,
-    ]
-  );
+    });
+  }, [
+    asks.data,
+    comments.data,
+    events,
+    issue.artifacts,
+    issue.open_asks,
+    issueKey,
+    loadedFrom,
+    messages.data,
+    refusesCheck,
+    results.data,
+    today,
+    visitMark,
+  ]);
   // The key each run of uploads is drawn under, held from one render to the next by its files'
   // uploads (`runKeys`), so a run a newer upload joins is drawn on, not drawn anew, and so is the
   // newer part of a run that upload splits.
@@ -733,11 +757,14 @@ function Entry({
         <span className="min-w-40 flex-1 break-words">
           {head}
           {/* `main`'s line links a document's name in the application's link blue, which
-              Details draws in no line: those two lines are the history's own. */}
+              Details draws in no line: those two lines are the history's own. So is a line that
+              names a block by its node's words, where `main`'s names it by its id. */}
           {entry.event.type === "artifact.created" || entry.event.type === "artifact.renamed" ? (
             <DocumentLine artifact={entry.event.payload.artifact} description={entry.description} />
-          ) : (
+          ) : entry.block === undefined ? (
             <ActivityLine description={entry.description} event={entry.event} issueKey={issueKey} />
+          ) : (
+            <BlockLine block={entry.block} description={entry.description} />
           )}
         </span>
         <PinButton
@@ -858,6 +885,40 @@ function DocumentLine({
             </>
           );
         }}
+      />
+    </span>
+  );
+}
+
+/** The line of a block repaired or found invalid that names the block by its node's words
+ *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's a
+ *  link to its node in the page's ink and its rows' underline, where its address reads as one. */
+function BlockLine({
+  block,
+  description,
+}: {
+  block: HistoryBlock;
+  description: readonly AgentPart[];
+}): ReactNode {
+  const { path, words } = block;
+  const linked = path === undefined ? -1 : description.lastIndexOf(words);
+  return (
+    <span>
+      <AgentParts
+        parts={description}
+        text={(part, index) =>
+          index !== linked || path === undefined ? (
+            part
+          ) : (
+            <Link
+              className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
+              to={path}
+              {...authorText}
+            >
+              {part}
+            </Link>
+          )
+        }
       />
     </span>
   );

@@ -975,6 +975,10 @@ export const CONTROL_LABELS = freeze({
    *  written out in the reader's locale (`dayLabel`). */
   history_today: "Today",
   history_yesterday: "Yesterday",
+  /** What a line of the history calls a block it names by a UUID that no node of the issue
+   *  carries now, in place of that id and the word before it (`history-model.ts`): an id is no
+   *  name, so the line says what the block is rather than which one. */
+  history_gone_block: "a block that is gone",
   /** Details' list of the runs Legion made of the issue's steps, under the history
    *  (`DetailsSteps.tsx`), where today's page has a Steps tab: its heading, which its count of
    *  runs follows, "Steps (4)"; the heading of each task's runs, before the task's own name,

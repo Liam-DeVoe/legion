@@ -2,6 +2,7 @@ import type {
   Actor,
   Artifact,
   Ask,
+  CheckBlock,
   Comment,
   CommentWithTrees,
   DispatchEvent,
@@ -12,9 +13,15 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { activityDescription, dateKey, dayLabel } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
-import { sessionOfAddress } from "../refs/routes";
+import {
+  buildIssuePath,
+  buildReferencePath,
+  parseNodeReference,
+  sessionOfAddress,
+} from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
-import { CONTROL_LABELS, issueStatusWord } from "./page-words";
+import { drawnLine, firstLineOf } from "./issue-tree";
+import { CONTROL_LABELS, issueStatusWord, NODE_TYPE_NAMES } from "./page-words";
 import { plainWords } from "./tree-drafts";
 
 /**
@@ -64,9 +71,13 @@ export type HistoryEntry =
       readonly id: string;
       readonly at: string;
       readonly author: Actor;
-      /** `main`'s line of the event, in the page's words where it names a delivery's agent or
-       *  a status (`historyLine`). */
+      /** `main`'s line of the event, in the page's words where it names a delivery's agent, a
+       *  status or a block (`historyLine`). */
       readonly description: AgentPart[];
+      /** The block the line names by its node's words, where it names one (`historyLine`):
+       *  those words are a part of `description` of their own, which the panel draws as a link
+       *  to the node. */
+      readonly block?: HistoryBlock;
       readonly event: DispatchEvent;
       readonly seq: number;
     }
@@ -100,12 +111,26 @@ export interface UploadedFile {
   readonly slug: string | undefined;
 }
 
+/** A block a line of the history names (`HistoryInput.blocks`): the first line of its node's
+ *  words, as the page draws one line for a node, and the address of that node, where its address
+ *  reads as one. */
+export interface HistoryBlock {
+  readonly path: string | undefined;
+  readonly words: string;
+}
+
 export interface HistoryInput {
   readonly artifacts: readonly Artifact[];
   /** The issue's asks, which tell a reply under a question, the outline's, from one under an
    *  approval request (`agents-only.ts`): the outline's own input, the issue's open asks and the
    *  asks read (`tree-drafts.ts`). */
   readonly asks: readonly Pick<Ask, "id" | "kind">[];
+  /** The blocks the issue's nodes carry, by block id (`historyBlocks`), or undefined while a read
+   *  they come from has not answered. A line that names a block by a UUID names it by its node's
+   *  words instead; where no node here carries that block, by the page's words for a block that
+   *  is gone; and while the blocks are not known, by `main`'s word for the block alone, since
+   *  whether it is gone is not known yet (`historyLine`). */
+  readonly blocks: ReadonlyMap<string, HistoryBlock> | undefined;
   readonly comments: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[] | undefined;
   readonly events: readonly DispatchEvent[];
   /** `user_issue_state.last_read_seq`: the reader's read mark. */
@@ -124,6 +149,48 @@ export interface HistoryInput {
 /** How long before a run's newest upload its author's other uploads may have been made and
  *  still be of that run: the run's minute is counted back from its newest upload alone. */
 const UPLOAD_RUN_MS = 60_000;
+
+/** A block id that is a UUID, which no reader names a block by. A block id that reads as words,
+ *  a slug such as `c-units`, is a name its author chose, and a line keeps it. */
+const UUID_BLOCK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+/**
+ * The blocks the issue's nodes carry, by block id, as the history names them (`HistoryBlock`).
+ * Each ask's typed block is named by its question's plain words, as the outline names a question
+ * (`plainWords`), at the ask's own address, which puts the focus on its row. Each check of the
+ * results read is named by its words, at the address its `ref` reads as, as Details' references
+ * link a node (`NodeReferences.tsx`). The words are cut to the one line the page draws for a
+ * node (`firstLineOf`, `drawnLine`), and a node with no words is named by its kind's word.
+ */
+export function historyBlocks(
+  issueKey: string,
+  asks: readonly Pick<Ask, "block_id" | "id" | "question">[],
+  checks: readonly Pick<CheckBlock, "block_id" | "ref" | "text">[]
+): ReadonlyMap<string, HistoryBlock> {
+  const blocks = new Map<string, HistoryBlock>();
+  for (const check of checks) {
+    const route = parseNodeReference(check.ref);
+    blocks.set(check.block_id, {
+      path: route === undefined ? undefined : buildReferencePath(route),
+      words: nodeLine(check.text, check, NODE_TYPE_NAMES.check),
+    });
+  }
+  for (const ask of asks) {
+    if (ask.block_id === null) continue;
+    blocks.set(ask.block_id, {
+      path: buildIssuePath({ id: ask.id, key: issueKey, kind: "ask" }),
+      words: nodeLine(ask.question, ask, NODE_TYPE_NAMES.ask),
+    });
+  }
+  return blocks;
+}
+
+/** The first line of the stored text `text`, which `holder` holds, as the page draws one line
+ *  for a node, or `kind`, the page's word for the node's kind, where the text holds no words. */
+function nodeLine(text: string, holder: object, kind: string): string {
+  const first = firstLineOf(plainWords(text, holder));
+  return first.line === "" ? kind : drawnLine(first);
+}
 
 /** The event types of a row the outline draws, which the history leaves out. A comment's and a
  *  message's are left out where the outline draws that comment or message - one a person took
@@ -196,10 +263,12 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
       uploads.push({ event, file: upload });
       continue;
     }
+    const block = namedBlock(event, input.blocks);
     entries.push({
       at: event.created_at,
       author: event.actor,
-      description: historyLine(event, previousStatus),
+      ...(block === undefined ? {} : { block }),
+      description: historyLine(event, previousStatus, input.blocks),
       event,
       id: `event:${event.id}`,
       kind: "event",
@@ -379,13 +448,19 @@ function threadEntry(
  * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
  * line names by a token in the page's words, as an address is no name: a delivery's target by
  * the agent it went to, never its address or
- * `session:<id>`; the status a reopened issue went into by its word; and a stored text it
+ * `session:<id>`; the status a reopened issue went into by its word; a stored text it
  * quotes, an approval request's question or the reason it was resolved with, by its plain words,
  * as the outline names an ask (`plainWords`), never the markup its author typed or a
- * bare `dispatch://` address, which reads as its short form. Every other text a line of the
- * history holds is a name, a key or the server's own words, none of which is markdown.
+ * bare `dispatch://` address, which reads as its short form; and a block it names by a UUID by
+ * the words of the node that carries it, from `blocks`, never by that id (`withBlock`). Every
+ * other text a line of the history holds is a name, a key or the server's own words, none of
+ * which is markdown.
  */
-function historyLine(event: DispatchEvent, previousStatus: string | undefined): AgentPart[] {
+function historyLine(
+  event: DispatchEvent,
+  previousStatus: string | undefined,
+  blocks: ReadonlyMap<string, HistoryBlock> | undefined
+): AgentPart[] {
   const line = activityDescription(event, previousStatus);
   switch (event.type) {
     case "comment.delivery":
@@ -420,20 +495,35 @@ function historyLine(event: DispatchEvent, previousStatus: string | undefined): 
       return withWords(line, event.payload.question);
     case "ask.resolved":
       return withWords(line, askResolutionReason(event.payload.resolution));
+    // `main`'s line names a block by its id after its word for the block: a question's block is
+    // a decision there, and a check's block a check.
+    case "block.repaired":
+      return withBlock(line, "block", event.payload.block_id, blocks);
+    case "block.invalid":
+      return withBlock(
+        line,
+        event.payload.block_type === "check" ? "check" : "decision",
+        event.payload.block_id,
+        blocks
+      );
     default:
       return line;
   }
 }
 
-/** `line` with each reading of `token` in its text, the last of each part, drawn as `part`. */
-function withPart(line: AgentPart[], token: string | undefined, part: AgentPart): AgentPart[] {
+/** `line` with each reading of `token` in its text, the last of each part, drawn as `parts`. */
+function withPart(
+  line: AgentPart[],
+  token: string | undefined,
+  ...parts: AgentPart[]
+): AgentPart[] {
   if (token === undefined || token === "") return line;
   return line.flatMap((piece) => {
     if (typeof piece !== "string") return [piece];
     const at = piece.lastIndexOf(token);
     return at < 0
       ? [piece]
-      : [piece.slice(0, at), part, piece.slice(at + token.length)].filter((one) => one !== "");
+      : [piece.slice(0, at), ...parts, piece.slice(at + token.length)].filter((one) => one !== "");
   });
 }
 
@@ -442,6 +532,40 @@ function withWords(line: AgentPart[], stored: string | undefined): AgentPart[] {
   if (stored === undefined) return line;
   const words = plainWords(stored);
   return words === stored ? line : withPart(line, stored, words);
+}
+
+/** `line` with its mention of the block `id`, which is `noun`, `main`'s word for the block, then
+ *  the id, in the page's words where the id is a UUID (`UUID_BLOCK_ID`): that word and the words
+ *  of the node that carries the block, in quotes as `main` quotes a question, where a node of the
+ *  issue carries it (`blocks`); the page's words for a block that is gone where none does; and
+ *  that word alone after "a", as in "a block", while the blocks are not known, since whether the
+ *  block is gone is not known then either. A block id that reads as words stays as `main`
+ *  writes it. */
+function withBlock(
+  line: AgentPart[],
+  noun: string,
+  id: string,
+  blocks: ReadonlyMap<string, HistoryBlock> | undefined
+): AgentPart[] {
+  if (!UUID_BLOCK_ID.test(id)) return line;
+  const mention = `${noun} ${id}`;
+  if (blocks === undefined) return withPart(line, mention, `a ${noun}`);
+  const block = blocks.get(id);
+  return block === undefined
+    ? withPart(line, mention, CONTROL_LABELS.history_gone_block)
+    : withPart(line, mention, `${noun} “`, block.words, "”");
+}
+
+/** The block `event`'s line names by its node's words (`withBlock`): a block repaired, or one
+ *  settlement found invalid, whose id is a UUID that a node of the issue carries. */
+function namedBlock(
+  event: DispatchEvent,
+  blocks: ReadonlyMap<string, HistoryBlock> | undefined
+): HistoryBlock | undefined {
+  if (blocks === undefined) return undefined;
+  if (event.type !== "block.repaired" && event.type !== "block.invalid") return undefined;
+  const id = event.payload.block_id;
+  return UUID_BLOCK_ID.test(id) ? blocks.get(id) : undefined;
 }
 
 /** Who a delivery went to, as the page names an agent (`AgentName`): the session the attempt
