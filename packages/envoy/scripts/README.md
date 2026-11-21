@@ -532,8 +532,9 @@ splits into legs: the package's test binary, built under the run's own flags, li
 pattern selects (`-test.list`), and only the `EXPECTED_SKIPS` lines of those tests excuse a skip
 and must be in the report, so each leg is held to the expected skips of the tests it ran. A line
 whose test the binary does not list at all, and a test the report shows run that the pattern
-does not select, are UNKNOWN, and a pattern holding a `/` or a run of more than one package is
-refused. It prints, on stderr, the expected skips the pattern selects. `--report` reads a
+does not select, are UNKNOWN. A pattern holding a `/`, or a `|` outside brackets and parentheses
+(go test `-run` splits a pattern at either and `-test.list` does not), and a run of more than one
+package are refused. It prints, on stderr, the expected skips the pattern selects. `--report` reads a
 `go test -json` report instead and runs nothing, and refuses the four options that shape a run;
 `--run` may stand beside it, its binary built under `GOFLAGS` alone.
 

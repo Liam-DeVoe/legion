@@ -35,9 +35,10 @@
 # renamed test leaves no line that no leg is held to; with go-test-shards.py's proof that the legs'
 # patterns select every listed test exactly once, every line is held by exactly one leg. A test
 # the report shows run that the listing does not select fails it too, since go test -run and
-# -test.list then read the pattern apart. It takes one package, and a pattern with no `/`, at
-# which go test -run splits a pattern and -test.list does not. It prints, on stderr, which
-# EXPECTED_SKIPS tests the pattern selects.
+# -test.list then read the pattern apart. It takes one package, and a pattern with no `/` and no
+# `|` outside brackets and parentheses: go test -run splits a pattern at each and -test.list does
+# not, so the two would read it apart (a shard's `^(A|B|…)$` holds its `|` inside its
+# parentheses). It prints, on stderr, which EXPECTED_SKIPS tests the pattern selects.
 # `--report FILE` reads FILE instead and runs nothing, which the controls use; the four options
 # that shape a run are refused beside it. `--run PATTERN` may stand beside it: its binary is then
 # built under GOFLAGS alone, so a report made with -race is read with GOFLAGS=-race.
@@ -165,6 +166,25 @@ usage() {
   exit 1
 }
 
+# bar_outside PATTERN: whether PATTERN holds a `|` outside brackets and parentheses, read as
+# testing/match.go's splitRegexp reads a -run: `[` and `]` nest (an unmatched `]` is legal), `(`
+# and `)` count only outside brackets, and a `\` takes the character after it.
+bar_outside() {
+  PATTERN="$1" awk 'BEGIN {
+    s = ENVIRON["PATTERN"]; cs = 0; cp = 0
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (c == "[") cs++
+      else if (c == "]") { if (--cs < 0) cs = 0 }
+      else if (c == "(" && cs == 0) cp++
+      else if (c == ")" && cs == 0) cp--
+      else if (c == "\\") i++
+      else if (c == "|" && cs == 0 && cp == 0) exit 0
+    }
+    exit 1
+  }'
+}
+
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   read -r _ _ reason <<<"$line"
@@ -203,6 +223,8 @@ while [ $# -gt 0 ]; do
       case "$2" in
         */*) usage "--run takes a pattern of top-level tests, with no /: go test -run splits a pattern at each /, and -test.list, which says what the pattern selects, does not" ;;
       esac
+      ! bar_outside "$2" ||
+        usage "--run takes a pattern with no | outside brackets and parentheses: go test -run splits a pattern at such a |, and -test.list, which says what the pattern selects, does not"
       run="$2"
       shift 2
       ;;

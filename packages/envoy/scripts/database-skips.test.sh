@@ -40,8 +40,9 @@
 #      is UNKNOWN read as the whole package's, naming a test of the other half; that report less one
 #      selected expected skip is UNKNOWN naming it, and one holding a test the pattern does not
 #      select is UNKNOWN naming that; a copy of the counter whose table names a test the package's
-#      binary does not list fails that report by name; and --run refuses a pattern holding a `/` and
-#      a run of two packages.
+#      binary does not list fails that report by name; and --run refuses a pattern holding a `/`, a
+#      pattern holding a `|` outside brackets and parentheses, and a run of two packages, and reads
+#      a pattern whose `|` stand inside them.
 #
 # Every run but control 6's narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
@@ -412,6 +413,16 @@ count two bash "$COUNTER" --report "$WORK/leg.json" --run "$leg" ./internal/disp
 judge "$([ "$(code slash)" = 1 ] && said slash '--run takes a pattern of top-level tests, with no /' &&
   [ "$(code two)" = 1 ] && said two "--run reads one package's test binary" && echo 0 || echo 1)" \
   "control 6: --run refuses a pattern holding a / and a run of two packages" "slash: $(seen slash); two: $(seen two)"
+# go test -run splits a pattern at a | outside brackets and parentheses and -test.list does not, so
+# such a pattern is refused before anything runs; the leg's own pattern, whose | stand inside its
+# parentheses, is read (the rows above), and so is a | inside brackets.
+count bar bash "$COUNTER" --report "$WORK/leg.json" --run "^$API_ANCHOR\$|^${first%%|*}\$" ./internal/dispatch/api/
+count bracketed bash "$COUNTER" --report "$WORK/leg.json" --run "^($API_ANCHOR|$first)[|]?\$" ./internal/dispatch/api/
+judge "$([ "$(code bar)" = 1 ] && [ "$(out bar)" = '' ] &&
+  said bar '--run takes a pattern with no | outside brackets and parentheses' &&
+  [ "$(code bracketed)" = 0 ] && [ "$(out bracketed)" = 'database_skips=0' ] && echo 0 || echo 1)" \
+  "control 6: --run refuses a pattern holding a | outside brackets and parentheses, and reads one whose | stand inside them" \
+  "bar: $(seen bar); bracketed: $(seen bracketed)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"
