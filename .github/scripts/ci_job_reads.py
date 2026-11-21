@@ -716,8 +716,6 @@ RULES = {
          "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
         ("packages/contracts/src/legion-api.ts",
          "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
-        ("packages/pi-legion/AGENTS.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
         ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
          "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
         ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",

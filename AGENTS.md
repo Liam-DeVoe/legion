@@ -50,11 +50,17 @@ A measurement outranks any line here.
 - A patch in the root `patches/` is keyed to one exact version: when you bump a patched package, redo its patch.
   Bun installs a package whose patch names another version without the patch, prints only a warning and exits 0, even under `--frozen-lockfile`.
 
+- Change nothing under the operator's `~/.omp` (its configuration and installed plugins) from pi-envoy's or pi-legion's code or tests: a test runs Oh My Pi under a HOME of its own (pi-shared's `omp-harness`), and installing a plugin there is a person's step.
+  pi-envoy's smoke scripts are the exception: they run the installed `omp` under the caller's HOME, so their sessions are recorded there.
+
 - Deploys come only from main: a fix a deployment needs merges to `main` and ships in the next release, and no long-lived integration or deployment branch is kept.
 
 ## This repository is public
 
 - No name of the private infrastructure Legion is deployed into (a host, an account id, an IAM role, a token audience, a secret-store id, a bucket or an alert channel) goes in a file, a path, a commit or a pull request: write a placeholder, and make a value a live script needs a required input.
+
+- Name neither the repository Legion is deployed from nor the company that runs it, in a file, a commit, a branch, or pull-request or review text: write "the deployment repository".
+  `.github/scripts/check-private-names.sh` refuses both, but it reads pull-request text only after GitHub shows it.
 
 - A skill, a role prompt and an `AGENTS.md` name no person: write "a person", "the operator" or "the human".
   A login or a path that holds a name is fine.
@@ -68,7 +74,7 @@ A measurement outranks any line here.
 
 - Name a file in a guide by its plain path, never as `@path`: Oh My Pi and Claude Code paste an `@path`'s file into every session started here.
 
-- `bun scripts/semantic-line-breaks.ts <file>` checks a guide's layout and `--write` fixes it; CI runs it on this guide and `packages/envoy/AGENTS.md` only.
+- Run `bun scripts/semantic-line-breaks.ts --write <file>` on each guide you change: CI checks the layout of only some of them.
   Add an item next to the one it belongs with, so two pull requests that edit one guide do not conflict.
 
 ## Tools and documents

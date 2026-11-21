@@ -135,6 +135,25 @@ export const MAX_BROADCAST_RECIPIENTS = 100;
 export const REFERENCE_TARGETS_MAX = 256;
 
 /**
+ * How many blocks a document may open inside one another: a quote, a list, a list item, a typed
+ * block and a footnote definition each count one. Generated into Go as
+ * `contracts.DocumentBlockNestingMax`, past which the document service refuses a document, and
+ * read by the editor's parser (`@legion/proof-editor`'s `maxBlockNesting`), which reads a list or
+ * quote opener past it as the text it is, so a document the service refuses is one the editor
+ * draws as text.
+ */
+export const DOCUMENT_BLOCK_NESTING_MAX = 100;
+
+/**
+ * How many typed blocks a document may open inside one another; each also counts toward
+ * `DOCUMENT_BLOCK_NESTING_MAX`. Generated into Go as `contracts.DocumentTypedBlockNestingMax`, past
+ * which the document service refuses a typed block, and read by the editor's parser
+ * (`@legion/proof-editor`'s `maxDirectiveNesting`), which reads a `:::` opener past it as the text
+ * it is.
+ */
+export const DOCUMENT_TYPED_BLOCK_NESTING_MAX = 32;
+
+/**
  * The request header that names one write's intent: the same on every retry of that write, and
  * different for every new press. Dispatch accepts it, optionally, on every `POST` and `PATCH`
  * route (`PUT` and `DELETE` are idempotent already): a repeat with the same key and the same

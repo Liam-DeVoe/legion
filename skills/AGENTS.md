@@ -20,7 +20,7 @@
 - A fact lives in one skill, and the others link to it.
 
 - Keep each skill file path that code, a prompt or another skill names, or change the namer in the same change.
-  No check reads a `skill://` name in Go or TypeScript source.
+  The skills guards resolve `skill://` names only in skills and daemon prompts, not in Go or TypeScript source.
 
 ## Links and names
 

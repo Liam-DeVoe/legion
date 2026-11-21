@@ -97,7 +97,16 @@ func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
 	listener, ok := servedSchema(t).Resources["envoy-infra:host:Listener"]
 	require.True(t, ok, "the schema lists envoy-infra:host:Listener")
 	require.True(t, listener.IsComponent)
-	require.True(t, listener.InputProperties["seed"].Secret, "seed is a secret input")
+	// The whole input set is pinned with each input's secret flag, as the hubs' are, so an input
+	// cannot reach the schema without this test deciding whether it holds a secret: one that does
+	// and lacks `provider:"secret"` is stored in plain text in state and preview output.
+	require.ElementsMatch(t, []string{
+		"adopt", "containerName", "image", "machineId", "natsUrls", "port", "seed", "senderMessageBurst",
+		"senderMessagesPerMinute", "waitForHealthy", "watchdog",
+	}, slices.Collect(maps.Keys(listener.InputProperties)))
+	for name, in := range listener.InputProperties {
+		require.Equal(t, name == "seed", in.Secret, "only seed is a secret input, not %s", name)
+	}
 
 	// Generated SDKs append Args to an object type's name for its input type, so a type named
 	// WatchdogArgs would reach consumers as WatchdogArgsArgs.
@@ -221,6 +230,31 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	dispatch, ok := s.Resources["envoy-infra:gcp:Dispatch"]
 	require.True(t, ok, "the schema lists envoy-infra:gcp:Dispatch")
 	require.True(t, dispatch.IsComponent)
+	// The whole input set is pinned with each input's secret flag, as the hubs' are, so an input
+	// cannot reach the schema without this test deciding whether it holds a secret: one that does
+	// and lacks `provider:"secret"` is stored in plain text in state and preview output.
+	require.ElementsMatch(t, []string{
+		"agentSecretsAudience", "agentSecretsUrl", "allowedNamespaces", "appClientId", "appCpu",
+		"appEphemeralStorage", "appId", "appMemory", "appPdbMinAvailable", "appPrivateKeySecretKey",
+		"appPrivateKeySecretName", "azureChatApiVersion", "azureChatDeployment", "azureChatEndpoint",
+		"azureChatScope", "azureChatTokensPerMinute", "azureClientId", "azureEmbedDeployment",
+		"azureEmbedEndpoint", "azureEmbedKeySecret", "azureEmbedTokensPerMinute", "azureFederationAudience",
+		"azureTenantId", "chatEndpoint", "chatModel", "chatTokenSecret", "cloudSqlProxyImage", "clusterOnly",
+		"databaseAvailabilityType", "databaseTier", "databaseVersion", "databaseWaitsFor", "deletionProtection",
+		"envoyImage", "existingCluster", "existingDatabaseInstance", "existingNamespace",
+		"frontDoorPdbMinAvailable", "frontDoorReplicas", "frontDoorToolsImage", "hostname", "iapAudience",
+		"listenerPdbMinAvailable", "listenerReplicas", "loadBalancerSourceRanges", "namespace", "natsInCluster",
+		"natsReplicas", "natsSeedSecret", "natsUrl", "networkEndpointGroupName", "oidcAudience", "oidcIssuer",
+		"outsideOrigin", "pprofPort", "priorityClassName", "proxyCpu", "proxyEphemeralStorage", "proxyMemory",
+		"publicOrigin", "region", "regionalNetwork", "replicas", "senderMessageBurst", "senderMessagesPerMinute",
+		"signInClientId", "signInClientSecret", "signInDomain", "signInOutside", "signInPasskey",
+		"signInWorkspaceDomains", "signingKeyGenerations", "streamMaxBytes", "tags", "tailnetAuthKey",
+		"tailnetDnsName", "tailscaleImage",
+	}, slices.Collect(maps.Keys(dispatch.InputProperties)))
+	secrets := []string{"chatTokenSecret", "signInClientSecret", "tailnetAuthKey"}
+	for name, in := range dispatch.InputProperties {
+		require.Equal(t, slices.Contains(secrets, name), in.Secret, "whether %s is a secret input", name)
+	}
 	require.True(t, dispatch.InputProperties["tailnetAuthKey"].Secret)
 	require.True(t, dispatch.InputProperties["signInClientSecret"].Secret)
 	require.Contains(t, dispatch.InputProperties, "agentSecretsAudience")
