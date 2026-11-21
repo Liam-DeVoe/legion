@@ -15,7 +15,10 @@ import (
 // are both left out for alice, an open member who sees PUB alone, so her issue read cannot tell
 // which ids name a document she does not see. carol, who sees both projects, reads the gate naming
 // PRIV's document and not the one naming nothing. With no private project alice sees every object
-// and reads all three as stored, as every reader did before (R9).
+// and reads all three as stored, as every reader did before (R9). carol stores the three gates
+// while PRIV is public, as a deployment held them before its first project went private: while one
+// is private, a write of a gate naming a document its writer does not see, an id no document holds
+// included, is refused (refuseUnseenGateDocuments).
 //
 // Control: the statement that left out only a gate naming a document its reader does not see, and
 // carol, who does not see every object while PRIV is private, reads the decisions gate, whose id
@@ -43,7 +46,9 @@ func TestADesignGateNamingNoDocumentItsReaderSeesIsLeftOutWhateverItNames(t *tes
 		{Step: model.GatedStepCriteria, ArtifactID: seen},
 		{Step: model.GatedStepSpec, ArtifactID: unseen},
 	}
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/issues/"+issue+"/design-gates", map[string]any{"gates": all}, http.StatusOK)
+	seed.setVisibility(t, seedPrivate, model.ProjectPrivate)
 	stored := decodeBody[struct {
 		DesignGates []issueDesignGate `json:"design_gates"`
 	}](t, seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/issues/"+issue, nil, http.StatusOK)).DesignGates
