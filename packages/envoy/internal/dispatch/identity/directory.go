@@ -184,10 +184,12 @@ func NewDirectoryReader(ctx context.Context, signer, admin string, opts ...optio
 // another primaryEmail and is Held. An answer for email itself (its primaryEmail, case ignored)
 // under another id than knownID is the address deleted and created again for another person, and
 // is Recreated: whether it confirms anyone is the caller's to decide. An answer whose account is
-// suspended or archived is Held, whichever account it is, since neither can sign in. A Failed
-// outcome comes with a *DirectoryError. Check returns when ctx ends, at each of its steps. A shared
-// mint it started runs to ctx's deadline at most, and goes on after ctx is canceled for the checks
-// still waiting on it.
+// suspended or archived is Held, whichever account it is, since neither can sign in. An answer
+// with no archived is not archived: Google writes archived whenever it is true, so Failed there
+// would refuse every person once their 24 hours ran out, and hold no one more. A Failed outcome
+// comes with a *DirectoryError. Check returns when ctx ends, at each of its steps. A shared mint it
+// started runs to ctx's deadline at most, and goes on after ctx is canceled for the checks still
+// waiting on it.
 func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (DirectoryOutcome, string, error) {
 	token, err := d.accessToken(ctx)
 	if err != nil {
@@ -217,7 +219,7 @@ func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (Dir
 	var user struct {
 		ID           string `json:"id"`
 		Suspended    *bool  `json:"suspended"`
-		Archived     *bool  `json:"archived"`
+		Archived     bool   `json:"archived"`
 		PrimaryEmail string `json:"primaryEmail"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxGoogleBody)).Decode(&user); err != nil {
@@ -231,9 +233,7 @@ func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (Dir
 		return DirectoryFailed, "", &DirectoryError{Class: "the Directory read's answer has no id", Status: http.StatusOK}
 	case user.Suspended == nil:
 		return DirectoryFailed, "", &DirectoryError{Class: "the Directory read's answer has no suspended", Status: http.StatusOK}
-	case user.Archived == nil:
-		return DirectoryFailed, "", &DirectoryError{Class: "the Directory read's answer has no archived", Status: http.StatusOK}
-	case *user.Suspended, *user.Archived:
+	case *user.Suspended, user.Archived:
 		return DirectoryHeld, user.ID, nil
 	}
 	sameAddress := strings.EqualFold(user.PrimaryEmail, email)

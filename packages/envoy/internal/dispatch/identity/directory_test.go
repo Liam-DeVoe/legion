@@ -138,8 +138,11 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 		{name: "a 200 whose suspended is null", reason: "the Directory read's answer has no suspended (HTTP 200)", answer: func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":null}`})
 		}},
-		{name: "a 200 with no archived", reason: "the Directory read's answer has no archived (HTTP 200)", answer: func(g *directorytest.Google) {
+		{name: "a 200 with no archived, not suspended", outcome: DirectoryActive, userID: "u-ada", answer: func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":false,"etag":"` + directorytest.Planted + `"}`})
+		}},
+		{name: "a 200 with no archived, suspended", knownID: "u-ada", outcome: DirectoryHeld, userID: "u-ada", answer: func(g *directorytest.Google) {
+			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":true}`})
 		}},
 		{name: "a 200 with no id", reason: "the Directory read's answer has no id (HTTP 200)", answer: func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"primaryEmail":"ada@example.com","suspended":false,"etag":"` + directorytest.Planted + `"}`})

@@ -263,10 +263,9 @@ func TestIAPStandingFollowsTheDirectory(t *testing.T) {
 
 // TestIAPDirectoryFailureChangesNothing (c-iap-directory): each Failed kind of a Directory check -
 // a reply later than the check's 15 seconds, 429, 500, 401, 403, a body that does not decode, an
-// answer with no suspended, one with no archived, a signJwt refusal and a token-exchange refusal -
-// run by the membership pass, leaves directory_confirmed_at, not_held_until and the hold as they
-// were, and moves directory_checked_at. A held person whose deadline passes during the failures
-// stays held.
+// answer with no suspended, a signJwt refusal and a token-exchange refusal - run by the membership
+// pass, leaves directory_confirmed_at, not_held_until and the hold as they were, and moves
+// directory_checked_at. A held person whose deadline passes during the failures stays held.
 //
 // Control: let a Failed outcome set directory_confirmed_at or clear the hold (record a Failed
 // outcome as an Active one); the test fails naming the kind.
@@ -286,9 +285,6 @@ func TestIAPDirectoryFailureChangesNothing(t *testing.T) {
 		}},
 		{"an answer with no suspended", func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com"}`})
-		}},
-		{"an answer with no archived", func(g *directorytest.Google) {
-			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":false}`})
 		}},
 		{"a signJwt refusal", func(g *directorytest.Google) {
 			g.AnswerSigner(&directorytest.Answer{Status: http.StatusForbidden, Body: `{"error":{"code":403,"message":"` + directorytest.Planted + `"}}`})
