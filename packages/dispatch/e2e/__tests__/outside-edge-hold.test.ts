@@ -208,7 +208,7 @@ function namedBy(path: string): { readonly pid: number; readonly start: number }
  *  place it writes `<pid> <start>` to `at`, as `hold` names itself in `held`, so a SIGTERM sent
  *  after that reaches the handler. */
 function stubbornHolder(at: string): Promise<BoundedRun> {
-  return runBounded({
+  const holder = runBounded({
     argv: [
       "bun",
       "--eval",
@@ -223,6 +223,10 @@ setInterval(() => undefined, 1_000);`,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
     from: import.meta.url,
   });
+  // A row that fails before it awaits the holder leaves it to end at its bound, and that end is
+  // this row's own failure, not an error between rows: a row that awaits it still sees it.
+  holder.catch(() => undefined);
+  return holder;
 }
 
 describe.concurrent("hold and release, against an edge stand-in", () => {
