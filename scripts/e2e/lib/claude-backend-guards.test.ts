@@ -266,14 +266,14 @@ claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringi
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
 : >"$scratch/stages"
 found=
-SECONDS=0
-while [ "$SECONDS" -lt 60 ]; do
+while :; do
   if found=$(claude_pid "$pid"); then break; fi
   case $found in *"does not run Claude Code yet: it runs "*) printf '%s\\n' "\${found##*it runs }" >>"$scratch/stages" ;; esac
   found=
+  [ "$SECONDS" -lt "$until_true_deadline" ] || break
   sleep 0.02
 done
-[ -n "$found" ] || { echo "no Claude Code within 60 s" >&2; exit 1; }
+[ -n "$found" ] || { echo "no Claude Code by the end of the row's waits" >&2; exit 1; }
 [ "$(readlink "/proc/$found/exe")" = "$claude_exe" ] && echo "first answer: the program the chain ends in" || echo "first answer: $found, running $(readlink "/proc/$found/exe")"
 for stage in "the bridge's fork:$(realpath -e -- "$work/legion")" "the first wrapper:$(realpath -e -- "$(command -v bash)")" "the second wrapper:$(realpath -e -- "$(command -v sh)")"; do
   if grep -qxF -- "\${stage#*:}" "$scratch/stages"; then echo "refused while it was \${stage%%:*}"; else echo "never saw \${stage%%:*}"; fi
