@@ -291,6 +291,7 @@ legion_command: &legion_command
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/steprecord/*'
 listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
@@ -3170,6 +3171,9 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/goroutinetest/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oidc/*'
+  - 'packages/envoy/internal/redact/*'
+  - 'packages/envoy/internal/tlsalert/*'
+  - 'packages/envoy/natsurl/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
   - 'packages/envoy/internal/stacktest/*'
@@ -3202,10 +3206,13 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/testwait/**/*_test.go'
+  - '!packages/envoy/internal/tlsalert/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsurl/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#private_names_port-the-private-name-port-harness-in-a-job-of-its-own-it
 private_names_port:
