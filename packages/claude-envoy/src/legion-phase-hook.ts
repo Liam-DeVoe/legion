@@ -220,8 +220,9 @@ export interface PhaseHookDeps {
    * called at each `PostToolUse` of the worker's own, which starts the next read where one is due
    * and does not wait for it; its `turnEnded`, which drops what the turn's reads named and a read
    * still in flight, is called at the worker's turn's end — a `Stop` that blocks nothing, a
-   * `StopFailure`; and its `turnStarted`, at each `UserPromptSubmit`, drops what earlier reads
-   * named, a turn that ended with neither among them, and keeps a read in flight. */
+   * `StopFailure`; and its `turnStarted`, at each `UserPromptSubmit`, drops what an earlier read
+   * named where that read started a minute or more ago, a turn that ended with neither among
+   * them, and keeps a fresher answer and a read in flight. */
   readonly holdsRead: HoldsRead
 }
 
@@ -619,11 +620,12 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           dropTimer()
           // A turn starts: the holds answer a turn kept is that turn's alone, since the daemon
           // accepts each take it names at that turn's end. A turn that ended with neither `Stop`
-          // nor `StopFailure` (an interrupted one) dropped nothing, so it is dropped here, as Oh
-          // My Pi's run start drops it (`packages/pi-legion/src/claim-session.ts`). A read still
-          // in flight is kept: Claude Code may fire this event for a message the bridge injects
-          // mid-turn, which ends no turn, and that read's answer, at most 3 s old, is noted at the
-          // next `PostToolUse` rather than a minute later from the next read.
+          // nor `StopFailure` (an interrupted one) dropped nothing, so its answer is dropped here
+          // where its read started a minute or more ago, as Oh My Pi's run start drops it
+          // (`packages/pi-legion/src/claim-session.ts`). A fresher answer is kept, and so is a read
+          // still in flight: Claude Code may fire this event for a message the bridge injects
+          // mid-turn, which ends no turn, and dropping that answer would put its note a minute
+          // past R2's bound, since the next read starts only a minute after the last one started.
           deps.holdsRead.turnStarted()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}

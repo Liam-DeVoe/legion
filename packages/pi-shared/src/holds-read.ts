@@ -37,12 +37,14 @@ export interface HoldsRead {
    * a read still unanswered, since the daemon accepts each take they name at that end. */
   readonly turnEnded: () => void;
   /**
-   * A turn of the holder started: what an earlier read named is dropped, and a read still
-   * unanswered is kept, its answer returned by the first call after it comes, since that answer is
-   * at most {@link HOLDS_READ_BOUND_MS} old and so still names what the daemon holds. It does not
-   * move the count of turns `turnEnded` moves. Claude Code's phase hook calls it at
-   * `UserPromptSubmit` rather than `turnEnded`, because Claude Code may fire that event for a
-   * message injected while a turn runs, which ends no turn.
+   * A turn of the holder started: the answer an earlier read gave is dropped where that read
+   * started a minute or more ago ({@link HOLDS_READ_EVERY_MS}), as is the answer a turn that
+   * ended with no `turnEnded` (an interrupted one) kept. A fresher answer is kept, and so is a
+   * read still unanswered, its answer returned by the first call after it comes. Claude Code's
+   * phase hook calls it at `UserPromptSubmit` rather than `turnEnded`, because Claude Code may
+   * fire that event for a message injected while a turn runs, which ends no turn, and dropping a
+   * fresh answer there would put its note a minute past R2's bound: the next read starts only a
+   * minute after the last one started. It does not move the count of turns `turnEnded` moves.
    */
   readonly turnStarted: () => void;
 }
@@ -61,8 +63,10 @@ export function createHoldsRead(deps: {
   let lastRead: number | undefined;
   // Counts the holder's turns, so that an answer that comes after its turn ended is dropped.
   let turn = 0;
-  // The latest answer of this turn's reads, whose `holds` are read off it at each call.
+  // The latest answer of this turn's reads, whose `holds` are read off it at each call, and the
+  // time the read that brought it started, by which `turnStarted` tells an answer it drops.
   let latest: LegionTask | undefined;
+  let latestStarted: number | undefined;
   // The role and task of each take this process has returned.
   const returned = new Set<string>();
   return {
@@ -80,7 +84,9 @@ export function createHoldsRead(deps: {
         void deps.daemon
           .task(caller, { signal: AbortSignal.timeout(HOLDS_READ_BOUND_MS) })
           .then((reading) => {
-            if (turn === during) latest = reading;
+            if (turn !== during) return;
+            latest = reading;
+            latestStarted = now;
           }, deps.failed);
       }
       return due;
@@ -90,7 +96,9 @@ export function createHoldsRead(deps: {
       latest = undefined;
     },
     turnStarted: () => {
-      latest = undefined;
+      if (latestStarted !== undefined && deps.now() - latestStarted >= HOLDS_READ_EVERY_MS) {
+        latest = undefined;
+      }
     },
   };
 }

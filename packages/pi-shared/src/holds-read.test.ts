@@ -75,7 +75,7 @@ test("a read that fails is handed to failed and names nothing, and the next star
 
 // `turnStarted` beside `turnEnded`, on the read alone: claude-envoy's phase hook calls it at
 // `UserPromptSubmit`, which Claude Code may fire for a message injected while a turn runs.
-test("turnStarted drops an earlier answer and keeps a read in flight", async () => {
+test("turnStarted drops an answer whose read started a minute or more ago and keeps a read in flight", async () => {
   let now = Date.parse("2026-11-19T20:00:00Z");
   // Each read's answer, held back until the case gives it.
   const readings: { promise: Promise<LegionTask>; resolve: (reading: LegionTask) => void }[] = [];
@@ -92,23 +92,50 @@ test("turnStarted drops an earlier answer and keeps a read in flight", async () 
     failed: () => undefined,
   });
 
-  // An answer an earlier read gave, not returned yet, is dropped: the next call returns nothing
-  // of it, and starts no read inside the minute.
+  // An answer whose read started a minute or more before the turn started, not returned yet, is
+  // dropped: the next call returns nothing of it, and starts the read that is due.
   expect(holdsRead.holds()).toEqual([]);
   readings[0]?.resolve(HOLDING);
   await readings[0]?.promise;
+  now += 60_000;
   holdsRead.turnStarted();
   expect(holdsRead.holds()).toEqual([]);
-  expect(readings).toHaveLength(1);
+  expect(readings).toHaveLength(2);
 
   // A read still in flight is kept: its answer, given after the turn started, is returned by the
   // next call, once.
-  now += 60_000;
-  expect(holdsRead.holds()).toEqual([]);
-  expect(readings).toHaveLength(2);
   holdsRead.turnStarted();
   readings[1]?.resolve(HOLDING);
   await readings[1]?.promise;
   expect(holdsRead.holds()).toEqual([{ role: "tester", task: 7 }]);
   expect(holdsRead.holds()).toEqual([]);
+});
+
+// Claude Code may fire `UserPromptSubmit` for a message injected mid-turn, which ends no turn: an
+// answer whose read started less than a minute ago is kept there, since the next read, a minute
+// after this one started, would put its note past R2's bound.
+test("turnStarted keeps an answer whose read started less than a minute ago", async () => {
+  let now = Date.parse("2026-11-19T20:00:00Z");
+  // Each read's answer, which the holds read's own handler is on before the case awaits it.
+  const readings: Promise<LegionTask>[] = [];
+  const holdsRead = createHoldsRead({
+    daemon: {
+      task: () => {
+        const reading = Promise.resolve(HOLDING);
+        readings.push(reading);
+        return reading;
+      },
+    },
+    caller: () => caller,
+    now: () => now,
+    failed: () => undefined,
+  });
+
+  expect(holdsRead.holds()).toEqual([]);
+  await readings[0];
+  now += 59_999;
+  holdsRead.turnStarted();
+  expect(holdsRead.holds()).toEqual([{ role: "tester", task: 7 }]);
+  expect(holdsRead.holds()).toEqual([]);
+  expect(readings).toHaveLength(1);
 });

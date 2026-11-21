@@ -860,8 +860,8 @@ test("a PostToolUse while the daemon names a take held behind this turn adds one
 // Risk (c) of dispatch://INFRA-4130: a turn can end with neither `Stop` nor `StopFailure` (one the
 // user interrupts), so the holds answer it kept is still kept when the next turn starts. The
 // daemon accepts each take that answer names at that end, so it waits no more: the next turn's
-// `UserPromptSubmit` drops it, as Oh My Pi's run start does, and that turn notes it only where a
-// read of its own names it again.
+// `UserPromptSubmit` drops it where its read started a minute or more ago, as Oh My Pi's run start
+// does, and that turn notes it only where a read of its own names it again.
 test("a holds answer of a turn that ended with no Stop is not noted in the next turn", async () => {
   const { endpoint, taskReads, answered, advance, close } = await harness({
     record: recorded("open", 0),
@@ -871,23 +871,23 @@ test("a holds answer of a turn that ended with no Stop is not noted in the next 
   const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
   try {
     // The turn's first call starts the read, which names the tester's take; the turn is
-    // interrupted before a call notes it, and no `Stop` or `StopFailure` comes.
+    // interrupted before a call notes it, and no `Stop` or `StopFailure` comes. The next turn
+    // starts a minute after that read started.
     expect(await toolCall()).toEqual({})
     await waitFor(async () => answered() === 1, "the holds read's answer")
+    advance(60_000)
     await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with LEGION-208." })
 
-    // The next turn's calls note nothing of the ended turn's answer, and read nothing inside the
-    // minute.
-    expect(await toolCall()).toEqual({})
-    expect(await toolCall()).toEqual({})
-    expect(taskReads).toHaveLength(1)
-
-    // A minute on, this turn's own read names the take again, and the next call notes it once.
-    advance(60_000)
+    // The next turn's first call notes nothing of the ended turn's answer, and starts a read of
+    // its own, a minute having passed.
     expect(await toolCall()).toEqual({})
     expect(taskReads).toHaveLength(2)
+
+    // That read names the take again, and the next call notes it once.
     await waitFor(async () => answered() === 2, "the new turn's holds read's answer")
     expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(2)
   } finally {
     await close()
   }
@@ -914,6 +914,35 @@ test("a UserPromptSubmit while a holds read is in flight still gives one note fr
     await waitFor(async () => answered() === 1, "the holds read's answer")
 
     // The next call notes the take that answer names, and the one after notes nothing.
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+  } finally {
+    await close()
+  }
+})
+
+// Claude Code may fire `UserPromptSubmit` for a message the bridge injects while a turn runs,
+// which ends no turn, so the reset there keeps an answer whose read started less than a minute
+// ago too: the next read starts only a minute after that one did, and waiting for its answer
+// would put R2's note past its bound.
+test("a UserPromptSubmit keeps a holds answer whose read started less than a minute ago", async () => {
+  const { endpoint, taskReads, answered, advance, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    claimsTask: async () => ({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] }),
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    // The worker's call starts the read, whose answer names the tester's take; the prompt comes
+    // half a minute after that read started.
+    expect(await toolCall()).toEqual({})
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+    advance(30_000)
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "A message for LEGION-208." })
+
+    // The next call notes the take that answer names, the one after notes nothing, and no second
+    // read started.
     expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
     expect(await toolCall()).toEqual({})
     expect(taskReads).toHaveLength(1)
