@@ -7099,7 +7099,8 @@ Each item below names a function, then what it does.
 
 - `session_psql NAME VALUE`
 
-  runs the SQL on stdin with `psql -A -t` as `legion`, VALUE the psql variable NAME, which the SQL quotes as `:'NAME'`, so no value is spliced into it; an SQL error is its exit status
+  runs the SQL on stdin with `psql -q -A -t` as `legion`, in one read-only transaction that opens with `SET LOCAL search_path = pg_catalog, pg_temp` and `SET LOCAL row_security = off`, so the SQL names each table `public.<table>`;
+  VALUE is the psql variable NAME, which the SQL quotes as `:'NAME'`, so no value is spliced into it; an SQL error is its exit status
 
 - `session_text PATH`
 
