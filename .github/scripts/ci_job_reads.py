@@ -1919,7 +1919,8 @@ TEXT_CHECK_TESTS = {
         "TestTheDecisionBlockGuardSeesWhatItGuards",
         "TestTheGuardReadsABodyStringOffARequestType"},
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
-        "TestOnlyTheBrokerInsertsEvents"},
+        "TestOnlyTheBrokerInsertsEvents",
+        "TestTheEventInsertGuardSeesAPlantedInserter"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
         "TestOnlyTheIssuePatchWritesTheRoute",
         "TestTheRouteWriterGuardSeesAPlantedWriter"},
