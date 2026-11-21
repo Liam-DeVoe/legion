@@ -79,12 +79,9 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 
 // dueAt is when the view is next due, and why: a dirty view viewQuiet after its last mark or
 // viewMaxWait after its first, whichever is sooner, or at once for a mark that waits for no quiet
-// (immediate: a subscribe's, and a settings rewrite's, whose page already waited 1.2-1.7 s for the
-// refresher's pass, markDirtyLocked), never before a failed read's retry; a clean one with an
-// answer at its expiry. A view being computed is not due, so it is never recomputed twice at once:
-// a mark made meanwhile falls due by these rules once that recompute has ended. A settings
-// rewrite that arrives while its settings change's own mark still waits for its quiet is one mark
-// with it, so one recompute, due at once, answers both.
+// (immediate, markDirtyLocked), never before a failed read's retry; a clean one with an answer at
+// its expiry. A view being computed is not due, so it is never recomputed twice at once: a mark
+// made meanwhile falls due by these rules once that recompute has ended.
 func (view *deliveryView) dueAt() (time.Time, string, bool) {
 	if view.computing {
 		return time.Time{}, "", false

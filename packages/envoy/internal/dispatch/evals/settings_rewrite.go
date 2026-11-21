@@ -365,9 +365,8 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// two rules name one set where it did not move): its verdicts decide which projects a deploy
 	// counts for (attribution.deploy) and which lead times a day keeps (dropUnshipped), and so which
 	// rows each project's day holds.
-	movedCards := cardsOf(slugs)
 	followed := slices.DeleteFunc(slices.Concat(prevCards, cards), func(card measures.DeployJobCard) bool {
-		return !slices.Contains(movedCards, card.CardID)
+		return !slices.Contains(slugs, cardSlugs[card.CardID])
 	})
 	judged := slices.Compact(slices.Sorted(slices.Values(slices.Concat(prevProduction.JudgedJobNames(), production.JudgedJobNames(),
 		measures.DeployCardJobNames(followed)))))
@@ -653,7 +652,12 @@ func MarkSettingsRewrite(ctx context.Context, tx pgx.Tx) error {
 // of the settings are what its rows were built from.
 func movedDeliveryDays(histories []repoHistory, was []containment, prs []delivery.DeliveryPullRequest, attribute attribution,
 	before, after []measures.DeployJobCard, slugs, projects []string, firsts map[string]map[evalKey]time.Time, start, today time.Time) []time.Time {
-	cards := cardsOf(slugs)
+	var cards []measures.DeployJobCardID
+	for _, slug := range slugs {
+		if card, ok := CardOf(slug); ok {
+			cards = append(cards, card)
+		}
+	}
 	moved := map[time.Time]bool{}
 	for k, h := range histories {
 		var span daySpan
@@ -731,17 +735,6 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 		}
 	}
 	return slices.SortedFunc(maps.Keys(moved), time.Time.Compare)
-}
-
-// cardsOf is the deploy card each eval of slugs that times one times (CardOf), in slugs' order.
-func cardsOf(slugs []string) []measures.DeployJobCardID {
-	var cards []measures.DeployJobCardID
-	for _, slug := range slugs {
-		if card, ok := CardOf(slug); ok {
-			cards = append(cards, card)
-		}
-	}
-	return cards
 }
 
 // containment is a production rule's verdict on one repository's history as the deploy

@@ -370,11 +370,9 @@ func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
 // An eval_days change that the refresher's rewrite of a delivery settings change wrote carries the
 // rewrite's mark (delivery.EvalDaysWrittenBySettingsRewrite in its RunKind, which the rewrite's
 // transaction sets: evals.MarkSettingsRewrite), and marks with cause settings-rewrite, which waits
-// for no quiet (markDirtyLocked). Every other change waits the quiet. The mark is the change's own,
-// so a rewrite is recomputed at once however long after its settings change it commits, and a day
-// write that is not the rewrite's waits the quiet whenever it comes, after a settings change that
-// moved no day row too. The rewrite writes every eval's rows in one transaction, so its changes
-// reach the log together, and the one recompute they make due answers them all.
+// for no quiet (markDirtyLocked). Every other change waits the quiet. The mark is the change's own.
+// The rewrite writes every eval's rows in one transaction, so its changes reach the log together,
+// and the one recompute they make due answers them all.
 func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) {
 	for _, change := range changes {
 		cause := deliveryCauseChange
@@ -429,15 +427,10 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	// A change of the delivery settings row can move the deploy repository, whose rows of the
 	// evals that read it an evals view reads (evals.DeployRepoOf), and a move of it writes no day
 	// row, so no eval_days change follows it: the change itself marks every evals view, and a
-	// recompute that reads the same figures sends nothing. A change of a judged name
-	// (production_job_names and its kin) is answered instead by the refresher's rewrite of the
-	// days it moved, one transaction whose eval_days changes arrive together 1.2-1.7 s after the
-	// settings write at ten times INFRA's size, after this mark's own recompute has read the old
-	// figures: so the mark waits its quiet as any change does, and the rewrite's changes, which
-	// carry its mark (markChangesLocked), recompute the view at once rather than after a second
-	// quiet of 250 ms, with which the change reached the page 1.49-1.93 s after the write, against
-	// R14's 2 s. A change of a repository's mapping begins the delivery walk again, whose eval_days
-	// changes mark the views.
+	// recompute that reads the same figures sends nothing. A change of a judged name is answered by
+	// the refresher's rewrite of the days it moved, whose eval_days changes carry its mark and
+	// recompute the view at once (markChangesLocked). A change of a repository's mapping begins the
+	// delivery walk again, whose eval_days changes mark the views.
 	if view.spec.kind == evalsView && settingsRowChange(change) {
 		return true
 	}

@@ -663,8 +663,9 @@ func TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone(t *testing.T) {
 	} {
 		prev := settings
 		change.change(&settings)
-		if slugs, _ := settingsMoves(prev, settings); !slices.Equal(slugs, slices.Sorted(slices.Values(change.moves))) {
-			t.Fatalf("%s moves %v, and the check needs %v", change.name, slugs, slices.Sorted(slices.Values(change.moves)))
+		moves := slices.Sorted(slices.Values(change.moves))
+		if slugs, _ := settingsMoves(prev, settings); !slices.Equal(slugs, moves) {
+			t.Fatalf("%s moves %v, and the check needs %v", change.name, slugs, moves)
 		}
 		r.putSettings(t, settings, alice)
 		r.pass(t)
