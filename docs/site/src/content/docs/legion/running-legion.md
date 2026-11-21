@@ -1111,8 +1111,11 @@ on `modelRoles.default`, and `review` is the model of the `@review` subagents, s
 on another model family than the implementer, say), name under that role in `role_config_files` an
 overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the
 operator's overlays, so its `default` outranks theirs for that role alone. Under Kubernetes the
-file must be in an operator mount, and adding the mount replaces each issue pod at its next launch
-(the `role_config_files` item above, and `docs/kubernetes.md`, "Rolling it out").
+file must be in an operator mount, and an issue pod made before that mount has drifted: its roles
+keep running in it on the overlays it holds, so the role stays on its old model until the pod's
+update round replaces the pod, once every role in it has answered or at the round's bound; the
+controller's pod alone is replaced at its next launch (the `role_config_files` item above, and
+`docs/kubernetes.md`, "Rolling it out").
 
 ## Check and start the daemon
 

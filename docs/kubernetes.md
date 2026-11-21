@@ -8083,7 +8083,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
   Those lines are Oh My Pi's model roles, not Legion's: every Legion role's session runs on `modelRoles.default`, and `review` is the model of the `@review` subagents, so no line of `overlay.yml` moves one Legion role alone.
   To give one Legion role a model of its own (the reviewer on another model family than the implementer, say), name under that role in `role_config_files` an overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the operator's overlays, so its `default` outranks theirs for that role alone.
-  The file must be in an operator mount, and adding the mount replaces each issue pod at its next launch, ending its roles' running turns (`role_config_files` and "Rolling it out", below).
+  The file must be in an operator mount, and an issue pod made before that mount has drifted: its roles keep running in it on the overlays it holds, so the role stays on its old model until the pod's update round replaces the pod, once every role in it has answered or at the round's bound; the controller's pod alone is replaced at its next launch (`role_config_files` and "Rolling it out", below).
   Where the deployment's `plan_guidance` file names the models that its recent issues' reviewer and implementer ran on, measure them again once issues have run on a role's new model, and write that sentence again: Legion reads no model from that file.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
@@ -8190,11 +8190,13 @@ each issue's pod (every role of it alike) and the image probe's.
   The probe reads the ConfigMap as it is at boot, and a pod reads it when it starts;
   a file mounted by `sub_path` is never refreshed in a running pod, so a changed file reaches a role once its pod is replaced.
 
-- **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file, so the whole pod is replaced, as for a change of the secrets broker's enrollment.
-  At the restart, every role of an affected pod that is running is reported `StaleAddress` at the boot's re-adoption, whether or not `role_config_files` names it, its detail `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name>
-  items [...]`; the supervisor relaunches each at once, uncharged, so each running turn is lost and each role resumes its session in the new pod, and the issue pod is replaced with its disk, which takes the unpushed work of every role in it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-  A pod with no role running at the restart is replaced at the first launch into it, which ends no turn, since none is running.
-  So add the mount and the key when no role of an affected issue is mid-turn and every role has pushed.
+- **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file where the configuration now puts it, so it must be replaced, and an issue pod and the controller's pod are replaced at different times.
+  An issue pod has drifted (`driftedInPod`), as for a change of the secrets broker's enrollment:
+  at the restart each role running in it is re-adopted alive where it runs, the pod's drift names the file and the volume it lacks (`role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name> items [...]`), and a role launched into it meanwhile keeps the pod and is told only the overlays the pod holds, so it runs as before, on its old model among the rest.
+  The pod's update round replaces it, once every role in it has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound ([The disk dies with its pod](#the-disk-dies-with-its-pod));
+  the next launch makes a pod that mounts the volume, and each role resumes its session there with the file in its `PI_CONFIG_FILES`.
+  So adding the mount and the key ends no running turn, and a role's new overlay, a new model with it, reaches the role only once its issue's round has replaced the pod.
+  The controller's pod, which no round covers (`roundCovers`), holds the same lack as a moved address: at the restart its running controller is reported `StaleAddress` with that detail and relaunched at once, uncharged, so its running turn is lost and it resumes its session in a new pod that mounts the volume.
   **Who can read the files:** only loading is per role.
   Every role of a pod mounts every operator volume, so each role can read every role's overlay file;
   never put a secret in one (a credential travels in `provider_keys` or a mounted Secret the operator means every role to hold).
