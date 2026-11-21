@@ -317,8 +317,8 @@ type brokerAdmission struct {
 // address's account or less than brokerCredentialMargin after it, or at an unrecorded time. It is
 // false for an address recording no account, and, for a token recording none, with no recording
 // time, so nothing is refused that predates the column. An admission reads it
-// (brokerPersonAdmitted), the one read that needs it: a broker token never mints or decides
-// (brokerPersonScopes), so no read a request makes once its body has arrived reads its account.
+// (brokerPersonAdmitted), the one place it is read: a broker token neither decides nor mints
+// (brokerPersonScopes), so no read made again once a request's body has arrived asks it.
 func brokerAccountReplaced(address, subject, issuer, foreign, createdAt, held string) string {
 	return "(" + held + " and exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and (sub <> " + subject + " or coalesce(sub_issuer, '') <> " + issuer + "))" +

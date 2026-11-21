@@ -2126,6 +2126,8 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/githubapp/*'
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
   - 'packages/envoy/internal/dispatch/githubreads/*'
+  # docs imports graphcensus for the roll tick's object pass (EventsOweObjectPass,
+  # WriteOwedObjectNodes, the orphan sweep), so cmd/listener's test binary compiles it again.
   - 'packages/envoy/internal/dispatch/graphcensus/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
   - 'packages/envoy/internal/dispatch/identity/*'
@@ -3206,6 +3208,8 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/githubreads/*'
   - 'packages/envoy/internal/dispatch/graphcensus/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
+  # docs' register of the store's writers reads graphstoretest.WriteFunctions (storeWriterCall).
+  - 'packages/envoy/internal/dispatch/graphstore/graphstoretest/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
   - 'packages/envoy/internal/dispatch/model/*'
