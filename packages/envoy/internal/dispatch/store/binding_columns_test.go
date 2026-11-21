@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -81,20 +82,18 @@ type bindingRefusal struct {
 const bindingToken = `insert into agent_tokens (owner, name, token_hash, prefix, subject) values ('r@x.example', 'token', '\x01'::bytea, 'test', 'account-a')`
 
 // bindingRevocationHolder is the address r@x.example recording account-b, which took it from
-// account-a; bindingRevocation is the revocation of account-a its sign-in records, owed, at the
-// address's session generation as it stands, which the recording reads in its own statement; and
-// bindingRevocationAgain is the sign-in's upsert of it, for an account replaced again
-// (store.recordBrokerRevocationSQL with its values written in).
+// account-a, and bindingRevocation is its sign-in's recording of the revocation of account-a,
+// naming account-b the holder: the writer's own statement (recordBrokerRevocationSQL) with its
+// values written in, so a writer's change is the census's too. On no row it records the
+// revocation, owed, at the address's session generation as it stands, which it reads in its own
+// statement; run again, for an account replaced again, it records it again under the next
+// generation, owed, at the generation the address holds then.
 const (
 	bindingRevocationHolder = `insert into people (email, sub) values ('r@x.example', 'account-b')`
-	bindingRevocation       = `insert into broker_revocations (email, issuer, subject, holder_subject, session_generation) values ('r@x.example', 'https://accounts.google.com', 'account-a', 'account-b', (select generation from user_sessions where login = 'r@x.example'))`
-	bindingRevocationAgain  = `insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, session_generation)
-		values ('r@x.example', 'https://accounts.google.com', 'account-a', 'account-b', clock_timestamp(), (select generation from user_sessions where login = 'r@x.example'))
-		on conflict (email, issuer, subject) do update
-		set generation = broker_revocations.generation + 1, holder_subject = excluded.holder_subject,
-			recorded_at = excluded.recorded_at, session_generation = excluded.session_generation, done_at = null`
-	bindingRevocationGuard = `alter table broker_revocations disable trigger broker_revocations_binding_columns`
+	bindingRevocationGuard  = `alter table broker_revocations disable trigger broker_revocations_binding_columns`
 )
+
+var bindingRevocation = writtenIn(recordBrokerRevocationSQL, `'r@x.example'`, `'https://accounts.google.com'`, `'account-a'`, `'account-b'`)
 
 // bindingFloor is the floor the runbook's recovery writes for p@x.example, the generation the
 // secrets broker recorded for the address, where a session row of it made later starts;
@@ -389,7 +388,7 @@ var bindingTransitions = []bindingTransition{
 		`insert into user_sessions (login) values ('p@x.example') on conflict (login) do nothing`},
 	{"user_sessions.generation", "n -> n+1 (revokeSessionsSQL)",
 		[]string{`insert into people (email) values ('p@x.example')`, `insert into user_sessions (login) values ('p@x.example')`},
-		`insert into user_sessions (login, generation) values ('p@x.example', 1) on conflict (login) do update set generation = user_sessions.generation + 1`},
+		writtenIn(revokeSessionsSQL, `'p@x.example'`)},
 	{"agent_tokens.revoked_at", "null -> the revoke's time",
 		[]string{bindingToken},
 		`update agent_tokens set revoked_at = now() where revoked_at is null`},
@@ -404,7 +403,7 @@ var bindingTransitions = []bindingTransition{
 		`update agent_tokens set scopes = array['person']`},
 	{"people.held_since", "a hold recorded, then released by a sign-in (EndSubject's EndHold, SignInSubject)",
 		[]string{`insert into people (email, sub, refresh_token, confirmed_at) values ('h@x.example', 'account-a', 'sealed', now())`,
-			`update people set refresh_token = null, confirmed_at = null, held_since = clock_timestamp() where email = 'h@x.example'`},
+			writtenIn(endSubjectSQL[auth.EndHold], `'h@x.example'`)},
 		`update people set refresh_token = 'sealed', confirmed_at = now(), signed_in_at = now(), held_since = null, signed_out_at = null where email = 'h@x.example'`},
 	{"people.signed_out_at", "a sign-out that keeps the token, then forgets it (KeepAfterSignOut, ForgetSignedOut)",
 		[]string{`insert into people (email, sub, refresh_token, confirmed_at, signed_in_at) values ('o@x.example', 'account-a', 'sealed', now(), now())`,
@@ -434,11 +433,11 @@ var bindingTransitions = []bindingTransition{
 		bindingRevocation},
 	{"broker_revocations.generation", "recorded again (the sign-in's upsert, for an account replaced again)",
 		[]string{bindingRevocationHolder, bindingRevocation, `update broker_revocations set done_at = now()`},
-		bindingRevocationAgain},
+		bindingRevocation},
 	{"broker_revocations.session_generation", "recorded again at the address's generation, moved since the first recording (the sign-in's upsert)",
 		[]string{bindingRevocationHolder, bindingRevocation, `update broker_revocations set done_at = now()`,
 			`update user_sessions set generation = generation + 1 where login = 'r@x.example'`},
-		bindingRevocationAgain},
+		bindingRevocation},
 	{"broker_revocations.tried_at", "claimed (a pass's claim)",
 		[]string{bindingRevocationHolder, bindingRevocation},
 		`update broker_revocations set tried_at = now()`},
