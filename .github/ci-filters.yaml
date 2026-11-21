@@ -970,6 +970,7 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/go-test-step-expansion.test.sh'
   - '.github/scripts/go-test-step-expansion.py'
+  - '.github/scripts/go_run_matcher.py'
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
