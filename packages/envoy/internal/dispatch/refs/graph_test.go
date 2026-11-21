@@ -19,15 +19,17 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// The constants below are main's text, at commit b459fa923705, of each statement of the graph
-// read that INFRA-4704 keys: refs.Edges' in read of a node, as readEdgeRows writes it for the
-// Query each caller named sends, and the four loaders resolveNodes runs for the comments, asks,
-// messages and blocks at the other end of an edge. Each was captured from that commit's code by
-// a throwaway test that called the function through a Queryer recording the text it sent and the
-// arguments it bound, and is held here letter for letter, as mainClosureQuery is: a text built
-// from the package's own fragments would move with them, and main and the head would then agree
-// however the head's statement changed. The ids a capture bound are not in any text: every
-// statement binds them.
+// The constants below are main's text, at commit b459fa923705, of statements of the graph read.
+// refs.Edges' in reads, as readEdgeRows writes each for the Query each caller named sends (a
+// document with WholeDocuments false and true, a message, a comment, an ask and the ask panel,
+// and the issue read, the first arm of every in read), are the statements INFRA-4855 changes; the
+// four loaders resolveNodes runs for the comments, asks, messages and blocks at the other end of
+// an edge are the ones INFRA-4704 changes. Each was captured from that commit's code by a
+// throwaway test that called the function through a Queryer recording the text it sent and the
+// arguments it bound, and each is held here letter for letter as b459fa923705 wrote it, as
+// mainClosureQuery is: a text built from the package's own fragments would move with them, and
+// main and the head would then agree however the head's statement changed. The ids a capture
+// bound are not in any text: every statement binds them.
 
 // mainEdgesInDocument is readEdgeRows' in read of a document by its ref_key, Query{Direction:
 // "in", Kind: "artifact", WholeDocuments: false, ExcludeKinds: ["part_of"]}: the Query
@@ -531,7 +533,7 @@ var (
 // a probe's. refs has none.
 var edgesSourceColumns = map[string]*regexp.Regexp{
 	"refs":               nil,
-	"block_refs":         regexp.MustCompile(`\bartifact_id\b`),
+	"block_refs":         namesSourceDocument,
 	"ask_block_refs":     regexp.MustCompile(`\bask_id\b`),
 	"comment_block_refs": regexp.MustCompile(`\bcomment_id\b`),
 	"message_block_refs": regexp.MustCompile(`\bmessage_id\b`),
@@ -666,18 +668,19 @@ type edgesRead struct {
 	listed, hidden []edgeKey
 	probes         edgesProbes
 	statement      recordedStatement
-	plans          [2]json.RawMessage
+	plans          [len(edgesPlanSettings)]json.RawMessage
 }
 
-// edgesStatement is the statement refs.Edges sends first for query, its in statement.
+// edgesStatement is query's in statement: the statement readEdgeRows sends, the first refs.Edges
+// sends.
 func edgesStatement(t *testing.T, q Queryer, query Query) recordedStatement {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: q}
-	if _, err := Edges(context.Background(), recorder, query); err != nil {
-		t.Fatalf("read the edges of %+v: %v", query, err)
+	if _, err := readEdgeRows(context.Background(), recorder, query); err != nil {
+		t.Fatalf("read the edge rows of %+v: %v", query, err)
 	}
-	if len(recorder.statements) == 0 {
-		t.Fatalf("refs.Edges sent no statement for %+v", query)
+	if len(recorder.statements) != 1 {
+		t.Fatalf("readEdgeRows sent %d statements for %+v; want its one", len(recorder.statements), query)
 	}
 	return recorder.statements[0]
 }
@@ -842,7 +845,7 @@ func requireKeyedReads(t *testing.T, keys *explaintest.IndexKeys, plan json.RawM
 			// row each time it runs, and tests replies_to_block on that row alone. That is the
 			// exists foldsAnswers writes into a comment's read, which asks whether one answering
 			// comment replies to the comment or to one of its blocks; it reads no reply arm, so
-			// it has no replies_to_block to key (INFRA-4855's orchestrator, on D11).
+			// it has no replies_to_block to key.
 		default:
 			fail("%s (loops %g, rows %g) tests replies_to_block with Index Cond %q, Filter %q and Recheck Cond %q: it does not read by replies_to_block", scan, loops, rows, cond, filter, recheck)
 		}
@@ -1097,7 +1100,8 @@ func graphViewBlockArms(t *testing.T, q Queryer) []string {
 // (artifact_id)::text, a Bitmap Heap Scan through a Bitmap Index Scan of its bitmap that carries
 // that Index Cond, and removes no row by a filter; no scan of block_refs that ran is a sequential
 // scan; and as many probes ran as want says. Rows Removed by Filter is an average for each loop,
-// rounded to a whole number, so no row removed is at most 0.5 times the loops in all (D12).
+// rounded to a whole number, so no row removed is at most 0.5 times the loops in all, the one
+// margin the Verification document's "Running the checks" allows.
 func requireProbeRule(t *testing.T, plan json.RawMessage, want edgesProbes) {
 	t.Helper()
 	failed := false
@@ -1376,7 +1380,6 @@ func newEdgesFixture(t *testing.T) edgesFixture {
 		ask.read("ask panel", Query{Direction: "in", Kind: "ask", ID: ask.node.ID, ExcludeKinds: AskBacklinkExclusions},
 			mainEdgesInAskPanel, "ask", ask.node.ID, ask.node.ID, AskBacklinkExclusions),
 	}
-	reads[1].probes = probesNone
 	return edgesFixture{
 		database: database, subjects: []edgesSubject{document, message, comment, ask},
 		reads: reads, probe: probe, kinds: kinds,
@@ -1603,9 +1606,13 @@ func (s *edgesSubject) block(index int) Target {
 }
 
 // read is the subject read by query: main's statement with mainArgs, and what it lists and must
-// not list once query's Kinds and ExcludeKinds have dropped the edges of the kinds they drop.
+// not list once query's Kinds and ExcludeKinds have dropped the edges of the kinds they drop. A
+// read of whole documents writes no probe (probesNone).
 func (s *edgesSubject) read(name string, query Query, main string, mainArgs ...any) edgesRead {
 	read := edgesRead{name: name, query: query, main: main, mainArgs: mainArgs, hidden: slices.Clone(s.hidden)}
+	if query.WholeDocuments {
+		read.probes = probesNone
+	}
 	for _, key := range s.listed {
 		if (len(query.Kinds) == 0 || slices.Contains(query.Kinds, key.kind)) && !slices.Contains(query.ExcludeKinds, key.kind) {
 			read.listed = append(read.listed, key)

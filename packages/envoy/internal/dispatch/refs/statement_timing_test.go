@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -22,9 +21,8 @@ import (
 // CI never runs a measurement; api/search_bench_test.go and api/related_recall_test.go are gated
 // the same way.
 //
-// This change alters no closure statement, so the test holds no closure pair: a pair of one text
-// with itself measures no change, and passes or fails by chance. INFRA-4704's pull request, which
-// changes the closure, adds its closure pairs here.
+// The test holds no closure pair: closureQuery's text is main's, and a pair of one text with
+// itself measures no change and passes or fails by chance.
 //
 // Which protocol each measurement is under, and why:
 //
@@ -292,10 +290,6 @@ var mainsTargetIndex = []string{
 	`create index block_refs_to on block_refs (to_kind, to_id)`,
 }
 
-// artifactIDWord finds artifact_id in a plan's condition: heldByABlock's probe of block_refs is
-// the one scan of it that names the column.
-var artifactIDWord = regexp.MustCompile(`\bartifact_id\b`)
-
 // requireMainsTargetIndexRead reads the plan of mainEdgesInIssue for the issue under
 // mainsTargetIndex, on the runner's connection in a transaction of its own that it rolls back,
 // and stops the test unless that plan reads block_refs_to. With probe false, at least one scan of
@@ -337,7 +331,7 @@ func requireMainsTargetIndexRead(t *testing.T, runner *benchtime.Runner, issue s
 		judged = "heldByABlock's probe of block_refs reads block_refs_to"
 		probes := 0
 		for _, scan := range scans {
-			if !slices.ContainsFunc(scan.conds, artifactIDWord.MatchString) {
+			if !slices.ContainsFunc(scan.conds, namesSourceDocument.MatchString) {
 				continue
 			}
 			probes++
@@ -480,8 +474,8 @@ const probeFixtureAnalyze = `analyze projects, issues, artifacts, refs, block_re
 // writeProbeFixture writes the probe fixture (probeFixtureWrites) through a connection of its own
 // to the measurement database, never the runner's, which is for reading (benchtime.Runner.Conn):
 // it first removes what an interrupted run left, commits the fixture in one transaction, analyzes
-// the tables it wrote, and holds them to the rows round 12 wrote. t.Cleanup removes it and
-// analyzes the tables again.
+// the tables it wrote, and holds them to the rows round 12 wrote. t.Cleanup removes it
+// (removeProbeFixture) and then analyzes the tables again (probeFixtureAnalyze).
 func writeProbeFixture(t *testing.T) probeFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -491,7 +485,12 @@ func writeProbeFixture(t *testing.T) probeFixture {
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	removeProbeFixture(t, conn)
-	t.Cleanup(func() { removeProbeFixture(t, conn) })
+	t.Cleanup(func() {
+		removeProbeFixture(t, conn)
+		if _, err := conn.Exec(context.Background(), probeFixtureAnalyze); err != nil {
+			t.Errorf("remove the probe fixture: %s: %v", probeFixtureAnalyze, err)
+		}
+	})
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the probe fixture: %v", err)
@@ -528,12 +527,13 @@ func writeProbeFixture(t *testing.T) probeFixture {
 }
 
 // removeProbeFixture deletes the probe fixture through conn (probeFixtureRemovals) and analyzes
-// the tables it wrote. It reports each statement that fails and goes on with the rest, since it
-// also runs as a cleanup, where a removal that stopped at its first error would leave the others
-// behind.
+// nothing: before the fixture is written its own analyze follows the writes, and the cleanup
+// analyzes after the removal. It reports each statement that fails and goes on with the rest,
+// since it also runs as a cleanup, where a removal that stopped at its first error would leave
+// the others behind.
 func removeProbeFixture(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
-	for _, statement := range append(slices.Clone(probeFixtureRemovals), probeFixtureAnalyze) {
+	for _, statement := range probeFixtureRemovals {
 		if _, err := conn.Exec(context.Background(), statement); err != nil {
 			t.Errorf("remove the probe fixture: %s: %v", statement, err)
 		}
