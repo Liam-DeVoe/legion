@@ -31,9 +31,15 @@ type repoWriteSeed struct {
 // routes: PRIV-1 names acme/priv; PRIV-2 names acme/privdone and is done; PRIV-3 names none and
 // resolves to PRIV's default, acme/privdefault; PUB-2 and PRIV-4 both name acme/both. The server
 // settles no document while a test runs, so no write but the test's own adds a row the test counts.
+// Its GitHub answers each repository the tests name with an id of its own (repoWriteIDs), so each
+// write records the id GitHub gives the name, as a write does (writtenRepository), and a write into
+// private PRIV is not refused for want of one.
 func seedRepoWrite(t *testing.T, options testServerOptions) repoWriteSeed {
 	t.Helper()
 	options.settle = time.Hour
+	if options.app == nil {
+		options = newIDGitHub(repoWriteIDs()).options(t, options)
+	}
 	seed := repoWriteSeed{privateSeed: seedPrivateProjectWith(t, options)}
 	private := "/api/v1/issues/" + seed.issue[seedPrivate]
 	seed.mustRequest(t, callerCarol, http.MethodPatch, private, map[string]any{"repo": "acme/priv"}, http.StatusOK)
@@ -56,6 +62,15 @@ func seedRepoWrite(t *testing.T, options testServerOptions) repoWriteSeed {
 			http.StatusCreated)).Key
 	}
 	return seed
+}
+
+// repoWriteIDs is the GitHub id of each repository the repository-write tests name, one apiece.
+func repoWriteIDs() map[string]repositoryIdentity {
+	ids := map[string]repositoryIdentity{}
+	for index, name := range []string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/pub", "acme/pubonly", "acme/fresh"} {
+		ids[name] = repositoryIdentity{id: int64(8100 + index), fullName: name}
+	}
+	return ids
 }
 
 // sendAs makes one write as caller, the body naming the session a token acts for, as a token's
