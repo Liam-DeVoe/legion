@@ -95,7 +95,8 @@ while it holds the phase. A retro that cannot write the body:
 
 In `accepting` no worker runs; the issue's own architect accepts it. Read, against the goal, every
 check and every requirement, in the five sources that
-`skill://legion-architect/references/acceptance.md`, "Accepting", lists.
+`skill://legion-architect/references/acceptance.md`, "Accepting", lists. The reviewer's verdict
+is its completion's, not a review on GitHub.
 
 Run the `goal-red-team` read your role prompt names. Accept only when a pass stands for every
 `before_merge` check at the approved head, every requirement has a check, and none is unmet or read

@@ -28,7 +28,7 @@ daemon part below says; your handoff is never a commit.
 
 ## GitHub attribution
 
-Everything you post — check runs, PR comments — is attributed to the review App's bot account, the login your pane's `JJ_USER` names.
+Everything you post on GitHub, a PR comment included, is attributed to the one App's bot account, the login your pane's `JJ_USER` names. You post no check run: the daemon writes `legion-verdict` from your verdict and the reviewer's.
 
 ## Test handoff
 

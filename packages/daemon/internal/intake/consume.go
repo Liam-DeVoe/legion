@@ -1067,7 +1067,9 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // recordedPullRequest says whether the daemon records the pull request a review or a checks
 // settlement names (PullRequestReview, PullRequestChecks), by repository and number as the workflow
 // looks it up (record.PullRequestRecorded), false for an outside pull request's sighting
-// (OutsidePullRequest), whose pull request no issue records, and true for every other fact. It asks under the
+// (OutsidePullRequest), whose pull request no issue records, and for a merge group (MergeGroup),
+// which is a fact only on a verdict repository whoever's pull request it holds (outsideFact), and
+// true for every other fact. It asks under the
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
@@ -1087,7 +1089,7 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 		repo, number = fact.Repo, fact.Number
 	case PullRequestChecks:
 		repo, number = fact.Repo, fact.Number
-	case OutsidePullRequest:
+	case OutsidePullRequest, MergeGroup:
 		return false, nil
 	default:
 		return true, nil
@@ -1101,8 +1103,9 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 
 // outsideFact is the fact to apply for fact of a pull request the daemon does not record, and
 // whether there is one: on a verdict repository (ConsumerSpec.VerdictRepositories), an outside
-// pull request's sighting as it is, and a review as an OutsideReview; nothing on any other
-// repository, and nothing for a checks settlement anywhere, since no verdict reads one.
+// pull request's sighting as it is, a review as an OutsideReview, and a merge group as it is;
+// nothing on any other repository, where nothing writes legion-verdict, and nothing for a checks
+// settlement anywhere, since no verdict reads one.
 func outsideFact(spec ConsumerSpec, fact Fact) (Fact, bool) {
 	verdicts := func(repo string) bool {
 		return slices.ContainsFunc(spec.VerdictRepositories, func(r ghrepo.Repository) bool { return strings.EqualFold(r.String(), repo) })
@@ -1112,6 +1115,8 @@ func outsideFact(spec ConsumerSpec, fact Fact) (Fact, bool) {
 		return fact, verdicts(fact.Repo)
 	case PullRequestReview:
 		return OutsideReview{PullRequestReview: fact}, verdicts(fact.Repo)
+	case MergeGroup:
+		return fact, verdicts(fact.Repo)
 	}
 	return nil, false
 }

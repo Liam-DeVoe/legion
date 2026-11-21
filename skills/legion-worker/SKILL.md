@@ -36,7 +36,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Commits and pushes
 
 - Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`. Then, with the `$default` it set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`. Earlier phases' commits in it are expected; `description.first_line()` shows no trailer.
-- Write no trailer yourself. The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names; the git wrapper adds the first two to a `git commit`. A merge, revert, cherry-pick or rebase that git makes gets none. Cure a commit that lacks a line by describing it again in the pane's shell; where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
+- Write no trailer yourself: the pane adds them, and the trailer check above says which and how to cure a commit that lacks one.
 - A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.
 
@@ -44,9 +44,8 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body. Later phases push to that branch and edit that pull request.
 - No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
-- The merge gate, in order: the tester's evidence green → the reviewer's approval of the head → the architect's acceptance → retro, which commits nothing → the merger's merge of the head it read, which closes the issue → the production check after the close, the tester's unless the project's `production_check` is `off`. Only the merger runs `gh pr merge`; nobody turns auto-merge on.
-- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
-- A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+- The merge gate, in order: the tester's evidence green → the reviewer's `approve` of the head → the architect's acceptance → retro, which commits nothing → the merger's merge of the head it read, which closes the issue → the production check after the close, the tester's unless the project's `production_check` is `off`. Only the merger runs `gh pr merge`; nobody turns auto-merge on.
+- End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`. A Dispatch comment or message carries no footer: Dispatch records the session that wrote it.
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset: a set variable outranks the gh directory the daemon refreshes.
 - Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`. Request a secret only for your issue's work.
 
@@ -58,7 +57,7 @@ They override this skill, except: no deferrals; the base merged forward only as 
 
 - PR body, a check's result, the simplify pass: `skill://legion-worker/references/pr-body.md`.
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
-- Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
+- Review, verdict, merge, production check: `skill://legion-worker/references/merge-gate.md`.
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.

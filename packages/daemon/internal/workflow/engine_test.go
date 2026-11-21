@@ -395,11 +395,12 @@ func reviewerPrompt(t *testing.T) string {
 	return prompt.String()
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
+// The reviewer's prompt names the label its task's verdict carries as the tester's result, and the
+// refusal of a completion of reviewing whose own verdict is neither `approve` nor `changes`, so a
+// rename on either side alone fails here.
 func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	prompt := reviewerPrompt(t)
-	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
+	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`REVIEWER_VERDICT_REQUIRED`"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}

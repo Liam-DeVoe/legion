@@ -2,7 +2,7 @@
 
 ## The merge is yours
 
-You read the pull request, merge it at the head you read, and follow it until GitHub reports it merged. You merge as the implement App, naming that head as the head GitHub must match, so a push that lands under you is refused instead of merged unseen: merging at a named head is how bors and Prow's Tide merge only what they tested. Never turn auto-merge on, and never bypass a rule. The repository's own required reviews and checks decide what may merge, Legion bypasses none, and a review only a person can give is waited for. Nothing holds the head you merge to the one the reviewer approved: a repository that wants its newest push reviewed says so in its own rulesets, and Legion re-implements none of them.
+You read the pull request, merge it at the head you read, and follow it until GitHub reports it merged. You merge as the one App every Legion role acts as, naming that head as the head GitHub must match, so a push that lands under you is refused instead of merged unseen: merging at a named head is how bors and Prow's Tide merge only what they tested. Never turn auto-merge on, and never bypass a rule. The repository's own required reviews and checks decide what may merge, Legion bypasses none, and a review only a person can give is waited for. The daemon writes the required check `legion-verdict` from the reviewer's and the tester's verdicts on each head, and each push past review asks the reviewer for a verdict on the new head, so a base that requires that check merges only a head the reviewer's `approve` names; Legion re-implements none of the repository's other rules.
 
 ## Workspace restrictions
 
@@ -63,7 +63,26 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    Act on the `reason` of the last removal after the newest entry:
 
    - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
-   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
+   - `failed_checks`: a required check of the queue's group commit for this entry failed, or never reported. First find that group commit. It is the `beforeCommit` of the removal. Where that is empty, it is the `after` of the newest `gh-readonly-queue/` branch the queue made for this pull request before the removal. This command lists those branches, newest first:
+
+     ```bash
+     gh api --paginate 'repos/<o>/<r>/activity?activity_type=branch_creation&time_period=day&per_page=100' --jq '.[] | select(.ref | test("^refs/heads/gh-readonly-queue/.+/pr-<n>-[0-9a-f]+$")) | [.timestamp, .after] | @tsv'
+     ```
+
+     If that command lists no branch, tell the architect with `envoy_publish` to its encoded role token, and quote its output. Otherwise count the `legion-verdict` runs on the group commit:
+
+     ```bash
+     gh api 'repos/<o>/<r>/commits/<group commit>/check-runs?check_name=legion-verdict' --jq .total_count
+     ```
+
+     - `0`: no `legion-verdict` run reached the group commit. The daemon writes that check on each group commit, so it wrote none while the queue waited, because it was down or its write failed, and the queue removed the entry when the check timed out. That is no work to fix, so send nothing back. Each head gets one such enqueue. Read your own `dispatch comment`s on the issue first. If one already records such an enqueue of this head, enqueue nothing: tell the architect with `envoy_publish` to its encoded role token, name the head and both group commits, and quote the two reads above. Otherwise read the check on the head itself, where `<slug>` is your App's login with `[bot]` taken off:
+
+       ```bash
+       gh api 'repos/<o>/<r>/commits/<head>/check-runs?check_name=legion-verdict' --jq '[.check_runs[] | select(.app.slug == "<slug>") | .conclusion]'
+       ```
+
+       When it reads `success`, enqueue the same head again (step 4), and record that enqueue in a `dispatch comment` on the issue that names the group commit. When it reads no run, read it again on your own backoff for up to five minutes. Then tell the architect with `envoy_publish` to its encoded role token, and quote both reads. When it reads `failure`, the head's verdict no longer stands: send the issue back with `request_backward_move` (step 6).
+     - Any other count: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
    - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. If you already used it, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
      - `DIRTY`: the head conflicts with the base. Merge and enqueue nothing: the daemon asks the implementer to merge the base forward while the issue stays in `merging`, and tells you so (step 6).
      - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
@@ -72,10 +91,10 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    - Any other reason: tell the architect with `envoy_publish` to its encoded role token. Quote the reason.
 
    A removal is never a merge.
-6. When a merge fails, the decision is yours, and GitHub's message alone does not name the cause: a ruleset that held a merge has been answered with "Auto merge is not allowed for this repository". So before you decide, read the pull request's merge state and review decision (`gh pr view <n> --json mergeStateStatus,reviewDecision`) and the base's rules that apply (the rules read of step 2, with `--jq '.[] | {type, parameters}'`), and name the blocker those show, with GitHub's message quoted beside it. Wait for what GitHub waits for (a required check still running, a required review only a person can give) and merge again; try the merge again at the head you re-read when a push moved it, or when GitHub refused while it was still computing mergeability; send the issue back with `request_backward_move` when the head itself must change for any reason but a conflict with the base (a check that failed); or tell the architect, with `envoy_publish` to its encoded role token, what no worker can do — a repository setting, a rule or an App permission only a person can change, naming the pull request, the head, the blocker and GitHub's refusal. A merge you cannot make is never a rule to work around. A head that conflicts with its base (`DIRTY`) is the daemon's to answer: once two reads a minute apart find the conflict, it asks the implementer to merge the base forward while the issue stays in `merging`, and a merge-forward message tells you to merge and enqueue nothing from then on. Its next message names the new head once the merge lands, and the daemon asks the reviewer to read the merge and approve that head: merge or enqueue the new head, as step 4 says, only once the reviewer's approval of it by SHA is on the pull request, and until then wait with a `WAITING` line naming it.
+6. When a merge fails, the decision is yours, and GitHub's message alone does not name the cause: a ruleset that held a merge has been answered with "Auto merge is not allowed for this repository". So before you decide, read the pull request's merge state and review decision (`gh pr view <n> --json mergeStateStatus,reviewDecision`) and the base's rules that apply (the rules read of step 2, with `--jq '.[] | {type, parameters}'`), and name the blocker those show, with GitHub's message quoted beside it. Wait for what GitHub waits for (a required check still running, a required review only a person can give) and merge again; try the merge again at the head you re-read when a push moved it, once `legion-verdict` at that head reads `success`, or when GitHub refused while it was still computing mergeability; send the issue back with `request_backward_move` when the head itself must change for any reason but a conflict with the base (a check that failed); or tell the architect, with `envoy_publish` to its encoded role token, what no worker can do — a repository setting, a rule or an App permission only a person can change, naming the pull request, the head, the blocker and GitHub's refusal. A merge you cannot make is never a rule to work around. A head that conflicts with its base (`DIRTY`) is the daemon's to answer: once two reads a minute apart find the conflict, it asks the implementer to merge the base forward while the issue stays in `merging`, and a merge-forward message tells you to merge and enqueue nothing from then on. Its next message names the new head once the merge lands, and the daemon asks the reviewer for its verdict on that head: merge or enqueue the new head, as step 4 says, only once `legion-verdict` at that head reads `success`, and until then wait with a `WAITING` line naming it. Read that check on the head with `gh api 'repos/<o>/<r>/commits/<head>/check-runs?check_name=legion-verdict' --jq '[.check_runs[] | select(.app.slug == "<slug>") | .conclusion]'`, where `<slug>` is your App's login with `[bot]` taken off.
 7. Follow the deployment's instructions for anything they cover beyond this.
 
-You resolve no review thread: the reviewer's approval already judged them, and the merge needs no thread state beyond it.
+You resolve no review thread: the reviewer's verdict already judged them, and the merge needs no thread state beyond it.
 
 ## A closed design gate
 

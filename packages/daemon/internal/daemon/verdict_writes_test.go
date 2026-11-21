@@ -77,10 +77,11 @@ type fakeWrite struct {
 // check runs and the commit statuses of each head, created and updated by the daemon's writes; pull
 // request 86's merge state, `blocked` while its head has no legion-verdict run concluding success
 // and `clean` once it has, which is what a ruleset that requires the check answers; and any other
-// pull request named in pulls. Each write and each read of pull request 86 is recorded in order.
-// failCreates is how many of the next creates of a check run GitHub answers 502, as it does when
-// it fails a request; staleReads is how many reads of pull request 86, made once its head has a
-// success run, still answer `blocked`, as GitHub does while it has not yet counted a new run.
+// pull request named in pulls, whose reads it counts in pullReads. Each write and each read of pull
+// request 86 is recorded in order. failCreates is how many of the next creates of a check run
+// GitHub answers 502, as it does when it fails a request; staleReads is how many reads of pull
+// request 86, made once its head has a success run, still answer `blocked`, as GitHub does while it
+// has not yet counted a new run.
 type verdictGitHub struct {
 	mu          sync.Mutex
 	nextID      int64
@@ -90,12 +91,13 @@ type verdictGitHub struct {
 	writes      []fakeWrite
 	events      []string
 	pulls       map[int]string
+	pullReads   map[int]int
 	failCreates int
 	staleReads  int
 }
 
 func newVerdictGitHub() *verdictGitHub {
-	return &verdictGitHub{nextID: 1000, head86: "code", pulls: map[int]string{}}
+	return &verdictGitHub{nextID: 1000, head86: "code", pulls: map[int]string{}, pullReads: map[int]int{}}
 }
 
 func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
@@ -139,6 +141,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "pulls":
 			number, _ := strconv.Atoi(parts[1])
 			pull, known := g.pulls[number]
+			g.pullReads[number]++
 			if !known {
 				http.NotFound(w, r)
 				return
@@ -252,11 +255,18 @@ type verdictRig struct {
 	asked []string
 }
 
-func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool)) *verdictRig {
+// newVerdictRig builds a verdictRig over the store seed fills. wrap, where given, builds the fake's
+// handler around the rig's verdictGitHub and its own handler, for a test that serves more of GitHub.
+func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
+	wrap ...func(*verdictGitHub, http.HandlerFunc) http.HandlerFunc) *verdictRig {
 	t.Helper()
 	rig := &verdictRig{pool: isolatedOutboxPool(t), github: newVerdictGitHub(), logs: &syncBuffer{}}
 	seed(t, rig.pool)
-	api := githubtest.Server(t, githubtest.Spec{Handle: rig.github.serve(t)})
+	handle := rig.github.serve(t)
+	for _, around := range wrap {
+		handle = around(rig.github, handle)
+	}
+	api := githubtest.Server(t, githubtest.Spec{Handle: handle})
 	log := slog.New(slog.NewJSONHandler(rig.logs, nil))
 	w := &workflowRuntime{
 		pool: rig.pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),

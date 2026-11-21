@@ -792,6 +792,29 @@ type PullRequestDequeued struct {
 
 func (PullRequestDequeued) namedIssue() (string, bool) { return "", false }
 
+// MergeGroup is a merge queue's group of pull request Number of Repo: GitHub's merge_group event as
+// Envoy publishes it, with the number read from the group's head_ref
+// (gh-readonly-queue/<base>/pr-<number>-<base sha>), and HeadSHA the group's own commit, which the
+// queue waits on every required check of. Action is GitHub's: checks_requested asks for those
+// checks, and the daemon writes legion-verdict on HeadSHA from the pull request's verdict at its
+// head (internal/daemon's mergeGroupHandler); destroyed ends the group, and nothing is written. It
+// is a fact only on a repository the daemon writes legion-verdict on
+// (ConsumerSpec.VerdictRepositories); the consumer acknowledges it with no transaction on every
+// other repository (outsideFact).
+type MergeGroup struct {
+	Repo    string
+	Number  int
+	Action  string
+	HeadSHA string
+}
+
+func (MergeGroup) namedIssue() (string, bool) { return "", false }
+
+// ChecksRequested says whether the group asks for its required checks, legion-verdict among them.
+func (g MergeGroup) ChecksRequested() bool {
+	return g.Action == "checks_requested"
+}
+
 // MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
 // merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
 // or closed unmerged, or, with Unread, no read of it succeeded, so the daemon does not know

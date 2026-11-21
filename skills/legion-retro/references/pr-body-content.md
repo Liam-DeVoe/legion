@@ -2,7 +2,7 @@
 
 Read this at step 4 of `skill://legion-retro`. A failure here stops retro as its "When retro
 stops" says. A repository can require body lines derived from the changed paths, read by a required
-check; the body approved earlier may not cover every path the pull request now changes, and the
+check; the body reviewed earlier may not cover every path the pull request now changes, and the
 merger reports a stale body rather than rewriting it. `<owner>/<repo>` and `<n>` are the pull
 request's repository and number.
 
@@ -10,7 +10,7 @@ request's repository and number.
    pull request template (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`)
    and the workflow under `.github/workflows/` that reads the body, for lines they require per
    changed path. When they require none, stop here.
-2. List the paths the pull request changes at `<head>`, the approved head your task names:
+2. List the paths the pull request changes at `<head>`, the reviewed head your task names:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" git fetch && jj -R "$LEGION_WORKSPACE" diff --from "fork_point(${base}@origin | <head>)" --to <head> --name-only
@@ -30,7 +30,7 @@ request's repository and number.
    The parentheses keep `pipefail` to this line. In `$dir/body.md`, change only the path-derived
    lines, adding a missing one where the sources place it; leave every other line byte for byte,
    the `Checks` block included.
-4. Write it back. A body edit changes no commit, so the approval stands:
+4. Write it back. A body edit changes no commit, so the reviewer's verdict and `legion-verdict` stand:
 
    ```bash
    cd -- "$LEGION_WORKSPACE" && gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@"$dir/body.md"

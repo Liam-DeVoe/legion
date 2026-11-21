@@ -1904,6 +1904,44 @@ export const LegionReviewVerdictRequest = z.strictObject({
   summary: nonEmptyString,
 });
 
+/** A GitHub repository as `owner/name`, by the daemon's own rule for one (`ghrepo.Parse`): an owner
+ * of at most 39 letters, digits, `-` and `_` that starts with a letter or digit, and a name of at
+ * most 100 letters, digits, `.`, `-` and `_` that is not `.` or `..`. The side-review routes refuse
+ * any other name (`INVALID_REPOSITORY`), and the `legion` tool refuses it before it sends one. */
+export const legionRepository = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/);
+
+/** `api.PullRequestReviewerRequest`, the controller's naming of a side reviewer (`POST
+ * /legion/v1/pull-request-reviewer`): `session`, a running Legion reviewer's session whose tree did
+ * not write the change and is on the reviewed repository, is the reviewer of pull request `number`
+ * of `repository` at `head`. The daemon takes it only from the project's controller claim, only
+ * for an open pull request no Legion issue owns on a verdict repository whose entry takes side
+ * reviews, and only at the pull request's current head (`VERDICT_CALLER_FORBIDDEN` otherwise); it
+ * answers an empty object. */
+export const LegionPullRequestReviewerRequest = z.strictObject({
+  grantId: nonEmptyString,
+  repository: legionRepository,
+  number: z.number().int().positive(),
+  head: nonEmptyString,
+  session: nonEmptyString,
+});
+
+/** `api.PullRequestVerdictRequest`, the verdict the controller relays from a side reviewer (`POST
+ * /legion/v1/pull-request-verdict`): `session`'s `verdict` on pull request `number` of `repository`
+ * at `head`, which the daemon's writer of `legion-verdict` reads as the verdict on that head. The
+ * daemon refuses it as it refuses the naming (`VERDICT_CALLER_FORBIDDEN`), and a session that is
+ * not the reviewer the controller named for that pull request and head
+ * (`VERDICT_REVIEWER_NOT_NAMED`); it answers an empty object. */
+export const LegionPullRequestVerdictRequest = z.strictObject({
+  grantId: nonEmptyString,
+  repository: legionRepository,
+  number: z.number().int().positive(),
+  head: nonEmptyString,
+  verdict: z.enum(LEGION_REVIEWER_VERDICTS),
+  session: nonEmptyString,
+});
+
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({
   grantId: nonEmptyString,

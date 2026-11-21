@@ -1,0 +1,13 @@
+{
+  "topic": "notifications.github.sjawhar.legion.merge_group",
+  "payload_summary": "merge group checks_requested: sjawhar/legion#1050 into main (9e1c7d2)",
+  "payload": {
+    "action": "checks_requested",
+    "base_ref": "refs/heads/main",
+    "head_ref": "refs/heads/gh-readonly-queue/main/pr-1050-7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d",
+    "head_sha": "9e1c7d2a4b6f8e0c1d3a5b7c9e1f2a4b6c8d0e2f",
+    "kind": "merge_group",
+    "number": "1050",
+    "repo": "sjawhar/legion"
+  }
+}

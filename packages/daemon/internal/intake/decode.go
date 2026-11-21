@@ -721,6 +721,8 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 		if fact, unread, reason = decodeChecks(subject, repository, raw); reason != "" {
 			refused = &checksRefusal{reason: reason, settlement: readSettlement(raw)}
 		}
+	case "merge_group":
+		fact = decodeMergeGroup(repository, raw)
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
@@ -865,6 +867,19 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	before, _ := rawString(raw, "before")
 	sender, _ := rawString(raw, "sender")
 	return Push{Repo: repository.String(), Branch: branch, Before: before, After: after, Sender: sender}, nil
+}
+
+// decodeMergeGroup decodes a merge queue's group (MergeGroup): the pull request its head_ref names,
+// which Envoy reads into number and leaves out where the ref names none, GitHub's action, and the
+// group's own commit. One that names no pull request, no action or no commit is no fact: there is
+// nothing to decide, or nothing to write on.
+func decodeMergeGroup(repository ghrepo.Repository, raw map[string]json.RawMessage) Fact {
+	number, action, ok := githubIdentity(raw)
+	sha, _ := rawString(raw, "head_sha")
+	if !ok || action == "" || sha == "" {
+		return nil
+	}
+	return MergeGroup{Repo: repository.String(), Number: number, Action: action, HeadSHA: sha}
 }
 
 // decodeChecks decodes a checks settlement of the pull request its subject names. A settlement

@@ -1,11 +1,13 @@
 import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
+  LEGION_REVIEWER_VERDICTS,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
   type LegionPhase,
   type LegionState,
+  legionRepository,
 } from "@legion/contracts/legion-api";
 import {
   type DaemonRestartRetry,
@@ -61,7 +63,16 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     ...PHASE_OPS,
   ],
   "phase-worker": PHASE_OPS,
-  controller: ["read_state", "set_status", "fresh_session", "compact", "pause", "resume"],
+  controller: [
+    "read_state",
+    "set_status",
+    "fresh_session",
+    "compact",
+    "pause",
+    "resume",
+    "pull_request_reviewer",
+    "pull_request_verdict",
+  ],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -79,6 +90,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   compact: ["issue", "role"],
   pause: ["reason"],
   resume: [],
+  pull_request_reviewer: ["repository", "number", "head", "session"],
+  pull_request_verdict: ["repository", "number", "head", "verdict", "session"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -335,6 +348,26 @@ function toolSchema(pi: PiApi): unknown {
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    repository: z
+      .string()
+      .describe("pull_request_reviewer's and pull_request_verdict's repository, as owner/name")
+      .optional(),
+    number: z
+      .number()
+      .describe("pull_request_reviewer's and pull_request_verdict's pull request number")
+      .optional(),
+    head: z
+      .string()
+      .describe(
+        "pull_request_reviewer's and pull_request_verdict's head: the pull request's current head commit"
+      )
+      .optional(),
+    session: z
+      .string()
+      .describe(
+        "pull_request_reviewer's and pull_request_verdict's reviewer session: the side reviewer you name, and whose verdict you relay"
+      )
+      .optional(),
   });
 }
 
@@ -510,7 +543,15 @@ export function createLegionTool(deps: {
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-        "since each would start a turn. ",
+        "since each would start a turn. " +
+        "pull_request_reviewer (repository, number, head, session) names a running Legion reviewer's session the side reviewer " +
+        "of a pull request that no Legion issue owns, at its current head: name a reviewer whose tree did not write the change " +
+        "and is on the reviewed repository. pull_request_verdict (repository, number, head, verdict, session) relays that " +
+        "reviewer's verdict on that head, approve or changes, and the daemon writes legion-verdict from it: relay a verdict only " +
+        "when the Envoy delivery's sender session is the reviewer you named for that pull request and head. The daemon takes " +
+        "both only from the controller, only for an open pull request no Legion issue owns on a repository whose verdict entry " +
+        "takes side reviews, and only at the pull request's current head (VERDICT_CALLER_FORBIDDEN), and it refuses a verdict " +
+        "from a session not named for that pull request and head (VERDICT_REVIEWER_NOT_NAMED). ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -570,6 +611,42 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // A side review: the controller names the reviewer of a pull request no Legion issue
+          // owns at its head, then relays that reviewer's verdict on it. Each is validated whole
+          // before its grant is minted.
+          if (operation === "pull_request_reviewer" || operation === "pull_request_verdict") {
+            const number = parameters.number;
+            if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 1) {
+              throw new Error(`${operation} requires number, a pull request's number`);
+            }
+            const pullRequest = {
+              repository: requiredString(parameters, operation, "repository"),
+              number,
+              head: requiredString(parameters, operation, "head"),
+              session: requiredString(parameters, operation, "session"),
+            };
+            // One rule for a repository's name, the daemon's (`legionRepository`), so a name the
+            // daemon would refuse is refused here, before a grant is minted.
+            if (!legionRepository.safeParse(pullRequest.repository).success) {
+              throw new Error(
+                `${operation} requires repository as owner/name, such as acme/widgets`
+              );
+            }
+            if (operation === "pull_request_reviewer") {
+              const { grantId } = await controllerGrant(active.sessionID);
+              return jsonSuccess(await client.pullRequestReviewer({ grantId, ...pullRequest }));
+            }
+            const verdict = LEGION_REVIEWER_VERDICTS.find((word) => word === parameters.verdict);
+            if (verdict === undefined) {
+              throw new Error(
+                `pull_request_verdict requires verdict ${LEGION_REVIEWER_VERDICTS.join(" or ")}`
+              );
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(
+              await client.pullRequestVerdict({ grantId, ...pullRequest, verdict })
+            );
           }
           // The controller's three writes of one issue: each validated whole before its grant is
           // minted.

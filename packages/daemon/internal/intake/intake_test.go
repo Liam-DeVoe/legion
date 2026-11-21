@@ -956,6 +956,26 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 					t.Fatalf("%s's push decoded %#v, want %#v from the golden's own payload", repository, decoded.Fact, want)
 				}
 			}
+			if kind == "merge_group" {
+				// The merge group's decode is compared whole with the listener's own payload, as the
+				// push's is: the number Envoy read from head_ref, the action and the group's commit.
+				field := func(key string) string {
+					t.Helper()
+					value, ok := golden.Payload[key].(string)
+					if !ok {
+						t.Fatalf("the merge_group golden carries no string %q, which decodeMergeGroup reads", key)
+					}
+					return value
+				}
+				number, err := strconv.Atoi(field("number"))
+				if err != nil {
+					t.Fatalf("the merge_group golden's number %q: %v", field("number"), err)
+				}
+				want := MergeGroup{Repo: repository.String(), Number: number, Action: field("action"), HeadSHA: field("head_sha")}
+				if got, ok := decoded.Fact.(MergeGroup); !ok || got != want {
+					t.Fatalf("%s's merge group decoded %#v, want %#v from the golden's own payload", repository, decoded.Fact, want)
+				}
+			}
 		})
 	}
 }

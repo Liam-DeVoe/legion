@@ -117,8 +117,8 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*re
 	}
 	repo := w.heardSpelling(issue.GitHubRepo)
 	// The opened this read applies carries GitHub's updated_at and nothing of when the head
-	// arrived: a listed review names the head it read in its own Legion footer
-	// (intake.PullRequestReview), so no clock of this read is weighed against a review's.
+	// arrived, and no review is judged by a clock: the reviewer's verdict names the head it read,
+	// and a person's request for changes refuses the commit_id its webhook carried.
 	w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
 		"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
 	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
