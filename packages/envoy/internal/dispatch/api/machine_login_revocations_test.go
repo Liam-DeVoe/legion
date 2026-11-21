@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -587,4 +588,65 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 	if code := <-removed; code != http.StatusOK {
 		t.Errorf("alice's removal of erin answered %d once erin's approval ended, want 200", code)
 	}
+}
+
+// TestARefusedRemovalHoldsUpNoApproveOfThePerson: a removal takes the approval lock of the person
+// it takes off the list before the project's owner lock, and that person's approve does not wait
+// for the lock: it is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while another transaction holds it. So
+// a removal the caller may not make must take no lock before the caller is known to own the
+// project, or anyone who sees the project could keep a person's approves refused by sending such
+// removals. carol, a full member who sees ACC and does not own it, sends the removal of erin from
+// ACC while another write of ACC's access holds its owner lock: she is answered 403
+// PROJECT_OWNER_REQUIRED without waiting on a lock, and erin's approve of her own machine login
+// meanwhile is 200.
+//
+// Control: ownerWrite taking access.LockForAccessWrite's locks before it reads the owner, as the
+// head before this row did, and carol's removal holds erin's approval lock while it waits on ACC's
+// owner lock, so erin's approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, named.
+func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL,
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	// Another write of ACC's access, holding ACC's owner lock until the row releases it.
+	other, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Rollback(context.Background()) })
+	if err := store.LockOwner(ctx, other, store.ProjectOwner("ACC")); err != nil {
+		t.Fatalf("hold ACC's owner lock: %v", err)
+	}
+
+	removal := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, accessCarol)
+	}()
+	var refused *httptest.ResponseRecorder
+	for giveUp := time.Now().Add(30 * time.Second); refused == nil && advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
+		select {
+		case refused = <-removal:
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("carol's removal of erin from ACC neither answered nor waited on a lock within 30 s")
+			}
+		}
+	}
+	approved := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
+	if approved.Code != http.StatusOK {
+		t.Errorf("erin's approve while carol's removal of her, which carol may not make, is in flight = %d %s, want 200", approved.Code, approved.Body.String())
+	}
+	if err := other.Rollback(ctx); err != nil {
+		t.Fatalf("release ACC's owner lock: %v", err)
+	}
+	if refused == nil {
+		refused = <-removal
+	}
+	wantRefusal(t, refused, http.StatusForbidden, "PROJECT_OWNER_REQUIRED", accessCarol, "DELETE erin from ACC's list")
 }

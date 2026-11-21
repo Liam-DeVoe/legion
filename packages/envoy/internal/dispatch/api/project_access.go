@@ -379,7 +379,12 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
 // sees the project, and so may read its access list, is then told it is not the owner, by the 403
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
-// to anyone who guessed its key.
+// to anyone who guessed its key. The owner is read first with no lock (access.ReadOwner), and a
+// caller who does not own the project is refused before the write takes any: a removal's first
+// lock is the approval lock of the person it removes, which that person's approve does not wait
+// for, so a removal anyone who sees the project may send and the owner check refuses would
+// otherwise hold that person's approves at 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT. The read under
+// the locks is the one that decides.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group, removed string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
@@ -401,14 +406,19 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group, remov
 		return
 	}
 	defer tx.Rollback(r.Context())
-	owner, err := access.LockForAccessWrite(r.Context(), tx, key, group, removed)
-	if err != nil {
-		s.writeAccessError(w, err)
-		return
+	owns := func(owner *string, err error) bool {
+		if err != nil {
+			s.writeAccessError(w, err)
+			return false
+		}
+		if owner == nil || *owner != actor.ID {
+			writeError(w, "PROJECT_OWNER_REQUIRED", http.StatusForbidden,
+				"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
+			return false
+		}
+		return true
 	}
-	if owner == nil || *owner != actor.ID {
-		writeError(w, "PROJECT_OWNER_REQUIRED", http.StatusForbidden,
-			"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
+	if !owns(access.ReadOwner(r.Context(), tx, key)) || !owns(access.LockForAccessWrite(r.Context(), tx, key, group, removed)) {
 		return
 	}
 	answer, appended, err := write(r.Context(), tx, key, actor, who.Viewer)

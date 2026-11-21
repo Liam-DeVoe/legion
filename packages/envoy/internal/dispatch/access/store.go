@@ -123,8 +123,17 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed stri
 	if err := lockProject(ctx, tx, key); err != nil {
 		return nil, err
 	}
+	return ReadOwner(ctx, tx, key)
+}
+
+// ReadOwner answers project key's owner as q reads it, nil for a project with none, and
+// ErrProjectNotFound for an unknown key, taking no lock. LockForAccessWrite reads it again under
+// the project's owner lock, and only that read decides a write; a write reads it first to refuse a
+// caller who does not own the project before it takes any lock (api.ownerWrite), so a refused write
+// holds up no other.
+func ReadOwner(ctx context.Context, q Querier, key string) (*string, error) {
 	var owner *string
-	err := tx.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
+	err := q.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
