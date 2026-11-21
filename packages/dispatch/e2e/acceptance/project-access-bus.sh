@@ -132,8 +132,9 @@ if [ "$mode" = inputs ]; then
   exit "$status"
 fi
 
-# two_builds_setup reads DATABASE_URL, drops every DISPATCH_*, ENVOY_*, NATS_* and PG* setting the
-# shell inherited, and arms two-builds' teardown, which bus_cleanup below runs last.
+# two_builds_setup reads DATABASE_URL, drops every DISPATCH_*, ENVOY_* and NATS_* setting the shell
+# inherited and its PGHOSTADDR, PGSERVICE and PGSERVICEFILE, and arms two-builds' teardown, which
+# bus_cleanup below runs last.
 two_builds_setup 'project access bus e2e'
 for variable in $(compgen -e); do
   case $variable in AGENT_SECRETS_*) unset "$variable" ;; esac
@@ -597,12 +598,11 @@ exited() { ! kill -0 "$1" 2>/dev/null; }
 
 if section_gate writes; then
   begin writes
-  : >"$work/markers-PUB" && : >"$work/markers-PRIV"
   for project in PUB PRIV; do
-    case $project in PUB) label=pub ;; PRIV) label=priv ;; esac
+    label=${project,,}
     session=${session_name[$label]}
     marker="$project-marker-$(openssl rand -hex 6)"
-    printf '%s\n' "$marker" "$project-1" "$session" "$(recalled main "$project notes")" >>"$work/markers-$project"
+    printf '%s\n' "$marker" "$project-1" "$session" "$(recalled main "$project notes")" >"$work/markers-$project"
     send main carol POST "/api/v1/issues/$project-1/comments" "$(jq -cn --arg b "A remark for @$session ($marker issue)." \
       --arg t "session:$session" '{body: $b, mentions: [{target: $t}]}')"
     expect_status 201 "carol comments on $project-1 mentioning $session"

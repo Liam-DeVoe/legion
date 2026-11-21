@@ -156,7 +156,7 @@ section_gate() {
   local missing line
   missing=$(section_missing "$1") || return 2
   [ -n "$missing" ] || return 0
-  line="not run: $1 ($(paste -sd ';' <<<"$missing" | sed 's/;/; /g'))"
+  line="not run: $1 (${missing//$'\n'/; })"
   printf '%s\n' "$line" | tee -a "$work/unrun"
   return 1
 }
