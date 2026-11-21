@@ -15,6 +15,7 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
+import { WordedLinksMarked } from "../refs/RefLink";
 import { useKnownReferences } from "../refs/reference-names";
 import { issueOfRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
@@ -530,15 +531,18 @@ function DrawnText({
       {reads}
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
-            reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
-        <MarkdownBody
-          markdown={markdown}
-          onRendered={link}
-          referenceText=""
-          source={source}
-          surface="node-row-words"
-          tree={tree}
-        />
+            reads no target, and the row's pass links what the words cite (`linkRowReferences`).
+            A link whose words its author wrote keeps those words alone, with no status mark. */}
+        <WordedLinksMarked.Provider value={false}>
+          <MarkdownBody
+            markdown={markdown}
+            onRendered={link}
+            referenceText=""
+            source={source}
+            surface="node-row-words"
+            tree={tree}
+          />
+        </WordedLinksMarked.Provider>
       </TextAskCard.Provider>
     </div>
   );
