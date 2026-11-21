@@ -61,8 +61,9 @@ read_other_cluster() {
   masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
   admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
+  admission_power "$KUBE" "$cstep"
   named_rights "$iam_project"
-  guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$NAMED_RIGHTS")"
+  guard_rights="$(with_rights "$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")" "$NAMED_RIGHTS")"
   # A cluster that is no GKE cluster runs kube-controller-manager's own approver of kubelet client
   # certificates (NODE_CLIENT_RIGHTS).
   [ "$groups_mode" != own ] || guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"

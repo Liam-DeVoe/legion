@@ -4161,7 +4161,10 @@ project has no fleet passes `--fleet none`: an empty membership list then passes
 membership listed is a finding. A fleet member that is no GKE cluster reads UNKNOWN, since its own
 cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. In the
 IAM steps only GKE's, GKE Hub's and Compute Engine's service agents are allowed by kind; another
-Google service agent the deployment needs is named with `--service-agent <email>`. It
+Google service agent the deployment needs is named with `--service-agent <email>`. Admission power
+outside the admission objects counts too: the backend of a webhook that can match a guarded
+namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
+a webhook that calls a URL outside the cluster reads UNKNOWN. It
 reads code first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing
 found, 1 naming each principal and right, or 2 naming each step it could not read, a run that
 stopped mid-way included.

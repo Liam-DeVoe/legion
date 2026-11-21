@@ -247,6 +247,19 @@
 # UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
 # allowed.
 #
+# Admission power outside the admission objects (admission-backends.sh), asked on every cluster of
+# the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
+# can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
+# change), the writes to its backend Service, its Endpoints and EndpointSlices, its Secrets (the TLS
+# key) and the pods and pod controllers in that Service's namespace; a webhook that calls a URL
+# outside the cluster is UNKNOWN. Create, update and patch of each cluster-scoped resource of a
+# policy engine (a CRD of kyverno.io, gatekeeper.sh or its subgroups, or a group whose name holds
+# "policy"), as a Kyverno ClusterPolicy or a Gatekeeper Assign mutates pods. And the writes to each
+# parameter object an admission policy's binding names (paramRef, of the policy's paramKind,
+# resolved through the API server's discovery): create, and update and patch by name. A refused
+# list of webhook configurations, CRDs or admission policies, and a parameter kind the discovery
+# does not resolve, is UNKNOWN.
+#
 # Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
 # the identity service for GKE takes users and groups from an outside identity provider, so no
 # review sees who either lets in: on each GKE cluster of the pool, read from the cluster list
@@ -494,9 +507,9 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
 # before output.sh defines its report, or leave a step that needs it unread.
 missing=""
 for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
-  step-clusters.sh reviews.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh step-workload-identity.sh step-live-iam.sh \
-  step-admin-tag.sh analysis.jq become-rights.jq code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq \
-  guard-rights.jq named-rights.jq rec.jq review-answer.jq review-request.jq; do
+  step-clusters.sh reviews.sh admission-backends.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh step-workload-identity.sh \
+  step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq \
+  guard-rights.jq named-rights.jq rec.jq review-answer.jq review-request.jq webhook-backends.jq; do
   [ -r "$LIB/$part" ] || missing="${missing:+$missing, }$part"
 done
 if [ -n "$missing" ]; then
@@ -518,6 +531,8 @@ fi
 . "$LIB/checks.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
 . "$LIB/reviews.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/admission-backends.sh
+. "$LIB/admission-backends.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-permission-names.sh
 . "$LIB/step-permission-names.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh

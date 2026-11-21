@@ -258,6 +258,25 @@ case "${args[*]}" in
       jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
         | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}]}'
     ;;
+  "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
+    # The cluster's webhook configurations: the world's webhooks.json (each a configuration object), or none.
+    [ ! -e "$dir/refuse-webhooks" ] || forbidden mutatingwebhookconfigurations.admissionregistration.k8s.io 'list resource "mutatingwebhookconfigurations" in API group "admissionregistration.k8s.io"' container.mutatingWebhookConfigurations.list
+    { if [ -e "$dir/webhooks.json" ]; then cat "$dir/webhooks.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get customresourcedefinitions -o json")
+    # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none.
+    [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
+    { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get "*admissionpolic*" -o json")
+    # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
+    { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get --raw "*)
+    # Discovery of one group version: the world's raw.json, keyed by path, or the API server's 404.
+    jq -e --arg p "${args[2]}" '.[$p] // error("no such path")' "$dir/raw.json" 2>/dev/null ||
+      { echo "Error from server (NotFound): the server could not find the requested resource" >&2; exit 1; }
+    ;;
   "get roles,clusterroles --all-namespaces -o json")
     # The built-in cluster-admin role, and one ClusterRole of each grant (planted-<its index>, as the
     # bindings' list names it), holding the grant as a rule, limited by name when the grant names one.

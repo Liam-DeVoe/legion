@@ -28,7 +28,7 @@
 #     Secret Manager's NotFound and PermissionDenied are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
-# the run to its exit and to the line naming what it planted. The rows are in five files of
+# the run to its exit and to the line naming what it planted. The rows are in six files of
 # operator-token-minters/, by concern, each sourced below after the world and its helpers, and
 # each listing its rows in its header:
 #
@@ -41,7 +41,9 @@
 #   - test-rows-iam.sh: Google IAM: GKE IAM, the minters of the operator's and the broker's
 #     accounts, the hold writers, IAM impersonation and IAM writers, and a fleet member's project;
 #   - test-rows-pool.sh: the pool's other clusters: the project's other clusters, the pool
-#     project's own clusters, and the fleet's members.
+#     project's own clusters, and the fleet's members;
+#   - test-rows-admission.sh: admission power outside the admission objects: a webhook's backend,
+#     a policy engine's resources, and an admission policy's parameter objects.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -435,6 +437,8 @@ each() {
 . "$script_dir/operator-token-minters/test-rows-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-pool.sh
 . "$script_dir/operator-token-minters/test-rows-pool.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-admission.sh
+. "$script_dir/operator-token-minters/test-rows-admission.sh"
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
 echo "all $rows rows passed"
