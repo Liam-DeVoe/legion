@@ -3960,6 +3960,13 @@ project's own lane.
 image behind a stand-in auth callout: `DaemonPermissions` receives another project's pulls on
 `_INBOX.>`, the held grant receives none, and its GitHub consumer receives every repository's
 events, one only another project's issues resolve to among them.
+A daemon on fresh consumer names (`consumer_names: fresh` in its `legion.yaml`) makes every call on
+one generation of a consumer, `legion-go-<project>-<kind>~<generation>`, on a connection named
+`legion-go-<project>-<kind>/<generation>` (`natsgrant.DaemonGenerationConnection`). The auth
+service hands the connection's name into the scope (`natsgrant.Scope.Connection`), and the held
+grant adds that one fresh name's filtered create, info, pull and acknowledgements, for a generation
+of 22 letters and digits of a project the scope holds; any other name adds nothing.
+`natsgrant/daemon_generation_live_test.go` checks it on the hub's image behind a stand-in callout.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of

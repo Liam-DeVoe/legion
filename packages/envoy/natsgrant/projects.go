@@ -25,6 +25,14 @@ type Scope struct {
 	// Identity is the account the token names: its sub, or a Google token's email. It names the
 	// reply prefix (InboxPrefix).
 	Identity string
+	// Connection is the name the connection asked to be authorized under, which the auth service
+	// reads from the authorization request (natscallout's Request.Name). A daemon connection
+	// named for one generation of one of its consumers, legion-go-<P>-<kind>/<generation>
+	// (DaemonGenerationConnection), of a project the scope holds, is granted that generation's
+	// consumer, legion-go-<P>-<kind>~<generation>, beside the fixed one: its create on the kind's
+	// filter, its info, its pull and its acknowledgements. Any other name, "" among them, adds
+	// nothing.
+	Connection string
 }
 
 // inboxPrefixBase begins every reply prefix InboxPrefix makes: nats.go's own prefix, "_INBOX.",
@@ -103,11 +111,13 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 //     process the events of a repository it does not work in;
 //   - a consumer call on the notification stream that reaches every consumer (its consumer token a
 //     wildcard) becomes that call on each consumer the Legion daemon opens under each project,
-//     legion-go-<P>-<kind>, and nothing else: the create (its subject naming the consumer's one
-//     filter, which nats-server holds the request's body to), the info, the pull
-//     (CONSUMER.MSG.NEXT) and the acknowledgements. The kinds are dispatch (the project's issue
-//     events), wake (its Legion wake lane), ready (the one wake lane every daemon shares,
-//     bus.LegionWakeTopic) and github (every repository's events, notifications.github.>). The
+//     legion-go-<P>-<kind>, and, when the scope's connection is named for one generation of one of
+//     them (Scope.Connection, DaemonGenerationConnection), on that generation's fresh name
+//     legion-go-<P>-<kind>~<generation> with the same filter, and nothing else: the create (its
+//     subject naming the consumer's one filter, which nats-server holds the request's body to),
+//     the info, the pull (CONSUMER.MSG.NEXT) and the acknowledgements. The kinds are dispatch (the
+//     project's issue events), wake (its Legion wake lane), ready (the one wake lane every daemon
+//     shares, bus.LegionWakeTopic) and github (every repository's events, notifications.github.>). The
 //     GitHub consumer's create subject ends in its filter's wildcard, so it admits a create of
 //     that consumer on any filter inside the family. Each project has one GitHub consumer, not
 //     one per repository: a grant names a create subject exactly, with a wildcard only as a whole
@@ -193,6 +203,17 @@ func newHeldScope(scope Scope) (heldScope, error) {
 			named("ready", bus.LegionWakeTopic),
 			named("github", githubLanes),
 		)
+	}
+	// The connection's generation, when it names one of a consumer the scope holds: that fresh
+	// name, on the fixed consumer's filter (DaemonGenerationConnection).
+	if physical, ok := ParseDaemonGenerationConnection(scope.Connection); ok {
+		fixed := physical[:strings.LastIndex(physical, "~")]
+		for _, consumer := range held.consumers {
+			if consumer.name == fixed {
+				held.consumers = append(held.consumers, daemonConsumer{name: physical, filter: consumer.filter})
+				break
+			}
+		}
 	}
 	return held, nil
 }
