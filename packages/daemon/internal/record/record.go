@@ -2552,8 +2552,8 @@ type Store interface {
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 	// ClaimPhaseTask is the text of the task the claim token holds pending for phase at of run
-	// generation, at an entry no later than entry (any entry where entry is 0), and "" where it
-	// holds none: the delivery supervise.Machine.RetireStoppedTask retires for that phase. Its one
+	// generation at entry itself, and "" where it holds none or entry is 0: of the deliveries
+	// supervise.Machine.RetireStoppedTask retires for that phase, the one of that entry alone. Its one
 	// reader is the admission pass's stop of a phase under its worker (workflow's
 	// StopForChildren), which holds that task as the start the return gives back. It is a read of
 	// its own, and RoleRuns reads no task text, because no other rule over a run reads it.

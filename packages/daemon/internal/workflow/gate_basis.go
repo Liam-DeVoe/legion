@@ -36,24 +36,8 @@ const basisOpenedLine = "Design gate opened on an ancestor's approval."
 // move when the architect registers it again (R2). A step the deployment does not gate asks
 // nobody and opens at its registration, as every registration did under `gates.design: off`, so
 // it takes no basis either. The value is a copy: the fact is the API's.
-//
-// A root out of the workflow, or whose tree lingers (record.Stopped, of root as the registration's
-// transaction reads it), takes no basis either, standing or pending, and its step is written as a
-// registration with no basis writes it. Its architect can still be in the turn its leave suspends,
-// so its registration can land after the leave, which told the ancestor's architect that the root
-// left and ended any wait of its steps on an ancestor's request (leaveBases). A basis taken then
-// would tell that architect the root rests on it again, post the basis on the root's issue, and
-// open the step, or let a later approval open it, on a root nobody runs (R3, R8).
-func (e *Engine) registeredBasis(ctx context.Context, root record.Issue, fact intake.GateRegistered, ungated bool, stored *record.DesignGate,
-	version int,
-) *record.GateBasis {
+func (e *Engine) registeredBasis(fact intake.GateRegistered, ungated bool, stored *record.DesignGate, version int) *record.GateBasis {
 	if fact.Basis == nil || ungated {
-		return nil
-	}
-	if record.Stopped(root) {
-		e.logOnCommit(ctx, "workflow: a registration on a basis of a root out of the workflow takes no basis", "issue", root.Key,
-			"step", fact.Step.OrSpec(), "ancestor", fact.Basis.Issue, "basis", fact.Basis.ArtifactID, "basis_version", fact.Basis.Version,
-			"pending", fact.Basis.Pending != nil, "phase", root.Phase, "status", root.Status, "lingers", root.Lingers())
 		return nil
 	}
 	basis := *fact.Basis
@@ -89,12 +73,11 @@ func standsOn(gate record.DesignGate, basis record.GateBasis) bool {
 // refused itself (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). The refusal writes nothing and leaves the
 // fact unspent (intake.Result.Unspent): its cause can clear, as a move of the ancestor back out of
 // its retro clears it, and a call made again is then judged afresh rather than answered as one
-// already applied. A step the deployment does not gate takes no basis (registeredBasis), and no
-// step of root, the registration's record, takes one while root is out of the workflow or lingers
-// (record.Stopped), so neither refuses anything: such a registration is written as one with no
-// basis.
-func (e *Engine) acceptedBasis(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.GateRegistered) (intake.Result, error) {
-	if fact.Basis == nil || !e.gatesStep(fact.Step.OrSpec()) || record.Stopped(root) {
+// already applied. A step the deployment does not gate takes no basis (registeredBasis), so it
+// refuses nothing, and neither does a registration on a root out of the workflow, whose basis
+// gateRegistered drops before it asks.
+func (e *Engine) acceptedBasis(ctx context.Context, tx pgx.Tx, fact intake.GateRegistered) (intake.Result, error) {
+	if fact.Basis == nil || !e.gatesStep(fact.Step.OrSpec()) {
 		return intake.Result{}, nil
 	}
 	ancestor := fact.Basis.Issue
@@ -182,17 +165,21 @@ func openedNotice(root string, gate record.DesignGate, reviewer string) record.N
 // ancestor's architect of the pending registration. A registration that leaves no basis on the
 // ancestor a pending row of the step waited on ends that wait, and the ancestor's architect is told;
 // the root's own architect made that registration, so no basis-ended notice tells it what it did.
-// A root out of the workflow, or whose tree lingers, takes no basis (registeredBasis), and its leave
-// told each ancestor's architect that it left, so the end of such a wait on it is told to nobody,
-// as at the leave (endPendingUntold).
+// A root out of the workflow, or whose tree lingers, takes no basis (gateRegistered), and its
+// leave told each ancestor's architect that it left, so the end of such a wait on it is told to
+// nobody, as at the leave (endPendingUntold), and only logged.
 func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record.Issue, before *record.DesignGate, gate record.DesignGate, stood bool) error {
 	step := gate.Step.OrSpec()
-	if before != nil && before.PendingOnBasis() && (gate.Basis == nil || gate.Basis.Issue != before.Basis.Issue) && !record.Stopped(root) {
+	if before != nil && before.PendingOnBasis() && (gate.Basis == nil || gate.Basis.Issue != before.Basis.Issue) {
 		ended := *before.Basis
-		what := fmt.Sprintf("%s registered its %s step again with no basis on %s. The step no longer waits on approval request %s of version %d of the %s of %s.",
-			root.Key, step, ended.Issue, ended.Pending.Ask, ended.Version, step.Document(), ended.Issue)
-		if err := e.queueRestingRoot(ctx, tx, root, step, ended, restingEnded(ended.Pending.Ask), what); err != nil {
-			return err
+		if record.Stopped(root) {
+			e.logEndedUntold(ctx, root.Key, step, ended)
+		} else {
+			what := fmt.Sprintf("%s registered its %s step again with no basis on %s. The step no longer waits on approval request %s of version %d of the %s of %s.",
+				root.Key, step, ended.Issue, ended.Pending.Ask, ended.Version, step.Document(), ended.Issue)
+			if err := e.queueRestingRoot(ctx, tx, root, step, ended, restingEnded(ended.Pending.Ask), what); err != nil {
+				return err
+			}
 		}
 	}
 	switch {
@@ -831,7 +818,7 @@ func (e *Engine) ancestorLeftInStore(ctx context.Context, tx pgx.Tx, ancestor st
 //
 // A root out of the workflow, or whose tree lingers (record.Stopped), opens nothing: its leave
 // ended the waits of its steps (leaveBases), and a registration after the leave takes no basis
-// (registeredBasis). A step that still waits there, written before a leave ended such waits, ends
+// (gateRegistered). A step that still waits there, written before a leave ended such waits, ends
 // its wait as the leave would have, with nobody told (endPendingUntold), and is returned as it
 // ended.
 func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, approval record.EventMark, approver string) (record.DesignGate, error) {
@@ -900,7 +887,8 @@ func (e *Engine) endPendingUntold(ctx context.Context, tx pgx.Tx, root record.Is
 }
 
 // logEndedUntold logs the end of root key's step's wait on basis's request with nobody told, the
-// end of such a wait on a root out of the workflow (endPendingUntold, tellPendingEnded).
+// end of such a wait on a root out of the workflow (endPendingUntold, tellPendingEnded, and
+// tellRegisteredBasis for a registration with no basis on that root).
 func (e *Engine) logEndedUntold(ctx context.Context, key string, step record.DesignStep, basis record.GateBasis) {
 	e.logOnCommit(ctx, "workflow: a step's wait on an ancestor's approval request ended with its root out of the workflow, and nobody is told", "issue", key,
 		"step", step, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "ask", basis.Pending.Ask)

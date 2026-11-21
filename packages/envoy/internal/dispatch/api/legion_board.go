@@ -55,7 +55,7 @@ const (
 	legionColumnRetro            = "retro"
 	legionColumnMerging          = "merging"
 	legionColumnAwaitingChildren = "awaiting_children"
-	legionColumnAwaiting         = "awaiting_person"
+	legionColumnAwaitingPerson   = "awaiting_person"
 	legionColumnHeld             = "held"
 )
 
@@ -73,7 +73,7 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legionColumnRetro, "Retro"},
 	{legionColumnMerging, "Merging"},
 	{legionColumnAwaitingChildren, "Waiting on children"},
-	{legionColumnAwaiting, "Waiting on a person"},
+	{legionColumnAwaitingPerson, "Waiting on a person"},
 	{legionColumnHeld, "Held"},
 }
 
@@ -95,7 +95,7 @@ var legionPhaseColumns = map[string]string{
 	legion.PhaseMerging:          legionColumnMerging,
 	legion.PhaseAwaitingMerge:    legionColumnMerging,
 	legion.PhaseAwaitingChildren: legionColumnAwaitingChildren,
-	legion.PhaseAwaitingPerson:   legionColumnAwaiting,
+	legion.PhaseAwaitingPerson:   legionColumnAwaitingPerson,
 	legion.PhaseHeld:             legionColumnHeld,
 }
 

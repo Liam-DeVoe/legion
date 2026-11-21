@@ -11,12 +11,14 @@ body: |-
   message, the kind #4464 stopped writing for a conflict, which migration
   `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
   worker's pending task for the phase is retired (the supervise op `retire_task`). The start held
-  for a worker stopped in the middle of its phase is the task its claim was given for that phase,
-  a retry's task included. Where the move drops a merge forward of the parent's pull request that
-  has not landed, a stopped worker other than the implementer is told to write and push nothing
-  more, since the implementer may be merging in the workspace they share, and the implementer is
-  told of the dropped merge forward, with its head and its base, in its own `phase_ended` message
-  where the move ended its phase and otherwise in a `role_message`: one that has begun the merge
+  for a worker stopped in the middle of its phase is the task its claim was given for the entry the
+  phase stands on, a retry's task included, and otherwise the work that entry was raised with,
+  never the bare resume task a catch-up or a boot gives. Where the move drops a merge forward
+  of the parent's pull request that has not landed, a stopped worker other than the
+  implementer is told to write and push nothing more, since the implementer may be merging
+  in the workspace they share, and the implementer is told of the dropped merge forward, with
+  its head and its base, in its own `phase_ended` message where the move ended its phase and
+  otherwise in a `role_message`: one that has begun the merge
   finishes and pushes it and does nothing more, one that has not begun it begins none, and the
   daemon does not ask for it again. `request_backward_move` and `sign_off` on the parent are
   refused `WAITING_ON_CHILDREN`. The wait records each child that held it, the ones open at the

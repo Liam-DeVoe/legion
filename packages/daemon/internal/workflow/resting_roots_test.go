@@ -507,7 +507,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 // both with its own code and the issues it names rather than letting either through, and no hold
 // refuses nothing.
 func TestEveryAcceptanceHoldRefusesBothActs(t *testing.T) {
-	acts := []acceptanceAct{actSignOff, actCloseRoot}
+	acts := []architectAct{actSignOff, actCloseRoot}
 	for code, texts := range acceptanceRefusals {
 		for _, act := range acts {
 			if texts[act] == "" {

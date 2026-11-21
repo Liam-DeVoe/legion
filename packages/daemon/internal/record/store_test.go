@@ -2668,10 +2668,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	})
 }
 
-// ClaimPhaseTask reads the text of the task a claim holds for one phase of one run, at an entry no
-// later than the one asked (any entry for 0), as the retirement of a stopped phase's task reads
-// the task it retires (supervise.Machine.RetireStoppedTask), and nothing for a task of another
-// phase, another run or a later entry, or for a token no claim stands under.
+// ClaimPhaseTask reads the text of the task a claim holds for one phase of one run at the entry
+// asked alone, as the admission pass's stop of a phase holds the task its worker was given for the
+// entry the phase stands on (workflow's givenTask), and nothing for a task of another phase,
+// another run or another entry, for no entry named, or for a token no claim stands under.
 func TestClaimPhaseTaskReadsTheTaskOfThatPhaseRunAndEntry(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2693,8 +2693,8 @@ func TestClaimPhaseTaskReadsTheTaskOfThatPhaseRunAndEntry(t *testing.T) {
 		want       string
 	}{
 		{name: "its own entry", token: implementer, at: phase.Implementing, generation: 1, entry: 3, want: retry},
-		{name: "a later entry", token: implementer, at: phase.Implementing, generation: 1, entry: 4, want: retry},
-		{name: "no entry named", token: implementer, at: phase.Implementing, generation: 1, entry: 0, want: retry},
+		{name: "a later entry", token: implementer, at: phase.Implementing, generation: 1, entry: 4},
+		{name: "no entry named", token: implementer, at: phase.Implementing, generation: 1, entry: 0},
 		{name: "an earlier entry", token: implementer, at: phase.Implementing, generation: 1, entry: 2},
 		{name: "another phase", token: implementer, at: phase.Testing, generation: 1, entry: 3},
 		{name: "another run", token: implementer, at: phase.Implementing, generation: 2, entry: 3},

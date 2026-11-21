@@ -242,12 +242,20 @@ func TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused(t *testing.T) {
 
 	refusedWith(t, apply("register-on-basis", onBasis(restingBasis(), 6)), "BASIS_ACCEPTED", basisAncestor, "retro")
 
+	refusedRegistrationLeftNothing(t, pool, "register-on-basis")
+}
+
+// refusedRegistrationLeftNothing fails t unless the registration refused under the event id event
+// left nothing of the root behind: no gate row, no mirrored request, no outbox row, no mark of the
+// event and no view fact.
+func refusedRegistrationLeftNothing(t *testing.T, pool *pgxpool.Pool, event string) {
+	t.Helper()
 	if gates := gatesOf(t, pool, gatedRoot); len(gates) != 0 {
 		t.Fatalf("the root's gates = %#v, want none: the refused registration records nothing", gates)
 	}
 	var asks, rows, marked int
 	if err := pool.QueryRow(t.Context(), `select (select count(*) from root_asks where issue = $1), (select count(*) from outbox where issue = $1),
-		(select count(*) from processed_events where event_id = 'register-on-basis')`, gatedRoot).Scan(&asks, &rows, &marked); err != nil {
+		(select count(*) from processed_events where event_id = $2)`, gatedRoot, event).Scan(&asks, &rows, &marked); err != nil {
 		t.Fatalf("read what the refused registration left: %v", err)
 	}
 	if asks != 0 || rows != 0 || marked != 0 {
@@ -285,20 +293,7 @@ func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
 
 	refusedWith(t, apply("register-on-basis", onBasis(approvedBasis(), 6)), "BASIS_ACCEPTED", "The daemon records "+basisAncestor+" done")
 
-	if gates := gatesOf(t, pool, gatedRoot); len(gates) != 0 {
-		t.Fatalf("the root's gates = %#v, want none: the refused registration records nothing", gates)
-	}
-	var asks, rows, marked int
-	if err := pool.QueryRow(t.Context(), `select (select count(*) from root_asks where issue = $1), (select count(*) from outbox where issue = $1),
-		(select count(*) from processed_events where event_id = 'register-on-basis')`, gatedRoot).Scan(&asks, &rows, &marked); err != nil {
-		t.Fatalf("read what the refused registration left: %v", err)
-	}
-	if asks != 0 || rows != 0 || marked != 0 {
-		t.Fatalf("the refused registration left %d mirrored requests, %d outbox rows and %d marked events, want none", asks, rows, marked)
-	}
-	if got := recordedRoot(t, pool).ViewOf; got != "" {
-		t.Fatalf("the root's view fact = %q, want none written", got)
-	}
+	refusedRegistrationLeftNothing(t, pool, "register-on-basis")
 }
 
 // A registration on the ancestor's open approval request leaves the step closed and pending on that

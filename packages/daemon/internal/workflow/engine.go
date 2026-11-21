@@ -2023,7 +2023,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// refused with the wait's own code before the table is read, which would only say that no
 	// backward row serves the phase (dispatch://INFRA-3320 R11).
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, "request_backward_move")
+		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove)
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - and the
@@ -2084,13 +2084,16 @@ type acceptanceHold struct {
 	names string
 }
 
-// acceptanceAct is an act an acceptance hold refuses (acceptanceHold.refusal), named as the
-// architect's request names it: the sign-off (signOff) and the close of a root (closeRoot).
-type acceptanceAct string
+// architectAct is an act a hold on an issue refuses, named as the request that makes it names it:
+// the sign-off (signOff) and the close of a root (closeRoot), which an acceptance hold refuses
+// (acceptanceHold.refusal), and the move back (backward, an architect's or a worker's), which a
+// parent's wait on its children refuses with the sign-off (waitingRefusal).
+type architectAct string
 
 const (
-	actSignOff   acceptanceAct = "sign_off"
-	actCloseRoot acceptanceAct = "close_root"
+	actSignOff      architectAct = "sign_off"
+	actCloseRoot    architectAct = "close_root"
+	actBackwardMove architectAct = "request_backward_move"
 )
 
 // acceptanceRefusals is the refusal text of each hold acceptanceHeld answers, by its code and by
@@ -2098,7 +2101,7 @@ const (
 // carries (%[2]s). It is the one place a hold's refusal is written for both acts, so a hold added
 // to acceptanceHeld is read here for each of them, and one the table misses for an act still
 // refuses that act (acceptanceHold.refusal).
-var acceptanceRefusals = map[string]map[acceptanceAct]string{
+var acceptanceRefusals = map[string]map[architectAct]string{
 	signOffChildInWorkflow: {
 		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
 		actCloseRoot: "%[1]s is not closed while these issues beneath it are still in the workflow: %[2]s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
@@ -2117,7 +2120,7 @@ var acceptanceRefusals = map[string]map[acceptanceAct]string{
 // the hold's own code with that act's text (acceptanceRefusals). A hold the table names no text of
 // for act refuses it all the same, with its code and the issues it names, so no hold lets a
 // sign-off or a close through for want of its words.
-func (h acceptanceHold) refusal(act acceptanceAct, key string) (intake.Result, bool) {
+func (h acceptanceHold) refusal(act architectAct, key string) (intake.Result, bool) {
 	if h.code == "" {
 		return intake.Result{}, false
 	}
@@ -2241,7 +2244,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, "sign_off")
+		return e.waitingRefusal(ctx, tx, *issue, actSignOff)
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil

@@ -212,7 +212,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	for id, want := range map[string][]string{
 		legionColumnDesign:           {"INFRA-3"},
 		legionColumnImplementing:     {"INFRA-4"},
-		legionColumnAwaiting:         {"INFRA-5"},
+		legionColumnAwaitingPerson:   {"INFRA-5"},
 		legionColumnHeld:             {"INFRA-6"},
 		legionColumnAwaitingChildren: {"INFRA-11", "INFRA-13"},
 		legionColumnPlanning:         {},
@@ -667,10 +667,10 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 		t.Errorf("the header = %+v (read_error %v), want the read failed, its error the refusal of its record", header, deref(header.ReadError))
 	}
 	for column, want := range map[string][]string{
-		legionColumnImplementing: {"INFRA-1"},
-		legionColumnTesting:      {"INFRA-2"},
-		legionColumnReviewing:    {},
-		legionColumnAwaiting:     {},
+		legionColumnImplementing:   {"INFRA-1"},
+		legionColumnTesting:        {"INFRA-2"},
+		legionColumnReviewing:      {},
+		legionColumnAwaitingPerson: {},
 	} {
 		if got := legionColumnKeys(t, board, column); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v: the last good read's cards", column, got, want)

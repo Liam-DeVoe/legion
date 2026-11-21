@@ -641,14 +641,15 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // entryWork is the work row's entry was raised with (record.PhaseRow.EntryTask), and the phase's
-// resume task where the row carries none (ResumePhaseTask, whose parent flag parent is), as a
-// claim behind its entry is sent it (sendOwedEntry, whose doc says which rows carry none): what
-// the admission pass holds for a phase it stops in the middle (StopForChildren, queuedTask).
-func entryWork(issue record.Issue, row record.PhaseRow, parent bool) string {
+// resume task where the row carries none (ResumePhaseTask), as a claim behind its entry is sent it
+// (sendOwedEntry, whose doc says which rows carry none): what the admission pass holds for a phase
+// it stops in the middle (StopForChildren, queuedTask, givenTask). The resume task is built with
+// no base-merge sentence, which a held task keeps none of (withoutBaseMergeRun).
+func entryWork(issue record.Issue, row record.PhaseRow) string {
 	if row.EntryTask != "" {
 		return row.EntryTask
 	}
-	return ResumePhaseTask(issue, parent)
+	return ResumePhaseTask(issue, false)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -1138,10 +1139,11 @@ func handoffWord(role claim.Role) string {
 //
 // Every testing task of a parent asks for the round on the head merged with its base's tip, and
 // the resume task is no exception (withBaseMergeRun): the silence repair, the boot's resume, the
-// catch-up, a re-admitted tree's promotion (StartPromotedWorker), the send of an entry that names
-// no task (sendOwedEntry) and the admission pass's stop of a phase under way (entryWork) each hand
-// it to a session that may have read none of the task that first asked. parent says whether issue
-// is a parent, as task's does.
+// catch-up, a re-admitted tree's promotion (StartPromotedWorker) and the send of an entry that
+// names no task (sendOwedEntry) each hand it to a session that may have read none of the task that
+// first asked. parent says whether issue is a parent, as task's does. The admission pass's stop of
+// a phase under way holds it with parent false (entryWork), since a held task keeps no base-merge
+// sentence and the return adds its own.
 func ResumePhaseTask(issue record.Issue, parent bool) string {
 	return withBaseMergeRun(continueLine(issue)+" Resume the existing phase work.", issue.Phase, parent)
 }

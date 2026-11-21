@@ -288,15 +288,15 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 //     owed its worker at its own generation: it holds that start with the task its queued row
 //     carries (queuedTask), and no role is told, since none has been given that phase;
 //   - a parent whose worker is in the middle of its phase: it holds that phase with the task its
-//     worker was given, the one its claim holds for that phase (givenTask) — after the
-//     architect's retry or the operator's restart, the retry's own — or else the work the phase
-//     entry was raised with (entryWork, as SendOwedEntry sends it), and that worker is told on its
-//     own topic that its phase ended (childrenHold.Ended, record.PhaseEnded), which wakes a pod the
-//     idle rule released.
+//     worker was given, the one its claim holds for the entry the phase stands on (givenTask) —
+//     after the architect's retry or the operator's restart, the retry's own — or else the work
+//     the phase entry was raised with (entryWork, as SendOwedEntry sends it), and that worker is
+//     told on its own topic that its phase ended (childrenHold.Ended, record.PhaseEnded), which
+//     wakes a pod the idle rule released.
 //
-// Each of those tasks is built for a worker, so a testing task of a parent ends with the
-// base-merge sentence, which the hold keeps none of (withoutBaseMergeRun): the return adds it once
-// to the testing task it starts (returnTask).
+// Each of those tasks but the resume task entryWork builds was built for a worker, so a testing
+// task of a parent ends with the base-merge sentence, which the hold keeps none of
+// (withoutBaseMergeRun): the return adds it once to the testing task it starts (returnTask).
 //
 // Every start the parent owes is finished in the same transaction (Store.FinishOutbox), so none
 // delivers later: the wait keeps its start on the record (record.ChildrenWait), and the return
@@ -396,13 +396,9 @@ func acceptedEntry(row record.PhaseRow) bool {
 // supervise rows (Store.RoleRun): the very task that start would have delivered, which for the
 // retry of a held phase is the retry's own and not its entry's. A row no longer queued — its lane
 // finished it after the pass read it — leaves the work of entry, the role's phases row the caller
-// read (entryWork), as a parent's, since an open child holds its start.
+// read (entryWork).
 func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, due record.OwedStart, entry record.PhaseRow) (string, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return "", err
-	}
-	token, err := claim.NewToken(project, issue.Key, due.Role)
+	token, err := stepClaim(issue, issue.Key, due.Role)
 	if err != nil {
 		return "", err
 	}
@@ -415,18 +411,19 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return queued.Request.Task, nil
 		}
 	}
-	return entryWork(issue, entry, true), nil
+	return entryWork(issue, entry), nil
 }
 
 // givenTask is the task the worker of the phase issue stands in was given for that phase, role
 // being its role and entry its phases row the caller read: the task the role's claim holds for
-// that phase, at issue's generation and at an entry no later than entry's
-// (Store.ClaimPhaseTask), the one the `retire_task` row StopForChildren writes takes back. After
-// the architect's retry or the operator's restart that is the retry's own task, with the reason
-// it was given, which restart delivers on the entry the row already names and does not write on
-// the row (record.PhaseRow.EntryTask). A claim that holds no such task — the turn that took it has
-// ended, or none reached the claim — leaves the work of entry (entryWork), as a parent's, since
-// an open child holds its start.
+// that phase, at issue's generation and at entry's own entry (Store.ClaimPhaseTask), which the
+// `retire_task` row StopForChildren writes takes back. After the architect's retry or the
+// operator's restart that is the retry's own task, with the reason it was given, which restart
+// delivers on the entry the row already names and does not write on the row
+// (record.PhaseRow.EntryTask). A claim that holds no such task leaves the work of entry
+// (entryWork): the turn that took it has ended, none reached the claim, or the task the claim
+// holds is of an earlier entry or of none, the phase's resume task, which a catch-up or a boot's
+// resume gives a claim level with its entry and which names none of that entry's work.
 func (e *Engine) givenTask(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, entry record.PhaseRow) (string, error) {
 	token, err := stepClaim(issue, issue.Key, role)
 	if err != nil {
@@ -436,7 +433,7 @@ func (e *Engine) givenTask(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil || given != "" {
 		return given, err
 	}
-	return entryWork(issue, entry, true), nil
+	return entryWork(issue, entry), nil
 }
 
 // ReturnFromChildren takes issue back from awaiting_children once no open Dispatch child stands
@@ -640,13 +637,13 @@ func (e *Engine) KeepWaitChildren(ctx context.Context, tx pgx.Tx, issue record.I
 	return true, e.store.PutIssue(ctx, tx, issue)
 }
 
-// waitingRefusal refuses act — request_backward_move or sign_off — on issue, which stands in
-// awaiting_children (WAITING_ON_CHILDREN, dispatch://INFRA-3320 R11): each acts on a phase, and
-// the parent stands in none. The reason names the open children as the daemon reads them now,
-// the start the parent holds and where the return takes it (goesBack), and the architect's
-// levers, which are the children. A parent whose last open child has gone since the last
-// admission pass is told that the next pass brings it back.
-func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, act string) (intake.Result, error) {
+// waitingRefusal refuses act — request_backward_move or sign_off (actBackwardMove, actSignOff) —
+// on issue, which stands in awaiting_children (WAITING_ON_CHILDREN, dispatch://INFRA-3320 R11):
+// each acts on a phase, and the parent stands in none. The reason names the open children as the
+// daemon reads them now, the start the parent holds and where the return takes it (goesBack), and
+// the architect's levers, which are the children. A parent whose last open child has gone since
+// the last admission pass is told that the next pass brings it back.
+func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, act architectAct) (intake.Result, error) {
 	open, err := e.childrenOpen(ctx, tx, issue, nil)
 	if err != nil {
 		return intake.Result{}, err

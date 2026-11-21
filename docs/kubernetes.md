@@ -2686,40 +2686,7 @@ The design-gate basis of dispatch://INFRA-3320, in this same release, adds the b
 That migration also keeps `phase_ended` in the kind check, and this release queues rows of it again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
-**Before the deploy, list the parents that the first admission pass after it stops.**
-That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
-An open child is one that `record.ChildOpen` reads as open, a child filed in the backlog or triage and never released among them.
-The migration leaves `phases.entry_from` null on every row it finds, so that pass also stops a parent whose role stands on an entry that a move back out of `retro` or `merging` raised, which a later pass, reading the column this release writes, leaves where it stands.
-Where such a parent's worker is in the middle of its phase, the pass retires the task its claim holds for that phase (`retire_task`) and sends that worker a `phase_ended` message in the middle of its turn, which tells it to push what it has and stop.
-A parent in `accepting`, or one whose start has not reached its worker, is moved with no `phase_ended` message, and the architect of every parent the pass moves gets one `awaiting-children` notice.
-This read lists those parents, after the reading of dispatch://INFRA-2192/artifact/parent-waits-reading-sh (version 6): one line for each, with its phase, its tree and its open children.
-It reads the running daemon's state with `legion state --json` and the children of each parent from Dispatch, with `DISPATCH_URL` set to the daemon's `dispatch_url` and `DISPATCH_TOKEN_FILE` to its `dispatch_token_file`, in bash, which gives curl the token as a header file and never as an argument:
-
-```bash
-legion state --json > state.json
-jq -r '.issues as $I | .issues[]
-  | select((.phase | IN("planning", "implementing", "testing", "reviewing", "accepting"))
-      and ((.status | IN("triage", "icebox", "backlog", "done")) | not)
-      and (.pullRequest.state // "") != "merged"
-      and ($I[.tree // ""] | . != null and .phase != "done" and .lingerUntil == null
-        and ((.status | IN("triage", "icebox", "backlog", "done")) | not)))
-  | .key' state.json |
-while read -r key; do
-  curl -sSf -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/$key"
-done |
-jq -s -r --slurpfile state state.json '$state[0].issues as $I
-  | def live($r): $r.phase != "done" and (($r.status | IN("triage", "icebox", "backlog", "done")) | not);
-    def open($c): if ($c.status | IN("done", "icebox")) then false
-      elif $I[$c.key].tree == $c.key then live($I[$c.key])
-      elif ($c.status | IN("backlog", "triage")) then $I[$c.key] == null or live($I[$c.key])
-      else true end;
-  .[] | [.children[]? | select(open(.)) | .key] as $open | select($open != [])
-  | "\(.key) \($I[.key].phase) tree=\($I[.key].tree) open=\($open | join(","))"'
-```
-
-The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues, which a boot's listing of the project refreshes (`record.ChildWaits`): a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
-
-An earlier daemon reads this much of it:
+An earlier daemon reads this much of the release:
 
 - **An issue in `awaiting_children`.**
   An earlier daemon knows no such phase, and a write of such a row that leaves the phase without clearing the held start fails `issues_children_wait_shape` (the comment of `20261114232555_awaiting_children.up.sql`).
@@ -2867,6 +2834,36 @@ Run them only when every daemon of the database is stopped, and roll back every 
 **Each project's daemon image moves first, and its worker image with it or after it.**
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
+
+**Before the deploy, list the parents that the first admission pass after it stops.**
+That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
+An open child is one that `record.ChildOpen` reads as open, a child filed in the backlog or triage and never released among them.
+The migration leaves `phases.entry_from` null on every row it finds, so that pass also stops a parent whose role stands on an entry that a move back out of `retro` or `merging` raised, which a later pass, reading the column this release writes, leaves where it stands.
+Where such a parent's worker is in the middle of its phase, the pass retires the task its claim holds for that phase (`retire_task`) and sends that worker a `phase_ended` message in the middle of its turn, which tells it to push what it has and stop.
+A parent in `accepting`, or one whose start has not reached its worker, is moved with no `phase_ended` message, and the architect of every parent the pass moves gets one `awaiting-children` notice.
+This read lists those parents, after the reading of dispatch://INFRA-2192/artifact/parent-waits-reading-sh (version 6): one line for each, with its phase, its tree and its open children.
+It reads the running daemon's state with `legion state --json`, and every issue of the daemon's project from Dispatch in one listing, `GET /api/v1/issues?project=<key>` with the key the state names in `.daemon.project`, with `DISPATCH_URL` set to the daemon's `dispatch_url` and `DISPATCH_TOKEN_FILE` to its `dispatch_token_file`, in bash, which gives curl the token as a header file and never as an argument.
+It groups the listing's open children by their `.parent`, and one rule, `live`, says whether an issue the state records is still in the workflow, for a parent, its tree's root and a child alike:
+
+```bash
+legion state --json > state.json
+project=$(jq -r '.daemon.project' state.json)
+curl -sSf -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues?project=$project" > issues.json
+jq -r --slurpfile listed issues.json '.issues as $I
+  | def live($r): $r != null and $r.phase != "done" and (($r.status | IN("triage", "icebox", "backlog", "done")) | not);
+    def open($c): if ($c.status | IN("done", "icebox")) then false
+      elif $I[$c.key].tree == $c.key then live($I[$c.key])
+      elif ($c.status | IN("backlog", "triage")) then $I[$c.key] == null or live($I[$c.key])
+      else true end;
+  (reduce ($listed[0][] | select(.parent != null and open(.))) as $c ({}; .[$c.parent] += [$c.key])) as $open
+  | .issues[] | $I[.tree // ""] as $root
+  | select((.phase | IN("planning", "implementing", "testing", "reviewing", "accepting")) and live(.)
+      and (.pullRequest.state // "") != "merged" and live($root) and $root.lingerUntil == null
+      and $open[.key] != null)
+  | "\(.key) \(.phase) tree=\(.tree) open=\($open[.key] | join(","))"' state.json
+```
+
+The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues, which a boot's listing of the project refreshes (`record.ChildWaits`): a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
 
 
 #### Rolling back below the release that trims an issue pod's volume

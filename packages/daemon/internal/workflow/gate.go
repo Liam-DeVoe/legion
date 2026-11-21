@@ -75,21 +75,36 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // anything (acceptedBasis): an ancestor accepted since, by a sign-off or a close_root this fact's
 // lock ordered before it, refuses the registration as register_gate refuses one, recording
 // nothing. The engine stamps the basis with its own time of the registration, or keeps the first
-// one's where the step already stands on that basis (registeredBasis). A root out of the
-// workflow, or whose tree lingers, takes no basis (registeredBasis), and its registration is
-// written as one with no basis. An approved basis writes the row open (record.OpenOnBasis), so the
-// tree starts as after a person's approval at that version, and answers a root waiting on that
-// gate as such an approval does; a pending one writes it closed on the ancestor's open request
-// (record.PendOnBasis) and declares no hand-back, so the root keeps its slot, its phase and any
-// wait it holds. What each tells, and to whom, is tellRegisteredBasis's. A registration with no
-// basis writes a row with none, so it ends any basis the step stood or waited on: the step waits
-// for a person's approval of the root's own document, as it did before the basis (R3).
+// one's where the step already stands on that basis (registeredBasis). An approved basis writes
+// the row open (record.OpenOnBasis), so the tree starts as after a person's approval at that
+// version, and answers a root waiting on that gate as such an approval does; a pending one writes
+// it closed on the ancestor's open request (record.PendOnBasis) and declares no hand-back, so the
+// root keeps its slot, its phase and any wait it holds. What each tells, and to whom, is
+// tellRegisteredBasis's. A registration with no basis writes a row with none, so it ends any
+// basis the step stood or waited on: the step waits for a person's approval of the root's own
+// document, as it did before the basis (R3).
+//
+// A root out of the workflow, or whose tree lingers (record.Stopped, of the root as this
+// transaction reads it), takes no basis, standing or pending: the registration drops the basis
+// before anything reads it, so it refuses nothing and is written as one with no basis. Its
+// architect can still be in the turn its leave suspends, so its registration can land after the
+// leave, which told the ancestor's architect that the root left and ended any wait of its steps
+// on an ancestor's request (leaveBases). A basis taken then would tell that architect the root
+// rests on it again, post the basis on the root's issue, and open the step, or let a later
+// approval open it, on a root nobody runs (R3, R8). The fact is a copy, so the drop is this
+// registration's alone.
 func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.GateRegistered) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if refusal, err := e.acceptedBasis(ctx, tx, *issue, fact); err != nil || refusal.Refusal != nil {
+	if fact.Basis != nil && record.Stopped(*issue) {
+		e.logOnCommit(ctx, "workflow: a registration on a basis of a root out of the workflow takes no basis", "issue", issue.Key,
+			"step", fact.Step.OrSpec(), "ancestor", fact.Basis.Issue, "basis", fact.Basis.ArtifactID, "basis_version", fact.Basis.Version,
+			"pending", fact.Basis.Pending != nil, "phase", issue.Phase, "status", issue.Status, "lingers", issue.Lingers())
+		fact.Basis = nil
+	}
+	if refusal, err := e.acceptedBasis(ctx, tx, fact); err != nil || refusal.Refusal != nil {
 		return refusal, err
 	}
 	request, err := e.mirrorRegisteredRequest(ctx, tx, *issue, fact)
@@ -144,7 +159,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
-	basis := e.registeredBasis(ctx, *issue, fact, ungated, stored, version)
+	basis := e.registeredBasis(fact, ungated, stored, version)
 	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.

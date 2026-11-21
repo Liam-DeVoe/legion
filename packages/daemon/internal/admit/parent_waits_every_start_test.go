@@ -115,7 +115,8 @@ func pwMidPhase(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, st
 
 // pwDeliver records start, a phase worker's start row of the parent, as delivered to token's
 // claim, as the outbox leaves a claim it ran that row on (supervise's queue): the claim holds the
-// row's task for its phase, run and entry, confirmed by a turn, it was given that entry, and the
+// row's task for its phase, run and entry, confirmed by a turn, it was given that entry where the
+// row carries one (a start at no entry leaves the entry the claim was given as it stands), and the
 // row is finished.
 func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record.SuperviseRequest) {
 	t.Helper()
@@ -125,7 +126,9 @@ func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record
 		string(token), start.Task, fixedNow, int64(start.Generation), string(start.Phase), start.Entry); err != nil {
 		t.Fatalf("record the task the claim %s was given: %v", token, err)
 	}
-	markGivenEntry(t, pool, token, start.Entry)
+	if start.Entry > 0 {
+		markGivenEntry(t, pool, token, start.Entry)
+	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		var id int64
 		if err := tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
@@ -1266,6 +1269,51 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		work := retry.Task + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
 		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
 			t.Fatalf("starts of %s = %+v, want one implementer start on the retry's task %q", spParent, starts, work)
+		}
+	})
+
+	// The phase's resume task, which the catch-up of the implementer's ready claim queues at no
+	// entry, the claim being level with the entry its phases row names (workflow's
+	// readyWorkerTask), delivered to that implementer before a child opens: it says to carry the
+	// phase's work on and names none of that work. The pass that then finds a child open holds
+	// implementing with the work of the entry the implementer stands on, not the resume task, and
+	// still takes the resume task back (the retirement is bounded by that entry), and the return
+	// starts implementing on the entry's work.
+	t.Run("a resume task delivered to the implementer at no entry, then a child opens: the held task and the return's task are the entry's work", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		token := pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateReady, "")
+		pwApplied(t, pool, admission, "supervisor", "ready", intake.ClaimReady{Issue: spParent, Role: claim.RoleImplementer, Launch: 1})
+		resume := pnWorkerStart(t, pool, spParent, claim.RoleImplementer)
+		if !resume.ResumeTask || resume.Entry != 0 || !strings.Contains(resume.Task, "Resume the existing phase work.") {
+			t.Fatalf("the catch-up's start = %+v, want the phase's resume task at no entry", resume)
+		}
+		pwDeliver(t, pool, token, resume)
+		if _, err := pool.Exec(context.Background(), `update claims set state = $2 where token = $1`,
+			string(token), string(supervise.StateWorking)); err != nil {
+			t.Fatalf("record the implementer's claim in the turn the resume task started: %v", err)
+		}
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		spPass(t, pool, admission)
+
+		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
+		if wait.Task != pwTask(spParent, phase.Implementing) {
+			t.Fatalf("the held task = %q, want the work of the entry the implementer stands on, %q, not the resume task %q",
+				wait.Task, pwTask(spParent, phase.Implementing), resume.Task)
+		}
+		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Generation: 1,
+			Phase: phase.Implementing, Entry: 3}}
+		if retired := spRetired(t, pool, spParent); !reflect.DeepEqual(retired, want) {
+			t.Fatalf("task retirements = %+v, want %+v: the move takes the resume task back, bounded by the entry", retired, want)
+		}
+
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+
+		work := pwTask(spParent, phase.Implementing) + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
+			t.Fatalf("starts of %s = %+v, want one implementer start on the entry's work %q", spParent, starts, work)
 		}
 	})
 
