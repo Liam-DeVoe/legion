@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -118,6 +119,10 @@ type bootConfig struct {
 	NATSReplicas     int
 	StreamMaxBytes   int64
 	TestHooksEnabled bool
+	// ConsumerNames is ENVOY_CONSUMER_NAMES (consumernames.ParseMode), how the delivery intakes name
+	// their durables' consumers: the fixed names by default, or a fresh name at each creation behind
+	// a selection record (delivery.IntakeNaming). Read once here; only a restart changes it.
+	ConsumerNames consumernames.Mode
 	// SettleDelay is how long a document waits after a live change before it settles, zero for the
 	// document service's own default; only DISPATCH_TEST_SETTLE_DELAY, under the test hooks, sets it.
 	SettleDelay time.Duration
@@ -1027,6 +1032,12 @@ func main() {
 	// each intake can hold its durable before this process serves anything. With no NATS client there
 	// is nothing to wait for.
 	waitIntakes := func() {}
+	// Each step of the fresh consumer names' protocol (ENVOY_CONSUMER_NAMES=fresh), by durable,
+	// operation and outcome; registered in every mode, so the series' absence says no step ran.
+	durableNameSteps := met.NewCounter(
+		"envoy_dispatch_durable_names_total",
+		"Steps of the delivery intakes' fresh consumer names (ENVOY_CONSUMER_NAMES=fresh), by durable (delivery-events, delivery-jobs), op (select, create, replace, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error); refused is a call stopped before anything changed: the cutover not run, a missing selection table, sentinel or row, or no safe start",
+	)
 	if natsClient != nil {
 		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
 		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
@@ -1038,7 +1049,8 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake,
+			delivery.IntakeNaming{Mode: boot.ConsumerNames, Steps: durableNameSteps})
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1348,6 +1360,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	if boot.StreamMaxBytes, err = bus.ParseStreamMaxBytes(env.get(bus.StreamMaxBytesEnvVar)); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.ConsumerNames, err = consumernames.ParseMode(env.get(consumernames.ModeEnvVar)); err != nil {
 		return bootConfig{}, err
 	}
 	if boot.RoleHolderWindows, err = roleHolderWindows(env); err != nil {
