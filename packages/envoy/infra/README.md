@@ -3176,13 +3176,14 @@ The declared set is built from the code's own names, never written as a list:
 `ENVOY_NOTIFICATIONS`, each listener bucket, the webhook redelivery bucket, `ENVOY_MEASURE` and the
 writer hold's barrier stream, each with the configuration the program that owns it makes it with.
 Every stream but `ENVOY_MEASURE` is protected: only the operator, under a hold, makes or changes
-one. `ENVOY_MEASURE` too is the operator's alone, made by `ensure` outside a hold: the measurement
-user's grant holds no stream create, update or delete, since a create carries a configuration of
-the caller's choosing. Its copies are held to the deployment's count like every other stream's.
+one. `ENVOY_MEASURE` too is the operator's alone, made and raised by `update` inside a hold: no
+grant outside a hold, the measurement user's and the operator's `released` one included, holds a
+stream create or update, since either carries a configuration of the caller's choosing, whose
+republish could write any subject. Its copies are held to the deployment's count like every other
+stream's.
 
 ```text
-envoy-infra streams check  --nats-url <urls> (--token-file <file> | --nkey-seed-file <file>) [settings]
-envoy-infra streams ensure --nats-url <urls> --token-file <file> --broker-url <url> --hold-verify-keys <keys> [settings]
+envoy-infra streams check --nats-url <urls> (--token-file <file> | --nkey-seed-file <file>) [settings]
 ```
 
 `streams update` and `streams census` are the writer hold's held commands. It registers them
@@ -3195,14 +3196,11 @@ workflows, so its done entry completes the record that `hold release` needs.
   and prints `FAIL` for one that is missing, one with fewer copies than the deployment's count,
   and each other setting that differs from the build's, and sends no create and no update. Its
   reads ask for no stored subjects.
-- `ensure`, as the operator while the hold row is `released`: it makes `ENVOY_MEASURE` when it is
-  missing, and brings an existing `ENVOY_MEASURE` that drifts to its declared settings, copies
-  included, with one update, so the shortfall `check` reports has a repair. It touches no other
-  stream. The update of `ENVOY_MEASURE` is in the operator's `released` grant alone.
 - `update` (the writer hold's, inside a `streams-update` hold): it makes each missing protected
-  stream with the build's configuration and raises each by a start's own rules (subjects only
-  added, limits only raised, copies raised, `envoy_stream_id` kept), and stops, naming the stream
-  and the setting, at any other difference.
+  stream, and `ENVOY_MEASURE`, with the build's configuration and raises each by a start's own
+  rules (subjects only added, limits only raised, copies raised, `envoy_stream_id` kept), and
+  stops, naming the stream and the setting, at any other difference. So every stream `check`
+  reports missing or below its copies has its repair here.
 - `census` (the writer hold's, inside a hold whose workflow names it), once every family has a
   cutover row in state `done`: it lists every stream and consumer, removes a stream outside the
   declared set and a consumer that matches no declared shape by its whole configuration, and puts a
@@ -3211,14 +3209,11 @@ workflows, so its done entry completes the record that `hold release` needs.
   it. A listing it cannot complete is `UNKNOWN`. It reads the session consumers the hold records,
   after the hold's barrier on their bucket.
 
-`ensure` reads the hold row through the broker's `/v1/nats-hold` routes first, verified
-with `--hold-verify-keys` (entries as `BROKER_NATS_HOLD_SIGNING_KEYS` writes them), and refuse any
-other phase by name. The token file holds the identity's platform token, presented as user `service`;
-the operator's is also its token at the broker's routes. The settings are `--replicas`,
-`--stream-max-bytes` and `--session-max-age`, which default to `ENVOY_NATS_REPLICAS`,
-`ENVOY_STREAM_MAX_BYTES` and `ENVOY_SESSION_MAX_AGE`, as every program of the deployment reads them.
-Each word prints one line per change, failure and unknown read, then `CLEAN`, `FAIL` or `UNKNOWN`,
-and exits 0, 1 or 2; a refused phase exits 1 and a usage error 2.
+`check`'s token file holds the measurement job's platform token, presented as user `service`. Its
+settings are `--replicas`, `--stream-max-bytes` and `--session-max-age`, which default to
+`ENVOY_NATS_REPLICAS`, `ENVOY_STREAM_MAX_BYTES` and `ENVOY_SESSION_MAX_AGE`, as every program of the
+deployment reads them. It prints one line per failure and unknown read, then `CLEAN`, `FAIL` or
+`UNKNOWN`, and exits 0, 1 or 2; a usage error exits 2.
 
 **The ordering this needs.** No hub turns its callout on before its static listener and Dispatch
 users start with `ENVOY_STREAMS_OPERATOR_MADE=1`, their streams made by `envoy-infra streams

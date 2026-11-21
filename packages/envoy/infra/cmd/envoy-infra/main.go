@@ -1,9 +1,9 @@
 // Command envoy-infra is envoy-infra's command line. seed writes a NATS nkey user seed into a
 // secret store and checks and verifies the one stored there (package seed); render prints what the
 // AWS components register, for a program that needs it outside Pulumi (package render); streams
-// check reads the JetStream streams Envoy declares beside the NATS auth service, and streams ensure
-// makes and repairs ENVOY_MEASURE (package streams), while streams update and streams census are
-// the writer hold's held commands; and `envoy-infra --version` prints the release it was built as.
+// check reads the JetStream streams Envoy declares beside the NATS auth service (package streams),
+// while streams update and streams census, which make and censuses them, are the writer hold's held
+// commands; and `envoy-infra --version` prints the release it was built as.
 package main
 
 import (
