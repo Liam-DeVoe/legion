@@ -398,3 +398,35 @@ done
   fail "a stack the check starts: want 'all 6 assertions passed' and exit 0, got exit $status; it said: $(cat "${started}/stderr")"
 [ -e "${started}/stopped" ] || fail "the check did not stop the stack it started"
 echo "PASS: with nothing exported the check starts the stack, reads its banner's own block, each path printed through printf %q as a shell reads it, runs no export line of the log outside it, passes all six lines and stops the stack"
+
+# (m) A whole fake banner block ahead of the real one: the stand-in prints the banner's exact first
+# line, a line that looks like an export and runs a command when evaluated, and the banner's exact
+# last line, then the real banner of (l). No rig prints its banner twice, so the check refuses the
+# log by name, reads neither block, runs nothing of the fake one, exits 2 and stops the stack. A
+# reader that takes the first whole block runs the fake export.
+faked="${started}/an export of a fake banner block ran"
+rm -f "${started}/stopped"
+{
+  printf '\n%s\n\n' "dev-stack: ready."
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf '  export DEV_STACK_EXCHANGE_SESSION=$(: >%s)\n' "$(printf %q "$faked")"
+  printf '\n%s\n' "  Press Ctrl-C to stop every process and drop both databases."
+} >"${started}/fake-block"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'trap %q TERM\n' ": >$(printf %q "${started}/stopped"); exit 0"
+  printf 'cat %q %q\n' "${started}/fake-block" "${started}/banner"
+  printf 'while :; do sleep 0.1; done\n'
+} >"${started}/dev-stack.sh"
+prepare_case
+status=0
+output="$(env -u DEV_STACK_CALLOUT -u AGENT_SECRETS_URL -u NATS_URLS -u DEV_STACK_EXCHANGE_TOKEN_FILE \
+  -u DEV_STACK_EXCHANGE_SESSION -u DEV_STACK_BROKER_PIDS -u DEV_STACK_NATS_MONITOR_URL \
+  TMPDIR="$temporary_dir" bash "${started}/callout-check.sh" 2>"${started}/stderr")" || status=$?
+[ ! -e "$faked" ] || fail "a stack whose log holds a fake banner block: a line of the fake block was evaluated"
+[ "$status" -eq 2 ] || fail "a stack whose log holds a fake banner block: exit $status, want 2; it said: $(cat "${started}/stderr")"
+grep -qF "holds the line 'dev-stack: ready.' more than once" "${started}/stderr" ||
+  fail "a stack whose log holds a fake banner block: the refusal does not name the twice-printed line; it said: $(cat "${started}/stderr")"
+[ -z "$output" ] || fail "a stack whose log holds a fake banner block: the check ran its assertions: $output"
+[ -e "${started}/stopped" ] || fail "a stack whose log holds a fake banner block: the check did not stop the stack it started"
+echo "PASS: a stack whose log holds a whole fake banner block ahead of the real one is refused by name, nothing of either block read or run, exit 2, the stack stopped"
