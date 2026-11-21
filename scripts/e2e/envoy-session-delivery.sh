@@ -547,9 +547,6 @@ if [[ -n "$build_from" ]]; then
   tree_label="$rev (git archive into $tree)"
 fi
 readonly tree
-# The fresh naming mode needs a listener that knows ENVOY_CONSUMER_NAMES: a --build-from tree from
-# before it names every consumer s-<session> whatever it is handed, and writes no selection record
-# for any fresh reading below to find.
 if [[ "$consumer_names" == fresh ]] &&
   ! grep -rqs --include='*.go' --exclude='*_test.go' ENVOY_CONSUMER_NAMES "$tree/packages/envoy"; then
   refuse "ENVOY_CONSUMER_NAMES=fresh needs a listener that knows that setting, and the one in ${tree_label} does not"

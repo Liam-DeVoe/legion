@@ -89,13 +89,6 @@ func NewKVStore(bucket string, request Requester) *KVStore {
 // Bucket is the bucket the store reads.
 func (s *KVStore) Bucket() string { return s.bucket }
 
-// The JetStream API's error codes this store reads.
-const (
-	errCodeNoMessageFound   = 10037
-	errCodeStreamNotFound   = 10059
-	errCodeWrongLastSubject = 10071
-)
-
 // kvOperationHeader marks a KV delete or purge marker (nats.go kv.go).
 const kvOperationHeader = "KV-Operation"
 
@@ -215,9 +208,9 @@ func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) 
 		return nil, 0, fmt.Errorf("consumer names: read the answer for %s from %s: %w", key, s.stream(), err)
 	}
 	switch {
-	case response.Error != nil && response.Error.ErrorCode == errCodeNoMessageFound:
+	case response.Error != nil && response.Error.ErrorCode == jetstream.JSErrCodeMessageNotFound:
 		return nil, 0, ErrNoRecord
-	case response.Error != nil && response.Error.ErrorCode == errCodeStreamNotFound:
+	case response.Error != nil && response.Error.ErrorCode == jetstream.JSErrCodeStreamNotFound:
 		return nil, 0, fmt.Errorf("%w: %s (%w)", ErrNoStore, s.stream(), response.Error)
 	case response.Error != nil:
 		return nil, 0, fmt.Errorf("consumer names: read %s from %s: %w", key, s.stream(), response.Error)
@@ -257,7 +250,7 @@ func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uin
 		return 0, fmt.Errorf("consumer names: read the acknowledgement of %s's write to %s: %w", key, s.bucket, err)
 	}
 	switch {
-	case ack.Error != nil && ack.Error.ErrorCode == errCodeWrongLastSubject:
+	case ack.Error != nil && ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence:
 		return 0, fmt.Errorf("%w: %s in %s is past revision %d (%w)", ErrConflict, key, s.bucket, revision, ack.Error)
 	case ack.Error != nil:
 		return 0, fmt.Errorf("consumer names: write %s to %s: %w", key, s.bucket, ack.Error)

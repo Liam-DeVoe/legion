@@ -13,13 +13,11 @@ import (
 	"testing"
 	"time"
 
-	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/natsversion"
 )
 
 // The forced-order rows of the plan's families 2 to 6 and 8 for the session family, on the hooked
@@ -133,7 +131,7 @@ type forcedSpy struct {
 
 func (r *forcedRig) spy(t *testing.T) (*forcedSpy, *natsgo.Conn) {
 	t.Helper()
-	conn := testnats.Connect(t, r.uri)
+	conn := testnats.Connect(t, r.URL)
 	t.Cleanup(conn.Close)
 	spy := &forcedSpy{}
 	sub, err := conn.Subscribe("$JS.API.>", func(msg *natsgo.Msg) {
@@ -186,7 +184,11 @@ func createdTwice(names []string) string {
 // left the session no consumer to deliver from, or its record an open replace: another process's
 // registration must recover it, and every message after the floor arrive.
 func TestForcedOrderARestartKilledBeforeItsCreateDeliversEveryMessageAfterRecoveryInAnotherProcess(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, aRestartKilledBeforeItsCreate)
+}
+
+func aRestartKilledBeforeItsCreate(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	s := r.pendingSession(t, "ses_forced_killed_restart")
 	killed := errors.New("the process was killed before its create")
 	var fired atomic.Int32
@@ -202,14 +204,14 @@ func TestForcedOrderARestartKilledBeforeItsCreateDeliversEveryMessageAfterRecove
 		t.Fatal("control: the kill never reached a create, so the row interrupts nothing")
 	}
 	r.consumers.Close()
-	other := forcedProcess(t, r.uri)
+	other := forcedProcess(t, r.urls)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	recovered, err := other.Ensure(ctx, s.id, []string{s.agent}, 0)
 	if err != nil {
 		t.Fatalf("the other process's registration: %v", err)
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, recovered, s.id) })
+	got := delivered(t, s.seqs[forcedAcked:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, recovered, s.id) })
 	requireDeliveredFrom(t, got, s.seqs[forcedAcked:], s.seqs, "the consumer the other process recovered")
 }
 
@@ -217,7 +219,11 @@ func TestForcedOrderARestartKilledBeforeItsCreateDeliversEveryMessageAfterRecove
 // the other process's answer stands, and when the paused creator finishes no name has been created
 // twice, and every message arrives from the one consumer the session keeps.
 func TestForcedOrderAPausedCreatorThatFinishesAfterAnotherProcessRegisteredCreatesNoNameTwice(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, aPausedCreator)
+}
+
+func aPausedCreator(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	spy, spyConn := r.spy(t)
 	id := "ses_forced_paused_creator"
 	agent := contracts.LegacyAgentSubject(id)
@@ -240,7 +246,7 @@ func TestForcedOrderAPausedCreatorThatFinishesAfterAnotherProcessRegisteredCreat
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the first creator never reached its create")
 	}
-	other := forcedProcess(t, r.uri)
+	other := forcedProcess(t, r.urls)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	registered, err := other.Ensure(ctx, id, []string{agent}, seqs[0])
@@ -262,26 +268,30 @@ func TestForcedOrderAPausedCreatorThatFinishesAfterAnotherProcessRegisteredCreat
 	if names := r.streamConsumerNames(t); len(names) != 1 || names[0] != forcedName(registered, id) {
 		t.Fatalf("the stream holds %v, want the one consumer %s", names, forcedName(registered, id))
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, registered, id) })
+	got := delivered(t, seqs, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, registered, id) })
 	requireDelivered(t, got, seqs, "the session's one consumer")
 }
 
 // Family 3. A replacement removed right after its publish, before any floor of its own was read:
 // the record's saved start governs, and every message after the predecessor's floor arrives.
 func TestForcedOrderAReplacementLostRightAfterItsPublishStartsAtTheSavedStart(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, aReplacementLostRightAfterItsPublish)
+}
+
+func aReplacementLostRightAfterItsPublish(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	s := r.pendingSession(t, "ses_forced_lost_after_publish")
 	restarted, err := r.consumers.RestartAtFloor(context.Background(), s.id, []string{s.agent})
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
 	r.removeFromOutside(t, forcedName(restarted, s.id))
-	other := forcedProcess(t, r.uri)
+	other := forcedProcess(t, r.urls)
 	again, err := other.Ensure(context.Background(), s.id, []string{s.agent}, 0)
 	if err != nil {
 		t.Fatalf("the other process's registration: %v", err)
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, again, s.id) })
+	got := delivered(t, s.seqs[forcedAcked:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, again, s.id) })
 	requireDeliveredFrom(t, got, s.seqs[forcedAcked:], s.seqs, "the consumer created again after the loss")
 }
 
@@ -289,17 +299,21 @@ func TestForcedOrderAReplacementLostRightAfterItsPublishStartsAtTheSavedStart(t 
 // server already removed has no floor to read: it must not record one of 0, or none, and the next
 // registration must start no later than the first message the session has not acknowledged.
 func TestForcedOrderADeleteOfAConsumerAlreadyGoneKeepsEveryUnacknowledgedMessage(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, aDeleteOfAConsumerAlreadyGone)
+}
+
+func aDeleteOfAConsumerAlreadyGone(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	s := r.pendingSession(t, "ses_forced_delete_absent")
 	r.removeFromOutside(t, forcedName(s.start, s.id))
 	floor, err := r.consumers.Delete(context.Background(), s.id, nil)
 	t.Logf("the delete of the absent consumer answered floor %d, %v", floor, err)
-	other := forcedProcess(t, r.uri)
+	other := forcedProcess(t, r.urls)
 	again, err := other.Ensure(context.Background(), s.id, []string{s.agent}, 0)
 	if err != nil {
 		t.Fatalf("the next registration: %v", err)
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, again, s.id) })
+	got := delivered(t, s.seqs[forcedAcked:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, again, s.id) })
 	requireDeliveredFrom(t, got, s.seqs[forcedAcked:], s.seqs, "the consumer registered after the delete")
 }
 
@@ -308,11 +322,10 @@ func TestForcedOrderADeleteOfAConsumerAlreadyGoneKeepsEveryUnacknowledgedMessage
 // and runs no first-create rule. The control is a registration on the same process before the
 // loss, which creates its consumer.
 func TestForcedOrderLostSelectionStateRefusesToCreate(t *testing.T) {
-	if natsversion.Refusal(natsserver.VERSION) != nil {
-		// The row itself skips, after newForcedRig confirms the refusal, rather than passing over
-		// subtests that each skip.
-		newForcedRig(t)
-	}
+	forEachTopology(t, lostSelectionStateRefusesToCreate)
+}
+
+func lostSelectionStateRefusesToCreate(t *testing.T, topo forcedTopology) {
 	for name, lose := range map[string]func(t *testing.T, kv jetstream.JetStream, sessionID string){
 		"the bucket deleted": func(t *testing.T, js jetstream.JetStream, _ string) {
 			if err := js.DeleteKeyValue(context.Background(), selectionBucket); err != nil {
@@ -338,7 +351,7 @@ func TestForcedOrderLostSelectionStateRefusesToCreate(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := newForcedRig(t)
+			r := newForcedRig(t, topo)
 			ctx := context.Background()
 			id := "ses_forced_lost_state"
 			agent := contracts.LegacyAgentSubject(id)
@@ -354,7 +367,7 @@ func TestForcedOrderLostSelectionStateRefusesToCreate(t *testing.T) {
 			}
 			lose(t, js, id)
 			r.removeFromOutside(t, forcedName(start, id))
-			other := forcedProcess(t, r.uri)
+			other := forcedProcess(t, r.urls)
 			_, err = other.Ensure(ctx, id, []string{agent}, 0)
 			if err == nil || !forcedLostState(err) {
 				t.Fatalf("the registration after the loss = %v, want a refusal for lost selection state", err)
@@ -371,8 +384,12 @@ func TestForcedOrderLostSelectionStateRefusesToCreate(t *testing.T) {
 // no request updates the stream. The control is a raw create on the full cap, which the server
 // refuses.
 func TestForcedOrderAFullCapServesEverySessionCallWithNoCapUpdate(t *testing.T) {
+	forEachTopology(t, aFullCap)
+}
+
+func aFullCap(t *testing.T, topo forcedTopology) {
 	// The keeper's period is an hour, so the cap lowered below stays lowered for the row.
-	r := newForcedRig(t, WithKeepInterval(time.Hour))
+	r := newForcedRig(t, topo, WithKeepInterval(time.Hour))
 	ctx := context.Background()
 	s := r.pendingSession(t, "ses_forced_full_cap")
 	js, err := r.conn.JetStream()
@@ -408,7 +425,7 @@ func TestForcedOrderAFullCapServesEverySessionCallWithNoCapUpdate(t *testing.T) 
 	if err != nil {
 		t.Fatalf("the restart at a full cap: %v", err)
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, restarted, s.id) })
+	got := delivered(t, s.seqs[forcedAcked:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, restarted, s.id) })
 	requireDelivered(t, got, s.seqs[forcedAcked:], "the consumer restarted at a full cap")
 
 	if _, err := r.consumers.Delete(ctx, s.id, nil); err != nil {
@@ -419,7 +436,7 @@ func TestForcedOrderAFullCapServesEverySessionCallWithNoCapUpdate(t *testing.T) 
 	if err != nil {
 		t.Fatalf("the registration right after the deregistration at a full cap: %v", err)
 	}
-	got = delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, again, s.id) })
+	got = delivered(t, later, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, again, s.id) })
 	requireDelivered(t, got, later, "the consumer registered again at a full cap")
 
 	if err := r.consumers.UpdateFilter(ctx, s.id, []string{s.agent, "notifications.team.forced-full-cap"}); err != nil {
@@ -433,7 +450,11 @@ func TestForcedOrderAFullCapServesEverySessionCallWithNoCapUpdate(t *testing.T) 
 // Family 8. Out-of-order acks with an earlier message still pending: a restart starts after the
 // floor, which the pending earlier message holds back, so it arrives again with the later ones.
 func TestForcedOrderOutOfOrderAcksKeepTheEarlierPendingMessage(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, outOfOrderAcks)
+}
+
+func outOfOrderAcks(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	ctx := context.Background()
 	id := "ses_forced_out_of_order"
 	agent := contracts.LegacyAgentSubject(id)
@@ -459,14 +480,18 @@ func TestForcedOrderOutOfOrderAcksKeepTheEarlierPendingMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, restarted, id) })
+	got := delivered(t, seqs, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, restarted, id) })
 	requireDelivered(t, got, seqs, "the restarted consumer")
 }
 
 // Family 8. A saved start that retention has passed is raised to the stream's first sequence, as
 // today: the registration after a deregistration delivers what the stream still holds.
 func TestForcedOrderASavedStartRetentionPassedStartsAtTheStreamsFirstSequence(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, aSavedStartRetentionPassed)
+}
+
+func aSavedStartRetentionPassed(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	ctx := context.Background()
 	id := "ses_forced_retention"
 	agent := contracts.LegacyAgentSubject(id)
@@ -475,7 +500,7 @@ func TestForcedOrderASavedStartRetentionPassedStartsAtTheStreamsFirstSequence(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, start, id) })
+	got := delivered(t, first, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, start, id) })
 	requireDelivered(t, got, first, "the first consumer")
 	if _, err := r.consumers.Delete(ctx, id, nil); err != nil {
 		t.Fatal(err)
@@ -496,14 +521,18 @@ func TestForcedOrderASavedStartRetentionPassedStartsAtTheStreamsFirstSequence(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	got = delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, again, id) })
+	got = delivered(t, later[2:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, again, id) })
 	requireDelivered(t, got, later[2:], "the consumer registered after retention passed its start")
 }
 
 // Family 8. Long ids: 253 bytes are accepted, 254 refused with the server's 10102 answer as today,
 // and two 253-byte ids that share their first 250 bytes keep consumers and messages of their own.
 func TestForcedOrderLongSessionIDsAreKeptApartAndRefusedAsToday(t *testing.T) {
-	r := newForcedRig(t)
+	forEachTopology(t, longSessionIDs)
+}
+
+func longSessionIDs(t *testing.T, topo forcedTopology) {
+	r := newForcedRig(t, topo)
 	ctx := context.Background()
 	long := strings.Repeat("a", 254)
 	if _, err := r.consumers.Ensure(ctx, long, []string{contracts.LegacyAgentSubject(long)}, 0); err == nil || !strings.Contains(err.Error(), "consumer name is too long, maximum allowed is 255") {
@@ -519,7 +548,7 @@ func TestForcedOrderLongSessionIDsAreKeptApartAndRefusedAsToday(t *testing.T) {
 			t.Fatalf("a 253-byte id: %v", err)
 		}
 		names[forcedName(start, id)] = true
-		got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, start, id) })
+		got := delivered(t, seqs, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, start, id) })
 		requireDelivered(t, got, seqs, "a 253-byte id's consumer")
 	}
 	if len(names) != 2 {
