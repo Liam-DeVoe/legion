@@ -245,3 +245,31 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 		t.Errorf("with no bearer token the lookup carried Authorization %q, want envoy_url's userinfo as Basic auth", l.bearer)
 	}
 }
+
+// The probe follows no redirect: its lookup carries the credential in an explicit Authorization
+// header, which Go's client copies to a redirect's target on the same host, so a listener that
+// redirected would hand the credential to another path. A redirect is an answer the probe reads as
+// Unknown, and the target is never asked. The control is a client that follows redirects, which
+// asks the target with the bearer.
+func TestProbeFollowsNoRedirect(t *testing.T) {
+	var targeted, bearer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			targeted, bearer = r.URL.Path, r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	var log bytes.Buffer
+	if got := newTestProber(server.URL, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("Probe = %s, want unknown", got)
+	}
+	if targeted != "" || bearer != "" {
+		t.Fatalf("the probe followed the redirect to %q with Authorization %q", targeted, bearer)
+	}
+	if !strings.Contains(log.String(), "status=302") {
+		t.Errorf("the log %q does not name the redirect's status", log.String())
+	}
+}

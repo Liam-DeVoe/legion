@@ -65,9 +65,15 @@ type Prober struct {
 }
 
 // NewProber is a Prober over opts. An envoy_url that does not parse, which the loader refuses
-// (config.validURL), leaves no lookup, and every probe of it is Unknown.
+// (config.validURL), leaves no lookup, and every probe of it is Unknown. Its client follows no
+// redirect: the lookup carries its credential in an explicit Authorization header, which Go's
+// client copies to a redirect's target on the same host or a subdomain, and the listener answers
+// the lookup itself, so a redirect is an answer the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
-	p := &Prober{token: opts.EnvoyToken, log: opts.Log, client: &http.Client{Timeout: probeTimeout}}
+	p := &Prober{token: opts.EnvoyToken, log: opts.Log, client: &http.Client{
+		Timeout:       probeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 	if parsed, err := url.Parse(strings.TrimRight(opts.EnvoyURL, "/")); err == nil {
 		p.user, parsed.User = parsed.User, nil
 		p.lookup = parsed.String() + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project)))
