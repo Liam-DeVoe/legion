@@ -118,6 +118,16 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 //     token, so it could name a consumer per repository only from a list of the repositories,
 //     which no scope holds, and a wildcard in place of the consumer's name would reach every
 //     consumer of the stream, other projects' included.
+//     The create alone names a filter: the info, the pull and the acknowledgements name the
+//     consumer only, so the grant holds a daemon to its consumers by name, not by what they
+//     filter. A durable of one of those names that already exists with a wider filter is read
+//     whole through this grant: today's daemon opens legion-go-<P>-dispatch on every project's
+//     issue events (notifications.dispatch.issue.>) and legion-go-<P>-wake on the shared wake
+//     lane, so a held PUB daemon pulls PRIV's issue events through its own dispatch consumer
+//     (TestWithinProjectsReadsAWideConsumerWhole). The grant holds a daemon to its projects only
+//     once each of its consumers filters on the project's own lane, which the daemon that opens
+//     its consumers per project does in place at boot, and only while it stays so: a user holding
+//     today's daemon grant, or a listener, may widen it again.
 //     The shared wake lane is a project's own only once the listener publishes its role and agent
 //     wake reports on each project's lane (contracts.LegionWakeSubject) and keeps only
 //     listener_ready there: until then it carries every project's role names and session ids, and
