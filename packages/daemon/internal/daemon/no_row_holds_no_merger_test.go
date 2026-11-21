@@ -6,11 +6,15 @@ package daemon
 // still holds the tree's work (record.TreeGate.Open), but it names no document, so nobody can be
 // asked about it and no task or message can name its version. Each case drives the daemon's own
 // pieces over a real PostgreSQL: the production fact handlers, the outbox's executor and its
-// fence, the claim's machine, the API a worker declares its wait through, the idle release and
-// its backstop, and admission's controller tick.
+// fence, the claim's machine, the API a worker declares its wait through and asks what it owes
+// through, the idle release and its backstop, and admission's controller tick.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -48,6 +53,7 @@ const closedGateWords = "The design gate of LEGION-208 closed"
 //   - its pod's release arms a backstop, which is taken when it comes due, and its wake reaches the
 //     merger;
 //   - the merger declares a wait in that turn, and the wait is recorded and stands;
+//   - the merger's owed answer gives the merge and that wait, and no hold;
 //   - no task and no message the merger receives names a closed gate.
 func TestNoRowHoldsNoMergerUnderAGatedStepNobodyRegistered(t *testing.T) {
 	r := newWaitDeliveryRigOf(t, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -121,6 +127,13 @@ func TestNoRowHoldsNoMergerUnderAGatedStepNobodyRegistered(t *testing.T) {
 	}
 	r.endTurn(woken.ID)
 	r.wantStanding()
+	owed := r.owed()
+	if owed.Hold != nil {
+		t.Fatalf("the merger's owed answer gives the hold %+v, want none: a gated step that nobody registered holds no merger", owed.Hold)
+	}
+	if !owed.Owes || owed.Work != "the merging phase of LEGION-208" || owed.Wait == nil || owed.Wait.ID != wait.ID {
+		t.Fatalf("the merger's owed answer is %+v, want the merge it owes and its wait %s, which stands", owed, wait.ID)
+	}
 
 	sent := r.prompts()
 	if len(sent) < 2 {
@@ -233,6 +246,32 @@ func (r *waitDeliveryRig) applies(id string, fact intake.Fact) {
 	if err != nil || result.Refusal != nil {
 		r.t.Fatalf("apply %s = %+v, %v; want it applied", id, result.Refusal, err)
 	}
+}
+
+// owed is what the rig's claim's own session is told it owes now, asked over the daemon's owed
+// route (`POST /legion/v1/claims/owed`) with the session and the secret its registration holds.
+// The rig's API serves no owed route, so the route is served here over the rig's own supervisor,
+// store and steps, with the three rules the daemon hands the route (daemon.go's api.Options:
+// RoleFor, WaitStands and Holds).
+func (r *waitDeliveryRig) owed() api.OwedResponse {
+	r.t.Helper()
+	handler := api.NewServer("127.0.0.1", 0, api.Options{Steps: r.w.gatedSteps, Supervisor: r.sup, Project: "legion",
+		DispatchProject: r.issue.Project, Pool: r.pool, Record: r.records, Log: r.log,
+		RoleFor: phase.RoleFor, WaitStands: workflow.WaitStandsNow, Holds: workflow.HoldsNow}).Handler
+	encoded, err := json.Marshal(api.OwedRequest{ClaimToken: r.token, SessionID: waitingSession, Secret: waitingSecret})
+	if err != nil {
+		r.t.Fatalf("encode the owed question: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/legion/v1/claims/owed", bytes.NewReader(encoded)))
+	if recorder.Code != http.StatusOK {
+		r.t.Fatalf("ask what %s owes = %d %s, want 200", r.token, recorder.Code, recorder.Body)
+	}
+	var answer api.OwedResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		r.t.Fatalf("decode the owed answer: %v", err)
+	}
+	return answer
 }
 
 // movesTo moves the rig's issue to at, with at's own status, as a transition records it.

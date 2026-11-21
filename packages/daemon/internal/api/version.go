@@ -3105,11 +3105,19 @@ package api
 // the bands compose, and every reader from 207 on takes each key as optional
 // (`packages/contracts/src/legion-api.ts`). `hold.step` is a design step, which a reader
 // enumerates, and its three words arrived with the key at 207 (answers.go's holdSteps), so no
-// value strip is owed. The two routes' answers arrived with their routes at 207, so no contract
+// value strip is owed. The answer of `POST /legion/v1/claims/owed` (`api.OwedResponse`, 206's
+// claim route) gains the same two keys, read by the same two rules: `wait` while the claim's
+// wait stands and `hold` while the closed design gate holds the claim, each named whether or
+// not the claim owes, so a plugin can stop reminding a worker that waits or a merger the gate
+// holds. A caller below 207 is served that answer without either key (shapeAnswer's row of
+// AnswerOwed, withoutOwedWaitAndHold); every plugin that knows the route states its contract
+// in the header, so the header alone places it. `hold.step` of that answer is a row of
+// answers.go's EnumeratedFields too, so the owed answer's record at 206 carries its empty domain.
+// The two routes' answers arrived with their routes at 207, so no contract
 // below records them (answers.go's AnswerWait and AnswerWaitNews), and their requests are
 // recorded from 207 on (`request-shapes.json`). 207's records are 206's under its own number,
-// with the key paths of `wait` and `hold` under every claim view of the state and of the record,
-// and the two new answers.
+// with the key paths of `wait` and `hold` under every claim view of the state and of the record
+// and on the owed answer, and the two new answers.
 // The change carries two store migrations beside it: `20261119055500_claim_waits`, the table
 // that keeps each wait apart from the claim's per-launch columns so a relaunch keeps it, and
 // `20261119055600_outbox_kinds_with_the_wait_due`, the outbox kind of a wait's time. Neither is

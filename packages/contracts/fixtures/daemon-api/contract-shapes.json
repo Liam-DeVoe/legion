@@ -28812,7 +28812,9 @@
       "owes",
       "work"
     ],
-    "domains": {}
+    "domains": {
+      "hold.step": []
+    }
   },
   {
     "contract": 206,
@@ -30180,10 +30182,25 @@
     "noBody": false,
     "keyPaths": [
       "architect",
+      "hold",
+      "hold.artifactId",
+      "hold.step",
+      "hold.version",
       "owes",
+      "wait",
+      "wait.declaredAt",
+      "wait.id",
+      "wait.waitingOn",
+      "wait.wakeAt",
       "work"
     ],
-    "domains": {}
+    "domains": {
+      "hold.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ]
+    }
   },
   {
     "contract": 207,

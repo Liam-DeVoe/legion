@@ -239,6 +239,15 @@ type Options struct {
 	// `POST /legion/v1/claims/owed` reads it for whether a claim's role works its issue's phase,
 	// and nil answers that route 500.
 	RoleFor func(phase.Phase) claim.Role
+	// WaitStands and Holds are the daemon's one rule for whether a claim's wait stands
+	// (workflow.WaitStandsNow) and for the closed design gate that holds a merger
+	// (workflow.HoldsNow), each asked of the record in tx under the deployment's steps. This
+	// package may not import internal/workflow, whose own tests read this one, so the daemon
+	// hands both in as it hands RoleFor, and no rule of either is written here. The claim route
+	// `POST /legion/v1/claims/owed` reads both for the wait and the hold it answers, and nil for
+	// either answers that route 500.
+	WaitStands func(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, token claim.Token) (record.ClaimWait, bool, error)
+	Holds      func(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep, claims []supervise.Claim) (map[claim.Token]record.DesignGate, error)
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
 	// operator tree's memory group. A route that needs a database as well tests Pool.
@@ -382,6 +391,9 @@ type server struct {
 	records     record.Store
 	dispatch    dispatch.Client
 	claimReady  func(c supervise.Claim)
+	// waitStands and holds are Options.WaitStands and Options.Holds.
+	waitStands func(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, token claim.Token) (record.ClaimWait, bool, error)
+	holds      func(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep, claims []supervise.Claim) (map[claim.Token]record.DesignGate, error)
 	// handoffCompleted is Options.HandoffCompleted.
 	handoffCompleted func(issue string)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
@@ -458,6 +470,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		unread:             opts.RepositoryUnread,
 		await:              opts.AwaitRecovery,
 		roleFor:            opts.RoleFor,
+		waitStands:         opts.WaitStands,
+		holds:              opts.Holds,
 		records:            opts.Record,
 		dispatch:           opts.Dispatch,
 		claimReady:         opts.ClaimReady,

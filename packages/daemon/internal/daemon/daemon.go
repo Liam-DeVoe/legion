@@ -2767,6 +2767,15 @@ func (l *servingLatch) reach() { l.served.Store(true) }
 // on whatever goroutine a probe's request runs on.
 func (l *servingLatch) serving() bool { return l.served.Load() }
 
+// waitStandsNow and holdsNow are the workflow's one rule of a claim's wait
+// (workflow.WaitStandsNow) and of the design gate's hold on a merger (workflow.HoldsNow), which
+// serve hands the API's owed route (api.Options.WaitStands, api.Options.Holds). They are named
+// here because serve's own workflow runtime is named workflow, which hides the package there.
+var (
+	waitStandsNow = workflow.WaitStandsNow
+	holdsNow      = workflow.HoldsNow
+)
+
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -2867,6 +2876,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
 		RoleFor:            phase.RoleFor,
+		WaitStands:         waitStandsNow,
+		Holds:              holdsNow,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,

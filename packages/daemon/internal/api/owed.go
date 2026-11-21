@@ -27,7 +27,7 @@ type OwedRequest struct {
 // LEGION-208", "the production check of LEGION-208". Work is empty exactly when Owes is false, so
 // a reminder renders the phrase it is given and never one of its own.
 //
-// Architect is the architect claim that owns the claim now (owningArchitect): the issue's own
+// Architect is the architect claim that owns the claim now (owedStandingOf): the issue's own
 // architect while its claim holds its role, else the nearest one above it whose claim does, else
 // the tree root's. It is named for a phase worker whose issue the workflow records, whether or not
 // the claim owes, and left out for an architect, the controller, a failed claim and an issue the
@@ -35,10 +35,23 @@ type OwedRequest struct {
 // packages/pi-shared/src/phase-reminder.ts), and so does the stall watch's notice of a stuck call
 // (packages/pi-legion/src/stall-evidence.ts), so both reach the architect the daemon's own notices
 // of the issue reach, without a read of the daemon's whole state.
+//
+// Wait is the wait the claim's worker declared (POST /legion/v1/claims/wait) while it stands, with
+// the four keys the declaration's answer named (WaitView). It is absent where no wait stands: none
+// was declared, the wait ended, or the wait has no end and no longer stands — a fresh session, a
+// phase that moved (workflow.WaitStands). Hold is the closed design gate that holds the claim
+// (HoldView): only a merger in merging is held, while a step the deployment gates stands closed
+// with a row of its own (workflow.HeldByDesignGate). It is absent once that gate opens, and on a
+// tree with no registered gate row. Each is named as Architect is, whether or not the claim owes,
+// so a reminder can tell a worker that waits, or a merger the gate holds, from a worker that
+// stopped. A caller below waitContract is served the answer without either key (shapeAnswer's
+// row of AnswerOwed).
 type OwedResponse struct {
 	Owes      bool        `json:"owes"`
 	Work      string      `json:"work"`
 	Architect claim.Token `json:"architect,omitempty"`
+	Wait      *WaitView   `json:"wait,omitempty"`
+	Hold      *HoldView   `json:"hold,omitempty"`
 }
 
 // claimOwed is a live role's session asking, at the end of its turn, what its claim owes now. It
@@ -67,10 +80,10 @@ type OwedResponse struct {
 // over `POST /legion/v1/claims/turn-outcome` reaches `launch_failure_limit`, and the one delayed
 // reminder each refused turn arms asks this route before it goes.
 //
-// A daemon that reads no issue record, or does not know which role works a phase
-// (Options.Pool, Options.RoleFor), answers 500 rather than "nothing owed": the reminder that
-// reads a failure still nudges and says it could not read the record, where an empty answer
-// would silence it on a guess.
+// A daemon that reads no issue record, does not know which role works a phase, or holds no rule
+// for a wait or a hold (Options.Pool, Options.RoleFor, Options.WaitStands, Options.Holds), answers
+// 500 rather than "nothing owed": the reminder that reads a failure still nudges and says it
+// could not read the record, where an empty answer would silence it on a guess.
 func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	var req OwedRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
@@ -105,7 +118,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		s.writeAnswer(w, r, AnswerOwed, http.StatusOK, OwedResponse{})
 		return
 	}
-	if s.pool == nil || s.roleFor == nil {
+	if s.pool == nil || s.roleFor == nil || s.waitStands == nil || s.holds == nil {
 		s.refuse(w, r, http.StatusInternalServerError, "the daemon reads no issue record, so it cannot say what this claim owes")
 		return
 	}
@@ -115,42 +128,82 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusInternalServerError, "read the issue record: "+err.Error())
 		return
 	}
-	var owner claim.Token
+	var standing owedStanding
 	if position.issue != nil {
-		if owner, err = s.owningArchitect(r.Context(), *position.issue); err != nil {
-			s.logRequestFailure(r, err, "api: the architect that owns a claim could not be read for what it owes", "claim", req.ClaimToken)
-			s.refuse(w, r, http.StatusInternalServerError, "read the architect that owns the claim: "+err.Error())
+		if standing, err = s.owedStandingOf(r.Context(), c, *position.issue); err != nil {
+			s.logRequestFailure(r, err, "api: the architect, the wait or the hold of a claim could not be read for what it owes", "claim", req.ClaimToken)
+			s.refuse(w, r, http.StatusInternalServerError, "read the architect that owns the claim, its wait and its hold: "+err.Error())
 			return
 		}
 	}
-	s.writeAnswer(w, r, AnswerOwed, http.StatusOK, owedBy(c, position, owner, s.roleFor))
+	s.writeAnswer(w, r, AnswerOwed, http.StatusOK, owedBy(c, position, standing, s.roleFor))
 }
 
-// owningArchitect is the architect claim that owns a phase worker on issue now (OwedResponse's
-// Architect): the end of the owner walk from issue itself (record.OwnerWalk.Architect), over the
+// owedStanding is what the owed answer reads of the record beside the issue's position
+// (handoffPosition): the architect that owns the claim, its wait while it stands, and the closed
+// design gate that holds it (owedStandingOf).
+type owedStanding struct {
+	// owner is the architect claim that owns the claim now (OwedResponse.Architect).
+	owner claim.Token
+	// wait is the claim's wait while it stands, and nil otherwise (OwedResponse.Wait).
+	wait *WaitView
+	// hold is the closed design gate that holds the claim, and nil otherwise (OwedResponse.Hold).
+	hold *HoldView
+}
+
+// owedStandingOf is what claim c on issue stands under beside the issue's position
+// (owedStanding), read in a read-only transaction of its own, which the completion route,
+// sharing handoffPosition, does not pay for.
+//
+// The owner is the end of the owner walk from issue itself (record.OwnerWalk.Architect), over the
 // architect claims of issue's tree as the store records them. That is the walk the daemon's own
 // notices about a phase worker take (workflowRuntime.owningArchitect in
 // internal/daemon/specs.go): the issue's own architect while its claim holds its role, else the
 // nearest one above it that does, else the tree root's. It reads the tree's issues and their
-// architect claims, so it grows with the tree and not with the deployment, in a read-only
-// transaction of its own, which the completion route, sharing handoffPosition, does not pay for.
-func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
-	var owner claim.Token
+// architect claims, so it grows with the tree and not with the deployment.
+//
+// The wait and the hold are each read by the one rule every reader of it asks, which the daemon
+// hands this package (Options.WaitStands, Options.Holds), under the deployment's design-gate steps
+// (Options.Steps), so this answer, the state, the outbox's fence and the daemon's sends cannot
+// part. The wait is workflow.WaitStandsNow's, which reads the claim's wait row with no end first,
+// so a claim with none costs that one indexed read. The hold is workflow.HoldsNow's, over
+// workflow.HeldByDesignGate, which reads nothing for a claim of any role but the merger. HoldsNow
+// reads the issue again in this transaction, under the Dispatch project the record files it under
+// (record.Issue.Project).
+func (s *server) owedStandingOf(ctx context.Context, c supervise.Claim, issue record.Issue) (owedStanding, error) {
+	var standing owedStanding
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		walk, err := record.ReadOwnerWalk(ctx, s.records, tx, s.project, issue.Tree)
 		if err != nil {
 			return err
 		}
-		owner, err = walk.Architect(issue, false)
-		return err
+		if standing.owner, err = walk.Architect(issue, false); err != nil {
+			return err
+		}
+		wait, stands, err := s.waitStands(ctx, tx, s.records, s.steps, c.Token)
+		if err != nil {
+			return err
+		}
+		if stands {
+			standing.wait = WaitViewOf(wait)
+		}
+		holds, err := s.holds(ctx, tx, s.records, issue.Project, s.steps, []supervise.Claim{c})
+		if err != nil {
+			return err
+		}
+		if gate, held := holds[c.Token]; held {
+			standing.hold = HoldViewOf(gate)
+		}
+		return nil
 	})
-	return owner, err
+	return standing, err
 }
 
 // owedBy is what claim c owes with its issue's record standing at position, roleFor naming the
-// role that works each phase (phase.RoleFor), and owner the architect that owns c
-// (owningArchitect), which every answer about a recorded issue names, owed or not. Three sources
-// can each seem to say: the claim's pending delivery and what it was left serving
+// role that works each phase (phase.RoleFor), and standing what c stands under beside it
+// (owedStandingOf): the architect that owns c, its wait and its hold, which every answer about a
+// recorded issue carries, owed or not. Three sources can each seem to say: the claim's pending
+// delivery and what it was left serving
 // (supervise.Claim.Pending, ServingCheck), the issue's phase with the role's own row of it
 // (record.PhaseRow.Entry and Completed) against the entry the claim was given
 // (supervise.Claim.GivenEntry), and the issue's production check. They disagree, and the rule is
@@ -197,25 +250,32 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // (supervise.HoldsTask) carries no run, no entry and no look, only the sentence of what the last
 // let-go ended, so a claim holding it, confirmed or not, is answered as one holding nothing is:
 // by the record, and by what it was left serving.
-func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
+//
+// The wait and the hold say nothing of what is owed. A held merger whose pull request is not
+// merged still owes the merge, which the hold tells it not to make yet, and a waiting worker still
+// owes its phase, which it waits to go on with: each key tells the reader why the owed work does
+// not move, and the answer carries it as standing read it.
+func owedBy(c supervise.Claim, position completionPosition, standing owedStanding, roleFor func(phase.Phase) claim.Role) OwedResponse {
 	issue := position.issue
 	if issue == nil {
 		return OwedResponse{}
 	}
-	nothing := OwedResponse{Architect: owner}
+	answer := OwedResponse{Architect: standing.owner, Wait: standing.wait, Hold: standing.hold}
 	if look := c.ServingCheck(); look.Look > 0 {
 		check := position.check
 		if check == nil || !check.Open() || !check.LookOpen || check.Looks != look.Look ||
 			!check.NamedBy(look.OpenedAt) || check.Role != c.Role {
-			return nothing
+			return answer
 		}
-		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
+		answer.Owes, answer.Work = true, "the production check of "+issue.Key
+		return answer
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
-		return nothing
+		return answer
 	}
 	if behind := c.GivenEntry < position.entry; !behind && position.completed {
-		return nothing
+		return answer
 	}
-	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key), Architect: owner}
+	answer.Owes, answer.Work = true, fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key)
+	return answer
 }

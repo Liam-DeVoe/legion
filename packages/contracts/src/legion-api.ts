@@ -1651,6 +1651,19 @@ export const LegionOwedResponse = z
     owes: z.boolean(),
     work: z.string(),
     architect: nonEmptyString.optional(),
+    /** The wait the claim's worker declared (`POST /legion/v1/claims/wait`) while it stands, by
+     * the rule the state's claim view reads: the same four keys the declaration's answer named.
+     * Absent where no wait stands: none declared, one that ended, and one with no end that no
+     * longer stands — a fresh session, or a phase that moved. It is named whether or not the
+     * claim owes, as `architect` is. A caller below 207 is served the answer with no such key at
+     * all (the daemon's `withoutOwedWaitAndHold`), so every reader takes it as optional. */
+    wait: legionWait.optional(),
+    /** The closed design gate that holds this merger, by the rule the outbox's fence reads: a
+     * merger whose issue is in `merging` while a step its deployment gates stands closed with a
+     * row of its own. Absent for every other claim, once the gate opens, and on a tree with no
+     * registered gate row. A caller below 207 is served the answer with no such key at all (the
+     * daemon's `withoutOwedWaitAndHold`), so every reader takes it as optional. */
+    hold: legionHold.optional(),
   })
   .refine((body) => body.owes === (body.work !== ""), {
     message: "work names the owed work exactly when owes is true",

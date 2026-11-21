@@ -684,12 +684,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-		// The owed golden's own value (owed.json, claims_owed_test.go): a claim that owes its
-		// phase, named with the architect that owns it, which between them carry every key of
-		// an OwedResponse.
-		AnswerOwed: {roots: typesOf(OwedResponse{}), bodies: []any{OwedResponse{
-			Owes: true, Work: "the testing phase of LEGION-208", Architect: "legion-legion-legion-208-architect",
-		}}},
+		// The two owed goldens' own values (owed.json and owed-wait-hold.json,
+		// claims_owed_test.go): a claim that owes its phase, named with the architect that owns
+		// it, and the merger's answer with a wait and a hold, which between them carry every key of
+		// an OwedResponse. The hold is written once on each step the table declares for it
+		// (answers.go's holdSteps), so the bodies carry every value of `hold.step`.
+		AnswerOwed: {roots: typesOf(OwedResponse{}), bodies: owedFixtureBodies()},
 		// The wait golden's own value (TestWaitResponseGolden): the wait as the daemon recorded it,
 		// whose four keys are always written.
 		AnswerWait: {roots: typesOf(WaitResponse{}), bodies: []any{WaitResponse{Wait: WaitView{
@@ -704,6 +704,18 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			WaitNewsResponse{Ended: true}, WaitNewsResponse{UpdateAsk: true},
 		}},
 	}
+}
+
+// owedFixtureBodies is the owed answer's fixture bodies (answerFixtures): the first golden's value,
+// and the second golden's on each step of holdSteps in turn (owedWaitingAndHeld).
+func owedFixtureBodies() []any {
+	bodies := []any{OwedResponse{
+		Owes: true, Work: "the testing phase of LEGION-208", Architect: "legion-legion-legion-208-architect",
+	}}
+	for _, step := range holdSteps {
+		bodies = append(bodies, owedWaitingAndHeld(record.DesignStep(step.Value)))
+	}
+	return bodies
 }
 
 // controllerPause is the goldens' pause (goldenPause) begun by the controller from its session

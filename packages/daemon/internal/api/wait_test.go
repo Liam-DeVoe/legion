@@ -46,18 +46,28 @@ type waitHarness struct {
 
 func newWaitHarness(t *testing.T) *waitHarness {
 	t.Helper()
+	return newWaitHarnessGating(t, config.DesignGateRootIssues.Steps())
+}
+
+// newWaitHarnessGating is the wait harness under a deployment that gates steps. Its daemon knows
+// which role works each phase (workflow.RoleFor) and the rules of a wait and a hold
+// (workflow.WaitStandsNow, workflow.HoldsNow), as the daemon wires them, so the owed route answers
+// beside the wait routes.
+func newWaitHarnessGating(t *testing.T, steps []record.DesignStep) *waitHarness {
+	t.Helper()
 	h := newHarness(t)
 	logs := &testlog.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps()}, log)
+		Steps: steps}, log)
 	w := &waitHarness{harness: h, engine: engine, logs: logs, first: newFactHold(), second: newFactHold()}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Steps:      config.DesignGateRootIssues.Steps(),
+		Steps:      steps,
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Pool: h.store.Pool(), Record: records, PluginRelaunchable: true,
-		Handlers: w.handlers(), Log: log, Now: func() time.Time { return waitNow },
+		Handlers: w.handlers(), Log: log, Now: func() time.Time { return waitNow }, RoleFor: workflow.RoleFor,
+		WaitStands: workflow.WaitStandsNow, Holds: workflow.HoldsNow,
 	}).Handler
 	return w
 }

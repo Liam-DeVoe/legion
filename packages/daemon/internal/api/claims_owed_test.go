@@ -267,12 +267,12 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		serving := supervise.Claim{Role: claim.RoleTester, Pending: relaunch, ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
 		done := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Done},
 			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, Role: claim.RoleTester, Looks: 2, LookOpen: true}}
-		if got, want := owedBy(serving, done, "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+		if got, want := owedBy(serving, done, owedStanding{}, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
 			t.Errorf("a tester serving a look and holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
 		}
 		working := supervise.Claim{Role: claim.RoleTester, Pending: relaunch}
 		inPhase := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-		if got, want := owedBy(working, inPhase, "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+		if got, want := owedBy(working, inPhase, owedStanding{}, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
 			t.Errorf("a tester in its open phase holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
 		}
 	}
@@ -338,6 +338,7 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: unreadableIssues{record.NewStore()}, RoleFor: workflow.RoleFor,
+		WaitStands: workflow.WaitStandsNow, Holds: workflow.HoldsNow,
 	}).Handler
 	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
 	if recorder.Code != http.StatusInternalServerError {
@@ -350,7 +351,29 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 // the handler's own body.
 func TestClaimOwedResponseGolden(t *testing.T) {
 	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester}, position, "legion-legion-legion-208-architect", workflow.RoleFor))
+	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester}, position, owedStanding{owner: "legion-legion-legion-208-architect"}, workflow.RoleFor))
+}
+
+// The answer with both of the keys waitContract added, built through owedBy as the first golden
+// is (owedWaitingAndHeld, with the spec step), so the contracts hold their `wait` and `hold` to the
+// handler's own body. No claim is answered both at once: a merger the design gate holds has no
+// wait that stands (workflow.WaitStands). So this is the wire shape of the two keys together,
+// which a reader parses whichever of them it is sent, and not an answer the route gives.
+func TestClaimOwedWaitAndHoldResponseGolden(t *testing.T) {
+	golden(t, "owed-wait-hold.json", owedWaitingAndHeld(record.DesignStepSpec))
+}
+
+// owedWaitingAndHeld is the merger of LEGION-208, in merging with its pull request open, answered
+// with a wait and with the hold of step's row of the closed design gate, through owedBy, as the
+// architect of LEGION-208 owns it.
+func owedWaitingAndHeld(step record.DesignStep) OwedResponse {
+	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Merging, Generation: 1}}
+	return owedBy(supervise.Claim{Role: claim.RoleMerger}, position, owedStanding{
+		owner: "legion-legion-legion-208-architect",
+		wait: &WaitView{ID: "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685", WaitingOn: "the merge queue's run on the head",
+			WakeAt: time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC), DeclaredAt: time.Date(2026, 11, 14, 6, 0, 0, 123456000, time.UTC)},
+		hold: &HoldView{Step: step, ArtifactID: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", Version: 7},
+	}, workflow.RoleFor)
 }
 
 // The answer names the architect that owns the claim now, the end of the owner walk the daemon's

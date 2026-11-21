@@ -155,8 +155,11 @@ const schemas: Record<string, z.ZodType> = {
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
   // What a session reads at the end of its turn of what its claim owes now (`api.OwedResponse`):
-  // the reminder renders the `work` phrase and names no work of its own.
+  // the reminder renders the `work` phrase and names no work of its own. The second carries the
+  // two keys contract 207 added, the wait that stands and the design gate's hold, each of which
+  // the daemon names alone and this golden names together.
   "owed.json": LegionOwedResponse,
+  "owed-wait-hold.json": LegionOwedResponse,
   // What a phase worker's declared wait comes back as once the daemon recorded it: its id, its
   // text, its time and when the daemon recorded the declaration (`api.WaitResponse`).
   "wait.json": LegionWaitResponse,
@@ -450,11 +453,12 @@ interface EnumeratedFieldRow {
 
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
- * fails the case below, so an enumerated field of a fourth answer is read rather than skipped. */
+ * fails the case below, so an enumerated field of a fifth answer is read rather than skipped. */
 const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
+  owed: LegionOwedResponse,
 };
 
 /** One step of a path from a schema's root to a node below it: the field `key` of an object,
