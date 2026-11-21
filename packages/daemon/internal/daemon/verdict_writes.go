@@ -320,12 +320,6 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 	}
 }
 
-// writeVerdict writes legion-verdict on head of pull request number of repository from the
-// verdict the daemon records at that head, as a fact asks (writeVerdictOver).
-func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
-	return w.writeVerdictOver(ctx, repository, number, head, false)
-}
-
 // writeVerdictOver writes legion-verdict on head of pull request number of repository from the
 // verdict the daemon records at that head (verdict.Decide): success where it stands, failure where a
 // refusal stands, and nothing where neither does, so the head cannot merge (spec R4); with
