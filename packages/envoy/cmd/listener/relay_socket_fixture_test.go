@@ -12,7 +12,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -503,14 +502,21 @@ func (rig *relaySocketRig) holds(session string) int {
 	return len(rig.sockets.open[session])
 }
 
+// relayFrameReceipt is a receipt subject of a relay frame of session, shaped as an edge relay
+// names one (relayReceiptOf): the receipt family, a machine id, a relay's nuid, the session and a
+// token of its own.
+func relayFrameReceipt(session string) string {
+	return bus.SessionReplySubject(bus.RelayReplyPrefix+"edge-rows.rows", session)
+}
+
 // publishRelayFrame publishes, on session's relay subject, a message shaped as a relay frame -
-// its receipt subject under bus.RelayReplyPrefix - carrying header, and answers it.
+// its receipt subject a receipt of session's (relayFrameReceipt) - carrying header, and answers it.
 func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) *natsgo.Msg {
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	msg := &natsgo.Msg{
 		Subject: bus.DeliverSubject(session),
-		Reply:   bus.RelayReplyPrefix + "rowsown." + strings.ReplaceAll(t.Name(), "/", "."),
+		Reply:   relayFrameReceipt(session),
 		Header:  header,
 		Data:    []byte(`{"row":"` + t.Name() + `"}`),
 	}
@@ -549,7 +555,7 @@ func flood(t *testing.T, url, session string, n int) {
 	publisher := testnats.Connect(t, url)
 	data := bytes.Repeat([]byte("x"), 512<<10)
 	for i := range n {
-		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "unread." + strconv.Itoa(i), Data: data}); err != nil {
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: data}); err != nil {
 			t.Fatalf("publish frame %d: %v", i, err)
 		}
 	}

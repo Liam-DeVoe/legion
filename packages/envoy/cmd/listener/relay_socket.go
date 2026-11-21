@@ -35,19 +35,22 @@ package main
 // A frame's receipt subject is the owning machine's, under its receipt family
 // (natsgrant.EdgeRelayReplyPrefix; startSessionRelays in edge mode), which the edge's grant
 // publishes for every machine and subscribes for its own: the socket takes a receipt under any
-// machine's family (bus.RelayReplyPrefix), since it answers frames other machines own, and no reply
-// inbox is answered from here. The connection probe (connection_probe.go) is never forwarded and
-// never answered: the subscription itself is what keeps the session connected, and a probe costs
-// its sender at most its one second. A message on the relay subject that is no relay frame (its
-// reply not a relay receipt) is not forwarded either.
+// machine's family (bus.RelayReplyPrefix), since it answers frames other machines own, so long as
+// the receipt names the socket's own session (relayReceiptOf), and no reply inbox is answered from
+// here. The connection probe (connection_probe.go) is never forwarded and never answered: the
+// subscription itself is what keeps the session connected, and a probe costs its sender at most its
+// one second. A message on the relay subject that is no relay frame of the session (its reply no
+// receipt naming the session) is not forwarded either.
 //
 // While a socket is open it asks the broker again every relaySocketCheckEvery, on its ping tick,
 // and once at its token's expiry (watch), and closes with the code its client reopens by
 // (verdict). The socket's queue bounds what it holds for a client that reads slower than its
-// frames come, at relaySocketPendingMsgs frames and relaySocketPendingBytes, and what all of a
+// frames come, at relaySocketPendingMsgs frames and relaySocketPendingBytes, what all of one
+// caller's sockets on a replica hold together, at relaySocketCallerPendingBytes, and what all of a
 // replica's sockets hold together, at relaySocketReplicaPendingBytes (relay_socket_queue.go); the
-// frame that would pass either closes its socket 1013 slow_consumer. A replica holds at most
-// relaySocketMaxPerListener sockets, past which an upgrade is refused 503.
+// frame that would pass any of them closes its socket 1013 slow_consumer. A replica holds at most
+// relaySocketMaxPerCaller sockets of one caller, past which an upgrade is refused 429, and
+// relaySocketMaxPerListener in all, past which it is refused 503.
 
 import (
 	"bytes"
@@ -716,17 +719,31 @@ func relayReceiptBody(data []byte) bool {
 }
 
 // forward takes one message of a subscription, on the subscription's own goroutine: a relay frame
-// alone, never the connection probe, is held for the client (enqueue), whose queue is the bound on
-// what the socket holds, and the pump writes it.
+// of the socket's session alone, never the connection probe, is held for the client (enqueue),
+// whose queue is the bound on what the socket holds, and the pump writes it.
 func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe {
 		return
 	}
-	if !strings.HasPrefix(msg.Reply, bus.RelayReplyPrefix) {
+	if !relayReceiptOf(msg.Reply, socket.session) {
 		socket.stray(msg)
 		return
 	}
 	socket.enqueue(sid, msg)
+}
+
+// relayReceiptOf reports whether reply is the receipt subject of a relay frame of session: under
+// the receipt family (bus.RelayReplyPrefix), the owning machine's id, its relay's nuid, the session
+// and a token, as an edge relay names it (natsgrant.EdgeRelayReplyPrefix, bus.SessionReplySubject),
+// each one subject token. So the client of one session is handed no other session's receipt to
+// publish, whoever put a frame on its relay subject.
+func relayReceiptOf(reply, session string) bool {
+	rest, ok := strings.CutPrefix(reply, bus.RelayReplyPrefix)
+	if !ok {
+		return false
+	}
+	tokens := strings.Split(rest, ".")
+	return len(tokens) == 4 && !slices.Contains(tokens, "") && tokens[2] == session
 }
 
 // endSlowConsumer ends the socket 1013 slow_consumer, for why: its client opens it again after 5 s,
@@ -735,15 +752,17 @@ func (socket *relaySocket) endSlowConsumer(why string) {
 	held, bytes := socket.held()
 	socket.sockets.logger.Warn("listener: the relay socket's client reads its frames slower than they come; it is closed",
 		slog.String("session_id", socket.session), slog.String("why", why),
-		slog.Int("held_frames", held), slog.Int("held_bytes", bytes), slog.Int64("replica_held_bytes", socket.sockets.buffered.Load()))
+		slog.Int("held_frames", held), slog.Int("held_bytes", bytes),
+		slog.Int64("caller_held_bytes", socket.caller.buffered.Load()), slog.Int64("replica_held_bytes", socket.sockets.buffered.Load()))
 	socket.end(websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 }
 
-// stray logs, once a socket, a message on the relay subject that is no relay frame: one whose
-// reply is no relay receipt, which this socket could not publish an answer to.
+// stray logs, once a socket, a message on the relay subject that is no relay frame of the
+// socket's session: one whose reply is no receipt naming the session (relayReceiptOf), which this
+// socket publishes no answer to.
 func (socket *relaySocket) stray(msg *nats.Msg) {
 	if !socket.strayLogged.Swap(true) {
-		socket.sockets.logger.Warn("listener: the relay socket passed over a message on its relay subject whose reply is no relay receipt",
+		socket.sockets.logger.Warn("listener: the relay socket passed over a message on its relay subject whose reply is no receipt of its session",
 			slog.String("session_id", socket.session), slog.String("reply", msg.Reply))
 	}
 }

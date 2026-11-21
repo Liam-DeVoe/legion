@@ -1,8 +1,9 @@
 package main
 
 // relay_socket_caller_test.go holds the relay socket's in-process rows of what one caller takes
-// from a replica: at most its cap of the replica's sockets (relaySocketMaxPerCaller) and its share
-// of the replica's byte budget (relaySocketCallerPendingBytes). They run on the rig of
+// from a replica and is handed: at most its cap of the replica's sockets (relaySocketMaxPerCaller)
+// and its share of the replica's byte budget (relaySocketCallerPendingBytes), and the frames of
+// its own session's receipts alone (relayReceiptOf). They run on the rig of
 // relay_socket_fixture_test.go.
 
 import (
@@ -14,6 +15,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -100,4 +102,42 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	if frame := client.next(5 * time.Second); frame.Op != "msg" {
 		t.Fatalf("the other person's socket was sent %s, want its msg", frame.raw)
 	}
+}
+
+// A frame on a session's relay subject whose receipt names another session, or is no receipt of
+// the shape an edge relay names (relayReceiptOf), is not forwarded: the socket hands its client
+// only receipts of its own session's frames, so a frame anyone puts on the subject cannot have the
+// client publish another session's receipt through the edge. The frames go out on one connection,
+// those first and then a frame of the session's own, so a frame forwarded wrongly reaches the
+// client first. Control: forward taking any receipt under the family (relayReceiptOf's session
+// test removed); the first frame reaches the client, and the row fails naming it.
+func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T) {
+	rig := newRelaySocketRig(t)
+	const session, other = "ses_edge_own_receipts", "ses_edge_someone_else"
+	client, _ := rig.open(t, session)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	<-client.pongs
+
+	publisher := testnats.Connect(t, rig.owner.url)
+	for _, reply := range []string{
+		relayFrameReceipt(other),
+		bus.RelayReplyPrefix + "edge-rows.rows." + session,
+		relayFrameReceipt(session) + ".more",
+	} {
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: reply, Data: []byte(`{"stray":true}`)}); err != nil {
+			t.Fatalf("publish a frame whose receipt is %s: %v", reply, err)
+		}
+	}
+	own := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: []byte(`{"own":true}`)}
+	if err := publisher.PublishMsg(own); err != nil {
+		t.Fatalf("publish the session's own frame: %v", err)
+	}
+	if err := publisher.Flush(); err != nil {
+		t.Fatalf("flush the frames: %v", err)
+	}
+	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != own.Reply {
+		t.Fatalf("the socket sent %s first, want the msg %s of its own session: a frame whose receipt is no receipt of the session was forwarded", frame.raw, own.Reply)
+	}
+	client.none(500*time.Millisecond, "after the session's own frame")
 }
