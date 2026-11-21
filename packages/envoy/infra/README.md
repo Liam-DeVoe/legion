@@ -3956,6 +3956,48 @@ client on the server gets, other listeners' durable push deliveries included. Th
 `core/dispatch_permissions_live_test.go`, which also checks Dispatch's own user is refused a
 publish to a session's frames.
 
+Two grants have no static set, since no hub renders a user for them: the auth service alone
+answers them, to the `BROKER_NATS_SERVICES` entries of kinds `operator` and `probe`, each listed
+once, as `operator/-/*=<account>` and `probe/-/*=<account>`. `natsgrant.Operator(phase)` is the
+deployment's one operator identity's grant, a function of the NATS writer hold's phase, which the
+hold's row in the secrets broker's Postgres holds and the auth service reads at each decision. Each
+phase holds the one before it, and every phase subscribes `_INBOX_envoy_operator.>` alone, so an
+operator connects with that inbox prefix:
+
+- `released`, no hold, and the grant whenever the auth service cannot read the row: `$JS.API.INFO`;
+  the infos of `ENVOY_NOTIFICATIONS`, `KV_envoy_session_consumers` and each copied bucket
+  (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`);
+  each copied bucket's snapshot and the acknowledgements of its chunks, so a backup needs no hold;
+  the stored-message get of `KV_envoy_session_consumers` and the consumer names and infos of
+  `ENVOY_NOTIFICATIONS`; and the create and info of `ENVOY_MEASURE`, its one mutation, of the one
+  stream no client depends on;
+- `prepare`, a hold being prepared while every client is still admitted: also
+  `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*`, which raises the consumers' inactive thresholds
+  (one subject serves a consumer's create and its update, so it admits a named create too), and the
+  infos of `KV_legion_agents`, `KV_envoy_dpop_proofs` and `KV_envoy_webhook_redelivery`;
+- `held`, a hold set, while only the operator should be connected: also the barrier
+  stream `ENVOY_HOLD_BARRIER`'s create and delete; `STREAM.LIST`, `STREAM.NAMES` and
+  `CONSUMER.LIST.*`; the consumer delete on `ENVOY_NOTIFICATIONS`; the session consumers' records,
+  their bucket's create and restore; each copied bucket's create, update, delete and restore with
+  its chunks, and its barrier key `$KV.<bucket>.hold.barrier.*`; the create and update of
+  `ENVOY_NOTIFICATIONS` and every other bucket; every stream's and consumer's delete; and the
+  snapshot and restore of every other protected stream.
+
+No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance`.
+`natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
+a subject nothing else uses, so the probe only shows whether the hub admits a connection.
+
+**Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
+precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
+shell it runs in, requests no credential, and lists every principal that is not a person and can
+mint the operator ServiceAccount's token, run or enter a pod as it, mint its Google service
+account's token, make a namespace of the same name on another cluster of the project or of the
+workload pool's fleet, or write the writer hold's tables beside the broker's routes. It reads code
+first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1
+naming each principal and right, or 2 naming each step it could not read. `--report <file>` writes
+the same as JSON. `scripts/operator-token-minters.test.sh` runs every plant and control against a
+fake `kubectl`, `gcloud`, `curl` and `agent-secrets`.
+
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by
 a later release.
