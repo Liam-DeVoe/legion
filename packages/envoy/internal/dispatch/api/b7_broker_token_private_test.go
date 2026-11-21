@@ -65,5 +65,5 @@ func TestABrokerTokensListHoldsItOnceAProjectIsPrivate(t *testing.T) {
 
 	requireB7Answer(t, "the person token's issue filed in another project", as(person, http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTHER", "title": "Elsewhere", "spec": "# Spec"}), b7Answer{status: http.StatusCreated})
 	requireB7Answer(t, "the person token's whoami", as(person, http.MethodGet, "/api/v1/whoami", nil), b7Answer{http.StatusOK,
-		`{"kind":"agent","owner":"` + brokerTestPerson + `","projects":["BRK"],"project":"BRK","scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`})
+		`{"kind":"agent","owner":"` + brokerTestPerson + `","projects":["BRK"],"project":"BRK","scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`})
 }

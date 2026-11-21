@@ -2830,6 +2830,7 @@ func TestDispatchRefusesAServiceAccountListWithNoAudience(t *testing.T) {
 			row.edit(args)
 			m, err := runDispatch(t, args, true)
 			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when "+row.input+" is set")
+			requireInputError(t, err, "oidcAudience")
 			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
 		})
 	}
