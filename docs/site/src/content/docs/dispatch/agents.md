@@ -394,18 +394,25 @@ A session whose plugin does not stream its conversation shows none of it here.
 The live view says so, and still shows your messages and their replies.
 
 A session's conversation holds whatever the session read, of any project, so who may watch it is
-narrower than who may see its row on this page. A restricted member watches only a session that a
-token the secrets broker issued to them has proved, by a write to Dispatch, and whose Envoy
-listener lists only projects they see. While any project is private, everyone else watches a
-session that wrote to no project they do not see when either:
+narrower than who may see its row on this page. Dispatch ties a session to a person each time it
+checks a token the secrets broker issued to that person for the session, on a read as on a write.
+A restricted member watches only a session tied to them alone, whose Envoy listener lists only
+projects they see or lists none. While any project is private, everyone else watches a session
+that wrote to no project they do not see when either:
 
 - its listener lists its token's projects, each one a project they see; or
-- its listener lists none, and every private project of each person whose broker-issued token
-  proved the session, by a write to Dispatch, is one they see too. A session only people on no
-  private project proved is watched as before.
+- its listener lists none, and every private project of each person tied to the session is one
+  they see too. A session tied only to people on no private project is watched as before.
 
-The live view of any other session, one with no list that nobody's token has proved among them,
-shows it as not answering.
+Nobody but the session watches it once it has reached a project they do not see: a project its
+listener once listed while the project was private, or one taken from a person tied to it (taken
+off the project's list, out of a group on that list, or no longer its owner). The conversation
+still holds what the session read then.
+
+The live view checks this again before each new part of the conversation it shows, so a view of
+a session that another person's token starts acting in, or that writes in a project you do not
+see, ends before it shows you anything more. The live view of any other session shows it as not
+answering.
 
 ### A Claude Code session in the live view
 
