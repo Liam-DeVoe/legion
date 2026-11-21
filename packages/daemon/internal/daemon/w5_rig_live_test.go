@@ -461,6 +461,7 @@ func (s *w5Standin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	seen := readStandinRequest(body, time.Now())
+	seen.side = seen.side || isJobCaption(body)
 	s.mu.Lock()
 	var rule *w5Rule
 	if !seen.side {
@@ -510,6 +511,75 @@ func (s *w5Standin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	s.paneStandin.ServeHTTP(w, req)
+}
+
+// jobCaptionSystemLine opens the system prompt of the request Oh My Pi sends, beside the turn, to
+// caption a background job for its job list (job-caption-system.md, in the pinned build).
+const jobCaptionSystemLine = "You explain one background shell command"
+
+// isJobCaption is whether a Messages request is Oh My Pi's caption of a background job: no turn of
+// the role's. Its message holds the job's command, so a rule that waits for a word the job prints
+// would take it when the caption goes out late: a process the rig stops right after it backgrounds
+// a job sends the caption only once it runs again, beside the turn's own next request.
+func isJobCaption(body []byte) bool {
+	var request struct {
+		System json.RawMessage `json:"system"`
+	}
+	return json.Unmarshal(body, &request) == nil && strings.Contains(string(request.System), jobCaptionSystemLine)
+}
+
+// A rule that waits for a word a background job's command holds takes the turn's own request, and
+// never the caption Oh My Pi asks for that job beside it, whichever of the two comes first. On a
+// loaded host the rig stopped the fifth claim's process 0.8 s after it backgrounded its job, before
+// the caption went out; the caption went out only when the process ran again, the rule answered
+// it, and the turn got the stand-in's plain text and ended with no wait open.
+func TestTheW5StandinAnswersAJobCaptionAsNoTurn(t *testing.T) {
+	s := newW5Standin(t, "w5caption")
+	served := s.script(func(seen seenRequest) bool {
+		return anyTurn(seen) && strings.Contains(seen.last, "FIFTH-JOB-DONE")
+	}, 0, "bash", map[string]any{"command": "echo started"})
+	command := "while [ ! -f done ]; do sleep 1; done; echo FIFTH-JOB-DONE"
+	send := func(name string, request map[string]any) string {
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("encode the %s: %v", name, err)
+		}
+		answer := httptest.NewRecorder()
+		s.ServeHTTP(answer, httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body)))
+		return answer.Body.String()
+	}
+	caption := send("caption", map[string]any{
+		"model":  "w5caption-model",
+		"system": []map[string]any{{"type": "text", "text": jobCaptionSystemLine + " to a person glancing at a list of running jobs."}},
+		"messages": []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text",
+			"text": "<job>\nWhy it was started: Running the proof's step\nTimeout: none\nCommand:\n```\n" + command + "\n```\n</job>"}}}},
+	})
+	select {
+	case <-served:
+		t.Fatalf("the rule answered the job's caption: %s", caption)
+	default:
+	}
+	if strings.Contains(caption, "tool_use") {
+		t.Fatalf("the caption was answered with a tool call: %s", caption)
+	}
+	turn := send("turn", map[string]any{
+		"model":  "w5caption-model",
+		"system": "You are the role's agent.",
+		"messages": []map[string]any{
+			{"role": "user", "content": "Run the proof's step."},
+			{"role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "toolu_1", "name": "wait", "input": map[string]any{}}}},
+			{"role": "user", "content": []map[string]any{{"type": "tool_result", "tool_use_id": "toolu_1",
+				"content": []map[string]any{{"type": "text", "text": "## Completed (1)\n```\nFIFTH-JOB-DONE\n```"}}}}},
+		},
+	})
+	select {
+	case <-served:
+	default:
+		t.Fatalf("the rule did not answer the turn that carries the job's end: %s", turn)
+	}
+	if !strings.Contains(turn, `"name":"bash"`) {
+		t.Fatalf("the turn was not answered with the scripted bash call: %s", turn)
+	}
 }
 
 // script adds a rule answering the first request match takes with a call of tool, after delay,
