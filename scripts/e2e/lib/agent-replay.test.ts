@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
 
 import {
@@ -15,11 +15,12 @@ import { libRowBoundMs, rowWaits } from "./row-waits";
 // module or agent-replay.ts is reachable, so a helper it names from outside the function fails a
 // row here as it would fail in the page. They run it against a stand-in for Dispatch's live socket
 // that answers the agent view's subscribe as the script tells it to. Its two waits are its own
-// real timers, read against real socket traffic, which no fake clock drives: each row gives both the
-// end of the row's waits (lib/row-waits.ts), so a row ends on the frame it waits for however late a
-// loaded host delivers it, and gives a short one only to the timer that is its subject (`emptyAfterMs`
-// 300 ms where the empty replay is the point, a 1 s timeout where the timeout is). Each timer ends
-// the read with a message of its own, so the message says which ended it.
+// timers, read against real socket traffic: each row gives both the end of the row's waits
+// (lib/row-waits.ts), so a row ends on the frame it waits for however late a loaded host delivers
+// it, and gives a short one only to the timer that is its subject: `emptyAfterMs` 300 ms where the
+// empty replay is the point, and a 1 s timeout on jest's fake clock where the timeout is, moved only
+// once the reader has taken the verdict the row names (endedByTimeout). Each timer ends the read
+// with a message of its own, so the message says which ended it.
 const waits = rowWaits(libRowBoundMs);
 
 const SESSION = "01a0e0c1-0000-7000-8000-00000000beef";
@@ -128,9 +129,57 @@ test("a session that answers a re-arm after not responding still gives its repla
   expect(await read(dispatch.wsUrl)).toEqual(replay);
 });
 
-test("a session that never answers ends at the timeout, saying it is not responding", async () => {
-  const dispatch = dispatchAnswering((socket) => socket.send(responder(false)));
-  const result = await settled(read(dispatch.wsUrl, { timeoutMs: 1_000 }));
+// endedByTimeout reads with a 1 s timeout on jest's fake clock, so no wall clock races the
+// stand-in's frames to the reader. `verdict` waits until the reader has taken Dispatch's last
+// verdict, through `armed`: the reader arms its empty-replay timer on a responding verdict and
+// clears it on the next one, so whether that timer is pending, over the timers pending once the
+// read began, says which verdict it took last. Only then does the row move the clock past the
+// timeout. The empty-replay timer is given the end of the row's waits, past the 1 s the clock moves.
+async function endedByTimeout(
+  url: string,
+  verdict: (armed: (pending: boolean, what: string) => Promise<void>) => Promise<void>
+) {
+  const endNs = Bun.nanoseconds() + Math.max(0, waits.end() - performance.now()) * 1e6;
+  const emptyAfterMs = Math.max(2_000, waits.end() - performance.now());
+  jest.useFakeTimers();
+  try {
+    const reading = settled(inPage({ emptyAfterMs, sessionId: SESSION, timeoutMs: 1_000, url }));
+    const base = jest.getTimerCount();
+    const armed = async (pending: boolean, what: string) => {
+      const want = base + (pending ? 1 : 0);
+      while (jest.getTimerCount() !== want) {
+        if (Bun.nanoseconds() >= endNs) {
+          throw new Error(
+            `by the end of the row's waits the reader had not taken ${what}: ${jest.getTimerCount()} timers pending, not ${want}`
+          );
+        }
+        const tick = Promise.withResolvers<void>();
+        setImmediate(tick.resolve);
+        await tick.promise;
+      }
+    };
+    await verdict(armed);
+    jest.advanceTimersByTime(1_000);
+    return await reading;
+  } finally {
+    jest.useRealTimers();
+  }
+}
+
+test("a session Dispatch last called not responding ends at the timeout, saying it is not responding", async () => {
+  // Dispatch calls the session responding, then, on the row's word, not responding: the reader
+  // arms its empty-replay timer on the first verdict and clears it on the second, so the row sees
+  // it take each one.
+  let session: ServerWebSocket<undefined> | undefined;
+  const dispatch = dispatchAnswering((socket) => {
+    session = socket;
+    socket.send(responder(true));
+  });
+  const result = await endedByTimeout(dispatch.wsUrl, async (armed) => {
+    await armed(true, "Dispatch's verdict that the session is responding");
+    session?.send(responder(false));
+    await armed(false, "Dispatch's verdict that the session is not responding");
+  });
   expect(result.error).toBe(
     "the session did not answer Dispatch's replay request within 1s (responding: false), so the agent view has no replay"
   );
@@ -140,7 +189,9 @@ test("a session that never answers ends at the timeout, saying it is not respond
 // replay never came before the timeout, is not one that did not answer.
 test("a responding session whose replay does not come before the timeout says the session is responding", async () => {
   const dispatch = dispatchAnswering((socket) => socket.send(responder(true)));
-  const result = await settled(read(dispatch.wsUrl, { timeoutMs: 1_000 }));
+  const result = await endedByTimeout(dispatch.wsUrl, (armed) =>
+    armed(true, "Dispatch's verdict that the session is responding")
+  );
   expect(result.error).toBe(
     "Dispatch said the session is responding and sent no replay within 1s (responding: true), so the agent view has no replay"
   );

@@ -322,22 +322,25 @@ describe("the model gateway key command", () => {
     expect(firstEnd).toMatch(ranPast);
     const behind = gaveUpBehind.test(secondEnd ?? "");
     expect(secondEnd).toMatch(behind ? gaveUpBehind : ranPast);
-    // One mint a call that minted, never two at once: the lock held the second behind the first.
+    // One mint a call that minted: either the second gave up behind the first and minted nothing,
+    // or it took the lock in time and minted once. Which of the two the second did is its own
+    // clock's, so each give-up is held on its own by a row below with a flock that hands the lock
+    // over at a moment the row names.
     expect(mintCount(mints)).toBe(behind ? 1 : 2);
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
   });
 
-  test("names a lock taken at the call's deadline or after it as that, not as a negative time left", async () => {
-    // A flock that hands the lock over only after the wait it was given (the call's time left)
-    // and a little more, the case a busy host's flock made once in 20 runs of the row above: the
-    // call then holds the lock with no time left, and says so in place of a figure below zero.
+  // callWithFlock installs the key command, gives it a flock that runs SCRIPT (`$2` is the wait the
+  // call gives it, in seconds: the call's time left), makes one call, and answers how it ended and
+  // what the key command recorded of it.
+  async function callWithFlock(script: string) {
     const { run, dest, mints, keyCommand } = install();
-    const late = join(run, "late-flock");
-    writeFileSync(late, '#!/usr/bin/env bash\nsleep "$2"\nsleep 0.3\n', { mode: 0o755 });
+    const flock = join(run, "stand-in-flock");
+    writeFileSync(flock, `#!/usr/bin/env bash\n${script}\n`, { mode: 0o755 });
     writeFileSync(
       keyCommand,
-      readFileSync(keyCommand, "utf8").replace(/^flock=.*$/m, `flock=${late}`)
+      readFileSync(keyCommand, "utf8").replace(/^flock=.*$/m, `flock=${flock}`)
     );
     const c = await call(keyCommand, join(run, "pane"), mints);
     const recorded = readFileSync(join(dest, "hawk-token.calls"), "utf8")
@@ -345,13 +348,38 @@ describe("the model gateway key command", () => {
       .filter(Boolean)
       .map((line) => line.split("\t"))
       .map((fields) => `${fields[4]}: ${fields[5]}`);
-    expect(recorded).toEqual([
+    return { c, recorded, mints: mintCount(mints) };
+  }
+
+  test("gives up on a lock taken with less than a mint needs, and mints nothing", async () => {
+    // A flock that hands the lock over 1.5 s before the wait it was given ends: the call then
+    // holds the lock with about 1.5 s of its 9.5 s left, under the 2 s a mint needs, and must give
+    // up rather than start a mint it cannot finish. The fake hawk-token mints at once, so a key
+    // command that started the mint anyway would print a key here.
+    const ended = await callWithFlock(
+      `sleep "$(awk -v w="$2" 'BEGIN { s = w - 1.5; printf "%.3f", (s > 0 ? s : 0) }')"`
+    );
+    expect(ended.recorded).toEqual([
+      expect.stringMatching(
+        /^timeout: waited \d+ ms for another call's mint and took the lock with \d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs$/
+      ),
+    ]);
+    expect([ended.c.code, ended.c.stdout]).toEqual([1, ""]);
+    expect(ended.mints).toBe(0);
+  });
+
+  test("names a lock taken at the call's deadline or after it as that, not as a negative time left", async () => {
+    // A flock that hands the lock over only after the wait it was given and 0.3 s more, the case
+    // a busy host's flock made once in 20 runs of the outlast row: the call then holds the lock
+    // with no time left, and says so in place of a figure below zero.
+    const ended = await callWithFlock('sleep "$2"\nsleep 0.3');
+    expect(ended.recorded).toEqual([
       expect.stringMatching(
         /^timeout: waited \d+ ms for another call's mint and took the lock at the call's 9500 ms deadline or after it$/
       ),
     ]);
-    expect([c.code, c.stdout]).toEqual([1, ""]);
-    expect(mintCount(mints)).toBe(0);
+    expect([ended.c.code, ended.c.stdout]).toEqual([1, ""]);
+    expect(ended.mints).toBe(0);
   });
 
   test("exempts the installer's preflight mint from the deadline, for hawk-token's first-run build", () => {

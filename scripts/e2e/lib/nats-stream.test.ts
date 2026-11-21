@@ -108,27 +108,23 @@ function runLast(subject: string, seconds: number) {
   };
 }
 
-async function runReadLast(subject: string, seconds: number) {
+// runReadLast reads with a client of its own. HOLD, when given, runs once the client has connected
+// and before the read, and what it answers runs once the read has ended, whatever its end.
+async function runReadLast(subject: string, seconds: number, hold?: () => () => void) {
   const client = await connect({
     servers: serverUrl,
     timeout: Math.max(1, Math.ceil(waits.end() - performance.now())),
     maxReconnectAttempts: 0,
   });
-  const started = performance.now();
+  const release = hold?.();
   try {
     const result = await readLast(client, stream, subject, seconds);
-    return { elapsedMilliseconds: performance.now() - started, result };
+    return { result };
   } finally {
+    release?.();
     void client.close();
   }
 }
-
-// readLast asks the server's fetch to expire no sooner than 1 s, so a read that waited out the fetch
-// rather than its own sub-second deadline ends at that expiry: a read that ends before it ended at
-// its own deadline. This one bound is a clock's, since nothing the client sees tells the two
-// apart: it leaves the read's in-process timer about 900 ms past its 100 ms, and an event loop
-// stalled longer than that fails it.
-const fetchExpiryMilliseconds = 1_000;
 
 // The hook's own end, 20 s before its bound, as a row's (lib/row-waits.ts): each of its waits on
 // the server (the connect, the stream's creation, each publish) gives up there and not at a
@@ -235,12 +231,17 @@ describe.skipIf(skip)("nats-stream last", () => {
     rowBoundMs
   );
 
+  // The server is paused before the read and resumed only once the read has ended, so nothing it
+  // sends can end the read: only readLast's own deadline can, and a read that waited out the
+  // server instead would fail when its JetStream request gave up, a second after its budget.
   test(
-    "finishes an unmatched sub-second read at its deadline",
+    "finishes a sub-second read the server does not answer at its own deadline",
     async () => {
-      const read = await runReadLast("events.missing.>", subsecondBudgetSeconds);
+      const read = await runReadLast("events.missing.>", subsecondBudgetSeconds, () => {
+        docker("pause", container);
+        return () => docker("unpause", container);
+      });
       expect(read.result).toEqual({ message: undefined, timedOut: true });
-      expect(read.elapsedMilliseconds).toBeLessThan(fetchExpiryMilliseconds);
     },
     rowBoundMs
   );
