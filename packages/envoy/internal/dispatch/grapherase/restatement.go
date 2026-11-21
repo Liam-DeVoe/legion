@@ -214,12 +214,14 @@ func (e *Erasure) replaceLiveTexts(ctx context.Context, tx pgx.Tx) error {
 }
 
 // treeSums is the key of the stored display tree of every whole text the run removes or rewrites:
-// the node's own texts, the markdown of each version it deletes, the text of each block holding
-// the node's block, each string of an event payload the redaction rewrites, and the live text of
-// its document. text_trees keys a tree by the SHA-256 of its text's UTF-8 bytes (pmdoc.TextSum,
-// migration 20261105121325) and holds the text's words in the tree, so each of those texts leaves
-// a row holding the erased bytes once its own row is gone. It is read before anything goes, while
-// the versions and the blocks still hold those texts.
+// the node's own texts, the markdown of each version it deletes, each text of a block holding the
+// node's block that the redaction rewrites (readAncestorTexts), each string of an event payload
+// the redaction rewrites, and the live text of its document. text_trees keys a tree by the
+// SHA-256 of its text's UTF-8 bytes (pmdoc.TextSum, migration 20261105121325) and holds the
+// text's words in the tree, so each of those texts leaves a row holding the erased bytes once its
+// own row is gone. It is read before anything goes, while the versions and the blocks still hold
+// those texts. The text of a block holding the node's block at a version the node's block did not
+// stand in (blockStoodIn) is one the run leaves, and its tree is that text's, which stays.
 func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][]byte, error) {
 	if len(read.texts) == 0 {
 		return nil, nil
@@ -233,9 +235,14 @@ func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][
 			whole = append(whole, document.live.Text)
 		}
 	}
-	document, ancestors := "", read.ancestors
+	document := ""
 	if read.document != nil {
 		document = read.document.artifact
+	}
+	textBlocks := make([]string, len(read.blockTexts))
+	textVersions := make([]int32, len(read.blockTexts))
+	for index, text := range read.blockTexts {
+		textBlocks[index], textVersions[index] = text.blockID, text.version
 	}
 	rows, err := tx.Query(ctx, `
 		select sha256(convert_to(whole.text, 'UTF8')) from unnest($1::text[]) as whole (text)
@@ -246,8 +253,10 @@ func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][
 		 where v.markdown is not null
 		union
 		select sha256(convert_to(t.text, 'UTF8')) from document_block_texts t
-		 where t.artifact_id = nullif($4, '')::uuid and t.block_id = any($5::text[]) and t.text is not null`,
-		whole, read.artifacts, read.numbers, document, ancestors)
+		  join unnest($5::text[], $6::int[]) as rewritten (block_id, version)
+		    on rewritten.block_id = t.block_id and rewritten.version = t.version
+		 where t.artifact_id = nullif($4, '')::uuid and t.text is not null`,
+		whole, read.artifacts, read.numbers, document, textBlocks, textVersions)
 	if err != nil {
 		return nil, fmt.Errorf("read the display trees of the texts of %s:%s: %w", e.Kind, e.ID, err)
 	}
