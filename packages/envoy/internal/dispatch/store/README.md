@@ -53,12 +53,13 @@ The two guards that hold a stamp to the database's clock (`people.confirmed_at`,
 Both run under a `search_path` of their own, `pg_catalog`, the schema the runner made the tables in, then `pg_temp` (`20261119021826`, built from `current_schema()` as it runs), so a session's own schema or temporary table cannot stand in for their clock or their tables (`TestTheClockGuardsRunUnderTheirOwnSearchPath`, `TestATemporaryTableNamedPeopleDoesNotShadowTheGuardsRead`).
 The guard is against a statement written by hand, or a mistaken one.
 It refuses each transition no writer makes, so no such statement can make a credential act for an account that no longer holds its address.
-A statement that makes a writer's own transition without the rest of what that writer does passes, since no trigger can tell it from the writer's, and two such leave something to recover;
+A statement that makes a writer's own transition without the rest of what that writer does passes, since no guard can tell it from the writer's, and two such leave something to recover, the first of which the account binding's catch-up recovers by itself;
 the last item is the broker's own clear, which recovers neither:
 
-- **An account written into `people.sub` by itself**, rather than that account signing in, skips the revocations a sign-in records, and leaves a replaced account's credentials acting.
-  Say A held the address and B took it: a statement that writes A back records no revocation of B, so B's machine logins and sign-ins stay live at the broker, which serves them secrets without asking Dispatch, and the broker goes on refusing A, since only a revocation naming A as the holder lifts that.
-  To recover, do on Dispatch's database what that sign-in would have done: first settle every revocation still owed for the account `people` records now (A), as a sign-in that takes an address back does (`settleReclaimedBrokerRevocationsSQL`), so the loop never pays one that would end what A holds; then record the revocation of the account the statement replaced (B, the `sub` it overwrote), naming A as its holder, exactly as a sign-in records one (`recordBrokerRevocationSQL`; an upsert where B was recorded before).
+- **An account written into `people.sub` by itself**, rather than that account signing in, records none of the revocations a sign-in records; the trigger `people_account_binding_replacement` keeps the change (migration `20261121180429`), and once the account binding holds, the revocation loop's catch-up (`CatchUpAccountBinding`) does what that sign-in would have done.
+  Say A held the address and B took it: writing A back is caught up by settling what is still owed for A and recording B's revocation naming A, which the loop pays, so the broker ends B's credentials and stops refusing A (`TestTheTriggerKeepsEveryChangeAWriterWithoutTheBindingMakesWhateverTheFleetReads`).
+  Until then, while a build without the binding is in the fleet, B's credentials stay live at the broker, which serves them secrets without asking Dispatch, and the broker goes on refusing A.
+  To recover at once, by hand, do on Dispatch's database what that sign-in would have done: first settle every revocation still owed for the account `people` records now (A), as a sign-in that takes an address back does (`settleReclaimedBrokerRevocationsSQL`), so the loop never pays one that would end what A holds; then record the revocation of the account the statement replaced (B, the `sub` it overwrote), naming A as its holder, exactly as a sign-in records one (`recordBrokerRevocationSQL`; an upsert where B was recorded before).
   The server's loop then pays it: the broker ends B's credentials and, since a revoke naming A as the holder deletes its record of A, stops refusing A.
   The block locks the address's `user_sessions` row first, so a sign-out at the same moment waits for it, rather than moving the generation between the statement's read of it and the guard's own check, which would refuse the statement:
 
@@ -73,7 +74,7 @@ the last item is the broker's own clear, which recovers neither:
   ```
 
   `store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this block from this file and the runbook, and `store.TestAnAccountWrittenBackOverARevocationPaidBeforeIsRecordedAgain` runs it where the replaced account's revocation was recorded and paid before, through its conflict arm.
-  A statement that records an account where the address recorded none overwrote no `sub`, and this recovery does not cover it: the first sign-in would also have revoked the address's personal tokens that recorded another account or none, and recorded a revocation of each other account, which nothing then records.
+  A statement that records an account where the address recorded none overwrote no `sub`; the trigger keeps it as a first recording, which the catch-up revokes and owes for as the first sign-in would have.
 
 - **A revocation settled by itself** (`done_at` written while the broker confirmed nothing) is what `envoy-dispatch clear-broker-revocation` does, and tells the broker nothing:
   the replaced account's credentials go on reading the secrets the broker serves without asking Dispatch,

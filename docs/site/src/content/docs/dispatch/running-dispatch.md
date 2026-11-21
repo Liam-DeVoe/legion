@@ -230,17 +230,22 @@ holder of a reassigned address keeps the sessions they already have until their 
 disabled, and keeps their agent tokens until someone revokes them.
 
 The broker refuses an account it was told no longer holds an address until a later revocation
-names that account as the holder, which only a sign-in to Dispatch that replaces another account
-sends. A statement written by hand that sets `people.sub` back to such an account, rather than the
-account signing in, skips the revocation that sign-in would have recorded, and that leaves a
-credential acting. Say A held the address and B took it: writing A back records no revocation of
-B, so B's machine logins and sign-ins stay live at the broker, which serves them secrets without
-asking Dispatch, and the broker goes on refusing A. To recover, do on Dispatch's database what that
-sign-in would have done, with the address as Dispatch holds it, the issuer and the `sub` the
-statement overwrote: settle every revocation still owed for the account the address records now
-(A), as a sign-in that takes an address back does, so the loop never pays one that would end what
-A holds; then record the revocation of the account the statement replaced (B), naming A as its
-holder, exactly as a sign-in records one. The block locks the address's `user_sessions` row
+names that account as the holder, which a sign-in to Dispatch that replaces another account sends,
+and so does the account binding's catch-up of a change written by hand. A statement written by
+hand that sets `people.sub` back to such an account, rather than the account signing in, records
+no revocation itself, but the database keeps the change, as it keeps every change of `sub` that a
+writer other than Dispatch's own sign-in makes, and once the account binding holds the revocation
+loop catches it up as that sign-in would have. Say A held the address and B took it: writing A back
+is caught up by settling every revocation still owed for A, recording the revocation of B naming A
+as its holder, which the loop pays, and revoking the address's personal tokens the binding
+refuses. Until then B's machine logins and sign-ins stay live at the broker, which serves them
+secrets without asking Dispatch, and the broker goes on refusing A; the catch-up waits while a
+build without the binding is in the fleet. To recover at once, by hand, do on Dispatch's database
+what that sign-in would have done, with the address as Dispatch holds it, the issuer and the `sub`
+the statement overwrote: settle every revocation still owed for the account the address records
+now (A), as a sign-in that takes an address back does, so the loop never pays one that would end
+what A holds; then record the revocation of the account the statement replaced (B), naming A as
+its holder, exactly as a sign-in records one. The block locks the address's `user_sessions` row
 first, as the one above does:
 
 ```sh
@@ -256,10 +261,10 @@ SQL
 The server's loop then pays it: the broker ends B's credentials and, since a revoke naming A as the
 holder deletes its record of A, stops refusing A
 (`store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this
-block). A statement that records an account where the address recorded none overwrote no
-`sub`, and this recovery does not cover it: the first sign-in would also have revoked the address's
-personal tokens that recorded another account or none, and recorded a revocation of each other
-account, which nothing then records.
+block). A statement that records an account where the address recorded none overwrote no `sub`;
+the database keeps it as a first recording, and once the binding holds the catch-up revokes the
+address's personal tokens that recorded another account or none and records a revocation of each
+other account, as the first sign-in would have.
 
 A refusal the operator chooses to lift by itself, of an account the address records again, is
 cleared on the broker's database instead; it lifts that refusal and ends nothing, so it is no
