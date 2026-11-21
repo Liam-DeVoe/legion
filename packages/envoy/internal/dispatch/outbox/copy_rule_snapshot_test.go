@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -36,7 +37,7 @@ func TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot(t *testing.T) {
 		Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0505", IssueKey: new("T-1"), Body: "earlier"},
 	})
 	const session = "ses_holder"
-	subject := model.SessionDestinationKey(session)
+	subject := recordkey.Session(session)
 	body := "@session:" + session + " look"
 	commentID := seedComment(t, database, "T-1", alice, body, nil)
 	comment := appendEvent(t, database, broker, model.Event{
@@ -52,7 +53,7 @@ func TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot(t *testing.T) {
 		update events set published_destinations = array[$2], owed_keys = array[$3],
 		       owed_seq = (select last_seq from issues where key = 'T-1'), attempt_count = 1
 		where id = $1
-	`, earlier.ID, "notifications.dispatch.issue.T-1.message.created", model.RoleDestinationKey("reviewer")); err != nil {
+	`, earlier.ID, "notifications.dispatch.issue.T-1.message.created", recordkey.Role("reviewer")); err != nil {
 		t.Fatalf("record the earlier event owing the role's topic: %v", err)
 	}
 	holds := func(_ context.Context, role string) bool { return role == "reviewer" }

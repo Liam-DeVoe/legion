@@ -26,8 +26,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -83,10 +83,9 @@ func (r *recorder) PublishStoredAsync(_ string, item contracts.Envelope, _ strin
 
 func (r *recorder) Probe(time.Duration) error { return nil }
 
-// recordForm is the destination the outbox records a copy it sent on subject by
-// (model.IssueDestinationKey, SessionDestinationKey, RoleDestinationKey): the subject with the
-// event's project, which the outbox puts after an issue's, a session's or a role's prefix, taken
-// out.
+// recordForm is the destination the outbox records a copy it sent on subject by (recordkey): the
+// subject with the event's project, which the outbox puts after an issue's, a session's or a
+// role's prefix, taken out.
 func recordForm(subject string) string {
 	for _, prefix := range []string{contracts.DispatchIssueTopicPrefix, contracts.AgentTopicPrefix, contracts.RoleTopicPrefix} {
 		if rest, ok := strings.CutPrefix(subject, prefix); ok {
@@ -410,9 +409,9 @@ func (r *rig) expectAddressedAsRecorded(t *testing.T, row map[string]string) {
 	}
 	subject := ""
 	if session, ok := strings.CutPrefix(row["target"], "session:"); ok {
-		subject = model.SessionDestinationKey(session)
+		subject = recordkey.Session(session)
 	} else if role, ok := strings.CutPrefix(row["target"], "role:"); ok {
-		subject = model.RoleDestinationKey(role)
+		subject = recordkey.Role(role)
 	}
 	want := fmt.Sprint(subject != "" && slices.Contains(recorded, subject))
 	if row["addressed"] != want {

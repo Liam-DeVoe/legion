@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 )
 
@@ -906,7 +906,7 @@ const (
 // fallback row's, so no copy of the comment goes out under the event's own key while a send of
 // that mention is still owed.
 func (d *destinations) leftToMention(sessionID string) bool {
-	return d.leftTo(d.mentions.holds(), sessionID, model.SessionDestinationKey(sessionID), false) != copyGoes
+	return d.leftTo(d.mentions.holds(), sessionID, recordkey.Session(sessionID), false) != copyGoes
 }
 
 // workingSessionHold is that same rule asked of a session the owner's own work names - the
@@ -914,7 +914,7 @@ func (d *destinations) leftToMention(sessionID string) bool {
 // which reads what the comment's unpinned attempts whose holder this read could not name hold
 // back beside its own key's attempts.
 func (d *destinations) workingSessionHold(sessionID string) copyHold {
-	return d.leftTo(d.mentions.holds(), sessionID, model.SessionDestinationKey(sessionID), true)
+	return d.leftTo(d.mentions.holds(), sessionID, recordkey.Session(sessionID), true)
 }
 
 // leftTo reports what becomes of the copy of the comment at destination, which key's attempts
@@ -1066,9 +1066,9 @@ func routeTopic(route string) string {
 	}
 	switch parsed.Kind {
 	case "role":
-		return model.RoleDestinationKey(parsed.ID)
+		return recordkey.Role(parsed.ID)
 	case "session":
-		return model.SessionDestinationKey(parsed.ID)
+		return recordkey.Session(parsed.ID)
 	}
 	return ""
 }
@@ -1246,7 +1246,7 @@ type fallbackCopy struct {
 // the holder it reaches (suppressesCurrentRoute, holdsTheForwardAsARow,
 // roleCopyWaitsForAMention).
 func (c fallbackCopy) ofASessionsOwnTopic() bool {
-	return c.kind == sessionMentions && c.destination == model.SessionDestinationKey(c.key)
+	return c.kind == sessionMentions && c.destination == recordkey.Session(c.key)
 }
 
 // fallbackEvent is the comment.created event a fallback copy is the envelope of, and the slug of
@@ -1714,14 +1714,33 @@ func decideFallbackCopy(
 	if err != nil {
 		return 0, fallbackSend{}, err
 	}
-	item.Topic = busSubject(held.destination, event.event.Project)
+	// The row's destination is a record key, in the bytes every release stored (recordkey): it is
+	// read back to its session or role and the copy goes out on the subject that names the
+	// event's project. A key no release stores is the row's failure, counted and logged.
+	stored, err := recordkey.Parse(held.destination)
+	if err != nil {
+		return 0, fallbackSend{}, fmt.Errorf("replay the fallback copy of comment %q: %w", held.commentID, err)
+	}
+	project := event.event.Project
+	if project == "" {
+		project = contracts.NoProject
+	}
+	switch stored.Kind {
+	case recordkey.SessionKind:
+		item.Topic = contracts.AgentSubject(project, stored.Name)
+	case recordkey.RoleKind:
+		item.Topic = contracts.RoleSubject(roleProject(stored.Name, project), stored.Name)
+	}
 	if key, ok := keys[held.key]; ok {
 		item.DedupeKey = key
 	}
 	if err := item.Validate(); err != nil {
 		return 0, fallbackSend{}, fmt.Errorf("validate envelope: %w", err)
 	}
-	forward := fallbackRoleForward(ctx, deps, item, held.destination, event.event.Project)
+	var forward *roleForward
+	if stored.Kind == recordkey.RoleKind {
+		forward = fallbackRoleForward(ctx, deps, item, stored.Name, project)
+	}
 	if forward != nil {
 		forward.mentionKeys, forward.settledKeys = deliveries.fallbackKeys, deliveries.settledKeys
 		if forward.keptFor == "" {
@@ -1759,7 +1778,13 @@ func decideFallbackCopy(
 	// and holds nothing of its own back: the owner's later events go on. The pass counts and
 	// reports what it waits on (heldCopies).
 	key := fallbackCopyKey(held.destination, forward)
-	if by, err := copyHolder(ctx, deps, event.event.Project, held.eventID, key, strings.TrimPrefix(key, contracts.AgentTopicPrefix)); err != nil {
+	// The session the key names, which an earlier event's role route is asked about; a key that
+	// names no session (a role's, for a copy kept for its next holder) asks none.
+	session := key
+	if parsed, err := recordkey.Parse(key); err == nil && parsed.Kind == recordkey.SessionKind {
+		session = parsed.Name
+	}
+	if by, err := copyHolder(ctx, deps, event.event.Project, held.eventID, key, session); err != nil {
 		return 0, fallbackSend{}, err
 	} else if by != nil {
 		return fallbackWaitsForAnEarlierEvent, fallbackSend{heldBy: by}, nil

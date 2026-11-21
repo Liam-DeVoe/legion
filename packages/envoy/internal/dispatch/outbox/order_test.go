@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
@@ -496,7 +497,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 
 	topic := "notifications.dispatch.issue.TT.T-1.message.created"
 	session := contracts.AgentSubject("TT", "S")
-	// The events' records name each destination with no project (model.*DestinationKey).
+	// The events' records name each destination with no project (recordkey).
 	topicRecord, sessionRecord := recordOf(topic)[0], recordOf(session)[0]
 	firstTo, firstAttempts := publishedDestinations(t, rig.database, first.ID)
 	secondTo, secondAttempts := publishedDestinations(t, rig.database, second.ID)
@@ -1012,7 +1013,7 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 		if strings.HasPrefix(item.Topic, contracts.AgentTopicPrefix) {
 			agents++
 		}
-		if recordOf(item.Topic)[0] == model.SessionDestinationKey("claimant") {
+		if recordOf(item.Topic)[0] == recordkey.Session("claimant") {
 			claimant++
 		}
 	}
@@ -1080,7 +1081,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 			}
 			continue
 		}
-		want := []string{model.SessionDestinationKey(fmt.Sprintf("author-%d", index))}
+		want := []string{recordkey.Session(fmt.Sprintf("author-%d", index))}
 		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), want) {
 			t.Fatalf("edit %d has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 				index, row.publishedAt, row.attempts, row.destinations, want)

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -187,7 +188,7 @@ func TestAnAttemptEndedAfterADenialReturnsBoth(t *testing.T) {
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
 	unreachable := errors.New("bus: waiting for NATS to reconnect: context deadline exceeded")
-	subjects := onBus("TT", roleTopic, model.SessionDestinationKey("writer"))
+	subjects := onBus("TT", roleTopic, recordkey.Session("writer"))
 	publisher := &countingPublisher{failTopics: map[string]error{
 		subjects[0]: denial(subjects[0]),
 		subjects[1]: unreachable,
@@ -224,8 +225,8 @@ func TestEveryDenialNamesItsDestination(t *testing.T) {
 		},
 	})
 	failTopics := map[string]error{}
-	for _, subject := range onBus("TT", roleTopic, model.SessionDestinationKey("writer"), model.SessionDestinationKey("asker"),
-		model.SessionDestinationKey("follower"), model.SessionDestinationKey("claimant")) {
+	for _, subject := range onBus("TT", roleTopic, recordkey.Session("writer"), recordkey.Session("asker"),
+		recordkey.Session("follower"), recordkey.Session("claimant")) {
 		failTopics[subject] = denial(subject)
 	}
 	publisher := &countingPublisher{failTopics: failTopics}

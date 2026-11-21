@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 )
 
 // destination is one subject an event is sent to, named by label and id in what a failure reports
@@ -110,43 +110,46 @@ func destinationKey(subject string) string {
 // - is keyed on its role topic.
 func (d destination) key() string {
 	if d.forward != nil && d.forward.holder != "" {
-		return model.SessionDestinationKey(d.forward.holder)
+		return recordkey.Session(d.forward.holder)
 	}
 	return destinationKey(d.subject)
 }
 
-// busSubject is the subject a copy bound for the destination recorded as subject goes out on: the
-// recorded subject with project, the project of the event the copy carries, in it. An issue's
-// topic becomes contracts.DispatchIssueSubject(project, key, type), a session's
-// contracts.AgentSubject(project, session) and a role's contracts.RoleSubject of the project the
-// role works for (roleProject) and the role, so the bus holds every copy to the tokens that may
-// see its project. A document's and a project's topic name their project already and are
-// unchanged, and so is every subject already in the new form. An event with no project takes
-// contracts.NoProject, though the outbox sends such an event to no destination at all.
+// busSubject is the subject a copy bound for the destination whose record key is key goes out on,
+// for an event of project. The key is read back by this package's record keys (recordkey), never
+// by a reader of a bus subject's forms, since a record keeps its bytes for ever while a bus
+// subject's old form goes: an issue's topic family's key becomes
+// contracts.DispatchIssueSubject(project, key, type), a session's contracts.AgentSubject(project,
+// session) and a role's contracts.RoleSubject of the project the role works for (roleProject) and
+// the role, so the bus holds every copy to the tokens that may see its project. A document's and
+// a project's topic name their project already and are not record keys of any kind here, so they
+// are sent as they are. An event with no project takes contracts.NoProject, though the outbox
+// sends such an event to no destination at all.
 //
-// The record keeps the form with no project, the one every release of Dispatch has written and
-// every reader of the record matches on (published_destinations, owed_keys,
-// comment_fallback_copies.destination): a release before this one reads this one's records and
-// this one reads that one's while the two roll side by side, and a reached destination stays
-// reached whichever wrote it.
-func busSubject(subject, project string) string {
+// The record keeps the key, the bytes every release of Dispatch has written and every reader of
+// the record matches on (published_destinations, owed_keys, comment_fallback_copies.destination):
+// a release before this one reads this one's records and this one reads that one's while the two
+// roll side by side, and a reached destination stays reached whichever wrote it.
+func busSubject(key, project string) string {
 	if project == "" {
 		project = contracts.NoProject
 	}
-	if rest, found := strings.CutPrefix(subject, contracts.DispatchIssueTopicPrefix); found {
-		key, legacy, ok := contracts.IssueEventKey(subject)
-		if !ok || !legacy {
-			return subject
+	if rest, found := strings.CutPrefix(key, recordkey.IssuePrefix); found {
+		// An issue key holds no dot; the type after it may (message.created).
+		issue, typ, ok := strings.Cut(rest, ".")
+		if _, isKey := contracts.IssueProject(issue); !ok || !isKey {
+			return key
 		}
-		return contracts.DispatchIssueSubject(project, key, strings.TrimPrefix(rest, key+"."))
+		return contracts.DispatchIssueSubject(project, issue, typ)
 	}
-	if session, found := strings.CutPrefix(subject, contracts.AgentTopicPrefix); found && !strings.Contains(session, ".") {
-		return contracts.AgentSubject(project, session)
+	stored, err := recordkey.Parse(key)
+	if err != nil {
+		return key
 	}
-	if role, found := strings.CutPrefix(subject, contracts.RoleTopicPrefix); found && !strings.Contains(role, ".") {
-		return contracts.RoleSubject(roleProject(role, project), role)
+	if stored.Kind == recordkey.RoleKind {
+		return contracts.RoleSubject(roleProject(stored.Name, project), stored.Name)
 	}
-	return subject
+	return contracts.AgentSubject(project, stored.Name)
 }
 
 // roleProject is the project an event of project addresses role under: the project a Legion role

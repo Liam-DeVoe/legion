@@ -335,10 +335,9 @@ func (p *recordingOutboxPublisher) topicsAbout(t *testing.T, commentID string) [
 	return topics
 }
 
-// destinationOf is the destination the outbox records a copy it sent on subject by
-// (model.IssueDestinationKey, SessionDestinationKey, RoleDestinationKey): the subject with the
-// event's project, which the outbox puts after an issue's, a session's or a role's prefix, taken
-// out.
+// destinationOf is the destination the outbox records a copy it sent on subject by (recordkey):
+// the subject with the event's project, which the outbox puts after an issue's, a session's or a
+// role's prefix, taken out.
 func destinationOf(subject string) string {
 	for _, prefix := range []string{contracts.DispatchIssueTopicPrefix, contracts.AgentTopicPrefix, contracts.RoleTopicPrefix} {
 		if rest, ok := strings.CutPrefix(subject, prefix); ok {

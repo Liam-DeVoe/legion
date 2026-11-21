@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
@@ -185,11 +186,11 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 					t.Fatalf("the role's move wrote an event of T-1 (last_seq %d, was %d; %v), want none", after, lastSeq, err)
 				}
 			}
-			forNext, err := copyHolder(ctx, rig.deps(), "TT", comment.ID, model.SessionDestinationKey(next), next)
+			forNext, err := copyHolder(ctx, rig.deps(), "TT", comment.ID, recordkey.Session(next), next)
 			if err != nil {
 				t.Fatalf("read the rule for %s: %v", next, err)
 			}
-			forOther, err := copyHolder(ctx, rig.deps(), "TT", comment.ID, model.SessionDestinationKey("ses_other"), "ses_other")
+			forOther, err := copyHolder(ctx, rig.deps(), "TT", comment.ID, recordkey.Session("ses_other"), "ses_other")
 			if err != nil {
 				t.Fatalf("read the rule for ses_other: %v", err)
 			}
@@ -313,7 +314,7 @@ func TestAnEventTheOutboxCannotReadOwesNothing(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `update events set `+tc.unreadable+` where id = $1`, earlier.ID); err != nil {
 				t.Fatalf("make the earlier event unreadable: %v", err)
 			}
-			s1 := model.SessionDestinationKey("s1")
+			s1 := recordkey.Session("s1")
 			if by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, s1, "s1"); err != nil || by == nil || by.EventID != earlier.ID {
 				t.Fatalf("control: before any batch s1's copy waits behind %s (%v), want event %d, which no record has written", describeHolder(by), err, earlier.ID)
 			}

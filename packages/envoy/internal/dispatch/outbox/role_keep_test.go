@@ -26,18 +26,20 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// keptCopies is every copy the stream holds on role's kept lane, in the order the drain walks
-// them: from the lane's first sequence on, one NextStoredMessage per copy, which is the read the
-// listener's handover makes (cmd/listener/role_keep.go, walkKeptRole). The drain reads the lane
-// by stream sequence and not by who wrote it, so a copy Dispatch's outbox kept is read here
-// exactly as one the listener kept.
+// keptCopies is every copy the stream holds on role's kept lane for an event of TT, the rig's
+// project, in the order the drain walks them: from the lane's first sequence on, one
+// NextStoredMessage per copy, which is the read the listener's handover makes
+// (cmd/listener/role_keep.go, walkKeptRole). The lane is the role's claim key under TT (roleKey,
+// keptOrSkipped): TT.<role> for a free-form role, a Legion role's own name for it. The drain reads
+// the lane by stream sequence and not by who wrote it, so a copy Dispatch's outbox kept is read
+// here exactly as one the listener kept.
 func keptCopies(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var copies []contracts.Envelope
 	for seq := uint64(1); ; {
-		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
+		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(roleKey("TT", role)), seq)
 		if errors.Is(err, natsgo.ErrMsgNotFound) {
 			return copies
 		}
@@ -423,9 +425,10 @@ func TestAKeptRoleRouteIsPublishedOnTheRolesKeptLaneUnderTheKeptMsgID(t *testing
 		t.Fatalf("the outbox made %d kept publishes, want one: %+v", len(kept), kept)
 	}
 	key := fmt.Sprintf("dispatch-%d", event.ID)
-	if kept[0].subject != bus.KeptRoleSubject(role) || kept[0].msgID != bus.KeptMsgID(key, role) {
+	lane := roleKey("TT", role)
+	if kept[0].subject != bus.KeptRoleSubject(lane) || kept[0].msgID != bus.KeptMsgID(key, lane) {
 		t.Fatalf("the keep went to %q under %q, want %q under %q",
-			kept[0].subject, kept[0].msgID, bus.KeptRoleSubject(role), bus.KeptMsgID(key, role))
+			kept[0].subject, kept[0].msgID, bus.KeptRoleSubject(lane), bus.KeptMsgID(key, lane))
 	}
 	if kept[0].item.Topic != contracts.RoleSubject("TT", role) || kept[0].item.DedupeKey != key {
 		t.Fatalf("the kept envelope is topic %q dedupe key %q, want the message as its sender sent it under %q",
