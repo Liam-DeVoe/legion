@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
@@ -680,10 +681,25 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		} else if err := repair.Err(); err != nil {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("role claim repair", err)
+		} else if err := sessionSelectionHealth(d); err != nil {
+			response["status"] = "degraded"
+			response["error"] = dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err)
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(response)
 	}
+}
+
+// sessionSelectionHealth is, in the fresh consumer naming mode, why the session consumers' calls
+// are refused (bus.SessionConsumers.SelectionHealth): the selection bucket, its sentinel or a key
+// missing, or the cutover not run, each named. Every registration is then refused, while the
+// listener's other routes serve, so /healthz answers degraded rather than unhealthy. nil in the
+// fixed mode, whose /healthz answers as it did before the setting.
+func sessionSelectionHealth(d *listenerDeps) error {
+	if d.consumers == nil || d.consumers.consumers == nil {
+		return nil
+	}
+	return d.consumers.consumers.SelectionHealth()
 }
 
 // roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
@@ -910,6 +926,7 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 		bus.WithStreamMaxBytes(cfg.StreamMaxBytes),
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
+		bus.WithConsumerNames(cfg.ConsumerNames),
 	}
 }
 
@@ -1574,6 +1591,20 @@ func main() {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
+	}
+	if delivery.consumers.Fresh() {
+		// The fresh mode's selection steps, counted by step and outcome (consumernames.Operation,
+		// consumernames.Outcome); the fixed mode takes none and registers no such counter.
+		names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
+		delivery.consumers.ObserveNames(func(op, outcome string) { names.Inc([2]string{"op", op}, [2]string{"outcome", outcome}) })
+		checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
+		if err := delivery.consumers.CheckSelection(checkCtx); err != nil {
+			// Not the start's end: every session-consumer call refuses until the bucket, its
+			// sentinel and the cutover are there, and /healthz names what is missing meanwhile.
+			logger.Error("session consumer selection refuses every registration: "+err.Error(),
+				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
+		}
+		cancel()
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below).

@@ -35,6 +35,25 @@ func SessionBucketConfig(replicas int) jetstream.KeyValueConfig {
 	}
 }
 
+// CreateSessionBucket creates SessionBucket at replicas copies (SessionBucketConfig) and writes
+// its sentinel state, as the operator's create-bucket does before the cutover, and answers a
+// KVStore of it on conn. A bucket that exists already is refused, since no writer may adopt a
+// bucket another may own.
+func CreateSessionBucket(ctx context.Context, conn *nats.Conn, replicas int, state StoreState) (*KVStore, error) {
+	js, err := jetstream.New(conn)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
+		return nil, fmt.Errorf("consumer names: create %s: %w", SessionBucket, err)
+	}
+	store := NewKVStore(SessionBucket, ConnRequester{conn})
+	if _, err := store.WriteSentinel(ctx, state, 0); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
 // Requester sends one request and answers its one reply: a JetStream API request or a publish to
 // a stream that answers with its acknowledgement. A request the server refuses under the
 // connection's permissions is the requester's own error, which KVStore returns wrapped.

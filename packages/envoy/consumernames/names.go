@@ -212,6 +212,12 @@ func (n *Names) Select(ctx context.Context, logical string, create CreateFunc) (
 	return n.selectRecord(ctx, logical, create, true)
 }
 
+// Resolve is Select for a call that reads no consumer: it admits the call and runs Step 0 without
+// creating anything, and leaves Info unread, for a caller that holds the current's info already.
+func (n *Names) Resolve(ctx context.Context, logical string) (Selection, error) {
+	return n.selectRecord(ctx, logical, nil, false)
+}
+
 func (n *Names) selectRecord(ctx context.Context, logical string, create CreateFunc, readCurrent bool) (Selection, error) {
 	if err := CheckKey(logical); err != nil {
 		return Selection{}, err
