@@ -3957,7 +3957,7 @@ The daemon's Service carries the API port and the worker-stream port under one s
 A liveness probe on it would restart that one daemon for the same reason, in the middle of its drain.
 
 `legion config check` runs all of it without starting the daemon, writing a file or running a key command, and then every refusal boot makes from the files and the environment before its first write, in boot's words:
-the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, and the runtime's own reads (the kubeconfig and every value's translation;
+the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, the plan guidance file (`plan_guidance`, refused when unreadable or blank), and the runtime's own reads (the kubeconfig and every value's translation;
 under tmux, the OMP invocation, through `mise where` when it names a `mise` tool, and the host's `gh`, `git` and `jj`).
 After its `Config OK: project=…` line it prints one line per deployment capability the file alone leaves open with no decision
 — `resource-limits` under tmux, where a pane reserves no CPU and memory, and `secrets` when no broker is configured
@@ -8876,7 +8876,7 @@ Containers, in order:
 2. **Main container `worker`** runs `legion worker-shim --connect tcp://<host of daemon_url>:<worker_stream_port>
    --boot-token-file /var/run/legion/boot/LEGION_BOOT_TOKEN --provider-env-dir /var/run/legion/providers
    -- omp [--resume=<session file>] --mode rpc --append-system-prompt <path of the role's prompt file>`.
-   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text and deployment instructions joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
+   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text, an owner's `plan_guidance` where the deployment sets one, and deployment instructions, joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
    — OMP's flag is last-wins, so several flags would hand the model only the last text.
    No argument grows with the prompt; a prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.

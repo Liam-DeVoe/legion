@@ -71,8 +71,9 @@ func RoleReferences() promptrefs.Names {
 // file there does not already hold them. The caller constructs it during daemon boot, and `legion
 // controller start` for the controller's prompt. The files stay across restarts, since a resumed
 // pane reads its prompt from the snapshot by path. The daemon owns these files; an operator's own
-// text is the deployment `instructions`. A file already holding the current content is left as it
-// is, so an ordinary restart changes nothing, and one an older daemon wrote is rewritten.
+// texts are the deployment `instructions`, for every agent, and `plan_guidance`, for an owner alone.
+// A file already holding the current content is left as it is, so an ordinary restart changes
+// nothing, and one an older daemon wrote is rewritten.
 func New(stateDir string) (*Composer, error) {
 	sharedDir := filepath.Join(stateDir, "prompts", "shared")
 	if err := eachPart(roleParts, "roles", func(name string, body []byte) error {

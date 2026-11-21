@@ -1060,8 +1060,8 @@ type runtimeFactory func(ctx context.Context, listener *stream.Listener, address
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error)
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
-// then what writes or runs something: the state directory, the instructions copy, and what the
-// runtime needs) — all before the plugin gate runs and before any agent can launch.
+// then what writes or runs something: the state directory, the instructions copy, the plan guidance
+// copy, and what the runtime needs) — all before the plugin gate runs and before any agent can launch.
 func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	getenv := o.getenv
 	if getenv == nil {
