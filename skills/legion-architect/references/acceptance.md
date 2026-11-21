@@ -91,10 +91,12 @@ the review round, and the daemon acts when the issue enters `accepting`. When it
 the base and why; in `implementing` no notice comes. You start nothing for the merge.
 
 Past review, every push, a forward merge among them, has the daemon ask the reviewer for its
-verdict on the new head, which it sends with `review_verdict`. In `accepting`, wait for its
-`approve` of the new head before `sign_off`, and send the issue back with `request_backward_move`
-when its verdict is `changes`. An `approve` that carries no tester's pass to the new head moves
-the issue back to `testing` by itself.
+verdict on the new head, which it sends with `review_verdict`. That verdict writes no handoff and
+sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your
+role topic that it sent `approve` on the new head and `legion-verdict` at that head reads
+`success`, and send the issue back with `request_backward_move` when its verdict is `changes`.
+An `approve` that carries no tester's pass to the new head moves the issue back to `testing` by
+itself.
 
 ## A review thread GitHub will not resolve
 

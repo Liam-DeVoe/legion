@@ -47,7 +47,7 @@ Never send `approve` on a head while a required item has no run. Sort it, in thi
 
 ### A merge of the base is reviewed for what it changed
 
-After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since the head your last verdict named: in `reviewing`, the `Last reviewed commit` your task names; past review, the old head the daemon's message names. `none`, or no such head, means you read the branch's whole diff.
+After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last verdict's head: in `reviewing`, the `Last reviewed commit` your task names; past review, your last `review_verdict`'s `commit`, else your newest `review` handoff's `head`. `none`, or no such head, means you read the branch's whole diff.
 
 ## Side reviews
 

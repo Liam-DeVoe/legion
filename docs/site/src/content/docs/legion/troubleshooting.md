@@ -1395,12 +1395,13 @@ These arrive as messages on the Dispatch issue:
   told with `review-stuck`, the issue stays in `needs_review`, and the remedy is the reviewer's
   verdict on the head: it writes its `review` handoff again for that head and completes again. No
   review on GitHub stands in for the verdict on a head a Legion issue owns. A review written with
-  the one App's token decides nothing, whoever wrote it, logged at warn as `workflow: a review
-  decides nothing: the one App wrote it, and no review of the App decides a round`; the reviewer
-  posts its findings as a `COMMENT` review, which decides nothing either. A person's approval
-  decides nothing on such a head. A person's request for changes, delivered by its webhook,
-  refuses the head on the `commit_id` that event carried when its author is an account of type
-  `User` with write access to the repository; the daemon reads no list of a pull request's
+  the one App's token decides nothing, whoever wrote it; a request for changes the App wrote is
+  logged at warn as `workflow: a review decides nothing: the one App wrote it, and no review of the
+  App decides a round`, and any other review of the App logs nothing, the `COMMENT` review that
+  carries the reviewer's findings among them. A person's approval decides nothing on such a head.
+  A person's request for changes, delivered by its webhook, refuses the head on the `commit_id`
+  that event carried when its author is an account of type `User` with write access to the
+  repository; the daemon reads no list of a pull request's
   reviews, since GitHub's list moves each review's `commit_id` to the current head. Before it
   applies a person's request for changes, the daemon reads the author's permission from GitHub
   with its own read token: an account GitHub answers `404` for, or a `403` that is not its rate
@@ -1428,10 +1429,11 @@ These arrive as messages on the Dispatch issue:
   reviewing, and a verdict moves it only while the reviewer's phase row holds the task of an entry.
   Each task the reviewer gets in its round ends with that entry, `Review entry: <n>.`, the task of a
   wake that brought its pod back included, and the daemon holds each completion to the entry its
-  claim serves: a completion of an entry raised since is refused (`HANDOFF_STALE_ENTRY`) and moves
-  nothing. A `COMMENT` review, a person's review and a verdict the reviewer sends past review with
-  `review_verdict` leave the commit where it stands. A new generation clears the commit, so its
-  first round reads the whole change.
+  claim serves: a completion of an entry raised since is taken only at the head the record holds
+  and only where no move back raised that entry, and any other is refused (`HANDOFF_STALE_ENTRY`)
+  and moves nothing. A `COMMENT` review, a person's review and a verdict the reviewer sends past
+  review with `review_verdict` leave the commit where it stands. A new generation clears the
+  commit, so its first round reads the whole change.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
   the base forward while the issue stays in `merging`, asks the reviewer for its verdict on the new

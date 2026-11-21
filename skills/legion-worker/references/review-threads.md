@@ -11,7 +11,7 @@ Read it when you reply on, list or resolve a review thread, or judge a bot's fin
 
   When GitHub refuses, send the thread and GitHub's message to the architect with `envoy_publish`; never skip it.
 - The implementer records each thread in the PR body's `Threads` section, stamped with the head it just pushed.
-- The reviewer lists the threads, replies, and names the threads it accepted to the implementer by node id (on the implementer's role topic, or in its review body):
+- The reviewer lists the threads, replies, and names the threads it accepted to the implementer by node id (on the implementer's role topic, or in the body of its `COMMENT` review, which carries its findings and decides nothing; its verdict goes to the daemon):
 
   ```bash
   gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}' -F o=<owner> -F r=<repo> -F n=<number>

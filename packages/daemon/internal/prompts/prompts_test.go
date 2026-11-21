@@ -718,7 +718,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"`namingTheReviewRound` in `packages/daemon/internal/workflow/review_round.go` writes it into the task",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
 		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
-		"Your completion is held to the entry your claim serves: one of an entry the daemon has raised since is refused (`HANDOFF_STALE_ENTRY`)",
+		"Your completion is held to the entry your claim serves: one of an entry the daemon has raised since is taken only at the head the record holds and only where no move back raised the entry; any other is refused (`HANDOFF_STALE_ENTRY`)",
 		"When the task of a round names `Last reviewed commit: <commit>`, the head your own newest verdict of the round named (the daemon part below says which verdict that is), read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"the head your newest verdict named, sent with your completion of reviewing while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
 		"Your `COMMENT` reviews, a person's review and a verdict you send past review leave it where it stands.",
