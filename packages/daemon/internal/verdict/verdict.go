@@ -18,7 +18,10 @@
 // is written on it, so it cannot merge.
 package verdict
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // CheckName is the name of the required check the daemon writes, as a check run and, over a commit
 // status of the same name another writer of the one App left, as a commit status.
@@ -194,10 +197,11 @@ func after(a, b Review) bool {
 	return a.GitHubID > b.GitHubID
 }
 
-// isCIReviewer is whether author is the entry's ci_reviewer. A Legion head has none: the CI
-// reviewer's review of it is a bot's, which decides nothing.
+// isCIReviewer is whether author is the entry's ci_reviewer, compared without case as GitHub
+// compares logins: the configuration keeps the login as an operator spelled it. A Legion head has
+// none: the CI reviewer's review of it is a bot's, which decides nothing.
 func isCIReviewer(in Inputs, author string) bool {
-	return !in.Legion && in.CIReviewer != "" && author == in.CIReviewer
+	return !in.Legion && in.CIReviewer != "" && strings.EqualFold(author, in.CIReviewer)
 }
 
 // deciding is whether a review in state decides anything.

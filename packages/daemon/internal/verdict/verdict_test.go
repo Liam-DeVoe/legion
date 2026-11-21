@@ -94,6 +94,8 @@ func TestDecideIsR4sTable(t *testing.T) {
 			Tester: Tester{Verdict: TesterFail, Commit: h1}, Reviewer: Reviewer{Verdict: ReviewerApprove, Commit: h, TestedCommit: h1}}, None},
 
 		// A head no Legion issue owns, on a repository whose entry names a ci_reviewer.
+		{"an outside head: the CI reviewer named in another case than GitHub spells it", Inputs{Head: h, CIReviewer: "Example-CI-Review[bot]",
+			Reviews: []Review{approvedBy(ciReviewer, false, h)}}, Success},
 		{"an outside head: the CI reviewer approves", Inputs{Head: h, CIReviewer: ciReviewer, Reviews: []Review{approvedBy(ciReviewer, false, h)}}, Success},
 		{"an outside head: the CI reviewer asks for changes", Inputs{Head: h, CIReviewer: ciReviewer, Reviews: []Review{refusedBy(ciReviewer, false, h)}}, Failure},
 		{"an outside head: the CI reviewer's last review stands", Inputs{Head: h, CIReviewer: ciReviewer,
