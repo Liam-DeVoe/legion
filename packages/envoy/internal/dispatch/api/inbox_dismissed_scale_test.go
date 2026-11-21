@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -287,7 +290,7 @@ func dismissedScaleBounds() []dismissedScaleHeld {
 func runDismissedScaleInbox(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=inbox", nil)
+		"/api/v1/me/inbox?state=inbox", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if len(page.Rows) != dismissedScaleInboxRows() {
 		t.Fatalf("state=inbox answered %d rows, want the %d the seed holds", len(page.Rows), dismissedScaleInboxRows())
@@ -298,7 +301,7 @@ func runDismissedScaleInbox(t *testing.T, shape *dismissedScaleShape) time.Durat
 func runDismissedScaleUnreadCount(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil)
+		"/api/v1/me/inbox?state=unread&limit=1", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if page.Total != dismissedScaleUnreadRows() {
 		t.Fatalf("the Inbox count read answered total=%d, want %d", page.Total, dismissedScaleUnreadRows())
@@ -309,9 +312,9 @@ func runDismissedScaleUnreadCount(t *testing.T, shape *dismissedScaleShape) time
 func runDismissedScaleFirstPage(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=dismissed", nil)
+		"/api/v1/me/inbox?state=dismissed&limit="+fmt.Sprint(dismissedScalePage), nil)
 	page := decodeDismissedScaleReplies(t, response)
-	want := min(shape.dismissedReplies+shape.dismissedAgents, myRepliesDismissedPage)
+	want := min(shape.dismissedReplies+shape.dismissedAgents, dismissedScalePage)
 	if len(page.Rows) != want {
 		t.Fatalf("the first Dismissed page answered %d rows, want %d", len(page.Rows), want)
 	}
@@ -321,9 +324,9 @@ func runDismissedScaleFirstPage(t *testing.T, shape *dismissedScaleShape) time.D
 func runDismissedScaleDeepPage(t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=dismissed&cursor="+shape.deepCursor, nil)
+		"/api/v1/me/inbox?state=dismissed&limit="+fmt.Sprint(dismissedScalePage)+"&cursor="+shape.deepCursor, nil)
 	page := decodeDismissedScaleReplies(t, response)
-	if len(page.Rows) != myRepliesDismissedPage {
+	if len(page.Rows) != dismissedScalePage {
 		t.Fatalf("the page %d deep answered %d rows, want a full page",
 			dismissedScaleCursorDepth, len(page.Rows))
 	}
@@ -414,11 +417,29 @@ func timeDismissedScaleRequest(
 	return taken, response
 }
 
-func decodeDismissedScaleReplies(t *testing.T, response *httptest.ResponseRecorder) model.MyRepliesResponse {
+// dismissedScalePage is how many rows one Dismissed page draws: the page the Dismissed view reads
+// again from the cursor.
+const dismissedScalePage = 200
+
+// dismissedScalePageRows is one answer of the one read cut to what a14 reads of it: the Thread and
+// Agent rows it draws, its total and its as_of.
+type dismissedScalePageRows struct {
+	Rows  []string
+	Total int
+	AsOf  time.Time
+}
+
+func decodeDismissedScaleReplies(t *testing.T, response *httptest.ResponseRecorder) dismissedScalePageRows {
 	t.Helper()
-	var page model.MyRepliesResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+	var read meInboxResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
 		t.Fatalf("decode the Inbox read: %v", err)
+	}
+	page := dismissedScalePageRows{Total: read.Total, AsOf: read.AsOf}
+	for _, entry := range read.Entries {
+		if entry.Thread != nil || entry.Agent != nil {
+			page.Rows = append(page.Rows, entry.Node.ID)
+		}
 	}
 	return page
 }
@@ -437,7 +458,7 @@ func decodeDismissedScaleCount(t *testing.T, response *httptest.ResponseRecorder
 func dismissedScaleAsOf(t *testing.T, shape *dismissedScaleShape) string {
 	t.Helper()
 	response := dispatchRequest(t, shape.handler, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil, dismissedScaleLogin)
+		"/api/v1/me/inbox?state=unread&limit=1", nil, dismissedScaleLogin)
 	if response.Code != http.StatusOK {
 		t.Fatalf("read as_of on %s: status=%d body=%s", shape.name, response.Code, response.Body.String())
 	}
@@ -457,8 +478,13 @@ func dismissDismissedScaleRestore(t *testing.T, shape *dismissedScaleShape, rows
 
 // unmarkDismissedScale puts every read mark one Mark all read moved back where it was, off the
 // clock: each Reply thread's mark to the minute before its newest reply, which is where the
-// trigger left it, and the Agent threads' replies unread by deleting the rows the mark-all wrote
-// by id. The dismissed pile's own read rows are named here one by one, so they stay.
+// trigger left it, and the Agent threads' replies unread, the way the prune of a row ends a reply
+// read by its id (prunedAgentReplies, api/state.go): the rows the mark-all wrote, deleted by id,
+// and in the same transaction the retraction of the reply_read tuple each of those rows' marks
+// stated. That tuple is what an Agent row's unread test reads (replyReadByID,
+// api/unread_replies.go), so a put-back that deleted the rows alone would leave every Agent reply
+// read, and every Mark all read after the first would mark the Reply threads alone: 1,270 of the
+// 1,300. The dismissed pile's own read rows are named here one by one, so they stay.
 func unmarkDismissedScale(t *testing.T, shape *dismissedScaleShape) {
 	t.Helper()
 	ctx := context.Background()
@@ -472,15 +498,24 @@ func unmarkDismissedScale(t *testing.T, shape *dismissedScaleShape) {
 	if tag.RowsAffected() != int64(len(shape.unreadThreads)) {
 		t.Fatalf("put back %d thread marks, want %d", tag.RowsAffected(), len(shape.unreadThreads))
 	}
-	deleted, err := shape.database.Pool.Exec(ctx, `
-		delete from user_agent_reply_read where login = $1 and reply_id = any($2::uuid[])
-	`, dismissedScaleLogin, shape.unreadReplies)
-	if err != nil {
-		t.Fatalf("put the agent marks back: %v", err)
-	}
-	if deleted.RowsAffected() != int64(len(shape.unreadReplies)) {
-		t.Fatalf("put back %d agent marks, want %d", deleted.RowsAffected(), len(shape.unreadReplies))
-	}
+	writeInTx(t, shape.database, func(tx pgx.Tx) error {
+		deleted, err := tx.Exec(ctx, `
+			delete from user_agent_reply_read where login = $1 and reply_id = any($2::uuid[])
+		`, dismissedScaleLogin, shape.unreadReplies)
+		if err != nil {
+			return fmt.Errorf("put the agent marks back: %w", err)
+		}
+		if deleted.RowsAffected() != int64(len(shape.unreadReplies)) {
+			return fmt.Errorf("put back %d agent marks, want %d", deleted.RowsAffected(), len(shape.unreadReplies))
+		}
+		at := time.Now().UTC()
+		ended := make([]graphstore.Tuple, 0, len(shape.unreadReplies))
+		for _, reply := range shape.unreadReplies {
+			ended = append(ended, personMark(model.Actor{Kind: "user", ID: dismissedScaleLogin},
+				graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.NoEvent))
+		}
+		return graphstore.FromPerson(ctx, tx, at, ended)
+	})
 }
 
 // dismissedScaleReading is one operation's 20 runs: the two percentiles and every reading, so a

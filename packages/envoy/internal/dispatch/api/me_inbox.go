@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -167,8 +168,11 @@ func (cursor meInboxCursor) String() string {
 		cursor.moment.UTC().Format(time.RFC3339Nano) + "\n" + cursor.kind + "\n" + cursor.id))
 }
 
-// parseMeInboxCursor reads one ?cursor=, which is a next_cursor this route answered.
-func parseMeInboxCursor(raw string) (*meInboxCursor, error) {
+// parseMeInboxCursor reads one ?cursor=, which is a next_cursor this route answered. Under
+// state=dismissed the key it resumes after is the moment and the id of a thread root or an Agent
+// root (meInboxOrder), which this route writes as a uuid's own text, so a cursor naming anything else
+// there is none it answered.
+func parseMeInboxCursor(raw, state string) (*meInboxCursor, error) {
 	refusal := errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor is one this route answered in next_cursor")
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
@@ -181,6 +185,11 @@ func parseMeInboxCursor(raw string) (*meInboxCursor, error) {
 	moment, err := time.Parse(time.RFC3339Nano, parts[0])
 	if err != nil {
 		return nil, refusal
+	}
+	if state == myRepliesStateDismissed {
+		if id, err := uuid.Parse(parts[2]); err != nil || id.String() != parts[2] {
+			return nil, refusal
+		}
 	}
 	return &meInboxCursor{moment: moment, kind: parts[1], id: parts[2]}, nil
 }
@@ -236,7 +245,7 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 		request.offset = value
 	}
 	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
-		cursor, err := parseMeInboxCursor(raw)
+		cursor, err := parseMeInboxCursor(raw, request.state)
 		if err != nil {
 			return meInboxRequest{}, err
 		}
@@ -1048,11 +1057,11 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 			and (` + meInboxKindsParam + `::text[] is null or ` + kind + ` = any(` + meInboxKindsParam + `::text[]))`
 	}
 	// A project narrows every entry by its node's own project, and a node the store holds no row
-	// for cannot be judged, so it is left out under the narrowing. An owner keeps the page's rows of
-	// that owner alone (meInboxRequest.owned); under a state the entries are those rows already.
-	inProject := `(` + meInboxProject + `::text = '' or n.project_key = ` + meInboxProject + `::text)`
-	visible := `coalesce((select ` + refs.VisibleRow("n", meInboxVisibility) + ` and ` + inProject + `
-			from graph_nodes n where n.kind = g.node_kind and n.id = g.node_id), ` + meInboxProject + `::text = '')`
+	// for cannot be judged, so it is left out under the narrowing (meInboxVisible). An owner keeps
+	// the page's rows of that owner alone (meInboxRequest.owned); under a state the entries are those
+	// rows already.
+	visible := meInboxVisible("g.node_kind", "g.node_id")
+	order := meInboxOrderOf(shape)
 
 	var statement strings.Builder
 	statement.WriteString(`
@@ -1060,6 +1069,8 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	-- The three parameters of unreadDirectRepliesArgs, typed once: a request narrowed to an
 	-- owner splices in no Agent fragment, which is what reads the last two.
 	direct_args(login, actor_id, session_id) as (select $1::text, $2::text, $3::text),
+	-- The cursor, typed once: the Dismissed view's key takes no kind (meInboxOrder).
+	cursor_args(moment, kind, id) as (select ` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text),
 	person_nodes(kind, id) as (
 		select '` + graphstore.KindPerson + `'::text, $1::text
 		union
@@ -1145,6 +1156,14 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		  and ` + visible + `
 	),`)
 	}
+	// Under state=dismissed the total is the page the read answers, and not the whole pile, which
+	// nothing counts: the arms are cut to the page before the walk (meInboxDismissedCut), so the
+	// entries hold the page and no row past it but the one each arm reads to learn whether another
+	// page follows (remaining).
+	total := `(select c.total from counted c limit 1)`
+	if shape.state == myRepliesStateDismissed {
+		total = `(select count(*) from paged)`
+	}
 	statement.WriteString(`
 	counted as (
 		select e.*, count(*) over () as total from entries e
@@ -1152,14 +1171,14 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	remaining as (
 		select c.*, count(*) over () as remaining from counted c
 		where ` + meInboxCursorMoment + `::timestamptz is null
-		   or (c.moment, c.node_kind, c.node_id) < (` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)
+		   or ` + order.after("c") + `
 	),
 	-- The page, each entry numbered in the order it is answered in.
 	paged as (
 		select cut.*, row_number() over () as ord
 		from (
-			select * from remaining
-			order by moment desc, node_kind desc, node_id desc
+			select * from remaining r
+			order by ` + order.by("r") + `
 			offset ` + meInboxOffset + ` limit ` + meInboxLimit + `
 		) cut
 	),`)
@@ -1183,11 +1202,11 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	       entry.page, entry.agent
 	from (
 		select now() as as_of, ` + roster + ` as roster,
-		       coalesce((select c.total from counted c limit 1), 0) as total,
+		       coalesce(` + total + `, 0) as total,
 		       coalesce((select r.remaining from remaining r limit 1), 0) as remaining
 	) head
 	left join paged entry on true
-	order by entry.moment desc, entry.node_kind desc, entry.node_id desc`)
+	order by ` + order.by("entry"))
 	return statement.String(), args.values[slots.first:], nil
 }
 
@@ -1229,7 +1248,9 @@ func meInboxKindSkip(name, end string) string {
 //
 // Each row is the node it draws, the kind of row, the moment that state's list orders it by, and an
 // Agent row's session and the row itself (myAgentRowColumns), read once here for its order and kept.
-// A walk with no state draws the rows of the Inbox's own state.
+// A walk with no state draws the rows of the Inbox's own state. Under state=dismissed each of the two
+// arms is cut to the page before the walk meets it (meInboxDismissedCut), so a page of that state
+// reads the rows it answers however many threads the person has dismissed.
 //
 // The Ask rows are the open asks first, read by their state alone, and then the ones of those that
 // wait on the person, each with its newest reply; and an owner's test is written only into a shape
@@ -1244,18 +1265,25 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 	if state == "" {
 		state = myRepliesStateInbox
 	}
-	threads, threadMoment := myRepliesInbox, `u.replied_at`
+	threads, threadMoment := bindFragment(myRepliesInbox, "$1", issue, artifact), `u.replied_at`
 	agents, agentMoment := myAgentInboxRoots, `listed.replied_at`
 	switch state {
 	case myRepliesStateUnread:
-		threads, agents = myRepliesUnread, myAgentUnreadRoots
+		threads, agents = bindFragment(myRepliesUnread, "$1", issue, artifact), myAgentUnreadRoots
 	case myRepliesStateDismissed:
-		threads, threadMoment = myRepliesDismissed, `u.dismissed_at`
-		agents, agentMoment = myAgentDismissedRoots, `listed.dismissed_at`
+		threads, threadMoment = `
+		from (
+			select u.kind, u.thread_id, u.dismissed_at
+			`+bindFragment(myRepliesDismissed, "$1", issue, artifact)+
+			meInboxDismissedCut("u.kind", "u.thread_id", "u.dismissed_at")+`
+		) u`, `u.dismissed_at`
+		agents, agentMoment = myAgentDismissedRootsHead+
+			meInboxDismissedCut(`'`+graphstore.KindMessage+`'`, "d.message_id", "d.dismissed_at")+`
+	)`, `listed.dismissed_at`
 	}
 	arms := []string{`
 		select u.kind, u.thread_id::text, '` + meInboxPageThread + `', ` + threadMoment + `, null::text, null::record
-		` + bindFragment(threads, "$1", issue, artifact)}
+		` + threads}
 	if state == myRepliesStateInbox {
 		owner := ``
 		if shape.owned {
@@ -1283,6 +1311,79 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 	}
 	return strings.Join(arms, `
 		union all`)
+}
+
+// meInboxDismissedCut cuts one arm of the Dismissed view to the page before the walk meets it, as
+// GET /api/v1/me/replies cuts its own (myRepliesDismissedCut, myAgentDismissedPageCut): the arm's
+// rows past the cursor, in the order of the state's own index - the dismissal's moment, then the
+// root's id (user_threads_dismissed, user_agent_thread_dismissed_login_dismissed_at; meInboxOrder)
+// - and of those the first offset + limit + 1, the one past the page saying whether another page
+// follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its root's uuid
+// and its dismissal. So the walk, the grouping, the count and the sort meet at most twice that
+// many rows, where they met the whole pile: at the dismissed scale test's seed a page of 200 read a p50 of
+// 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and cut it reads 86 ms at either.
+//
+// Three things make the cut the page the read answers. The cursor is one row comparison over
+// coalesced arguments rather than `(cursor is null or ...)`, so it is the index's own condition in
+// the plan Postgres keeps from the sixth execution too, which knows nothing of whether a request
+// carries a cursor: the first page compares against a key past every dismissal. Every test an entry
+// of the page passes is passed above the cut - the visibility predicate and the project
+// (meInboxVisible) here, the owner in the fragment the cut ends - so no row the page would answer
+// lies past a row the cut took and the page dropped. And a request narrowed by relation kind keeps
+// the whole arm, since whether a row holds one of those kinds is the walk's to say, which the cut
+// comes before; no caller sends one to this state. With no limit the cut takes every row, as the
+// read answers every entry then.
+func meInboxDismissedCut(kind, id, moment string) string {
+	return `
+		  and (` + moment + `, ` + id + `) < (coalesce(` + meInboxCursorMoment + `::timestamptz, 'infinity'),
+		      coalesce(` + meInboxCursorID + `::text::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+		  and ` + meInboxVisible(kind, id+`::text`) + `
+		order by ` + moment + ` desc, ` + id + ` desc
+		limit case when ` + meInboxKindsParam + `::text[] is null
+		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end`
+}
+
+// meInboxVisible is whether the caller may see the node kind and id name, inside the request's
+// project where it names one: the visibility predicate over the node's own row of graph_nodes, read
+// by its key and bound once (refs.VisibleRow at meInboxVisibility), and for a node the store holds
+// no row for, true unless a project narrows the read, since such a node cannot be judged.
+func meInboxVisible(kind, id string) string {
+	inProject := `(` + meInboxProject + `::text = '' or n.project_key = ` + meInboxProject + `::text)`
+	return `coalesce((select ` + refs.VisibleRow("n", meInboxVisibility) + ` and ` + inProject + `
+			from graph_nodes n where n.kind = ` + kind + ` and n.id = ` + id + `), ` + meInboxProject + `::text = '')`
+}
+
+// meInboxOrder is the order a shape's entries are answered in, newest first, and the key a cursor
+// resumes after: the moment, then the node's kind and id, which together name one node. Under
+// state=dismissed it is the moment and the node's id alone, as a uuid (byID), which is the order
+// both of that state's indexes hold and so the order its arms are cut in (meInboxDismissedCut).
+// Every row of that state is a thread root or an Agent root, each a uuid of its own, so the id alone
+// names the node; and a key the cut did not take would let the page's last entry and the next
+// page's cut disagree over a tie, which a dismissal of many threads at once makes, since it gives
+// them all one moment.
+type meInboxOrder struct {
+	byID bool
+}
+
+func meInboxOrderOf(shape meInboxShape) meInboxOrder {
+	return meInboxOrder{byID: shape.state == myRepliesStateDismissed}
+}
+
+// after is whether the entry row names lies past the cursor in this order.
+func (order meInboxOrder) after(row string) string {
+	if order.byID {
+		return `(` + row + `.moment, ` + row + `.node_id::uuid) < (` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorID + `::text::uuid)`
+	}
+	return `(` + row + `.moment, ` + row + `.node_kind, ` + row + `.node_id) < (` + meInboxCursorMoment + `::timestamptz, ` +
+		meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)`
+}
+
+// by is this order over the entry rows row names, for an `order by`.
+func (order meInboxOrder) by(row string) string {
+	if order.byID {
+		return row + `.moment desc, ` + row + `.node_id::uuid desc`
+	}
+	return row + `.moment desc, ` + row + `.node_kind desc, ` + row + `.node_id desc`
 }
 
 // meInboxReads is what the page's rows draw, as meInboxPageReads writes it: the statement's
