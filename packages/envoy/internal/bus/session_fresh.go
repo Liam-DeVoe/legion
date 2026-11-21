@@ -586,36 +586,18 @@ func (s *SessionConsumers) SessionConsumerSets(ctx context.Context) (map[string]
 		return sets, nil
 	}
 	sets := map[string][]*jetstream.ConsumerInfo{}
-	for offset := 0; ; {
-		var page struct {
-			Total     int                       `json:"total"`
-			Consumers []*jetstream.ConsumerInfo `json:"consumers"`
-			Error     *jetstream.APIError       `json:"error"`
+	err := s.eachListedConsumer(ctx, func(info *jetstream.ConsumerInfo) {
+		if !strings.HasPrefix(info.Name, SessionConsumerNamePrefix+"~") {
+			return
 		}
-		if err := s.consumerRequest(ctx, "$JS.API.CONSUMER.LIST."+Stream, struct {
-			Offset int `json:"offset"`
-		}{offset}, &page); err != nil {
-			return nil, err
+		if sessionID := info.Config.Metadata[SessionIDMetadataKey]; sessionID != "" {
+			sets[sessionID] = append(sets[sessionID], info)
 		}
-		if page.Error != nil {
-			return nil, fmt.Errorf("bus: list the consumers of %s: %w", Stream, page.Error)
-		}
-		for _, info := range page.Consumers {
-			// Only a session~ name that carries its session's id is a session's: the listener's own
-			// durable carries envoy.logical too, and a listing by that would take it for a session
-			// and the sweep would delete it.
-			if !strings.HasPrefix(info.Name, SessionConsumerNamePrefix+"~") {
-				continue
-			}
-			if sessionID := info.Config.Metadata[SessionIDMetadataKey]; sessionID != "" {
-				sets[sessionID] = append(sets[sessionID], info)
-			}
-		}
-		offset += len(page.Consumers)
-		if len(page.Consumers) == 0 || offset >= page.Total {
-			return sets, nil
-		}
+	})
+	if err != nil {
+		return nil, err
 	}
+	return sets, nil
 }
 
 // freshList is ListSessionConsumers in the fresh mode: for each session, the consumer of its set
