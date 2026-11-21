@@ -382,30 +382,61 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty.
+// the plan's tables and columns, so the roll forward creates them again empty. Before it, newest
+// first, it takes the way back of each later migration that alters the plan's tables
+// (altersPlanTables), as a rollback past those releases does: the plan's way back drops the
+// tables they altered and leaves their version rows standing, so a roll forward would apply none
+// of them again and the plan's tables would come back without their columns.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
 	if err != nil {
 		r.t.Fatalf("read the embedded migrations: %v", err)
 	}
+	plan := slices.IndexFunc(all, func(migration migrations.Migration) bool {
+		return strings.HasSuffix(migration.Name, inFlightPlanMigration)
+	})
+	if plan < 0 {
+		r.t.Fatalf("no embedded migration ends %s", inFlightPlanMigration)
+	}
+	for later := len(all) - 1; later > plan; later-- {
+		if altersPlanTables(all[later].SQL) {
+			r.exec(r.headerWayBack(all[later]))
+		}
+	}
+	r.exec(r.headerWayBack(all[plan]))
+}
+
+// headerWayBack is the way back migration's header gives from `begin;` to `commit;`, with
+// <PROJECT> the run's project.
+func (r *stepRecordsRig) headerWayBack(migration migrations.Migration) string {
+	r.t.Helper()
 	var block []string
-	for _, migration := range all {
-		if !strings.HasSuffix(migration.Name, inFlightPlanMigration) {
+	for _, line := range strings.Split(migration.SQL, "\n") {
+		statement, comment := strings.CutPrefix(line, "--")
+		if statement = strings.TrimSpace(statement); !comment || (len(block) == 0 && statement != "begin;") {
 			continue
 		}
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			statement, comment := strings.CutPrefix(line, "--")
-			if statement = strings.TrimSpace(statement); !comment || (len(block) == 0 && statement != "begin;") {
-				continue
-			}
-			if block = append(block, statement); statement == "commit;" {
-				r.exec(strings.ReplaceAll(strings.Join(block, "\n"), "<PROJECT>", r.cfg.Project))
-				return
+		if block = append(block, statement); statement == "commit;" {
+			return strings.ReplaceAll(strings.Join(block, "\n"), "<PROJECT>", r.cfg.Project)
+		}
+	}
+	r.t.Fatalf("%s carries no way back from begin; to commit; in its header, read %d lines of it", migration.Name, len(block))
+	return ""
+}
+
+// altersPlanTables says whether sql, a migration, alters one of the plan's three tables in a
+// statement of its own, not in a comment.
+func altersPlanTables(sql string) bool {
+	for _, line := range strings.Split(sql, "\n") {
+		statement := strings.ToLower(strings.TrimSpace(line))
+		for _, table := range []string{"issue_plans", "plan_tasks", "plan_steps"} {
+			if strings.HasPrefix(statement, "alter table "+table+" ") {
+				return true
 			}
 		}
 	}
-	r.t.Fatalf("no embedded migration ending %s carries a way back from begin; to commit;, read %d lines of it", inFlightPlanMigration, len(block))
+	return false
 }
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
