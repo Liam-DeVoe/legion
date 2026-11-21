@@ -510,6 +510,46 @@ func TestTheCohortDeleteIsSignedAndRunsOnlyInPrepare(t *testing.T) {
 	})
 }
 
+// A broker process keeps, for each hold record, the highest gen it has written or served, and
+// answers a record below it as unknown, 409 below_floor, never the older record: a database writer
+// who puts an older signed journal back is refused, and a write naming the put-back gen is 409
+// gen_mismatch, since it would store a gen at or below the floor again. A broker that starts again
+// has no floor and serves the older record: the residual the hold's design states, asserted here
+// as such. Fails if the floor goes: the put-back journal is answered 200.
+func TestARecordBelowTheFloorReadsAsUnknown(t *testing.T) {
+	rig := newHoldRig(t)
+	op := rig.operator()
+	rig.bootstrap()
+	rig.move(1, "prepare", "hold-f")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 0, `{"ops":[]}`)).require(t, "the journal's insert", http.StatusOK, "")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 1, `{"ops":[1]}`)).require(t, "the journal's write at gen 2", http.StatusOK, "")
+	var older, olderSig string
+	if err := rig.pool.QueryRow(context.Background(), `select value::text, sig from nats_hold_records where hold_id = 'hold-f' and kind = 'done'`).Scan(&older, &olderSig); err != nil {
+		t.Fatal(err)
+	}
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 2, `{"ops":[1,2]}`)).require(t, "the journal's write at gen 3", http.StatusOK, "")
+	if _, err := rig.pool.Exec(context.Background(), `update nats_hold_records set value = $1::jsonb, gen = 2, sig = $2 where hold_id = 'hold-f' and kind = 'done'`, older, olderSig); err != nil {
+		t.Fatal(err)
+	}
+	const journal = "/v1/nats-hold/records?hold_id=hold-f&kind=done"
+	read := rig.do(http.MethodGet, journal, op, nil)
+	write := rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 2, `{"ops":[1,9]}`))
+	if read.status != http.StatusConflict || read.str("error") != "below_floor" || write.status != http.StatusConflict || write.str("error") != "gen_mismatch" {
+		t.Fatalf("with the signed gen-2 journal put back after gen 3, GET answered %d %s and a write at gen 2 %d %s; want 409 below_floor and 409 gen_mismatch",
+			read.status, read.body, write.status, write.body)
+	}
+	if stored := rig.count(`select gen from nats_hold_records where hold_id = 'hold-f' and kind = 'done'`); stored != 2 {
+		t.Fatalf("the refused write moved the journal to gen %d", stored)
+	}
+	// The residual: a broker process that starts again has no floor, and serves the older journal.
+	rig.restart()
+	again := rig.do(http.MethodGet, journal, op, nil).require(t, "GET the put-back journal after a restart", http.StatusOK, "")
+	var records []map[string]json.RawMessage
+	if err := json.Unmarshal(again.fields["records"], &records); err != nil || len(records) != 1 || string(records[0]["gen"]) != "2" {
+		t.Fatalf("after a restart GET lists %s, want the put-back journal at gen 2 (the stated residual)", again.fields["records"])
+	}
+}
+
 // holdTables is every row of the hold's four tables, as text, for a test that requires a refused
 // call to change none.
 func (r *holdRig) holdTables() string {

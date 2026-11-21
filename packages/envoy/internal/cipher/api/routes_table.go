@@ -582,10 +582,11 @@ func routes() []apiRoute {
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
 		// gen it will store. expected_gen 0 inserts a record that is not there, and any other gen
 		// updates the record that holds it, one above; a record moved since is 409 gen_mismatch,
-		// and a hold id other than the row's 409 hold_mismatch.
+		// and so is a write storing a gen at or below the record's floor (recordFloors), and a hold
+		// id other than the row's 409 hold_mismatch.
 		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
 		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
-		// was stored and its signature.
+		// was stored and its signature; a record below its floor is 409 below_floor.
 		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
 		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
 		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released:

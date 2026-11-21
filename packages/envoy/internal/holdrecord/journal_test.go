@@ -140,6 +140,19 @@ func run(t *testing.T, c *holdrecord.Client, holdID string, req holdrecord.Reque
 
 func cmd(command string) holdrecord.Request { return holdrecord.Request{Command: command} }
 
+// recreateStops runs a buckets-recreate hold's recreate until its own check refuses after its
+// change, and writes its stop recording left.
+func recreateStops(t *testing.T, c *holdrecord.Client, holdID, left string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := c.Admit(ctx, holdID, cmd("buckets recreate"), nil); err != nil {
+		t.Fatalf("admit buckets recreate: %v", err)
+	}
+	if err := c.AppendStopLeft(ctx, holdID, "buckets recreate", "the create is refused", left); err != nil {
+		t.Fatalf("the recreate's stop: %v", err)
+	}
+}
+
 func journal(t *testing.T, c *holdrecord.Client, holdID string) (holdrecord.Done, uint64) {
 	t.Helper()
 	d, gen, err := c.Journal(context.Background(), holdID)
@@ -885,6 +898,35 @@ func TestTheHoldJournal(t *testing.T) {
 			if err := c.AppendDone(ctx, s.holdID, holdrecord.CommandAbort, nil); err != nil {
 				t.Fatal(err)
 			}
+		}
+	})
+
+	// The broker's floor of each record: an older signed journal a database writer puts back reads
+	// as unknown, so Admit fails closed, and hold release is not admitted over a command that
+	// changed data. A broker that starts again has no floor: the stated residual.
+	t.Run("a replayed older journal is unknown, so hold release is refused after a command changed data", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-replay", holdrecord.WorkflowBucketsRecreate, nil)
+		var older, olderSig string
+		var olderGen int64
+		if err := r.Pool.QueryRow(ctx, `select value::text, gen, sig from nats_hold_records where hold_id = 'h-replay' and kind = 'done'`).Scan(&older, &olderGen, &olderSig); err != nil {
+			t.Fatal(err)
+		}
+		recreateStops(t, c, "h-replay", "envoy_sessions deleted")
+		_, err := c.Admit(ctx, "h-replay", cmd(holdrecord.CommandRelease), nil)
+		refused(t, "hold release after the recreate's stop", err, holdrecord.ErrOutOfOrder, "not complete")
+		// A database writer puts back the earlier signed journal: hold set's entries alone.
+		if _, err := r.Pool.Exec(ctx, `update nats_hold_records set value = $1::jsonb, gen = $2, sig = $3 where hold_id = 'h-replay' and kind = 'done'`, older, olderGen, olderSig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-replay", cmd(holdrecord.CommandRelease), nil); !errors.Is(err, holdrecord.ErrUnknown) {
+			t.Fatalf("hold release over the put-back gen-%d journal answered %v, want ErrUnknown", olderGen, err)
+		}
+		// The residual: a broker process that starts again has no floor, and admits the release.
+		r.Restart()
+		if _, err := c.Admit(ctx, "h-replay", cmd(holdrecord.CommandRelease), nil); err != nil {
+			t.Fatalf("after a restart hold release over the put-back journal answered %v; the stated residual is that it is admitted", err)
 		}
 	})
 

@@ -87,7 +87,7 @@ type CutoverRow struct {
 }
 
 // RouteError is a route's 400, 403 or 409 answer, with its code: `bad_signature`,
-// `bad_transition`, `not_operator`, `gen_mismatch`, `hold_mismatch` or `row_exists`.
+// `bad_transition`, `not_operator`, `gen_mismatch`, `hold_mismatch`, `row_exists` or `below_floor`.
 type RouteError struct {
 	Status int
 	Code   string
@@ -211,13 +211,18 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 	}
 }
 
-// Records reads and verifies the hold's records of one kind, through `/v1/nats-hold/records`.
+// Records reads and verifies the hold's records of one kind, through `/v1/nats-hold/records`. A
+// record the broker answers below its floor, an older signed record put back, is ErrUnknown.
 func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, error) {
 	var answer struct {
 		Records []recordWire `json:"records"`
 	}
 	query := url.Values{"hold_id": {holdID}, "kind": {kind}}
 	if err := c.call(ctx, http.MethodGet, recordsPath, query, nil, &answer); err != nil {
+		var refusal *RouteError
+		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
+			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back", holdID, kind))
+		}
 		return nil, err
 	}
 	out := make([]Record, 0, len(answer.Records))
@@ -484,6 +489,7 @@ const (
 	journalKey       = "hold"
 	cohortKind       = "cohort"
 	codeGenMismatch  = "gen_mismatch"
+	codeBelowFloor   = "below_floor"
 	maxJournalWrites = 16
 	// maxAnswer bounds the answer body the client reads: the largest is a hold's records of one
 	// kind, a journal of some hundreds of entries.
