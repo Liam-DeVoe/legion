@@ -352,7 +352,8 @@ sees: a private project needs a token that lists it.
   private projects it lists that its person sees. It reads what belongs to no project as its
   person does, but for the sessions and roles of private projects it does not see. A token that
   lists projects is refused a write of the whole deployment, such as a new project, a repository
-  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
+  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
+  person is refused it only while some project is private.
 - A restricted member's token that lists projects sees those of them its person sees and nothing
   else; one that lists none sees the public projects its person sees. Of what belongs to no
   project it reads only the people and sessions of those projects, its own, and its person's
@@ -384,8 +385,8 @@ A project can be made private only once the deployment has provisioned it.
 `DISPATCH_PRIVATE_PROJECTS` holds, comma-separated, the keys of the projects whose private
 namespace, stores and grants the deployment has made; on a deployment built by `envoy-infra`'s
 `gcp:Dispatch`, the component's `privateProjects` input, a list of keys, renders it. An entry that
-is not a project key, the old value `1` included, stops the start. Unset or empty, no project can
-be made private.
+is not a project key, the old value `1` included, is ignored, and the start logs an ERROR line
+naming it. Unset or empty, no project can be made private.
 
 The owner switches a project private on its Access tab
 (`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in

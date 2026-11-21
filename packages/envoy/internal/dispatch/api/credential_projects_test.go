@@ -1,7 +1,6 @@
 // credential_projects_test.go proves that a credential carries its list of projects: a personal
 // token's agent_tokens.projects and a broker token's list reach the one rule of what a caller sees
-// (internal/dispatch/access), a mint or an edit lists only projects its caller sees, and a
-// credential that lists projects passes on only a part of its own list.
+// (internal/dispatch/access), and a mint or an edit lists only projects its caller sees.
 package api
 
 import (
