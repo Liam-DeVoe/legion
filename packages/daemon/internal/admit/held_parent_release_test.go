@@ -235,7 +235,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 
 		// A person moves the waiting root and sets it to todo again. The todo leaves the hold, and
 		// the board is set back at the root's status with the same why beside it, so the person
-		// reads why the todo went back (workflow's heldForChildrenReason).
+		// reads why the todo went back (workflow's heldParentWait).
 		apply(t, pool, admission, "person-moves", intake.DispatchIssue{Key: parent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "in_progress",
 			Title: parent, Parent: root, Rank: "B", HandedOver: true}, engine)
 		apply(t, pool, admission, "person-todo", intake.DispatchIssue{Key: parent, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: "todo",

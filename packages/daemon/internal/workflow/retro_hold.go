@@ -42,19 +42,48 @@ func retroHeldNotice(parent string, beneath []string) record.Notice {
 			"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))}
 }
 
-// heldForChildrenReason is why parent, held before its retro for the issues beneath it, still
-// waits, given beneath, the issues beneath it still open (openBeneath): the hold's own retro-held
-// sentence where any is open (retroHeldNotice), and otherwise why its tree runs nothing yet
-// (intake.HeldParentWaitsForTree), the one other way such a hold stands (releaseHeldParents).
-func (e *Engine) heldForChildrenReason(ctx context.Context, tx pgx.Tx, parent record.Issue, beneath []string) (string, error) {
-	if len(beneath) > 0 {
-		return retroHeldNotice(parent.Key, beneath).Reason, nil
+// heldParentWait is why parent, held before its retro for the issues beneath it
+// (record.HoldForChildren), still waits, decided once (heldParentWaitOf) for both answers that say
+// it: the refusal of a release of the hold (planHoldRefusal) and the reason posted beside the status
+// a todo on a held root is set back to (releaseHeldRoot). beneath names the issues beneath it still
+// open (openBeneath). With none open its tree alone holds it, since the settle of every fact
+// releases such a parent in a tree that runs (releaseHeldParents): the tree lingers after its root
+// left the workflow, where lingers says so, and otherwise its root waits in the line for the
+// promotion that opens it, a hand-over among them (record.TreeRuns, record.QueuedRoot).
+type heldParentWait struct {
+	parent  record.Issue
+	beneath []string
+	lingers bool
+}
+
+// heldParentWaitOf decides why parent, held for the issues beneath it, still waits.
+func (e *Engine) heldParentWaitOf(ctx context.Context, tx pgx.Tx, parent record.Issue) (heldParentWait, error) {
+	beneath, err := e.openBeneath(ctx, tx, parent)
+	if err != nil || len(beneath) > 0 {
+		return heldParentWait{parent: parent, beneath: beneath}, err
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, parent.Tree)
-	if err != nil {
-		return "", err
+	return heldParentWait{parent: parent, lingers: lingers}, err
+}
+
+// refusal is the answer to a release of the hold, which would start the retro's role early: the
+// issues beneath still open, the last of which starts the retro (intake.RetryOfHeldParent), or why
+// the tree runs nothing yet (intake.RetryOfHeldParentUntilTreeRuns).
+func (w heldParentWait) refusal() *intake.Refusal {
+	if len(w.beneath) > 0 {
+		return intake.RetryOfHeldParent(w.parent.Key, w.beneath)
 	}
-	return intake.HeldParentWaitsForTree(parent.Key, parent.Tree, lingers), nil
+	return intake.RetryOfHeldParentUntilTreeRuns(w.parent.Key, w.parent.Tree, w.lingers)
+}
+
+// reason is the reason posted beside the status a todo on the held root is set back to: the hold's
+// own retro-held sentence where any issue beneath is open (retroHeldNotice), and otherwise why its
+// tree runs nothing yet (intake.HeldParentWaitsForTree).
+func (w heldParentWait) reason() string {
+	if len(w.beneath) > 0 {
+		return retroHeldNotice(w.parent.Key, w.beneath).Reason
+	}
+	return intake.HeldParentWaitsForTree(w.parent.Key, w.parent.Tree, w.lingers)
 }
 
 // releaseHeldParents is the one place a parent held before its retro for the issues beneath it

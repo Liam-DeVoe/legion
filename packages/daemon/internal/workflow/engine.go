@@ -534,7 +534,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // (waitForFirstStep). A todo on a root held for the issues beneath it leaves the hold, since the
 // last of them to leave starts the retro, keeps the observation, and logs why. It queues the status
 // the record keeps, the last step's, over the todo, with the reason the hold still stands posted
-// beside it (heldForChildrenReason), so the person who set the todo reads why the board went back,
+// beside it (heldParentWait's reason), so the person who set the todo reads why the board went back,
 // as the release of any other hold queues the status of the phase it ends in: every later status
 // write of the issue is keyed on the record's status (Engine.status), the retro's that ends the
 // hold among them (startHeldRetro), and finds the board at it only once this row has put it back.
@@ -550,20 +550,16 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 	switch {
 	case !planHold(issue, w.Stored):
 	case record.HeldForChildren(issue):
-		beneath, err := e.openBeneath(ctx, tx, issue)
-		if err != nil {
-			return err
-		}
-		reason, err := e.heldForChildrenReason(ctx, tx, issue, beneath)
+		wait, err := e.heldParentWaitOf(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
-			"issue", issue.Key, "beneath", beneath)
+			"issue", issue.Key, "beneath", wait.beneath)
 		if err := e.WriteIssue(ctx, tx, released); err != nil {
 			return err
 		}
-		return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(issue.Status, fact.Status, reason))
+		return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(issue.Status, fact.Status, wait.reason()))
 	default:
 		if !w.Place.Started() {
 			return e.waitForFirstStep(ctx, tx, released, w, restartReason)
