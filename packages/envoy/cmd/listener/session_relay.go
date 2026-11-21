@@ -39,8 +39,17 @@ const (
 	// relayHeaderStoredAt is when the stream stored the message, RFC 3339 with nanoseconds, UTC.
 	relayHeaderStoredAt = "Envoy-Stored-At"
 	// relayHeaderGap is "true" on the first frame after a restart of the consumer that started below
-	// the stream's first sequence: messages the session had not taken are gone.
+	// the stream's first sequence: messages the session had not taken are gone. An edge listener
+	// sets it too on the first frame after GitHub events it withheld while it could read no fresh
+	// repository answer for the session's projects, and names that gap in relayHeaderGapReason.
 	relayHeaderGap = "Envoy-Gap"
+	// relayHeaderGapReason names a gap that is not the stream's own loss, beside relayHeaderGap:
+	// relayGapRepositoryWithheld for the edge's withheld GitHub events (sessionRelays.edgeWithholds).
+	// A gap mark with no reason is the stream's retention gap.
+	relayHeaderGapReason = "Envoy-Gap-Reason"
+	// relayGapRepositoryWithheld is relayHeaderGapReason's value for a gap of GitHub events the
+	// edge withheld because no fresh repository answer could say they were the session's.
+	relayGapRepositoryWithheld = "repository_withheld"
 )
 
 // The replies a session sends on a frame's reply subject, each exactly one ASCII word.
@@ -1031,7 +1040,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	streamID, gap := start.StreamID, start.Gap
+	// gapReason names the gap the next frame marks, "" for the stream's retention gap
+	// (relayHeaderGapReason).
+	streamID, gap, gapReason := start.StreamID, start.Gap, ""
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1057,21 +1068,25 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// token's projects names the repository the event itself names (relayVerdict). One that
 		// does not is acknowledged undelivered and counted, and while no such answer can be read
 		// the session's next frame carries the gap mark, since the events withheld then are ones
-		// the session may have been owed.
+		// the session may have been owed, with the reason repository_withheld; a retention gap
+		// the same frame already marks keeps no reason, since it lost more.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
+				if !gap {
+					gapReason = relayGapRepositoryWithheld
+				}
 				gap = true
 			}
 			continue
 		}
-		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
+		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason); err != nil {
 			if ctx.Err() != nil {
 				return relayEnded
 			}
 			m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
-		gap = false
+		gap, gapReason = false, ""
 	}
 }
 
@@ -1099,8 +1114,9 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 }
 
 // publishFrame publishes msg as a frame on the session's relay subject, its reply subject a token
-// of its own under the listener's reply inbox.
-func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
+// of its own under the listener's reply inbox. gap marks the frame as the first after a gap, and
+// gapReason names that gap when it is not the stream's retention gap.
+func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason string) error {
 	token := strconv.FormatUint(m.nextToken.Add(1), 36)
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
@@ -1119,6 +1135,9 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	header.Set(relayHeaderStoredAt, msg.StoredAt.UTC().Format(time.RFC3339Nano))
 	if gap {
 		header.Set(relayHeaderGap, "true")
+		if gapReason != "" {
+			header.Set(relayHeaderGapReason, gapReason)
+		}
 	}
 	return m.delivery.consumers.Publish(ctx, &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),

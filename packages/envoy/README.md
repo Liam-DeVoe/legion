@@ -134,7 +134,8 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A subject writes a dot in a name as `_`, so `acme/a.b` and `acme/a_b` publish on one subject, and an answer that names one admits only that one's events.
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
-  In that second case the session's next frame carries `Envoy-Gap: true`, and every frame that is not GitHub's is delivered as before.
+  In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
+  A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
 - **Publishes**: `POST /v1/messages/publish` takes only a role subject in the form that names the project, `notifications.role.<KEY>.<role>`, of one of the token's projects and for a role that works for that project;
