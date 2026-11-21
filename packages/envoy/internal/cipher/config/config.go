@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/fileerr"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -2603,15 +2604,16 @@ func secretValue(getenv func(string) string, name string) (string, error) {
 }
 
 // secretFile reads the trimmed contents of path, the file the variable setting names; an
-// unreadable or blank file is an error naming setting and path, never what the file holds.
+// unreadable or blank file is an error naming setting and why (fileerr.Class), never the path,
+// which can be a credential pasted where it goes, nor what the file holds.
 func secretFile(setting, path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return "", fmt.Errorf("%s names a file that cannot be read: %s", setting, fileerr.Class(err))
 	}
 	value := strings.TrimSpace(string(data))
 	if value == "" {
-		return "", fmt.Errorf("%s names %s, which is empty", setting, path)
+		return "", fmt.Errorf("%s names a file that is empty", setting)
 	}
 	return value, nil
 }

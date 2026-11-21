@@ -126,9 +126,9 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 		{"the keyless sign-in without its token file", azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": ""})),
 			[]string{"DISPATCH_AZURE_TENANT_ID, DISPATCH_AZURE_CLIENT_ID set, DISPATCH_AZURE_FEDERATED_TOKEN_FILE missing"}},
 		{"an unreadable key file", azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY": "", "DISPATCH_AZURE_EMBED_KEY_FILE": missing}),
-			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names " + missing + ", which could not be read, and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
+			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
 		{"a blank key file beside a bare key", azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": blank}),
-			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names " + blank + ", which is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
+			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names a file that is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
 	}
 	// Every DISPATCH_AZURE_EMBED_ variable, a _FILE form included, is refused under Bedrock,
 	// whether DISPATCH_EMBEDDER says so or is unset.

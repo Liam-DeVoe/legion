@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/internal/fileerr"
 	"github.com/sjawhar/envoy/natsurl"
 )
 
@@ -96,28 +97,29 @@ func CutNATSServiceEntry(text string) (head, account string, ok bool) {
 }
 
 // ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting
-// and never the seed, when path is unset or unreadable or its trimmed contents are not a seed of
-// kind. It is the one reader of the NATS auth service's seeds: the broker's start checks each with
-// it (loadNATSCallout), and the service reads its keys with it (natscallout.Start).
+// and never the path or the seed, when path is unset or unreadable (fileerr.Class) or its trimmed
+// contents are not a seed of kind: the path can be a seed pasted where it goes. It is the one
+// reader of the NATS auth service's seeds: the broker's start checks each with it
+// (loadNATSCallout), and the service reads its keys with it (natscallout.Start).
 func ReadSeedFile(setting, path string, kind nkeys.PrefixByte) (nkeys.KeyPair, error) {
 	if path == "" {
 		return nil, fmt.Errorf("the NATS auth service needs %s", setting)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return nil, fmt.Errorf("%s names a file that cannot be read: %s", setting, fileerr.Class(err))
 	}
 	seed := []byte(strings.TrimSpace(string(raw)))
 	prefix, _, err := nkeys.DecodeSeed(seed)
 	if err != nil {
-		return nil, fmt.Errorf("%s names %s, which holds no nkey seed", setting, path)
+		return nil, fmt.Errorf("%s names a file that holds no nkey seed", setting)
 	}
 	if prefix != kind {
-		return nil, fmt.Errorf("%s names %s, which holds a %s seed where it needs a %s seed", setting, path, prefix, kind)
+		return nil, fmt.Errorf("%s names a file that holds a %s seed where it needs a %s seed", setting, prefix, kind)
 	}
 	pair, err := nkeys.FromSeed(seed)
 	if err != nil {
-		return nil, fmt.Errorf("%s names %s, whose seed makes no key: %w", setting, path, err)
+		return nil, fmt.Errorf("%s names a file whose seed makes no key", setting)
 	}
 	return pair, nil
 }

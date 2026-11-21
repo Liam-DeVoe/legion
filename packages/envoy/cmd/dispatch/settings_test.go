@@ -1562,14 +1562,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY": "", "DISPATCH_AZURE_EMBED_KEY_FILE": file})); boot.Embedder.AzureKey != "file-key" {
 				t.Errorf("file alone: AzureKey = %q, want the file's", boot.Embedder.AzureKey)
 			}
-			// An unreadable or blank file refuses, naming both variables, rather than falling back to
-			// the bare key.
+			// An unreadable or blank file refuses, naming both variables and why, never the path,
+			// rather than falling back to the bare key. A made-up seed pasted where the path goes
+			// is named nowhere in the refusal.
 			missing := filepath.Join(t.TempDir(), "missing")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": missing}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+missing+", which could not be read, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			const pastedSeed = "SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV"
+			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}),
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			if _, err := resolveBootConfig(bootEnvironment(azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}))); err == nil || strings.Contains(err.Error(), pastedSeed[:10]) {
+				t.Errorf("a seed pasted as DISPATCH_AZURE_EMBED_KEY_FILE: err = %v, want a refusal holding none of it", err)
+			}
 			blank := writeFile(t, "blank", "\n")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": blank}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+blank+", which is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY": "bare-key"}, "DISPATCH_AZURE_EMBED_KEY set, but DISPATCH_EMBEDDER is unset")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}, "DISPATCH_AZURE_EMBED_KEY_FILE set, but DISPATCH_EMBEDDER is unset")
 			if _, ok := azureEmbedderFor(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}).(*embed.AzureClient); !ok {

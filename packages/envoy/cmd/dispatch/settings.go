@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/fileerr"
 )
 
 // setting is one row of envoy-dispatch's settings table: a Dispatch setting, an environment
@@ -310,18 +311,19 @@ func (values settingValues) get(name string) string {
 }
 
 // fileSetting resolves a File row's value: the trimmed contents of the file name+"_FILE" names,
-// ahead of name's own trimmed value. A set but unreadable or blank file is an error naming both,
-// never a silent fallback to the bare variable.
+// ahead of name's own trimmed value. A set but unreadable or blank file is an error naming both
+// variables and why (fileerr.Class), never the path, which can be a credential pasted where it
+// goes, and never a silent fallback to the bare variable.
 func fileSetting(env settingValues, name string) (string, error) {
 	fileVariable := name + "_FILE"
 	if path := strings.TrimSpace(env.get(fileVariable)); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("%s names %s, which could not be read, and %s is not read in its place: %w", fileVariable, path, name, err)
+			return "", fmt.Errorf("%s names a file that cannot be read (%s), and %s is not read in its place", fileVariable, fileerr.Class(err), name)
 		}
 		value := strings.TrimSpace(string(data))
 		if value == "" {
-			return "", fmt.Errorf("%s names %s, which is empty, and %s is not read in its place", fileVariable, path, name)
+			return "", fmt.Errorf("%s names a file that is empty, and %s is not read in its place", fileVariable, name)
 		}
 		return value, nil
 	}
