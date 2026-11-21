@@ -222,26 +222,32 @@ export function pathKeepsBytesOf(name: string): boolean {
 
 const artifactOwner = documentOwnerValidation(false);
 
-/** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
- *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
- *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
- *  its lines joined. The name alone makes an empty document and is held to the same rule, since
- *  what the writer types into it afterwards is Markdown too. */
+/** The refusal of the parts of dispatch_artifact's rule `value` breaks, or undefined when it keeps
+ *  the rule. It names every part the call broke, the owner and the source before the name, joined
+ *  in one refusal, so its caller fixes them all and calls once. A call without path writes a
+ *  document, whose text is always Markdown, so it goes only under a name that says Markdown or
+ *  says nothing: a .jsonl stored that way reads back with its lines joined. The name alone makes
+ *  an empty document and is held to the same rule, since what the writer types into it
+ *  afterwards is Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
     readonly path?: unknown;
     readonly content?: unknown;
   };
-  const ownerOrSourceProblem = brokenParts([
+  const extension =
+    typeof input.path === "string" || typeof input.name !== "string"
+      ? undefined
+      : NAME_EXTENSION.exec(input.name.trim())?.[1];
+  const nameProblem =
+    extension === undefined || MARKDOWN_EXTENSION.test(extension)
+      ? undefined
+      : `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
+  return brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
     [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
+    [nameProblem === undefined, nameProblem ?? ""],
   ]);
-  if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
-  if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
-  const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
-  if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
