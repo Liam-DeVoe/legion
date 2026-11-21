@@ -945,7 +945,7 @@ const repositoryAppsContract = 152
 const pauseContract = 178
 
 // repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
-// repository left on its record (version.go's 202, dispatch://INFRA-3136): `repoBefore` and
+// repository left on its record (version.go's 205, dispatch://INFRA-3136): `repoBefore` and
 // `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
 // correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
 // the daemon has not applied and why. A plugin before it is served every issue without the four
@@ -960,7 +960,7 @@ const pauseContract = 178
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
 // dispatch://INFRA-3136's own number, and the arrival of the owed answer moves with it.
-const repositoryCorrectionContract = 202
+const repositoryCorrectionContract = 205
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
