@@ -281,7 +281,7 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 	after := &logtest.Recorder{}
 	restore := logtest.Swap(t, after)
 	defer restore()
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("run the finished fill again: %v", err)
 	}
 	oneLine(t, after, fillNothingLine)

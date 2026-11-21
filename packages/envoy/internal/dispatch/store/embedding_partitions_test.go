@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -127,7 +130,7 @@ func TestTheFillCopiesEveryRowIntoItsProjectsPartitionAndSwapsItIn(t *testing.T)
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("fill: %v", err)
 	}
 
@@ -169,6 +172,14 @@ func TestTheFillCopiesEveryRowIntoItsProjectsPartitionAndSwapsItIn(t *testing.T)
 		t.Errorf("the copy finished reporting %d rows inserted, want the %d the mirror had not carried over", inserted, unmirrored.RowsAffected())
 	}
 	oneLine(t, records, partitionSwappedLine)
+	// The swap analyzes the partitioned parent, which autovacuum never does, so the planner has
+	// statistics of embeddings itself and not of its partitions alone.
+	oneLine(t, records, "dispatch: embeddings is analyzed after its swap")
+	var parentStatistics int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from pg_statistic where starelid = 'embeddings'::regclass and stainherit`).
+		Scan(&parentStatistics); err != nil || parentStatistics == 0 {
+		t.Errorf("embeddings holds %d rows of statistics of its own after the swap (%v), want the ANALYZE's", parentStatistics, err)
+	}
 
 	// The writers, on the swapped-in table.
 	execAll(t, database,
@@ -195,12 +206,71 @@ func TestTheFillCopiesEveryRowIntoItsProjectsPartitionAndSwapsItIn(t *testing.T)
 	after := &logtest.Recorder{}
 	restore := logtest.Swap(t, after)
 	defer restore()
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("fill again: %v", err)
 	}
 	oneLine(t, after, partitionNothingLine)
 	if done, err := database.EmbeddingProjectKeyFillDone(ctx); err != nil || !done {
 		t.Errorf("EmbeddingProjectKeyFillDone = %t, %v after the swap, want true", done, err)
+	}
+}
+
+// Every partition of embeddings, and every index of one, reads in a plan as embeddings and as the
+// index of embeddings it belongs to (explaintest.PartitionParent, PartitionParentIndex), which is
+// what lets every plan guard written for embeddings hold the partitioned table: the names
+// migration 20261120105330 gives them (embeddings_name_partition_indexes) are read against the
+// catalog's own record of which parent each belongs to, for the partitions the swap brings and
+// for one a project made after it gets.
+func TestEveryIndexOfAPartitionOfEmbeddingsReadsAsTheIndexItBelongsTo(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 1)
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
+		t.Fatalf("partition embeddings: %v", err)
+	}
+	execAll(t, database, `insert into projects (key, name, default_assignee) values ('LATER9', 'Later', 'alice@d.example')`)
+	rows, err := database.Pool.Query(ctx, `
+		select child.relname::text, parent.relname::text from pg_inherits link
+		  join pg_class child on child.oid = link.inhrelid
+		  join pg_class parent on parent.oid = link.inhparent
+		 where parent.oid = 'embeddings'::regclass
+		    or parent.oid in (select indexrelid from pg_index where indrelid = 'embeddings'::regclass)
+		 order by 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type link struct{ child, parent string }
+	links, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (link, error) {
+		var l link
+		return l, row.Scan(&l.child, &l.parent)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var partitions, indexes int
+	for _, l := range links {
+		if l.parent == "embeddings" {
+			partitions++
+			if got := explaintest.PartitionParent(l.child); got != "embeddings" {
+				t.Errorf("partition %s reads in a plan as %s, want embeddings", l.child, got)
+			}
+			continue
+		}
+		indexes++
+		if got := explaintest.PartitionParentIndex(l.child); got != l.parent {
+			t.Errorf("index %s of a partition reads in a plan as %s, want %s, the index of embeddings it belongs to", l.child, got, l.parent)
+		}
+	}
+	// PARTA, PARTB, the partition of no project and LATER9's, and every index of each.
+	if partitions != 4 || indexes != 4*7 {
+		t.Errorf("the catalog names %d partitions and %d partition indexes of embeddings, want 4 and %d: the reading above proves nothing of the rest", partitions, indexes, 4*7)
+	}
+	for _, name := range []string{"embeddings", "embeddings_project_key_backfill", "embeddings_partitioned_copy", "embedding_window_states", "embeddings_pending", "embeddings_kind_project"} {
+		if got := explaintest.PartitionParent(name); got != name {
+			t.Errorf("%s, no partition, reads as %s", name, got)
+		}
+		if got := explaintest.PartitionParentIndex(name); got != name {
+			t.Errorf("%s, no index of a partition, reads as the index %s", name, got)
+		}
 	}
 }
 
@@ -211,7 +281,7 @@ func TestTheFillCopiesEveryRowIntoItsProjectsPartitionAndSwapsItIn(t *testing.T)
 func TestTheFillMovesARowFromTheNoProjectPartitionIntoItsProjects(t *testing.T) {
 	ctx := context.Background()
 	database, _ := openPartitionTestStore(t, 3)
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("partition: %v", err)
 	}
 	// A row stored before its project was known: the label trigger would label it again as it
@@ -225,7 +295,7 @@ func TestTheFillMovesARowFromTheNoProjectPartitionIntoItsProjects(t *testing.T) 
 	if table := partitionOf(t, database, "issue", "PARTB-2"); table != "embeddings_no_project" {
 		t.Fatalf("PARTB-2 unlabelled is stored in %s, want embeddings_no_project", table)
 	}
-	labelled, err := database.FillEmbeddingProjectKeys(ctx)
+	labelled, err := database.FillEmbeddingProjectKeys(ctx, "")
 	if err != nil {
 		t.Fatalf("fill: %v", err)
 	}
@@ -351,22 +421,170 @@ func waitForALockWaiter(t *testing.T, database *Store, bound time.Duration) bool
 	return false
 }
 
-// The swap refuses, and changes nothing, when the copy holds fewer rows than embeddings.
-func TestTheSwapRefusesACopyThatHoldsFewerRows(t *testing.T) {
+// partitionCopyShortLine is the line PartitionEmbeddings writes when the copy's count and
+// embeddings' disagree.
+const partitionCopyShortLine = "dispatch: the embeddings partition copy does not hold the rows embeddings holds, so it is emptied and copied again: a write reached one table and not the other, as a write made as a replica, with the mirror's trigger disabled or by hand does"
+
+// A copy that holds fewer rows than embeddings - a row taken out of it by a write the mirror did
+// not see - is found by the count the fill makes before it takes any lock, emptied and copied
+// again, and swapped in whole, in the same pass: the swapped-in table holds what embeddings held.
+// And finding it holds no reader: a reader of embeddings holds its ACCESS SHARE lock across the
+// pass, and the fill says the copy is short while that reader still holds it, which a fill that
+// took embeddings' ACCESS EXCLUSIVE lock to count could not do before the reader let go. The
+// reader lets go once the line is written, so the swap that follows takes its locks.
+func TestASwapThatFindsTheCopyShortCopiesAgainWithoutHoldingAReader(t *testing.T) {
 	ctx := context.Background()
 	database, _ := openPartitionTestStore(t, 2)
+	before := embeddingsContent(t, database, "embeddings")
 	execAll(t, database,
 		`delete from embeddings_partitioned where id = 'PARTA-1'`,
 		`update embeddings_partitioned_copy set done = true`,
 	)
-	_, err := database.FillEmbeddingProjectKeys(ctx)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "the copy is not complete") {
-		t.Fatalf("fill over a short copy = %v, want the swap's refusal", err)
+	reader, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback(ctx)
+	var held int
+	if err := reader.QueryRow(ctx, `select count(*) from embeddings`).Scan(&held); err != nil {
+		t.Fatalf("read embeddings as a reader that stays open: %v", err)
+	}
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	filled := make(chan error, 1)
+	go func() {
+		_, err := database.FillEmbeddingProjectKeys(ctx, "")
+		filled <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(loggedLines(records, partitionCopyShortLine)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the fill did not say the copy is short while a reader of embeddings held its lock: it took embeddings' lock before it counted, which queues every reader behind it")
+		}
+		select {
+		case err := <-filled:
+			t.Fatalf("the fill ended (%v) before it said the copy is short", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if err := reader.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-filled; err != nil {
+		t.Fatalf("fill over a short copy = %v, want it copied again and swapped in", err)
+	}
+	requirePartitioned(t, database, true)
+	if after := embeddingsContent(t, database, "embeddings"); !slices.Equal(after, before) {
+		t.Errorf("the swapped-in table holds %d rows that differ from the %d stored before the copy", len(after), len(before))
+	}
+	short := oneLine(t, records, partitionCopyShortLine)
+	short.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "copy_rows" && attr.Value.Int64() != int64(held-1) || attr.Key == "embeddings_rows" && attr.Value.Int64() != int64(held) {
+			t.Errorf("the short copy's line says %s=%v, want embeddings %d rows and the copy %d", attr.Key, attr.Value, held, held-1)
+		}
+		return true
+	})
+	oneLine(t, records, partitionSwappedLine)
+}
+
+// A copy that still disagrees after it is copied again - here every copy of PARTA-1 is dropped
+// as it lands, so the two counts differ however often it is copied - ends the pass with an error
+// and leaves the copy emptied, its cursor at the start, and embeddings as it was; once nothing
+// drops the row, the next pass copies it whole and swaps it in.
+func TestACopyThatDisagreesTwiceIsCopiedAgainByTheNextPass(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 2)
+	before := embeddingsContent(t, database, "embeddings")
+	execAll(t, database,
+		`create function drop_parta_1() returns trigger language plpgsql as $$
+		   begin if new.id = 'PARTA-1' then return null; end if; return new; end $$`,
+		`create trigger drop_parta_1 before insert on embeddings_project_parta for each row execute function drop_parta_1()`,
+		`delete from embeddings_partitioned where id = 'PARTA-1'`,
+		`update embeddings_partitioned_copy set done = true`,
+	)
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	_, err := database.FillEmbeddingProjectKeys(ctx, "")
+	if err == nil || !strings.Contains(err.Error(), "twice in a row") {
+		t.Fatalf("fill over a copy that disagrees every time = %v, want the error that it disagreed twice", err)
+	}
+	if lines := loggedLines(records, partitionCopyShortLine); len(lines) != 2 {
+		t.Errorf("the fill said the copy is short %d times, want twice", len(lines))
 	}
 	requirePartitioned(t, database, false)
-	if done, err := database.EmbeddingProjectKeyFillDone(ctx); err != nil || done {
-		t.Errorf("EmbeddingProjectKeyFillDone = %t, %v, want false while embeddings is not swapped", done, err)
+	var copied int
+	var kind, id string
+	var done bool
+	if err := database.Pool.QueryRow(ctx, `select (select count(*) from embeddings_partitioned), kind, id, done from embeddings_partitioned_copy`).
+		Scan(&copied, &kind, &id, &done); err != nil {
+		t.Fatal(err)
+	}
+	if copied != 0 || kind != "" || id != "" || done {
+		t.Errorf("after the second disagreement the copy holds %d rows and its cursor reads (%q, %q, done %t), want it emptied and at the start", copied, kind, id, done)
+	}
+	execAll(t, database, `drop trigger drop_parta_1 on embeddings_project_parta`)
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
+		t.Fatalf("the next pass, with nothing dropping the row = %v, want it copied and swapped in", err)
+	}
+	requirePartitioned(t, database, true)
+	if after := embeddingsContent(t, database, "embeddings"); !slices.Equal(after, before) {
+		t.Errorf("the swapped-in table holds %d rows that differ from the %d stored before the copy", len(after), len(before))
+	}
+}
+
+// releasedCoverageInsert is the coverage pass's insert of the release before this one
+// (legion-envoy-v32.33.0, embedqueue/coverage.go:214), reduced to one row: its conflict target
+// is embeddings' key before the swap, (kind, id), which the swap replaces.
+const releasedCoverageInsert = `insert into embeddings (kind, id, text_snapshot, content_hash)
+	select 'issue', 'PARTA-1', 'x', 'x' on conflict (kind, id) do nothing`
+
+// The swap waits while any live server process serves another commit than the one running it:
+// the registry records commits and not their order, and a process of the release before, whose
+// coverage insert targets (kind, id), cannot run once the swap has replaced that key. So with a
+// live process of another commit registered the fill copies and does not swap, answering
+// ErrEmbeddingsSwapWaits naming that commit, and the released insert still plans; a process of
+// the same commit, or one whose heartbeat lapsed past the registry's live window, holds nothing,
+// and the swap that follows leaves the released insert failing as the gate says it would.
+func TestTheSwapWaitsWhileALiveProcessServesAnotherCommit(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 2)
+	register := func(commit string, age time.Duration) string {
+		t.Helper()
+		var instance string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into server_processes (instance, commit, signing_keys, heartbeat_at)
+			values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2))
+			returning instance::text`, commit, age.Seconds()).Scan(&instance); err != nil {
+			t.Fatalf("register a process of %q: %v", commit, err)
+		}
+		return instance
+	}
+	const own, earlier = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	register(own, 0)
+	other := register(earlier, 0)
+	register("3333333333333333333333333333333333333333", EmbeddingsSwapLiveWindow+time.Second)
+	_, err := database.FillEmbeddingProjectKeys(ctx, own)
+	if !errors.Is(err, ErrEmbeddingsSwapWaits) || !strings.Contains(err.Error(), earlier) {
+		t.Fatalf("fill beside a live process of %s = %v, want ErrEmbeddingsSwapWaits naming it", earlier, err)
+	}
+	if strings.Contains(err.Error(), "3333") {
+		t.Errorf("the wait names a process whose heartbeat lapsed past the live window: %v", err)
+	}
+	requirePartitioned(t, database, false)
+	var done bool
+	if err := database.Pool.QueryRow(ctx, `select done from embeddings_partitioned_copy`).Scan(&done); err != nil || !done {
+		t.Errorf("the copy reads done %t (%v) while the swap waits, want the copy made", done, err)
+	}
+	execAll(t, database, releasedCoverageInsert)
+	execAll(t, database, fmt.Sprintf(`delete from server_processes where instance = '%s'`, other))
+	if err := database.PartitionEmbeddings(ctx, own); err != nil {
+		t.Fatalf("partition with every live process serving %s = %v, want the swap", own, err)
+	}
+	requirePartitioned(t, database, true)
+	_, err = database.Pool.Exec(ctx, releasedCoverageInsert)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42P10" {
+		t.Errorf("the released coverage insert after the swap = %v, want SQLSTATE 42P10, which is why the swap waits", err)
 	}
 }
 
@@ -403,7 +621,7 @@ func TestEveryProjectHasItsPartitionAndARowOfNoProjectThatExistsIsRefused(t *tes
 		}
 	}
 	refused("before the swap")
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	refused("after the swap")
@@ -517,7 +735,7 @@ func TestAProjectWrittenAsAReplicaOrBesideItsIssueHasItsPartition(t *testing.T) 
 		`insert into embeddings (kind, id, text_snapshot, content_hash, project_key) values ('issue', 'BEFT-1', 'An issue', 'h', 'BEFT')`,
 		`alter table embeddings enable trigger user`,
 	)
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("partition embeddings over a project with no partition: %v", err)
 	}
 	if stored := partitionOf(t, database, "issue", "BEFT-1"); stored != "embeddings_project_beft" {
@@ -608,7 +826,7 @@ func TestCensusAdmitsThePartitionMigrationsOverALargeEmbeddings(t *testing.T) {
 func TestTheCensusStillGuardsEmbeddingsOnceItIsPartitioned(t *testing.T) {
 	ctx := context.Background()
 	database, _ := openPartitionTestStore(t, 50)
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("partition embeddings: %v", err)
 	}
 	requirePartitioned(t, database, true)

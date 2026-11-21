@@ -299,17 +299,19 @@ func requireHiddenVectorsChangeNothing(t *testing.T, reader hnswReader, shape hn
 
 // hnswSeed is verification v16's seed with the fake embedder answering queryVector() for
 // hnswQuery and hnswVisible issues of the project reader sees at cosine 0.60 down to 0.50 from it,
-// placed by reader.layout, each embedded as embedqueue would have embedded it, on shape. The
-// partitioned shape is the pass a deployment's boot runs (store.FillEmbeddingProjectKeys), over
-// the rows already written: it copies them into the table partitioned by project and swaps it in,
-// so every hidden vector written after it is written to the partitioned table.
+// placed by reader.layout, each embedded as embedqueue would have embedded it, on shape. The seed
+// is written to the table a deployment holds before its fill's swap (storetest.OpenUnpartitioned),
+// so the one-graph shape is that table as it stands, and the partitioned shape is the pass a
+// deployment's boot runs (store.FillEmbeddingProjectKeys) over the rows already written: it copies
+// them into the table partitioned by project and swaps it in, so every hidden vector written
+// after it is written to the partitioned table.
 func hnswSeed(t *testing.T, reader hnswReader, shape hnswShape) privateSeed {
 	t.Helper()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{hnswQuery: queryVector()}}
-	seed := seedPrivateProjectWith(t, testServerOptions{embedder: embedder})
+	seed := seedPrivateProjectWith(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	hnswIssues(t, seed, reader.visible, 1001, hnswVisible, 0.60, 0.50, reader.layout)
 	if shape == hnswPartitioned {
-		if _, err := seed.database.FillEmbeddingProjectKeys(t.Context()); err != nil {
+		if _, err := seed.database.FillEmbeddingProjectKeys(t.Context(), ""); err != nil {
 			t.Fatalf("partition embeddings by project: %v", err)
 		}
 		if _, err := seed.database.Pool.Exec(t.Context(), `analyze embeddings`); err != nil {

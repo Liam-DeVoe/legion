@@ -34,7 +34,7 @@ func TestCreatingAProjectGivesItItsPartitionOfEmbeddings(t *testing.T) {
 		t.Fatal("PARTN was created with no partition of embeddings")
 	}
 	create("PARTN", http.StatusConflict)
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("partition embeddings: %v", err)
 	}
 

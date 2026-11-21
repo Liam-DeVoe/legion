@@ -224,7 +224,7 @@ func (s *Store) EmbeddingProjectKeyFillDone(ctx context.Context) (bool, error) {
 
 // FillEmbeddingProjectKeys labels the embeddings rows stored before 20261109120000 added
 // project_key, and answers how many of them gained a project; then it moves embeddings onto the
-// table partitioned by that project (partitionEmbeddings). The boot starts it in the background
+// table partitioned by that project (PartitionEmbeddings). The boot starts it in the background
 // under a lease (api.RunEmbeddingProjectKeyFill): each half is one to two hours on a deployment
 // of a million vectors (EmbeddingProjectKeyBatch, EmbeddingPartitionCopyBatch), and until the
 // labelling has recorded itself done an unlabelled row is invisible to the column's own
@@ -234,12 +234,22 @@ func (s *Store) EmbeddingProjectKeyFillDone(ctx context.Context) (bool, error) {
 // meaningProjectScope), the server serves while the pass runs, and every batch moves rows onto
 // the predicate the column exists for. It answers an error, and the runner tries again, until
 // both halves are done.
-func (s *Store) FillEmbeddingProjectKeys(ctx context.Context) (int64, error) {
+//
+// What embeddings is, in order. Before the swap it is the table 0072 made, keyed (kind, id): a
+// `before insert` trigger labels a row that names no project from its owner (20261110064913),
+// and 20261120105818's mirror trigger writes every write of it into embeddings_partitioned as
+// well. Once the labelling's cursor reads done, the copy has carried every stored row over and
+// every live process serves buildCommit, this process's own commit, embeddings_swap_in_partitioned
+// swaps embeddings_partitioned in under embeddings' own name: list-partitioned by project_key,
+// keyed (kind, id, project_key), and labelled by an `after insert` trigger that moves a row of no
+// project into its owner's partition. The runner tries again every five minutes until the
+// labelling's cursor reads done and embeddings is partitioned (EmbeddingProjectKeyFillDone).
+func (s *Store) FillEmbeddingProjectKeys(ctx context.Context, buildCommit string) (int64, error) {
 	labelled, err := s.labelEmbeddingProjectKeys(ctx)
 	if err != nil {
 		return labelled, err
 	}
-	return labelled, s.partitionEmbeddings(ctx)
+	return labelled, s.PartitionEmbeddings(ctx, buildCommit)
 }
 
 // labelEmbeddingProjectKeys is FillEmbeddingProjectKeys' first half, the labelling.
@@ -355,7 +365,48 @@ func (s *Store) embeddingsPartitioned(ctx context.Context) (bool, error) {
 
 const embeddingsPartitionedQuery = `select relkind = 'p' from pg_class where oid = 'embeddings'::regclass`
 
-// partitionEmbeddings is FillEmbeddingProjectKeys' second half: it copies every row of
+// ErrEmbeddingsSwapWaits is the partition swap waiting for the fleet to serve one build: the copy
+// is done, and PartitionEmbeddings answers it, wrapped around the commits of the live processes
+// that serve another build than the one running the swap, instead of swapping. The runner logs it
+// and tries again at its interval (api.RunEmbeddingProjectKeyFill).
+//
+// Why it waits. The swap replaces embeddings' key (kind, id) with (kind, id, project_key), since a
+// partitioned table's unique key must hold its partition key, and a build before this one inserts
+// its coverage rows with `on conflict (kind, id) do nothing` (embedqueue/coverage.go in
+// legion-envoy-v32.33.0 and earlier), which Postgres refuses when it plans the statement once no
+// unique key on (kind, id) alone is left (SQLSTATE 42P10). A partitioned table cannot carry that
+// key, so no form of the swap keeps that statement working. The registry records each process's
+// commit, not which release came first, so the swap cannot tell an earlier build from a later
+// one: it runs only while every live process serves the commit of the process running it, and a
+// fleet serving two commits, a roll or a rollback in progress, holds it. What a rollback past the
+// swap costs is the same statement failing, and cmd/dispatch/README.md ("Database migrations")
+// says what that build then does. An unstamped process (the empty commit) serves a build no commit
+// names: beside a stamped one it is another commit and holds the swap, and an unstamped process
+// swaps beside unstamped ones alone, which is a test's or a local server's fleet, since an image
+// build always stamps its commit (packages/envoy/docker/Dockerfile refuses anything but a full
+// sha).
+var ErrEmbeddingsSwapWaits = errors.New("the embeddings partition swap waits while a live process serves another commit")
+
+// EmbeddingsSwapLiveWindow is how recent a server_processes heartbeat must be for the swap to
+// count its process as live: the registry's live window (processes.LiveWindow, which this package
+// cannot import, since processes imports it; api's TestTheSwapReadsTheFleetOnTheRegistrysLiveWindow
+// holds the two equal), so the swap reads the fleet as every other decision over it does.
+const EmbeddingsSwapLiveWindow = 15 * time.Second
+
+// embeddingsSwapOtherCommitsQuery is the commits of the live processes of server_processes that
+// serve another commit than $1, the swapping process's own, each once, an unstamped process's empty one
+// among them. $2 is EmbeddingsSwapLiveWindow in seconds.
+const embeddingsSwapOtherCommitsQuery = `
+	select coalesce(array_agg(distinct commit order by commit), '{}') from server_processes
+	 where commit <> $1
+	   and heartbeat_at > now() - make_interval(secs => $2)`
+
+// embeddingsCopyCountsQuery counts both tables in one statement, so in one snapshot: the mirror
+// writes both in the writer's own transaction, so a snapshot sees equal counts whenever every
+// write reached both, and it takes no lock beyond the ACCESS SHARE every read takes.
+const embeddingsCopyCountsQuery = `select (select count(*) from embeddings), (select count(*) from embeddings_partitioned)`
+
+// PartitionEmbeddings is FillEmbeddingProjectKeys' second half: it copies every row of
 // embeddings into embeddings_partitioned, the table 20261120105330 built beside it, and then
 // swaps the two (embeddings_swap_in_partitioned). Writes made while it copies are carried over by
 // 20261120105818's trigger, so once the copy has read the last row the two tables hold the same
@@ -363,14 +414,27 @@ const embeddingsPartitionedQuery = `select relkind = 'p' from pg_class where oid
 // their counts and rename, bounded by pgmigrate.LockTimeout while it waits for them. A swap that
 // waits longer is given up and answered as an error, which the runner tries again.
 //
+// Before it takes those locks it makes two reads that take none. One is the fleet: while a live
+// process serves another commit than buildCommit, this process's own (cmd/dispatch's
+// main.buildCommit, empty in an unstamped build), it answers ErrEmbeddingsSwapWaits naming those
+// commits and swaps nothing (that error says why). The other is both tables' counts in one
+// snapshot (embeddingsCopyCountsQuery). Counts that differ mean a write reached one table and not
+// the other - one made as a replica, or with the mirror's trigger disabled, or by hand, none of
+// which fires the mirror - and no later pass would make them agree, so it says so and empties
+// the copy and copies again (resetEmbeddingsCopy), once in the same call; a second disagreement
+// empties it and answers an error, and the next try copies again. So a disagreement costs a copy
+// and holds no reader, where taking the locks to find it held every read of embeddings for up to
+// the lock wait on each try.
+//
 // A database whose embeddings is partitioned already costs one catalog read. Before it copies, it
 // gives every project that has none its partition (embeddings_ensure_project_partition): a
 // project written with its table's triggers off has none, and the copy of its rows would be
 // refused. The copy resumes from its cursor (embeddings_partitioned_copy), so a process killed
 // mid-copy costs the next try the batch it was in. It logs as the labelling does: a line that it
 // began and where from, one every embeddingProjectKeyProgressEvery while it copies, one when the
-// copy finished, and one when embeddings is swapped, with how long the swap held the two tables.
-func (s *Store) partitionEmbeddings(ctx context.Context) error {
+// copy finished, one when the counts disagree, and one when embeddings is swapped, with how long
+// the swap held the two tables.
+func (s *Store) PartitionEmbeddings(ctx context.Context, buildCommit string) error {
 	partitioned, err := s.embeddingsPartitioned(ctx)
 	if err != nil {
 		return err
@@ -388,33 +452,99 @@ func (s *Store) partitionEmbeddings(ctx context.Context) error {
 	if _, err := s.Pool.Exec(ctx, `select embeddings_ensure_project_partition(key) from projects order by key`); err != nil {
 		return fmt.Errorf("give every project its partition of embeddings before the copy: %w", err)
 	}
-	if !done {
-		started := time.Now()
-		slog.Info("dispatch: the embeddings partition copy began",
-			"from_kind", fromKind, "from_id", fromID, "batch", EmbeddingPartitionCopyBatch)
-		// rows is every row the copy read, and inserted the rows of them the mirror had not
-		// carried over already: on a database that took writes while the copy ran, inserted is
-		// smaller, and the two together say how much of the table the copy itself moved.
-		var rows, inserted, batches int64
-		said := started
-		for !done {
-			var read, wrote int64
-			if read, wrote, done, err = s.copyEmbeddingsBatch(ctx); err != nil {
+	for attempt := 1; ; attempt++ {
+		if !done {
+			if err := s.copyEmbeddings(ctx, fromKind, fromID); err != nil {
 				return err
 			}
-			rows += read
-			inserted += wrote
-			batches++
-			if now := time.Now(); !done && now.Sub(said) >= embeddingProjectKeyProgressEvery {
-				said = now
-				slog.Info("dispatch: the embeddings partition copy is copying",
-					"rows", rows, "inserted", inserted, "batches", batches, "elapsed", now.Sub(started))
-			}
 		}
-		slog.Info("dispatch: the embeddings partition copy finished",
-			"rows", rows, "inserted", inserted, "batches", batches, "duration", time.Since(started))
+		var others []string
+		if err := s.Pool.QueryRow(ctx, embeddingsSwapOtherCommitsQuery, buildCommit, EmbeddingsSwapLiveWindow.Seconds()).Scan(&others); err != nil {
+			return fmt.Errorf("read the commits the live server processes serve: %w", err)
+		}
+		if len(others) > 0 {
+			return fmt.Errorf("%w: this process serves %q, and live processes of server_processes serve %q",
+				ErrEmbeddingsSwapWaits, buildCommit, others)
+		}
+		var stored, copied int64
+		if err := s.Pool.QueryRow(ctx, embeddingsCopyCountsQuery).Scan(&stored, &copied); err != nil {
+			return fmt.Errorf("count embeddings and its partitioned copy: %w", err)
+		}
+		if stored == copied {
+			break
+		}
+		slog.Warn("dispatch: the embeddings partition copy does not hold the rows embeddings holds, so it is emptied and copied again: a write reached one table and not the other, as a write made as a replica, with the mirror's trigger disabled or by hand does",
+			"embeddings_rows", stored, "copy_rows", copied, "attempt", attempt)
+		if err := s.resetEmbeddingsCopy(ctx); err != nil {
+			return err
+		}
+		if attempt == 2 {
+			return fmt.Errorf("the embeddings partition copy disagreed with embeddings (%d rows against %d) twice in a row: it is emptied, and the next try copies it again", copied, stored)
+		}
+		fromKind, fromID, done = "", "", false
 	}
 	return s.swapInEmbeddingPartitions(ctx)
+}
+
+// copyEmbeddings copies every row of embeddings above the cursor (fromKind, fromID) into
+// embeddings_partitioned, batch by batch (copyEmbeddingsBatch), and logs that it began, its
+// progress and that it finished.
+func (s *Store) copyEmbeddings(ctx context.Context, fromKind, fromID string) error {
+	started := time.Now()
+	slog.Info("dispatch: the embeddings partition copy began",
+		"from_kind", fromKind, "from_id", fromID, "batch", EmbeddingPartitionCopyBatch)
+	// rows is every row the copy read, and inserted the rows of them the mirror had not carried
+	// over already: on a database that took writes while the copy ran, inserted is smaller, and
+	// the two together say how much of the table the copy itself moved.
+	var rows, inserted, batches int64
+	said := started
+	for done := false; !done; {
+		read, wrote, finished, err := s.copyEmbeddingsBatch(ctx)
+		if err != nil {
+			return err
+		}
+		done = finished
+		rows += read
+		inserted += wrote
+		batches++
+		if now := time.Now(); !done && now.Sub(said) >= embeddingProjectKeyProgressEvery {
+			said = now
+			slog.Info("dispatch: the embeddings partition copy is copying",
+				"rows", rows, "inserted", inserted, "batches", batches, "elapsed", now.Sub(started))
+		}
+	}
+	slog.Info("dispatch: the embeddings partition copy finished",
+		"rows", rows, "inserted", inserted, "batches", batches, "duration", time.Since(started))
+	return nil
+}
+
+// resetEmbeddingsCopy empties embeddings_partitioned, every partition of it, and moves the copy's
+// cursor back to the start, in one transaction waiting at most pgmigrate.LockTimeout for its
+// locks. TRUNCATE takes ACCESS EXCLUSIVE on embeddings_partitioned alone, which no read of
+// embeddings touches before the swap, so a reset holds no reader; a write of embeddings waits
+// for it, since the mirror writes the copy in the writer's transaction, for as long as the
+// truncate takes. The mirror goes on writing every later write into the emptied table, and the
+// copy that follows meets those rows and leaves them as the mirror wrote them.
+func (s *Store) resetEmbeddingsCopy(ctx context.Context) error {
+	ctx = WithTransactionTracking(ctx)
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the embeddings partition copy's reset: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range []string{
+		fmt.Sprintf("set local lock_timeout = %d", pgmigrate.LockTimeout.Milliseconds()),
+		"truncate embeddings_partitioned",
+		"update embeddings_partitioned_copy set kind = '', id = '', done = false",
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("reset the embeddings partition copy (%s): %w", statement, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the embeddings partition copy's reset: %w", err)
+	}
+	return nil
 }
 
 // copyEmbeddingsBatch copies the next EmbeddingPartitionCopyBatch rows of embeddings above the
@@ -490,6 +620,13 @@ const copyEmbeddingsBatchQuery = `
 // waiting for the two tables' locks at most pgmigrate.LockTimeout, as a migration waits for its
 // own: while the swap waits for embeddings' ACCESS EXCLUSIVE lock, every read and write of the
 // table queues behind it, and a bound that long is the one a migration already makes them pay.
+//
+// Once it has committed, it analyzes embeddings. Autovacuum analyzes each partition as its rows
+// change, but never a partitioned table itself, so without this the planner would cost every
+// statement over the parent from no statistics of it for good, where the old table had its own.
+// ANALYZE takes SHARE UPDATE EXCLUSIVE, which no read or write waits for, so it holds nothing up;
+// one that fails is logged and the swap stands, since a plan without the parent's statistics is
+// slower, not wrong.
 func (s *Store) swapInEmbeddingPartitions(ctx context.Context) error {
 	ctx = WithTransactionTracking(ctx)
 	tx, err := s.Pool.Begin(ctx)
@@ -508,5 +645,11 @@ func (s *Store) swapInEmbeddingPartitions(ctx context.Context) error {
 		return fmt.Errorf("commit the embeddings partition swap: %w", err)
 	}
 	slog.Info("dispatch: embeddings is partitioned by project: the copy is swapped in", "held", time.Since(started))
+	analyzed := time.Now()
+	if _, err := s.Pool.Exec(ctx, "analyze embeddings"); err != nil {
+		slog.Warn("dispatch: analyzing the swapped-in embeddings failed; the planner reads its partitions' statistics alone until an ANALYZE of embeddings runs", "error", err)
+		return nil
+	}
+	slog.Info("dispatch: embeddings is analyzed after its swap", "duration", time.Since(analyzed))
 	return nil
 }

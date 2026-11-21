@@ -10,9 +10,22 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
+
+// The embeddings partition swap counts a server process as live by the registry's own window
+// (store.EmbeddingsSwapLiveWindow, a copy of processes.LiveWindow, since store cannot import the
+// registry), so it reads the fleet as every other decision over it does: a copy that drifted from
+// the registry's would hold the swap for a process the registry counts gone, or let it run beside
+// one it counts live.
+func TestTheSwapReadsTheFleetOnTheRegistrysLiveWindow(t *testing.T) {
+	if store.EmbeddingsSwapLiveWindow != processes.LiveWindow {
+		t.Fatalf("store.EmbeddingsSwapLiveWindow = %s, want processes.LiveWindow, %s", store.EmbeddingsSwapLiveWindow, processes.LiveWindow)
+	}
+}
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
 // kinds the block-index tick's window arm writes (refs.WriteItemWindows,
@@ -106,7 +119,9 @@ func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
 func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
 	const project = "FILL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	// The labelling runs before the swap: on the partitioned table the unlabel below moves each row
+	// into the partition of no project, whose label trigger labels it again.
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	issue := createInteractionIssue(t, handler, project, "A fill subject", "Body text.")
 	createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to label."}, "alice")
 	createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message to label."}, "alice")
@@ -126,7 +141,7 @@ func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
 		t.Fatalf("unlabel the stored rows: %v", err)
 	}
 
-	labelled, err := database.FillEmbeddingProjectKeys(ctx)
+	labelled, err := database.FillEmbeddingProjectKeys(ctx, "")
 	if err != nil {
 		t.Fatalf("label the stored rows: %v", err)
 	}
@@ -150,7 +165,7 @@ func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
 	if !done {
 		t.Error("the fill did not record itself finished, so every later boot would read the table again")
 	}
-	again, err := database.FillEmbeddingProjectKeys(ctx)
+	again, err := database.FillEmbeddingProjectKeys(ctx, "")
 	if err != nil {
 		t.Fatalf("run the finished fill again: %v", err)
 	}
@@ -186,7 +201,8 @@ func fillRetryEvery(t *testing.T, every time.Duration) {
 func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolderDies(t *testing.T) {
 	const project = "LEAS"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	// Before the swap, as TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn says why.
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	issue := createInteractionIssue(t, handler, project, "A leased fill", "Body text.")
 	createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to label."}, "alice")
 	uploadSearchDocument(t, handler, issue.Key, "notes.md", "A document to label.\n")
@@ -242,7 +258,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
+		RunEmbeddingProjectKeyFill(fillCtx, database, leases, "")
 	}()
 
 	// Twenty of its retries pass while the lease is held elsewhere, and it labels nothing in
@@ -345,7 +361,7 @@ func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
+		RunEmbeddingProjectKeyFill(fillCtx, database, leases, "")
 	}()
 	select {
 	case <-returned:

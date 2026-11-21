@@ -15,9 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -307,7 +305,7 @@ func TestPartitionEmbeddingsOnBenchCorpus(t *testing.T) {
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 	started = time.Now()
-	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
 		t.Fatalf("fill: %v", err)
 	}
 	t.Logf("bench partition: the fill's pass took %v", time.Since(started))
@@ -361,7 +359,7 @@ func TestMeaningSearchOnBenchCorpus(t *testing.T) {
 	for i, vector := range queries {
 		embedder.vectors[benchQueryText(i)] = vector
 	}
-	handler := newBenchMeaningHandler(t, database, embedder)
+	handler := newCorpusServer(t, database, embedder)
 	widths := benchWidths(t)
 	built := searchMeaningScan
 	t.Cleanup(func() { searchMeaningScan = built })
@@ -853,34 +851,4 @@ func benchExactNearest(t *testing.T, database *store.Store, vector []float32, li
 		t.Fatal(err)
 	}
 	return items
-}
-
-// newBenchMeaningHandler is newCorpusSearchHandler's server with embedder configured, so its
-// searches run the meaning statement.
-func newBenchMeaningHandler(t *testing.T, database *store.Store, embedder embed.Embedder) http.Handler {
-	t.Helper()
-	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
-	})
-	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
-	deps, err := NewDeps(DepsInput{
-		Store:       database,
-		Identity:    headerIdentity(database),
-		AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL:   "https://dispatch.example",
-		Docs:        documentService,
-		Events:      broker,
-		Embedder:    embedder,
-	})
-	if err != nil {
-		t.Fatalf("create bench API dependencies: %v", err)
-	}
-	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
 }

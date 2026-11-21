@@ -38,9 +38,10 @@
 -- it creates: its census answers 0 whatever embeddings holds.
 -- 20261120105818 mirrors every later write of embeddings into it; store.FillEmbeddingProjectKeys,
 -- the leased pass the boot already starts (api.RunEmbeddingProjectKeyFill), copies the stored
--- rows in committed batches and then calls embeddings_swap_in_partitioned, which drops the old
--- table and renames this one in one short transaction. Until the swap every reader reads the old
--- table, by the same name, as before.
+-- rows in committed batches and then, once no process of an earlier build is in the fleet
+-- (server_processes.partitioned_embeddings, 20261121074019), calls
+-- embeddings_swap_in_partitioned, which drops the old table and renames this one in one short
+-- transaction. Until the swap every reader reads the old table, by the same name, as before.
 create table embeddings_partitioned (
   kind text not null,
   id text not null,
@@ -270,7 +271,9 @@ $$;
 -- copy's progress row, renames the new table and its indexes to the old names, installs the
 -- label trigger above, and points the two enqueue functions at the new key. It refuses, changing
 -- nothing, when the two tables do not hold the same number of rows, and does nothing when
--- embeddings is partitioned already.
+-- embeddings is partitioned already. The caller counts both tables without these locks first
+-- and empties and copies again on a difference (store.PartitionEmbeddings), so this count under
+-- the locks refuses only a write that bypassed the mirror in the moment between the two.
 create function embeddings_swap_in_partitioned() returns void
 language plpgsql as $$
 declare
@@ -285,7 +288,8 @@ begin
   select count(*) into v_copied from embeddings_partitioned;
   if v_stored <> v_copied then
     raise exception 'embeddings holds % rows and embeddings_partitioned % rows: the copy is not complete', v_stored, v_copied
-      using errcode = 'P0001';
+      using errcode = 'P0001',
+            hint = 'A write reached one table and not the other (made as a replica, with the mirror''s trigger disabled, or by hand); the fill counts both again on its next try and empties and copies the copy again where they still differ.';
   end if;
 
   drop table embeddings;

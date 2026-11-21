@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -73,5 +75,64 @@ func TestAMeaningStatementReadsOnlyThePartitionsItsReaderSees(t *testing.T) {
 	generic = append(generic, "set local plan_cache_mode = force_generic_plan")
 	if read := readUnder(generic); !slices.Contains(read, "embeddings_project_priv") {
 		t.Errorf("alice's meaning statement run on a generic plan read %v, which leaves out PRIV's partition: the check above proves nothing", read)
+	}
+}
+
+// The related check's leg over the other projects (relatedOtherProjectsSQL) plans only the
+// partitions of embeddings of the projects its writer sees and the one of no project, as search's
+// arms do: alice, who does not see PRIV, has her other-projects statement planned with the meaning
+// scan's settings, and its plan names PUB's partition and no partition of PRIV's. The plan is what
+// is read, not the statement's statistics, since the leg reads nothing of a partition holding no
+// answered question and its statistics would then say nothing of what it walks. The control is the
+// same statement planned generically, as a cached statement settles on from its sixth run, which
+// cannot read the viewer and names PRIV's partition: a reading blind to the plan would fail there.
+func TestTheOtherProjectsLegPlansOnlyThePartitionsItsWriterSees(t *testing.T) {
+	seed := hnswSeed(t, hnswAlice, hnswPartitioned)
+	alice := model.Actor{Kind: "user", ID: seedAlice, Viewer: &model.Viewer{
+		Person: seedAlice, Open: true, Sees: []string{seedPublic}, AnyPrivate: true,
+	}}
+	arguments := []any{embed.Literal(queryVector()), "ELSEWHERE", seed.deps.Embedder.Identity(),
+		searchMeaningFloor, contracts.SearchKindDepth, relatedViewer(alice)}
+	planUnder := func(settings []string) string {
+		t.Helper()
+		ctx := context.Background()
+		tx, err := seed.database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		for _, setting := range settings {
+			if _, err := tx.Exec(ctx, setting); err != nil {
+				t.Fatalf("%s: %v", setting, err)
+			}
+		}
+		rows, err := tx.Query(ctx, "explain (costs off) "+relatedOtherProjectsSQL, arguments...)
+		if err != nil {
+			t.Fatalf("explain the other-projects leg: %v", err)
+		}
+		var plan []string
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, line)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("explain the other-projects leg: %v", err)
+		}
+		return strings.Join(plan, "\n")
+	}
+	plan := planUnder(searchMeaningScan)
+	if !strings.Contains(plan, "embeddings_project_pub") {
+		t.Fatalf("the other-projects leg, planned for alice, names no partition of PUB's, so this row cannot tell a pruned plan from one that reads nothing:\n%s", plan)
+	}
+	if strings.Contains(plan, "embeddings_project_priv") {
+		t.Errorf("the other-projects leg, planned for alice, names PRIV's partition, a project she does not see:\n%s", plan)
+	}
+	generic := slices.DeleteFunc(slices.Clone(searchMeaningScan), func(setting string) bool { return strings.Contains(setting, "plan_cache_mode") })
+	generic = append(generic, "set local plan_cache_mode = force_generic_plan")
+	if plan := planUnder(generic); !strings.Contains(plan, "embeddings_project_priv") {
+		t.Errorf("the other-projects leg planned generically names no partition of PRIV's, so the check above proves nothing:\n%s", plan)
 	}
 }

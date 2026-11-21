@@ -235,11 +235,18 @@ const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::t
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json
-// column for each text as json escapes it as well as raw. Two tables are not searched. Each row
+// column for each text as json escapes it as well as raw. Three tables are not searched. Each row
 // of text_trees is a cache of one text, keyed by that text's digest, which the run deletes for
 // every text it removes or rewrites (forgetTrees) and which belongs to whatever text it was read
 // from otherwise. graph_erasures is the erase's own record, which holds no erased text, and which
-// the run reads nothing of before it writes its row last.
+// the run reads nothing of before it writes its row last. embeddings_partitioned is the copy of
+// embeddings the boot's fill builds until it swaps it in (migrations 20261120105330 and
+// 20261120105818, store.PartitionEmbeddings): each of its rows is a row of embeddings, kept the
+// same by the mirror's trigger in the writer's transaction, so every row of it that holds an
+// erased text is listed under embeddings already, and whatever the run removes or rewrites of
+// embeddings the mirror removes or rewrites of it in the run's own transaction. Listed under its
+// own name it would read as left a row the run in fact removes, since derivedTables knows that
+// row by embeddings' name alone; after the swap no table holds that name.
 func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -269,7 +276,7 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		windowKind, ownerKey, read.document.specIssue(), read.project, histories}
 	held := map[string][]string{}
 	for _, column := range columns {
-		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {
+		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures" || column.table == "embeddings_partitioned") {
 			continue
 		}
 		var arms []string
