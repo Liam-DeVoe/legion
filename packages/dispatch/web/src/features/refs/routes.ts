@@ -29,6 +29,7 @@ export type IssueRoute =
   | ({ key: string; kind: "spec" } & BlockTarget)
   | { key: string; kind: "verification" }
   | { key: string; kind: "plan" }
+  | { key: string; kind: "steps" }
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
   | { key: string; kind: "decisions" }
@@ -163,6 +164,7 @@ export type IssueTab =
   | "spec"
   | "verification"
   | "plan"
+  | "steps"
   | "conversation"
   | "children"
   | "artifacts"
@@ -176,7 +178,7 @@ export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 /** An issue tab whose whole route is the tab itself (`@legion/contracts`'s `PLAIN_ISSUE_TABS`,
  *  which the server reads the same way): no block, no slug, no id. Each one is parsed from the
  *  segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>` and is the tab of
- *  its own name, so the chains below hold the six in one arm rather than one apiece and a seventh
+ *  its own name, so the chains below hold the seven in one arm rather than one apiece and an eighth
  *  tab is that list. The spec, the conversation and the decisions stay out of it: a spec route
  *  carries a block, the conversation is written `log` in a reference and `conversation` in a
  *  path, and the Decisions tab is a view of the issue's `decisions.md`, which a reference names as
@@ -751,9 +753,9 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
     return `${issue}/spec${block}`;
   }
   // An issue's tabs are the issue: the grammar lets only `spec`, `artifact/…`, `ask/…`,
-  // `comment/…` and `message/…` follow an issue key, so the seven forms this once wrote -
-  // verification, plan, activity, children, artifacts, collaborators and the conversation's
-  // `log` - were references the server refused to read.
+  // `comment/…` and `message/…` follow an issue key, so the eight forms this once wrote -
+  // verification, plan, steps, activity, children, artifacts, collaborators and the
+  // conversation's `log` - were references the server refused to read.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
     return issue;
   }

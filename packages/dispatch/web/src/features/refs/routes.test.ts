@@ -656,6 +656,18 @@ test("the collaborators tab owns its path, its reference and its short form", ()
   ).toEqual(route);
 });
 
+test("the steps tab owns its path, its reference and its short form", () => {
+  const route = { key: "CORE-1", kind: "steps" as const };
+
+  expect(parseDispatchReference("dispatch://CORE-1/steps")).toEqual(route);
+  expect(shortForm(route)).toBe("CORE-1 steps");
+  expect(parseIssuePath("/issues/CORE-1/steps")).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/steps"));
+  expect(
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/steps", "https://dispatch.test")
+  ).toEqual(route);
+});
+
 test("the verification tab owns its path, its reference and its short form", () => {
   const route = { key: "CORE-1", kind: "verification" as const };
 
@@ -683,13 +695,14 @@ test("the plan tab owns its path, its reference and its short form", () => {
   ).toEqual(route);
 });
 
-// The seven forms a tab was once written as - `dispatch://CORE-1/verification` and its six
+// The eight forms a tab was once written as - `dispatch://CORE-1/verification` and its seven
 // siblings - are no reference the server reads: only `spec`, `artifact/<slug>`, `ask/<id>`,
 // `comment/<id>` and `message/<id>` follow an issue key in the grammar both readers read. A tab
 // is written as the issue it is a view of, which is what it resolves to anyway.
 test.each([
   "verification",
   "plan",
+  "steps",
   "activity",
   "children",
   "artifacts",
@@ -1196,7 +1209,7 @@ test("routeIsInbox covers every path that renders the Inbox, and not the machine
 // exactly as a session id's is.
 test("a machine path percent-encodes its name and reads it back", () => {
   for (const host of [
-    "sami-devbox",
+    "sand-devbox",
     "example-host-devbox.example-tailnet.ts.net",
     "legion infra/daemon",
     "box%2F1",

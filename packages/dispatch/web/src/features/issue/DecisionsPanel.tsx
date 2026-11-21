@@ -4,6 +4,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
   Decision,
@@ -29,11 +30,12 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { PlainText, usePlainHeadline } from "../refs/plain-text";
+import { PlainText } from "../refs/plain-text";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { decisionHeadingTree } from "./decision-heading";
+import { decisionHeadingTree, useDecisionHeadingWords } from "./decision-heading";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -241,8 +243,8 @@ function ChangeComposer({
 }: {
   documentId: string;
   issueKey: string;
-  /** The decision's heading as plain words (`usePlainHeadline`), which the form and its write
-   *  are named after. */
+  /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
+   *  write are named after. */
   name: string;
   onDone: () => void;
   quote: string;
@@ -252,6 +254,7 @@ function ChangeComposer({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `Change to ${name}`,
+    method: "POST",
     // The decisions document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
@@ -296,7 +299,13 @@ function ChangeComposer({
       />
       {send.error === null ? null : (
         <p className={`text-sm ${dangerText}`} role="alert">
-          {send.error.message}
+          {/* A change the reader stopped may have been posted, and Send is a press of its own,
+              under a key of its own. The error's own words are a composer's, of its Retry. */}
+          {send.error instanceof SendStoppedError
+            ? stoppedWriteNote("your change", "posted", {
+                anew: "Send posts it again as a new comment.",
+              })
+            : send.error.message}
         </p>
       )}
       <div className="flex gap-2">
@@ -413,19 +422,17 @@ function WaitingDecision({
   // against (`pmdoc.FindQuote`). A block drawn from its markdown, with no reading, quotes that
   // markdown (`markdownBlocks`).
   const quote = blocks[0]?.text;
-  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   // The heading as plain words, which the Keep and the Change are named after: a write's label
-  // and a form's name hold no markup. Until the engine has answered, the heading as written,
-  // which is the load state the reading list's `decision-heading-words` accepts.
-  const { reads, text: heading } = usePlainHeadline(headingTree, decision.heading, {
-    source: textSourceOf("artifact", documentId, issueKey),
-    surface: "decision-heading-words",
-  });
-  const name = heading?.text ?? decision.heading;
+  // and a form's name hold no markup (the reading list's `decision-heading-words`).
+  const { reads, words: name } = useDecisionHeadingWords(
+    decision,
+    textSourceOf("artifact", documentId, issueKey)
+  );
   const keep = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `Keep ${name}`,
+    method: "POST",
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -435,7 +442,9 @@ function WaitingDecision({
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
+      // Over any read of the decisions still out, which was asked before the Keep and would put
+      // the decision back as waiting (`replaceQueryData`).
+      replaceQueryData<IssueDecisions>(queryClient, ["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {
@@ -482,7 +491,14 @@ function WaitingDecision({
             </div>
             {keep.error === null ? null : (
               <p className={`text-sm ${dangerText}`} role="alert">
-                {keep.error.message}
+                {/* A Keep the reader stopped may have been made, and Keep is a press of its
+                    own, under a key of its own. */}
+                {keep.error instanceof SendStoppedError
+                  ? // The decision in plain words, as Keep's label: `decision-heading-words`.
+                    stoppedWriteNote(`the Keep of “${name}”`, "made", {
+                      anew: "Pressing Keep again sends a new Keep.",
+                    })
+                  : keep.error.message}
               </p>
             )}
             {changing && quote !== undefined ? (

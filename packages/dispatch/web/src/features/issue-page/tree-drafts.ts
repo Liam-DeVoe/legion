@@ -10,18 +10,16 @@ import type {
   Decision,
   DisplayTree,
   IssueChild,
+  IssueCoverage,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import type { ReferenceNameReading } from "../refs/reference-names";
 import { referenceSpans } from "../refs/reference-spans";
-import {
-  buildDispatchReference,
-  parseDispatchReference,
-  parseNodeReference,
-  shortForm,
-} from "../refs/routes";
+import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
+import { firstWordedBlock } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
@@ -55,10 +53,10 @@ import {
   type NodeType,
   PRESET_NAMES,
 } from "./page-words";
+import { storedReading } from "./stored-reading";
 
 /**
- * One draft node per read of the issue page, for `buildIssueTree` to place
- * (dispatch://INFRA-1196 R4, `dispatch://INFRA-1196/artifact/plan-md#b-t13`).
+ * One draft node per read of the issue page, for `buildIssueTree` to place.
  *
  * Every function here is pure and takes the reads as its input. A builder may enrich a draft an
  * earlier one made - the decisions read names a block of `decisions.md` the document's own blocks
@@ -70,15 +68,16 @@ import {
  * conversation for an ask, a comment and a message, and the one batched reference read for every
  * other block, whose `name` for a block is that block's stored excerpt. No document's text is
  * read, and no request is made per node. Where the read sends the server's reading of those
- * words beside them - every one of these reads does, but for a result - the draft keeps it with
- * the record the words are, which is what the row draws (`TreeNode.tree`).
+ * words beside them - every one of these reads does, a result's (`observed_tree`) included,
+ * though a server of the build before sends none for a result - the draft keeps it with the
+ * record the words are, which is what the row draws (`TreeNode.tree`).
  *
- * The tree is the issue's conversation and what it revealed (dispatch://INFRA-1196 R1, R3): a
- * document, an artifact and a handoff are nodes of the issue and not of its conversation, so no
- * builder here drafts one. A document's typed blocks are drafted without it, under the issue
- * unless the model gives a block a parent of its own (R4). The issue's children are rows of the
- * tree, one group of them where the model places them, which today is under the issue: the page
- * draws no section of them above the outline (the architect's ruling 5 on R12).
+ * The tree is the issue's conversation and what it revealed: a document, an artifact and a
+ * handoff are nodes of the issue and not of its conversation, so no builder here drafts one. A
+ * document's typed blocks are drafted without it, under the issue unless the model gives a block
+ * a parent of its own (R4). The issue's children are rows of the tree, one group of them where
+ * the model places them, which today is under the issue: the page draws no section of them above
+ * the outline.
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -96,9 +95,7 @@ export interface Draft {
   answer?: NodeAnswer;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
-   *  every other draft, a statement of the spec drawn before that read answers among them, which
-   *  is how the review list tells a requirement the coverage read holds from every other
-   *  (`treeDrafts`). */
+   *  every other draft, a statement of the spec drawn before that read answers among them. */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -194,39 +191,106 @@ export interface TreeContext {
 }
 
 /**
- * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
- * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
- * `targetNames` give R1's rule over the words of the reading's first block (`chipLine`, which
- * is `drawnLine(firstLineOf(…))` of what `lineWords` reads), which this module cannot import,
- * since `issue-tree.ts` imports it. Every caller hands one in, so no chip names a block by
- * anything but the line its caller chose: a default would name it by its whole reading.
+ * How `issue` addresses a node: the node a `dispatch://` reference names, as the tree's node ids
+ * write it - the spec, a document, a block of either, an ask, a comment, a message, the issue
+ * itself - and undefined for a reference to another issue or to anything else. It reads only the
+ * issue's key and its spec's slug (`primarySpec`), so a caller that needs a node id and no chip
+ * calls it without building a whole `treeContext`, and `treeContext` addresses nodes by it too,
+ * so the two never differ.
+ */
+export function nodeIdOf(
+  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">
+): (reference: string) => string | undefined {
+  const key = issue.key;
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  return (reference: string): string | undefined => {
+    const route = parseNodeReference(reference);
+    if (route === undefined || !("key" in route) || route.key !== key) return undefined;
+    const block = "block" in route ? route.block : undefined;
+    if (route.kind === "spec") {
+      return block === undefined ? specSlug : blockNodeId(specSlug, block.id);
+    }
+    if (route.kind === "artifact") {
+      return block === undefined ? route.slug : blockNodeId(route.slug, block.id);
+    }
+    if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
+      return route.id;
+    }
+    return route.kind === "issue" ? key : undefined;
+  };
+}
+
+/**
+ * Whether a reference names a statement of `issue` as the review list reads one (R35): a
+ * requirement the coverage read `coverage` holds, each compared as the tree addresses it - the
+ * requirement by the node `addRequirements` draws for it, the reference by `nodeIdOf` - so the
+ * spec's block written short (`spec#b-…`) and by the spec's own slug name the same requirement,
+ * and another issue's address names none. Nothing is one while that read has not answered, and
+ * no other block is one: not a `requirement` block of the spec that read does not hold, which
+ * its row draws as a statement all the same (`Draft.statement`), nor a block of any other
+ * document. It is the one rule both readers of the list read, the tree's `waiting`
+ * (`addDecisions`) and the header's count, whose caller hands it to `waitingOnReader`, so the
+ * count counts the very decisions the tree marks.
+ */
+export function coverageStatements(
+  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,
+  coverage: IssueCoverage | undefined
+): (reference: string) => boolean {
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  const statements = new Set(
+    (coverage?.requirements ?? []).map((requirement) => blockNodeId(specSlug, requirement.block_id))
+  );
+  const nodeIdOfReference = nodeIdOf(issue);
+  return (reference: string): boolean => {
+    const id = nodeIdOfReference(reference);
+    return id !== undefined && statements.has(id);
+  };
+}
+
+/**
+ * The reads as every builder reads them: the tree's (`buildIssueTree`) and the page's published
+ * names (`targetNaming`) both, so a chip and a link name one target by one rule and cannot drift
+ * apart.
  *
- * A chip names its target by the words a reader reads it by, and never by markup:
+ * A chip carries how its target is named (`NodeChip.reading`), and never the words: the page
+ * publishes each reading and the shared reader projects it (`refs/reference-names.tsx`), as a
+ * title drawn over one record, so no word of a name is written by a reader of this page's own,
+ * and markup is never a word of one (R21). The name is the one a link to the target reads (R8),
+ * and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
  *
- * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone. A short
+ * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers
  *   `ambiguous` as well, and its chip carries `ambiguous` so it can draw the reference as
- *   written rather than as a target deleted (dispatch://INFRA-1196 decision 62).
- * - **A block** - the reference names one, or the read answers that its target is one - by
- *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
- *   answered and sent no reading, or one that holds no words, a block of this issue whose
- *   document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`), never
- *   by its id (R22); another issue's block, whose kind no read of this page gives, by `""`. A
- *   block the read has not answered for yet is `""` too, which the chip draws as not yet named
- *   (`NodeChip.answered`). The read's `name` for a block is its stored excerpt, which is the
- *   block's source: a typed block's directive and the markdown its words are written in are
- *   markup and no word of it (R21).
+ *   written rather than as a target deleted.
+ * - **A block** - the reference names one, or the read answers that its target is one - by the
+ *   server's reading of its whole text (`ReferenceTarget.text_tree`), as a link to it titles it
+ *   (R8); a chip names it by the first block of that reading that holds any words instead, so a
+ *   decision's chip is its own heading (`refs/reference-names.tsx`'s `blockLineReading`). Where
+ *   the read answered and sent no reading, or one that holds no words, a block of this issue
+ *   whose document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`),
+ *   never by its id (R22), and so is one whose words project to none (`fallback`); another
+ *   issue's block, whose kind no read of this page gives, by nothing, and a surface reads it
+ *   itself. A block the read has not answered for yet has no name either, which the chip draws
+ *   as not yet named (`NodeChip.answered`). The read's `name` for a block is its stored excerpt,
+ *   which is the block's source: a typed block's directive and the markdown its words are
+ *   written in are markup and no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
+ * - **An issue** - the read answers that its target is one - by its title, which is no markdown,
+ *   read as one text run (`titleReading`), so nothing in it is parsed. The issue and each child
+ *   the issue read lists are named by their whole titles, which that read holds, so their chips
+ *   draw the very title their rows draw. Any other issue is named by the read's name for it,
+ *   which is the first 240 characters of its title (the server's `refs.excerptRunes`). An issue
+ *   the read has not answered for yet has no name, as a block has none.
  * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
  *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
- *   so it is read to plain words (`plainWords`); an issue's and a component's name is a title,
- *   which is no markdown, and is left as the read gives it.
+ *   and the read sends no reading of it, so it is named from the reading of its stored text in
+ *   the shape of the server's (`storedReading`), whose words are the server's for every text that
+ *   holds none of three things (`STORED_TEXT_PARSE`): an HTML comment an agent's comment ends
+ *   with is no word of it. A component's name is a title, which is no markdown, and is drawn as
+ *   the read gives it.
  */
-export function treeContext(
-  reads: IssueTreeReads,
-  lineOf: (reading: DisplayTree) => string
-): TreeContext {
+export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
@@ -247,42 +311,50 @@ export function treeContext(
       }
     }
   }
-  const nodeIdOf = (reference: string): string | undefined => {
-    const route = parseNodeReference(reference);
-    if (route === undefined || !("key" in route) || route.key !== key) return undefined;
-    const block = "block" in route ? route.block : undefined;
-    if (route.kind === "spec") {
-      return block === undefined ? specSlug : blockNodeId(specSlug, block.id);
-    }
-    if (route.kind === "artifact") {
-      return block === undefined ? route.slug : blockNodeId(route.slug, block.id);
-    }
-    if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
-      return route.id;
-    }
-    return route.kind === "issue" ? key : undefined;
-  };
-  const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
+  const nodeIdOfReference = nodeIdOf(reads.issue);
+  // The whole title of the issue and of each child the issue read lists, by its own address:
+  // the names read cuts a title to its first 240 characters, and the issue read holds these
+  // whole, as the rows draw them.
+  const titles = new Map<string, string>([
+    [buildDispatchReference({ key, kind: "issue" }), reads.issue.title],
+    ...(reads.issue.children ?? []).map((child): [string, string] => [
+      buildDispatchReference({ key: child.key, kind: "issue" }),
+      child.title,
+    ]),
+  ]);
+  const readingOf = (
+    reference: string,
+    target: ReferenceTarget | undefined
+  ): ReferenceNameReading | undefined => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
     if (block !== undefined || target?.kind === "block") {
-      const reading = target?.text_tree;
-      const line = reading === undefined ? "" : lineOf(reading);
-      if (line !== "" || target === undefined) return line;
-      const kind = kinds.get(nodeIdOf(reference) ?? "");
-      return kind === undefined ? "" : NODE_TYPE_NAMES[kind];
+      if (target === undefined) return undefined;
+      const kind = kinds.get(nodeIdOfReference(reference) ?? "");
+      const word = kind === undefined ? undefined : NODE_TYPE_NAMES[kind];
+      const whole = target.text_tree;
+      if (whole === undefined || firstWordedBlock(whole) === undefined) {
+        return word === undefined ? undefined : { words: word };
+      }
+      return word === undefined ? { tree: whole } : { fallback: word, tree: whole };
     }
     // Another issue's document is named by no role of this issue's.
     if (route?.kind === "spec") {
-      return documentWord(reads.issue, route.key === key ? spec : undefined);
+      return { words: documentWord(reads.issue, route.key === key ? spec : undefined) };
     }
-    if (route?.kind === "artifact") {
-      return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
+    if (route?.kind === "artifact" && route.block === undefined) {
+      const document = route.key === key ? documents.get(route.slug) : undefined;
+      return { words: documentWord(reads.issue, document) };
     }
-    if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
-      return plainWords(target.name);
+    if (target === undefined) return undefined;
+    if (target.kind === "ask" || target.kind === "comment" || target.kind === "message") {
+      return { tree: storedReading(target.name, target) };
     }
-    return blockWords(target?.name ?? "");
+    if (target.kind === "issue") {
+      return { tree: titleReading(titles.get(reference) ?? target.name) };
+    }
+    const words = blockWords(target.name);
+    return words === "" ? undefined : { words };
   };
   // One chip per reference, made the first time it is asked for: a tree asks once for every
   // citation of a target, and no caller changes a chip - its fields are read-only (`NodeChip`),
@@ -295,11 +367,12 @@ export function treeContext(
       if (held !== undefined) return held;
       const target = names.get(reference);
       const gone = target?.gone ?? false;
+      const reading = gone ? undefined : readingOf(reference, target);
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
         gone,
-        name: gone ? "" : nameOf(reference, target),
+        ...(reading === undefined ? {} : { reading }),
         ref: reference,
       };
       chips.set(reference, chip);
@@ -310,7 +383,7 @@ export function treeContext(
       return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
-    nodeIdOf,
+    nodeIdOf: nodeIdOfReference,
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
     treeOf: (reference: string) => names.get(reference)?.text_tree,
@@ -331,8 +404,7 @@ export function treeContext(
  * documents' blocks by (`useIssueTree.ts`). Where the issue names no id for a part - none
  * (`""`), or a Dispatch older than that part (absent) - no document plays it, and a document
  * flagged `primary` or carrying that part's `role` is named by the page's word for a document:
- * a chip naming "Spec" or "Decisions" opens a document whose blocks the tree reads as that part
- * (dispatch://INFRA-1196 decision 152).
+ * a chip naming "Spec" or "Decisions" opens a document whose blocks the tree reads as that part.
  */
 function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
@@ -363,258 +435,17 @@ export function blockWords(name: string): string {
   return lines.join("\n").trim();
 }
 
-/** A blank line, which ends a paragraph: no mark and no code span reaches past one. A stored
- *  text's blocks are read one at a time between them (`plainWords`, `lineWords`). */
-export const BLANK_LINE = /\n\s*\n/u;
-
-/** One ASCII punctuation character: what a backslash escapes, and what a code span and an
- *  autolink hold that the marks below would otherwise read as marks. */
-const PUNCTUATION = /[!-/:-@[-`{-~]/gu;
-
-/**
- * What markdown reads literally, each where it starts, left to right: a backslash before an
- * ASCII punctuation character, which is that character; a code span, a run of backticks closed
- * by the next run of the same count, which is its content verbatim and inside which a backslash
- * escapes nothing; an autolink, `<https://…>`, which is its URL; and a run of backticks no run
- * of its count closes, which is that run as written. They are one pattern because each decides
- * the others: a backtick a backslash escapes opens no code span, and a backslash inside a code
- * span escapes nothing.
- */
-const LITERAL =
-  /\\([!-/:-@[-`{-~])|(`+)(?!`)([\s\S]*?[^`])\2(?!`)|<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>|`+/gu;
-
-/**
- * The markers a line of a blockquote or a list item opens on, at the start of the line, each
- * container's in turn as they nest: a blockquote's `>` and the one space or tab after it, which
- * markdown allows up to three spaces of indent before, once per quote (`> > deep`); and a
- * bullet (`-`, `+` or `*`) or an ordered marker (one to nine digits and `.` or `)`), which must
- * be followed by a space or a tab, after any indent, since a nested item carries its parent's,
- * with a task box (`[ ]`, `[x]`) after it, which the server's reading holds as the item's state
- * and no word of it. `**bold**` at a line's start opens on no marker, since its first `*` is
- * followed by another and not by white space; nor does what `LITERAL` read, which is held as a
- * stand-in by then, so `1\.` and `\-` stay words.
- */
-const BLOCK_MARKER =
-  /^(?: {0,3}>[ \t]?|[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ \txX]\][ \t]+)?)+/gmu;
-
-/** A heading marker at the start of a line, `#` to `######` and a space, which markdown allows
- *  up to three spaces of indent before, and which a blockquote's or a list item's markers
- *  (`BLOCK_MARKER`) may stand before. */
-const HEADING_MARKER = /^ {0,3}#{1,6}[ \t]+/gmu;
-
-/** An image, `![alt](src)`, whose words the server's reading of it holds none of. */
-const IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
-
-/** A link, `[words](target)`, which reads as its words; its target is no word of the text. */
-const LINK = /\[([^\]]*)\]\([^)]*\)/gu;
-
-/** `**strong**`, which stands wherever it is written. */
-const STAR_STRONG = /\*\*(?=\S)([\s\S]*?\S)\*\*/gu;
-
-/** `__strong__`, which markdown reads only where no letter or digit stands either side of it. */
-const UNDERSCORE_STRONG = /(?<![\p{L}\p{N}])__(?=\S)([\s\S]*?\S)__(?![\p{L}\p{N}])/gu;
-
-/** `~~struck~~`, which stands wherever it is written. */
-const STRUCK = /~~(?=\S)([\s\S]*?\S)~~/gu;
-
-/** `*emphasis*`, which stands wherever it is written. */
-const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
-
-/** `_emphasis_`, which markdown reads only between characters that are no letter or digit, so
- *  `snake_case_name` is one word. */
-const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
-
-/** Each ASCII punctuation character, in code order, as `PUNCTUATION` picks them out of the
- *  printable ASCII characters but the space: the 32 each hold of `Holds` has a stand-in for. */
-const PUNCTUATION_CHARACTERS: readonly string[] =
-  String.fromCharCode(...Array.from({ length: 0x7f - 0x21 }, (_, at) => 0x21 + at)).match(
-    PUNCTUATION
-  ) ?? [];
-
-/** The private-use code points, in the order a text's stand-ins are taken from them: the Basic
- *  Multilingual Plane's area, U+E000 to U+F8FF, then plane 15's and plane 16's. */
-const PRIVATE_USE: readonly (readonly [first: number, last: number])[] = [
-  [0xe000, 0xf8ff],
-  [0xf0000, 0xffffd],
-  [0x100000, 0x10fffd],
-];
-
-/** One private-use character a text holds: an author's own, or a stand-in `Holds` chose. */
-const PRIVATE_USE_CHARACTER = /\p{Co}/gu;
-
-/** One hold's stand-ins: each ASCII punctuation character's (`held`), and the character each
- *  stand-in is held for (`back`). */
-interface Hold {
-  readonly back: ReadonlyMap<string, string>;
-  readonly held: ReadonlyMap<string, string>;
-}
-
-/**
- * The private-use stand-ins one text's `LITERAL` characters are held as while the marks are
- * taken off, in two holds that `plainWords` puts back at two times. An escaped character
- * (`escaped`) is put back before bare addresses are written short, so `see dispatch://CORE-2\.`
- * reads `see CORE-2.`. A code span's content and an autolink's URL (`verbatim`) are put back
- * after, so an address in code stays as its author wrote it, and an autolink's, written short as
- * it is read, is not read again.
- */
-interface Holds {
-  readonly escaped: Hold;
-  readonly verbatim: Hold;
-}
-
-/** The holds of a text `LITERAL` reads nothing of, which hold nothing and put nothing back. */
-const NO_HOLDS: Holds = {
-  escaped: { back: new Map(), held: new Map() },
-  verbatim: { back: new Map(), held: new Map() },
-};
-
-/**
- * The holds of `text`, their stand-ins chosen for it alone: the private-use code points in order
- * (`PRIVATE_USE`), skipping each one the text holds, the escaped hold's 32 first and the verbatim
- * hold's 32 next. A stand-in is so never a character the author wrote, and an author's own
- * private-use character - an icon font's, a pasted terminal glyph - reads as written. Undefined
- * for a text that holds so many private-use characters that fewer than 64 are left free.
- */
-function holdsFor(text: string): Holds | undefined {
-  const free = freePrivateUse(new Set(text.match(PRIVATE_USE_CHARACTER)));
-  const hold = (): Hold | undefined => {
-    const back = new Map<string, string>();
-    const held = new Map<string, string>();
-    for (const character of PUNCTUATION_CHARACTERS) {
-      const standIn = free.next();
-      if (standIn.done === true) return undefined;
-      back.set(standIn.value, character);
-      held.set(character, standIn.value);
-    }
-    return { back, held };
+/** A title as the page reads it: a reading of one paragraph holding the title as one text run,
+ *  so nothing in it is parsed, since a title is no markdown: a parse would read
+ *  `1. Migrate the table` as a list item with no label, and leave out the marks of
+ *  ``Add `x` flag``. The line of the issue and of a child issue is projected from it
+ *  (`issue-tree.ts`'s `lineReading`), and so is the name of a chip naming an issue
+ *  (`treeContext`), so a row and a chip read one title by one rule. */
+export function titleReading(title: string): DisplayTree {
+  return {
+    content: [{ content: [{ text: title, type: "text" }], type: "paragraph" }],
+    type: "doc",
   };
-  const escaped = hold();
-  const verbatim = hold();
-  return escaped === undefined || verbatim === undefined ? undefined : { escaped, verbatim };
-}
-
-/** Each private-use character, in `PRIVATE_USE`'s order, that is none of `taken`. */
-function* freePrivateUse(taken: ReadonlySet<string>): Generator<string, void> {
-  for (const [first, last] of PRIVATE_USE) {
-    for (let point = first; point <= last; point += 1) {
-      const character = String.fromCodePoint(point);
-      if (!taken.has(character)) yield character;
-    }
-  }
-}
-
-/** `text` with each stand-in of `hold` the ASCII character it is held for, and every other
- *  character, an author's own private-use one included, as written. */
-function putBack(text: string, hold: Hold): string {
-  return hold.back.size === 0
-    ? text
-    : text.replace(PRIVATE_USE_CHARACTER, (character) => hold.back.get(character) ?? character);
-}
-
-/**
- * The words of a stored markdown text as a reader reads them, on one line: what a place that
- * draws a stored text as plain words draws, since its marks are markup and no word of it (R21),
- * and a mark after a sentence's end (`today.**`) would hide that end from `firstLineOf`.
- *
- * Each paragraph is read on its own, since no mark pairs across a blank line. What markdown
- * reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`), a code span's
- * content, an autolink's URL, which reads as a link's words read, its address written short - is
- * read first, and each ASCII punctuation character of it is held as a private-use stand-in while
- * the marks are taken off, so no mark is read inside it. The stand-ins are chosen for each text
- * from the private-use code points it does not hold (`holdsFor`) and read back by what each was
- * chosen for, so an author's own private-use character - an icon font's, a pasted terminal
- * glyph - is no stand-in and reads as written. Then a blockquote's and a list item's markers at
- * the start of any line go (`BLOCK_MARKER`), and a heading marker after them, an image goes
- * whole, a link reads as its words, and strong, emphasis and struck marks go until none is left,
- * so nested marks (`***x***`) go too. The escaped characters are put back, and white space
- * collapses to single spaces.
- *
- * Then a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`,
- * decision 95): every place that reads a stored text to plain words draws it on one line - a
- * node's line where the node has no reading (`lineWords`), and the name of a chip naming an
- * ask, a comment or a message (`treeContext`) - and no one-line view draws a raw address (R22).
- * A link already reads as its words, so `[the spec](dispatch://…)` reads `the spec`. Last, the
- * characters of code spans and autolinks are put back, so an address in code reads as its
- * author wrote it, as a rendered body draws it: a code span holding
- * `dispatch read dispatch://CORE-2` keeps its address.
- *
- * A text `LITERAL` reads something of that holds so many private-use characters that fewer than
- * the 64 stand-ins it needs are left free - more than 137,404 of the 137,468 - has nothing to
- * hold its literal characters as, and reads as its own words with white space collapsed and no
- * mark taken off: markup shown is less wrong than characters changed.
- */
-export function plainWords(markdown: string): string {
-  return plainWordsWith(markdown, addressesAsShortForms);
-}
-
-/** The words of a stored markdown text as `plainWords` reads them, with no address written
- *  short: its marks, markers, links, images, escapes and code spans read as they read there, an
- *  author's own private-use character as written, and a bare address and an autolink's URL stay
- *  as written (dispatch://INFRA-1196 decision 140). A caller that names each reference itself
- *  reads these, since a short form leaves it no address to name. */
-export function plainWordsRaw(markdown: string): string {
-  return plainWordsWith(markdown, (words) => words);
-}
-
-/** The words `plainWords` reads, each bare address in them and each autolink's URL written by
- *  `shorten` where `plainWords` writes it short (`addressesAsShortForms`). A text `LITERAL` reads
- *  nothing of holds nothing, so no stand-in is chosen for it and none is put back. */
-function plainWordsWith(markdown: string, shorten: (words: string) => string): string {
-  const holds = markdown.search(LITERAL) === -1 ? NO_HOLDS : holdsFor(markdown);
-  if (holds === undefined) return markdown.replace(/\s+/gu, " ").trim();
-  const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
-    let words = paragraph
-      .replace(LITERAL, (written, escaped?: string, _run?: string, code?: string, url?: string) => {
-        const hold = escaped === undefined ? holds.verbatim : holds.escaped;
-        const literal = escaped ?? code ?? (url === undefined ? undefined : shorten(url));
-        return (
-          literal?.replace(PUNCTUATION, (character) => hold.held.get(character) ?? character) ??
-          written
-        );
-      })
-      .replace(BLOCK_MARKER, "")
-      .replace(HEADING_MARKER, "")
-      .replace(IMAGE, "")
-      .replace(LINK, "$1");
-    for (let marked = ""; marked !== words; ) {
-      marked = words;
-      words = words
-        .replace(STAR_STRONG, "$1")
-        .replace(UNDERSCORE_STRONG, "$1")
-        .replace(STRUCK, "$1")
-        .replace(STAR_EMPHASIS, "$1")
-        .replace(UNDERSCORE_EMPHASIS, "$1");
-    }
-    return putBack(words, holds.escaped);
-  });
-  const words = paragraphs.join(" ").replace(/\s+/gu, " ").trim();
-  return putBack(shorten(words), holds.verbatim);
-}
-
-/**
- * `words` with each bare `dispatch://` address in them written as its target's short form, as a
- * link to it draws it (`shortForm`): `dispatch://CORE-2` reads `CORE-2`, and
- * `dispatch://INFRA-1196/spec#b-r1` reads `INFRA-1196 spec block`. It is for the words a place
- * that draws one line for a node cuts that line from, since no one-line view draws a raw address
- * (dispatch://INFRA-1196 R22, decision 95): the server's reading keeps a bare address in a node's
- * words as a plain text run, which is no link, and a stored text holds it as written, so both
- * meet it.
- *
- * An address is found as the page finds a reference in text (`referenceSpans`), and only the
- * address itself is written short: what `trimReference` cuts off its end stays where it stood, so
- * `see dispatch://CORE-2.` reads `see CORE-2.`. A span that names no target
- * (`parseDispatchReference`) is left as written.
- */
-export function addressesAsShortForms(words: string): string {
-  let shortened = "";
-  let cursor = 0;
-  for (const { start, value } of referenceSpans(words, "dispatch://")) {
-    const route = parseDispatchReference(value);
-    if (route === undefined) continue;
-    shortened += `${words.slice(cursor, start)}${shortForm(route)}`;
-    cursor = start + value.length;
-  }
-  return shortened + words.slice(cursor);
 }
 
 /** Every draft the reads hold, by its node id. */
@@ -641,27 +472,6 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDecisions(drafts, reads, context, asks, changes);
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
-  // What waits for the reader's review is the review list's one rule (R35): the tie to a
-  // statement decides it, and a decision the reader asked to change waits on its agent, not on
-  // the reader (`decision-review.ts`). The list reads a statement as a requirement the coverage
-  // read holds - a draft `addRequirements` gave that read's counts - as the header's count is
-  // handed the coverage read's statements (`waitingOnReader`'s `isStatement`), and not as the
-  // rows read one (`Draft.statement`): a spec's `requirement` block drawn before that read
-  // answers is a statement on its row, and a tie to it still puts no decision on the list until
-  // the read holds it; one of another document is a block and nothing more either way. It is
-  // read once every statement has its draft. Nothing waits on a reader whose login has not
-  // resolved, as `waiting.ts` counts it.
-  for (const decision of reads.decisions?.decisions ?? []) {
-    const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
-    if (draft === undefined) continue;
-    draft.waiting =
-      context.viewer !== undefined &&
-      inReviewList(
-        decision,
-        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined,
-        changes.has(decision.ref)
-      );
-  }
   servePlacements(drafts, context);
   addDocumentChips(drafts, reads, context);
   return drafts;
@@ -726,7 +536,12 @@ function addDocumentChips(
       if (draft.chips.some((chip) => chip.ref === ref)) continue;
       draft.chips = [
         ...draft.chips,
-        { answered: true, gone: false, name: documentWord(reads.issue, artifact), ref },
+        {
+          answered: true,
+          gone: false,
+          reading: { words: documentWord(reads.issue, artifact) },
+          ref,
+        },
       ];
     }
   }
@@ -780,8 +595,8 @@ function blank(id: string, type: NodeType, order: number): Draft {
  * children a document's blocks keep the order they have in it, one document after another.
  *
  * A block plays the part its type names only in the document that plays that part, which the
- * issue read names by its id (`primarySpec`, `roleDocument`; dispatch://INFRA-1196 decision
- * 152): a `requirement` block of the spec is a statement (`Draft.statement`) before the
+ * issue read names by its id (`primarySpec`, `roleDocument`): a `requirement` block of the spec
+ * is a statement (`Draft.statement`) before the
  * coverage read answers as after, and a `check` block of the Verification document is a check,
  * which draws a state. The same block of any other document - a `requirement` in the plan, a
  * `check` in the decisions document - keeps its type and is a block and nothing more: no
@@ -844,10 +659,10 @@ function addDocumentBlocks(
 /**
  * The issue's children, each a node of the tree and a row of the outline, one group of them in
  * the issue read's order: its title as its words, and how it stands, what blocks it, who holds it
- * and its key as the tag drawn from the child itself (the architect's ruling 5 on R12,
- * `IssueChildren.tsx`). The model places a child under the words that filed it once it holds
- * that edge (dispatch://INFRA-1253); today it holds none, so the group sits under the issue. A
- * child's own tree is its own page, so a child holds no node below it.
+ * and its key as the tag drawn from the child itself (`IssueChildren.tsx`). The model places a
+ * child under the words that filed it once it holds that edge; today's reads hold no such edge,
+ * so the group sits under the issue. A child's own tree is its own page, so a child holds no
+ * node below it.
  */
 function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
   const children = reads.issue.children ?? [];
@@ -864,8 +679,8 @@ function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
  * else a node of its own under the issue. An approval request belongs to the document it reviews
  * rather than to the reasoning, so the tree draws none.
  *
- * A person's answer is part of the ask and no node of its own (dispatch://INFRA-1150 R3): it is
- * kept on the ask's draft as the store holds it, which the ask's own row and body draw.
+ * A person's answer is part of the ask and no node of its own: it is kept on the ask's draft as
+ * the store holds it, which the ask's own row and body draw.
  *
  * Answers the node id each ask is drawn under, by the ask's own id, which is how a decision
  * names the question it answers (`Decision.asks`).
@@ -895,8 +710,14 @@ function addAsks(
       draft.options = (ask.options ?? []).map((option) => ({
         ...(option.description === undefined || option.description === ""
           ? {}
-          : { description: option.description }),
+          : {
+              description: option.description,
+              ...(option.description_tree === undefined
+                ? {}
+                : { descriptionTree: option.description_tree }),
+            }),
         label: option.label,
+        ...(option.label_tree === undefined ? {} : { labelTree: option.label_tree }),
       }));
     }
     if (ask.multiple) draft.multiple = true;
@@ -922,13 +743,16 @@ function addAsks(
 }
 
 /** An ask's answer as the tree holds it: the person it is theirs, with the agent they answered
- *  through where they did, and their choices and words as stored. */
-function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
+ *  through where they did, and their choices and words as stored, with the server's reading of
+ *  each where the read sent one. */
+function answerOf(answer: NonNullable<TreeAsk["answer"]>): NodeAnswer {
   return {
     at: answer.at,
     by: { id: answer.user, kind: "user", ...(answer.act === undefined ? {} : { act: answer.act }) },
     selected: answer.selected ?? [],
+    ...(answer.selected_trees === undefined ? {} : { selectedTrees: answer.selected_trees }),
     text: answer.text ?? "",
+    ...(answer.text_tree === undefined ? {} : { textTree: answer.text_tree }),
   };
 }
 
@@ -981,8 +805,8 @@ interface Turn {
  * reply parented by `reply_to` would be drawn under the thread's head. A comment stored before
  * `comments.answers` existed (migration 20261105014808) carries none, and its thread's head is
  * then the one entry it names. A reply to an ask names the ask alone (`ask_id`) and is drawn
- * under the ask's node, whatever state the ask is in, a resolved one included
- * (dispatch://INFRA-3677). An approval request is no node (`addAsks`), so the replies under one
+ * under the ask's node, whatever state the ask is in, a resolved one included. An approval
+ * request is no node (`addAsks`), so the replies under one
  * are no node either where only agents wrote them, and sit under the issue once a person has
  * written among them. A message carries no such column, so its thread stays as
  * `in_reply_to` holds it. A comment that is a change a person asked of a decision, and answers
@@ -1043,14 +867,16 @@ function addTurns(
     draft.text = turn.body;
     draft.tree = turn.bodyTree;
   }
-  // A comment that answers nothing else and is anchored inside a statement of the issue's own
-  // documents hangs under that statement, whoever
-  // wrote it and wherever: the issue page's box, a document's margin, an agent. The server stores
-  // the lowest block that holds the anchor's words (`pmdoc.BlockIDForRange`): a one-paragraph
-  // statement's paragraph, and the statement itself for words across two of its paragraphs. So
-  // the anchor's block is mapped to the statement whose range holds that block's range in its
-  // document's blocks read. A comment anchored in no statement, or in a document whose blocks
-  // are not read yet, keeps its place under the issue.
+  // A comment that answers nothing else and is anchored inside a statement - a `requirement`
+  // block of the issue's spec, whose draft `addDocumentBlocks` marked a statement before this
+  // ran (`Draft.statement`) - hangs under that statement, whoever wrote it and wherever: the
+  // issue page's box, a document's margin, an agent. The server stores the lowest block that
+  // holds the anchor's words (`pmdoc.BlockIDForRange`): a one-paragraph statement's paragraph,
+  // and the statement itself for words across two of its paragraphs. So the anchor's block is
+  // mapped to the statement whose range holds that block's range in its document's blocks read.
+  // A `requirement` block of any other document is a block and nothing more, which nothing is
+  // placed under, so a comment anchored inside one keeps its place under the issue, as does one
+  // anchored in no statement or in a document whose blocks are not read yet.
   const blocksOf = new Map(
     (reads.documents ?? []).map((document) => [document.artifactId, document.blocks])
   );
@@ -1064,7 +890,10 @@ function addTurns(
     const held = blocks.find((block) => block.id === anchor.block_id);
     if (slug === undefined || held === undefined) continue;
     const statement = blocks.find(
-      (block) => block.type === "requirement" && block.from <= held.from && held.to <= block.to
+      (block) =>
+        drafts.get(blockNodeId(slug, block.id))?.statement === true &&
+        block.from <= held.from &&
+        held.to <= block.to
     );
     if (statement !== undefined) draft.parents = [blockNodeId(slug, statement.id)];
   }
@@ -1079,7 +908,7 @@ function addTurns(
  * spine parent is absent does, and never inside `decisions.md`, which is no node at all. It
  * carries no gap for that: a lack every such decision shares tells none of them apart (R10). It
  * names every spec block it links as a chip, since a link places nothing. The read carries no
- * `shaped` edge (dispatch://INFRA-1150's, `packages/contracts/src/dispatch-api.ts:2519-2534`), so
+ * `shaped` edge (`packages/contracts/src/dispatch-api.ts:2519-2534`), so
  * today a decision's links stand for it: they are its chips here, and what `addRequirements`
  * reads a `shaped_disagreement` from.
  */
@@ -1098,6 +927,12 @@ function addDecisions(
     decisionsDocumentId(reads.issue.artifacts, reads.decisions),
     context.key
   );
+  // A decision waits for the reader's review where it is on their review list (R35), which
+  // reads a statement as a requirement the coverage read holds (`coverageStatements`), the rule
+  // the header's count is handed too (`waitingOnReader`), and not as the rows read one
+  // (`Draft.statement`): a spec's `requirement` block that read does not hold - each one, before
+  // it answers - is a statement on its row, and a tie to it puts no decision on the list.
+  const isCoverageStatement = coverageStatements(reads.issue, reads.coverage);
   (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);
     if (id === undefined) return;
@@ -1135,9 +970,14 @@ function addDecisions(
     draft.text = decision.text;
     draft.tree = decision.text_tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape
-    // the way every other state is (R21). Whether it waits for the reader's review is the
-    // review list's rule, read once every statement has its draft (`treeDrafts`).
+    // the way every other state is (R21).
     draft.state = decisionState(decision, changes.has(decision.ref));
+    // The tie to a statement decides whether it waits on the reader, and a decision the reader
+    // asked to change waits on its agent, not on the reader (`decision-review.ts`). Nothing
+    // waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+    draft.waiting =
+      context.viewer !== undefined &&
+      inReviewList(decision, isCoverageStatement, changes.has(decision.ref));
     if (decision.kept !== null && !decision.waiting_review) {
       draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
     }
@@ -1251,6 +1091,12 @@ function requirementGaps(
  * fold's frontier, the Verification filter's failing count and its body read one state, and the
  * row reads what its result's own fact reads. The check's `serves` is no part of this read
  * (`CheckBlock` carries none), so its placement is the block's own pointer, below.
+ *
+ * A result is drawn from the server's reading of its observed text (`observed_tree`) where the
+ * read carries one, so the page parses no result's text; only from a server that sends none, a
+ * build before it, is that text parsed from its stored markdown (`storedReading`). Its node names
+ * no `source`: a result is no record the reference graph indexes a text under (`TextSource`), so
+ * a `#id` in its observed text declares nothing.
  */
 function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
   for (const check of reads.results?.checks ?? []) {
@@ -1277,6 +1123,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
       row.facts = resultFacts(result);
       row.parents = [id];
       row.text = result.observed;
+      if (result.observed_tree !== undefined) row.tree = result.observed_tree;
     });
   }
 }
@@ -1367,9 +1214,9 @@ export interface CheckStanding {
  * checks of one issue compare with different commits, a `before_merge` check with the pull
  * request's head and an `after_merge` one with the branch it merged into, so a pass at its own
  * check's basis reads Passed whatever newer result another check holds at another commit, as its
- * own fact reads "Up to date" (`check-facts.ts`'s `resultFacts`; dispatch://INFRA-1196
- * decision 152). A result stands for something at the basis only where nobody withdrew it and
- * its check's words have not moved since it was recorded.
+ * own fact reads "Up to date" (`check-facts.ts`'s `resultFacts`). A result stands for something
+ * at the basis only where nobody withdrew it and its check's words have not moved since it was
+ * recorded.
  *
  * **The latest evidence at the basis decides.** A check with no result reads No result, and one
  * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
@@ -1389,13 +1236,7 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   // The newest result that stands for something at the commit the server names for the check:
   // over the check's words now and at its basis (`standingCommit`). A check with no result has
   // none, and one with no `pass_stands` is read before it.
-  const here =
-    check.pass_stands === undefined
-      ? undefined
-      : standing.find(
-          (result) =>
-            result.check_words_moved !== true && result.commit_stands?.answer === "at_basis"
-        );
+  const here = check.pass_stands === undefined ? undefined : standing.find(standsAtBasis);
   if (here !== undefined) {
     return { stands: here, state: here.verdict === "pass" ? "passed" : "failed" };
   }
@@ -1404,6 +1245,16 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   // its results here.
   const stands = state === "passed" ? undefined : standing[0];
   return { state, ...(stands === undefined ? {} : { stands }) };
+}
+
+/** Whether `result` stands at its check's basis: recorded against the check's words now
+ *  (`check_words_moved`) and at the commit the server names for the check (`commit_stands` is
+ *  `at_basis`), as the server's `standingCommit` reads it. It is the one reading of "this result
+ *  stands at its check's basis" that a check's state (`checkStanding`) and its body's mark
+ *  (`statement-state.ts`'s `atBasis`) share, so the two never disagree. Whether anybody withdrew
+ *  the result is no part of it: both read it only of a result that stands (`standingResults`). */
+export function standsAtBasis(result: CheckResult): boolean {
+  return result.check_words_moved !== true && result.commit_stands?.answer === "at_basis";
 }
 
 /** Every result of `check` nobody withdrew, which is every result that stands as evidence: the
@@ -1436,8 +1287,7 @@ function newerFirst(first: CheckResult, second: CheckResult): number {
  * (`needsChips`), as every edge that is not the spine is. A `serves` naming no statement of
  * this issue places nothing, so the block keeps its place under the issue. A statement is a
  * requirement of the issue's spec (`Draft.statement`), and the `requirement` block of any other
- * document is a block and nothing more, which nothing is placed under (dispatch://INFRA-1196
- * decision 152).
+ * document is a block and nothing more, which nothing is placed under.
  *
  * Two of the chain's gaps are read here, from the pointers this pass already resolves (R10):
  *
@@ -1451,11 +1301,10 @@ function newerFirst(first: CheckResult, second: CheckResult): number {
  *   what it is not holding, and a target nothing answers to at all is already drawn as a chip
  *   that says so.
  * - **A plan task nobody asked for.** A task naming no requirement it serves and no
- *   declaration it attempts is work no reason stands behind. `attempts` is the declarations
- *   route of dispatch://INFRA-1278, read from the same `block[]` attributes as every other
- *   pointer, so the day it lands this pass reads it and nothing else changes. A check is held
- *   to neither: a check is there to prove a requirement, and it attempts no declaration at
- *   all.
+ *   declaration it attempts is work no reason stands behind. `attempts` is the route of the
+ *   planned declarations read, read from the same `block[]` attributes as every other pointer,
+ *   so the day that read lands this pass reads it and nothing else changes. A check is held to
+ *   neither: a check is there to prove a requirement, and it attempts no declaration at all.
  */
 function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void {
   for (const draft of drafts.values()) {
@@ -1482,7 +1331,7 @@ function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void
 }
 
 /**
- * The chips of what a block `needs`, one per target (dispatch://INFRA-1196 decision 143), in the
+ * The chips of what a block `needs`, one per target, in the
  * order its pointers first name each. The server accepts one task needed by a pinned and an
  * unpinned pointer at once (`#b-a1@v1 #b-a1`), and both need the one task, so the pointers are
  * told apart by what they name with any version pin dropped (`pinDropped`). A target named both

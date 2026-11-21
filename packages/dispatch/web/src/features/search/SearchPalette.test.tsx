@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
@@ -25,6 +25,12 @@ import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const results: SearchResult[] = [
   {
@@ -190,6 +196,8 @@ async function searchFor(user: UserEvent, query: string): Promise<HTMLInputEleme
 }
 
 test("renders grouped results with marked snippets and dims a done issue", async () => {
+  // Each snippet is Markdown (`MarkdownPreview`), empty until the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
@@ -276,6 +284,8 @@ test("renders document-owned results under the document and opens their discussi
 });
 
 test("an ask hit says where it stands and shows its latest answer", async () => {
+  // Each snippet and answer is Markdown (`MarkdownPreview`), empty until the lazy engine loads.
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const answer = {
     at: "2026-10-01T00:00:00Z",

@@ -22,7 +22,6 @@ import {
   pageComposer,
   pageComposerAnswerControls,
   pageComposerControl,
-  pageFailedText,
   pageRowAct,
 } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -31,6 +30,7 @@ import {
   keepFocusOnPress,
   MentionComposer,
   type OutlineKind,
+  OutlineRefusal,
   OutlineTargetLine,
   sendOnEnter,
 } from "../conversation/MentionComposer";
@@ -39,7 +39,7 @@ import { saveCommentEdit } from "../conversation/send-request";
 import { answerAskInput } from "../inbox/answer-ask";
 import { useAnswerDraft } from "../inbox/answer-drafts";
 import { DeclineControl } from "../inbox/DeclineControl";
-import { useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
+import { type AskPress, useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
 import { invalidateOwnerReads } from "../inbox/owner-reads";
 import { useQuestionLabel } from "../inbox/question-label";
 import { answerFailure } from "../inbox/useAskAnswerForm";
@@ -47,6 +47,7 @@ import { AgentName } from "../refs/AgentName";
 import { PlainText } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useMediaQuery } from "../shell/useDialog";
+import { outlineCommentsQuery, outlineMessagesQuery } from "./conversation-reads";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
@@ -62,6 +63,7 @@ import {
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { TAB_STOP_ROW } from "./slots/stage";
+import { issueAsksQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -71,7 +73,7 @@ const KINDS: readonly OutlineKind[] = [
     kind: "comment",
     label: (
       <>
-        <span aria-hidden="true">❝</span>
+        <span aria-hidden="true">“</span>
         <span {...pageChrome}>{CONTROL_LABELS.composer_comment}</span>
       </>
     ),
@@ -304,11 +306,10 @@ interface LinePlace {
 /**
  * Ends the line's target and puts the reader back: on the outline, on the row `landing` names
  * once its read draws it (R4); under a view, where no outline is drawn to consume a landing and
- * one would act on the outline the next time it mounts, and where the line names no row to land
- * on - a statement it took up from a held send - where the reader came to the box from.
+ * one would act on the outline the next time it mounts, where the reader came to the box from.
  */
-function finish(writer: OutlineWriter, place: LinePlace, landing: Landing | undefined): void {
-  if (place.outlineDrawn && landing !== undefined) {
+function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void {
+  if (place.outlineDrawn) {
     writer.land(landing);
     writer.clear();
     return;
@@ -331,53 +332,57 @@ function WriteLine({
   writer: OutlineWriter;
 }): ReactNode {
   const { reply, statement } = writer;
-  // A statement's comment carries the statement's document and its whole words alone, never the
-  // target whole, so a send held over a refusal or a reload stores those two fields.
+  // A statement's comment carries the statement's document, its whole words and its row alone,
+  // never the item a Reply aimed the line with, so a send held over a refusal or a reload stores
+  // those three fields and never the statement's tree.
   const anchor = useMemo(
     () =>
       statement === undefined
         ? undefined
-        : { artifact: statement.artifact, quote: statement.quote },
+        : { artifact: statement.artifact, quote: statement.quote, row: statement.row },
     [statement]
   );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
-  // The statement's row, where the line names one: a statement the line took up from a held send
-  // is its document and its words alone (`OutlineWriter.statement`), which name no row.
-  const statementRow = statement !== undefined && "id" in statement ? statement : undefined;
   // Whether the line is aimed at something: the entry a reply answers, or the statement a comment
   // is on; not for a write on the issue itself.
   const aimed = reply !== null || statement !== undefined;
-  // What a landing names: that entry, or that statement's row; nothing for a write on the issue.
+  // What a landing names: that entry, or that statement's row, which a statement the line took
+  // up from a held send names as well (`StatementAnchor.row`); nothing for a write on the issue.
   const under: Landing["under"] =
     reply !== null
       ? { id: reply.id, kind: reply.parentKind }
-      : statementRow === undefined
+      : statement === undefined
         ? undefined
-        : { id: statementRow.id, kind: "statement" };
-  // A write to a statement whose row the line cannot name lands on none (`finish`).
-  const lands = !aimed || under !== undefined;
+        : { id: statement.row, kind: "statement" };
   // A reply and a statement's comment are comments under the row they are aimed at, so the kinds
   // are drawn only while the line writes on the issue. A closed issue takes a comment and no
   // question, so the line writes a comment there whatever chip was pressed while it was open,
   // rather than holding a question the issue refuses.
   const writesKinds = !aimed && !isClosed;
+  // The target line's control and Escape. With no target they leave the line. With the box drawn
+  // at rest the line goes back to writing on the issue with the caret kept in it, ending the
+  // target itself: the issue's own Reply keeps a refused send's target (`writeOnIssue`), and
+  // this is the line's own end of it. Elsewhere ending the target hides the box (R1), so the
+  // reader is put back: on the row they were replying to where the outline is drawn, and where
+  // they came from under a view.
+  const end = () => {
+    if (!aimed) {
+      place.giveBack();
+      return;
+    }
+    if (place.atRest) {
+      writer.clear();
+      writer.focus();
+      return;
+    }
+    finish(writer, place, { to: "self", under });
+  };
   return (
     <MentionComposer
       box="issue-page-composer"
       closed={isClosed}
       kind={writesKinds ? writer.kind : "comment"}
       mutationKey={writer.sendKey}
-      // The target line's control and Escape. With the box drawn at rest the line goes back to
-      // writing on the issue with the caret kept in it. Elsewhere ending the target hides the
-      // box (R1), so the reader is put back: on the row they were replying to where the outline
-      // is drawn, and where they came from under a view.
-      onCancelReply={() => {
-        if (place.atRest) {
-          writer.writeOnIssue();
-          return;
-        }
-        finish(writer, place, lands ? { to: "self", under } : undefined);
-      }}
       onClose={place.giveBack}
       onKindChange={(next) => {
         if (next === "ask" || next === "comment") writer.setKind(next);
@@ -386,10 +391,12 @@ function WriteLine({
       // The reader is taken to what they wrote - their newest node under the row the line was
       // aimed at, or under the issue - and the line writes on the issue again. Neither is refused
       // here: the write store drops the send before it calls this, so no send is out by then.
-      onSent={() => finish(writer, place, lands ? { to: "newest", under } : undefined)}
+      onSent={() => finish(writer, place, { to: "newest", under })}
       outline={{
         anchor,
         cancelReply: CONTROL_LABELS.write_on_issue,
+        end,
+        kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
         kinds: writesKinds ? KINDS : [],
         placeholder: aimed
           ? place.phone
@@ -398,6 +405,7 @@ function WriteLine({
           : place.phone
             ? CONTROL_LABELS.issue_placeholder_phone
             : CONTROL_LABELS.issue_placeholder,
+        retry: CONTROL_LABELS.retry,
         send: CONTROL_LABELS.send,
         sending: ANSWER_LINES.sending,
         statementTwice: ANSWER_LINES.statement_twice,
@@ -407,14 +415,15 @@ function WriteLine({
           ) : statement === undefined ? undefined : (
             <>
               <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{" "}
-              {/* A statement taken up from a held send is its words alone, named in plain
-                  words as a row's statement is. A row's text is the coverage read's words, which
-                  leave every reference out, so its tree's references are named whole. */}
+              {/* A statement a Reply aimed the line at is named by its row's words; a row's
+                  text is the coverage read's words, which leave every reference out, so its
+                  tree's references are named whole. One taken up from a held send is its quote
+                  alone, named in plain words as a row's statement is. */}
               <TargetWords
-                markdown={statementRow?.text ?? statement.quote}
-                namesAll={statementRow !== undefined}
-                source={statementRow?.source}
-                tree={statementRow?.tree}
+                markdown={statement.item?.text ?? statement.quote}
+                namesAll={statement.item !== undefined}
+                source={statement.item?.source}
+                tree={statement.item?.tree}
               />
             </>
           ),
@@ -428,26 +437,23 @@ function WriteLine({
 }
 
 /** A reply's target line (R3): "Replying to:", the entry's author, and the entry's first line,
- *  read from the entry's own record in the reads the outline is drawn from, so its tree costs no
- *  request of its own: only the read of the entry's kind is observed, and the outline keeps it
- *  fresh, so the line asks for it again on no mount. */
+ *  read from the entry's own record in the reads the outline is drawn from (`outline-reads.ts`),
+ *  so its tree costs no request of its own: only the read of the entry's kind is observed, and
+ *  the outline keeps it fresh, so the line asks for it again on no mount. */
 function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTarget }): ReactNode {
   const asks = useQuery({
+    ...issueAsksQuery(issueKey),
     enabled: reply.parentKind === "ask",
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
     refetchOnMount: false,
   });
   const comments = useQuery({
+    ...outlineCommentsQuery(issueKey),
     enabled: reply.parentKind === "comment",
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
     refetchOnMount: false,
   });
   const messages = useQuery({
+    ...outlineMessagesQuery(issueKey),
     enabled: reply.parentKind === "message",
-    queryFn: () => api.listIssueMessages(issueKey),
-    queryKey: ["issue-messages", issueKey],
     refetchOnMount: false,
   });
   const tree =
@@ -488,10 +494,7 @@ function EditLine({
   writer: OutlineWriter;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const comments = useQuery({
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
-  });
+  const comments = useQuery(outlineCommentsQuery(issueKey));
   const tree = comments.data?.find((one) => one.id === editing.id)?.body_tree;
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   const mutationKey = useMemo(
@@ -511,10 +514,12 @@ function EditLine({
       onSent={back}
       outline={{
         cancelReply: CONTROL_LABELS.write_on_issue,
+        end: back,
         kinds: [],
         placeholder: place.phone
           ? CONTROL_LABELS.edit_placeholder_phone
           : CONTROL_LABELS.edit_placeholder,
+        retry: CONTROL_LABELS.retry,
         send: CONTROL_LABELS.save,
         sending: ANSWER_LINES.saving_field,
         target: (
@@ -533,7 +538,7 @@ function EditLine({
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {
         const saved = await saveCommentEdit(id, body, carried, bounds);
-        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        await queryClient.invalidateQueries({ queryKey: outlineCommentsQuery(issueKey).queryKey });
         return saved;
       }}
     />
@@ -554,10 +559,7 @@ function AnswerLine({
   target: AnswerTarget;
   writer: OutlineWriter;
 }): ReactNode {
-  const asks = useQuery({
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
-  });
+  const asks = useQuery(issueAsksQuery(issueKey));
   const ask = asks.data?.find((one) => one.id === target.askId);
   const missing = asks.isSuccess && ask === undefined;
   const clear = writer.clear;
@@ -624,24 +626,32 @@ function AnswerForm({
   const setText = replacing === undefined ? setDraft : setChanged;
   const back = () =>
     finish(writer, place, { to: "self", under: { id: target.askId, kind: "ask" } });
+  // Each press carries the question it answers, as the Inbox's card's does (`AskPress`): a Retry
+  // runs the newest render's write with the press's own values (`useKeyedWrite`).
   const mutation = useOutstandingAnswerWrite({
-    askId: target.askId,
-    label: () => `Answer to “${question.line()}”`,
-    removesRow: () => replacing === undefined,
-    write: (input: AnswerAskInput, bounds) => api.answerAsk(target.askId, input, bounds),
+    label: (press: AnswerLinePress) => `Answer to “${press.questionWords}”`,
+    method: "POST",
+    // A change of an answer the server has already recorded leaves the Inbox alone: the
+    // question has no open row there to take out.
+    removesRow: (press) => press.input.expected_answer_at === undefined,
+    write: (press: AnswerLinePress, bounds) => api.answerAsk(press.ask.id, press.input, bounds),
     onError: (error) => {
       if (!(error instanceof ApiError) || STALE_ASK[error.code ?? ""] !== true) return;
       void queryClient.invalidateQueries({ queryKey: ["issue", issueKey] });
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", target.askId] });
-      const asksRead = queryClient.invalidateQueries({ queryKey: ["asks", issueKey] });
-      if (error.code === "NOT_ANSWERER") setEnded(answerFailure(error).message);
+      const asksRead = queryClient.invalidateQueries({
+        queryKey: issueAsksQuery(issueKey).queryKey,
+      });
+      if (error.code === "NOT_ANSWERER") {
+        setEnded(answerFailure({ error, method: undefined }).message);
+      }
       if (error.code !== "ASK_ANSWER_CHANGED") return;
       // The answer moved under the change: the line takes the answer as it now stands from the
       // read that answers, its time for the next send's `expected_answer_at` and its words in
       // the field, which the refusal's own words say it shows.
       void asksRead.then(() => {
         const answer = queryClient
-          .getQueryData<readonly AskWithTrees[]>(["asks", issueKey])
+          .getQueryData<readonly AskWithTrees[]>(issueAsksQuery(issueKey).queryKey)
           ?.find((one) => one.id === target.askId)?.answer;
         if (answer === null || answer === undefined) return;
         setCurrent({ at: answer.at });
@@ -682,9 +692,13 @@ function AnswerForm({
     (selected.length === 0 && text.trim() === "" ? CONTROL_LABELS.answer_placeholder : null);
   const send = () => {
     if (refusal !== null || pending) return;
-    mutation.mutate(answerInput(ask, selected, text, replacing));
+    mutation.mutate({
+      ask,
+      input: answerInput(ask, selected, text, replacing),
+      questionWords: question.line(),
+    });
   };
-  const failure = mutation.error === null ? null : answerFailure(mutation.error);
+  const failure = mutation.error === null ? null : answerFailure(mutation);
   const source = textSourceOf("ask", ask.id, issueKey);
   return (
     <form
@@ -795,25 +809,12 @@ function AnswerForm({
           </div>
         </div>
         {failure === null ? null : (
-          // The refusal in the page's own colour, like the rest of the box, its
-          // Retry a 24 px target at every width (R2) that a press leaves the focus beside.
-          <div
-            className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
-            onMouseDown={keepFocusOnPress}
-            role="alert"
-          >
-            <p>{failure.message}</p>
-            {failure.retryable ? (
-              <button
-                className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
-                disabled={pending}
-                onClick={send}
-                type="button"
-              >
-                {CONTROL_LABELS.retry}
-              </button>
-            ) : null}
-          </div>
+          <OutlineRefusal
+            message={failure.message}
+            onRetry={failure.retryable ? send : undefined}
+            retryLabel={CONTROL_LABELS.retry}
+            retrying={pending}
+          />
         )}
       </fieldset>
     </form>
@@ -1019,6 +1020,13 @@ function OptionWords({
       {(line) => line ?? option.label}
     </PlainText>
   );
+}
+
+/** One press of the answer line's Send: the question it answers (`AskPress`), what it sends, and
+ *  the question as the write's label names it (`questionWords`). */
+interface AnswerLinePress extends AskPress {
+  readonly input: AnswerAskInput;
+  readonly questionWords: string;
 }
 
 /** The answer the line sends: the options picked, the reader's words, and, for a change of their

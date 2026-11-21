@@ -256,7 +256,7 @@ func trimReference(raw string) string {
 // dashboard's `/issues/CORE-1/plan`, reads as the issue, as the dashboard draws it, so the graph
 // holds the edge the page shows. The shared text table holds a row per tab in both forms, so a tab
 // one reader names and the other does not fails there.
-var issueTabs = []string{"verification", "plan", "activity", "children", "artifacts", "collaborators", "conversation"}
+var issueTabs = []string{"verification", "plan", "steps", "activity", "children", "artifacts", "collaborators", "conversation"}
 
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
@@ -393,7 +393,7 @@ func parseArtifactSlug(value string) (string, bool) {
 // fails every write that indexes it. (A block's node id `<ref_key>#<block id>` holds the
 // document's unbounded ref_key too, so it is hash indexed, never a B-tree key.) Text citing a
 // longer id cites nothing (inBound), and the index makes no node of a block carrying one
-// (refs.IndexBlocks). It decides only which blocks the graph keys: a block whose id is longer is
+// (refs.PlanBlocks). It decides only which blocks the graph keys: a block whose id is longer is
 // written, stored, read and rendered as any other, and a request naming it (ParseRef) finds no
 // node. Its twin is MAX_BLOCK_ID_BYTES in @legion/contracts.
 const MaxBlockIDBytes = 256

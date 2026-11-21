@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and `scroll` has no user-event form at all.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -17,10 +17,17 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function issue(key: string, title: string): IssueDetails {
   return {
@@ -325,7 +332,7 @@ test("a hover that ends before the delay, a touch pointer, or a held button neve
  *  there): the references inside it open no card on hover. */
 const NO_HOVER_FRAME = { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" };
 
-// dispatch://INFRA-1196 R6: the issue page opens nothing on hover, a reference included, because
+// R6: the issue page opens nothing on hover, a reference included, because
 // its reader works it from the keyboard. Its frame carries the mark the host reads, so a
 // reference inside it opens no card for a resting pointer, the keyboard still opens that
 // reference's card, and a reference on any other page keeps its hover card.
@@ -389,7 +396,7 @@ function EditableBody(): ReactNode {
   return <div contentEditable ref={root} suppressContentEditableWarning />;
 }
 
-// dispatch://INFRA-1196 R6: a link inside the issue page's live editor takes no focus of its
+// R6: a link inside the issue page's live editor takes no focus of its
 // own, so the keyboard reaches it by putting the caret in it - which opens its card, as focus
 // opens a card on any other link - and the caret leaving the link closes it again.
 test("on the issue page, the caret in an editor's link opens its card, and leaving the link closes it", () => {
@@ -449,6 +456,54 @@ test("Escape closes the open card", async () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
+// open and the key goes on to the page, which the card's capture listener on `document` would
+// stop. An Escape after the composition closes the card and stops there.
+test("an Escape that ends an IME composition leaves the open card open", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const behind: KeyboardEvent[] = [];
+  const hearBehind = (event: KeyboardEvent) => behind.push(event);
+  window.addEventListener("keydown", hearBehind);
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+          key: "Escape",
+        })
+      );
+    });
+    expect(
+      screen.queryByRole("tooltip"),
+      "the Escape that ended a composition closed the card"
+    ).toBeInTheDocument();
+    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(behind.length, "the card's Escape reached the page").toBe(1);
+  } finally {
+    view.unmount();
+    window.removeEventListener("keydown", hearBehind);
     getIssue.mockRestore();
   }
 });
@@ -688,6 +743,10 @@ test("scrolling under a hover-opened card closes it", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
+    // The reader turns the wheel over the reference, which makes the scroll after it theirs: a
+    // scroll with no input of the reader's behind it is the page moving by itself, which keeps
+    // the card. user-event has no wheel form.
+    fireEvent.wheel(first);
     // user-event has no scroll form.
     fireEvent.scroll(document);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();

@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { IssueDecisions } from "../web/src/api/types";
+import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
   baseUrl,
@@ -14,13 +15,21 @@ import {
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
+declare global {
+  interface Window {
+    /** `holdClipboard`'s clipboard: how many writes were made, and the resolve of each write
+     *  still held. */
+    __dispatchHeldClipboard?: { held: (() => void)[]; writes: number };
+  }
+}
+
 /**
- * What the header's rows read (dispatch://INFRA-3943, part P of dispatch://INFRA-1196): the
- * header, its properties line, its readings against R3's limits and the typeface, and the one
- * issue they read it on. The rows open the page with part D's `phase` and `gotoIssue`
- * (`e2e/issue-page.ts`) and measure the header to D's `filterRow`.
+ * What the header's rows read: the header, its properties line, its readings against the
+ * header's height limits and the typeface, and the one issue they read it on. The rows open the
+ * page with `phase` and `gotoIssue` (`e2e/issue-page.ts`) and measure the header to the view
+ * row's `filterRow`.
  *
- * This is part P's file (decision 2 of the parts): no other part's rows read it.
+ * This is the header rows' own file: no other part's rows read it.
  *
  * - **The header** `header[data-issue-header]` inside `[data-issue-page]`, drawing no box of its
  *   own (`display: contents`), and in it the band that stays from 761 px up,
@@ -50,8 +59,7 @@ export function viewportAt(width: number): { readonly height: number; readonly w
   return { height: width < 1024 ? 844 : DESKTOP.height, width };
 }
 
-/** INFRA-1196's own title, 115 characters: the one the header's widths were read on
- *  (dispatch://INFRA-1196/comment/f31b8ac4-874c-4735-94c8-8af17a95eba2). */
+/** A real issue's title, 115 characters: the one the header's widths were read on. */
 export const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
 
@@ -100,12 +108,11 @@ export interface HeaderSeed {
 }
 
 /**
- * One issue holding every part of the header's list (R1 of dispatch://INFRA-3943), written
- * through `e2e/api.ts`: a parent whose route reaches nobody, so the parent draws the header's one
- * route marker; the issue under it in progress, at P1, assigned to alice, with a spec and a
- * Verification document, three children (one done, one in progress, one to do) and two questions
- * an agent asked, which wait on alice. No approval request is open: a row that needs one asks
- * for it.
+ * One issue holding every part of the header's list, written through `e2e/api.ts`: a parent
+ * whose route reaches nobody, so the parent draws the header's one route marker; the issue under
+ * it in progress, at P1, assigned to alice, with a spec and a Verification document, three
+ * children (one done, one in progress, one to do) and two questions an agent asked, which wait
+ * on alice. No approval request is open: a row that needs one asks for it.
  */
 export async function seedHeader(): Promise<HeaderSeed> {
   await createProject({ key: HEADER_PROJECT, name: "Header" });
@@ -158,6 +165,12 @@ export function issueHeader(page: Page): Locator {
   return page.locator("[data-issue-page] header[data-issue-header]");
 }
 
+/** The header's Edit title: the button laid over the title's heading that opens its editor
+ *  (`IssueTitleRow.tsx`), drawn while the issue is open and its title is not being edited. */
+export function editTitleButton(page: Page): Locator {
+  return issueHeader(page).getByRole("button", { exact: true, name: CONTROL_LABELS.edit_title });
+}
+
 /** The part of the header that stays at the top of the screen from 761 px up: the key's row
  *  and the title. */
 export function identityBand(page: Page): Locator {
@@ -170,7 +183,7 @@ export function propertiesLine(page: Page): Locator {
 }
 
 /** Waits for the header's properties line: every row's first step, so a page that draws only
- *  part A's key and title fails on this and not on a later reading. */
+ *  the key and the title fails on this and not on a later reading. */
 export async function expectHeaderDrawn(page: Page): Promise<void> {
   await expect(propertiesLine(page), "the new page draws no properties line").toBeVisible();
 }
@@ -236,45 +249,6 @@ export function lineOrder(page: Page, parts: readonly LinePart[]): Promise<strin
   }, parts);
 }
 
-/**
- * The label chips the frame after the properties line narrows by `by` px draws cut. In one task,
- * so before any frame is drawn and before the labels are read again on the next one, the line
- * takes an inline `max-width` that much under its width, and each chip's box is read against the
- * labels' box: a chip wholly inside it is drawn whole, one wholly outside it is not drawn, and
- * each other one is returned as `<label>: <its box> in <the labels' box>`. The line keeps the
- * inline width; the row takes it off.
- */
-export function labelsCutAsTheLineNarrows(page: Page, by: number): Promise<string[]> {
-  return page.evaluate((by) => {
-    const header = document.querySelector("[data-issue-page] header[data-issue-header]");
-    const line = header?.querySelector<HTMLElement>('[data-testid="issue-state-actions"]');
-    const box = header?.querySelector('[data-testid="issue-header-labels"]');
-    if (line === null || line === undefined || box === null || box === undefined) {
-      return ["the header draws no properties line or no labels"];
-    }
-    line.style.maxWidth = `${line.getBoundingClientRect().width - by}px`;
-    const outer = box.getBoundingClientRect();
-    const edges = (rect: DOMRect) =>
-      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
-    return [...box.querySelectorAll("[data-header-label]")].flatMap((chip) => {
-      const rect = chip.getBoundingClientRect();
-      const inside =
-        rect.left >= outer.left - 0.5 &&
-        rect.right <= outer.right + 0.5 &&
-        rect.top >= outer.top - 0.5 &&
-        rect.bottom <= outer.bottom + 0.5;
-      const outside =
-        rect.right <= outer.left + 0.5 ||
-        rect.left >= outer.right - 0.5 ||
-        rect.bottom <= outer.top + 0.5 ||
-        rect.top >= outer.bottom - 0.5;
-      return inside || outside
-        ? []
-        : [`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`];
-    });
-  }, by);
-}
-
 /** The longest label Dispatch takes, 40 UTF-16 units (`maxIssueLabel16`,
  *  `packages/envoy/internal/dispatch/api/issue_queries.go`): wider than what the header's line
  *  at 1440 px leaves beside the labels it draws of the twenty, count or no count, so drawn after
@@ -290,6 +264,8 @@ export const LONGEST_LABEL = "the-longest-label-the-header-never-holds";
  * still fits; a room that holds all of its words, or not one letter, throws.
  */
 export async function labelFillingTheRoom(page: Page, under: number): Promise<string> {
+  // The one caller waits for the labels drawn and no count first, so the line has settled; an
+  // error only throws.
   const filled = await propertiesLine(page).evaluate((line, under) => {
     const box = line.querySelector('[data-testid="issue-header-labels"]');
     const last = [...(box?.querySelectorAll<HTMLElement>("[data-header-label]") ?? [])].at(-1);
@@ -350,6 +326,8 @@ export function details(page: Page): Locator {
  *  menu's first action instead of closing it. The menu is the element the control names in
  *  `aria-controls`. */
 export async function actionsMenuDrop(page: Page): Promise<number> {
+  // The one caller waits for the control's `aria-expanded` to read true first, so the menu is
+  // open when this reads it; a miss only throws.
   const drop = await issueHeader(page)
     .getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions })
     .evaluate((control) => {
@@ -374,6 +352,77 @@ export function badgeValue(page: Page, label: string): Locator {
   return issueHeader(page).locator(
     `:has(> select[aria-label="${cssValue(label)}"]) > [aria-hidden="true"]`
   );
+}
+
+/** The header's approval chip of the document `artifactId`: the issue's own chip, or the chip of
+ *  a gated root's entry. */
+export function approvalChip(page: Page, artifactId: string): Locator {
+  return issueHeader(page).locator(`[data-approval-artifact="${cssValue(artifactId)}"]`);
+}
+
+/** The entry of a gated root's step `step` among the header's approval steps: the approval of the
+ *  document that step approves - its chip, or `Not requested` - and, while that document's
+ *  request waits on the reader, its actions. */
+export function approvalEntry(page: Page, step: string): Locator {
+  return issueHeader(page)
+    .getByTestId("issue-approval-steps")
+    .locator(`[data-approval-step="${cssValue(step)}"]`);
+}
+
+/** The reads that redraw the header's approval control after a review of the issue's document,
+ *  held from `hold` until `release`. */
+export interface HeldReviewReads {
+  /** Holds every read made from now until `release`. */
+  hold(): void;
+  /** How many reads of the issue itself have been held. */
+  issueReadsHeld(): number;
+  /** Lets every held read on, and holds no read made after. */
+  release(): void;
+}
+
+/**
+ * Routes the page's reads that follow a review of the document `artifactId` of the issue `key`,
+ * so that a row can press a control after the review has landed and before the page has drawn
+ * what it reads back: each `GET` of the issue itself, which the header draws the approval from
+ * (`useIssueDetail`'s `primaryArtifact`), of the issue's documents and of its asks, and of the
+ * document and every address under it, its reviews among them - the reads `ApprovalChip`'s
+ * `onSuccess` refreshes. Each read waits in the route's handler, and goes on once released. A
+ * write is never held, and neither is a read made before `hold` or after `release`.
+ */
+export async function holdReviewReads(
+  page: Page,
+  key: string,
+  artifactId: string
+): Promise<HeldReviewReads> {
+  const issue = `/api/v1/issues/${key}`;
+  const artifact = `/api/v1/artifacts/${artifactId}`;
+  const released = Promise.withResolvers<void>();
+  let holding = false;
+  let issueReads = 0;
+  await page.route(
+    ({ pathname }) =>
+      pathname === issue ||
+      pathname === `${issue}/artifacts` ||
+      pathname === `${issue}/asks` ||
+      pathname === artifact ||
+      pathname.startsWith(`${artifact}/`),
+    async (route) => {
+      if (route.request().method() !== "GET" || !holding) return route.fallback();
+      if (new URL(route.request().url()).pathname === issue) issueReads += 1;
+      await released.promise;
+      return route.fallback();
+    }
+  );
+  return {
+    hold: () => {
+      holding = true;
+    },
+    issueReadsHeld: () => issueReads,
+    release: () => {
+      holding = false;
+      released.resolve();
+    },
+  };
 }
 
 /**
@@ -443,33 +492,39 @@ export function undersizedTargets(page: Page): Promise<string[]> {
   });
 }
 
-/** The controls R3 holds to 24 px tall at every width (finding F13 of
- *  dispatch://INFRA-1196/artifact/tester-findings-md): the status, the priority, the assignee,
- *  the count, Approve, Request changes, the labels' count and the control that copies the key,
- *  24 by 24 px as row one's other controls are, each as `<name>: <height>` where it is drawn
- *  shorter. */
+/** The controls the header holds to 24 px tall at every width: the status, the priority, the
+ *  assignee, the count, Approve (`Approve v3` on a stale approval), Request changes, the labels'
+ *  count and the control that copies the key, 24 by 24 px as row one's other controls are, each
+ *  as `<name>: <height>` where it is drawn shorter. The two actions are the buttons whose words
+ *  are an action's (`ACTION_WORDS`), the patterns the header itself finds them by. */
 export function shortControls(page: Page, key: string): Promise<string[]> {
-  return issueHeader(page).evaluate((header, key) => {
-    const named: [string, Element | null][] = [
-      ["the status", header.querySelector('select[aria-label="Status"]')],
-      ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
-      ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
-      ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
-      ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
-      ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
-      ...[...header.querySelectorAll("button")]
-        .filter((button) => /^(Approve|Request changes)$/.test((button.textContent ?? "").trim()))
-        .map((button): [string, Element] => [(button.textContent ?? "").trim(), button]),
-    ];
-    return named
-      .filter(([, control]) => control !== null)
-      .map(([name, control]) => [name, control?.getBoundingClientRect().height ?? 0] as const)
-      .filter(([, height]) => height < 24 - 0.5)
-      .map(([name, height]) => `${name}: ${height.toFixed(1)} px`);
-  }, key);
+  const actionWords = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
+  return issueHeader(page).evaluate(
+    (header, { actionWords, key }) => {
+      const actions = actionWords.map((source) => new RegExp(source));
+      const named: [string, Element | null][] = [
+        ["the status", header.querySelector('select[aria-label="Status"]')],
+        ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
+        ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
+        ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
+        ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
+        ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
+        ...[...header.querySelectorAll("button")]
+          .map((button): [string, Element] => [(button.textContent ?? "").trim(), button])
+          .filter(([words]) => actions.some((action) => action.test(words))),
+      ];
+      return named
+        .filter(([, control]) => control !== null)
+        .map(([name, control]) => [name, control?.getBoundingClientRect().height ?? 0] as const)
+        .filter(([, height]) => height < 24 - 0.5)
+        .map(([name, height]) => `${name}: ${height.toFixed(1)} px`);
+    },
+    { actionWords, key }
+  );
 }
 
-/** The header as R3 measures it: from the top of the header to the top of the view row. */
+/** The header as its height limit measures it: from the top of the header to the top of the
+ *  view row. */
 interface HeaderReading {
   readonly height: number;
   /** The words of each line drawn between the two, top to bottom. */
@@ -581,16 +636,18 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 }
 
 /**
- * R3's limit on the header at `width`: 3 lines and 130 px at 1440 px; at 390 px, on the 20-label
- * seed and the measured title, 8 lines and 250 px while no approval request waits on the reader
- * and 9 lines and 280 px while one does (ruling 8 of
- * dispatch://INFRA-1196/artifact/build-rulings-md). No other width has a limit.
+ * The header's height limit at `width`: at 1440 px 3 lines and 130 px, and 4 lines and 130 px
+ * where the issue's project gates two or three steps, since the header then draws one approval
+ * entry for each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
+ * 8 lines and 250 px while no approval request waits on the reader and 9 lines and 280 px while
+ * one does. No other width has a limit.
  */
 function headerLimit(
   width: number,
-  requestWaiting: boolean
+  requestWaiting: boolean,
+  gatedSteps: number
 ): { readonly height: number; readonly lines: number } | undefined {
-  if (width === DESKTOP.width) return { height: 130, lines: 3 };
+  if (width === DESKTOP.width) return { height: 130, lines: gatedSteps >= 2 ? 4 : 3 };
   if (width !== IPHONE_13.width) return undefined;
   return requestWaiting ? { height: 280, lines: 9 } : { height: 250, lines: 8 };
 }
@@ -598,20 +655,25 @@ function headerLimit(
 /**
  * The header read against its limit at `width`, softly so one run reports every width and seed,
  * with the page at its top; at 390 px the title is drawn whole. `drawnIn` names the typeface the
- * page is drawn in, for the message. The header is read alone: no row of the outline is waited
- * for.
+ * page is drawn in, for the message, and `gatedSteps` how many steps the issue's project gates
+ * (one, or none, unless a caller says otherwise). The header is read alone: no row of the
+ * outline is waited for.
  */
 export async function expectHeaderWithinItsLimit(
   page: Page,
   width: number,
   requestWaiting: boolean,
-  drawnIn: string
+  drawnIn: string,
+  gatedSteps = 1
 ): Promise<void> {
-  const limit = headerLimit(width, requestWaiting);
+  const limit = headerLimit(width, requestWaiting, gatedSteps);
   if (limit === undefined) return;
-  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting`;
+  const gated = gatedSteps >= 2 ? ` on a project that gates ${gatedSteps} steps` : "";
+  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting${gated}`;
   await expect(filterRow(page), `the page draws no view row ${where}`).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
+  // The view row was waited visible just above, and every caller waits for the header drawn
+  // first; null only throws.
   const reading = await headerReading(page);
   if (reading === null) throw new Error(`the page draws no header or no view row ${where}`);
   const drawnAs = `${reading.lines.length} lines, ${reading.height.toFixed(1)} px`;
@@ -630,8 +692,7 @@ export async function expectHeaderWithinItsLimit(
   }
 }
 
-/** What stays at the top of the screen and what scrolls away (ruling 5), where the page stands
- *  now. */
+/** What stays at the top of the screen and what scrolls away, where the page stands now. */
 export interface StickyReading {
   /** The band - the key's row and the title - by its box on the screen. */
   readonly block: { readonly bottom: number; readonly height: number; readonly top: number };
@@ -701,14 +762,15 @@ export function stickyReading(page: Page): Promise<StickyReading | null> {
   });
 }
 
-/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in
- *  (part B). */
+/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in. */
 export const TYPEFACE = "Dispatch Inter";
 
 /** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule; null when no rule declares the family. */
-export function typefaceAddress(page: Page): Promise<string | null> {
-  return page.evaluate((family) => {
+ *  rule. Throws when no rule declares the family. */
+export async function typefaceAddress(page: Page): Promise<string> {
+  // Callers wait for the header drawn first, and the page's script runs only once its stylesheet
+  // has loaded, so the rule is there; a miss only throws.
+  const address = await page.evaluate((family) => {
     const find = (rules: CSSRuleList, base: string): string | null => {
       for (const rule of rules) {
         if (rule instanceof CSSFontFaceRule) {
@@ -728,6 +790,10 @@ export function typefaceAddress(page: Page): Promise<string | null> {
     }
     return null;
   }, TYPEFACE);
+  if (address === null) {
+    throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
+  }
+  return address;
 }
 
 /** How each face of the typeface's family stands in the document's font set: `loaded` once the
@@ -752,6 +818,90 @@ export function headerFamilies(page: Page): Promise<string[]> {
   );
 }
 
+/** The header's labels against their count, read off the drawn page: how many chips are drawn
+ *  wholly inside the labels' box, each chip the box's edge cuts (`<label>: <its box> in <the
+ *  labels' box>`), and the number the count names, 0 where no count is drawn. A chip wholly
+ *  outside the box is not drawn. The count is a count of the rest where the chips drawn whole and
+ *  its number make every label, and no chip is cut. */
+export interface LabelsAgainstTheCount {
+  readonly cut: readonly string[];
+  readonly left: number;
+  readonly whole: number;
+}
+
+/** Reads `LabelsAgainstTheCount` off the header's properties line `line`, inside the page.
+ *  Playwright sends the page a page function's own source and nothing it closes over, so this
+ *  closes over nothing, and a page function builds it there from `LABELS_READING`. */
+function readLabelsAgainstTheCount(line: Element): LabelsAgainstTheCount {
+  const box = line.querySelector('[data-testid="issue-header-labels"]');
+  if (box === null) throw new Error("the header draws no labels' box");
+  const outer = box.getBoundingClientRect();
+  const edges = (rect: DOMRect) =>
+    `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
+  const cut: string[] = [];
+  let whole = 0;
+  for (const chip of box.querySelectorAll("[data-header-label]")) {
+    const rect = chip.getBoundingClientRect();
+    const inside =
+      rect.left >= outer.left - 0.5 &&
+      rect.right <= outer.right + 0.5 &&
+      rect.top >= outer.top - 0.5 &&
+      rect.bottom <= outer.bottom + 0.5;
+    const outside =
+      rect.right <= outer.left + 0.5 ||
+      rect.left >= outer.right - 0.5 ||
+      rect.bottom <= outer.top + 0.5 ||
+      rect.top >= outer.bottom - 0.5;
+    if (inside) whole += 1;
+    else if (!outside)
+      cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
+  }
+  const count = line.querySelector('[data-testid="issue-labels-left"]');
+  return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
+}
+
+/** The source of `readLabelsAgainstTheCount`, which a page function turns back into the reading
+ *  with `new Function`, as `labelsAgainstTheCount` does. A row whose one page function reads the
+ *  line at many widths reads with it too, so the two read a chip the same way. Dispatch sends no
+ *  Content-Security-Policy, so the page may build a function from a string. */
+export const LABELS_READING = String(readLabelsAgainstTheCount);
+
+/**
+ * Reads `LabelsAgainstTheCount` on the header's properties line. With `narrowBy`, it reads the
+ * frame after the line narrows by that many px: in one task, so before any frame is drawn and
+ * before the labels are read again on the next one, the line takes an inline `max-width` that
+ * much under its width and the chips are then read. The line keeps the inline width; the row
+ * takes it off.
+ */
+export function labelsAgainstTheCount(
+  page: Page,
+  narrowBy?: number
+): Promise<LabelsAgainstTheCount> {
+  return propertiesLine(page).evaluate(
+    (line, { narrowBy, reading }) => {
+      if (narrowBy !== undefined) {
+        line.style.maxWidth = `${line.getBoundingClientRect().width - narrowBy}px`;
+      }
+      const read = new Function(`return ${reading}`)() as (line: Element) => LabelsAgainstTheCount;
+      return read(line);
+    },
+    { narrowBy, reading: LABELS_READING }
+  );
+}
+
+/** Holds the header's labels' box at the width the chips it draws now fill, rounded up to a
+ *  whole pixel, whatever the rest of the line does after: an inline `flex` of that basis that
+ *  neither grows nor shrinks. */
+export function holdLabelsAtTheirChips(page: Page): Promise<void> {
+  return propertiesLine(page).evaluate((line) => {
+    const box = line.querySelector<HTMLElement>('[data-testid="issue-header-labels"]');
+    const last = [...(box?.querySelectorAll("[data-header-label]") ?? [])].at(-1);
+    if (box === null || last === undefined) throw new Error("the header draws no label");
+    const width = Math.ceil(last.getBoundingClientRect().right - box.getBoundingClientRect().left);
+    box.style.flex = `0 0 ${width}px`;
+  });
+}
+
 /** What the count's press left in the history entry: its `waitingPress` number, or null. */
 export function waitingPressInHistory(page: Page): Promise<number | null> {
   return page.evaluate(() => {
@@ -769,6 +919,8 @@ export async function titleOfLines(page: Page, lines: number): Promise<string> {
   let title = "Edit";
   for (let index = 0; index < 400; index += 1) {
     title = `${title} ${words[index % words.length]}`;
+    // The caller waits for the header drawn first, and each call lays out and measures its own
+    // hidden copy within the call.
     const drawn = await page.evaluate((text) => {
       const heading = document.querySelector<HTMLElement>(
         "[data-issue-page] [data-issue-header] h1"
@@ -790,4 +942,44 @@ export async function titleOfLines(page: Page, lines: number): Promise<string> {
     if (drawn === lines) return title;
   }
   throw new Error(`no title takes ${lines} lines`);
+}
+
+/** The page's clipboard, as `holdClipboard` replaces it. */
+export interface HeldClipboard {
+  /** Lets every held write land: each `writeText` promise still out resolves. */
+  land(): Promise<void>;
+  /** How many writes the page has made to the clipboard. */
+  writes(): Promise<number>;
+}
+
+/**
+ * Replaces the page's clipboard, before the page loads, with one that counts each
+ * `navigator.clipboard.writeText` and holds the promise it returns until the row calls `land`,
+ * so a row can press a copy control while its write is out. Called before the row's first
+ * navigation, as `recordClipboard` (`clipboard.ts`) is. It lives in this file, not beside
+ * `recordClipboard`, because this part changes no browser file of the suite but its own.
+ */
+export async function holdClipboard(page: Page): Promise<HeldClipboard> {
+  await page.addInitScript(() => {
+    const state = { held: [] as (() => void)[], writes: 0 };
+    window.__dispatchHeldClipboard = state;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => {
+          state.writes += 1;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          state.held.push(resolve);
+          return promise;
+        },
+      },
+    });
+  });
+  return {
+    land: () =>
+      page.evaluate(() => {
+        for (const resolve of window.__dispatchHeldClipboard?.held.splice(0) ?? []) resolve();
+      }),
+    writes: () => page.evaluate(() => window.__dispatchHeldClipboard?.writes ?? 0),
+  };
 }

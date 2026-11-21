@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,6 +16,12 @@ import { MarkdownPreview } from "./MarkdownPreview";
 import { loadedEngine, useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { ReferenceHostIs } from "./reference-host";
 import { Unfurl } from "./Unfurl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** CORE-1's summary read, which a reference to it shows. */
 const issue: IssueReferenceSummary = {

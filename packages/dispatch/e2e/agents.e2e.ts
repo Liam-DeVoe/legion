@@ -11,9 +11,11 @@ import {
   isBroadcastInput,
   pickAgentFilter,
   postedBroadcasts,
+  QUEUED,
   refuseBroadcasts,
   setLiveSessions,
   setSessionLive,
+  setSessionRecord,
   shownAgentRows,
   toggleAgentGroup,
 } from "./agents";
@@ -28,6 +30,7 @@ import {
   getAgentStates,
   listAgentMessages,
   putAgentState,
+  queuedEnvelopesOf,
   replyToMessageDelivery,
 } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -153,7 +156,11 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     const shownTitles = shownAgentRows(page).locator("h2");
     await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent", "Archivist"]);
     // Each heading owns its own row: a group's heading starts below the row above it.
+    await expect(idleToggle).toBeVisible();
+    await expect(quietToggle).toBeVisible();
+    // The waits above drew both headings, and a drawn element has a box, so each has one.
     const idleBox = await idleToggle.boundingBox();
+    // The Quiet heading was waited for above too, so its box is there as the Idle one's is.
     const quietBox = await quietToggle.boundingBox();
     if (idleBox === null || quietBox === null) throw new Error("group headings not laid out");
     expect(quietBox.y).toBeGreaterThanOrEqual(idleBox.y + idleBox.height);
@@ -343,6 +350,84 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
     await expect(inbox.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// INFRA-3740: a person's message to an agent that neither the listener's registry nor its
+// known-session store holds any more - its session ended after the page listed it - is queued
+// rather than failed. Dispatch makes no send, since its registry read answers `no live session`,
+// and publishes on the session's own agent subject the envelope the listener's send would have
+// stored, so the listener gives it up with the agent wake and the session reads it when it runs
+// again. The card reads the one queued sentence a person reads for every stopped session. The
+// harness runs Dispatch with NATS disabled, so the row reads what the server published from its
+// test hook rather than from a stream.
+// SLOW(>=2s): the Agents page's load and an opened card, then a send Dispatch answers only after
+// it has read the ended session again within the harness's half-second take-over window.
+test("a message to an agent no store knows any more is queued for it, and its card says so", async ({
+  browser,
+}) => {
+  // This Planner takes Send, so a plain message to it goes as Send; the one above takes only
+  // Aside and BTW, and a plain message to it would go as Aside.
+  await setLiveSessions([{ ...planner, capabilities: ["aside", "btw", "steer"] }]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/agents");
+    const card = agentRow(page, planner.session_id);
+    await card.getByRole("button", { exact: true, name: "Planner" }).click();
+    const composer = card.getByRole("textbox", { name: "Comment" });
+    await expect(composer).toBeVisible();
+    // The session ends after the page listed it, with no record left in the registry or the
+    // known-session store, so the page still offers it Send and the registry read Dispatch makes
+    // before it sends answers 404 `no live session`.
+    await setSessionRecord(planner.session_id, "absent");
+
+    const body = "Pick up the release notes when you are back.";
+    const sent = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/v1/agents/${planner.session_id}/messages`)
+    );
+    await composer.fill(body);
+    await composer.press("Control+Enter");
+    const response = await sent;
+    expect(response.status()).toBe(201);
+    expect(keyedWrite(response.request())).toEqual({
+      input: { body, delivery: "steer" },
+      key: expect.any(String),
+    });
+    const message = (await response.json()) as {
+      deliveries: { delivery: string; state: string }[];
+      id: string;
+    };
+    expect(message.deliveries).toEqual([
+      expect.objectContaining({ delivery: "steer", state: "queued" }),
+    ]);
+
+    const conversation = card.getByRole("list", { name: "Conversation with Planner" });
+    await expect(conversation).toContainText(body);
+    await expect(conversation.getByText(QUEUED("Planner"), { exact: true })).toBeVisible();
+    await expect(conversation).not.toContainText("Failed");
+    expect(
+      (await getSentMessages()).filter((send) => send.target_session === planner.session_id)
+    ).toEqual([]);
+
+    // What Dispatch published is the envelope the listener's send would have stored: on the
+    // session's own subject, under the send's dedupe key, carrying the delivery frame.
+    const queued = await queuedEnvelopesOf(message.id);
+    expect(queued).toEqual([
+      expect.objectContaining({
+        dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,
+        source: "dispatch",
+        subject: `notifications.agent.${planner.session_id}`,
+      }),
+    ]);
+    expect(JSON.parse(queued[0]?.payload ?? "null")).toMatchObject({
+      delivery: { mode: "steer" },
+      event: { payload: { id: message.id }, type: "message.created" },
+    });
   } finally {
     await alice.close();
   }
@@ -846,6 +931,7 @@ function planners(count: number, capable: number): FakeSession[] {
 async function fillUntilStable(textarea: Locator): Promise<void> {
   const height = async (lines: number) => {
     await textarea.fill(Array.from({ length: lines }, (_, line) => `Line ${line + 1}`).join("\n"));
+    // The fill above waited for the box to be visible and editable, so the box is drawn.
     const box = await textarea.boundingBox();
     if (box === null) throw new Error("the message box is not on screen to measure");
     return box.height;
@@ -935,9 +1021,12 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     // one, the row clauses record intent. A third whole card is bounded by the 166 px card, not
     // by the composer. The list is windowed, so the cards on the page are the ones it drew, of
     // the forty the heading above counts and the select-all ticked.
-    const drawn = await shownAgentRows(page).count();
-    expect(drawn).toBeGreaterThan(2);
-    expect(drawn).toBeLessThanOrEqual(40);
+    // The floor is polled: the window draws its cards after the scroll above, so a count read at
+    // once can be of a window still drawing. Once that poll has seen the window draw, one read of
+    // the ceiling catches a moment with more than 40 cards, which a poll would wait out.
+    const drawn = shownAgentRows(page);
+    await expect.poll(() => drawn.count()).toBeGreaterThan(2);
+    expect(await drawn.count()).toBeLessThanOrEqual(40);
 
     // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
     // message empty. Two whole cards and the third card's checkbox are above the composer.
@@ -1079,7 +1168,7 @@ test("on a narrow or short screen a refused send's row stays out of the sticky b
   }
 });
 
-const NOTICE = /^Excluded:/;
+const NOTICE = /^(At most \d+ recipients|Excluded:)/;
 const NOTICE_SIZES = [
   { height: 664, width: 390 },
   { height: 390, width: 844 },
@@ -1147,6 +1236,8 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
     excludedChip: (title: string) =>
       composer.getByRole("button", { name: new RegExp(`^${title} · does not advertise BTW`) }),
     excludedLine: composer.getByText(/^Excluded:/),
+    limit: composer.getByText(/^At most 100 recipients per broadcast/),
+    notice: composer.getByText(NOTICE),
   };
 }
 
@@ -1197,19 +1288,66 @@ test("with half the recipients unable to take the mode, the compact composer kee
   }
 });
 
-test("with 120 selected and 110 recipients, the compact composer keeps its budget and each excluded chip names its reason", async ({
-  browser,
-}) => {
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    const fixture = await openNoticeFixture(page, planners(120, 110));
-    await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-      await expect.soft(fixture.excludedChip("Planner 111"), at).toHaveCount(1);
-    });
-  } finally {
-    await alice.close();
-  }
+test.describe("the composer's notices share one slot, highest first, within budget on compact screens", () => {
+  test("the limit alone: 120 recipients", async ({ browser }) => {
+    const alice = await asUser(browser, "alice");
+    try {
+      const page = await alice.newPage();
+      const fixture = await openNoticeFixture(page, planners(120, 120));
+      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+        await expect.soft(fixture.limit, at).toHaveCount(1);
+        await expect.soft(fixture.notice, at).toHaveCount(1);
+      });
+    } finally {
+      await alice.close();
+    }
+  });
+
+  test("the limit over exclusions: 120 selected, 110 recipients, each excluded chip still names its reason", async ({
+    browser,
+  }) => {
+    const alice = await asUser(browser, "alice");
+    try {
+      const page = await alice.newPage();
+      const fixture = await openNoticeFixture(page, planners(120, 110));
+      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+        await expect.soft(fixture.limit, at).toHaveCount(1);
+        await expect.soft(fixture.excludedLine, at).toHaveCount(0);
+        await expect.soft(fixture.excludedChip("Planner 111"), at).toHaveCount(1);
+      });
+    } finally {
+      await alice.close();
+    }
+  });
+
+  // SLOW(>=2s): 111 recipient chips rendered for real at each of three compact sizes, twice over
+  // the boundary; the layout under measurement is what the row proves.
+  test("the boundary with exclusions: 101 recipients show the limit, exactly 100 the Excluded line", async ({
+    browser,
+  }) => {
+    const alice = await asUser(browser, "alice");
+    try {
+      const page = await alice.newPage();
+      const fixture = await openNoticeFixture(page, planners(111, 101));
+      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+        await expect.soft(fixture.limit, at).toHaveCount(1);
+        await expect.soft(fixture.excludedLine, at).toHaveCount(0);
+      });
+      await page.setViewportSize({ height: 664, width: 390 });
+      // One recipient off the selection, taken out at the chip the composer shows for it: the
+      // list is windowed, and the hundred-and-first row is not drawn at this scroll position.
+      await fixture.composer.getByTitle("Remove Planner 101 from this broadcast").click();
+      await expect(
+        fixture.composer.getByRole("heading", { name: "Broadcast to 100 of 110 selected" })
+      ).toBeVisible();
+      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+        await expect.soft(fixture.limit, at).toHaveCount(0);
+        await expect.soft(fixture.excludedLine, at).toHaveCount(1);
+      });
+    } finally {
+      await alice.close();
+    }
+  });
 });
 
 test("a typed broadcast survives clearing the selection and picking again, and a refused send gives it back", async ({
@@ -1474,6 +1612,8 @@ test("a human-paced double click on one Retry sends that message once, and never
     // into the pointer and the second click lands on that row again.
     await expect(sends.getByRole("listitem").first()).toContainText("Never retried.");
     const retry = row("Retried once.").getByRole("button", { name: "Retry" });
+    await expect(retry).toBeVisible();
+    // The wait above drew Retry, and a drawn element has a box, so the box is there.
     const box = await retry.boundingBox();
     if (box === null) throw new Error("Retry has no box to click");
     const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -1499,6 +1639,47 @@ test("a human-paced double click on one Retry sends that message once, and never
     await expect(row("Never retried.").getByRole("status")).toHaveText(
       /^Could not send to 2 agents: /
     );
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a selection over the broadcast limit says so and never asks the server", async ({
+  browser,
+}) => {
+  await setLiveSessions(planners(101, 101));
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = postedBroadcasts(page);
+    await page.goto("/agents");
+    const agents = page.getByRole("region", { name: "Agents" });
+    const composer = page.getByRole("region", { name: "Broadcast" });
+    await agents.getByRole("checkbox", { name: "Select all matching agents" }).click();
+    await expect(
+      composer.getByRole("heading", { name: "Broadcast to 101 of 101 selected" })
+    ).toBeVisible();
+    await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Too many.");
+    const send = composer.getByRole("button", { name: "Send to 101" });
+    await expect(send).toBeDisabled();
+    await send.click({ force: true });
+    // A selection over the limit asks nothing of the server, and a request that never leaves
+    // marks nothing to wait on: `ABSENCE_MARGIN_MS` is the window a POST made in the forced
+    // click's own task would show in, taken in Node so the page's clock cannot skip it.
+    await sleep(ABSENCE_MARGIN_MS);
+    expect(posts).toEqual([]);
+    expect(await getSentMessages()).toEqual([]);
+    await expect(
+      composer.getByText("At most 100 recipients per broadcast; this one would reach 101.")
+    ).toBeVisible();
+
+    // One fewer is within the limit: the reason goes and Send comes back. The row itself is not
+    // drawn - the list is windowed and the hundred-and-first row is far below the window - so
+    // the recipient comes off at the chip the composer shows for it.
+    await composer.getByTitle("Remove Planner 101 from this broadcast").click();
+    await expect(composer.getByText(/^At most 100 recipients/)).toHaveCount(0);
+    await expect(composer.getByRole("button", { name: "Send to 100" })).toBeEnabled();
   } finally {
     await alice.close();
   }

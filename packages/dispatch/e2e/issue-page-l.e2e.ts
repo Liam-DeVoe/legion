@@ -3,10 +3,19 @@ import type { Locator, Page } from "@playwright/test";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
+  CURRENT_POINT,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
-import { createAsk, getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createProject,
+  getArtifactBlocks,
+  getIssueEvents,
+  getMyState,
+  listComments,
+} from "./api";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
 import {
@@ -55,6 +64,7 @@ import {
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
+import { asUser } from "./users";
 
 /**
  * Writing on the new issue page: the page's one
@@ -63,14 +73,17 @@ import { expect, test } from "./test";
  * the verification document, named by its `-g` string: rows (1) to (4) are
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
  * its Spec view half, owed until the Spec view's keymap takes the box's writer and skipped until
- * then (`@owed`).
+ * then (`@owed`). Row (10) is R12's: the conversation's current point, which the outline marks on
+ * one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that the
+ * reader causes, beside the row of `issue-page-i.e2e.ts` for the other half.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
- * the new page turned on with `withIssuePage`): every row writes from the box and then reads its
- * own write, as Dispatch stored it and as the outline draws it from the server's reads. Rows (1)
- * to (5) are the checkpoint's (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`),
- * where the issue itself is no row of the outline now (ruling 5), so a node with no parent is read
- * at the outline's top level.
+ * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
+ * from the box and then reads its own write, as Dispatch stored it and as the outline draws it
+ * from the server's reads. Rows (1) to (5) are the checkpoint's
+ * (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`), where the issue itself is
+ * no row of the outline now (ruling 5), so a node with no parent is read at the outline's top
+ * level.
  */
 
 /** The widest window that draws the phone's form of the page (decision 72 of the parts). */
@@ -185,6 +198,8 @@ async function expectFormAtFoot(page: Page, when: string): Promise<void> {
  *  outline's, at most 1,000 px (R1). */
 async function expectFormOnOutline(page: Page, when: string): Promise<void> {
   const box = await formBox(page, when);
+  // The outline is measured once, at the instant the form above was, because the row compares
+  // where the two stand now and both are laid out in the same frame.
   const outline = await tree(page).boundingBox();
   expect(outline, `the page draws no outline ${when}`).not.toBeNull();
   expect(
@@ -225,6 +240,111 @@ async function oneRowHolding(page: Page, words: string, what: string): Promise<s
   return id;
 }
 
+/** The rows the page names to a screen reader as the conversation's current point: each that
+ *  carries `aria-current`, whatever its value (R12). */
+function currentRows(page: Page): Locator {
+  return nodeRows(page).filter({ has: page.locator(":scope[aria-current]") });
+}
+
+/** The rows that carry a mark of the conversation's current point (R12): the point's own row
+ *  (`here`), or each drawn row above it on its path while its own row is folded away (`path`). */
+function markedRows(page: Page): Locator {
+  return nodeRows(page).filter({ has: page.locator(":scope[data-current-point]") });
+}
+
+/** Fails unless node `id`'s row, `what`, is the conversation's current point and no other row
+ *  carries a mark of it (R12): that row is the current location for a screen reader
+ *  (`aria-current`, `CURRENT_POINT`) and carries the point's own mark, and no other row carries
+ *  either. */
+async function expectPointOn(page: Page, id: string, what: string, when: string): Promise<void> {
+  const row = nodeRow(page, id).first();
+  await expect(row, `${what} is not the current location ${when}`).toHaveAttribute(
+    "aria-current",
+    CURRENT_POINT
+  );
+  await expect(row, `${what} does not carry the current point's own mark ${when}`).toHaveAttribute(
+    "data-current-point",
+    "here"
+  );
+  await expect(
+    currentRows(page),
+    `a row besides ${what} is the current location ${when}`
+  ).toHaveCount(1);
+  await expect(
+    markedRows(page),
+    `a row besides ${what} carries a mark of the current point ${when}`
+  ).toHaveCount(1);
+}
+
+/** An outline as the browser computes it: its colour, its offset, its style and its width. */
+interface Ring {
+  readonly color: string;
+  readonly offset: string;
+  readonly style: string;
+  readonly width: string;
+}
+
+/** A ring the page draws around a bullet's dot (R12): a solid outline `width` wide and `offset`
+ *  off the dot, in the colour of the page's token `--color-<token>`. */
+interface RingClass {
+  readonly offset: string;
+  readonly token: string;
+  readonly width: string;
+}
+
+/** The ring on the dot of the current point's own row, its branch not folded (`theme/classes.ts`'s
+ *  `pagePointRing`): 1.5 px of the page's quiet grey, 2 px off the dot. */
+const POINT_RING: RingClass = { offset: "2px", token: "page-quiet", width: "1.5px" };
+
+/** The lighter ring on the dot of a row above the current point on its path while the point's own
+ *  row is folded away, that row's own branch folded (`pagePathRingFolded`): 1 px of the bullets'
+ *  grey, 5 px off the dot, so it stands outside the folded branch's halo. */
+const PATH_RING_FOLDED: RingClass = { offset: "5px", token: "page-bullet", width: "1px" };
+
+/** The outline of the bullet's dot in `row` (`NodeRow.tsx`'s `Bullet`), as the browser computes
+ *  it. */
+function dotRing(row: Locator): Promise<Ring> {
+  return row
+    .locator("[data-node-bullet] > i")
+    .first()
+    .evaluate((dot) => {
+      const style = getComputedStyle(dot);
+      return {
+        color: style.outlineColor,
+        offset: style.outlineOffset,
+        style: style.outlineStyle,
+        width: style.outlineWidth,
+      };
+    });
+}
+
+/**
+ * `ring` as this browser computes it, read off a probe that is given its outline and its token as
+ * its `color` and is removed at once: the token's value in the scheme the page is drawn in, and
+ * the width as the browser keeps it. A browser that snaps an outline's width to whole device
+ * pixels at computed-value time, as CSS Values 4 has it ("snap as a border width"), keeps 1.5 px
+ * as 1 px on a screen of one device pixel to the CSS pixel, so a dot is held to the width its
+ * class computes to here rather than to the words of the class.
+ */
+function owedRing(page: Page, ring: RingClass): Promise<Ring> {
+  return page.evaluate(({ offset, token, width }) => {
+    const probe = document.createElement("i");
+    probe.style.color = `var(--color-${token})`;
+    probe.style.outline = `${width} solid`;
+    probe.style.outlineOffset = offset;
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const owed = {
+      color: style.color,
+      offset: style.outlineOffset,
+      style: style.outlineStyle,
+      width: style.outlineWidth,
+    };
+    probe.remove();
+    return owed;
+  }, ring);
+}
+
 // c-replies (1): a reply is drawn
 // under the entry it answers, at any depth, a resolved question's reply included; every node
 // that takes a reply draws the control; a reply from the box lands under its target; an answer
@@ -256,6 +376,8 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     // is the fourth level of the tree. The thread's folds are opened by their fold controls
     // alone, since G's `unfoldEveryBranch` also presses that line.
     const folds = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
+    // The outline's rows were drawn with their fold controls in one render (the wait above), and
+    // each press redraws before the next count, so a count of none means every fold is open.
     for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
       await folds.first().click();
     }
@@ -332,7 +454,9 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     // The box at the foot posts a comment drawn at the outline's top level, where the issue's
     // own nodes are: the issue itself is no row.
     const instead = composer(page).getByRole("button", { name: CONTROL_LABELS.write_on_issue });
-    if (await instead.isVisible()) await instead.click();
+    // The answer that landed above ended the line's target, so the box holds no reply and offers
+    // no way back to the issue.
+    await expect(instead, "the box still holds a target after the answer landed").toHaveCount(0);
     await sendFromComposer(page, "A comment on the issue from the composer.");
     await drawnUnder(
       (await commentWithBody(seeded.key, undefined, "A comment on the issue from the composer."))
@@ -554,6 +678,22 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
         Math.round((foot?.y ?? 0) + (foot?.height ?? 0)),
         `the box does not stand at the foot of the screen at ${at}`
       ).toBe(size.height);
+      // Standing there, it publishes how far up from the screen's foot it reaches, which the
+      // shell's status corner rides above (`--foot-composer-inset`, `useFootInset`): the reach of
+      // its wrapper, the element its host marks as held at the foot (`data-foot-held`).
+      const wrapper = await page.locator("[data-foot-held]").boundingBox();
+      const reach = size.height - (wrapper?.y ?? size.height);
+      await expect
+        .poll(
+          async () =>
+            Number.parseFloat(
+              await page.evaluate(() =>
+                getComputedStyle(document.documentElement).getPropertyValue("--foot-composer-inset")
+              )
+            ),
+          { message: `the box does not publish its reach of ${reach.toFixed(1)} px at ${at}` }
+        )
+        .toBeCloseTo(reach, 0);
 
       // While it replies, its placeholder says where the words go.
       await focusRow(page, seeded.head);
@@ -572,6 +712,8 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
       await focusRow(page, seeded.openAsk);
       await page.keyboard.press("a");
       await expect(composerField(page)).toBeFocused();
+      // The field is measured once it holds the caret (the wait above), because the row reads the
+      // width it is drawn at for typing.
       const field = await composerField(page).boundingBox();
       console.log(
         `the answer field at ${at}: ${field?.width.toFixed(0)} x ${field?.height.toFixed(0)}`
@@ -628,6 +770,8 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
 
       // At rest: one line 26 px tall, which says where the words go and fits what it says.
       const field = composerField(page);
+      // The line at rest is measured once, at the instant the form above was measured on the
+      // outline, because the row reads the height it rests at.
       const rest = await field.boundingBox();
       expect(
         Math.abs((rest?.height ?? 0) - LINE_AT_REST),
@@ -682,12 +826,13 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
         .toBe(true);
 
       // Tab from the focused row reaches the line, Comment, Question and Send, in that order.
-      for (
-        let pressed = 0;
-        pressed < 30 &&
-        !(await composer(page).evaluate((section) => section.contains(document.activeElement)));
-        pressed += 1
-      ) {
+      for (let pressed = 0; pressed < 30; pressed += 1) {
+        // A press of Tab moves the focus before it returns, so the focus read here is where the
+        // last press put it.
+        const inBox = await composer(page).evaluate((section) =>
+          section.contains(document.activeElement)
+        );
+        if (inBox) break;
         await page.keyboard.press("Tab");
       }
       await expect(
@@ -1344,5 +1489,304 @@ test.skip("r on a statement in the Spec view writes a comment under it @owed", {
         anchored.to <= range.to,
       `the comment from the Spec view is anchored to ${JSON.stringify(comment.anchor)}, not inside ${STATEMENT_BLOCKS.two}`
     ).toBe(true);
+  });
+});
+
+// Tester's finding, round 4 of the test of part L: the foot inset counts a sticky element held at
+// the foot, the new page's box. Today's docked composer is sticky too, held at the top from 640 px
+// up, and keeps the 64 px `bottom` of its fixed look below 640 px, so a wide window whose foot
+// meets its bottom edge counted it, published its whole height and drew the shell's status corner
+// above the screen's top edge, which `main` never does (R10).
+test("today's docked composer lifts nothing at the foot of a short wide window", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  // An issue of a project of the row's own: the database is empty at each row's start.
+  await createProject({ key: "DOCK", name: "Today's docked composer" });
+  const { key } = await createIssue({
+    force: true,
+    project: "DOCK",
+    title: "Today's page in a window whose foot meets its composer",
+  });
+  // Today's page: the reader has not turned the new page on.
+  const context = await asUser(browser, READER);
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    await page.goto(`/issues/${key}/conversation`);
+    const docked = page.getByRole("form", { name: "Comment composer" });
+    await expect(docked, "today's Conversation tab draws no docked composer").toBeVisible();
+    // The window's foot on the composer's bottom edge, which is where the inset reads its box: the
+    // window is set to the composer's bottom until the two meet, as a reader's short window does.
+    const bottomOf = async () => {
+      // The composer was seen drawn by the wait above, and each try of the loop below reads its
+      // box where the last resize left it.
+      const box = await docked.boundingBox();
+      return box === null ? Number.NaN : Math.round(box.y + box.height);
+    };
+    let bottom = await bottomOf();
+    for (
+      let tries = 0;
+      tries < 3 && Math.abs((page.viewportSize()?.height ?? 0) - bottom) > 1;
+      tries++
+    ) {
+      expect(bottom, "the docked composer's foot is not on a desktop screen").toBeLessThan(
+        DESKTOP.height
+      );
+      await page.setViewportSize({ height: bottom, width: DESKTOP.width });
+      await expect
+        .poll(bottomOf, { message: "the docked composer moved on the resize" })
+        .toBeGreaterThan(0);
+      bottom = await bottomOf();
+    }
+    expect(
+      Math.abs((page.viewportSize()?.height ?? 0) - bottom),
+      "the window's foot never met the docked composer's bottom edge"
+    ).toBeLessThanOrEqual(1);
+    const inset = () =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--foot-composer-inset")
+      );
+    // Two frames after the window met it: the resize and the composer's size observer have both
+    // run by then, so the inset read is the one the shell draws its status corner by.
+    await page.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+    );
+    expect(
+      await inset(),
+      `today's docked composer published a foot inset at ${DESKTOP.width}x${bottom}`
+    ).toMatch(/^(0px)?$/);
+  } finally {
+    await context.close();
+  }
+});
+
+// (10) The outline marks the conversation's current point on one row - the node the reader's
+// next turn answers - as the current location for a screen reader and with a quiet ring on its
+// bullet's dot. On this seed it is the open question at load, whether that question waits on the
+// reader or is only the newest act, since the seed asks it last. A Reply moves the mark to the
+// row the box is aimed at and Escape moves it back, the focus staying the box's; while the
+// point's own row is folded away no row is the current location and the row above it on its path
+// carries a lighter ring; and an answer and then a new comment, each the newest act, take the
+// mark with them.
+// SLOW(>=2s): a seeded thread and three questions, the thread opened press by press twice, two
+// replies aimed and ended, and an answer and a comment written from the box, each waited on until
+// the outline marks it.
+test("the outline marks the current point of the conversation on one row, and the mark follows the box and each new act @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    // At load: the one question waiting on the reader, if the server says it waits on alice, and
+    // else the newest act on the issue, which is that question too, asked after every other node.
+    await expectPointOn(page, seeded.openAsk, "the open question's row", "at load");
+    // The probe reads what the page's own values compute to, which no state of the page moves, so
+    // one reading holds for the whole row.
+    const pointRing = await owedRing(page, POINT_RING);
+    await expect
+      .poll(() => dotRing(nodeRow(page, seeded.openAsk).first()), {
+        message:
+          "the open question's dot is not ringed as the point's own row: a solid 1.5 px line 2 px off it, in the page's quiet grey",
+      })
+      .toEqual(pointRing);
+
+    // A Reply aims the box at the thread's head: the mark moves to its row, and the focus is the
+    // box's, where the Reply put it, and not the mark's. Escape in the box ends the reply, and the
+    // mark goes back to the open question.
+    await focusRow(page, seeded.head);
+    await page.keyboard.press("r");
+    await expect(
+      composerField(page),
+      "r on the thread's head put no caret in the box"
+    ).toBeFocused();
+    await expectPointOn(page, seeded.head, "the thread's head", "while the box replies to it");
+    await expect(
+      nodeRow(page, seeded.openAsk).first(),
+      "the open question's row is still the current location while the box replies to the thread's head"
+    ).not.toHaveAttribute("aria-current");
+    await expect(composerField(page), "the mark took the focus from the box").toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(composerTarget(page), "Escape in the box did not end the reply").toHaveCount(0);
+    await expectPointOn(
+      page,
+      seeded.openAsk,
+      "the open question's row",
+      "once Escape ended the reply to the thread's head"
+    );
+
+    /** Opens the thread's folds by their fold controls and the line its fourth level is folded
+     *  to at this width, as the first row of this file does, so `third`'s row is drawn. */
+    const openThread = async (): Promise<void> => {
+      const folds = nodeRows(page).getByRole("button", {
+        exact: true,
+        name: CONTROL_LABELS.unfold,
+      });
+      // Each press redraws before the next count, so a count of none means every fold is open.
+      for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
+        await folds.first().click();
+      }
+      await openEveryDeeperBranch(page);
+      await expect(
+        nodeRow(page, seeded.third),
+        "the thread's fourth level is not drawn once its branches are open"
+      ).not.toHaveCount(0);
+    };
+
+    // The folded path: with the box replying to the fourth level, folding the thread's head folds
+    // the point's own row away. No row is then the current location, and the head, the one row
+    // of its path still drawn, carries the path's lighter ring, outside its folded halo.
+    await openThread();
+    await focusRow(page, seeded.third);
+    await page.keyboard.press("r");
+    await expect(
+      composerField(page),
+      "r on the fourth level's reply put no caret in the box"
+    ).toBeFocused();
+    await expectPointOn(
+      page,
+      seeded.third,
+      "the fourth level's row",
+      "while the box replies to it"
+    );
+    const head = nodeRow(page, seeded.head).first();
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+    await expect(
+      nodeRow(page, seeded.third),
+      "folding the thread's head left its fourth level drawn"
+    ).toHaveCount(0);
+    await expect(
+      currentRows(page),
+      "a row is the current location while the point's own row is folded away"
+    ).toHaveCount(0);
+    await expect(
+      head,
+      "the thread's head does not carry the path's mark while the point is folded away under it"
+    ).toHaveAttribute("data-current-point", "path");
+    await expect(
+      markedRows(page),
+      "a row besides the thread's head carries a mark while the point is folded away under it"
+    ).toHaveCount(1);
+    // Read once, as the point's ring above is: the page's own values, which no state moves.
+    const pathRing = await owedRing(page, PATH_RING_FOLDED);
+    await expect
+      .poll(() => dotRing(head), {
+        message:
+          "the folded head's dot is not ringed as a row on the point's path: a solid 1 px line 5 px off it, outside the fold's halo, in the bullets' grey",
+      })
+      .toEqual(pathRing);
+    // Unfolded again, the point's own row is drawn and carries the mark once more.
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+    await openThread();
+    await expectPointOn(
+      page,
+      seeded.third,
+      "the fourth level's row",
+      "once the thread's head is unfolded again"
+    );
+    // A press on the deeper line's control, where that line came back, takes the focus from the
+    // box, as a press on a fold control does not, so the caret is put back in the box for Escape.
+    await composerField(page).focus();
+    await page.keyboard.press("Escape");
+    await expect(
+      composerTarget(page),
+      "Escape in the box did not end the reply to the fourth level"
+    ).toHaveCount(0);
+    await expectPointOn(
+      page,
+      seeded.openAsk,
+      "the open question's row",
+      "once Escape ended the reply to the fourth level"
+    );
+
+    // A new act moves the mark: the answer sent from the open question's row is the newest act,
+    // on that question's own row, and no question waits once it is answered; then a comment on
+    // the issue is the newest act, and the mark is on its row alone.
+    await focusRow(page, seeded.openAsk);
+    await nodeRow(page, seeded.openAsk).first().locator('[data-pick-option="Left"]').click();
+    await composer(page).getByRole("button", { name: CONTROL_LABELS.send_answer }).click();
+    await expect(
+      nodeRow(page, seeded.openAsk).first(),
+      "the answer sent from the open question's row did not land"
+    ).toHaveAttribute("data-node-state", "answered");
+    await expectPointOn(
+      page,
+      seeded.openAsk,
+      "the open question's row",
+      "once its answer, the newest act, landed"
+    );
+    const words = "A comment on the issue, the newest act of all.";
+    await sendFromComposer(page, words);
+    const comment = (await commentWithBody(seeded.key, undefined, words)).id;
+    await expect(nodeRow(page, comment), "the new comment is not drawn").not.toHaveCount(0);
+    await expectPointOn(page, comment, "the new comment's row", "once it landed on the issue");
+  });
+});
+
+// (11) A row that holds the focus and leaves the tree hands the focus on only where the reader
+// caused it to leave, since the page would otherwise choose the reader's next place for them.
+// This row is the half the reader causes: a key of the reader's that takes the focused row out of
+// the view hands the focus to the nearest row still drawn, as a key's move gives it - the row now
+// at the dropped row's place among the rows the tree draws, or the last row where the tree now
+// ends before that place. The key is the cycle key `z`, pressed in its last state, which draws
+// every branch, to go back to its first, which draws the reader's own folds: the thread's fourth
+// level, which holds the focus, is folded away under the thread. The other half, a read the
+// reader did nothing toward, is the row of `issue-page-i.e2e.ts` that leaves the focus on the
+// page's body.
+// SLOW(>=2s): a seeded thread and three questions, the tree cycled to every branch and back.
+test("a key of the reader's that drops the focused row from the view hands the focus to the nearest row", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, seeded.head);
+    // The cycle's last state draws every branch, the thread's fourth level among them.
+    await page.keyboard.press("z");
+    await page.keyboard.press("z");
+    await expect(
+      nodeRow(page, seeded.third),
+      "the cycle's last state does not draw the thread's fourth level"
+    ).not.toHaveCount(0);
+    await focusRow(page, seeded.third);
+    /** The keys of the rows the tree draws, in order, and the key of the one that holds the
+     *  focus, or null where no row of the tree holds it. */
+    const drawn = () =>
+      tree(page).evaluate((outline) => {
+        const focused = document.activeElement?.closest<HTMLElement>("[data-node-row]");
+        return {
+          focused:
+            focused !== null && focused !== undefined && outline.contains(focused)
+              ? (focused.dataset.rowKey ?? null)
+              : null,
+          keys: [...outline.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+            (row) => row.dataset.rowKey ?? ""
+          ),
+        };
+      });
+    const before = await drawn();
+    const place = before.focused === null ? -1 : before.keys.indexOf(before.focused);
+    expect(place, "the thread's fourth level does not hold the focus").not.toBe(-1);
+
+    await page.keyboard.press("z");
+    await expect(
+      nodeRow(page, seeded.third),
+      "the cycle's first state still draws the thread's fourth level"
+    ).toHaveCount(0);
+    await expect
+      .poll(
+        async () => {
+          const after = await drawn();
+          const nearest = after.keys[Math.min(place, after.keys.length - 1)];
+          return after.focused !== null && after.focused === nearest;
+        },
+        {
+          message:
+            "the key that dropped the focused row left the focus on no row of the tree, or not on the row now at its place or the last row",
+        }
+      )
+      .toBe(true);
   });
 });

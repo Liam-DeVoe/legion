@@ -1,15 +1,31 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, renderHook, waitFor, within } from "@testing-library/react";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import {
+  hashKey,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+  useQuery,
+} from "@tanstack/react-query";
+import {
+  act,
+  type RenderResult,
+  render,
+  renderHook,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
+import { userStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   ArchitectureSource,
   ArtifactApproval,
@@ -17,7 +33,9 @@ import type {
   IssueComponents,
   IssueDetails,
   UserIssueState,
+  UserState,
 } from "../../api/types";
+import { withoutEllipsis } from "../../components/tooltips";
 import {
   pageStatusDoneText,
   pageStatusIdleText,
@@ -28,14 +46,17 @@ import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels, labelsControlName } from "../issue/IssueLabels";
+import { stateForIssue } from "../issue/pins";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { StatusGlyph } from "./StatusGlyph";
 import {
   architecture,
   doc,
@@ -46,17 +67,22 @@ import {
 } from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
-/** What the new issue page's header and Details share (dispatch://INFRA-3935 R8 and R10). */
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** What the new issue page's header and Details share. */
 
 /** The issue both callers write: the margin fixture's issue, at a later event and admitted. */
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
-// A document's approval reason comes with its reading (`doc`), which the engine makes.
-beforeAll(async () => {
-  await warmMarkdownRenderer();
-});
+// A document's approval reason comes with its reading (`doc`), which the engine makes, so the file
+// waits for the engine at its top level: it is ready before any test reads that reason.
+await warmMarkdownRenderer();
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 function narrowIssue(details: IssueDetails): Issue {
@@ -194,9 +220,41 @@ test("a status pick is kept in the write store when the page that made it goes",
   }
 });
 
-// dispatch://INFRA-3935 R8 (dispatch://INFRA-1196 R21): the shell's indicator names a header
-// write by the page's own name for each field it carries, never the schema's, and a status by the
-// board's word for it.
+// A parent save the reader stopped may have been saved: the hook's parent line says so, and that
+// saving it again is a write of its own, rather than that the save failed.
+test("a parent save the reader stopped says it may have been saved, not that it failed", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError(`/api/v1/issues/${issue.key}`, new TypeError("Failed to fetch"))
+  );
+  jest.useFakeTimers();
+  const hook = renderHook(() => useIssueHeaderWrites(issue, state), { wrapper });
+  try {
+    act(() => {
+      hook.result.current.drafts.writeParent("CORE-9");
+      hook.result.current.drafts.requestParentSubmit();
+    });
+    await stopTheLateWrite(client);
+    expect(hook.result.current.parentSaveFailed).toBe(true);
+    expect(hook.result.current.parentError).toBe(
+      stoppedWriteNote("the new parent", "saved", {
+        anew: "Saving it again sends it as a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    hook.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// The shell's indicator names a header write by the page's own name for each field it carries,
+// never the schema's, and a status by the board's word for it.
 test("issueUpdateLabel names each field by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
   expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
@@ -207,9 +265,8 @@ test("issueUpdateLabel names each field by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", {})).toBe("CORE-1 saved");
 });
 
-// dispatch://INFRA-3935 R8: the prototype's `.st-*` puts every status in one of three groups,
-// each with its glyph and its colour: done, the work that moves, and the rest, a status the board
-// does not know among them.
+// The prototype's `.st-*` puts every status in one of three groups, each with its glyph and its
+// colour: done, the work that moves, and the rest, a status the board does not know among them.
 test("statusGlyph and statusTone give the prototype's three groups", () => {
   expect([statusGlyph("done"), statusTone("done")]).toEqual(["✓", pageStatusDoneText]);
   const moving = ["in_progress", "testing", "needs_review"];
@@ -234,6 +291,54 @@ test("statusGlyph and statusTone give the prototype's three groups", () => {
   }
 });
 
+// The page's typeface lacks ◐, which as text would be drawn in a face of the reader's own machine,
+// at that face's width; a shape is the same whatever the reader's fonts, so each group's glyph is
+// an inline svg with no text in it.
+test("StatusGlyph draws each status's shape as an inline svg with no text", () => {
+  const groups: [status: string, shapes: (string | null)[][]][] = [
+    ["done", [["path", "none", "currentColor"]]],
+    [
+      "in_progress",
+      [
+        ["circle", "none", "currentColor"],
+        ["path", "currentColor", null],
+      ],
+    ],
+    ["todo", [["circle", "none", "currentColor"]]],
+  ];
+  for (const [status, shapes] of groups) {
+    const view = render(createElement(StatusGlyph, { glyph: statusGlyph(status) }));
+    try {
+      const svg = view.container.firstElementChild;
+      expect({
+        elements: Array.from(view.container.children, (element) => element.tagName),
+        glyph: svg?.getAttribute("data-status-glyph"),
+        hidden: svg?.getAttribute("aria-hidden"),
+        shapes: Array.from(svg?.children ?? [], (shape) => [
+          shape.tagName,
+          shape.getAttribute("fill"),
+          shape.getAttribute("stroke"),
+        ]),
+        sized: svg?.classList.contains("size-[1em]"),
+        status,
+        text: svg?.textContent,
+        textElements: svg?.querySelectorAll("text").length,
+      }).toEqual({
+        elements: ["svg"],
+        glyph: statusGlyph(status),
+        hidden: "true",
+        shapes,
+        sized: true,
+        status,
+        text: "",
+        textElements: 0,
+      });
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
 /** The project's one architecture source, so the components line draws its picker
  *  (`IssueComponentsLine.test.tsx`'s `source`, counting one component). */
 const architectureSource: ArchitectureSource = {
@@ -249,12 +354,12 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// dispatch://INFRA-3935 R8: the new issue page's add menu reaches four of `main`'s controls by
-// name, so each name is `main`'s, and each of `main`'s controls answers to it.
+// The new issue page's add menu reaches four of `main`'s controls by name, so each name is
+// `main`'s, and each of `main`'s controls answers to it.
 test("the four control names are main's", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
-  expect(componentsControlName("CORE-1")).toBe("Edit components of CORE-1");
+  expect(componentsControlName("CORE-1", null)).toBe("Edit components of CORE-1");
   expect(addPriorityControlName("CORE-1")).toBe("Add a priority to CORE-1");
 
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
@@ -300,25 +405,53 @@ test("the four control names are main's", async () => {
   }
 });
 
-// dispatch://INFRA-3935 R2 and R8: the new issue page's add menu, its `l` key and its rows find
-// the labels control by the name it carries inside `NoTooltips`, which `labelsControlName`
-// builds: the words it draws, then the issue's key, while it has no label; `main`'s name once it
-// has one; and while it saves, the words it draws then, their ellipsis dropped, then the key
-// (decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
+// The new issue page's add menu, its `l` key and its rows find the labels control by the name it
+// carries inside `NoTooltips`, which `labelsControlName` builds: the words it draws, then the
+// joining word of `page-words.ts` and the issue's key, while it has no label; `main`'s name once
+// it has one; and while it saves, the words it draws then, their ellipsis dropped, then the
+// joining word of `page-words.ts` and the key. Given `null`, outside `NoTooltips`, it is `main`'s
+// name in every state. Each expected name is built from the words of `page-words.ts`.
 test("labelsControlName names the labels control as it is drawn", () => {
-  expect(labelsControlName([], "CORE-1", CONTROL_LABELS)).toBe("Add a label to CORE-1");
-  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS)).toBe("Edit labels");
-  expect(labelsControlName([], "CORE-1", CONTROL_LABELS, ANSWER_LINES)).toBe(
-    "Saving labels of CORE-1"
+  const words = { ANSWER_LINES, CONTROL_LABELS };
+  const addName = `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`;
+  const saving = withoutEllipsis(ANSWER_LINES.saving_labels);
+  const savingName = `${saving} ${CONTROL_LABELS.control_name_of} CORE-1`;
+  expect(labelsControlName("CORE-1", null)).toBe("Edit labels");
+  expect(labelsControlName(undefined, null)).toBe("Edit labels");
+  expect(labelsControlName("CORE-1", { labels: [], saving: false, words })).toBe(addName);
+  expect(labelsControlName(undefined, { labels: [], saving: false, words })).toBe(
+    CONTROL_LABELS.add_label
   );
-  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS, ANSWER_LINES)).toBe(
-    "Saving labels of CORE-1"
+  expect(labelsControlName("CORE-1", { labels: ["api"], saving: false, words })).toBe(
+    "Edit labels"
   );
-  expect(labelsControlName(["api"], undefined, CONTROL_LABELS, ANSWER_LINES)).toBe("Saving labels");
-  // Three dots end the words as an ellipsis does.
+  expect(labelsControlName("CORE-1", { labels: [], saving: true, words })).toBe(savingName);
+  expect(labelsControlName("CORE-1", { labels: ["api"], saving: true, words })).toBe(savingName);
+  expect(labelsControlName(undefined, { labels: ["api"], saving: true, words })).toBe(saving);
+  // `saving` alone says whether a save is in flight: with it false the name is never the saving
+  // one, with a label or none and with a key or none. Of the four states the loop reads, one, a
+  // label with no key, is asserted nowhere above.
+  for (const labels of [[], ["api"]]) {
+    for (const issueKey of ["CORE-1", undefined]) {
+      const name = labelsControlName(issueKey, { labels, saving: false, words });
+      expect({ issueKey, labels, saving: [saving, savingName].includes(name) }).toEqual({
+        issueKey,
+        labels,
+        saving: false,
+      });
+    }
+  }
+  // The saving words are the ones passed, and three dots end them as an ellipsis does.
   expect(
-    labelsControlName([], "CORE-1", CONTROL_LABELS, { saving_labels: "Saving labels..." })
-  ).toBe("Saving labels of CORE-1");
+    labelsControlName("CORE-1", {
+      labels: [],
+      saving: true,
+      words: {
+        ANSWER_LINES: { ...ANSWER_LINES, saving_labels: "Writing labels..." },
+        CONTROL_LABELS,
+      },
+    })
+  ).toBe(`Writing labels ${CONTROL_LABELS.control_name_of} CORE-1`);
 
   const view = draw(
     createElement(IssueLabels, {
@@ -332,23 +465,21 @@ test("labelsControlName names the labels control as it is drawn", () => {
     "inside"
   );
   try {
-    const control = within(view.container).getByRole("button", {
-      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
-    });
+    const control = within(view.container).getByRole("button", { name: addName });
     expect(control.textContent).toBe(CONTROL_LABELS.add_label);
   } finally {
     undraw(view);
   }
 });
 
-// dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// the new issue page's add menu and its rows find the components picker by the name its trigger
+// The new issue page's add menu and its rows find the components picker by the name its trigger
 // carries inside `NoTooltips`, which `componentsControlName` builds: the words the trigger draws,
-// then the issue's key, and while it saves the page's "Saving components…" that `ComponentPicker`
-// draws in their place, its ellipsis dropped. On the issue's own set the trigger draws a bare
-// "+", a symbol no voice user says, and the name stays `main`'s word-first one. Called with the
-// key alone, as `main`'s callers call it, it is `main`'s name, which the trigger carries outside
-// `NoTooltips` in every state, beside `main`'s "Saving…" while it saves (R1).
+// then the joining word of `page-words.ts` and the issue's key, and while it saves the page's
+// `saving_components` that `ComponentPicker` draws in their place, its ellipsis dropped. On the
+// issue's own set the trigger draws a bare "+", a symbol no voice user says, and the name stays
+// `main`'s word-first one. Given `null`, as outside `NoTooltips`, it is `main`'s name, which the
+// trigger carries there in every state, beside `main`'s "Saving…" while it saves. Each expected
+// name inside is built from the words of `page-words.ts`.
 test("componentsControlName names the components picker as it is drawn", async () => {
   const notAttached: IssueComponents = {
     ids: [],
@@ -358,30 +489,29 @@ test("componentsControlName names the components picker as it is drawn", async (
     unknown: [],
   };
   const ownSet: IssueComponents = { ...notAttached, ids: ["dispatch-server"], mode: "explicit" };
+  const words = { ANSWER_LINES, CONTROL_LABELS };
   const drawnName = (components: IssueComponents, saving = false) =>
-    componentsControlName("CORE-1", {
-      components,
-      controlLabels: CONTROL_LABELS,
-      saving: saving ? ANSWER_LINES : undefined,
-    });
-  expect(componentsControlName("CORE-1")).toBe("Edit components of CORE-1");
-  expect(drawnName(notAttached)).toBe("Set components of CORE-1");
-  expect(drawnName({ ...notAttached, mode: "none", reason: "A process change" })).toBe(
-    "Set components of CORE-1"
-  );
-  expect(drawnName({ ...ownSet, inherited_from: "CORE-9" })).toBe("Set components of CORE-1");
+    componentsControlName("CORE-1", { components, saving, words });
+  const setName = `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-1`;
+  const savingName = `${withoutEllipsis(ANSWER_LINES.saving_components)} ${CONTROL_LABELS.control_name_of} CORE-1`;
+  expect(componentsControlName("CORE-1", null)).toBe("Edit components of CORE-1");
+  expect(drawnName(notAttached)).toBe(setName);
+  expect(drawnName({ ...notAttached, mode: "none", reason: "A process change" })).toBe(setName);
+  expect(drawnName({ ...ownSet, inherited_from: "CORE-9" })).toBe(setName);
   expect(drawnName(ownSet)).toBe("Edit components of CORE-1");
-  expect(ANSWER_LINES.saving_components).toBe("Saving components…");
-  expect(drawnName(notAttached, true)).toBe("Saving components of CORE-1");
-  expect(drawnName(ownSet, true)).toBe("Saving components of CORE-1");
+  expect(drawnName(notAttached, true)).toBe(savingName);
+  expect(drawnName(ownSet, true)).toBe(savingName);
   // The saving words are the ones passed, and three dots end them as an ellipsis does.
   expect(
     componentsControlName("CORE-1", {
       components: notAttached,
-      controlLabels: CONTROL_LABELS,
-      saving: { saving_components: "Writing components..." },
+      saving: true,
+      words: {
+        ANSWER_LINES: { ...ANSWER_LINES, saving_components: "Writing components..." },
+        CONTROL_LABELS,
+      },
     })
-  ).toBe("Writing components of CORE-1");
+  ).toBe(`Writing components ${CONTROL_LABELS.control_name_of} CORE-1`);
 
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
     architectureSource,
@@ -418,23 +548,25 @@ test("componentsControlName names the components picker as it is drawn", async (
     );
     views.push(inside);
     const scope = within(inside.container);
-    const trigger = await scope.findByRole("button", { name: "Set components of CORE-1" });
+    const trigger = await scope.findByRole("button", { name: setName });
     expect(trigger.textContent).toBe(CONTROL_LABELS.components_set);
-    expect("Set components of CORE-1".startsWith(trigger.textContent ?? "")).toBe(true);
+    // Its name begins with the words it draws.
+    const drawnWords = withoutEllipsis((trigger.textContent ?? "").trim());
+    expect(trigger.getAttribute("aria-label")?.startsWith(drawnWords)).toBe(true);
     expect(scope.getByRole("button", { name: "Edit components of CORE-2" }).textContent).toBe("+");
 
-    // A save in flight: `ComponentPicker` draws the page's "Saving components…", and the name
+    // A save in flight: `ComponentPicker` draws the page's `saving_components`, and the name
     // begins with those words, their ellipsis dropped.
     await save(trigger);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    const saving = await scope.findByRole("button", { name: "Saving components of CORE-1" });
+    const saving = await scope.findByRole("button", { name: savingName });
     expect(saving.textContent).toBe(ANSWER_LINES.saving_components);
-    const said = (saving.textContent ?? "").replace(/…$/u, "");
-    expect("Saving components of CORE-1".startsWith(said)).toBe(true);
+    const savingWords = withoutEllipsis((saving.textContent ?? "").trim());
+    expect(saving.getAttribute("aria-label")?.startsWith(savingWords)).toBe(true);
     await act(async () => {
       answers[0]?.resolve({} as Issue);
     });
-    await scope.findByRole("button", { name: "Set components of CORE-1" });
+    await scope.findByRole("button", { name: setName });
 
     const outside = draw(line(notAttached, "CORE-1"), "outside");
     views.push(outside);
@@ -456,8 +588,8 @@ test("componentsControlName names the components picker as it is drawn", async (
   }
 });
 
-// dispatch://INFRA-3935 R8: the header and Details are two callers of the hook on one page, and
-// each reads the status the other is saving, from the first moment of its write to its answer.
+// The header and Details are two callers of the hook on one page, and each reads the status the
+// other is saving, from the first moment of its write to its answer.
 test("two callers of useIssueHeaderWrites read the status either one is saving", async () => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -496,9 +628,157 @@ test("two callers of useIssueHeaderWrites read the status either one is saving",
   }
 });
 
-// dispatch://INFRA-3935 R8: a write of the issue's fields lands one way whichever row made it:
-// its answer merged over the cached details, or the issue read again when Dispatch took the write
-// with no answer, and the issue lists refreshed either way.
+/** The viewer's state as Dispatch holds it before the pin: the issue unpinned. */
+const unpinned: UserState = { [issue.key]: state };
+
+/** The pin's PUT's answer: Dispatch's state of the issue once it took the pin. */
+const pinnedState: UserIssueState = { ...state, pinned: true, seq: 1 };
+
+/** Every read of the viewer's state (`getMyState`), each held until the test answers it. */
+function holdStateReads() {
+  const reads: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
+  const getMyState = spyOn(api, "getMyState").mockImplementation(() => {
+    const read = Promise.withResolvers<UserState>();
+    reads.push(read);
+    return read.promise;
+  });
+  return { getMyState, reads };
+}
+
+/** Each read of `queryKey` that `client` asks from now on, listed as it calls its query's
+ *  function: a read a write holds is listed before it waits, and one that is not held has asked
+ *  by then. */
+function readsAsked(client: DispatchQueryClient, queryKey: QueryKey) {
+  const asked: string[] = [];
+  const stop = client.onAttempt((queryHash) => {
+    if (queryHash === hashKey(queryKey)) asked.push(queryHash);
+  });
+  return { asked, stop };
+}
+
+/** `client`, signed in as alice, around what a hook renders. */
+function signedInWrapper(client: QueryClient) {
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  return ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+}
+
+// The pin's answer went into the cache under a read of the viewer's state asked while the PUT was
+// out, and that read's answer, of the state from before Dispatch took the pin, landed over it: the
+// issue read as unpinned again wherever the state was next drawn. Nothing draws the state here,
+// as when the reader has left the page, so the pin's settling does not read it again over that.
+test("a read of the state asked while the pin is out does not put back the unpinned state its answer replaced", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const wrapper = signedInWrapper(client);
+  const { getMyState, reads } = holdStateReads();
+  const pinSave = Promise.withResolvers<UserIssueState>();
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(pinSave.promise);
+  const hook = renderHook(() => useIssueHeaderWrites(issue, state), { wrapper });
+  try {
+    const first = client.fetchQuery(userStateQuery());
+    await act(async () => {
+      reads[0]?.resolve(unpinned);
+      await first;
+    });
+    act(() => {
+      const { pin, pinGuard } = hook.result.current;
+      pinGuard.guard(() => pin.mutate({ issueKey: issue.key, pinned: true }));
+    });
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    // While the PUT is out the state is read again; Dispatch has not taken the pin yet.
+    act(() => {
+      void client.refetchQueries({ queryKey: userStateQuery().queryKey });
+    });
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      pinSave.resolve(pinnedState);
+    });
+    await waitFor(() => expect(hook.result.current.pin.isSuccess).toBe(true));
+    await act(async () => {
+      reads[1]?.resolve(unpinned);
+      await settle();
+    });
+    expect(client.getQueryData<UserState>(userStateQuery().queryKey)?.[issue.key]).toEqual(
+      pinnedState
+    );
+  } finally {
+    hook.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+  }
+});
+
+/** The pin as the issue page drives it: the viewer's state read as the page reads it, and the
+ *  hook given the issue's row of it, which is what the page shows. */
+function usePagePin() {
+  const userState = useQuery(userStateQuery());
+  const shown = stateForIssue(userState.data, issue.key);
+  return { shown, writes: useIssueHeaderWrites(issue, shown) };
+}
+
+// A refresh of the viewer's state asked while the pin was out could reach Dispatch before the pin
+// did, and its answer put the issue back unpinned under the reader's press. The read waits for the
+// pin's answer and is asked once it is in, so the page shows what Dispatch holds after the pin.
+test("a read of the state asked while the pin is out waits for its answer, and the page shows what it reads then", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const wrapper = signedInWrapper(client);
+  const { getMyState, reads } = holdStateReads();
+  const pinSave = Promise.withResolvers<UserIssueState>();
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(pinSave.promise);
+  const { asked, stop } = readsAsked(client, userStateQuery().queryKey);
+  const hook = renderHook(usePagePin, { wrapper });
+  // Dispatch's state once it took the pin, with a read the reader made elsewhere since.
+  const after: UserIssueState = { ...pinnedState, last_read_seq: 7 };
+  try {
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      reads[0]?.resolve(unpinned);
+    });
+    await waitFor(() =>
+      expect(client.getQueryData<UserState>(userStateQuery().queryKey)).toEqual(unpinned)
+    );
+
+    act(() => {
+      const { pin, pinGuard } = hook.result.current.writes;
+      pinGuard.guard(() => pin.mutate({ issueKey: issue.key, pinned: true }));
+    });
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.shown.pinned).toBe(true);
+
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: userStateQuery().queryKey });
+    });
+    // The refresh is asked, and waits: the state is read once, before the pin.
+    await waitFor(() => expect(asked).toHaveLength(2));
+    expect(getMyState).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.shown.pinned).toBe(true);
+
+    await act(async () => {
+      pinSave.resolve(pinnedState);
+    });
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+    getMyState.mockResolvedValue({ [issue.key]: after });
+    await act(async () => {
+      reads[1]?.resolve({ [issue.key]: after });
+    });
+    await waitFor(() => expect(hook.result.current.shown).toEqual(after));
+    await waitFor(() => expect(hook.result.current.writes.pin.isSuccess).toBe(true));
+  } finally {
+    hook.unmount();
+    stop();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+  }
+});
+
+// A write of the issue's fields lands one way whichever row made it: its answer merged over the
+// cached details, or the issue read again when Dispatch took the write with no answer, and the
+// issue lists refreshed either way.
 test("landIssueWrite merges an answer and reads the issue again when none came", () => {
   const land = (next: Issue | null) => {
     const client = new QueryClient();
@@ -527,9 +807,8 @@ test("landIssueWrite merges an answer and reads the issue again when none came",
   expect(unanswered.listsReadAgain).toBe(true);
 });
 
-// dispatch://INFRA-3935 R8: only the Status pill's pick alone is a control's write, shown in the
-// shell's indicator and rolled back on a refusal; a write that carries any other field is the
-// header's.
+// Only the Status pill's pick alone is a control's write, shown in the shell's indicator and
+// rolled back on a refusal; a write that carries any other field is the header's.
 test("statusPickOnly is true for a status alone", () => {
   expect(statusPickOnly({ status: "done" })).toBe(true);
   expect(statusPickOnly({ status: "done", title: "New title" })).toBe(false);
@@ -562,10 +841,9 @@ function answerReviews(artifactId: string) {
   });
 }
 
-// dispatch://INFRA-3935 R10: given `actionsOn`, each entry whose document's approval request
-// waits on the reader carries its own Approve and Request changes, which review that entry's
-// document, and no other entry carries any; not given, the primary document's entry alone
-// carries them, as on `main`.
+// Given `actionsOn`, each entry whose document's approval request waits on the reader carries its
+// own Approve and Request changes, which review that entry's document, and no other entry carries
+// any; not given, the primary document's entry alone carries them, as on `main`.
 test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn and on no other", async () => {
   const entries: StepEntry[] = [
     {
@@ -640,8 +918,7 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
   }
 });
 
-// Decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R10):
-// where `actionsOn` names two or more documents the list holds two Approve and two Request
+// Where `actionsOn` names two or more documents the list holds two Approve and two Request
 // changes, so inside `NoTooltips` each is named by the words it draws and then the document it
 // reviews, in the page's words, and a voice user says what they read (WCAG 2.5.3). A stale
 // approval's Approve draws its version, and its name says the version of the document. Naming

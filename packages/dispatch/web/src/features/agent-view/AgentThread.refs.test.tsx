@@ -1,11 +1,12 @@
-import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, spyOn } from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition, and Safari's key code 229, which user-event has no form for
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -16,8 +17,16 @@ import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { REF_PICKER_INSTRUCTION, REF_PICKER_PARTS_WORDS } from "../refs/ref-picker";
+import { settleRefPickerSearch, refPickerTest as test } from "../refs/ref-picker-fixture";
 import { AgentThread } from "./AgentThread";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The reference picker in an agent's live conversation: the three doors of every other box over
@@ -127,6 +136,7 @@ function Harness({
         front
         held={false}
         initialPlace={null}
+        notice={undefined}
         onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
@@ -177,6 +187,13 @@ async function type(user: UserEvent, input: HTMLTextAreaElement, value: string):
   await user.click(input);
   await user.keyboard("{Control>}a{/Control}");
   await user.paste(value);
+}
+
+/** Lets the search debounce's length pass inside act after a key that should do nothing: long
+ *  enough for any read the key started to answer and its rows to draw, so a check made after it
+ *  would see them, where a check made at once would find nothing whether the key acted or not. */
+async function afterTheKey(): Promise<void> {
+  await settleRefPickerSearch();
 }
 
 /** The picker's rows in the order they are drawn, each as `<heading>: <words>`: a row's
@@ -307,6 +324,57 @@ test("ArrowRight opens the highlighted row's parts, and nothing on a row that ho
   );
   await user.keyboard("{Enter}");
   await waitFor(() => expect(input.value).toBe("dispatch://CORE-2/message/message-1#b-block-1 "));
+  expect(pane?.sent).toEqual([]);
+});
+
+// An input method's arrows move between the segments of the word it is composing, so an
+// ArrowRight of a composition opens no parts, on a row that holds some.
+test("ArrowRight in the middle of a composition opens no parts", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "#relay");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "Issues: Relay drops a reply",
+      "Messages: I told the relay to retry",
+    ])
+  );
+  await user.keyboard("{ArrowDown}");
+  await waitFor(() =>
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent(
+      "I told the relay to retry"
+    )
+  );
+  // user-event has no form for this: it cannot mark a key as an IME composition.
+  fireEvent.keyDown(input, { isComposing: true, key: "ArrowRight" });
+  await afterTheKey();
+  expect(drawnRows().filter((row) => row.startsWith("Message blocks:"))).toEqual([]);
+  expect(pane?.getReferences).not.toHaveBeenCalled();
+});
+
+// Safari ends the composition before the Enter that confirms it, so that Enter carries only the
+// IME's key code 229, and assistant-ui, which skips a key marked composing, would take the row.
+test("Safari's Enter that confirms a composition takes no row, where a plain Enter does", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "#relay");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "Issues: Relay drops a reply",
+      "Messages: I told the relay to retry",
+    ])
+  );
+  // user-event has no form for this: it cannot mark a key as an IME composition.
+  fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 });
+  await afterTheKey();
+  expect(input.value).toBe("#relay");
+  expect(pane?.sent).toEqual([]);
+
+  // The same Enter with no IME code is the list's: it takes the highlighted issue.
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(input.value).toBe("dispatch://CORE-2 "));
   expect(pane?.sent).toEqual([]);
 });
 

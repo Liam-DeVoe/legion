@@ -1,8 +1,14 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import type { ReactNode } from "react";
-
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { useFollowLatest } from "./use-follow-latest";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The composer sits at document top 0; the newest card (topmost `[data-turn]`) sits below it.
 // `useFollowLatest` reads both elements' `getBoundingClientRect()`, so the harness renders

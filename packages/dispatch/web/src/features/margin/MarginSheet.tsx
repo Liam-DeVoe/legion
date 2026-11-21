@@ -15,6 +15,7 @@ import {
 } from "../../theme/classes";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import type { AwayDraft } from "../conversation/unsent-drafts";
 import { useMarginDrawer, useMarginSlotFill } from "../issue-page/margin-slot";
 import {
   COMPACT_VIEWPORT_QUERY,
@@ -22,7 +23,12 @@ import {
   useDialog,
   useMediaQuery,
 } from "../shell/useDialog";
-import { CommentsTab, type MarginComposer, MarginComposerSlot } from "./CommentsTab";
+import {
+  CommentsTab,
+  type MarginComposer,
+  MarginComposerSlot,
+  MarginKeptDrafts,
+} from "./CommentsTab";
 import { marginReplySendKey } from "./margin-context";
 import { PinnedTab } from "./PinnedTab";
 import { ThreadCard } from "./ThreadCard";
@@ -43,9 +49,12 @@ export interface MarginSheetModel {
      *  store holds for the document goes, its mark with it. */
     closeComposer: (composer: MarginComposer) => void;
     onAction: (id: string, action: MarginItemAction) => void;
-    onComposerKindChange: (kind: ComposerKind) => string | undefined;
+    /** The kind switch of the composer on the document `artifact` (`retypeCompose`). */
+    onComposerKindChange: (artifact: string, kind: ComposerKind) => string | undefined;
     onEdit: SaveCommentEdit;
     onRetryAction: () => void;
+    /** Discard my draft on a draft the compose kept for words of the document (`keptDrafts`). */
+    discardKeptDraft: (away: AwayDraft) => void;
     onUnpin: (eventId: number) => void;
     onUnpinConversation: (id: string) => void;
     onRetryAnsweredAsk: (() => void) | undefined;
@@ -72,6 +81,9 @@ export interface MarginSheetModel {
     issueError: boolean;
     owner: MarginOwner | undefined;
     issuePending: boolean;
+    /** What the margin's compose kept for words of the open document (`AwayDraft.anchor`), which
+     *  the margin draws while no compose is open there. */
+    keptDrafts: readonly AwayDraft[];
     needsYou: Ask[];
     onSelectCard: (id: string, blockID?: string) => void;
     openAskCount: number;
@@ -137,7 +149,7 @@ interface MarginSheetProps {
    *  `DetailsDrawer`): a box that scrolls inside the drawer at every width, with no sheet of its
    *  own below `xl`, which draws only what the page put in the margin's slot - the slot's fill,
    *  handed this sheet's content - and nothing while the page has put nothing there
-   *  (dispatch://INFRA-1196 R14). False everywhere else. */
+   *  (R14). False everywhere else. */
   drawer?: boolean;
   model: MarginSheetModel;
 }
@@ -164,6 +176,7 @@ export function MarginSheet({
       issueError,
       owner,
       issuePending,
+      keptDrafts,
       openAskCount,
       pendingActionIds,
       pinned,
@@ -360,12 +373,16 @@ export function MarginSheet({
               )}
             </>
           )}
+          {/* Keyed by its document and its compose: a newer compose on the document is the host's
+              move for the one before it, so it draws a composer of its own, which takes nothing
+              of that compose's draft, while Send, a kind switch and a re-written mark keep the
+              one the reader is writing in. */}
           {composer === undefined ? null : (
             <MarginComposerSlot
               composer={composer}
               hidden={tab.value !== "comments"}
               isClosed={isClosed}
-              key={composer.anchor.artifact}
+              key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}
               onClose={actions.closeComposer}
               onKindChange={actions.onComposerKindChange}
               onScreen={
@@ -375,6 +392,17 @@ export function MarginSheet({
               }
             />
           )}
+          {/* With no compose open on the document, what the margin's compose kept for its words
+              is drawn here: the compose that held it ended with nothing the reader pressed - a
+              reload, a sign-in after a lapse, its issue's closing - and nothing else would show
+              it until the next compose on the document. */}
+          {composer === undefined && visibleArtifact !== undefined ? (
+            <MarginKeptDrafts
+              drafts={keptDrafts}
+              hidden={tab.value !== "comments"}
+              onDiscard={actions.discardKeptDraft}
+            />
+          ) : null}
           {tab.value === "comments" &&
           !covered &&
           owner !== undefined &&
@@ -476,8 +504,7 @@ export function MarginSheet({
  * the new issue page's Details it is the sheet's own box. In Details it draws only what the page
  * put in the margin's slot (`margin-slot.tsx`), which is handed this content and answers what is
  * drawn in its place, and nothing while the page has put nothing there, so the content is drawn
- * once per load rather than plain first and again inside the page's panel (dispatch://INFRA-1196
- * R14, INFRA-2004).
+ * once per load rather than plain first and again inside the page's panel (R14).
  */
 function SheetBody({
   children,

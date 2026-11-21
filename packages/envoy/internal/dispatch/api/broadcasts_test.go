@@ -617,6 +617,10 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
+	tooMany := make([]string, contracts.MaxBroadcastRecipients+1)
+	for index := range tooMany {
+		tooMany[index] = "session-" + string(rune('a'+index%26)) + string(rune('a'+index/26))
+	}
 	for name, input := range map[string]struct {
 		body map[string]any
 		code string
@@ -624,6 +628,7 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 		"empty body":   {map[string]any{"body": "   ", "delivery": "btw", "session_ids": []string{"planner"}}, "INVALID_MESSAGE"},
 		"unknown mode": {map[string]any{"body": "hi", "delivery": "shout", "session_ids": []string{"planner"}}, "BROADCAST_INPUT"},
 		"no sessions":  {map[string]any{"body": "hi", "delivery": "btw", "session_ids": []string{" "}}, "BROADCAST_INPUT"},
+		"over the cap": {map[string]any{"body": "hi", "delivery": "btw", "session_ids": tooMany}, "BROADCAST_INPUT"},
 		"over the block bound": {
 			map[string]any{"body": strings.Repeat("x", contracts.DispatchBlockUnits+1), "delivery": "btw", "session_ids": []string{"planner"}},
 			"CAP_EXCEEDED",

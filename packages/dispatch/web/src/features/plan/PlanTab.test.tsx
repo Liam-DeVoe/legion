@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -6,7 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactBlock, GraphReferences } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PlanTab } from "./PlanTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The words a block reference resolves to, which is what a pointer's link shows. */
 const BLOCK_TEXT: Record<string, string> = {
@@ -188,5 +195,8 @@ test("an issue with no plan document shows the command that makes one", () => {
   const empty = screen.getByTestId("plan-empty");
   expect(empty.textContent).toContain("CORE-1 has no plan document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name plan.md");
+  // The note's words are asserted once, in `ArtifactUpload.test.tsx`, where they live: this
+  // case asks only that the tab shows the note.
+  expect(within(empty).getByTestId("replacing-upload-note")).not.toBeNull();
   expect(getArtifactBlocks).not.toHaveBeenCalled();
 });

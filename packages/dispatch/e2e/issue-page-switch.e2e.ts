@@ -44,12 +44,16 @@ async function navigation(page: Page): Promise<Locator> {
 }
 
 async function openSettings(page: Page): Promise<void> {
+  // Each caller has waited for the page it stands on, today's or the new one, to draw, so one
+  // count says whether it is the new one.
+  const onNewPage = (await page.locator("[data-issue-page]").count()) > 0;
+  // The shell draws the rail, which holds Open navigation, in the render that routes to the new
+  // page, from a width query read as it renders, so one count says whether this width has it.
+  const navigationControls = await page.getByRole("button", { name: "Open navigation" }).count();
   // The new page's frame (part D) draws no navigation below 768 px until the header's menu
   // comes, so there the reader goes to Settings with its key, `g s`, which moves with no reload
   // as a link does.
-  const frameWithoutNavigation =
-    (await page.locator("[data-issue-page]").count()) > 0 &&
-    (await page.getByRole("button", { name: "Open navigation" }).count()) === 0;
+  const frameWithoutNavigation = onNewPage && navigationControls === 0;
   if (frameWithoutNavigation) {
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press("g");
@@ -96,10 +100,9 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
- *  header that part P fills, which draws the key and the title, the view row that part D fills,
- *  the outline's one line for an issue that holds nothing, and nothing else but what part L draws
- *  at the foot - the box to write in and the read mark - which its own rows read
- *  (`e2e/issue-page-l.e2e.ts`). */
+ *  header, which draws the key and the title, the view row, the outline's one line for an issue
+ *  that holds nothing, and nothing else but what the foot draws - the box to write in and the
+ *  read mark - which `e2e/issue-page-l.e2e.ts` reads. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -107,12 +110,12 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part P fills the header
-  // (`[data-issue-header]`), part D the view row (`[data-filter-row]`), part I's outline draws
+  // A part that fills another slot adds its selector here: so far the header
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, the outline draws
   // its one line for an issue that holds nothing at the issue's own address, and each other slot
   // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
-  // until part J fills it. Part L's box at the foot (`[data-testid="issue-composer"]`) and the
-  // read mark at the outline's end (`[data-outline-end]`) are left out of both counts.
+  // until that view's own slot is filled. The box at the foot (`[data-testid="issue-composer"]`)
+  // and the read mark at the outline's end (`[data-outline-end]`) are left out of both counts.
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);

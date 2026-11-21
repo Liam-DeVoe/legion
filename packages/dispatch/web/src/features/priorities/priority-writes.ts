@@ -37,11 +37,13 @@ export function usePriorityWrites() {
   };
   const add = useKeyedWrite({
     label: (input: CreatePriorityInput) => `New priority “${input.title}”`,
+    method: "POST",
     write: (input, bounds) => api.createPriority(input, bounds),
     onSettled: refresh,
   });
   const patch = useKeyedWrite({
     label: (patch_: PriorityPatch) => patch_.label,
+    // The request names its own method (`PATCH`), which a write on a line takes from it.
     target: (patch_) => `priority:${patch_.id}`,
     request: (patch_) => priorityPatchRequest(patch_.id, patch_.input),
     onSettled: refresh,

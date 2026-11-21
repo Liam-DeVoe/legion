@@ -28,7 +28,8 @@ import type {
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
  *  names the person by lowercase email, the form issue assignees carry. While it answers
  *  `EVENT_HEAD_UNAVAILABLE` it is asked again for as long as that lasts (`queryRetry`), so the
- *  shell shows its skeleton, never the error page. */
+ *  shell shows its skeleton, never the error page. News that who is signed in may have changed
+ *  asks it again through `askSignInAgain` (`query-client.ts`), never a bare invalidation. */
 export const whoAmIQuery = () =>
   queryOptions({
     queryKey: ["whoami"],
@@ -130,6 +131,18 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
       if (key === undefined) throw new Error("A collaborators read needs the issue's key.");
       return api.getIssueCollaborators(key);
     },
+  });
+
+/** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
+ *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
+ *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
+ *  naming it exactly as it names every issue target. The tab reads it through its catch-up,
+ *  which every refresh that reaches the key starts, and through Retry
+ *  (`features/steps/StepsTab.tsx`). */
+export const issueStepsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "steps"],
+    queryFn: () => api.listSteps(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -478,15 +491,17 @@ interface DeliveryLiveBodies {
   readonly pipeline: DeliveryPipelineResponse;
 }
 
-/** The live view's answer, which is the body of the GET route its kind mirrors. */
-function subscribeLive<V extends DeliveryLiveView>(
+/** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
+ *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
+ *  other kinds this page does not read. */
+function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
-  view: V
-): Promise<DeliveryLiveBodies[V["kind"]]> {
+  view: DeliveryLiveView & { readonly kind: K }
+): Promise<DeliveryLiveBodies[K]> {
   // The socket answers each view with its own route's body (packages/contracts DeliveryLiveView);
   // the frame carries the union, and the view's kind names the member.
   return liveSocketFor(context.client).subscribe(context.queryKey, view) as Promise<
-    DeliveryLiveBodies[V["kind"]]
+    DeliveryLiveBodies[K]
   >;
 }
 
@@ -533,4 +548,13 @@ export const deliverySettingsQuery = () =>
   queryOptions({
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
+  });
+
+/** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
+ *  project is its own entry: the Settings page's Legion section reads one entry per project
+ *  (`useLegionDaemons`), since no route lists them. */
+export const legionDaemonQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["legion-daemon", project],
+    queryFn: () => api.getLegionDaemon(project),
   });

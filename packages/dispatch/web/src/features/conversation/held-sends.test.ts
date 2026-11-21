@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import {
   type MutationKey,
@@ -10,18 +10,13 @@ import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
-import {
-  type KeptTab,
-  keptTab,
-  keyMinted,
-  memoryFiles,
-  UnloadTarget,
-} from "../../__tests__/kept-sends-harness";
+import { type KeptTab, keptTab, keyMinted, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   FIRST_BACKOFF_MS,
   SEND_DEADLINE_MS,
@@ -29,33 +24,17 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
-import { Writes } from "../writes/write-store";
-import { type HeldSend, HeldSends, heldSends, stoppable } from "./held-sends";
+import { type HeldSend, type HeldSends, heldSends, stoppable } from "./held-sends";
+import { agentKey, agentSend, heldOf, request, signedIn, verdict } from "./held-sends-fixture";
 import { PendingSendTurn } from "./PendingSendTurn";
 import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
 import { type SessionSends, useSessionSends } from "./useSessionSends";
 
-const request: SentRequest = {
-  anchor: undefined,
-  ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Held", replacement: "" },
-  edit: undefined,
-  kind: "comment",
-  owner: { issueKey: "CORE-1", kind: "issue" },
-  plainDelivery: "steer",
-  replyTo: null,
-  sendKey: "send-0",
-};
-
-/** A message to one session, Send's own: the request the Agents page's composer holds. */
-const agentSend: SentRequest = {
-  ...request,
-  draft: { body: "Status please", replacement: "" },
-  owner: { kind: "session", sessionId: "planner-session" },
-  sendKey: "send-1",
-};
-
-const agentKey: MutationKey = ["agent-composer", "planner-session"];
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const sentMessage = {
   body: "Status please",
@@ -103,23 +82,6 @@ const editPatch = {
   ],
   body: editBody,
 };
-
-/** Dispatch's verdict on a send: it is not tried again, and the composer shows it. */
-const verdict = new ApiError(400, { code: "COMMENT_INPUT", error: "the body is empty" });
-
-/** A page's query client, signed in: the store stamps every send with this login at its press
- *  and resumes only this login's, as the app's does. */
-function signedIn(login = "alice"): QueryClient {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login });
-  return client;
-}
-
-/** The held sends of a page of `tab`, over a store of their own. */
-function heldOf(tab = keptTab(), client = signedIn(), unload?: EventTarget) {
-  const writes = new Writes(client, tab.page(unload), memoryFiles());
-  return { held: new HeldSends(writes), writes };
-}
 
 /** Puts the write `key` back far enough that the page it comes back to does not make it again on
  *  its own: it shows refused, with Retry and Discard. */
@@ -375,6 +337,117 @@ test("a send kept with its edit as a bare comment id still restores", async () =
     expect(editComment.mock.calls[1]?.[2]?.key).toBe("send-edit");
   } finally {
     editComment.mockRestore();
+    tab.close();
+  }
+});
+
+// A comment on a statement keeps the statement's row beside its document and its words across a
+// reload, so the issue page's box that mounts again over the send lands the comment on that row.
+// A record whose statement is no statement - a document that is no string, or no row - is
+// dropped as every malformed record is, rather than restored and sent again with an anchor the
+// server cannot read, or held on a statement the page cannot land on.
+test("a held statement keeps its row across a reload, and a record with a malformed statement is dropped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const statement = {
+    artifact: "core-1-spec",
+    quote: "The box stays at the foot of the screen.",
+    row: "core-1-spec#b-r1",
+  };
+  // The statement each malformed record holds, by its send's key, written over what was kept.
+  const malformed: Record<string, object> = {
+    "send-number": { artifact: 1 },
+    "send-rowless": { artifact: statement.artifact, quote: statement.quote },
+  };
+  const sendKeys = ["send-whole", ...Object.keys(malformed)];
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  try {
+    const before = heldOf(tab).held;
+    for (const sendKey of sendKeys) before.send(keyOf(sendKey), { ...request, sendKey, statement });
+    await settle();
+    for (const [sendKey, held] of Object.entries(malformed)) {
+      const kept = tab.kept(sendKey) as { detail: { request: object } };
+      const detail = { ...kept.detail, request: { ...kept.detail.request, statement: held } };
+      tab.storage.setItem(`dispatch.write:${sendKey}`, JSON.stringify({ ...kept, detail }));
+    }
+    for (const sendKey of sendKeys) pressedLongAgo(tab, sendKey);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-whole"))?.request.statement).toEqual(statement);
+    for (const sendKey of Object.keys(malformed)) {
+      expect(after.get(keyOf(sendKey)), sendKey).toBeUndefined();
+      expect(tab.kept(sendKey), sendKey).toBeUndefined();
+    }
+    // Each press went out once, and no dropped record went out again.
+    expect(createComment).toHaveBeenCalledTimes(3);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// A reply the issue page's box sent keeps the mentions the box wrote in front of its draft, so a
+// box that mounts again over the send after a reload takes those out when the reply ends, and no
+// link the reader wrote; the request goes out with the body alone. A record kept before the box
+// kept them holds none and loads with none. A record whose mentions are not mentions - a target
+// that is no string - is dropped as every malformed record is, rather than restored for the box
+// to read.
+test("a held reply keeps the mentions its box wrote across a reload, one kept without them loads with none, and one with malformed ones is dropped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  try {
+    const before = heldOf(tab).held;
+    before.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    before.send(keyOf("send-unseeded"), { ...reply, sendKey: "send-unseeded" });
+    before.send(keyOf("send-malformed"), { ...reply, seeds, sendKey: "send-malformed" });
+    await settle();
+    // The record without mentions is the shape a build that kept none wrote.
+    const unseeded = tab.kept("send-unseeded") as { detail: { request: object } };
+    expect("seeds" in unseeded.detail.request).toBe(false);
+    const kept = tab.kept("send-malformed") as { detail: { request: object } };
+    const detail = { ...kept.detail, request: { ...kept.detail.request, seeds: [{ target: 1 }] } };
+    tab.storage.setItem("dispatch.write:send-malformed", JSON.stringify({ ...kept, detail }));
+    for (const sendKey of ["send-seeded", "send-unseeded", "send-malformed"]) {
+      pressedLongAgo(tab, sendKey);
+    }
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-seeded"))?.request.seeds).toEqual(seeds);
+    expect(after.get(keyOf("send-unseeded"))?.status).toBe("refused");
+    expect(after.get(keyOf("send-unseeded"))?.request.seeds).toBeUndefined();
+    expect(after.get(keyOf("send-malformed"))).toBeUndefined();
+    expect(tab.kept("send-malformed")).toBeUndefined();
+    // Each press went out once, with the body alone: the mentions are the page's own.
+    expect(createComment).toHaveBeenCalledTimes(3);
+    expect(createComment.mock.calls[0]?.[1]).toEqual({
+      body: `${link} hello`,
+      delivery: "steer",
+      reply_to: "comment-3",
+    });
+  } finally {
+    createComment.mockRestore();
     tab.close();
   }
 });

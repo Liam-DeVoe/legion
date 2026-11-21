@@ -13,19 +13,18 @@ const RELATIVE_UNITS: Array<{ ms: number; unit: Intl.RelativeTimeFormatUnit }> =
   { ms: 60 * 1000, unit: "minute" },
 ];
 
-const TICK_INTERVAL_MS = 30_000;
+export const TICK_INTERVAL_MS = 30_000;
 
 // Every mounted <Timestamp> subscribes to one shared tick instead of running its own
 // setInterval, so a page with hundreds of timestamps (a long log, a comment thread) still
 // pays for exactly one timer.
 const listeners = new Set<() => void>();
-let scheduled = false;
+let pendingTick: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleTick(): void {
-  scheduled = true;
-  setTimeout(() => {
+  pendingTick = setTimeout(() => {
     if (listeners.size === 0) {
-      scheduled = false;
+      pendingTick = undefined;
       return;
     }
     for (const listener of listeners) {
@@ -37,12 +36,21 @@ function scheduleTick(): void {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  if (!scheduled) {
+  if (pendingTick === undefined) {
     scheduleTick();
   }
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** Calls off the shared tick, so the next `<Timestamp>` to mount arms a fresh one. The unit-test
+ *  preload calls it after each test, since the tick outlives the test that armed it: it would
+ *  fire inside whichever later test has a `<Timestamp>` mounted then, and one armed on a fake clock
+ *  that test put back never fires, so no later `<Timestamp>` would tick at all. */
+export function resetTimestampTick(): void {
+  clearTimeout(pendingTick);
+  pendingTick = undefined;
 }
 
 /** "4 minutes ago", "just now": the relative form every `<Timestamp>` shows, for a caller that
@@ -78,15 +86,14 @@ export interface TimestampProps {
 /** Renders a relative time ("4 minutes ago") that keeps itself current, with the absolute
  * value available on hover (`title`) and to assistive tech (`datetime`). Inside `NoTooltips`
  * (`components/tooltips.tsx`, the new issue page) it carries no `title`, and with `exact` it
- * says the instant in words instead (dispatch://INFRA-1196 R19). */
+ * says the instant in words instead. */
 export function Timestamp({ at, className, exact = false }: TimestampProps): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const [, forceUpdate] = useState(0);
   useEffect(() => subscribe(() => forceUpdate((count) => count + 1)), []);
   // Inside `NoTooltips` an instant is a value the page draws whole, so it keeps `max-w-full` and
-  // breaks anywhere, as every value there does (dispatch://INFRA-3935 R6, decision 104 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md); outside it keeps the host's class alone.
+  // breaks anywhere, as every value there does; outside it keeps the host's class alone.
   const shownClassName =
     page === null
       ? className

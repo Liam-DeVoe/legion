@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -32,6 +32,7 @@ import {
   type RefPickerInsertion,
   type RefPickerKind,
 } from "./ref-picker";
+import { refPickerTest as test } from "./ref-picker-fixture";
 import { useRefPicker } from "./useRefPicker";
 
 const now = Date.now();

@@ -12,12 +12,14 @@ import {
 } from "./page-structure";
 import * as pageWords from "./page-words";
 import {
+  ADDRESS_FALLBACK_WORDS,
   ANSWER_LINES,
   ANSWER_PHRASES,
   ANSWER_SOURCES,
   APPROVAL_STATE_WORDS,
   AUTHOR_KIND_WORDS,
   BLOCK_ATTRIBUTE_LABELS,
+  BLOCK_TYPE_NAMES,
   BLOCKED_BY_REFUSALS,
   blockAttributeLabel,
   CHECK_WHEN_WORDS,
@@ -93,6 +95,7 @@ function phrasesOf(value: unknown): readonly string[] {
 
 const UNASKED: readonly unknown[] = [
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
@@ -122,7 +125,13 @@ const UNASKED: readonly unknown[] = [
   NODE_REFERENCES_WORDS,
 ];
 
-const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
+const ANSWERS: readonly unknown[] = [
+  ANSWER_LINES,
+  BLOCKED_BY_REFUSALS,
+  ADDRESS_FALLBACK_WORDS,
+  HELP_LINES,
+  KEY_REPORTS,
+];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
 
@@ -304,6 +313,24 @@ test("every answer to the reader's own act is one sentence with no schema token"
     expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
     expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
   }
+  // So is each line an address's fallback draws around the issue's key, and each heading and
+  // alert of an item, by its kind, is read whole.
+  const { back, block, children, items } = ADDRESS_FALLBACK_WORDS;
+  const fallbackLines = [
+    block.heading,
+    children.heading,
+    ...[back, block.line, children.line].map(({ after, before }) => `${before}CORE-9${after}`),
+    ...Object.values(items).flatMap(({ missing, unreadable }) => [
+      missing.heading,
+      `${missing.line.before}CORE-9${missing.line.after}`,
+      unreadable.heading,
+      unreadable.message,
+    ]),
+  ];
+  for (const whole of fallbackLines) {
+    expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
+    expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
+  }
   // A table holds what it is for and nothing the page says unasked.
   const unasked = new Set(UNASKED.flatMap(phrasesOf));
   expect(
@@ -322,13 +349,22 @@ test("the five controls are named in the order the row draws them, and none is c
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
   }
-  // The page draws Statement, never Requirement (R22): the kind's own name is the word, and no
-  // word the page declares anywhere says requirement.
+  // The page draws Statement, never Requirement (R22): a requirement of the issue's spec is a
+  // statement, and no word the page declares says requirement. One entry is let through by name,
+  // `BLOCK_TYPE_NAMES.requirement`: the tag of a requirement block in another document, such as
+  // the plan. That block is not a statement, so its tag calls it what it is (decision 246).
   expect(NODE_TYPE_NAMES.requirement).toBe("statement");
+  expect(BLOCK_TYPE_NAMES.requirement).toBe("requirement");
   for (const word of [...Object.values(PRESET_NAMES), ...Object.values(FILTER_SIGNAL_WORDS)]) {
     expect(word).not.toMatch(/tree|requirement|proven/iu);
   }
-  expect(DECLARED_WORDS.filter((word) => /requirement/iu.test(word))).toEqual([]);
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
+  expect(
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
+      .flatMap(phrasesOf)
+      .filter((phrase) => /requirement/iu.test(phrase)),
+    "a declared phrase other than BLOCK_TYPE_NAMES.requirement says requirement"
+  ).toEqual([]);
 });
 
 test("every empty-state line is one sentence a person reads", () => {

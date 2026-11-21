@@ -4,10 +4,10 @@ import { type ChangeComment, decisionChanges, inReviewList } from "./decision-re
 import type { DocumentBlocks } from "./issue-tree";
 
 /**
- * What waits on the reader, as the header's count counts it (dispatch://INFRA-1196 R13): each
- * open ask of the issue whose turn is the reader's, each decision in the Decisions filter's review
- * list (R35, `decision-review.ts`), and each open approval request whose turn is the reader's -
- * three things and no other.
+ * What waits on the reader, as the header's count counts it: each open ask of the issue whose
+ * turn is the reader's, each decision in the Decisions filter's review list (R35,
+ * `decision-review.ts`), and each open approval request whose turn is the reader's - three
+ * things and no other.
  *
  * An ask's turn is the reader's by the one rule every count of the reader's work reads
  * (`waitingOnYou`, `features/inbox/BlockedOnYou.tsx`): it waits on a person (`waitingOnHuman`),
@@ -16,6 +16,11 @@ import type { DocumentBlocks } from "./issue-tree";
  * reader asked of somebody else does not raise the count, and handing the issue to another
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
+ *
+ * A decision is on the review list by its tie to a statement, and `isCoverageStatement` answers
+ * which addresses name one: a caller passes `coverageStatements(issue, coverage)`
+ * (`tree-drafts.ts`), the rule the tree's review list reads, so the count counts the decisions
+ * the tree marks as waiting and no other.
  *
  * A decision the reader asked to change waits on its agent and is not counted
  * (`decisionChanges`): `comments` are the issue's comments, and `documents` the blocks of its
@@ -39,7 +44,7 @@ export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
-  isStatement: (reference: string) => boolean,
+  isCoverageStatement: (reference: string) => boolean,
   comments: readonly ChangeComment[] | undefined,
   documents: readonly DocumentBlocks[] | undefined
 ): WaitingOnReader {
@@ -63,7 +68,7 @@ export function waitingOnReader(
     viewer === undefined
       ? 0
       : (decisions?.decisions ?? []).filter((decision) =>
-          inReviewList(decision, isStatement, changes.has(decision.ref))
+          inReviewList(decision, isCoverageStatement, changes.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }

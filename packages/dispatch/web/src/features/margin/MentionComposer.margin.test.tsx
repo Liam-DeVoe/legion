@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a drop of files, and a press on a keystroke React has not rendered, neither of which user-event has a form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -12,6 +12,7 @@ import { ApiError, api } from "../../api/client";
 import type { ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
 import {
@@ -23,6 +24,12 @@ import {
 } from "./margin-context";
 import { issue, specArtifact, stubDocumentBridge } from "./margin-fixture";
 import type { MarginOwner } from "./useMarginItems";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function Composer({
   onSaved,
@@ -430,6 +437,42 @@ test("Escape after typing only an ask option prompts before discarding", async (
 
     await waitFor(() => expect(screen.getByText("Discard draft?")).toBeDefined());
     expect(closed).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A margin comment's Close is the reader's own control, and asks as Escape does: what they typed
+// is not dropped with nothing said, and Discard is what drops it.
+test("Close over a typed margin comment prompts before discarding, as Escape does", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  let closed = 0;
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Composer
+        anchor={{ artifact: "document-1", mark_id: "mark-1", quote: "selected" }}
+        owner={{ key: "CORE-1", kind: "issue" }}
+        onClose={() => {
+          closed += 1;
+        }}
+      />
+    </QueryClientProvider>
+  );
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste("A note worth keeping");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(screen.getByText("Discard draft?")).toBeDefined());
+    expect(closed).toBe(0);
+    expect(field.value).toBe("A note worth keeping");
+    await user.click(screen.getByRole("button", { exact: true, name: "Discard" }));
+    expect(closed).toBe(1);
   } finally {
     view.unmount();
   }
@@ -845,7 +888,8 @@ test("a refusal no document binds for ends at the wait's bound, telling the read
       return { markId: "m-2", placement: null, quote: MARK_ANCHOR.quote };
     },
   });
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const refusal = Promise.withResolvers<never>();
   const createComment = spyOn(api, "createComment").mockReturnValue(refusal.promise);
   jest.useFakeTimers();

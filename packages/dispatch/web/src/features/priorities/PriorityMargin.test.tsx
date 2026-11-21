@@ -1,10 +1,17 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { api } from "../../api/client";
 import type { PriorityAct } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PriorityMargin } from "./PriorityMargin";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const alice = { id: "alice", kind: "user" };
 const bob = { id: "bob", kind: "user" };
@@ -180,7 +187,7 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Could not load what happened to this priority."
   );
-  expect(screen.queryAllByRole("listitem")).toEqual([]);
+  expect(screen.queryAllByRole("listitem").length).toBe(0);
 });
 
 test("the other three states each say in one line why nothing of that kind is there", async () => {
@@ -194,8 +201,8 @@ test("the other three states each say in one line why nothing of that kind is th
   ]) {
     await userEvent.selectOptions(state, option as string);
     expect(screen.getByText(line as string)).toBeDefined();
-    expect(screen.queryAllByRole("listitem")).toEqual([]);
-    expect(screen.queryAllByRole("link")).toEqual([]);
+    expect(screen.queryAllByRole("listitem").length).toBe(0);
+    expect(screen.queryAllByRole("link").length).toBe(0);
   }
   expect(history).toHaveBeenCalledTimes(1);
 });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,7 +16,16 @@ import type {
   MyAnswerRow,
   MyAnswersResponse,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AnswersPage } from "./AnswersPage";
+
+// A row builds the trees it hands the page with `displayTree`, which parses with the page's own
+// engine and answers nothing until that engine has loaded. The rows run in random order, and one
+// that ran before any other had loaded the engine handed the page no tree, so the file loads it
+// before its first row.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;

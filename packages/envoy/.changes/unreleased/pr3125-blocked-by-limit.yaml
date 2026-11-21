@@ -1,8 +1,0 @@
-kind: Removed
-body: |-
-  `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` no longer refuse a `blocked_by` list of
-  more than 20 keys with `400 BLOCKED_BY_INPUT`. A key named twice is still one blocker, and an
-  unknown key, the issue itself and a dependency cycle are refused as before.
-time: 2026-11-17T09:20:04.000000000Z
-custom:
-    Issue: pr3125

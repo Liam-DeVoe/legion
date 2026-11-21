@@ -14,6 +14,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { KEY, node, SPEC_SOURCE, STATEMENT_WORDS } from "./composer-fixture";
 import { IssueTree } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -24,7 +25,6 @@ import {
   type StatementTarget,
   useOutlineWriter,
 } from "./outline-writer";
-import type { NodeType } from "./page-words";
 
 /**
  * A statement as a target of the page's writer: `r` on a focused
@@ -32,31 +32,6 @@ import type { NodeType } from "./page-words";
  * target stands beside it. The tree is drawn under the writer as `slots/body.tsx` draws it, so
  * the key is the tree's own `r` (`useTreeKeymap.ts`) and not a call made for it.
  */
-
-const KEY = "CORE-1";
-
-/** The record a statement's words are a block of: the issue's spec (`tree-drafts.ts`). */
-const SPEC_SOURCE = { id: "artifact-spec", issue: KEY, kind: "artifact" } as const;
-
-/** A statement of two paragraphs, one word of it marked, as the spec stores it. */
-const STATEMENT_WORDS = "The page draws **one** box.\n\nIt sits at the foot.";
-
-function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
 
 /** The question `id` as the asks read sends it: the record `changeAnswer` reads the reader's own
  *  answer from. */
@@ -166,6 +141,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     id: "spec#b-r1",
     reference: `dispatch://${KEY}/spec#b-r1`,
     source: SPEC_SOURCE,
+    statement: true,
     text: STATEMENT_WORDS,
     tree,
     type: "requirement",
@@ -174,6 +150,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
   const unread = node({
     id: "spec#b-r2",
     reference: `dispatch://${KEY}/spec#b-r2`,
+    statement: true,
     text: "The box takes the focus.",
     type: "requirement",
   });
@@ -215,8 +192,14 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     kind: "statement",
     text: "The box takes the focus.",
   });
-  // The statement's words with no mark of markdown, its two paragraphs one space apart.
-  const aimed: StatementTarget = { ...item, quote: "The page draws one box. It sits at the foot." };
+  // The statement's words with no mark of markdown, its two paragraphs one space apart, and its
+  // row, which a comment on it lands under.
+  const aimed: StatementTarget = {
+    artifact: "spec",
+    item,
+    quote: "The page draws one box. It sits at the foot.",
+    row: "spec#b-r1",
+  };
 
   const page = renderPage(
     node({ children: [statement, unread, comment, open, answered], id: KEY, type: "issue" }),
@@ -312,7 +295,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
       plainDelivery: "steer",
       replyTo: null,
       sendKey: "send-1",
-      statement: { artifact: aimed.artifact, quote: aimed.quote },
+      statement: { artifact: aimed.artifact, quote: aimed.quote, row: aimed.row },
     };
     // The send stays out: Dispatch never answers it.
     const createComment = spyOn(api, "createComment").mockImplementation(
@@ -341,8 +324,8 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
 // change of answer, an Edit - leaves the writer on that statement, so the refused words are
 // neither replaced by another target's seed nor sent under another target, as a refused reply
 // holds its reply (`redirectedReplyTarget`). A writer that mounts again over the refused send
-// takes its statement up from it - the document and the words the send keeps - and a Reply on
-// that same statement takes its row's whole target again.
+// takes its statement up from it - the document, the words and the row the send keeps - and a
+// Reply on that same statement takes its row's whole target again.
 test("a refused comment on a statement holds the writer on it, and a writer mounted again takes it up", async () => {
   const tree = displayTree(STATEMENT_WORDS);
   if (tree === undefined) throw new Error("the engine read no statement");
@@ -350,6 +333,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     id: "spec#b-r1",
     reference: `dispatch://${KEY}/spec#b-r1`,
     source: SPEC_SOURCE,
+    statement: true,
     text: STATEMENT_WORDS,
     tree,
     type: "requirement",
@@ -357,6 +341,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   const other = node({
     id: "spec#b-r2",
     reference: `dispatch://${KEY}/spec#b-r2`,
+    statement: true,
     text: "The box takes the focus.",
     type: "requirement",
   });
@@ -391,13 +376,17 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   ];
   const aimed: StatementTarget = {
     artifact: "spec",
-    blockId: "r1",
-    id: "spec#b-r1",
-    kind: "statement",
+    item: {
+      artifact: "spec",
+      blockId: "r1",
+      id: "spec#b-r1",
+      kind: "statement",
+      source: SPEC_SOURCE,
+      text: STATEMENT_WORDS,
+      tree,
+    },
     quote: "The page draws one box. It sits at the foot.",
-    source: SPEC_SOURCE,
-    text: STATEMENT_WORDS,
-    tree,
+    row: "spec#b-r1",
   };
   const sendKey = ["issue-composer", KEY];
   const request: SentRequest = {
@@ -410,7 +399,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     plainDelivery: "steer",
     replyTo: null,
     sendKey: "send-1",
-    statement: { artifact: aimed.artifact, quote: aimed.quote },
+    statement: { artifact: aimed.artifact, quote: aimed.quote, row: aimed.row },
   };
   const user = userEvent.setup();
   // Dispatch refuses the comment.
@@ -457,14 +446,49 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     // The writer mounted again in the same tab, over the send Dispatch refused.
     first.view.unmount();
     const again = renderPage(root, asks, first.client);
-    expect(again.writer().statement).toEqual({ artifact: aimed.artifact, quote: aimed.quote });
+    const held = { artifact: aimed.artifact, quote: aimed.quote, row: aimed.row };
+    expect(again.writer().statement).toEqual(held);
     await press("comment-1", "r");
-    expect(again.writer().statement).toEqual({ artifact: aimed.artifact, quote: aimed.quote });
+    expect(again.writer().statement).toEqual(held);
     expect(again.writer().reply).toBeNull();
     await press("spec#b-r1", "r");
     await waitFor(() => expect(again.writer().statement).toEqual(aimed));
   } finally {
     cleanup();
     createComment.mockRestore();
+  }
+});
+
+// The reviewer's finding 5942007779 and decision 152: only a `requirement` block of the spec is
+// a statement. The plan's own `requirement` block is a block and nothing more, so its focused row
+// draws no Reply - Copy reference alone - and `r` on it leaves the writer aimed at nothing: no
+// comment is anchored to the plan from the box.
+test("a requirement block of the plan draws no Reply, and r on it aims the writer at nothing", async () => {
+  const user = userEvent.setup();
+  const planned = node({
+    id: "plan-md#b-r9",
+    reference: `dispatch://${KEY}/artifact/plan-md#b-r9`,
+    source: { id: "artifact-plan", issue: KEY, kind: "artifact" },
+    text: "The plan restates a requirement.",
+    type: "requirement",
+  });
+  const page = renderPage(node({ children: [planned], id: KEY, type: "issue" }), []);
+  try {
+    const row = page.view.container.querySelector<HTMLElement>(
+      `[data-node-row][data-node-id="${planned.id}"]`
+    );
+    if (row === null) throw new Error("the tree drew no row for the plan's block");
+    await act(async () => row.focus());
+    await waitFor(() => expect(row.querySelector("[data-row-copy]")).not.toBeNull());
+    const acts = [...row.querySelectorAll("[data-row-act]")].map((control) =>
+      control.getAttribute("data-row-act")
+    );
+    expect(acts).toEqual([]);
+    await user.keyboard("r");
+    expect(page.writer().statement).toBeUndefined();
+    expect(page.writer().reply).toBeNull();
+    expect(replyItemOf(planned)).toBeUndefined();
+  } finally {
+    page.view.unmount();
   }
 });

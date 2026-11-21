@@ -41,12 +41,13 @@ type ShortID struct {
 // answers every other id of the call too. ambiguous is nil when no id is ambiguous. An id that
 // ids holds twice is read once.
 //
-// Every candidate is read as the zero Viewer reads it. A short message id in a reference always
+// Every candidate is read as a Viewer that is no person and no session reads it, with serverURL
+// the deployment whose dashboard URLs a first line cuts around (FirstLine), as ResolvePrefix reads
+// it with that Viewer. A short message id in a reference always
 // names the issue of its message (PrefixScope), so a message is resolved within its issue alone.
 // Thus no direct message is ever a candidate, and this function needs no part that decides
 // which session can read the first line of a direct message, as ResolvePrefix has. A message id
-// whose scope names no issue is no match. Each candidate's first line is cut where no reference
-// crosses the cut (FirstLine), serverURL being the server's own address, as ResolvePrefix's are.
+// whose scope names no issue is no match.
 func ResolvePrefixes(ctx context.Context, q Queryer, ids []ShortID, serverURL string) (whole map[ShortID]Candidate, ambiguous map[ShortID]bool, err error) {
 	var asks, comments, messages, documents, latest, pinned, order []ShortID
 	seen := make(map[ShortID]bool, len(ids))

@@ -1,4 +1,5 @@
-import type { Browser, BrowserContext, Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 
 import {
   FOOT_HEIGHT_PROPERTY,
@@ -30,7 +31,9 @@ import {
   createComment,
   createIssue,
   createMessage,
+  createProject,
   getArtifact,
+  getArtifactText,
   getAsk,
   getIssue,
   getIssueCoverage,
@@ -41,6 +44,7 @@ import {
   listIssueMessages,
   listMyReplies,
   patchIssue,
+  resolveComment,
 } from "./api";
 import { countDocumentSockets, cursorLabel } from "./editor";
 import { nextFrames } from "./frames";
@@ -51,6 +55,7 @@ import {
   seedUnbrokenChildTitle,
   seedUnbrokenWords,
   seedWholeIssue,
+  seedWideCode,
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
@@ -89,6 +94,7 @@ import {
   branchMoreRows,
   bulletBoxes,
   caretInNode,
+  caretInRowBlock,
   childRow,
   childRows,
   childrenSection,
@@ -124,18 +130,17 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * Part I's rows of the new issue page (dispatch://INFRA-3944, part I of dispatch://INFRA-1196):
- * the outline - the conversation folded to the frontier, its children as rows, its keys, and
- * editing in a node - read on the real stack. Each row turns the new page on for its reader with
- * `withIssuePage` (D's `phase` and this file's `openTree`), seeds what it reads with the seeds of
- * `e2e/issue-layout-seed.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts` and this part's `e2e/issue-page-i.ts`. The few selectors it spells itself
- * are marks one row reads: a key's report at a row, a crumb, a child's facts and key, a row's
- * card and author, the links the hover row rests on and the Inbox's owner link.
+ * The outline's rows of the new issue page: the outline - the conversation folded to the
+ * frontier, its children as rows, its keys, and editing in a node - read on the real stack. Each
+ * row turns the new page on for its reader with `withIssuePage` (`e2e/issue-page.ts`'s `phase`
+ * and this file's `openTree`), seeds what it reads with the seeds of `e2e/issue-layout-seed.ts`,
+ * and reads the page through `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and
+ * `e2e/issue-page-i.ts`. The few selectors it spells itself are marks one row reads: a key's
+ * report at a row, a crumb, a child's facts and key, a row's card and author, the links the
+ * hover row rests on and the Inbox's owner link.
  *
  * The rows come from the checkpoint's `e2e/issue-layout.e2e.ts` and `e2e/keyboard-issue.e2e.ts`,
- * each under the title its check names (`verification.md` of dispatch://INFRA-3944, c-outline
- * and c-keys).
+ * each under the title its check names (c-outline and c-keys).
  */
 
 interface OpenedTree {
@@ -180,12 +185,14 @@ async function visibleIds(page: Page): Promise<string[]> {
 /** Where the keys have left the reader: the row holding the focus, or the one the tree names with
  *  `aria-activedescendant`. */
 async function focusedRow(page: Page): Promise<string | null> {
+  // Where the keys left the reader at this instant is what this answers, by the focus or else
+  // by the row the tree names: a caller that waits for a row polls this whole function.
   return (await focusedNodeId(page)) ?? (await treeActiveDescendant(page));
 }
 
 /** The focused row is on screen, clear of the sticky identity block and above the box at the
- *  foot, which R9 requires after every move and not only at the end. The foot is bound as
- *  `onScreen` bounds it: the window's height less the height the page publishes for that box
+ *  foot, as it must be after every move and not only at the end. The foot is bound as `onScreen`
+ *  bounds it: the window's height less the height the page publishes for that box
  *  (`FOOT_HEIGHT_PROPERTY`), unset while no box is drawn. */
 async function expectFocusedRowClear(page: Page, after: string): Promise<void> {
   const id = await focusedRow(page);
@@ -222,6 +229,58 @@ async function expectFocusedRowOnScreen(page: Page, after: string, failure: stri
     .toBe(true);
 }
 
+/**
+ * What is wrong with where a zoom left the crumb line it draws and the focused row, one line of
+ * the failure each: the line's top under the band that stays at the top, as tall as the page
+ * publishes on the document element (`IDENTITY_HEIGHT_PROPERTY`), and the focused row's top off
+ * the screen - above that band, or below the window's foot less the box the page publishes the
+ * height of there (`FOOT_HEIGHT_PROPERTY`). Empty where both stand on screen. The row is read by
+ * its top, since a row taller than the window stands whole on it nowhere.
+ */
+function zoomMisplaced(page: Page): Promise<string[]> {
+  return tree(page).evaluate(
+    (element, { band, foot }) => {
+      const published = getComputedStyle(document.documentElement);
+      const top = Number.parseFloat(published.getPropertyValue(band)) || 0;
+      const floor = window.innerHeight - (Number.parseFloat(published.getPropertyValue(foot)) || 0);
+      const wrong: string[] = [];
+      const line = element.parentElement
+        ?.querySelector("[data-crumb]")
+        ?.parentElement?.getBoundingClientRect();
+      if (line === undefined) wrong.push("no crumb line is drawn");
+      else if (line.top < top - 1) {
+        wrong.push(
+          `the crumb line stands at ${Math.round(line.top)} to ${Math.round(line.bottom)} px, under a band ${top} px tall`
+        );
+      }
+      const row = document.activeElement?.closest("[data-node-row]")?.getBoundingClientRect();
+      if (row === undefined) wrong.push("the focus is on no row");
+      else if (row.top < top - 1 || row.top >= floor) {
+        wrong.push(
+          `the focused row's top stands at ${Math.round(row.top)} px, off the screen between ${top} and ${Math.round(floor)} px`
+        );
+      }
+      return wrong;
+    },
+    { band: IDENTITY_HEIGHT_PROPERTY, foot: FOOT_HEIGHT_PROPERTY }
+  );
+}
+
+/** The crumb line a zoom draws is below the band that stays at the top and the focused row's top
+ *  is on screen (`zoomMisplaced`), once the zoom has drawn and still a second later. */
+async function expectZoomPlaced(page: Page, after: string): Promise<void> {
+  await expect
+    .poll(() => zoomMisplaced(page), {
+      message: `${after} left the crumb line under the band or the focused row's top off the screen`,
+    })
+    .toEqual([]);
+  // The zoomed row goes on growing as its body draws, and a row placed again as it grew took
+  // the line back under the band, where it still stood 1.5 s after the zoom: the same reading
+  // after a second of that.
+  await page.waitForTimeout(1_000);
+  expect(await zoomMisplaced(page), `${after}, a second later`).toEqual([]);
+}
+
 /** Presses End or Home and reads that it moved the focus to the outline's last or first drawn
  *  row, which a row reads before where that row stands: a key that moved nowhere, or to another
  *  row, leaves a row on screen just as well. */
@@ -241,18 +300,60 @@ async function primarySlug(key: string): Promise<string> {
   return primary?.slug ?? "";
 }
 
+/** The markdown the server stores for the document `artifactId`. */
+async function storedMarkdown(artifactId: string): Promise<string> {
+  return (await getArtifactText(artifactId)).markdown;
+}
+
+/** Opens the issue `key` on `page` and, once the page has put the focus on a row, presses End,
+ *  which reaches the node `nodeId`, the outline's last row, named `what` in a failure; with
+ *  `enter`, then Enter, which puts the caret in that node. */
+async function enterNode(
+  page: Page,
+  key: string,
+  nodeId: string,
+  what: string,
+  { enter }: { readonly enter: boolean }
+): Promise<void> {
+  await gotoIssue(page, `/issues/${key}`);
+  await expectIssuePageDrawn(page);
+  await expect
+    .poll(async () => (await focusedRow(page)) !== null, {
+      message: `the page opens with the focus on no row, so End cannot reach ${what}`,
+    })
+    .toBe(true);
+  await page.keyboard.press("End");
+  await expect.poll(() => focusedRow(page), { message: `End did not reach ${what}` }).toBe(nodeId);
+  if (!enter) return;
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => caretInNode(page), { message: `Enter did not put the caret in ${what}` })
+    .toBe(true);
+}
+
+/** Makes the project CITED and an issue of it whose title runs past a phone's line, and answers
+ *  that issue's key, for a document of the seeded project to cite. */
+async function seedCitedIssue(): Promise<string> {
+  await createProject({ key: "CITED", name: "Cited issues" });
+  const cited = await createIssue({
+    force: true,
+    project: "CITED",
+    title: "A cited issue of another project, whose title runs past a phone's line",
+  });
+  return cited.key;
+}
+
 /** The kinds a row draws no tag for, because they are the conversation's own words rather than
- *  a kind it revealed (R34: "as one tag where the node has a typed kind"). */
+ *  a kind it revealed: one tag where the node has a typed kind. */
 const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
 
 /**
- * Every row of a typed kind carries its kind's word and its kind's shape on its one tag (R34),
- * but a child issue, whose tag is its key (the architect's ruling 5); a turn of the
- * conversation carries neither, its author's name and shape saying whose words it is (R9); and
- * every row its state word and its state's shape where the model holds a state, and nothing
- * where it holds none. Every word and token comes from `page-words.ts`, so a type or state the
- * page draws without declaring one fails here. `tags` is each row's tag by its node's id
- * (`rowTags`).
+ * Every row of a typed kind carries its kind's word and its kind's shape on its one tag, but a
+ * child issue, whose tag is its key; a turn of the conversation carries neither, its author's
+ * name and shape saying whose words it is; and every row its state word and its state's shape
+ * where the model holds a state, and nothing where it holds none. Every word and token comes
+ * from `page-words.ts`, so a type or state the page draws without declaring one fails here.
+ * `tags` is each row's tag by its node's id (`rowTags`).
  */
 function expectRowVocabulary(rows: readonly DrawnRow[], tags: ReadonlyMap<string, string>): void {
   for (const row of rows) {
@@ -337,7 +438,8 @@ function cutsAWord(stored: string, drawn: string): boolean {
 }
 
 /** The chips of `chips` that name a target whose stored words are `words`: a chip draws its
- *  target's words, cut as a title is, with an ellipsis where they carry on (G's `Chip`). */
+ *  target's words, cut as a title is, with an ellipsis where they carry on (`NodeRow.tsx`'s
+ *  `Chip`). */
 function chipsNaming(chips: readonly string[], words: string): string[] {
   return chips.filter((chip) => {
     const drawn = chip.replace(/\s*…$/u, "").trimEnd();
@@ -354,9 +456,9 @@ function seededBlockWords(spec: string, id: string): string {
 }
 
 /**
- * R1 on one row's one line - a folded branch's - read twice, because the text alone cannot see
- * the cut a box makes: a box that hides the tail of its line leaves every character of it in the
- * line's text. So the line is read for its words - the start of the stored text, ending at a
+ * The rule for a row's one line - a folded branch's - read twice, because the text alone cannot
+ * see the cut a box makes: a box that hides the tail of its line leaves every character of it in
+ * the line's text. So the line is read for its words - the start of the stored text, ending at a
  * word break, with an ellipsis where the text carries on - and its box for holding every
  * character it was given (`scrollWidth` at its `clientWidth`, a pixel for rounding).
  */
@@ -389,7 +491,7 @@ function expectCutAtAWord(row: DrawnRow | undefined, stored: string, where: stri
 }
 
 /** The kinds of node the issue holds that are no node of its conversation, so no row of the
- *  outline is one (dispatch://INFRA-1196 R1, R3). */
+ *  outline is one. */
 const NOT_CONVERSATION: readonly string[] = ["document", "handoff", "image"];
 
 /** Fails on every row of `rows` that is a document, a file or a handoff of the issue: by its
@@ -426,10 +528,10 @@ function askNodeId(ask: PlacedAsk, slugOf: ReadonlyMap<string, string>): string 
 /** What the outline of `seedWholeIssue` holds, read from the server's own reads rather than from
  *  the page: every node of its conversation by the id the tree draws it under, the slugs of its
  *  documents and files, which no row may be, the summary callout, which the head draws
- *  (dispatch://INFRA-1196 R8, c-three-things), the frontier - every node open and unanswered,
- *  which the fold opens the path to (R1) - and the words the server stores for each node whose
- *  read sends them, by the same id: an ask's question, a comment's and a message's body, and a
- *  requirement's, a decision's and a check's text. */
+ *  (c-three-things), the frontier - every node open and unanswered, which the fold opens the
+ *  path to - and the words the server stores for each node whose read sends them, by the same
+ *  id: an ask's question, a comment's and a message's body, and a requirement's, a decision's
+ *  and a check's text. */
 interface SeededOutline {
   readonly frontier: ReadonlySet<string>;
   readonly nodes: ReadonlySet<string>;
@@ -442,7 +544,7 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
   const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
   const slugOf = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
   const slug = (id: string) => slugOf.get(id) ?? "";
-  // The issue itself is no row: the header is the issue (ruling 5).
+  // The issue itself is no row: the header is the issue.
   const nodes = new Set<string>(seeded.children.keys);
   const frontier = new Set<string>();
   const words = new Map<string, string>();
@@ -524,9 +626,8 @@ function heldIn(rows: readonly DrawnRow[], id: string): number {
  *  document, a result for each check but the one recorded with none, the two comment threads
  *  with their replies and the comment anchored to a block, the three messages of the one
  *  conversation, and the children. The rest it writes once each: the open question and the
- *  answered one. The issue itself is no row (ruling 5), the summary's callout is the head's three
- *  sentences and no row (R8), and no document and no file is a row (dispatch://INFRA-1196 R1,
- *  R3). */
+ *  answered one. The issue itself is no row, the summary's callout is the head's three
+ *  sentences and no row, and no document and no file is a row. */
 function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
   const checks = seeded.checks.all.length;
   return {
@@ -552,17 +653,16 @@ function rowsByKind(rows: readonly DrawnRow[]): Record<string, number> {
   return kinds;
 }
 
-// c-tree. On the issue today's model holds, the one the conversion has not reached
-// (dispatch://INFRA-1253), with no filter on, at 1440 px. This row carries no `@phone`: below
-// 1024 px the tree is read one node at a time under a breadcrumb, one level below the node it is
-// on (R16), and every level, ancestor and fold below would be a different claim; the row under
-// this one reads the clauses the width keeps.
+// c-tree. On the issue today's model holds, the one the conversion has not reached, with no
+// filter on, at 1440 px. This row carries no `@phone`: below 1024 px the tree is read one node
+// at a time under a breadcrumb, one level below the node it is on, and every level, ancestor and
+// fold below would be a different claim; the row under this one reads the clauses the width
+// keeps.
 //
 // What waits on another issue, and is not read here: a criterion, a reading, a lens and a
-// finding, which the model cannot hold yet (dispatch://INFRA-1253, INFRA-1150, INFRA-1950); the
-// summary callout, which the head draws (R8) and c-three-things reads, and which this row
-// leaves out of its reading either way; and which row of a node the edit key opens, which is
-// c-editing's and touches nothing this row reads.
+// finding, which the model cannot hold yet; the summary callout, which the head draws and
+// c-three-things reads, and which this row leaves out of its reading either way; and which row
+// of a node the edit key opens, which is c-editing's and touches nothing this row reads.
 // SLOW(>=2s): the whole issue seeded and read back through seven API reads, one load waited out
 // until its reads settle, then every branch unfolded press by press and the rows read whole.
 test("with no filter the page is the conversation, each node edited once, folded to the frontier", async ({
@@ -571,9 +671,9 @@ test("with no filter the page is the conversation, each node edited once, folded
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // One more turn of the seed's conversation before the page opens: the planner cites the
-    // first child by its address, which the page draws as G's link to an issue, by its key and
-    // its title (R4 of the root spec). It answers the seed's message, since the outline draws a
-    // thread only once a person wrote in it (`agents-only.ts`).
+    // first child by its address, which the page draws as a link to an issue, by its key and
+    // its title. It answers the seed's message, since the outline draws a thread only once a
+    // person wrote in it (`agents-only.ts`).
     const cited = seeded.children.keys[0] ?? "";
     const citing = await createMessage(
       seeded.key,
@@ -590,7 +690,7 @@ test("with no filter the page is the conversation, each node edited once, folded
     await expectLoadSettled(settling);
     await expectIssuePageDrawn(page);
 
-    // The outline's measure (R1): at most 1000 px wide, the prototype's `#pane`, and centred in
+    // The outline's measure: at most 1000 px wide, the prototype's `#pane`, and centred in
     // the stage, its gaps to the stage's insets on its two sides a pixel apart at most.
     const place = await placeInStage(tree(page));
     expect(place, "the tree stands in no stage").not.toBeNull();
@@ -603,7 +703,7 @@ test("with no filter the page is the conversation, each node edited once, folded
       `the tree is not centred in the stage: ${place?.left} px at its left, ${place?.right} px at its right`
     ).toBeLessThanOrEqual(1);
 
-    // No document, file or handoff is a row, folded or not (R1, R3): the spec is drawn nowhere
+    // No document, file or handoff is a row, folded or not: the spec is drawn nowhere
     // in the outline.
     const folded = await drawnRows(page);
     expectNoIssueNodeRows(folded, outline.slugs, "the page as it opens");
@@ -615,7 +715,7 @@ test("with no filter the page is the conversation, each node edited once, folded
 
     // No row repeats the issue: the first row is the first node under it (row 2), and it starts
     // at most 15 px under the view row's foot - the prototype's 14 px gap under `#tabs`, and 1 px
-    // for rounding (part I's R3).
+    // for rounding.
     expect(
       rowOf(folded, seeded.key),
       "the outline draws a row for the issue itself"
@@ -663,9 +763,11 @@ test("with no filter the page is the conversation, each node edited once, folded
     // task, and each child under the issue - read by node id against the server's own reads,
     // and a row for nothing else.
     await unfoldEveryBranch(page);
+    // Every fold was pressed open above, and the ids read here are held to every node of the
+    // conversation below, so a read short of a row fails there before the loop at the foot.
     const whole = await drawnRows(page);
     expectNoIssueNodeRows(whole, outline.slugs, "the page with every branch open");
-    // The memo callout is the head's three sentences and no row of the outline (R8).
+    // The memo callout is the head's three sentences and no row of the outline.
     expect(idsOf(whole), "the memo callout is drawn as a row of the outline").not.toContain(
       outline.summary
     );
@@ -673,13 +775,13 @@ test("with no filter the page is the conversation, each node edited once, folded
       [...new Set(idsOf(whole))].sort(),
       "the rows of the outline are not the nodes of the issue's conversation"
     ).toEqual([...outline.nodes].sort());
-    // The planner's citation of a child is G's link to the child, by its key and its title.
+    // The planner's citation of a child is a link to the child, by its key and its title.
     await expect(
       rowReference(nodeRow(page, citing.id).first(), `dispatch://${cited}`),
       `the message that cites ${cited} does not draw it as its key and its title`
     ).toHaveText(`${cited} ${(await getIssue(cited)).title}`);
     // The children are rows of the outline's top level, under no other row: the issue itself
-    // is no row (ruling 5, part I's R6).
+    // is no row.
     for (const child of seeded.children.keys) {
       expect(ancestorsIn(whole, child), `the child ${child} sits under another row`).toEqual([]);
     }
@@ -722,10 +824,10 @@ test("with no filter the page is the conversation, each node edited once, folded
       "the answer is drawn as a row of its own"
     ).toEqual([]);
 
-    // A folded branch is where the page draws one line for a node (the architect's ruling 1 on
-    // R1): that line ends at a sentence end or at 100 characters, always at a word, and is the
-    // first line of the words the server stores for the node, cut by the page's own rule
-    // (`firstLineOf`). Every other row draws its words whole, so the focused row holds them.
+    // A folded branch is where the page draws one line for a node (the architect's ruling on a
+    // node's one line): that line ends at a sentence end or at 100 characters, always at a word,
+    // and is the first line of the words the server stores for the node, cut by the page's own
+    // rule (`firstLineOf`). Every other row draws its words whole, so the focused row holds them.
     const lines = folded.filter((row) => row.firstLine !== null);
     expect(lines.length, "the page as it opens draws no folded branch's line").toBeGreaterThan(0);
     for (const row of lines) {
@@ -769,10 +871,10 @@ test("with no filter the page is the conversation, each node edited once, folded
   });
 });
 
-/** The widths a folded branch's line is read at below 1024 px: the floor R18 names, the phone
- *  the `iphone` project runs, the last width the phone's classes draw and the first that draws
- *  the desktop's (decision 72: `max-[761px]:` is `width < 761px`), and the narrowest width above
- *  a phone's (`PHONE_VIEWPORT_QUERY` is under 768 px). */
+/** The widths a folded branch's line is read at below 1024 px: the narrowest width the page
+ *  holds to, the phone the `iphone` project runs, the last width the phone's classes draw and
+ *  the first that draws the desktop's (`max-[761px]:` is `width < 761px`), and the narrowest
+ *  width above a phone's (`PHONE_VIEWPORT_QUERY` is under 768 px). */
 const ONE_LINE_WIDTHS = [320, 390, 760, 761, 768] as const;
 
 /** How a deeper branch's one line is indented at `width`: per level and past its level's
@@ -783,16 +885,18 @@ function branchMoreIndent(width: number): { readonly inset: number; readonly ste
 }
 
 /**
- * The two gaps at a phone's bullet (part I's R3, decision 60). Between a node's bullet column
- * and its words stands the row's own 6 px (G's `NODE_ROW_LAYOUT.box`) and no inset of the
- * tree's box: at most 7 px, a pixel for rounding, read on each row whose node holds no other,
- * where the bullet is the column itself, and whose words are not the reader's own, which stand
- * inside their ink rule (G's second edge). A node that holds others draws its 24 px fold control
+ * The two gaps at a phone's bullet. Between a node's bullet column and its words stands the
+ * row's own 6 px (`NODE_ROW_LAYOUT.box`, `NodeRow.tsx`) and no inset of the tree's box: at most
+ * 7 px, a pixel for rounding, read on each row whose node holds no other, where the bullet is
+ * the column itself, and whose words are not the reader's own, which stand inside their ink rule
+ * (the row's second left edge). A node that holds others draws its 24 px fold control
  * reaching past that column on both sides (`NODE_ROW_LAYOUT.foldControl`): it ends before its
  * words, so it covers none of them, and it stays inside the page.
  */
-async function expectPhoneBulletGaps(page: Page, where: string): Promise<void> {
-  const layouts = await rowLayouts(page);
+async function expectPhoneBulletGaps(page: Page, spec: string, where: string): Promise<void> {
+  // Its one caller waited for every read of the load to settle and for the rows to draw, so the
+  // rows' layout is read as it stands now; the two counts at the foot fail a reading of no row.
+  const layouts = await rowLayouts(page, spec);
   const bullets = await bulletBoxes(page);
   expect(
     bullets.map((bullet) => bullet.id),
@@ -826,18 +930,18 @@ async function expectPhoneBulletGaps(page: Page, where: string): Promise<void> {
   expect(holders, `${where} draws no row of a node that holds others`).toBeGreaterThan(0);
 }
 
-// c-tree, at the widths the tree is read one node at a time at (R16), which is a row of its own:
+// c-tree, at the widths the tree is read one node at a time at, which is a row of its own:
 // the row above reads the whole tree at 1440 px, and every level it names, every ancestor it
 // walks and every fold it counts is that tree's. This reads the clauses the narrow tree keeps:
-// a drawn row draws its node's words whole (the architect's ruling 1 on R1), and a folded branch
-// draws one line - its node's first line, cut at a word by R1's rule - and how many nodes it
-// holds, in a box that hides none of it. It carries `@phone-only` beside `@phone` because the
-// row above reads the same clauses wherever the tree draws the whole of itself.
+// a drawn row draws its node's words whole (the architect's ruling on a node's one line), and a
+// folded branch draws one line - its node's first line, cut at a word by that rule - and how
+// many nodes it holds, in a box that hides none of it. It carries `@phone-only` beside `@phone`
+// because the row above reads the same clauses wherever the tree draws the whole of itself.
 //
 // Two rows of the issue's own screen: the first requirement, which holds a check that passed
 // and a plan task and so arrives folded, its author the page's own words for one nobody
-// recorded (R9); and the open question, which the frontier draws two levels down whatever the
-// depth (R16), its words whole.
+// recorded; and the open question, which the frontier draws two levels down whatever the
+// depth, its words whole.
 //
 // It sets the width itself, as every row of this file does: `phase` starts every page at the
 // desktop size in every project, the `iphone` project included.
@@ -853,7 +957,11 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
     const question = (await getAsk(seeded.openQuestion.askId)).ask.question;
     for (const width of ONE_LINE_WIDTHS) {
       await page.setViewportSize({ height: PHONE.height, width });
+      // Every read of the load settles before the rows are measured: the comments and messages
+      // come by reads of their own, and the phone's bullet reading below reads every row drawn.
+      const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectLoadSettled(settling);
       await expectIssuePageDrawn(page);
       await expect(
         nodeRow(page, questionId).first(),
@@ -875,7 +983,7 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
       expect(required?.expanded, `the first requirement is not folded at ${width} px`).toBe(
         "false"
       );
-      // Ruling 5: the model holds no author for a requirement, so its row draws none; its
+      // The model holds no author for a requirement, so its row draws none; its
       // opened body says so, which is read below once the row has the focus.
       expect(
         required?.author,
@@ -889,11 +997,13 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
       expect(required?.text, `the folded requirement counts nothing at ${width} px`).toContain(
         `${required?.foldedCount} ${CONTROL_LABELS.folded_rows}`
       );
-      // No row makes the page scroll sideways at any of these widths (R12).
+      // No row makes the page scroll sideways at any of these widths.
       await assertPageFits(page);
-      if (width === PHONE.width) await expectPhoneBulletGaps(page, `the page at ${width} px`);
+      if (width === PHONE.width) {
+        await expectPhoneBulletGaps(page, specSlug, `the page at ${width} px`);
+      }
 
-      // The phone's form ends at 760 px itself and the desktop's starts at 761 (decision 72).
+      // The phone's form ends at 760 px itself and the desktop's starts at 761.
       // Below 1024 px one level is drawn, so a branch the reader opens off the frontier folds
       // what its nodes hold to one line: the first requirement's check holds its results.
       if (width !== 760 && width !== 761) continue;
@@ -907,15 +1017,33 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
         })
         .toBeGreaterThan(0);
       const { inset, step } = branchMoreIndent(width);
+      // The poll above waited until the opened branch drew its deeper lines, so this read walks
+      // at least one of them.
       for (const line of await branchMoreIndents(page)) {
         expect(
           line.padding,
           `a deeper branch's line at depth ${line.depth} is indented ${line.padding} px at ${width} px`
         ).toBe(line.depth * step + inset);
       }
+      // The count and its words are one line of words, the space between them drawn: below
+      // 1280 px the line's button is a flex box (`styles.css`), and on a long issue the line
+      // read "21more rows below".
+      for (const line of await branchMoreRows(page).evaluateAll((lines) =>
+        lines.map((one) => ({
+          drawn: (one as HTMLElement).innerText.trim(),
+          held: Number.parseInt(one.textContent ?? "", 10),
+        }))
+      )) {
+        expect(
+          line.drawn,
+          `a deeper branch's line at ${width} px runs its count into its words`
+        ).toBe(
+          `${line.held} ${line.held === 1 ? CONTROL_LABELS.deeper_row : CONTROL_LABELS.deeper_rows}`
+        );
+      }
     }
 
-    // What the line left out is drawn the moment the row has the focus (R6), so the reader
+    // What the line left out is drawn the moment the row has the focus, so the reader
     // loses no word to it.
     const opened = nodeRow(page, nodeId).first();
     await opened.focus();
@@ -931,25 +1059,27 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
   });
 });
 
-// c-spine. Each node under the parent the model stores (R4), read against the server's own
+// c-spine. Each node under the parent the model stores, read against the server's own
 // edges on the two seeds that hold today's: an ask over the decision that answers it, `serves`
 // over checks and plan tasks, a check over its results, and the entry a reply answers. On the
 // issue the conversion has not reached every other typed block sits under the issue.
 //
 // What waits on another issue, and is not read here: a criterion under the words that raised
 // it, a requirement under its criterion, and the left arrow walking up from a requirement to
-// them (dispatch://INFRA-1253); a lens under its node and a finding under its lens
-// (both waiting on another issue); a reading under its decision (on a third); and a comment
-// anchored to a node other than a statement under that node, an edge the model does not store
-// yet, so it sits under the issue as any node with no stored parent does. A comment anchored
-// inside a statement is read under that statement, which the page finds by the anchor's block.
+// them; a lens under its node and a finding under its lens; a reading under its decision; and a
+// comment anchored to a node other than a statement under that node, an edge the model does not
+// store, so the anchored comment sits under the issue as any node with no stored parent does. A
+// comment anchored inside a statement is read under that statement, which the page finds by the
+// anchor's block.
 // SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
 // first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedSpineCases, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
@@ -969,7 +1099,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
       "the decision is not drawn under the ask it answers"
     ).toBe(seeded.answeredAskId);
     // A node with no stored parent stands at the outline's top level, under no row: the issue
-    // itself is no row (ruling 5).
+    // itself is no row.
     expect(
       await parentOfRow(page, seeded.answeredAskId),
       "the answered ask is not drawn at the outline's top level"
@@ -1030,9 +1160,9 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 
     // Every edge that is not the spine is a chip naming its target, and the spine is none: the
     // decision's link to a requirement is its chip, once, and the ask it sits under is not one.
-    // A folded branch draws one line and no chip (ruling 1 on R1), so the tree is read open.
-    // A chip names its target by the target's stored words, cut as a title is (G's `Chip`), so
-    // each is found by the words the seed stored.
+    // A folded branch draws one line and no chip, so the tree is read open. A chip names its
+    // target by the target's stored words, cut as a title is (`NodeRow.tsx`'s `Chip`), so each is
+    // found by the words the seed stored.
     await unfoldEveryBranch(page);
     const chips = (await drawnRows(page)).flatMap((row) => row.chips);
     expect(
@@ -1108,7 +1238,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
 
     // Every typed block the model gives no parent sits under the issue - the open question's
     // block and every requirement - and no row sits under a document. The summary callout is
-    // the head's three sentences and no row (R8).
+    // the head's three sentences and no row.
     expect(
       rows.some((row) => row.id === blockNodeId(specSlug, seeded.summaryBlockId)),
       "the summary callout is drawn as a row of the outline"
@@ -1136,17 +1266,21 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     ).toEqual([]);
   });
 
-  // R4 from 1024 px up: the outline draws three levels below the node it is rooted at, and a
+  // From 1024 px up the outline draws three levels below the node it is rooted at, and a
   // branch opened deeper is one line counting what it holds, which opens it in place. The
   // thread of `seedReplyNesting` is four levels deep - its head, the answer to it, the answer to
   // that answer, and a third answer under that - and `phase` opens it at 1440 by 900 px.
   await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
-    // The thread's folds are opened by their fold controls alone: G's `unfoldEveryBranch` also
+    // The thread's folds are opened by their fold controls alone: `unfoldEveryBranch` also
     // presses the line that counts a deeper branch, which is what this reading reads shut.
     const folds = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
+    // The load went quiet above, so the first count reads the folds the page settled on, and
+    // each press draws the branch it opens before its click resolves.
     for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
       await folds.first().click();
     }
@@ -1191,7 +1325,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
   });
 });
 
-// c-open-questions (R7). The page opens with the keyboard focus on the first open question that
+// c-open-questions. The page opens with the keyboard focus on the first open question that
 // waits on the reader, in the outline's order, its row inside the viewport with nothing unfolded
 // or scrolled by hand; `q` moves to the next one; and where none waits on the reader the page
 // opens with the focus on the outline's first row. The second question is asked after forty
@@ -1329,8 +1463,8 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       expect(await page.evaluate(() => window.scrollY), `the page opens scrolled at ${at}`).toBe(0);
     }
 
-    // A first row taller than the window opens where it stands too (part I's reading, decision
-    // 63). Its body opens with the focus (R7), and the page's one rule for placing a focused row
+    // A first row taller than the window opens where it stands too, as the architect ruled.
+    // Its body opens with the focus, and the page's one rule for placing a focused row
     // (`bringOnScreen`) puts a row taller than the screen at its top, under the band: on a long
     // answered question a load once opened at 89 px at 1440 by 900 and at 161 px at 390 by 664,
     // and hid the header. The issue's one node is a person's comment of 120 paragraphs.
@@ -1370,13 +1504,13 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
   });
 });
 
-// The tester's finding at #4205's e3136741: R8 read as a reader reaches an issue, by a link of
-// the dashboard itself and with no document load - from the Inbox, and from the parent's
-// outline. The dashboard moves the keyboard focus to its `<main>` at every page change but the
-// first (`app.tsx`), and the outline read that focus as one the reader had placed: with a
-// question waiting the page still went to it, and with none it opened with the focus on `<main>`
-// and on no row, at 1440 by 900. The row above loads the page by its address, where the
-// dashboard moves no focus, so it never met this.
+// The tester's finding at #4205's e3136741: the page's opening read as a reader reaches an
+// issue, by a link of the dashboard itself and with no document load - from the Inbox, and from
+// the parent's outline. The dashboard moves the keyboard focus to its `<main>` at every page
+// change but the first (`app.tsx`), and the outline read that focus as one the reader had
+// placed: with a question waiting the page still went to it, and with none it opened with the
+// focus on `<main>` and on no row, at 1440 by 900. The row above loads the page by its address,
+// where the dashboard moves no focus, so it never met this.
 // SLOW(>=2s): a whole seeded issue, then at two sizes a load from the Inbox and one from the
 // parent's outline, each waited on until the focus lands.
 test("an issue opened by a link opens with the focus on its question, or on its first row where none waits", async ({
@@ -1434,16 +1568,17 @@ test("an issue opened by a link opens with the focus on its question, or on its 
   });
 });
 
-// The tester's finding at #4205's e3136741, R10 and R9's "after each move the focused row is on
-// screen": Enter draws the statement's document - its one editor, and the whole of it - in the
-// row, and the document scrolls the caret's block to the middle of the screen. The row holding
-// the editor is still the focused row, and G's `useRowOnScreen` places a focused row again on
-// every change of its size: a row taller than the screen goes back to its top. So each new line
-// the reader writes, a picture that loads above the caret, and another reader's edit take the
-// page to the top of the document, and the caret off screen. On the real INFRA-1196 at 1440 by
-// 900 a picture that loaded during that scroll left the caret in its last statement 17,037 px
-// below the top of the window. The seeds' statements sit near their document's top and c-keys
-// (7) writes no new line, so no row met it.
+// The tester's finding at #4205's e3136741, on editing in a node and on "after each move the
+// focused row is on screen": Enter draws the statement's document - its one editor, and the
+// whole of it - in the row, and the document scrolls the caret's block to the middle of the
+// screen. The row holding the editor is still the focused row, and `useRowOnScreen`
+// (NodeRow.tsx) places a focused row again on every change of its size: a row taller than the
+// screen goes back to its top. So each new line the reader writes, a picture that loads above
+// the caret, and another reader's edit take the page to the top of the document, and the caret
+// off screen. On a real issue of some 160 rows at 1440 by 900 a picture that loaded during that
+// scroll left the caret in its last statement 17,037 px below the top of the window. The seeds'
+// statements sit near their document's top and c-keys' editing row writes no new line, so no row
+// met it.
 // SLOW(>=2s): a whole seeded issue and a long document of its own, a load waited on until the
 // statement takes the focus, then Enter and each line written waited on until the caret settles.
 test("the caret Enter puts in a statement deep in its document stays on screen while the reader writes", async ({
@@ -1477,22 +1612,26 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
     await expect
       .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
       .toBe(true);
-    // On screen is under nothing at the foot too: the height the box at the foot publishes
-    // (`FOOT_HEIGHT_PROPERTY`) is taken off the window, as `onScreen` and row (4)'s `inView` do.
+    // On screen is under the band that stays at the top and above the box at the foot: the
+    // heights the page publishes for both (`IDENTITY_HEIGHT_PROPERTY`, `FOOT_HEIGHT_PROPERTY`) are
+    // taken off the window, as `onScreen` and the open-question row's `inView` do.
     const caretOnScreen = (): Promise<boolean> =>
-      page.evaluate((property) => {
-        const selection = window.getSelection();
-        if (selection === null || selection.rangeCount === 0) return false;
-        const foot =
-          Number.parseFloat(
-            getComputedStyle(document.documentElement).getPropertyValue(property)
-          ) || 0;
-        // A caret on an empty line has no rectangle of its own, so its line's box is read.
-        const anchor = selection.anchorNode;
-        const line = anchor instanceof Element ? anchor : anchor?.parentElement;
-        const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
-        return box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight - foot;
-      }, FOOT_HEIGHT_PROPERTY);
+      page.evaluate(
+        ({ band, foot }) => {
+          const selection = window.getSelection();
+          if (selection === null || selection.rangeCount === 0) return false;
+          const style = getComputedStyle(document.documentElement);
+          const top = Number.parseFloat(style.getPropertyValue(band)) || 0;
+          const bottom =
+            window.innerHeight - (Number.parseFloat(style.getPropertyValue(foot)) || 0);
+          // A caret on an empty line has no rectangle of its own, so its line's box is read.
+          const anchor = selection.anchorNode;
+          const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+          const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
+          return box !== undefined && box.top >= top - 1 && box.bottom <= bottom;
+        },
+        { band: IDENTITY_HEIGHT_PROPERTY, foot: FOOT_HEIGHT_PROPERTY }
+      );
     await expect
       .poll(caretOnScreen, {
         message: "the caret Enter put in the statement is off screen at 1440x900",
@@ -1510,14 +1649,17 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
   });
 });
 
-// The tester's finding at #4205's e3136741, and decision 124 of the parts (INFRA-1196's
-// architect, 2026-11-16): while a row edits a block of a document the model holds whole, its
-// editor opens at that block with the caret there, and the row is no taller than the window,
-// with a scroll of its own, so the page around it stays where it was. At e3136741 Enter on R1 of
-// the real INFRA-1196 drew the whole spec in that row, 35,635 px high, and the rows under it
-// went down by as much.
-// SLOW(>=2s): a whole seeded issue and a long spec of its own, a load waited on until the
-// statement takes the focus, then Enter waited on until the editor opens and settles at the block.
+// The tester's finding at #4205's e3136741, and the architect's ruling of 2026-11-16: while a
+// row edits a block of a document the model holds whole, its editor opens at that block with
+// the caret there, and the row is no taller than the window, with a scroll of its own, so the
+// page around it stays where it was. At e3136741 Enter on the first requirement of a real issue
+// of some 160 rows drew the whole spec in that row, 35,635 px high, and the rows under it
+// went down by as much. At 861adff1 the editor's box is no taller than the room under it, but
+// the row's body stands under the box, so a long statement the reader moved to and edited made a
+// row of 971 px at 1440 by 900 on a spec of long statements like this one's, and of 927 px at
+// 1440 by 900 and 745 px at 390 by 664 on that real issue, its last lines below the window.
+// SLOW(>=2s): a whole seeded issue and two long specs of its own, a load of each waited on until
+// the statement takes the focus, then Enter waited on until the editor opens and settles.
 test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
   browser,
 }) => {
@@ -1568,14 +1710,616 @@ test("a row that edits a statement is no taller than the window, and the page ar
       Math.abs(after.scroll - before.scroll) + Math.abs(after.top - before.top),
       "the page around the row that edits the statement moved at 1440x900"
     ).toBeLessThanOrEqual(1);
+
+    // A statement the reader moved to, on a spec of long statements an agent wrote: the row's
+    // body - its facts and its controls - stands under the editor's box.
+    const long = await createIssue(
+      {
+        force: true,
+        project: PROJECT,
+        spec: [
+          "# Long statements an agent wrote",
+          "",
+          ...Array.from({ length: 12 }, (_, index) => [
+            `:::requirement{#r-long-${index + 1}}`,
+            `Statement ${index + 1} says ${Array.from({ length: 500 }, (_, word) => `word${word}`).join(" ")}.`,
+            ":::",
+            "",
+          ]).flat(),
+        ].join("\n"),
+        title: "An issue of long statements an agent wrote",
+      },
+      asPlanner
+    );
+    const last = blockNodeId(await primarySlug(long.key), "r-long-12");
+    await gotoIssue(page, `/issues/${long.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
+      .toBe(last);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    await expect
+      .poll(
+        () =>
+          nodeRow(page, last)
+            .first()
+            .evaluate((element) => element.getBoundingClientRect().height),
+        { message: "the row that edits a statement the reader moved to is taller than the window" }
+      )
+      .toBeLessThanOrEqual(DESKTOP.height);
   });
 });
 
-// c-children, as the architect's ruling 5 reads R12 (build-rulings-md): no view draws a
-// children's section above the outline; the children are one group of rows of the outline, where
-// the model places them, which for every child today is under the issue; each child's row holds
-// its title, its status, what blocks it and who holds it, with its key as the tag; and
-// `/children` and `t h` move the focus to that group. The header's bar and counts are part P's.
+// The architect's ruling of 2026-11-18 on the width of a row's editor: its box never scrolls
+// sideways. Prose wraps, a run with no space in it too, and a wide block scrolls sideways inside
+// itself alone, as the document's reading view draws it. On a real spec at 390 by 664, Enter on a
+// plain statement opened a box whose words were 414 px wide in a 320 px one. Read in this row's
+// 350 px box before the fix, two things were wider than it. A reference the editor draws as its
+// issue's title is one line of up to 24em, 384 px, that nothing held to its line, and in a bullet
+// it starts 30 px in: 414 px. A note's title is an item of the note's header, which held this
+// path, a run with no space in it, at its whole width, 862 px, since the editor's `break-word`
+// gives the run no place to break while the header sizes it. No seed cites an issue in a bullet
+// or titles a block with such a run, and no row read the editor at a phone's width, so no row met
+// it.
+// SLOW(>=2s): a seeded issue, an issue of another project and a spec citing it, a load waited on
+// until the focus lands, then End and Enter, waited on until the editor draws the cited issue's
+// name.
+test("a row's editor on a phone does not scroll sideways, and its words wrap @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page) => {
+    await page.setViewportSize({ height: 664, width: 390 });
+    // The cited issue is another project's, so its name is drawn once the editor's read of it
+    // answers, as in the row of the names a document cites.
+    const cited = await seedCitedIssue();
+    const spec = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A plain statement under a cited issue and a path",
+        "",
+        "## Problem",
+        "",
+        `- dispatch://${cited}`,
+        "",
+        `:::callout{#n-path kind="note" title="${UNBROKEN_PATH}"}`,
+        "The note's own words.",
+        ":::",
+        "",
+        "## Requirements",
+        "",
+        ":::requirement{#r-plain}",
+        "A plain statement.",
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose plain statement stands under wide words",
+    });
+    const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
+    await enterNode(page, spec.key, statement, "the statement", { enter: true });
+    const box = nodeRow(page, statement).first().locator("[data-editor-box]");
+    await expect(
+      box.locator("a.dispatch-reference"),
+      "the row's editor draws no name for the cited issue"
+    ).toBeVisible();
+    await nextFrames(page);
+    const drawn = await box.evaluate((element) => {
+      const title = element.querySelector("[data-proof-block-title]");
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        // How many lines the note's title is drawn on: its height over its own line's.
+        titleLines:
+          title === null
+            ? 0
+            : title.getBoundingClientRect().height /
+              Number.parseFloat(getComputedStyle(title).lineHeight),
+      };
+    });
+    expect(
+      drawn.scrollWidth,
+      "the editor's box of a plain statement scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(drawn.clientWidth);
+    expect(
+      drawn.titleLines,
+      "the note's title, a path with no space in it, is not wrapped at 390x664"
+    ).toBeGreaterThan(1.5);
+  });
+});
+
+// The same ruling's other half: a wide block the node itself holds is still whole by its own
+// scroll, so a box held to its width cuts none of it. A note is the block that holds a table - a
+// statement holds paragraphs alone (`pmdoc/schema/blocks.json`) - and this one names an issue too,
+// whose title is what widened the box at f5d49c35, while the table already scrolled inside itself.
+// SLOW(>=2s): a seeded issue, an issue of another project and a spec citing it, a load waited on
+// until the focus lands, then End and Enter, waited on until the editor draws the cited issue's
+// name, and a scroll of the table waited on until its last column shows.
+test("a table a row's editor holds scrolls sideways inside itself, and the box around it does not @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page) => {
+    await page.setViewportSize({ height: 664, width: 390 });
+    const cited = await seedCitedIssue();
+    const columns = Array.from({ length: 16 }, (_, index) => index + 1);
+    const spec = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A note that holds a table wider than a phone",
+        "",
+        // The spec's first callout is its summary, which the outline draws as no row of its own
+        // (`spec-summary.ts`), so the note is the second.
+        ':::callout{#summary kind="note"}',
+        "What the issue is about, in a sentence.",
+        ":::",
+        "",
+        ':::callout{#n-table kind="note"}',
+        `The note names dispatch://${cited} and lists what it found in sixteen columns.`,
+        "",
+        `| ${columns.map((column) => `column ${column}`).join(" | ")} |`,
+        `| ${columns.map(() => "---").join(" | ")} |`,
+        `| ${columns.map((column) => `cell ${column}`).join(" | ")} |`,
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose note holds a table wider than a phone",
+    });
+    const note = blockNodeId(await primarySlug(spec.key), "n-table");
+    await enterNode(page, spec.key, note, "the note", { enter: true });
+    const box = nodeRow(page, note).first().locator("[data-editor-box]");
+    await expect(
+      box.locator("a.dispatch-reference"),
+      "the row's editor draws no name for the cited issue"
+    ).toBeVisible();
+    const table = box.locator("table");
+    await expect(table, "the row's editor draws no table in the note").toHaveCount(1);
+    await nextFrames(page);
+    /** The box's and the table's widths, and whether the table's last column is inside what the
+     *  table shows. */
+    const widths = () =>
+      box.evaluate((element) => {
+        const drawn = element.querySelector("table");
+        const shown = drawn?.getBoundingClientRect();
+        const last = drawn?.querySelector("tr")?.lastElementChild?.getBoundingClientRect();
+        return {
+          box: {
+            client: element.clientWidth,
+            left: element.scrollLeft,
+            scroll: element.scrollWidth,
+          },
+          lastShown:
+            shown !== undefined &&
+            last !== undefined &&
+            last.left >= shown.left - 0.5 &&
+            last.right <= shown.right + 0.5,
+          table: { client: drawn?.clientWidth ?? 0, scroll: drawn?.scrollWidth ?? 0 },
+        };
+      });
+    const before = await widths();
+    expect(
+      before.box.scroll,
+      "the editor's box of a note that holds a table scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(before.box.client);
+    expect(
+      before.table.scroll,
+      "the table is no wider than what it shows, so it does not scroll inside itself"
+    ).toBeGreaterThan(before.table.client);
+    expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
+    // A reader's sideways scroll over the table, as a trackpad makes it.
+    const at = await table.boundingBox();
+    expect(at, "the table has no box on the page").not.toBeNull();
+    await page.mouse.move(
+      (at?.x ?? 0) + (at?.width ?? 0) / 2,
+      (at?.y ?? 0) + (at?.height ?? 0) / 2
+    );
+    await page.mouse.wheel(before.table.scroll, 0);
+    await expect
+      .poll(async () => (await widths()).lastShown, {
+        message: "a sideways scroll over the table does not reach its last column",
+      })
+      .toBe(true);
+    expect(
+      (await widths()).box.left,
+      "a sideways scroll over the table scrolled the editor's box"
+    ).toBe(0);
+  });
+});
+
+// The editor's own part of the same ruling: a collaborator's caret label hung from the caret
+// toward the line's end, so with the caret near a line's end it passed the end of the box and the
+// box scrolled sideways while the caret stood there. Measured at 390 by 664 with a caret drawn
+// as the editor draws one, 1 px inside the box's end, the label ran 195 px past it and the box's
+// scroll width went from 350 to 545 px. The editor now hangs such a label back from the caret
+// (`collab-cursor-plugin.ts`). The row runs at 1280 px with a real second reader, because below
+// 1280 px `ProofDocument.tsx` gives the editor no awareness and a phone draws no collaborator's
+// caret at all. The statement is one run with no space in it, which the box breaks at its width,
+// so its first line runs to within a character of the box's width, and bob's caret stands one
+// character before that line's end.
+// SLOW(>=2s): a seeded issue and a spec, two readers' pages each loaded and waited on until its
+// caret is in the statement, then alice's waited on until it draws bob's caret.
+test("a collaborator's caret label near a line's end hangs back inside the row's editor box", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page) => {
+    await page.setViewportSize({ height: 900, width: 1280 });
+    const spec = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A statement two readers edit at once",
+        "",
+        "## Requirements",
+        "",
+        ":::requirement{#r-plain}",
+        "Tworeaderseditthisstatementwhoselinerunstotheendofthebox".repeat(6),
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose statement two readers edit",
+    });
+    const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
+    await enterNode(page, spec.key, statement, "the statement on alice's page", { enter: true });
+    const bob = await asUser(browser, "bob");
+    try {
+      await withIssuePage(bob, "bob");
+      const bobPage = await bob.newPage();
+      await bobPage.setViewportSize({ height: 900, width: 1280 });
+      await enterNode(bobPage, spec.key, statement, "the statement on bob's page", { enter: true });
+      // End takes bob's caret to the end of the statement's first line, where the line breaks,
+      // and the step back keeps it on that line.
+      await bobPage.keyboard.press("End");
+      await bobPage.keyboard.press("ArrowLeft");
+      const label = nodeRow(page, statement)
+        .first()
+        .locator("[data-editor-box]")
+        .locator(cursorLabel(page, "bob"));
+      await expect(label, "alice's row draws no caret of bob's").toBeVisible();
+      await nextFrames(page);
+      const drawn = await label.evaluate((element) => {
+        const box = element.closest("[data-editor-box]");
+        if (box === null) throw new Error("bob's caret label stands in no editor box");
+        const edges = ({ bottom, left, right, top }: DOMRect) => ({ bottom, left, right, top });
+        return {
+          box: {
+            ...edges(box.getBoundingClientRect()),
+            clientWidth: box.clientWidth,
+            scrollWidth: box.scrollWidth,
+          },
+          label: {
+            ...edges(element.getBoundingClientRect()),
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+            text: element.textContent,
+          },
+        };
+      });
+      expect(
+        drawn.box.scrollWidth,
+        "alice's editor box scrolls sideways while bob's caret stands near a line's end"
+      ).toBeLessThanOrEqual(drawn.box.clientWidth);
+      expect(
+        {
+          bottom: drawn.label.bottom <= drawn.box.bottom,
+          left: drawn.label.left >= drawn.box.left,
+          right: drawn.label.right <= drawn.box.right,
+          top: drawn.label.top >= drawn.box.top,
+        },
+        `bob's label (${JSON.stringify(drawn.label)}) passes an edge of alice's editor box (${JSON.stringify(drawn.box)})`
+      ).toEqual({ bottom: true, left: true, right: true, top: true });
+      expect(drawn.label.text, "bob's label does not read his name").toBe("bob");
+      expect(drawn.label.scrollWidth, "bob's label cuts his name short").toBeLessThanOrEqual(
+        drawn.label.clientWidth
+      );
+    } finally {
+      await bob.close();
+    }
+  });
+});
+
+// The tester's finding at #4205's 861adff1, on "after each move the focused row is on screen":
+// `.` zooms into a row of the outline's top level, which draws that row alone at the top of the
+// page, and `,` draws the whole outline again with the focus still on that row, and nothing
+// places it: the row keeps the focus it held, so `useRowOnScreen` (NodeRow.tsx) has no new focus
+// to answer, and a zoom back to the whole issue places nothing of its own. At 1440 by 900, on a
+// real issue of some 160 rows and on this seed with forty more comments, the row stood 2,000 to
+// 40,000 px below the window until the next key. The key row presses `,` on a row the page then
+// draws on the first screen, so no row met it.
+// SLOW(>=2s): a whole seeded issue and forty comments, a load waited on until the focus lands,
+// then End, the zoom in and the zoom out, each waited on until the row settles.
+test("zooming back out of a top-level row keeps that row on screen", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    // Forty rows of the outline's top level under what the seed draws, so the last of them is
+    // far below the first screen once the whole outline is drawn again.
+    for (let older = 1; older <= 40; older += 1) {
+      await createComment(seeded.key, { body: `Older words, number ${older}.` });
+    }
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expectFocusedRowOnScreen(page, "End", "left the last row off screen");
+    const last = await focusedRow(page);
+    await page.keyboard.press(".");
+    await expect
+      .poll(async () => (await visibleIds(page))[0], {
+        message: "the zoom key did not make the last row the tree's root",
+      })
+      .toBe(last);
+    await page.keyboard.press(",");
+    expect(await focusedRow(page), "the key back out moved the focus off the row").toBe(last);
+    await expectFocusedRowOnScreen(
+      page,
+      "the key back out of a top-level row",
+      "left that row off screen at 1440x900"
+    );
+  });
+});
+
+// The tester's finding at #4205's 861adff1, on editing in a node and "after each move the
+// focused row is on screen": the row's editor holds the statement's whole document in a box of
+// its own scroll, and the words above the statement in that document cite issues of another
+// project, whose names the editor draws only once its reads of them answer - after the caret is
+// in. The words above grow, the box keeps the caret's block in place by scrolling itself, and the
+// window, which anchors its own scroll on what the box draws, scrolls by as much: the caret went
+// under the band at the top, at -43 px at 1440 by 900 and at -97 px at 390 by 664, and on a real
+// issue of some 160 rows the whole editing row stood above the window. The seeds' documents cite
+// nothing outside the issue's own project above a statement, so no row met it.
+// SLOW(>=2s): a whole seeded issue, sixty issues of another project and a long spec citing them,
+// a load waited on until the focus lands, then End and Enter, waited on until the editor's reads
+// of the names have answered.
+test("the caret Enter puts in a statement stays on screen while the editor draws the names its document cites", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    // The cited issues are another project's, so nothing the page reads before the editor opens
+    // has their names in hand.
+    await createProject({ key: "CITED", name: "Cited issues" });
+    const cited: string[] = [];
+    for (let number = 1; number <= 60; number += 1) {
+      const issue = await createIssue({
+        force: true,
+        project: "CITED",
+        title: `A cited issue of another project, number ${number}, whose title runs long`,
+      });
+      cited.push(issue.key);
+    }
+    const spec = await createIssue(
+      {
+        force: true,
+        project: PROJECT,
+        spec: [
+          "# Long statements under words that cite another project",
+          "",
+          "## Problem",
+          "",
+          ...Array.from({ length: 6 }, (_, paragraph) => [
+            `Paragraph ${paragraph + 1} cites ${cited
+              .slice(paragraph * 10, paragraph * 10 + 10)
+              .map((key) => `dispatch://${key}`)
+              .join(", ")}.`,
+            "",
+          ]).flat(),
+          "## Requirements",
+          "",
+          ...Array.from({ length: 12 }, (_, index) => [
+            `:::requirement{#r-cited-${index + 1}}`,
+            `Statement ${index + 1} says ${Array.from({ length: 500 }, (_, word) => `word${word}`).join(" ")}.`,
+            ":::",
+            "",
+          ]).flat(),
+        ].join("\n"),
+        title: "An issue whose statements stand under words citing another project",
+      },
+      asPlanner
+    );
+    const last = blockNodeId(await primarySlug(spec.key), "r-cited-12");
+    await gotoIssue(page, `/issues/${spec.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
+      .toBe(last);
+    const reads = watchApiRequests(page);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    // Every read the editor makes of the names it draws has answered, so the words above the
+    // caret have their last size.
+    await expectLoadSettled(reads);
+    await nextFrames(page);
+    expect(
+      await page.evaluate(
+        ({ band, foot }) => {
+          const selection = window.getSelection();
+          if (selection === null || selection.rangeCount === 0) return false;
+          const style = getComputedStyle(document.documentElement);
+          const top = Number.parseFloat(style.getPropertyValue(band)) || 0;
+          const bottom =
+            window.innerHeight - (Number.parseFloat(style.getPropertyValue(foot)) || 0);
+          // A caret on an empty line has no rectangle of its own, so its line's box is read.
+          const anchor = selection.anchorNode;
+          const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+          const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
+          return box !== undefined && box.top >= top - 1 && box.bottom <= bottom;
+        },
+        { band: IDENTITY_HEIGHT_PROPERTY, foot: FOOT_HEIGHT_PROPERTY }
+      ),
+      "the caret went off screen while the editor drew the names its document cites at 1440x900"
+    ).toBe(true);
+  });
+});
+
+// The box a row's editor scrolls in anchors its own scroll on the words it holds, and the window
+// anchors nothing inside it: `EditorBox` (StagedDocument.tsx) puts `overflow-anchor: none` on an
+// element around the box, not on the box. The editor draws the names of the issues a document
+// cites after the caret is in, so the words above the caret grow, and the box, anchored on the
+// words the caret is in, scrolls by as much in the same frame, so those words stay where they
+// stand. With the property on the box itself, the box anchored nothing: at 1440 by 900 the caret
+// went from 111 px down the window to 136 px, 443 px and then 597 px, for some 600 ms, until the
+// row's second look at the block (`holdEditorAtBlock`) put it back. The row above reads the caret
+// once, after that second look, so it passed with the property on either element.
+// SLOW(>=2s): a whole seeded issue, sixty issues of another project and a long spec citing them,
+// a load waited on until the focus lands, then End and Enter, and the caret read on every frame
+// for two seconds from the frame it is in the statement.
+test("the words the caret Enter puts in a statement stand still while the editor draws the names above them", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    // The cited issues are another project's, so nothing the page reads before the editor opens
+    // has their names in hand, and the editor draws them after the caret is in.
+    await createProject({ key: "CITED", name: "Cited issues" });
+    const cited: string[] = [];
+    for (let number = 1; number <= 60; number += 1) {
+      const issue = await createIssue({
+        force: true,
+        project: "CITED",
+        title: `A cited issue of another project, number ${number}, whose title runs long`,
+      });
+      cited.push(issue.key);
+    }
+    const spec = await createIssue(
+      {
+        force: true,
+        project: PROJECT,
+        spec: [
+          "# Long statements under words that cite another project",
+          "",
+          "## Problem",
+          "",
+          ...Array.from({ length: 6 }, (_, paragraph) => [
+            `Paragraph ${paragraph + 1} cites ${cited
+              .slice(paragraph * 10, paragraph * 10 + 10)
+              .map((key) => `dispatch://${key}`)
+              .join(", ")}.`,
+            "",
+          ]).flat(),
+          "## Requirements",
+          "",
+          ...Array.from({ length: 12 }, (_, index) => [
+            `:::requirement{#r-cited-${index + 1}}`,
+            `Statement ${index + 1} says ${Array.from({ length: 500 }, (_, word) => `word${word}`).join(" ")}.`,
+            ":::",
+            "",
+          ]).flat(),
+        ].join("\n"),
+        title: "An issue whose statements stand under words citing another project",
+      },
+      asPlanner
+    );
+    const statement = "r-cited-12";
+    const last = blockNodeId(await primarySlug(spec.key), statement);
+    await enterNode(page, spec.key, last, "the last statement", { enter: false });
+    /** Where the caret stood at one frame, `at` ms after the first frame it was in the
+     *  statement: its top down the window, and the window's scroll, in px. */
+    type CaretReading = { readonly at: number; readonly scroll: number; readonly top: number };
+    // The claim is where the caret stands over time, so the page reads it on every frame, from
+    // the first frame the caret is in the statement until two seconds later, with no key pressed
+    // between: a reading at one instant passes before the names draw or after the row's second
+    // look has put the block back. The reading is armed before Enter, so it misses no frame.
+    const sampler = await page.evaluateHandle(
+      ({ block, span }) => {
+        const done = Promise.withResolvers<{
+          readonly first: CaretReading;
+          readonly lineHeight: number;
+          readonly readings: readonly CaretReading[];
+        }>();
+        const readings: CaretReading[] = [];
+        let start: number | undefined;
+        let lineHeight = 0;
+        const frame = (now: number) => {
+          const selection = window.getSelection();
+          const anchor = selection?.anchorNode ?? null;
+          if (start === undefined) {
+            const editable =
+              document.activeElement?.closest('[data-node-row] [contenteditable="true"]') ?? null;
+            const drawn = editable?.querySelector(`[data-block-id="${block}"]`) ?? null;
+            if (editable === null || anchor === null || drawn?.contains(anchor) !== true) {
+              requestAnimationFrame(frame);
+              return;
+            }
+            start = now;
+            // One line of the editor, as `holdEditorAtBlock` measures it: its computed line
+            // height, or CSS's `normal` of about 1.2 times its font size where it keeps the word.
+            const style = getComputedStyle(editable);
+            const height = Number.parseFloat(style.lineHeight);
+            lineHeight = Number.isFinite(height) ? height : 1.2 * Number.parseFloat(style.fontSize);
+          }
+          // A caret on an empty line has no rectangle of its own, so its line's box is read.
+          const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+          const box =
+            (selection !== null && selection.rangeCount > 0
+              ? selection.getRangeAt(0).getClientRects()[0]
+              : undefined) ?? line?.getBoundingClientRect();
+          const reading = {
+            at: Math.round(now - start),
+            scroll: window.scrollY,
+            top: box?.top ?? Number.NaN,
+          };
+          readings.push(reading);
+          if (now - start < span) {
+            requestAnimationFrame(frame);
+            return;
+          }
+          done.resolve({ first: readings[0] ?? reading, lineHeight, readings });
+        };
+        requestAnimationFrame(frame);
+        return { done: done.promise };
+      },
+      { block: statement, span: 2_000 }
+    );
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInRowBlock(page, statement), {
+        message: "Enter did not put the caret in the statement",
+      })
+      .toBe(true);
+    const { first, lineHeight, readings } = await sampler.evaluate((armed) => armed.done);
+    // Each place the caret stood in turn, from the first: the path a failure names.
+    const path = readings
+      .filter(
+        (reading, index) =>
+          Math.round(reading.top) !== Math.round(readings[index - 1]?.top ?? Number.NaN)
+      )
+      .map((reading) => `${Math.round(reading.top)} px at ${reading.at} ms`);
+    expect(
+      Math.max(...readings.map((reading) => Math.abs(reading.top - first.top))),
+      `the caret stood ${path.join(", ")} down the window after it was in the statement, more than one line of the editor (${lineHeight} px) from where it went in, while the editor drew the names above it at 1440x900`
+    ).toBeLessThanOrEqual(lineHeight);
+    const scrolled = Math.max(
+      ...readings.map((reading) => Math.abs(reading.scroll - first.scroll))
+    );
+    expect(
+      scrolled,
+      `the window scrolled by ${scrolled} px while the editor drew the names above the caret at 1440x900`
+    ).toBe(0);
+  });
+});
+
+// c-children, as the architect ruled on the children's section: no view draws a children's
+// section above the outline; the children are one group of rows of the outline, where the model
+// places them, which for every child today is under the issue; each child's row holds its
+// title, its status, what blocks it and who holds it, with its key as the tag; and `/children`
+// and `t h` move the focus to that group. The header's bar and counts are the header's own to
+// read.
 // SLOW(>=2s): two seeds and twenty-one cold loads - each view's address at two sizes, each waited
 // out until its reads settle - and the children's keys pressed at two sizes.
 test("the children are one group of rows of the outline @phone", async ({ browser }) => {
@@ -1664,7 +2408,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
 
     // The children's own address, and `t h`, put the focus on the group's first row, on screen;
     // from there the rows are moved through like any other. `t h` takes the reader there each
-    // time it is pressed: again after a move, and from a zoom that holds no child (R6, R9).
+    // time it is pressed: again after a move, and from a zoom that holds no child.
     const [firstChild = "", secondChild = ""] = seeded.children.keys;
     for (const size of [DESKTOP, PHONE]) {
       const at = `${size.width} px`;
@@ -1734,7 +2478,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     }
 
     // With no child, `t h` has nowhere to go: the Keys list greys its line rather than hiding
-    // it, and a press moves no focus and reports nothing at the row (R6, R9).
+    // it, and a press moves no focus and reports nothing at the row.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect(outlineRows(page).first(), "the issue draws no row").toBeVisible();
@@ -1763,10 +2507,10 @@ test("the children are one group of rows of the outline @phone", async ({ browse
   });
 });
 
-// The stage's choice (part I's R1, R8): a view is drawn in place of the outline, never under or
-// beside it, and Conversation draws the outline again, with the focus on its rows. The views'
-// own bodies are their parts' (J, V, K, Q); until a part fills its slot, its view draws nothing,
-// and the outline is gone all the same.
+// The stage's choice: a view is drawn in place of the outline, never under or beside it, and
+// Conversation draws the outline again, with the focus on its rows. Each view's own body is its
+// own slot's; until that slot is filled, its view draws nothing, and the outline is gone all
+// the same.
 // SLOW(>=2s): the whole issue seeded and loaded, then four views turned on and off, the outline
 // waited for after each, two chords pressed and the list of keys opened.
 test("a view replaces the outline, and the outline comes back", async ({ browser }) => {
@@ -1777,7 +2521,7 @@ test("a view replaces the outline, and the outline comes back", async ({ browser
 
     // Each view's control draws that view in the outline's place, and Conversation's draws the
     // outline back. The outline is read by its own rows rather than by a tree: every view draws
-    // a tree of its own (decision 59), and no view's row carries the outline's mark.
+    // a tree of its own, and no view's row carries the outline's mark.
     for (const view of ["spec", "verification", "plan", "decisions"] as const) {
       await presetToggle(page, view).click();
       await expect(page).toHaveURL(new RegExp(`${presetPath(seeded.key, view)}$`));
@@ -1831,12 +2575,12 @@ test("a view replaces the outline, and the outline comes back", async ({ browser
 // Reading a thread on the issue page marks its Inbox row read, as the panel's list of the
 // conversation did on its own address: the row of the thread's newest reply, on screen for a
 // second, marks the thread read through that reply (`outline-thread-read.tsx`). Before the
-// outline, G's rows marked it read too, with every branch open, so the last reading of this row
-// is a guard that passes at the commit before the outline as well. The outline's own reading is
-// the one before it: a thread the outline folds is not read, however long the page stays open,
-// until the reader opens it.
-// SLOW(>=2s): a seeded thread and a reply, the Inbox polled, a load left folded for a fixed two
-// seconds, then the thread opened and waited on for the dwell that marks it read.
+// outline, the rows drawn with every branch open marked it read too, so the last reading of this
+// row is a guard that passes at the commit before the outline as well. The outline's own reading
+// is the one before it: a thread the outline folds is not read, however long the page stays
+// open, until the reader opens it.
+// SLOW(>=2s): a seeded thread and a reply, the Inbox polled, a load settled and left folded for a
+// fixed two seconds, then the thread opened and waited on for the dwell that marks it read.
 test("a thread read on the outline is read in the Inbox", async ({ browser }) => {
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     // An agent replies in alice's thread, which makes the thread unread in her Inbox.
@@ -1853,8 +2597,12 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
     await expect.poll(unread, { message: "the agent's reply left the thread read" }).toBe(true);
 
     // The page opens at 1440 by 900 with the thread folded, since it holds no open question.
+    // The load is let settle first, so the tree the span reads and the one opened after it hold
+    // every node the reads draw, and no branch drawn late is left shut by the opening.
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // A mark's absence is the claim, so the wait is a span: two seconds, twice the dwell that
     // marks a thread read, after which the folded thread is still unread.
@@ -1874,12 +2622,13 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
   });
 });
 
-// c-reflow, on words the seeded issue does not carry. R17 binds the page a reader opens, not one
-// seed's text: a statement whose words name a file path holds a run of 108 characters with no
-// space in it, which is longer than the row that draws it at every width this reads. Found by
-// the tester on 2026-11-09 at 39649c0f269d, where the Spec preset's requirement list drew that
-// run in a span that neither wrapped it nor gave it its own line, and the whole page scrolled
-// sideways: 884 px of page in a 390 px viewport. Read here on the outline, with no view on.
+// c-reflow, on words the seeded issue does not carry. The rule binds the page a reader opens,
+// not one seed's text: a statement whose words name a file path holds a run of 108 characters
+// with no space in it, which is longer than the row that draws it at every width this reads.
+// Found by the tester on 2026-11-09 at 39649c0f269d, where the Spec preset's requirement list
+// drew that run in a span that neither wrapped it nor gave it its own line, and the whole page
+// scrolled sideways: 884 px of page in a 390 px viewport. Read here on the outline, with no view
+// on.
 // SLOW(>=2s): a seeded issue loaded cold at three widths, each waited on until its words draw and
 // measured for its fit.
 test("a statement whose words hold an unbroken run keeps the outline inside its viewport @phone", async ({
@@ -1902,9 +2651,9 @@ test("a statement whose words hold an unbroken run keeps the outline inside its 
 });
 
 // c-reflow again, on the other surface the same run reaches: a child's own title, which is the
-// words of the child's row of the outline (the architect's ruling 5). Measured at 320 px with
-// the same 108 character path on 2026-11-09 at 454f2a3107a6, in the children's section the page
-// drew then: 807 px of text in a 288 px box and a page 823 px wide.
+// words of the child's row of the outline. Measured at 320 px with the same 108 character path
+// on 2026-11-09 at 454f2a3107a6, in the children's section the page drew then: 807 px of text in
+// a 288 px box and a page 823 px wide.
 // SLOW(>=2s): a seeded issue and its child, loaded cold at three widths, each waited on until the
 // child's row draws and measured for its fit.
 test("a child whose title holds an unbroken run keeps the page inside its viewport @phone", async ({
@@ -1930,12 +2679,72 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
   });
 });
 
-// c-tree, the crumb (the architect's ruling 1): where the tree is read one node at a time, a
-// crumb is the node's first line by R1's rule, cut at a word, never cut again mid-word by its
-// box, and a line that is a whole sentence carries no ellipsis after its own full stop. The
-// issue's crumb is its key (ruling 5). The Contents entry's half is part J's.
+/** One CSS selector for the element axe names by `target`: axe writes one part for each frame
+ *  the element is inside, and a part that reaches into a shadow root as a list of its own. */
+function axeSelector(target: readonly unknown[]): string {
+  return target.map((part) => (Array.isArray(part) ? part.join(" ") : String(part))).join(" ");
+}
+
+/** What axe's `target-size` rule (WCAG 2.2's 2.5.8) says of the crumbs the page draws: a line for
+ *  each crumb it fails or leaves for review, with the crumb's box and axe's own summary, and how
+ *  many crumbs it passed. A crumb is a button the reader presses to zoom out, so it is a target
+ *  whatever its tab index, but axe leaves an undersized target outside the tab order for review
+ *  rather than failing it, and every crumb is outside it (`tabIndex={-1}`): at 1440 by 900 px,
+ *  16 px crumbs with no padding of their own were no violation, each "incomplete", with axe's
+ *  own words "Safe clickable space has a diameter of 16px instead of at least 24px. Is this a
+ *  target?". So a crumb left for review is a fault here as one that fails is. */
+async function crumbTargets(
+  page: Page
+): Promise<{ readonly faults: readonly string[]; readonly passed: number }> {
+  const { incomplete, passes, violations } = await new AxeBuilder({ page })
+    .withRules(["target-size"])
+    .include("[data-crumb]")
+    .analyze();
+  const faults = await Promise.all(
+    [...violations, ...incomplete]
+      .flatMap((result) => result.nodes)
+      .map(async (node) => {
+        const selector = axeSelector(node.target);
+        const box = await page.locator(selector).evaluate((crumb) => {
+          const drawn = crumb.getBoundingClientRect();
+          return `${Math.round(drawn.width)} by ${Math.round(drawn.height)} px at ${Math.round(drawn.left)}, ${Math.round(drawn.top)}`;
+        });
+        return `${selector}, ${box}: ${(node.failureSummary ?? "").replace(/\s+/gu, " ")}`;
+      })
+  );
+  return { faults, passed: passes.flatMap((result) => result.nodes).length };
+}
+
+/** Every crumb the page draws passes axe's `target-size` rule, WCAG 2.2's 2.5.8, at `where`: it
+ *  is at least 24 by 24 px, or so spaced that a 24 px circle on it meets no other target. axe
+ *  fails none, leaves none for review and passes each one, so a line it read no crumb of fails
+ *  too. */
+async function expectCrumbTargets(page: Page, where: string): Promise<void> {
+  let read: Awaited<ReturnType<typeof crumbTargets>> | undefined;
+  await expect
+    .poll(
+      async () => {
+        read = await crumbTargets(page);
+        return read.faults;
+      },
+      { message: `at ${where} axe's target-size rule (WCAG 2.2's 2.5.8) fails a crumb` }
+    )
+    .toEqual([]);
+  expect(
+    read?.passed,
+    `at ${where} axe's target-size rule passed fewer crumbs than the line draws`
+  ).toBe(await page.locator("[data-crumb]").count());
+}
+
+// c-tree, the crumb (the architect's ruling on a node's one line): where the tree is read one
+// node at a time, a crumb is the node's first line by that rule, cut at a word, never cut again
+// mid-word by its box, and a line that is a whole sentence carries no ellipsis after its own full
+// stop. The issue's crumb is its key. The Contents entry's half is left to the Contents pane's
+// own entries, which this tree does not hold yet.
 // SLOW(>=2s): the whole issue seeded and loaded at a phone's size on a reply's address, waited on
-// until the reply has the focus, then zoomed into and measured.
+// until the reply has the focus, then zoomed into and measured, axe's target-size rule run on it,
+// and the same loaded, zoomed into and read by axe again at 1440 by 900 px, then zoomed out and
+// the reply's thread folded.
 test("a crumb draws its node's first line, cut at a word @phone @phone-only", async ({
   browser,
 }) => {
@@ -1947,14 +2756,28 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     const reply = comments.find((one) => one.id === seeded.comments.replies[0]);
     const thread = comments.find((one) => one.id === reply?.reply_to);
     expect(thread, "the server holds no thread the seeded reply answers").toBeDefined();
-    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
-    await expect
-      .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
-      .toBe(seeded.comments.replies[0] ?? "");
-    await page.keyboard.press(".");
     const crumbs = tree(page).locator("xpath=..").locator("[data-crumb]");
-    await expect.poll(() => crumbs.count(), { message: "no crumb is drawn" }).toBeGreaterThan(1);
+    /** Loads the reply's address at `size`, waits until the reply has the focus, and zooms into
+     *  it, waiting until the zoom draws more than one crumb. */
+    const zoomIntoReply = async (
+      size: { readonly height: number; readonly width: number },
+      at: string
+    ): Promise<void> => {
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the reply's address does not focus its row${at}`,
+        })
+        .toBe(seeded.comments.replies[0] ?? "");
+      await page.keyboard.press(".");
+      await expect
+        .poll(() => crumbs.count(), { message: `no crumb is drawn${at}` })
+        .toBeGreaterThan(1);
+    };
+    await zoomIntoReply({ height: PHONE.height, width: PHONE.width }, "");
+    // The poll above waited until the zoom drew more than one crumb, so this read holds the
+    // thread's crumb and the loop below walks at least it.
     const texts = (await crumbs.allInnerTexts()).map((crumb) => crumb.trim());
     expect(texts[0], "the issue's crumb repeats its title").toBe(seeded.key);
     expect(texts[1], "the thread's crumb is not its stored first line").toBe(
@@ -1979,14 +2802,89 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
       ),
       "a crumb is cut by its box, which cuts inside a word"
     ).toBe(0);
-    // Nothing the zoom draws makes the page scroll sideways (R12).
+    // A crumb is a word in a line of text and not a control box (`IssueTree.tsx`): below 1280 px
+    // the floor of `styles.css` made each crumb a box at least 44 by 44 px and the line 44 px
+    // tall, around a line of words 16 px tall. Its padding keeps it no shorter than WCAG 2.2's
+    // 24 px target (2.5.8). The two crumbs and the "/" after them fit on one line at 390 px, and
+    // that line is as tall as one line of a crumb's words and its padding.
+    const drawn = await crumbs.evaluateAll((all) => {
+      const [first] = all;
+      const line = first?.parentElement?.getBoundingClientRect();
+      const style = first === undefined ? null : getComputedStyle(first);
+      const crumbBox = first?.getBoundingClientRect();
+      return {
+        heights: all.map((crumb) => crumb.getBoundingClientRect().height),
+        line: line?.height ?? Number.NaN,
+        oneLine: [...(first?.parentElement?.children ?? [])].every((element) => {
+          const box = element.getBoundingClientRect();
+          return (
+            crumbBox !== undefined &&
+            box.top >= crumbBox.top - 1 &&
+            box.bottom <= crumbBox.bottom + 1
+          );
+        }),
+        oneLineTall:
+          style === null
+            ? Number.NaN
+            : Number.parseFloat(style.lineHeight) +
+              Number.parseFloat(style.paddingTop) +
+              Number.parseFloat(style.paddingBottom),
+      };
+    });
+    for (const [index, height] of drawn.heights.entries()) {
+      expect(
+        height,
+        `crumb ${index + 1} is a 44 px control box, not a word in a line of text`
+      ).toBeLessThan(44);
+      expect(
+        height,
+        `crumb ${index + 1} is shorter than WCAG 2.2's 24 px target`
+      ).toBeGreaterThanOrEqual(24);
+    }
+    expect(
+      drawn.oneLine,
+      'the crumbs and their "/" wrap at 390 px, where they fit on one line'
+    ).toBe(true);
+    expect(
+      drawn.line,
+      `the crumb line is taller than one line of a crumb's words and its padding, ${drawn.oneLineTall} px`
+    ).toBeLessThanOrEqual(drawn.oneLineTall + 1);
+    // Nothing the zoom draws makes the page scroll sideways.
     await assertPageFits(page);
+
+    // WCAG 2.2's 2.5.8 as axe reads it (`target-size`), on this zoom two levels deep: at the
+    // iPhone 13's 390 by 664 px, and at 1440 by 900 px, zoomed the same way from the reply's
+    // address. At 1440 px, where `dispatch-inline-link` sets no padding, a crumb with no padding
+    // of its own is its 16 px line alone, 34 by 16 and 125 by 16 px, which axe left for review.
+    await page.setViewportSize({ height: 664, width: 390 });
+    await expectCrumbTargets(page, "390 by 664 px");
+    await zoomIntoReply(DESKTOP, " at 1440 px");
+    await expectCrumbTargets(page, "1440 by 900 px");
+
+    // The reply's address holds the path to it open to land the reader there. Out of the zoom,
+    // Left on the reply steps to its thread, and Left on the thread, a branch of that path,
+    // folds it at once: held open, the fold drew nothing and Left said nothing.
+    const replyId = seeded.comments.replies[0] ?? "";
+    await page.keyboard.press(",");
+    await expect(crumbs, "`,` did not zoom out at 1440 px").toHaveCount(0);
+    await focusRow(page, replyId);
+    await page.keyboard.press("ArrowLeft");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "Left on the reply did not step to its thread" })
+      .toBe(thread?.id ?? "");
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, thread?.id ?? "").first(),
+      "Left on the thread the address goes through drew it still open"
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(nodeRow(page, replyId), "the folded thread still draws the reply").toHaveCount(0);
+    await expect(pageStatus(page), "Left on the thread said something").toHaveCount(0);
   });
 });
 
 /** Reads that the outline holds no row the focus left any more, `after` something: no body is
  *  drawn, no row draws its acts and no row has the focused look (`pageFocusedRow`), each of which
- *  the row kept while it was held (the architect's decision 105, as amended). */
+ *  the row kept while it was held (the architect's ruling on a press, as amended). */
 async function expectRowLetGo(page: Page, after: string): Promise<void> {
   await expect(nodeBodies(page), `a row's body is still drawn after ${after}`).toHaveCount(0);
   await expect(
@@ -2014,6 +2912,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
   // than a card takes to open elsewhere: half a second of absence each, on top of its own walk.
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
 
     // One body is drawn: the focused node's.
@@ -2040,7 +2939,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       "the pinned body and the focused node's are not the two bodies drawn"
     ).toBe(2);
     // A press on the pinned row's Let it close, with the focus on the row the reader moved to,
-    // closes that body and leaves the focus where it was (decision 141).
+    // closes that body and leaves the focus where it was.
     const movedTo = await focusedNodeId(page);
     await pinnedBodies(page)
       .getByRole("button", { exact: true, name: CONTROL_LABELS.let_close })
@@ -2060,12 +2959,12 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     expect(await pinnedBodies(page).count(), "o did not close the pinned body").toBe(0);
 
     // A press on a control of the page outside the outline fires with a row's body open (the
-    // architect's decision 105, as amended). The press focuses the control as it goes down, and
-    // the body closing as the focus left the outline shortened the page under the pointer: the
-    // press ended on something else, and the control never fired. The body stays drawn while the
-    // press is held and through its click, and the row is let go once the press has ended.
+    // architect's ruling on a press, as amended). The press focuses the control as it goes down,
+    // and the body closing as the focus left the outline shortened the page under the pointer:
+    // the press ended on something else, and the control never fired. The body stays drawn while
+    // the press is held and through its click, and the row is let go once the press has ended.
     //
-    // First a control of P's header: the issue's actions control, which opens the issue's
+    // First a control of the header: the issue's actions control, which opens the issue's
     // actions.
     await focusRow(page, focused ?? "");
     const actions = issuePage(page)
@@ -2133,9 +3032,12 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await nodeBodies(page).count(),
       "a body is drawn with the keyboard focus on no control"
     ).toBe(0);
+    await expectLoadSettled(settling);
     const resting = REF_PREVIEW_OPEN_DELAY_MS + 200;
     const before = await treeText(page);
     const rows = nodeRows(page);
+    // Every read the page made went quiet above, after Conversation drew the outline again, so
+    // this count is every row the outline draws.
     const count = await rows.count();
     for (let index = 0; index < count; index += 1) {
       await rows.nth(index).hover();
@@ -2157,14 +3059,13 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     ).toEqual([]);
 
     // No link opens a card on hover either, a link in an open body included: the issue page is
-    // worked from the keyboard (R6 of the root spec). A decision's words name the requirements
-    // it shaped, each as a chip in place and again as a chip at the end of its words, and its
-    // row is pinned open, so the pointer rests on every link the page draws - the children's,
-    // the panel's and that row's - with the keyboard focus elsewhere. No link of the outline is
-    // a preview's trigger at this head: G's links in a node's words and its chips carry no
-    // `data-dispatch-ref` or `data-dispatch-href` (`row-references.ts`, `NodeRow.tsx`'s `Chip`),
-    // so a focused one opens no card either, and the card a focused link opens is not part I's
-    // to read.
+    // worked from the keyboard. A decision's words name the requirements it shaped, each as a
+    // chip in place and again as a chip at the end of its words, and its row is pinned open, so
+    // the pointer rests on every link the page draws - the children's, the panel's and that
+    // row's - with the keyboard focus elsewhere. No link of the outline is a preview's trigger at
+    // this head: the links in a node's words and its chips carry no `data-dispatch-ref` or
+    // `data-dispatch-href` (`row-references.ts`, `NodeRow.tsx`'s `Chip`), so a focused one opens
+    // no card either, and the card a focused link opens is not this row's to read.
     const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const decision = nodeRow(page, blockNodeId(decisionsSlug, seeded.decisions[0] ?? "")).first();
     await decision.focus();
@@ -2178,6 +3079,8 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     const links = issuePage(page).locator(
       "a[href]:visible, [data-dispatch-ref]:visible, [data-dispatch-href]:visible"
     );
+    // The page's reads went quiet before the walk over the rows, and the poll above saw the
+    // pinned decision draw the links in its words, so one count holds every link drawn.
     const linkCount = await links.count();
     for (let index = 0; index < linkCount; index += 1) {
       await links.nth(index).hover();
@@ -2205,7 +3108,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       `two states are drawn the same way: ${JSON.stringify([...states])}`
     ).toBe(states.size);
     // Each typed kind's tag carries its shape, which is the first shape its row draws; a turn
-    // of the conversation draws no tag (R34), and its author's shape says whose words it is.
+    // of the conversation draws no tag, and its author's shape says whose words it is.
     const types = new Map(
       drawn
         .filter((row) => !UNTYPED_KINDS.includes(row.type ?? ""))
@@ -2222,6 +3125,8 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     await page.emulateMedia({ forcedColors: "active" });
     const forced = await drawnRows(page);
     expectRowVocabulary(forced, await rowTags(page));
+    // The rows were drawn and read just above with the colours forced, and the assertion below
+    // holds this read to those rows before the loop walks them.
     const painted = await shapesPainted(page);
     expect(
       painted.map((row) => row.id),
@@ -2373,17 +3278,57 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
 
     // z cycles the whole tree: first lines, first lines with bodies to depth two, everything.
     await focusThePage(page);
-    const firstLines = await visibleIds(page);
+    const atFirst = await drawnRows(page);
+    const firstLines = atFirst.filter((row) => row.visible).map((row) => row.id ?? "<no id>");
+    const openAtFirst = new Set(
+      atFirst.filter((row) => row.expanded === "true").map((row) => row.id)
+    );
     await page.keyboard.press("z");
     expect(
       await nodeBodies(page).count(),
       "the second state of the cycle draws no bodies"
     ).toBeGreaterThan(1);
     await page.keyboard.press("z");
+    const everything = await drawnRows(page);
     expect(
-      (await visibleIds(page)).length,
+      everything.filter((row) => row.visible).length,
       "the third state of the cycle draws no more rows than the first"
     ).toBeGreaterThan(firstLines.length);
+    // In that state Left on an open row folds that branch at once, and every other row stays
+    // drawn: it recorded a fold the state did not draw, which changed nothing on the page. The
+    // branch is one the first state draws folded, so the cycle still comes back to its lines.
+    const atBranch = everything.findIndex(
+      (row) => row.visible && row.expanded === "true" && !openAtFirst.has(row.id)
+    );
+    const foldedBranch = everything[atBranch];
+    expect(
+      foldedBranch,
+      "the third state of the cycle draws no branch the first draws folded"
+    ).toBeTruthy();
+    // Every open branch outside the rows the branch holds is one the fold must leave open.
+    const outside = [
+      ...everything.slice(0, atBranch),
+      ...everything.slice(atBranch + 1 + heldIn(everything, foldedBranch?.id ?? "")),
+    ];
+    const stillOpen = outside
+      .filter((row) => row.visible && row.expanded === "true")
+      .map((row) => row.id);
+    await focusRow(page, foldedBranch?.id ?? "");
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, foldedBranch?.id ?? "").first(),
+      "Left on an open row in the cycle's third state drew the branch still open"
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(await focusedRow(page), "Left moved off the row it folded").toBe(foldedBranch?.id ?? "");
+    const afterFold = await drawnRows(page);
+    expect(
+      afterFold.filter((row) => row.visible).length,
+      "the fold drew no fewer rows"
+    ).toBeLessThan(everything.filter((row) => row.visible).length);
+    expect(
+      afterFold.filter((row) => row.visible && row.expanded === "true").map((row) => row.id),
+      "the fold closed another branch of the third state"
+    ).toEqual(stillOpen);
     await page.keyboard.press("z");
     expect(await visibleIds(page), "the cycle did not come back to the first lines").toEqual(
       firstLines
@@ -2408,11 +3353,15 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
 });
 
 // SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some sixty keys
-// pressed at two sizes, each followed by a read of where the focus is.
+// pressed at two sizes, each followed by a read of where the focus is, and the page loaded again
+// for a zoom into a long comment's row, read again a second later. It took 27 to 36 s in the
+// pod's runs that passed, and twice in a busy pod it ran out of the project's 60 s mid-move, so it
+// takes the 120 s the file's other long rows take.
 test("Tab enters and leaves the tree at one stop and every move keeps the row on screen", async ({
   browser,
 }) => {
-  const { context, page } = await openTree(browser);
+  test.setTimeout(120_000);
+  const { context, page, seeded } = await openTree(browser);
   try {
     const order = await visibleIds(page);
 
@@ -2443,11 +3392,24 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     }
     await pressToOutlineEnd(page, "End");
     await expectFocusedRowClear(page, "End");
+    // The cycle key moves no focus, and draws bodies and then whole branches above the focused
+    // row: a key that moves no focus still keeps the focused row on screen, held there while the
+    // rows above it grow. On a long issue at 1440 by 900, before the page placed it, the row's
+    // top stood at 3,276, 3,991 and 694 px after the three presses.
+    for (const press of [1, 2, 3]) {
+      await page.keyboard.press("z");
+      await expectFocusedRowOnScreen(
+        page,
+        `press ${press} of z on the last row`,
+        "left the focused row off the screen"
+      );
+    }
     await pressToOutlineEnd(page, "Home");
     await expectFocusedRowClear(page, "Home");
     // Home on the first row while it already holds the focus, after the reader scrolled it off
-    // the screen: the move moves no focus, and still brings the row back on screen (decision
-    // 177). Before it the row stayed where the scroll left it, thousands of pixels above.
+    // the screen: the move moves no focus, and still brings the row back on screen, since a key
+    // that leaves the reader on a row they cannot see has taken them nowhere. Before it the row
+    // stayed where the scroll left it, thousands of pixels above.
     const first = (await focusedNodeId(page)) ?? "";
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect
@@ -2458,12 +3420,13 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     await pressToOutlineEnd(page, "Home");
     await expectFocusedRowClear(page, "Home on the row that holds the focus, scrolled off");
 
-    // The box at the foot of the screen: part L draws one and publishes its height on the
-    // document element (`FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), and the page brings the
-    // focused row clear of it as it does of the band at the top. A 200 px stand-in for that box:
-    // every move keeps the focused row whole above it. Measured at this part's head with only
-    // the height published and no box: the moves from the seventh on lift the row to 8 px above
-    // it, and End leaves the last row under it, with the page scrolled as far as it goes.
+    // The box at the foot of the screen: the page draws one to write in and publishes its height
+    // on the document element (`FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), and the page
+    // brings the focused row clear of it as it does of the band at the top. A 200 px stand-in
+    // for that box: every move keeps the focused row whole above it. Measured at the outline's
+    // own head with only the height published and no box: the moves from the seventh on lift the
+    // row to 8 px above it, and End leaves the last row under it, with the page scrolled as far
+    // as it goes.
     const takeFootAway = await standInFootBox(page, 200);
     for (let step = 0; step < Math.min(order.length - 1, 12); step += 1) {
       await page.keyboard.press("j");
@@ -2478,13 +3441,13 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     await takeFootAway();
 
     // At 760 px and below the header scrolls away and the view row stays at the top, the band
-    // part P publishes (`IDENTITY_HEIGHT_PROPERTY`): the moves up from the outline's last row
+    // the header publishes (`IDENTITY_HEIGHT_PROPERTY`): the moves up from the outline's last row
     // take the page up under it, and each keeps the focused row whole and clear below it. Home
     // first, so that End moves and places the last row at this size. Measured with the band read
-    // as 0 at this size by all three that place a row below it - `bringOnScreen`, G's
-    // `belowWhatStays` and the page's `scroll-padding-top`, by which a key's focus scrolls -
-    // moves with k left the row's top at 40, 13, 15 and 0 px under a band 51 px tall; at I's
-    // head without P, where nothing published the band, at 40, 13 and 0 px.
+    // as 0 at this size by all three that place a row below it - `bringOnScreen`,
+    // `belowWhatStays` (`NodeRow.tsx`) and the page's `scroll-padding-top`, by which a key's
+    // focus scrolls - moves with k left the row's top at 40, 13, 15 and 0 px under a band 51 px
+    // tall; at the outline's own head, where nothing published the band, at 40, 13 and 0 px.
     await page.setViewportSize({ height: 664, width: 390 });
     await pressToOutlineEnd(page, "Home");
     await pressToOutlineEnd(page, "End");
@@ -2496,9 +3459,294 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
         "left the focused row off the screen or under the band that stays at the top"
       );
     }
+    // A zoom draws the crumb line above the rows it zooms to, and places that line below the
+    // band, with the focused row still on screen. The moves up with k leave the row just under
+    // the band, where on a long issue the line drawn above it stood at -5 to 39 px under a band
+    // 51 px tall, and the reader read it only once they had scrolled.
+    await page.keyboard.press(".");
+    await expectZoomPlaced(page, ". at 390x664");
+    await expectFocusedRowOnScreen(page, ". at 390x664", "left the focused row off the screen");
+    // Right on the row the zoom is rooted at, which is drawn open over what it holds, moves to
+    // its first child, and where nothing is under it says so at the row, as every key with
+    // nowhere to go does. At 390 by 664 it zoomed into the row it was on: nothing moved and
+    // nothing was said.
+    const [zoomRoot, under] = await drawnRows(page);
+    expect(zoomRoot?.id, ". left the focus on another row than the zoom's own").toBe(
+      await focusedRow(page)
+    );
+    await page.keyboard.press("ArrowRight");
+    if (under !== undefined && Number(under.level) > Number(zoomRoot?.level)) {
+      await expect
+        .poll(() => focusedRow(page), {
+          message: "Right on the zoom's own row did not move to its first child",
+        })
+        .toBe(under.id);
+    } else {
+      await expect(
+        nodeRow(page, zoomRoot?.id ?? "")
+          .first()
+          .locator("[data-row-report]"),
+        "Right on the zoom's own row, with nothing under it, did not say so at the row"
+      ).toHaveText(KEY_REPORTS.nothing_under);
+      expect(await focusedRow(page), "Right with nothing under the row moved the focus").toBe(
+        zoomRoot?.id
+      );
+    }
+
+    // A zoom into a row taller than the window leaves the line below the band and the row's top
+    // just under the line. Placed by the page's one rule, as it was zoomed into and again as it
+    // grew, the row's top went to just under the band, which took the line above it under the
+    // band: on a real issue at this size rows of 1,634 and 1,464 px left the line at 15 to 59 and
+    // at -53 to 59 px under a band 51 px tall, still there 1.5 s later. No row of the seed is that
+    // tall, so a comment of thirty paragraphs is.
+    const long = await createComment(seeded.key, {
+      body: Array.from(
+        { length: 30 },
+        (_, paragraph) => `Paragraph ${paragraph + 1} of words taller than any window.`
+      ).join("\n\n"),
+    });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectTreeDrawn(page);
+    // The page lands on the question that waits on the reader once its read answers, which
+    // would take the focus back from a row focused before then.
+    const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    await expect
+      .poll(() => focusedRow(page), {
+        message: "the page loaded again with the focus off its open question",
+      })
+      .toBe(question);
+    const longRow = await focusRow(page, long.id);
+    expect(
+      await longRow.evaluate((element) => element.getBoundingClientRect().height),
+      "the long comment's focused row is not taller than the window"
+    ).toBeGreaterThan(664);
+    await page.keyboard.press(".");
+    await expectZoomPlaced(page, ". on a row taller than the window at 390x664");
   } finally {
     await context.close();
   }
+});
+
+/**
+ * Where the keyboard focus is, read against node row `row`, in the words a failure reads: "its
+ * code block" or "its table" where it is on that block of the row's words - the `pre` or the
+ * `table` itself, or a box that holds it alone and scrolls it sideways - "the row" on the row
+ * itself, and otherwise what holds it and whether that is inside the row, elsewhere in the tree,
+ * or outside the tree.
+ */
+function focusAgainstRow(row: Locator): Promise<string> {
+  return row.evaluate((element) => {
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) return "outside the tree, on the page";
+    if (focused === element) return "the row";
+    const what = focused.localName;
+    if (element.contains(focused)) {
+      const code = focused.querySelector("pre") !== null;
+      const table = focused.querySelector("table") !== null;
+      const scrolls = focused.scrollWidth > focused.clientWidth;
+      if (what === "pre" || (code && !table && scrolls)) return "its code block";
+      if (what === "table" || (table && !code && scrolls)) return "its table";
+      return `a ${what} inside the row`;
+    }
+    if (element.closest('[role="tree"]')?.contains(focused) === true) {
+      return `a ${what} elsewhere in the tree`;
+    }
+    return `outside the tree, on a ${what}`;
+  });
+}
+
+// The outline is one tab stop, and a reader on the keyboard still scrolls a wide block of the
+// focused row's words sideways (WCAG 2.1.1, which axe's `scrollable-region-focusable` rule
+// reads): the code block and the table that scroll in the row that holds the focus are tab stops,
+// each named for what it holds, and every other row's are out of the tab order. With every row's
+// out, as the outline had them, no key reached a wide block, and no key scrolled it; with the
+// focus on the code block the tree still took its keys, so Right scrolled nothing and End moved the
+// focus to the tree's last row. At 1440 by 900, a comment whose words hold a code block and a
+// table, each wider than its box, and a comment of words alone after it: Tab from the first stops
+// on its code block, where Right scrolls it sideways with the focus still on it, and End, which the
+// browser scrolls by only up and down, leaves the focus on it and moves and folds no row; Shift+Tab
+// and Escape each give the row back; Tab from the row stops on the code block, then on its table,
+// then leaves the tree; from the second, Tab leaves the tree at once, and so does Shift+Tab, which
+// passes the first comment's blocks above it; and with the first focused, axe finds no scroller on
+// the page that the keyboard cannot reach.
+// SLOW(>=2s): an issue of two comments seeded and loaded at the first one's address, its code
+// block and table waited for until they are laid out wider than their boxes, fourteen keys each
+// waited on until the focus lands, the block scrolls or the rows read as before, and the page read
+// by axe once the first row has the focus.
+test("Tab from the focused row stops on its code block and its table, then leaves the tree, and a row with neither leaves at once", async ({
+  browser,
+}) => {
+  await phase(browser, seedWideCode, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.wide}`);
+    await expectTreeDrawn(page);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the comment's address did not put the focus on its row",
+      })
+      .toBe(seeded.wide);
+    const row = nodeRow(page, seeded.wide).first();
+    for (const [block, what] of [
+      ["pre", "code block"],
+      ["table", "table"],
+    ] as const) {
+      await expect
+        .poll(
+          () =>
+            rowWords(row)
+              .locator(block)
+              .evaluateAll((found) =>
+                found.some((element) => element.scrollWidth > element.clientWidth)
+              ),
+          { message: `the focused comment's row never drew a ${what} wider than its own box` }
+        )
+        .toBe(true);
+    }
+
+    // Tab from the focused row stops on its code block, then on its table, each named for what
+    // it holds, and then leaves the tree.
+    const focused = page.locator(":focus");
+    await page.keyboard.press("Tab");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "Tab from the focused comment's row did not stop on its code block",
+      })
+      .toBe("its code block");
+    await expect(
+      focused,
+      "the code block's tab stop is not named for what it holds"
+    ).toHaveAccessibleName(CONTROL_LABELS.scrolls_code);
+
+    // On the code block the keys that scroll a box are the browser's: Right scrolls it sideways
+    // with the focus still on it, and End, which the browser scrolls by in the other direction
+    // alone, leaves the focus on it and moves and folds no row. Shift+Tab gives the row back, as
+    // the tab order has it, and so does Escape; Tab from the row stops on the code block again.
+    const code = rowWords(row).locator("pre");
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(() => code.evaluate((element) => element.scrollLeft), {
+        message: "Right on the focused comment's code block did not scroll it sideways",
+      })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "Right on the focused comment's code block took the focus off it",
+      })
+      .toBe("its code block");
+    /** Each row the tree draws, by its node, with its fold and whether it holds the tree's
+     *  stop. */
+    const folds = async () =>
+      (await drawnRows(page)).map(({ expanded, foldedCount, id, tabIndex }) => ({
+        expanded,
+        foldedCount,
+        id,
+        tabIndex,
+      }));
+    const beforeEnd = await folds();
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "End on the focused comment's code block took the focus off it",
+      })
+      .toBe("its code block");
+    await expect
+      .poll(folds, {
+        message: "End on the focused comment's code block moved the tree's stop or a fold",
+      })
+      .toEqual(beforeEnd);
+    for (const key of ["Shift+Tab", "Escape"]) {
+      await page.keyboard.press(key);
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: `${key} on the focused comment's code block did not give the row back`,
+        })
+        .toBe("the row");
+      await page.keyboard.press("Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: `Tab from the row, after ${key}, did not stop on its code block again`,
+        })
+        .toBe("its code block");
+    }
+    await page.keyboard.press("Tab");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "Tab from the focused comment's code block did not stop on its table",
+      })
+      .toBe("its table");
+    await expect(
+      focused,
+      "the table's tab stop is not named for what it holds"
+    ).toHaveAccessibleName(CONTROL_LABELS.scrolls_table);
+    await page.keyboard.press("Tab");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "Tab from the focused comment's table did not leave the tree",
+      })
+      .toMatch(/^outside the tree/u);
+
+    // Back on the row, j moves to the comment of words alone. From it Tab leaves the tree at
+    // once, and Shift+Tab does too: the first comment's blocks above it are no tab stop while
+    // its row holds no focus.
+    await page.keyboard.press("Shift+Tab");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "Shift+Tab from past the tree did not come back to the comment's row",
+      })
+      .toBe("the row");
+    await page.keyboard.press("j");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "j did not move from the comment's row to the comment of words alone",
+      })
+      .toBe(seeded.plain);
+    const plain = nodeRow(page, seeded.plain).first();
+    await expect(
+      rowWords(plain),
+      "the comment of words alone draws no words in its row"
+    ).toContainText("A comment of words alone");
+    await expect(
+      rowWords(plain).locator("pre, table"),
+      "the comment of words alone draws a code block or a table"
+    ).toHaveCount(0);
+    await page.keyboard.press("Tab");
+    await expect
+      .poll(() => focusAgainstRow(plain), {
+        message:
+          "Tab from a row whose words hold neither a code block nor a table did not leave the tree at once",
+      })
+      .toMatch(/^outside the tree/u);
+    await page.keyboard.press("Shift+Tab");
+    await expect
+      .poll(() => focusAgainstRow(plain), {
+        message: "Shift+Tab from past the tree did not come back to the comment of words alone",
+      })
+      .toBe("the row");
+    await page.keyboard.press("Shift+Tab");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message:
+          "Shift+Tab from the comment of words alone did not leave the tree at once, past the blocks of the row above it, which holds no focus",
+      })
+      .toMatch(/^outside the tree/u);
+
+    // With the first comment's row focused, axe finds no scroller on the page that the keyboard
+    // cannot reach.
+    await focusRow(page, seeded.wide);
+    await expect
+      .poll(
+        async () =>
+          (
+            await new AxeBuilder({ page }).withRules(["scrollable-region-focusable"]).analyze()
+          ).violations.flatMap((violation) =>
+            violation.nodes.map((node) => axeSelector(node.target))
+          ),
+        {
+          message:
+            "axe finds scrollers the keyboard cannot reach on the page with the comment's row focused",
+        }
+      )
+      .toEqual([]);
+  });
 });
 
 // SLOW(>=2s): the whole issue seeded and loaded in a context of its own, for one read of its rows.
@@ -2540,6 +3788,8 @@ test("the tree answers the WAI-ARIA tree pattern's roles and properties", async 
 
     // The tree is one tab stop: it roves with one tabbable row, or it names the row it is on.
     const tabbable = rows.filter((row) => row.tabIndex === 0);
+    // One state is the claim, the one the rows above were read in with no key pressed since, and
+    // the ternaries below only spell this answer for the assertion.
     const named = await treeActiveDescendant(page);
     expect(
       `${tabbable.length}/${named === null ? "none" : "named"}`,
@@ -2577,8 +3827,8 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     // The gaps the page draws are those that tell a node apart and name work somebody owes: each
     // requirement no check serves, and the plan task that serves no requirement - and no other
     // node draws any. The check whose latest result records no negative control is one of those
-    // others: dispatch://INFRA-1253 R3 asks a negative control of a before-merge pass alone, and
-    // this check runs after the merge, so the page names nothing it lacks.
+    // others: the server asks a negative control of a before-merge pass alone, and this check
+    // runs after the merge, so the page names nothing it lacks.
     const coverage = await getIssueCoverage(seeded.key);
     const wanted = new Map<string, string[]>();
     for (const requirement of coverage.requirements ?? []) {
@@ -2594,17 +3844,19 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
       uncontrolled?.results?.[0]?.negative_control,
       "the seed's uncontrolled check's latest result records a negative control"
     ).toBe("");
-    const drawnGaps = async () => {
-      const drawn = new Map<string, string[]>();
-      for (const row of await drawnRows(page)) {
-        if (row.gapKinds.length > 0) drawn.set(row.id ?? "", [...row.gapKinds]);
-      }
-      return Object.fromEntries([...drawn].sort());
-    };
     await expect
-      .poll(drawnGaps, {
-        message: "the page draws a gap on a node it does not tell apart, or none on one it does",
-      })
+      .poll(
+        async () => {
+          const drawn = new Map<string, string[]>();
+          for (const row of await drawnRows(page)) {
+            if (row.gapKinds.length > 0) drawn.set(row.id ?? "", [...row.gapKinds]);
+          }
+          return Object.fromEntries([...drawn].sort());
+        },
+        {
+          message: "the page draws a gap on a node it does not tell apart, or none on one it does",
+        }
+      )
       .toEqual(Object.fromEntries([...wanted].sort()));
     await expect
       .poll(async () => rowsByKind(await drawnRows(page)), {
@@ -2614,7 +3866,8 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
     // From the requirement to its checks and their latest results: each is drawn under it, and
     // the arrow keys walk down to them from the requirement's row. The decision's chip that
-    // names the requirement, and following it, are part J's step of the chain.
+    // names the requirement, and following it, are left to the Spec view's own rows, which this
+    // tree does not hold yet.
     expect(await parentOfRow(page, check), "the check that serves r1 is not under it").toBe(
       informed
     );
@@ -2644,7 +3897,7 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
     // No gap that every node of a kind carries is drawn: no requirement and no decision says
     // anything about a source, a read-back or an author. The head's gap and the Spec view's
-    // readings are part J's.
+    // readings are left to the Spec view's own rows, which this tree does not hold yet.
     expect(
       (await drawnRows(page))
         .filter((row) => row.type === "requirement" || row.type === "decision")
@@ -2658,9 +3911,17 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
   });
 });
 
-// The tester's F16: what a key says when it has nowhere to go - `w` on a row no decision stands
-// behind - is drawn at the row it was pressed on, once, and the reader's next move lets it go.
-// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed.
+// The tester's finding: what a key says when it has nowhere to go - `w` on a row no decision
+// stands behind - is drawn at the row it was pressed on, once, and the reader's next move lets
+// it go. At 390 px, where the tree is read one node at a time, Left on a child of the row the
+// tree is zoomed to asked to zoom to that row, which is the zoom already, and said nothing: it
+// says so at the row, and on the zoom's own row it zooms back out. At 1440 px Home on the first
+// row, End on the last and Right on a row with nothing under it moved nothing and said nothing,
+// and at 390 px so did `.` on the row the tree is zoomed to: each says so at its row, and the
+// next move lets it go.
+// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for nine keys pressed,
+// then loaded again at a phone's size on a reply's address, waited on until the reply has the
+// focus, for five keys more and a zoom out waited on.
 test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
   browser,
 }) => {
@@ -2674,10 +3935,9 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       nodeRow(page, seeded.answeredAsk).first().locator("[data-row-report]"),
       "the key's report is not drawn at the row it was pressed on"
     ).toHaveCount(1);
-    expect(
-      await issuePage(page).locator("[data-row-report]").count(),
-      "the key's report is drawn at more than one place"
-    ).toBe(1);
+    expect(await pageStatus(page).count(), "the key's report is drawn at more than one place").toBe(
+      1
+    );
     expect(
       (await issuePage(page).getByRole("status").allInnerTexts()).filter(
         (words) => words.trim() !== ""
@@ -2685,22 +3945,149 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       "the key's report is drawn a second time away from the row"
     ).toBe(1);
     await page.keyboard.press("j");
+    await expect(pageStatus(page), "the report stays after the reader moved on").toHaveCount(0);
+    /** The report of the key pressed `after` is drawn at the focused row, in `words`, and
+     *  nowhere else on the page. */
+    const reportedAt = async (after: string, words: string): Promise<void> => {
+      const at = (await focusedNodeId(page)) ?? "";
+      await expect(
+        nodeRow(page, at).first().locator("[data-row-report]"),
+        `${after} says nothing at the row`
+      ).toHaveText(words);
+      await expect(
+        pageStatus(page),
+        `the report of ${after} is drawn at more than one place`
+      ).toHaveCount(1);
+    };
+    // The first press of each end key moves to its end, and the second has nowhere to go.
+    await pressToOutlineEnd(page, "Home");
+    await pressToOutlineEnd(page, "Home");
+    await reportedAt("Home on the first row", KEY_REPORTS.first_row);
+    await page.keyboard.press("j");
     await expect(
-      issuePage(page).locator("[data-row-report]"),
-      "the report stays after the reader moved on"
+      pageStatus(page),
+      "the report of Home on the first row stays after the reader moved on"
     ).toHaveCount(0);
+    await pressToOutlineEnd(page, "End");
+    await pressToOutlineEnd(page, "End");
+    await reportedAt("End on the last row", KEY_REPORTS.last_row);
+    await page.keyboard.press("k");
+    await expect(
+      pageStatus(page),
+      "the report of End on the last row stays after the reader moved on"
+    ).toHaveCount(0);
+    const leaf =
+      (await drawnRows(page)).find((row) => row.visible && row.expanded === null)?.id ?? "";
+    expect(leaf, "the outline draws no row with nothing under it").not.toBe("");
+    await focusRow(page, leaf);
+    await page.keyboard.press("ArrowRight");
+    await reportedAt("Right on a row with nothing under it", KEY_REPORTS.nothing_under);
+    expect(await focusedNodeId(page), "Right on a row with nothing under it moved the focus").toBe(
+      leaf
+    );
+
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
+      .toBe(seeded.first);
+    const crumbs = issuePage(page).locator("[data-crumb]");
+    await expect(crumbs, "the reply's address does not zoom the tree to its thread").toHaveCount(1);
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.first).first().locator("[data-row-report]"),
+      "Left on a child of the row the tree is zoomed to says nothing at the row"
+    ).toHaveText(KEY_REPORTS.parent_zoomed);
+    expect(await focusedNodeId(page), "Left on a child of the zoom moved the focus").toBe(
+      seeded.first
+    );
+    // The zoom's own row, the thread's head: Left zooms out to the issue, and there Left on the
+    // head, a child of the issue, says the whole issue is drawn.
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(() => focusedNodeId(page)).toBe(seeded.head);
+    // `.` on the zoom's own row asks for the zoom the tree holds already: it says so at the row,
+    // and zooms nowhere.
+    await page.keyboard.press(".");
+    await reportedAt(". on the row the tree is zoomed to", KEY_REPORTS.already_zoomed);
+    await expect(crumbs, ". on the row the tree is zoomed to zoomed elsewhere").toHaveCount(1);
+    expect(await focusedNodeId(page), ". on the zoom's own row moved the focus").toBe(seeded.head);
+    await page.keyboard.press("ArrowLeft");
+    await expect(crumbs, "Left on the zoom's own row did not zoom out").toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "zooming out took the focus off the head" })
+      .toBe(seeded.head);
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.head).first().locator("[data-row-report]"),
+      "Left on a child of the issue, with the whole issue drawn, says nothing at the row"
+    ).toHaveText(KEY_REPORTS.whole_tree);
+    expect(await focusedNodeId(page), "Left on a child of the issue moved the focus").toBe(
+      seeded.head
+    );
   });
 });
 
-// Editing in a node (part I's R10). Enter on a row whose node is a block of one of the issue's
-// documents puts the caret at the start of its words, in that document's one room: the row takes
-// the page's one editor of the document, so the room gets no second connection. A second reader
-// who does the same on their own page is in that room too, and the first one's row draws the
-// second one's caret. What is typed is stored. Escape gives the same row the focus, and a second
-// Escape leaves the outline. A comment's row holds no document's text, and the key says so at
-// the row.
+// The architect's rule for an address of a node of the issue: following a link to it opens the
+// branches above the node and puts the focus on its row. At 1440 by 900, zoomed into one thread,
+// a link in a reply of that thread to a comment outside it went to the comment's address, and the
+// tree, still zoomed into the thread, drew no row for the comment: the landing gave up with
+// nothing said, and the focus stayed on the link it was followed from. The following leaves the
+// zoom, and the comment's row takes the focus on screen.
+// SLOW(>=2s): a seeded thread and two comments more, loaded cold, a thread zoomed into and a link
+// in one of its replies followed, waited on until the comment's row has the focus on screen.
+test("a comment's address followed from a link while the reader is zoomed elsewhere lands on the comment's row", async ({
+  browser,
+}) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const elsewhere = await createComment(seeded.key, {
+      body: "A comment outside the thread the reader zooms into.",
+    });
+    const reference = `dispatch://${seeded.key}/comment/${elsewhere.id}`;
+    const pointer = await createComment(seeded.key, {
+      body: `The comment this answers is ${reference} for now.`,
+      reply_to: seeded.head,
+    });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, seeded.head);
+    await page.keyboard.press(".");
+    await expect(
+      issuePage(page).locator("[data-crumb]"),
+      "the thread's head was not zoomed into"
+    ).toHaveCount(1);
+    await expect(
+      nodeRow(page, elsewhere.id),
+      "the zoom into the thread draws the comment outside it"
+    ).toHaveCount(0);
+
+    await focusRow(page, pointer.id);
+    await rowReference(nodeRow(page, pointer.id).first(), reference).click();
+    await expect(page, "the link did not go to the comment's address").toHaveURL(
+      new RegExp(`/issues/${seeded.key}/comments/${elsewhere.id}$`, "u")
+    );
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the comment's address, followed from a zoom into another thread, landed nowhere",
+      })
+      .toBe(elsewhere.id);
+    await expect(
+      issuePage(page).locator("[data-crumb]"),
+      "the zoom into the other thread stood after the following"
+    ).toHaveCount(0);
+    await expectFocusedRowOnScreen(page, "the following", "left the comment's row off screen");
+  });
+});
+
+// Editing in a node. Enter on a row whose node is a block of one of the issue's documents puts
+// the caret at the start of its words, in that document's one room: the row takes the page's one
+// editor of the document, so the room gets no second connection. A second reader who does the
+// same on their own page is in that room too, and the first one's row draws the second one's
+// caret. What is typed is stored, and keys pressed before the caret has reached the statement
+// edit the statement or nothing. Escape gives the same row the focus, and a second Escape leaves
+// the outline. A comment's row holds no document's text, and the key says so at the row.
 // SLOW(>=2s): the whole issue seeded and loaded, a second reader's context loading it too, both
-// carets put in the spec's live room, and two reloads or more reading what was stored.
+// carets put in the spec's live room, two reloads or more reading what was stored, and Enter
+// pressed on a page slowed four times, with Delete pressed until the caret is in the statement.
 test("Enter puts the caret in a node, and Escape gives the row back", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page, seeded } = await openTree(browser);
@@ -2778,6 +4165,53 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       .poll(storedWords, { message: "the word typed in the row was not removed" })
       .not.toContain(typed.trim());
 
+    // Keys pressed the moment Enter is pressed edit the statement or nothing. The editor took the
+    // focus with its own selection still at the top of the document, and read the caret put in
+    // the statement only a task later: on a busy page that was 0.27 to 0.84 s, and ten Deletes
+    // pressed in it removed the spec's first heading. The page is slowed here as a busy page is,
+    // the CPU throttled four times, and Delete pressed at once and again, without waiting on
+    // anything, until the caret has stood in the statement for three presses.
+    const before = await storedMarkdown(seeded.specArtifactId);
+    const words = requirementText(2);
+    const at = before.indexOf(words);
+    expect(at, "the stored spec does not hold the statement's words").toBeGreaterThan(-1);
+    const cpu = await context.newCDPSession(page);
+    await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    try {
+      await page.keyboard.press("Enter");
+      const until = Date.now() + 30_000;
+      for (let inBlock = 0; inBlock < 3 && Date.now() < until; ) {
+        await page.keyboard.press("Delete");
+        // The instant is the claim: each Delete goes out without waiting, and this read counts
+        // the presses that found the caret standing in the statement.
+        if (await caretInRowBlock(page, requirementBlockId(2))) inBlock += 1;
+      }
+    } finally {
+      await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+      await cpu.detach();
+    }
+    await expect
+      .poll(() => storedMarkdown(seeded.specArtifactId), {
+        message: "no Delete pressed after Enter reached the statement",
+      })
+      .not.toBe(before);
+    const after = await storedMarkdown(seeded.specArtifactId);
+    const above = before.slice(0, at);
+    const below = before.slice(at + words.length);
+    expect(
+      after.slice(0, above.length),
+      "a key pressed after Enter edited above the statement"
+    ).toBe(above);
+    expect(after.slice(after.length - below.length), "a key edited below the statement").toBe(
+      below
+    );
+    const left = after.slice(above.length, after.length - below.length);
+    expect(
+      left.length < words.length && words.endsWith(left),
+      `the statement reads "${left}", not its own words with their first ones deleted`
+    ).toBe(true);
+    await page.keyboard.press("Escape");
+
     // A comment's row holds no document's text: Enter puts no caret, and the row says so.
     const comment = seeded.comments.threads[0] ?? "";
     await focusRow(page, comment);
@@ -2790,4 +4224,732 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
   } finally {
     await context.close();
   }
+});
+
+/** A box's background before anything is drawn behind it, as computed. */
+const TRANSPARENT = "rgba(0, 0, 0, 0)";
+
+/** The ids of the rows the outline marks as taking typing, `[data-editable]` (`useNodeEditing.ts`'s
+ *  `nodeEditable`), in the order they are drawn. */
+function editableRows(page: Page): Promise<string[]> {
+  return issuePage(page)
+    .locator("[data-node-row][data-editable]")
+    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-node-id") ?? "<no id>"));
+}
+
+/** What the cue that a block takes typing draws on `row` (`styles.css`'s `[data-editable]`
+ *  rules), as computed: the row's cursor, and the background of its card, which is where the tint
+ *  is. */
+function rowCue(row: Locator): Promise<{ readonly background: string; readonly cursor: string }> {
+  return row.evaluate((element) => {
+    const card = element.querySelector(":scope > [data-node-card]");
+    return {
+      background: card === null ? "<no card>" : getComputedStyle(card).backgroundColor,
+      cursor: getComputedStyle(element).cursor,
+    };
+  });
+}
+
+/** The outline the cue draws on the box a row's editor scrolls in, as computed, and whether the
+ *  focus is inside that box. */
+function editorBoxRule(row: Locator): Promise<{
+  readonly color: string;
+  readonly focused: boolean;
+  readonly offset: string;
+  readonly style: string;
+  readonly width: string;
+}> {
+  return row.locator("[data-editor-box]").evaluate((box) => {
+    const style = getComputedStyle(box);
+    return {
+      color: style.outlineColor,
+      focused: box.matches(":focus-within"),
+      offset: style.outlineOffset,
+      style: style.outlineStyle,
+      width: style.outlineWidth,
+    };
+  });
+}
+
+/** The page's faint pane and its ink as the browser computes them from the palette (`styles.css`'s
+ *  `@theme`), which the cue is drawn in. */
+function cueColours(page: Page): Promise<{ readonly ink: string; readonly pane: string }> {
+  return page.evaluate(() => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--color-page-ink)";
+    probe.style.backgroundColor = "var(--color-page-pane)";
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const colours = { ink: style.color, pane: style.backgroundColor };
+    probe.remove();
+    return colours;
+  });
+}
+
+/** Opens the issue `key` and, once the page has put the focus on a row of its own, takes it off
+ *  the outline and moves the pointer away, so no row is drawn focused or under the pointer. */
+async function openWithNoRowFocused(page: Page, key: string): Promise<void> {
+  await gotoIssue(page, `/issues/${key}`);
+  await expectIssuePageDrawn(page);
+  await expect
+    .poll(async () => (await focusedRow(page)) !== null, {
+      message: "the page opens with the focus on no row",
+    })
+    .toBe(true);
+  await focusThePage(page);
+  await page.mouse.move(0, 0);
+}
+
+// A block that takes typing says so. Under the pointer, a row whose node Enter puts the caret in
+// - a block of one of the issue's documents, on an open issue - draws the text cursor and the
+// page's faint pane behind its card; once Enter has put the caret in it, the box its editor
+// scrolls in draws a 1 px outline in the page's ink just inside its edge, which takes no room. A
+// comment's row takes no typing and draws neither, and neither does any block of a closed issue,
+// whose documents are read-only, nor the box of its editor at focus. Each is read as computed
+// style, the rows by the mark the outline gives a row that takes typing.
+// SLOW(>=2s): the whole issue seeded and loaded, Enter waited on until the statement's editor
+// opens, then the issue closed and loaded again and the statement's editor opened there.
+test("an editable row shows it takes typing under the pointer and at focus, and a comment row and a closed issue's block show neither", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    const statement = blockNodeId(specSlug, requirementBlockId(2));
+    const check = blockNodeId(verificationSlug, seeded.checks.noResult);
+    const comment = seeded.comments.threads[0] ?? "";
+    await openWithNoRowFocused(page, seeded.key);
+    const colours = await cueColours(page);
+    const statementRow = nodeRow(page, statement).first();
+    const checkRow = nodeRow(page, check).first();
+    const commentRow = nodeRow(page, comment).first();
+
+    // The statement's row and the check's are marked as taking typing, and the comment's is not.
+    // Each row is drawn as the read of its own document lands, so the marks are read until both
+    // rows hold theirs, and the comment's once its row is drawn.
+    await expect
+      .poll(
+        async () => {
+          const marked = await editableRows(page);
+          return { check: marked.includes(check), statement: marked.includes(statement) };
+        },
+        {
+          message:
+            "the statement's row and the check's are not both marked as taking typing ([data-editable])",
+        }
+      )
+      .toEqual({ check: true, statement: true });
+    await expect(commentRow, "the comment's row is not drawn").toBeAttached();
+    expect(await editableRows(page), "the comment's row is marked as taking typing").not.toContain(
+      comment
+    );
+
+    // Under the pointer the statement's row draws the text cursor and the pane behind its card,
+    // and drew neither before.
+    expect(
+      await rowCue(statementRow),
+      "the statement's row draws a cue with no pointer on it"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+    await statementRow.hover();
+    await expect
+      .poll(() => rowCue(statementRow), {
+        message: "the statement's row under the pointer draws no text cursor and no tint",
+      })
+      .toEqual({ background: colours.pane, cursor: "text" });
+
+    // The comment's row under the pointer draws neither.
+    await commentRow.hover();
+    await nextFrames(page);
+    expect(await rowCue(commentRow), "the comment's row under the pointer draws a cue").toEqual({
+      background: TRANSPARENT,
+      cursor: "auto",
+    });
+
+    // Once Enter has put the caret in the statement, its editor's box draws the outline.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    await expect
+      .poll(() => editorBoxRule(statementRow), {
+        message: "the box of the statement's editor draws no 1 px rule in the ink at focus",
+      })
+      .toEqual({ color: colours.ink, focused: true, offset: "-1px", style: "solid", width: "1px" });
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => caretInNode(page), { message: "Escape did not take the caret out" })
+      .toBe(false);
+
+    // Closed, the issue's documents are read-only: no row is marked, and the statement's row
+    // under the pointer draws neither. The marks are read once the statement's row and the
+    // check's are drawn, as the reads of their documents land.
+    await patchIssue(seeded.key, { status: "done" });
+    await openWithNoRowFocused(page, seeded.key);
+    await expect(statementRow, "the closed issue's statement row is not drawn").toBeAttached();
+    await expect(checkRow, "the closed issue's check row is not drawn").toBeAttached();
+    await expect
+      .poll(() => editableRows(page), {
+        message: "a row of the closed issue is marked as taking typing",
+      })
+      .toEqual([]);
+    await statementRow.hover();
+    await nextFrames(page);
+    expect(
+      await rowCue(statementRow),
+      "the closed issue's statement under the pointer draws a cue"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+
+    // Nor does the box of its editor draw the rule at focus. Enter opens the statement's editor
+    // there, admitted read-only, and the focus stays on the row, since that editor takes no
+    // caret; so the document inside the box is given the focus, as a control of the document's
+    // would take it. The box itself is not: the browser draws its own ring on what holds the
+    // focus, which is no rule of the cue's.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    const article = statementRow.locator("[data-editor-box] .dispatch-doc");
+    await expect(
+      article,
+      "Enter drew no read-only document in the closed issue's statement row"
+    ).toHaveAttribute("data-read-only", "true");
+    await article.evaluate((element) => {
+      element.tabIndex = -1;
+      element.focus();
+    });
+    expect(
+      await editorBoxRule(statementRow),
+      "the box of the closed issue's statement editor draws a rule at focus"
+    ).toMatchObject({ focused: true, style: "none" });
+  });
+});
+
+// The tester's finding at #4205's 2ff6850a, on "a node the room keeps read-only draws neither"
+// of the architect's ruling on the cue that a block takes typing: the server admits a document
+// read-only to a page whose schema it cannot trust with writes, as for a page whose build is out
+// of date, and no block of that document takes typing then. The page here presents schema version
+// 0 on every document socket, which no server admits writable (`admits` in
+// `packages/envoy/internal/dispatch/docs/schema_admission.go`). At 2ff6850a a statement's row
+// is marked as taking typing by Enter's rule alone, so under the pointer it draws the text cursor
+// and the tint after the room has admitted that editor read-only; only the box of the editor
+// follows the document's `data-read-only`.
+// SLOW(>=2s): the whole issue seeded and loaded, then Enter waited on until the statement's editor
+// opens read-only.
+test("a statement of a document the server admits read-only shows no cue that it takes typing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.addInitScript(() => {
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(target, args) {
+          const url = new URL(String(args[0]), window.location.href);
+          if (url.searchParams.has("schema_version")) url.searchParams.set("schema_version", "0");
+          return new target(url.toString(), args[1]);
+        },
+      });
+    });
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statement = blockNodeId(specSlug, requirementBlockId(2));
+    const other = blockNodeId(specSlug, requirementBlockId(3));
+    await openWithNoRowFocused(page, seeded.key);
+    const statementRow = nodeRow(page, statement).first();
+    const otherRow = nodeRow(page, other).first();
+    await expect(statementRow, "the statement's row is not drawn").toBeAttached();
+    await expect(otherRow, "the second statement's row is not drawn").toBeAttached();
+
+    // Enter opens the statement's editor, which the room admits read-only; then another statement
+    // of the same document is under the pointer.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    await expect(
+      statementRow.locator("[data-editor-box] .dispatch-doc"),
+      "Enter drew no read-only document in the statement's row"
+    ).toHaveAttribute("data-read-only", "true");
+    await otherRow.hover();
+    await nextFrames(page);
+    expect(
+      await rowCue(otherRow),
+      "a statement of a document the room admitted read-only draws a cue under the pointer"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+  });
+});
+
+// When a read of the issue's comments no longer holds the comment whose row has the focus, that
+// row leaves the tree and the focus falls to the page's body. The reader caused no loss - another
+// session resolved a comment, which made the page read the comments again, and the row had the
+// focus by a script's hand, no act of theirs - so the focus stays on the body, where the page's
+// keys work, no row of the tree takes it, and the page does not scroll: the page, and not the
+// reader, would have chosen what stands near the lost place. The comments read is answered
+// without that comment as the server's answer reaches the page. The half the reader causes is
+// the last row of `issue-page-l.e2e.ts`.
+// SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
+// has drawn the outline without the comment.
+test("a read that drops the focused row with no act of the reader's leaves the focus on the page's body and scrolls nothing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const [gone = "", other = ""] = seeded.comments.threads;
+    expect(other, "the seed holds fewer than two comment threads").not.toBe("");
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, gone);
+
+    await page.route(`**/api/v1/issues/${seeded.key}/comments*`, async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as unknown;
+      const without = (list: readonly { readonly id?: string }[]) =>
+        list.filter((comment) => comment.id !== gone);
+      let json: unknown = body;
+      if (Array.isArray(body)) json = without(body);
+      else if (typeof body === "object" && body !== null) {
+        const record = body as Record<string, unknown>;
+        for (const field of ["comments", "items"]) {
+          const list = record[field];
+          if (Array.isArray(list)) json = { ...record, [field]: without(list) };
+        }
+      }
+      await route.fulfill({ json, response: answer });
+    });
+    // Where the page stands once the row holds the focus, before the event.
+    await nextFrames(page);
+    const scrolled = await page.evaluate(() => window.scrollY);
+    await resolveComment(other);
+    await expect(
+      nodeRow(page, gone),
+      "the read after the event still draws the comment its answer no longer holds"
+    ).toHaveCount(0);
+    // The frames a move of the focus, and the scroll a row makes as it takes the focus, would
+    // take to come.
+    await nextFrames(page);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      "a read that dropped the focused row, with no act of the reader's, took the focus off the page's body"
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => window.scrollY),
+      "a read that dropped the focused row, with no act of the reader's, scrolled the page"
+    ).toBe(scrolled);
+  });
+});
+
+/** Where `after` differs from `before`: the stretch of each that differs, with a few characters
+ *  around it, for a failure to say where an edit landed. */
+function changeIn(before: string, after: string): string {
+  let start = 0;
+  while (start < before.length && before[start] === after[start]) start += 1;
+  let tail = 0;
+  while (
+    tail < before.length - start &&
+    tail < after.length - start &&
+    before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  const around = (text: string) =>
+    JSON.stringify(text.slice(Math.max(0, start - 30), text.length - tail + 30).slice(0, 200));
+  return `${around(before)} became ${around(after)}`;
+}
+
+// The row's editor keeps its caret, and every edit a key makes, inside the node's own block. The
+// editor is the document's whole editor, and the keys it answers for a whole document reached past
+// the block: measured on a preview, Ctrl+Home moved the caret before the spec's `## Summary` and a
+// `Y` typed then made it `## YSummary`, and Up after Left put the caret before a heading above the
+// statement. Each move is pressed once Enter has put the caret at the start of a node's block, and
+// a `Y` typed after it. In a statement of the spec, Up from its first line and Down from its last
+// leave the caret at its start - unguarded, each put it between the statement and the block above
+// or below, and the `Y` became a paragraph of its own there - and select-all selects the
+// statement's words alone, which the `Y` replaces - unguarded, the `Y` replaced the whole spec.
+// In a decision's heading, Ctrl+Home leaves the caret at its start and Ctrl+End takes it to its
+// end - unguarded, they took it to the start of the document's first heading and the end of its
+// last paragraph; the spec opens and closes with typed blocks whose header and foot take no
+// caret, and Chromium's Ctrl+Home and Ctrl+End leave the caret where it is there. Backspace
+// pressed three times at the heading's start leaves the caret there too - unguarded, the editor
+// took the heading a level down and then made it a paragraph (Milkdown's `DowngradeHeading`), and
+// the third joined it to the paragraph above; the spec's statements are typed blocks, which no
+// join crosses. A paste of two lines at the heading's start, sent as a browser sends a paste, is
+// refused - unguarded, the editor put a line break into the heading, and the stored `## Keep...`
+// became a heading of two lines, `Two\`, `linesYKeep...` and `---` under them. Each time the
+// stored document holds the `Y` in that block, where the move stopped, and every other block byte
+// for byte as it was; the block is put back through the row after - past the `Y` and Backspace in
+// a heading, since Delete at a heading's start takes it a level down - and the stored document
+// read back as it was before.
+// SLOW(>=2s): the whole issue seeded and loaded, then seven edits made through the row, each read
+// back from the stored document, put back through the row and read back again.
+test("the keys of a row's editor move its caret and edit inside the node's own block alone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { context, page, seeded } = await openTree(browser);
+  try {
+    await expectTreeDrawn(page);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const statementBlock = requirementBlockId(2);
+    const statement = blockNodeId(specSlug, statementBlock);
+    const words = requirementText(2);
+    const heading = "Keep every address the old page answered";
+    const decision = seeded.decisions[1] ?? "";
+
+    /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
+     *  write of its selection after the focus passed. */
+    const enter = async (blockId: string) => {
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, blockId), { message: "Enter put no caret in the block" })
+        .toBe(true);
+      // ProseMirror writes its own selection back over the page's 20 ms after it takes the focus
+      // (prosemirror-view's focus handler), undoing a caret move it has not read yet: an arrow
+      // pressed in that window is put back, and the key after it acts at the old place. A reader
+      // is never that quick, so the row waits that window out before its first key. The page can
+      // drop the editable's focus and give it back some 45 ms after the caret goes in, which
+      // arms that write again, so the wait is a quiet spell: it ends once 50 ms have passed with
+      // no `focusin` anywhere in the document, starting again at each one, or at 2 s whatever
+      // moves. It runs on the page's own clock: a wait in this process lets the next key go out
+      // while that timer is still queued, and a busy page runs a queued key before a timer
+      // already due, while a timer the page sets after ProseMirror's runs after it, so the key
+      // is sent only once the write is made.
+      await page.evaluate(
+        ({ boundMs, quietMs }) => {
+          const waited = Promise.withResolvers<void>();
+          let quiet = 0;
+          const end = () => {
+            window.clearTimeout(quiet);
+            window.clearTimeout(bound);
+            document.removeEventListener("focusin", restart, true);
+            waited.resolve();
+          };
+          const restart = () => {
+            window.clearTimeout(quiet);
+            quiet = window.setTimeout(end, quietMs);
+          };
+          const bound = window.setTimeout(end, boundMs);
+          document.addEventListener("focusin", restart, true);
+          restart();
+          return waited.promise;
+        },
+        { boundMs: 2_000, quietMs: 50 }
+      );
+    };
+    /** One edit through the row `focus` focuses: Enter, `keys` pressed, `paste` pasted as a
+     *  browser sends a paste, a `Y` typed and Escape. The document `artifactId` then stores
+     *  `edited` in the place of `words`, its words before, and nothing else changed; `undo`,
+     *  after Enter, puts the words back. */
+    const editThroughRow = async (edit: {
+      artifactId: string;
+      blockId: string;
+      edited: string;
+      focus: () => Promise<void>;
+      keys: readonly string[];
+      name: string;
+      paste?: string;
+      undo: () => Promise<void>;
+      words: string;
+    }) => {
+      const before = await storedMarkdown(edit.artifactId);
+      const at = before.indexOf(edit.words);
+      expect(
+        at > -1 && before.lastIndexOf(edit.words) === at,
+        `the stored document does not hold "${edit.words}" once`
+      ).toBe(true);
+      await edit.focus();
+      await enter(edit.blockId);
+      for (const key of edit.keys) await page.keyboard.press(key);
+      if (edit.paste !== undefined) {
+        await page.evaluate((text) => {
+          const clipboardData = new DataTransfer();
+          clipboardData.setData("text/plain", text);
+          document.activeElement?.dispatchEvent(
+            new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData })
+          );
+        }, edit.paste);
+      }
+      await page.keyboard.type("Y");
+      await page.keyboard.press("Escape");
+      await expect
+        .poll(() => storedMarkdown(edit.artifactId), { message: `${edit.name}: no Y was stored` })
+        .not.toBe(before);
+      const after = await storedMarkdown(edit.artifactId);
+      expect(
+        after,
+        `${edit.name} then Y edited other than the block's words: ${changeIn(before, after)}`
+      ).toBe(before.slice(0, at) + edit.edited + before.slice(at + edit.words.length));
+      await edit.focus();
+      await enter(edit.blockId);
+      await edit.undo();
+      await page.keyboard.press("Escape");
+      await expect
+        .poll(() => storedMarkdown(edit.artifactId), {
+          message: `${edit.name}: the block was not put back`,
+        })
+        .toBe(before);
+    };
+    const inStatement = {
+      artifactId: seeded.specArtifactId,
+      blockId: statementBlock,
+      focus: async () => {
+        await focusRow(page, statement);
+      },
+      undo: () => page.keyboard.press("Delete"),
+      words,
+    };
+
+    await editThroughRow({
+      ...inStatement,
+      edited: `Y${words}`,
+      keys: ["ArrowUp"],
+      name: "Up from the statement's first line",
+    });
+    await editThroughRow({
+      ...inStatement,
+      edited: `Y${words}`,
+      keys: ["ArrowDown"],
+      name: "Down from the statement's last line",
+    });
+    await editThroughRow({
+      ...inStatement,
+      edited: "Y",
+      keys: ["Control+a"],
+      name: "select-all",
+      undo: async () => {
+        await page.keyboard.press("Control+a");
+        await page.keyboard.type(words);
+      },
+    });
+
+    // A decision's heading, reached by `w` from the third requirement, which that decision
+    // shapes.
+    const inHeading = {
+      artifactId: seeded.decisionsArtifactId,
+      blockId: decision,
+      focus: async () => {
+        await focusRow(page, blockNodeId(specSlug, requirementBlockId(3)));
+        await page.keyboard.press("w");
+        expect(await focusedRow(page), "w did not move into the decision behind r3").toBe(
+          blockNodeId(decisionsSlug, decision)
+        );
+      },
+      undo: async () => {
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Backspace");
+      },
+      words: heading,
+    };
+    await editThroughRow({
+      ...inHeading,
+      edited: `Y${heading}`,
+      keys: ["Control+Home"],
+      name: "Ctrl+Home",
+    });
+    await editThroughRow({
+      ...inHeading,
+      edited: `${heading}Y`,
+      keys: ["Control+End"],
+      name: "Ctrl+End",
+      undo: async () => {
+        await page.keyboard.press("Control+End");
+        await page.keyboard.press("Backspace");
+      },
+    });
+    await editThroughRow({
+      ...inHeading,
+      edited: `Y${heading}`,
+      keys: ["Backspace", "Backspace", "Backspace"],
+      name: "Backspace pressed three times at the heading's start",
+    });
+    await editThroughRow({
+      ...inHeading,
+      edited: `Y${heading}`,
+      keys: [],
+      name: "a paste of two lines at the heading's start",
+      paste: "Two\nlines",
+    });
+  } finally {
+    await context.close();
+  }
+});
+
+// The row's editor is the document's whole editor, and Tab, which Milkdown answers in a list item
+// alone, was the browser's: from the caret in a statement it moved the focus on to the next
+// control the editor draws - driving a preview, an ask another block draws - and the editor's box
+// scrolled to it, away from the statement. Tab from the row's editor goes past every control the
+// editor draws outside the node's block to the first tab stop after the editor's box, and
+// Shift+Tab to the row, the outline's one tab stop; each ends the editing, as a Tab out of the
+// outline and Escape do, and edits nothing. The seeded spec holds the open question's `ask` block
+// after its statements, and the ask's card draws controls of its own inside the editor. The
+// statement is the third, which no comment or ask is on, so the editor draws no references
+// button of its own block (the next row reads one), and the second's, which the seed's anchored
+// comment draws, is another block's, passed over too. Nothing of the page's own takes the focus
+// after the outline at this head, so a stand-in control under it is the tab stop Tab goes to
+// (`standInControlBelow`).
+// SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
+// on until it takes the caret and the ask's card is drawn in it, and until it closes again.
+test("Tab from a row's editor passes over the controls of an ask another block draws, Shift+Tab goes to the row, and each ends the editing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { context, page, seeded } = await openTree(browser);
+  try {
+    await expectTreeDrawn(page);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statementBlock = requirementBlockId(3);
+    const statement = blockNodeId(specSlug, statementBlock);
+    const before = await storedMarkdown(seeded.specArtifactId);
+    const row = nodeRow(page, statement).first();
+    const editable = row.locator('[contenteditable="true"]');
+    const below = await standInControlBelow(page);
+    // The tab stops the ask's card draws in the row's editor.
+    const askControls = row
+      .locator(`[data-block-id="${OPEN_QUESTION_BLOCK_ID}"]`)
+      .locator('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    /** Where the focus is: in an editor's box, in the ask's block, and its element - its name and
+     *  the block it stands in - for a failure to name. */
+    const focusAt = () =>
+      page.evaluate((ask) => {
+        const active = document.activeElement;
+        if (active === null || active === document.body) {
+          return { inAsk: false, inBox: false, name: "the page itself" };
+        }
+        const words = active.getAttribute("aria-label") ?? active.textContent?.slice(0, 40);
+        const block = active.closest("[data-block-id]")?.getAttribute("data-block-id");
+        const where = typeof block === "string" ? ` of block ${block}` : "";
+        return {
+          inAsk: active.closest(`[data-block-id="${ask}"]`) !== null,
+          inBox: active.closest("[data-editor-box]") !== null,
+          name: `${active.tagName.toLowerCase()} "${words}"${where}`,
+        };
+      }, OPEN_QUESTION_BLOCK_ID);
+    /** Enter on the statement's row, the caret in its block and the ask's card drawn in the
+     *  editor. */
+    const enter = async () => {
+      await focusRow(page, statement);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, statementBlock), {
+          message: "Enter put no caret in the statement",
+        })
+        .toBe(true);
+      await expect
+        .poll(() => askControls.count(), {
+          message: "the ask's block draws no control in the row's editor",
+        })
+        .toBeGreaterThan(0);
+    };
+
+    await enter();
+    await page.keyboard.press("Tab");
+    const afterTab = await focusAt();
+    expect(
+      afterTab.inBox,
+      `Tab from the row's editor left the focus in an editor's box, on ${afterTab.name}`
+    ).toBe(false);
+    expect(afterTab.inAsk, `Tab stopped on the ask's ${afterTab.name}`).toBe(false);
+    await expect(
+      below.control,
+      `Tab from the row's editor went to ${afterTab.name}, not the first tab stop after its box`
+    ).toBeFocused();
+    await expect(editable, "Tab from the row's editor did not end the editing").toHaveCount(0);
+    expect(await caretInNode(page), "a caret stayed in a row after Tab").toBe(false);
+
+    await enter();
+    await page.keyboard.press("Shift+Tab");
+    await expect(row, "Shift+Tab from the row's editor did not go to the row").toBeFocused();
+    await expect(editable, "Shift+Tab from the row's editor did not end the editing").toHaveCount(
+      0
+    );
+    await expect(row, "the row lost the focus as the editing ended").toBeFocused();
+    expect(
+      await storedMarkdown(seeded.specArtifactId),
+      "Tab or Shift+Tab from the row's editor changed the spec"
+    ).toBe(before);
+  } finally {
+    await context.close();
+  }
+});
+
+// A document draws a button for each block with comments or asks on it, which shows them and puts
+// the reader in that block, in an aside of its own beside the editor, outside every block
+// (`ProofDocument.tsx`'s "Block references"). The node's own block's button is the node's: Tab
+// from the row's editor stops at it, as the browser's own Tab did, and the editing stays; Tab from
+// it goes on past every other block's button to the first tab stop after the editor's box, and
+// ends the editing. The seed anchors a comment on the second statement, and the row anchors one on
+// the first and one on the third, so another block's button stands before the statement's and one
+// after it. A comment's quote is anchored to the innermost block that holds it - the paragraph
+// inside a statement's typed block, by the id the editor gave it - so each button names a block
+// inside its statement's (`data-block-references`). The buttons are found by their names, and the
+// one Tab reaches is read by the statement whose block holds the block it names.
+// SLOW(>=2s): the whole issue seeded with two more anchored comments and loaded, then the row's
+// editor opened and waited on until it takes the caret and draws the references buttons.
+test("Tab from a row's editor stops at the references button of the node's own block, and at no other block's", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      const seeded = await seedWholeIssue();
+      for (const index of [1, 3]) {
+        await createComment(seeded.key, {
+          anchor: { artifact: "spec", quote: requirementText(index) },
+          body: `A comment on requirement ${index}, so its block draws a references button.`,
+        });
+      }
+      return seeded;
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectTreeDrawn(page);
+      const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+      const statementBlock = requirementBlockId(2);
+      const statement = blockNodeId(specSlug, statementBlock);
+      const row = nodeRow(page, statement).first();
+      const editable = row.locator('[contenteditable="true"]');
+      const references = row
+        .locator("[data-editor-box]")
+        .getByRole("button", { name: /references on block$/ });
+      const below = await standInControlBelow(page);
+
+      await focusRow(page, statement);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, statementBlock), {
+          message: "Enter put no caret in the statement",
+        })
+        .toBe(true);
+      await expect
+        .poll(() => references.count(), {
+          message: "the row's editor draws no references button for each statement commented on",
+        })
+        .toBeGreaterThanOrEqual(3);
+      await page.keyboard.press("Tab");
+      const reached = await page.evaluate((block) => {
+        const active = document.activeElement;
+        const named = active?.getAttribute("data-block-references") ?? null;
+        const editable = active
+          ?.closest("[data-editor-box]")
+          ?.querySelector('[contenteditable="true"]');
+        const drawn =
+          named === null ? null : editable?.querySelector(`[data-block-id="${CSS.escape(named)}"]`);
+        return {
+          inStatement: (drawn?.closest(`[data-block-id="${block}"]`) ?? null) !== null,
+          name: active?.getAttribute("aria-label") ?? active?.textContent?.slice(0, 40) ?? "",
+          named,
+        };
+      }, statementBlock);
+      expect(
+        reached.inStatement,
+        `Tab from the row's editor went to "${reached.name}", naming block ${reached.named}, not the statement's references button`
+      ).toBe(true);
+      await expect(editable, "the editing ended at the statement's references button").toHaveCount(
+        1
+      );
+      await page.keyboard.press("Tab");
+      await expect(
+        below.control,
+        "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
+      ).toBeFocused();
+      await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);
+    }
+  );
 });

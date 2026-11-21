@@ -44,6 +44,7 @@ import {
   type CheckWhen,
   type DeliveryAttemptState,
   MAX_ISSUE_ADVANCES,
+  MAX_ISSUE_BLOCKERS,
   type ResultCommitStands,
 } from "@legion/contracts";
 
@@ -107,6 +108,17 @@ export const NODE_TYPE_NAMES = freeze({
 export type NodeType = keyof typeof NODE_TYPE_NAMES;
 
 /**
+ * The name a typed block draws in a document that does not play its type's part, in place of
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
+ */
+export const BLOCK_TYPE_NAMES = freeze({
+  requirement: "requirement",
+} as const);
+
+/**
  * The state words of each type whose state the model holds, and no entry at all for a type it
  * gives no state: a comment is not in a state, so the page has no word to draw for one, and an
  * entry holding an empty table would invite a row to draw a blank badge.
@@ -140,12 +152,13 @@ export const NODE_STATE_WORDS = freeze({
   check: {
     failed: "Failed",
     "no-result": "No result",
-    /** The newest result that stands was recorded against work the check no longer compares
-     *  its results with, or against an older wording of the check, so it no longer speaks for
-     *  the work as it stands, whatever it found. A result says the same of itself in the same
-     *  words (`RESULT_STANDS_WORDS`), and nothing else on the page draws them: a decision's
-     *  chip for a block it changed after naming says so in words of its own
-     *  (`CONTROL_LABELS.target_stale`). */
+    /** The newest result that stands does not stand at the commit the server names for the
+     *  check: it was recorded against another commit, or against an older wording of the
+     *  check, so it no longer speaks for the work as it stands, whatever it found. The check's
+     *  row and its result's fact read that one standing, the server's for the check, so the
+     *  result says the same of itself in the same words (`RESULT_STANDS_WORDS`); nothing else
+     *  on the page draws them: a decision's chip for a block it changed after naming says so
+     *  in words of its own (`CONTROL_LABELS.target_stale`). */
     older: "Out of date",
     passed: "Passed",
     /** Every result recorded against the check has been withdrawn (`CheckResultRetracted`),
@@ -271,7 +284,8 @@ export const PRESET_NAMES = freeze({
  * steps", R26's "ordered steps"). The count itself is a number and no word.
  */
 export const FILTER_SIGNAL_WORDS = freeze({
-  /** After the number of checks whose newest result failed. */
+  /** After the number of checks whose state is failed at the commit the server names for each
+   *  (`checkStanding`), the state their rows draw. */
   failing: "failing",
   /** After the number of plan tasks. */
   steps: "steps",
@@ -350,7 +364,7 @@ export const DECISIONS_WORDS = freeze({
   declined: "declined to answer",
   /** The link from an entry to the node that holds it, in the conversation. */
   in_conversation: "in the conversation",
-  /** Before the statements a decision's `shaped` ties name (the picture's "informs R4 R21"). */
+  /** Before the spec's statements that an entry's links tie it to, as the picture draws it. */
   informs: "informs",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
@@ -599,24 +613,47 @@ export const STATE_LINES = freeze({
   closed: "This issue is closed.",
   /** What Details says of a GitHub link whose issue or pull request Dispatch cannot read, since
    *  it holds no GitHub token for the link's repository, which today's pages say in the link's
-   *  tooltip (`features/issue/GitHubLink.tsx`, dispatch://INFRA-1196 R19). It is that tooltip's
-   *  sentence without "GitHub", whose capital inside the word reads as a code name to this
-   *  list's rule on internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own
-   *  address, drawn before it, already says where the link points. */
+   *  tooltip (`features/issue/GitHubLink.tsx`). It is that tooltip's sentence without
+   *  "GitHub", whose capital inside the word reads as a code name to this list's rule on
+   *  internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own address, drawn
+   *  before it, already says where the link points. */
   github_unreadable: "Details are unavailable for this repository.",
   /** How a subscribed agent stands whose subscription is wider than this issue, which Details
    *  draws where today's pages draw "via" and its topic with the reason as a tooltip
-   *  (`features/issue/SubscribedAgents.tsx`, dispatch://INFRA-1196 R19). */
+   *  (`features/issue/SubscribedAgents.tsx`). */
   subscription_wider:
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
+  /** What the outline says over its rows, on load as much as later, of each read they come from
+   *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
+   *  which checks serve each statement, the issue's decisions, the checks' results, the
+   *  questions, the comments, the messages, and each document whose blocks it draws, named by
+   *  the part the document plays. */
+  names_unreadable: "Could not load the names this issue's rows cite.",
+  coverage_unreadable: "Could not load which checks serve each statement.",
+  issue_decisions_unreadable: "Could not load this issue's decisions.",
+  results_unreadable: "Could not load the checks' results.",
+  asks_unreadable: "Could not load the questions.",
+  comments_unreadable: "Could not load the comments.",
+  messages_unreadable: "Could not load the messages.",
+  spec_unreadable: "Could not load the spec.",
+  plan_unreadable: "Could not load the plan.",
+  verification_unreadable: "Could not load the verification document.",
+  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
+
+/** The words of two controls the box at the foot of the outline names as the way back to a draft
+ *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`), declared once here, ahead of
+ *  both tables, for those lines and `CONTROL_LABELS` alike: a row's Reply, and the box's control
+ *  that writes on the issue instead. */
+const REPLY_WORD = "Reply";
+const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
 
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` and
+ * `ADDRESS_FALLBACK_WORDS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = freeze({
@@ -636,9 +673,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
@@ -674,6 +708,12 @@ export const ANSWER_LINES = freeze({
    *  stays in the box. */
   statement_twice:
     "The statement's words stand twice in its document, so the comment cannot be placed under it.",
+  /** What the box says, once a row's Reply moved it on, of what the reader wrote on the issue,
+   *  or on a statement, and the box keeps there, with the control that goes back to it: the
+   *  box's own that writes on the issue, or the statement's Reply. A reply kept for a row is said
+   *  in the composer's own words, which name the author of what it answers. */
+  kept_on_issue: `What you wrote on the issue is kept: press ${WRITE_ON_ISSUE_WORDS} to go on with it.`,
+  kept_on_statement: `What you wrote on a statement is kept: press ${REPLY_WORD} on that statement to go on with it.`,
 } as const);
 
 /**
@@ -696,10 +736,9 @@ export const CHECK_WHEN_WORDS = freeze({
  *  added there is a compile error here rather than a result that silently draws no word.
  *
  *  A result whose check's words moved since it was recorded is older work too, whatever its
- *  commit (`check-facts.ts`). That word is the one its check's `older` state reads, which is the
- *  state of a check whose newest result that stands is such a result and whose pass stands
- *  nowhere (`tree-drafts.ts`'s `checkState`): one fact, one word, on the result and on its
- *  check. */
+ *  commit (`check-facts.ts`). That word is the one its check's `older` state reads: a check's
+ *  row and its result's fact read one standing, the server's for that check, so one fact has
+ *  one word, on the result and on its check. */
 export const RESULT_STANDS_WORDS = freeze({
   at_basis: "Up to date",
   other_commit: NODE_STATE_WORDS.check.older,
@@ -729,10 +768,10 @@ export const DELIVERY_STATE_WORDS = freeze({
  * (`BlockedByControl.tsx`), one sentence per refusal, in place of the server's message, which
  * names the field by its wire token (`blocked_by issue CORE-9 not found`, R21). Each sentence is
  * cut where the issue it is about goes: that key is the server's detail and the reader's own
- * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is two refusals, told apart by
- * the key it names: no issue, or the issue itself; and `DEPENDENCY_CYCLE` is two, the issue the
- * list would make wait on itself, or none for a chain longer than Dispatch follows
- * (`packages/envoy/internal/dispatch/api/issue_parent.go`).
+ * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is three refusals, told apart by
+ * the key it names: no issue, the issue itself, or none at all for a list over the limit; and
+ * `DEPENDENCY_CYCLE` is two, the issue the list would make wait on itself, or none for a chain
+ * longer than Dispatch follows (`packages/envoy/internal/dispatch/api/issue_parent.go`).
  */
 export const BLOCKED_BY_REFUSALS = freeze({
   cycle: {
@@ -747,10 +786,73 @@ export const BLOCKED_BY_REFUSALS = freeze({
     before:
       "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.",
   },
+  too_many: { after: "", before: `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.` },
 } as const);
 
 /** One refusal of a blocked-by list the page has a sentence for. */
 export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
+
+/**
+ * What the page says in the outline's place where the address the reader followed names nothing
+ * the outline draws a row for (`slots/body.tsx`): an ask, a comment or a message the issue holds
+ * none of, or whose read failed, by the kind of item the address names; a block of a document no
+ * row is drawn for; the child issues of an issue with none; and the link back to the issue's own
+ * address under each. Each is drawn in answer to an address followed, which is the reader's own
+ * act, as `KEY_REPORTS.agents_thread` is (`page-structure.ts`), so this is one of the page's
+ * answers (`ANSWER_SOURCES`). They are the words of today's page for the same states
+ * (`issue/IssuePage.tsx`'s `ItemLandingFailure`), which `slots/body.tsx` copies until that page
+ * is removed. A line that names the issue is cut where the issue's key goes, as
+ * `BLOCKED_BY_REFUSALS` cuts its sentences: the key is drawn between `before` and `after`.
+ */
+export const ADDRESS_FALLBACK_WORDS = freeze({
+  /** The link under each line that takes the reader to the issue's own address. */
+  back: { after: "", before: "Back to " },
+  /** A block of a document the outline draws no row for - a paragraph, a heading, a table - is
+   *  no node of the tree as much as a block id no document holds, so the words fit both. */
+  block: {
+    heading: "No row for this block",
+    line: { after: "'s outline.", before: "That link names no row of " },
+  },
+  children: {
+    heading: "No child issues",
+    line: { after: ", which has none.", before: "That link names the child issues of " },
+  },
+  /** An item the issue holds none of (`missing`), and one whose read failed (`unreadable`): the
+   *  heading over each, the line under a missing one, and the alert beside a failed read's
+   *  Retry (`FailedReadLine`). */
+  items: {
+    ask: {
+      missing: {
+        heading: "Ask not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name an ask on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this ask", message: "Couldn't load this ask." },
+    },
+    comment: {
+      missing: {
+        heading: "Comment not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name a comment on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this comment", message: "Couldn't load this comment." },
+    },
+    message: {
+      missing: {
+        heading: "Message not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name a message on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this message", message: "Couldn't load this message." },
+    },
+  },
+} as const);
 
 /**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
@@ -790,8 +892,7 @@ export const CONTROL_LABELS = freeze({
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
   /** The labels control's word where the issue has no label yet, as `add_priority` is the
-   *  priority's: the property's own name would draw "Labels" twice in its row of Details
-   *  (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+   *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
   /** The control that places an issue under a priority, where the issue advances none: the
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
@@ -818,13 +919,12 @@ export const CONTROL_LABELS = freeze({
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
    *  `actionsOn`): each name begins with its control's own words and says its document,
    *  "Approve the spec", "Approve v5 of the spec", "Request changes to the verification"
-   *  (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+   *  (WCAG 2.5.3). */
   approval_document_criteria: "the verification",
   approval_document_decisions: "the decisions",
   approval_document_spec: "the spec",
   /** What a stale approval chip says of the document's latest version inside `NoTooltips`,
-   *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`,
-   *  dispatch://INFRA-1196 R19, R22). */
+   *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`). */
   approval_latest: "latest",
   /** The words between Request changes, or a stale approval's Approve, and the document it
    *  reviews, in those names: "Request changes to the spec", "Approve v5 of the spec". */
@@ -841,6 +941,14 @@ export const CONTROL_LABELS = freeze({
   /** The direct children's count in the header's properties line, before the issue's own
    *  numbers: "Children 2 of 7 done" (R13). */
   children: "Children",
+  /** The word between the words a shared control draws and the issue's key, in the name the
+   *  control answers to inside `NoTooltips`: "Set components of CORE-1", "Saving components of
+   *  CORE-1" (`componentsControlName`) and "Saving labels of CORE-1" (`labelsControlName`). */
+  control_name_of: "of",
+  /** The word between the labels control's `add_label` and the issue's key, in the name it
+   *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
+   *  (`labelsControlName`). */
+  control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
@@ -912,6 +1020,10 @@ export const CONTROL_LABELS = freeze({
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** Opens the editor of the issue's title: the button laid over the title's heading in the
+   *  header's second row (`IssueTitleRow.tsx`), which draws no words of its own and has the
+   *  title as its description. */
+  edit_title: "Edit title",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is
@@ -1019,7 +1131,7 @@ export const CONTROL_LABELS = freeze({
    *  message and an ask whatever its state, an answered or a resolved one included (R16,
    *  dispatch://INFRA-3677); it sets the line at the foot of the outline to answer it, as `r`
    *  does. */
-  reply: "Reply",
+  reply: REPLY_WORD,
   /** What the line at the foot of the outline says of the row it replies to, before that row's
    *  author and first line (the prototype's `.tgt`). */
   replying_to: "Replying to:",
@@ -1037,6 +1149,13 @@ export const CONTROL_LABELS = freeze({
   save_blocked_by: "Save what it waits on",
   save_parent: "Save parent",
   save_route: "Save route",
+  /** The names a focused row's scrollers carry while each keeps its tab stop, so a reader on the
+   *  keyboard can reach it and scroll it sideways (decision 317): a code block, a drawn diagram,
+   *  a table, and content of any other kind. */
+  scrolls_code: "Code, scrolls sideways",
+  scrolls_content: "Content, scrolls sideways",
+  scrolls_diagram: "Diagram, scrolls sideways",
+  scrolls_table: "Table, scrolls sideways",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
@@ -1106,7 +1225,7 @@ export const CONTROL_LABELS = freeze({
   edit_placeholder: "Your comment, as it should read…  (Enter saves)",
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
-  write_on_issue: "Write on the issue instead",
+  write_on_issue: WRITE_ON_ISSUE_WORDS,
   /** The act of a focused question, comment or message that aims the box's criterion line. */
   write_criterion: "Write a criterion",
   /** What the box at the foot of the outline says while it is empty and writes a comment or a
@@ -1417,6 +1536,14 @@ function glyphNames(): Readonly<Record<string, string>> {
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 
 /**
+ * The value of `aria-current` on the row of the conversation's current point, the node the
+ * reader's next turn answers (`current-point.ts`). A screen reader says it in its own words for
+ * the current location, so the page adds no hidden text and every row keeps its accessible name.
+ * It is no word the page draws, so no list of the page's words below holds it.
+ */
+export const CURRENT_POINT = "location" as const;
+
+/**
  * The words of `text`, as the page's vocabulary counts them: lowercase, each run of letters and
  * digits a word, an apostrophe inside a word kept, and every other character a break. A reader
  * of the page splits drawn text the same way, so the two sides compare word for word.
@@ -1443,6 +1570,7 @@ function phrasesIn(value: unknown): readonly string[] {
  */
 export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
@@ -1477,6 +1605,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
 export const ANSWER_SOURCES: readonly unknown[] = freeze([
   ANSWER_LINES,
   BLOCKED_BY_REFUSALS,
+  ADDRESS_FALLBACK_WORDS,
   HELP_LINES,
   KEY_REPORTS,
 ]);

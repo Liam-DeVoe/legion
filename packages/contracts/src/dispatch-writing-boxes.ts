@@ -38,13 +38,12 @@ export type DispatchWritingBox =
   | "ask-decline-note"
   | "ask-thread-reply"
   | "decisions-change"
-  | "issue-page-decision-change"
-  | "issue-page-title-editor"
   | "create-issue-spec"
   | "approval-reason"
   | "broadcast"
   | "architecture-reason"
   | "priority-description"
+  | "issue-title"
   | "delivery-production-jobs"
   | "delivery-population-authors"
   | "delivery-excluded-repos";
@@ -75,6 +74,7 @@ export type DispatchWritingBox =
  * - `architecture-reason`: why an issue touches no component.
  * - `priority-description`: a priority's description, which every reader of the priority reads
  *   and which is sent to nobody.
+ * - `issue-title`: an issue's title.
  * - `delivery-settings`: the delivery settings of this Dispatch.
  */
 export type DispatchWriting =
@@ -91,10 +91,10 @@ export type DispatchWriting =
   | "document-text"
   | "criterion"
   | "issue-spec"
-  | "issue-title"
   | "approval-reason"
   | "architecture-reason"
   | "priority-description"
+  | "issue-title"
   | "delivery-settings";
 
 /** One row of DISPATCH_WRITING_BOXES: one write of one box. */
@@ -562,40 +562,19 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Reply",
     write: "comment",
   },
-  // The issue's Decisions panel: a change is a comment anchored to the decision it quotes.
+  // The issue's Decisions panel, and a decision's row on the new issue page: a change is a
+  // comment anchored to the decision it quotes.
   {
     box: "decisions-change",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
+    ],
     issueRows: true,
     reach: "Your change",
     write: "comment",
-  },
-  // The new issue page's Change on a waiting decision's node (`DecisionActions.tsx`): the same
-  // write as the Decisions panel's, a comment anchored to the decision it quotes, written from
-  // the decision's own row of the outline.
-  {
-    box: "issue-page-decision-change",
-    covered: true,
-    delivers: true,
-    files: ["packages/dispatch/web/src/features/issue-page/DecisionActions.tsx"],
-    issueRows: true,
-    reach: "Your change",
-    write: "comment",
-  },
-  // The new issue page's title, which its heading becomes while the reader edits it
-  // (`IssueTitleRow.tsx`). It takes no picker.
-  {
-    box: "issue-page-title-editor",
-    covered: false,
-    delivers: false,
-    files: ["packages/dispatch/web/src/features/issue-page/IssueTitleRow.tsx"],
-    issueRows: true,
-    reach: "Issue title",
-    reason:
-      "A title is one line of plain text that every page draws as the characters typed, so a reference picked into it would never be drawn as one.",
-    write: "issue-title",
   },
   // The Create issue dialog: the issue has no key yet, so the picker offers everyone who has
   // signed in rather than an issue's people.
@@ -650,6 +629,19 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: false,
     reach: "Description of P1",
     write: "priority-description",
+  },
+  // The new issue page's title, which is its own editor (`IssueTitleRow.tsx`): a `textarea` so
+  // it wraps as the heading it stands over does, where today's page edits the title in an
+  // `<input>`. Neither takes a picker.
+  {
+    box: "issue-title",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueTitleRow.tsx"],
+    issueRows: true,
+    reach: "Issue title",
+    reason: "A title is one line of text that holds no markup, so the box takes no picker.",
+    write: "issue-title",
   },
   // Settings' delivery form. These three take no picker, and the spec's exclusion is why.
   {

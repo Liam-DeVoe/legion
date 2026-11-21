@@ -16,10 +16,9 @@ import { sessionOfAddress } from "../refs/routes";
 // Inside `NoTooltips` every marker here is the new issue page's warning, the waiting orange of
 // what needs a person's eye: a route that reaches nobody is the page's waiting chip, and a reach
 // nobody could judge or a holder that stopped answering is its words in that colour, as the
-// page's margin says such a state (dispatch://INFRA-3935 R6, decision 56 of
-// dispatch://INFRA-1196/artifact/part-decisions-md). There a route a marker names is a value, so
-// it breaks anywhere rather than ellipsize behind a tooltip that page does not draw (decision 104
-// of the same artifact); everywhere else it ellipsizes, as on `main`.
+// page's margin says such a state. There a route a marker names is a value, so it breaks
+// anywhere rather than ellipsize behind a tooltip that page does not draw; everywhere else it
+// ellipsizes, as on `main`.
 
 type RoutedIssue = Pick<
   IssueDetails,
@@ -110,8 +109,9 @@ export function UnresponsiveRouteMarker({
     return null;
   }
   const holder = issue.route_holder;
+  // The words name the session as `AgentName` draws it on this surface.
   const named =
-    holder === null || holder === undefined ? "That session" : text.sessionText(holder, undefined);
+    holder === null || holder === undefined ? "That session" : text.sessionShown(holder, undefined);
   const explanation = `${named} has missed its heartbeats without ending, so it still holds this route: what is sent to this issue is stored for it and waits until it answers. Nothing has to be done about it unless it stays this way - a session past the listener's gone horizon leaves the role unheld, and the route then reads as reaching nobody.`;
   return (
     <span
@@ -143,7 +143,8 @@ function UnreachableRoute({
   const text = useAgentText();
   const tooltips = useTooltips();
   const sessionId = sessionOfAddress(route);
-  const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionText(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
+  // The words name the session as `AgentName` draws it on this surface.
+  const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionShown(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
   return (
     <span
       className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${tooltips ? `${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}` : pageWaitingChip}`}
