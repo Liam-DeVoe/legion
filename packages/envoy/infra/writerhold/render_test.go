@@ -1,7 +1,6 @@
 package writerhold
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +21,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -40,29 +40,6 @@ func renderTestdata(t *testing.T, name string) string {
 	return string(data)
 }
 
-// authServiceUser is the auth service's own user as core renders it: an nkey user granted the
-// callout's subjects alone, subscribe $SYS.REQ.USER.AUTH and publish under $SYS._INBOX.
-func authServiceUser(keys testnats.CalloutKeys) core.User {
-	return core.User{
-		Name: "envoy-auth", NKey: keys.ServicePublic,
-		Publish:   &core.Rules{Allow: []string{"$SYS._INBOX.>"}},
-		Subscribe: &core.Rules{Allow: []string{"$SYS.REQ.USER.AUTH"}},
-	}
-}
-
-// renderAuthConf is auth.conf as core.Authorization renders it for the clustered hub (gcp
-// clusteredHubSettings' authConf): the auth service's user first, then users, with the callout.
-func renderAuthConf(t *testing.T, keys testnats.CalloutKeys, users ...core.User) string {
-	t.Helper()
-	a := core.Authorization{
-		Users:   append([]core.User{authServiceUser(keys)}, users...),
-		Callout: &core.AuthCallout{Issuer: keys.IssuerPublic, XKey: keys.XKeyPublic, ServiceUser: "envoy-auth"},
-	}
-	text, err := a.Render([]string{"auth.conf of the writer hold's render tests"})
-	require.NoError(t, err)
-	return text
-}
-
 // userKey is a new nkey user's public key.
 func userKey(t *testing.T) string {
 	t.Helper()
@@ -73,80 +50,28 @@ func userKey(t *testing.T) string {
 	return public
 }
 
-// secretEnv is an env value from key of Secret name.
-func secretEnv(name, key string) *corev1.EnvVarSource {
-	return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: name}, Key: key}}
-}
-
-// chartEnv is the nats container's env as the chart renders it (POD_NAME from the pod's name,
-// SERVER_NAME from it, the hub's GOMEMLIMIT), with t-13's route credentials from Secret
-// envoy-nats-route: the password from its key route-1, and the route URLs, which carry it, built
-// from it by Kubernetes' $(NAME) expansion. The URLs' shape is this fixture's own reading of t-13
-// (plan v62 line 1007), which names the two variables and their secretKeyRef source.
-func chartEnv() []corev1.EnvVar {
-	urls := make([]string, 3)
-	for i := range urls {
-		urls[i] = fmt.Sprintf(`"nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-%d.envoy-nats-headless:6222"`, i)
-	}
-	return []corev1.EnvVar{
-		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
-		{Name: "SERVER_NAME", Value: "$(POD_NAME)"},
-		{Name: "GOMEMLIMIT", Value: "1638MiB"},
-		{Name: "NATS_ROUTE_PASSWORD", ValueFrom: secretEnv("envoy-nats-route", "route-1")},
-		{Name: "NATS_ROUTE_URLS", Value: "[" + strings.Join(urls, ", ") + "]"},
-	}
-}
-
 // chartStatefulSet is StatefulSet envoy-nats as nats chart 2.15.1 renders it for the hub
-// (templates/stateful-set.yaml, helm template with gcp.clusteredHubChartValues' values): the nats
-// container started with --config /etc/nats-config/nats.conf, mounted from ConfigMap
-// envoy-nats-config, the reloader beside it, and the one JetStream claim template envoy-nats-js.
+// (templates/stateful-set.yaml, helm template with gcp.clusteredHubChartValues' values): holdtest's
+// ChartPodSpec of image and env, three replicas, and the one JetStream claim template
+// envoy-nats-js.
 func chartStatefulSet(image string, env []corev1.EnvVar) *appsv1.StatefulSet {
 	replicas := int32(3)
-	configMounts := []corev1.VolumeMount{{Name: "pid", MountPath: "/var/run/nats"}, {Name: "config", MountPath: "/etc/nats-config"}}
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: DefaultStatefulSet, Namespace: DefaultNamespace},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: "envoy-nats-headless",
-			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-				Containers: []corev1.Container{
-					{
-						Name: natsContainer, Image: image, Args: []string{"--config", "/etc/nats-config/nats.conf"}, Env: env,
-						VolumeMounts: []corev1.VolumeMount{
-							{Name: "config", MountPath: "/etc/nats-config"}, {Name: "pid", MountPath: "/var/run/nats"},
-							{Name: "envoy-nats-js", MountPath: "/data"},
-						},
-					},
-					{
-						Name: "reloader", Image: "natsio/nats-server-config-reloader:0.24.0",
-						Args:         []string{"-pid", "/var/run/nats/nats.pid", "-config", "/etc/nats-config/nats.conf", "-config", "/etc/nats-config/auth.conf"},
-						VolumeMounts: configMounts,
-					},
-				},
-				Volumes: []corev1.Volume{
-					{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: DefaultConfigMap}}}},
-					{Name: "pid", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
-			}},
+			Replicas:             &replicas,
+			ServiceName:          "envoy-nats-headless",
+			Template:             corev1.PodTemplateSpec{Spec: holdtest.ChartPodSpec(image, env)},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Name: "envoy-nats-js"}}},
 		},
 		Status: appsv1.StatefulSetStatus{CurrentRevision: renderRevision, UpdateRevision: renderRevision},
 	}
 }
 
-// renderConfigMap is ConfigMap envoy-nats-config holding natsConf and authConf, at
-// resourceVersion 4711.
-func renderConfigMap(natsConf, authConf string) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: DefaultConfigMap, Namespace: DefaultNamespace, ResourceVersion: "4711"},
-		Data:       map[string]string{"nats.conf": natsConf, "auth.conf": authConf},
-	}
-}
-
-// renderDisk is the persistent disk under claim i's volume, in the fixture's project and zone.
+// renderDisk is the persistent disk under claim i's volume, holdtest's disk name, in the fixture's
+// project and zone.
 func renderDisk(i int) DiskRef {
-	return DiskRef{Project: "example-infra", Zone: "us-west1-a", Name: fmt.Sprintf("pvc-envoy-nats-js-%d", i)}
+	return DiskRef{Project: "example-infra", Zone: "us-west1-a", Name: holdtest.Name(i)}
 }
 
 // claimObjects are the three JetStream claims, each Bound to its volume, and the volumes, each a
@@ -176,35 +101,9 @@ func claimObjects() []runtime.Object {
 	return out
 }
 
-// fakeDisks is Disks over a table of ids, standing in for compute.disks.get.
-type fakeDisks struct {
-	mu  sync.Mutex
-	ids map[DiskRef]uint64
-}
-
-func newFakeDisks() *fakeDisks {
-	d := &fakeDisks{ids: map[DiskRef]uint64{}}
-	for i := range 3 {
-		d.ids[renderDisk(i)] = uint64(7000000000000000000 + i)
-	}
-	return d
-}
-
-func (d *fakeDisks) DiskID(_ context.Context, disk DiskRef) (uint64, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	id, ok := d.ids[disk]
-	if !ok {
-		return 0, fmt.Errorf("googleapi: Error 404: The resource '%s' was not found", disk)
-	}
-	return id, nil
-}
-
-func (d *fakeDisks) set(disk DiskRef, id uint64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.ids[disk] = id
-}
+// renderDisks are holdtest's disks of the fixture's three claims, read by name as compute's would be
+// (stackDisks).
+func renderDisks() stackDisks { return stackDisks{holdtest.NewDisks(3)} }
 
 // renderHub is the clustered hub on a fake API server holding objects.
 func renderHub(objects ...runtime.Object) (KubeHub, *fake.Clientset) {
@@ -216,7 +115,7 @@ func renderHub(objects ...runtime.Object) (KubeHub, *fake.Clientset) {
 // StatefulSet.
 func precondition(t *testing.T, natsConf, authConf string) (*Render, error) {
 	t.Helper()
-	hub, _ := renderHub(renderConfigMap(natsConf, authConf), chartStatefulSet(renderImage, chartEnv()))
+	hub, _ := renderHub(holdtest.RenderConfigMap(natsConf, authConf), chartStatefulSet(renderImage, holdtest.ChartEnv(3)))
 	return Precondition(t.Context(), hub)
 }
 
@@ -233,8 +132,8 @@ func precondition(t *testing.T, natsConf, authConf string) (*Render, error) {
 // not read the included auth.conf.
 func TestHoldTheRender(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
-	natsConf := renderTestdata(t, "render-nats.conf")
-	authConf := renderAuthConf(t, keys)
+	natsConf := holdtest.ChartNatsConf
+	authConf := holdtest.AuthConf(t, keys)
 
 	r, err := precondition(t, natsConf, authConf)
 	require.NoError(t, err, "the $G-only render with auth_callout and the auth service's own user")
@@ -283,7 +182,7 @@ func TestHoldTheRender(t *testing.T) {
 		requireRefusal(t, err, StepPreflight, "a cluster block without route authorization")
 	})
 	t.Run("no auth_callout", func(t *testing.T) {
-		withoutCallout, err := core.Authorization{Users: []core.User{authServiceUser(keys)}}.Render([]string{"no callout"})
+		withoutCallout, err := core.Authorization{Users: []core.User{holdtest.AuthServiceUser(keys)}}.Render([]string{"no callout"})
 		require.NoError(t, err)
 		_, err = precondition(t, natsConf, withoutCallout)
 		requireRefusal(t, err, StepPreflight, "no auth_callout in authorization")
@@ -332,9 +231,9 @@ func TestHoldTheRender(t *testing.T) {
 // leaves AuthUser unset or set from one server alone.
 func TestHoldStaticUsers(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
-	natsConf := renderTestdata(t, "render-nats.conf")
+	natsConf := holdtest.ChartNatsConf
 
-	r, err := precondition(t, natsConf, renderAuthConf(t, keys))
+	r, err := precondition(t, natsConf, holdtest.AuthConf(t, keys))
 	require.NoError(t, err, "the auth service's own user alone")
 	require.Equal(t, keys.ServicePublic, r.AuthUser, "the auth service's user, as auth_callout's auth_users lists it")
 
@@ -349,7 +248,7 @@ func TestHoldStaticUsers(t *testing.T) {
 	t.Run("two authorization blocks", func(t *testing.T) {
 		// nats-server applies both, in its map's order, so which auth service user is in force is
 		// not known; each block alone would pass.
-		authConf := renderAuthConf(t, keys)
+		authConf := holdtest.AuthConf(t, keys)
 		second := strings.Replace(authConf, "authorization {", "Authorization {", 1)
 		require.NotEqual(t, authConf, second)
 		_, err := precondition(t, natsConf, authConf+second)
@@ -361,7 +260,7 @@ func TestHoldStaticUsers(t *testing.T) {
 		Publish: &core.Rules{Allow: []string{"$KV.envoy_sessions.>"}}, Subscribe: &core.Rules{Allow: []string{"_INBOX.>"}},
 	}
 	t.Run("a second keyed user", func(t *testing.T) {
-		_, err := precondition(t, natsConf, renderAuthConf(t, keys, listener))
+		_, err := precondition(t, natsConf, holdtest.AuthConf(t, keys, listener))
 		requireRefusal(t, err, StepPreflight,
 			"static user envoy-listener-hub-a ("+listener.NKey+") beside the auth service's own",
 			"auth_callout's auth_users lists 2 users")
@@ -413,7 +312,7 @@ func TestHoldStaticUsers(t *testing.T) {
 		{"a subscribe beyond the requests", []string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH", "_INBOX.>"}, []string{"is granted subscribe _INBOX.>"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			wide := authServiceUser(keys)
+			wide := holdtest.AuthServiceUser(keys)
 			wide.Publish, wide.Subscribe = &core.Rules{Allow: c.publish}, &core.Rules{Allow: c.subscribe}
 			a := core.Authorization{Users: []core.User{wide}, Callout: &core.AuthCallout{Issuer: keys.IssuerPublic, XKey: keys.XKeyPublic, ServiceUser: "envoy-auth"}}
 			text, err := a.Render([]string{"a wide auth service"})
@@ -423,7 +322,7 @@ func TestHoldStaticUsers(t *testing.T) {
 		})
 	}
 	t.Run("a queue group on the requests is the callout's grant", func(t *testing.T) {
-		queued := authServiceUser(keys)
+		queued := holdtest.AuthServiceUser(keys)
 		queued.Subscribe = &core.Rules{Allow: []string{"$SYS.REQ.USER.AUTH envoy-auth"}}
 		a := core.Authorization{Users: []core.User{queued}, Callout: &core.AuthCallout{Issuer: keys.IssuerPublic, XKey: keys.XKeyPublic, ServiceUser: "envoy-auth"}}
 		text, err := a.Render([]string{"a queue group"})
@@ -464,18 +363,18 @@ var hubMovePublish = []string{
 // key as the auth service's because auth_users lists it too.
 func TestHoldPreflightNoEnvoyMove(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
-	natsConf := renderTestdata(t, "render-nats.conf")
+	natsConf := holdtest.ChartNatsConf
 	move := core.User{
 		Name: "envoy-move", NKey: userKey(t),
 		Publish: &core.Rules{Allow: hubMovePublish}, Subscribe: &core.Rules{Allow: []string{"_INBOX_envoy_move.>"}},
 	}
-	withMove := renderAuthConf(t, keys, move)
+	withMove := holdtest.AuthConf(t, keys, move)
 	require.Contains(t, withMove, "# envoy-move\n", "core names the user beside its key")
 
 	_, err := precondition(t, natsConf, withMove)
 	requireRefusal(t, err, StepPreflight, "the static envoy-move ("+move.NKey+") user, which connects past the callout")
 
-	_, err = precondition(t, natsConf, renderAuthConf(t, keys))
+	_, err = precondition(t, natsConf, holdtest.AuthConf(t, keys))
 	require.NoError(t, err, "the control: the same render without envoy-move")
 }
 
@@ -535,10 +434,10 @@ func grantOnly(client *fake.Clientset, rights []t11Right) *[]string {
 func TestHoldThePreconditionReads(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	objects := append([]runtime.Object{
-		renderConfigMap(renderTestdata(t, "render-nats.conf"), renderAuthConf(t, keys)),
-		chartStatefulSet(renderImage, chartEnv()),
+		holdtest.RenderConfigMap(holdtest.ChartNatsConf, holdtest.AuthConf(t, keys)),
+		chartStatefulSet(renderImage, holdtest.ChartEnv(3)),
 	}, claimObjects()...)
-	disks := newFakeDisks()
+	disks := renderDisks()
 	run := func(rights []t11Right) (*[]string, error) {
 		hub, client := renderHub(objects...)
 		asked := grantOnly(client, rights)

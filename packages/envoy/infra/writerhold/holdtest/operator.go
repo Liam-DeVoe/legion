@@ -61,6 +61,16 @@ func (d *Disks) Remake(i int) {
 	d.ids["pvc-"+Pod(i)] += 1000
 }
 
+// Set gives disk name id, as a disk deleted and made again under its old name gets a new one.
+func (d *Disks) Set(name string, id uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ids[name] = id
+}
+
+// Name is the disk under member i's claim's volume, pvc-envoy-nats-<i>.
+func Name(i int) string { return "pvc-" + Pod(i) }
+
 // ConnectOperator connects to the hub as the operator, reconnecting as `envoy-infra hold` does, so
 // each reconnect is decided again under the row's phase at that moment.
 func (s *Stack) ConnectOperator(context.Context) (*nats.Conn, error) {

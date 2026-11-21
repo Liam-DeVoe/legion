@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -69,13 +70,13 @@ func readVarz(t *testing.T, server *testnats.Server) Varz {
 func TestHoldTheConfigurationBinding(t *testing.T) {
 	ctx := t.Context()
 	keys := testnats.NewCalloutKeys(t)
-	authConf := renderAuthConf(t, keys)
+	authConf := holdtest.AuthConf(t, keys)
 	measured := renderTestdata(t, "render-measured-nats.conf")
 	changed := strings.Replace(measured, `"lame_duck_duration": "30s",`, "\"lame_duck_duration\": \"30s\",\n  \"max_connections\": 1000,", 1)
 	require.NotEqual(t, measured, changed)
 
 	objects := func(natsConf, image string, change func([]runtime.Object)) []runtime.Object {
-		out := []runtime.Object{renderConfigMap(natsConf, authConf), chartStatefulSet(image, chartEnv())}
+		out := []runtime.Object{holdtest.RenderConfigMap(natsConf, authConf), chartStatefulSet(image, holdtest.ChartEnv(3))}
 		for i := range 3 {
 			out = append(out, bindingPod(i, renderRevision, renderImageID))
 		}
@@ -86,7 +87,7 @@ func TestHoldTheConfigurationBinding(t *testing.T) {
 		return out
 	}
 	hub, _ := renderHub(objects(measured, renderImage, nil)...)
-	disks := newFakeDisks()
+	disks := renderDisks()
 	r, err := Precondition(ctx, hub)
 	require.NoError(t, err)
 	claims, err := ReadClaims(ctx, hub, r, disks)
@@ -139,7 +140,7 @@ func TestHoldTheConfigurationBinding(t *testing.T) {
 	})
 
 	t.Run("a secret-backed variable skips the digest equality alone, naming it", func(t *testing.T) {
-		production, _ := renderHub(objects(renderTestdata(t, "render-nats.conf"), renderImage, nil)...)
+		production, _ := renderHub(objects(holdtest.ChartNatsConf, renderImage, nil)...)
 		rp, err := Precondition(ctx, production)
 		require.NoError(t, err)
 		require.Empty(t, rp.Digests)
@@ -242,9 +243,9 @@ func TestHoldTheConfigurationBinding(t *testing.T) {
 	}
 
 	t.Run("a disk made again under its old name", func(t *testing.T) {
-		recreated := newFakeDisks()
-		recreated.set(renderDisk(0), 7100000000000000000)
-		requireRefusal(t, r.ProveBinding(ctx, hub, recreated, "envoy-nats-0", varz, want), StepProof,
+		recreated := holdtest.NewDisks(3)
+		recreated.Set(holdtest.Name(0), 7100000000000000000)
+		requireRefusal(t, r.ProveBinding(ctx, hub, stackDisks{recreated}, "envoy-nats-0", varz, want), StepProof,
 			"claim envoy-nats-js-envoy-nats-0's disk "+renderDisk(0).String()+" has id 7100000000000000000, not 7000000000000000000")
 	})
 
