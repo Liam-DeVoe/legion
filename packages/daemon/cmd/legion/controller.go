@@ -507,10 +507,10 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {
-		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
-		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", daemonURL, status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", redact.URL(daemonURL), status, strings.TrimSpace(string(body)))
 	}
 	var state struct {
 		Repositories *api.RepositoriesView `json:"repositories"`
@@ -569,7 +569,7 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	const route = "/legion/v1/controller/secret"
 	status, body, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
 		var refused legionclaim.Refusal

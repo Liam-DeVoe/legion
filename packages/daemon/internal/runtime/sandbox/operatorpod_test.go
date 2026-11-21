@@ -277,10 +277,11 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 			t.Errorf("CheckPod(%q) = %v, want %q", value, check(value), want)
 		}
 	}
-	// A made-up user name and a password holding a "'": the refusal holds neither.
+	// A made-up user name and a password holding a "'": the refusal holds neither, and names the
+	// URL by its scheme and the mark of a URL with credentials.
 	const password, user = "madeUpDash'boardPassword0123", "madeUpDashboardUser0123"
 	err = check("https://" + user + ":" + password + "@dispatch.example.org:0")
-	if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to https://dispatch.example.org:0" + refusal; err == nil || err.Error() != want {
+	if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to https://" + redact.URLWithCredentials + refusal; err == nil || err.Error() != want {
 		t.Errorf("CheckPod(a dashboard URL with userinfo) = %v, want %q", err, want)
 	}
 }

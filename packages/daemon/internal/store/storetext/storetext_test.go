@@ -218,7 +218,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 		{
 			name: "a short text loses its URL credentials",
 			text: `Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`,
-			want: `Get "https://h.example/x": EOF`,
+			want: `Get "https://[a URL with credentials]/x": EOF`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

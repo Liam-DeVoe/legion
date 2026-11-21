@@ -207,7 +207,7 @@ func TestTrimTLSDetailKeepsNoPartOfAURLItsBoundsFallInside(t *testing.T) {
 			detail:  headDetail,
 			planted: user,
 			bound:   headDetail[:head],
-			want:    strings.Repeat("w", 85) + " https://h.exam" + "…" + strings.Repeat("z", window),
+			want:    strings.Repeat("w", 85) + " https://[a URL" + "…" + strings.Repeat("z", window),
 		},
 		{
 			name:    "an end whose window starts inside a URL's query",

@@ -1041,7 +1041,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
 		},
 			func(string) string {
-				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://127.0.0.1:1/legion`: "
+				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://[a URL with credentials]/legion`: "
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1423,7 +1423,7 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "",
-			"plugins: @sjawhar/pi-legion https://xxxxx@cache.example/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+			"plugins: @sjawhar/pi-legion https://[a URL with credentials]/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
 		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
@@ -2279,8 +2279,8 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 		url, want string
 		code      int
 	}{
-		"a daemon that answers":         {server.URL, "legion LEGION on " + server.URL + " — ", 0},
-		"a daemon that does not answer": {"http://127.0.0.1:1", "legion state: read http://127.0.0.1:1/legion/v1/state: ", 1},
+		"a daemon that answers":         {server.URL, "legion LEGION on http://[a URL with credentials] — ", 0},
+		"a daemon that does not answer": {"http://127.0.0.1:1", "legion state: read http://[a URL with credentials]/legion/v1/state: ", 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Chdir(t.TempDir())

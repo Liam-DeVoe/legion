@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // settingsConfigTypes is config.Config and every struct type of its package reachable from it
@@ -473,16 +474,17 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"pool-capacity": "the pool is sized by hand for the admission cap"}; !maps.Equal(settings.Capabilities.Decided, want) {
 		t.Errorf("capabilities.decided = %q, want %q", settings.Capabilities.Decided, want)
 	}
-	// The two addresses the file gives userinfo ride masked; the one it gives none rides as written.
-	if want := "http://xxxxx@envoy-listener.internal.example:9020"; settings.EnvoyURL != want {
+	// The two addresses the file gives userinfo ride as their scheme and the mark of a URL with
+	// credentials; the one it gives none rides as written.
+	if want := "http://" + redact.URLWithCredentials; settings.EnvoyURL != want {
 		t.Errorf("envoy_url = %q, want %q", settings.EnvoyURL, want)
 	}
-	if want := []string{"nats://xxxxx@nats.internal.example:4222", "nats://nats-2.internal.example:4222"}; !slices.Equal(settings.NatsURLs, want) {
-		t.Errorf("nats_urls = %q, want %q: the first entry's userinfo masked, the second unchanged", settings.NatsURLs, want)
+	if want := []string{"nats://" + redact.URLWithCredentials, "nats://nats-2.internal.example:4222"}; !slices.Equal(settings.NatsURLs, want) {
+		t.Errorf("nats_urls = %q, want %q: the first entry's authority marked, the second unchanged", settings.NatsURLs, want)
 	}
-	// The plugin source in URL form rides with its userinfo masked and its query dropped; the one in
-	// version form rides as written.
-	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"}
+	// The plugin source in URL form rides with its authority marked and its query dropped; the one
+	// in version form rides as written.
+	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://" + redact.URLWithCredentials + "/pi-envoy-10.4.0.tgz"}
 	if plugins := settings.Runtime.Kubernetes.Plugins; plugins == nil || *plugins != want {
 		t.Errorf("runtime.kubernetes.plugins = %+v, want %+v", plugins, want)
 	}
@@ -553,17 +555,21 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 	}
 }
 
-// endpointOf keeps an address's scheme, host and path and masks its userinfo, a user alone or a
-// user and password, as xxxxx@; "" stays "", and an address that yields no scheme and host is xxxxx
-// whole.
+// endpointOf keeps an address's scheme, host and path, and shows one with userinfo, a user alone or
+// a user and password, by its scheme, `[a URL with credentials]` and its path: nothing after the
+// last "@", a password holding an "@" with a host after it or none included. "" stays "", and an
+// address that yields no scheme and host is xxxxx whole.
 func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
+	const marked = "://" + redact.URLWithCredentials
 	for _, tc := range []struct{ address, want string }{
 		{"http://envoy-listener.internal.example:9020", "http://envoy-listener.internal.example:9020"},
-		{"http://legion@envoy-listener.internal.example:9020", "http://xxxxx@envoy-listener.internal.example:9020"},
-		{"http://legion:fixture-envoy-password@envoy-listener.internal.example:9020", "http://xxxxx@envoy-listener.internal.example:9020"},
+		{"http://legion@envoy-listener.internal.example:9020", "http" + marked},
+		{"http://legion:fixture-envoy-password" + "@envoy-listener.internal.example:9020", "http" + marked},
 		{"https://dispatch.internal.example/legion", "https://dispatch.internal.example/legion"},
-		{"https://legion:fixture-dispatch-password@dispatch.internal.example/legion", "https://xxxxx@dispatch.internal.example/legion"},
-		{"nats://legion:fixture-nats-password@nats.internal.example:4222", "nats://xxxxx@nats.internal.example:4222"},
+		{"https://legion:fixture-dispatch-password" + "@dispatch.internal.example/legion", "https" + marked + "/legion"},
+		{"nats://legion:fixture-nats-password" + "@nats.internal.example:4222", "nats" + marked},
+		{"http://user:p" + "@ssword@envoy-listener.internal.example:9020", "http" + marked},
+		{"http://user:p" + "@ssword", "http" + marked},
 		{"", ""},
 		{"not a url", "xxxxx"},
 		{"//host-only", "xxxxx"},
@@ -575,13 +581,13 @@ func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
 }
 
 // PluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
-// through endpointOf, masking its userinfo as xxxxx@ and dropping its query and fragment.
+// through endpointOf, marking an authority with userinfo and dropping its query and fragment.
 func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 	for _, tc := range []struct{ source, want string }{
 		{"10.4.0", "10.4.0"},
 		{"/opt/plugins/pi-legion-10.4.0.tgz", "/opt/plugins/pi-legion-10.4.0.tgz"},
 		{"https://plugins.internal.example/pi-legion-10.4.0.tgz", "https://plugins.internal.example/pi-legion-10.4.0.tgz"},
-		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://xxxxx@plugins.internal.example/pi-legion-10.4.0.tgz"},
+		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://" + redact.URLWithCredentials + "/pi-legion-10.4.0.tgz"},
 		{"http://plugins.internal.example/x.tgz?token=t", "http://plugins.internal.example/x.tgz"},
 	} {
 		if got := PluginSourceOf(tc.source); got != tc.want {

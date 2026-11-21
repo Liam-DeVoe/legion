@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
@@ -21,7 +22,7 @@ import (
 // out every credential, every source of one (a secretsd or Secret key, a key command) and every
 // path of a file holding one, and carries only what every pod may already know. Of the strings it
 // carries, the four address keys (`daemon_url`, `envoy_url`, `nats_urls`, `dispatch_url`) ride
-// endpointOf, which masks their userinfo as `xxxxx@`; a `runtime.kubernetes.plugins` source in
+// endpointOf, which shows one with userinfo by its scheme and `[a URL with credentials]`; a
 // URL form rides it too (PluginSourceOf), losing its userinfo, query and fragment; and
 // `runtime.kubernetes.agent_secrets.url` rides as written, since the loader refuses userinfo, a
 // path, a query and a fragment on it. Every other string is a name, a path, a quantity or a
@@ -779,14 +780,16 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 }
 
 // endpointOf is one address key's value as the state shows it: the scheme, the host and the path,
-// with the userinfo, where the loader has NATS and Envoy credentials live (`use URL userinfo or a
-// secret for credentials`), masked as `xxxxx@`. "" stays "" (`dispatch_url` may be unset); an
-// address that yields no scheme and host is `xxxxx` whole, never the raw string. The result is
-// composed from the parsed scheme, the userinfo mark, the host and EscapedPath, so a query or a
-// fragment never reaches the wire either: the loader refuses one on each of the four address keys,
-// and a plugin URL's pre-signed query (PluginSourceOf) is dropped here. runtime/sandbox's namedURL
-// is the same mask for a log line and keeps the host alone; this one keeps the path because a
-// setting is a value its reader acts on, where namedURL's result is only a name.
+// or, when the address carries userinfo, where the loader has NATS and Envoy credentials live (`use
+// URL userinfo or a secret for credentials`), the scheme, redact.URLWithCredentials in place of the
+// authority, and the path: nothing after the last "@" is shown, since a password holding an
+// unencoded "@" leaves its tail there, read as a host. "" stays "" (`dispatch_url` may be unset);
+// an address that yields no scheme and host is `xxxxx` whole, never the raw string. The result is
+// composed from the parsed scheme, the host or the mark, and EscapedPath, so a query or a fragment
+// never reaches the wire either: the loader refuses one on each of the four address keys, and a
+// plugin URL's pre-signed query (PluginSourceOf) is dropped here. runtime/sandbox's namedURL is the
+// same mask for a log line and keeps no path; this one keeps the path because a setting is a value
+// its reader acts on, where namedURL's result is only a name.
 func endpointOf(address string) string {
 	if address == "" {
 		return ""
@@ -795,11 +798,10 @@ func endpointOf(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	endpoint := u.Scheme + "://"
 	if u.User != nil {
-		endpoint += "xxxxx@"
+		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
 	}
-	return endpoint + u.Host + u.EscapedPath()
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
 
 // PluginSourceOf is one `runtime.kubernetes.plugins` source as the state shows it, and as `legion

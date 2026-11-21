@@ -46,27 +46,39 @@ var urlCredentialsCases = []struct {
 	{
 		name: "a userinfo with a password",
 		text: "clone https://user:" + planted + "@github.com/o/r.git failed",
-		want: "clone https://github.com/o/r.git failed",
+		want: "clone https://" + URLWithCredentials + "/o/r.git failed",
 	},
 	{
 		name: "a token as the user name",
 		text: "fetch https://" + planted + "@github.com/o/r.git: exit status 128",
-		want: "fetch https://github.com/o/r.git: exit status 128",
+		want: "fetch https://" + URLWithCredentials + "/o/r.git: exit status 128",
 	},
 	{
-		name: "everything up to the authority's last @",
+		name: "an authority with two @, nothing of it kept",
 		text: "https://a@" + planted + "@host.example:8443/p",
-		want: "https://host.example:8443/p",
+		want: "https://" + URLWithCredentials + "/p",
+	},
+	{
+		// A password holding an unencoded "@" and no host after it: its tail is not printed as a
+		// host, as it was when the rule kept what followed the last "@" (`ssword` here).
+		name: "a password holding an @ and no host",
+		text: "dial http://user:p" + "@" + planted + "ssword no such host",
+		want: "dial http://" + URLWithCredentials + " no such host",
+	},
+	{
+		name: "a password holding an @, then a host",
+		text: "dial http://user:p" + "@" + planted + "ssword@host.example/x refused",
+		want: "dial http://" + URLWithCredentials + "/x refused",
 	},
 	{
 		name: "a URL inside %q quotes",
 		text: fmt.Sprintf("parse %q: invalid port", "postgres://"+plantedUserinfo+"@db.example:5432/legion?sslmode=disable&password="+planted),
-		want: `parse "postgres://db.example:5432/legion": invalid port`,
+		want: `parse "postgres://` + URLWithCredentials + `/legion": invalid port`,
 	},
 	{
 		name: "a URL inside <…>",
 		text: "see <https://u:" + planted + "@host.example/x?sig=" + planted + "> now",
-		want: "see <https://host.example/x> now",
+		want: "see <https://" + URLWithCredentials + "/x> now",
 	},
 	{
 		name: "a URL inside single quotes and one inside backticks",
@@ -76,7 +88,7 @@ var urlCredentialsCases = []struct {
 	{
 		name: "two URLs in one text",
 		text: "a https://h.example/?t=" + planted + " then HTTP://" + planted + "@g.example:8080/p?q=" + planted + "#f",
-		want: "a https://h.example/ then HTTP://g.example:8080/p#f",
+		want: "a https://h.example/ then HTTP://" + URLWithCredentials + "/p#f",
 	},
 	{
 		name: "a query after a port with no path",
@@ -101,12 +113,12 @@ var urlCredentialsCases = []struct {
 	{
 		name: "a URL in the path of another",
 		text: "https://archive.example/web/https://u:" + planted + "@h.example/x?t=" + planted,
-		want: "https://archive.example/web/https://h.example/x",
+		want: "https://archive.example/web/https://" + URLWithCredentials + "/x",
 	},
 	{
 		name: "a URL in the fragment of another",
 		text: "https://h.example/#next=https://" + planted + "@g.example/?t=" + planted + "#top",
-		want: "https://h.example/#next=https://g.example/#top",
+		want: "https://h.example/#next=https://" + URLWithCredentials + "/#top",
 	},
 	{
 		name: "a URL in the query of another",
@@ -168,16 +180,18 @@ func urlCredentialsQuadratic(text string) string {
 		return text
 	}
 	var out strings.Builder
-	// text[:kept] is written to out or removed. Every removal starts after a "://", so kept is 0
-	// until the first one.
+	// text[:kept] is written to out or replaced. Every replacement starts after a "://", so kept
+	// is 0 until the first one.
 	kept := 0
-	remove := func(from, to int) {
+	replace := func(from, to int, with string) {
 		if kept == 0 {
 			out.Grow(len(text))
 		}
 		out.WriteString(text[kept:from])
+		out.WriteString(with)
 		kept = to
 	}
+	remove := func(from, to int) { replace(from, to, "") }
 	// A URL's query is removed once the search for the next "://" passes its start: a URL in the
 	// path before it has the same query, and a userinfo of that URL comes first in the text.
 	query, fragment := -1, -1
@@ -198,8 +212,8 @@ func urlCredentialsQuadratic(text string) string {
 		}
 		end := at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
 		host := at + orLen(strings.IndexAny(text[at:end], "/?#"), end-at)
-		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
-			remove(at, at+u+1)
+		if strings.IndexByte(text[at:host], '@') >= 0 {
+			replace(at, host, URLWithCredentials)
 		}
 		frag := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
 		if q := strings.IndexByte(text[host:frag], '?'); q >= 0 {
@@ -318,13 +332,13 @@ func TestHandlerOptionsGiveEveryTextOfALineThroughTheURLRule(t *testing.T) {
 	want := map[string]any{
 		"level":    "INFO",
 		"msg":      "fetch https://h.example/a failed",
-		"remote":   "https://g.example/o/r.git",
-		"url":      "https://h.example/p",
+		"remote":   "https://" + URLWithCredentials + "/o/r.git",
+		"url":      "https://" + URLWithCredentials + "/p",
 		"error":    `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`,
-		"target":   "https://h.example/p",
+		"target":   "https://" + URLWithCredentials + "/p",
 		"named":    "see https://h.example/",
 		"count":    3.0,
-		"replaced": "by the caller's own https://h.example/",
+		"replaced": "by the caller's own https://" + URLWithCredentials + "/",
 		"g":        map[string]any{"inner": "https://h.example/"},
 	}
 	if !reflect.DeepEqual(line, want) {
@@ -348,8 +362,8 @@ func TestHandlerOptionsOfNilAreTheZeroOptionsWithTheURLRule(t *testing.T) {
 	log.Debug("not written")
 	log.Info("read", "url", "https://"+planted+"@h.example/")
 	got := logged.String()
-	if strings.Contains(got, "not written") || strings.Contains(got, planted) || !strings.Contains(got, "url=https://h.example/") {
-		t.Fatalf("logged %q, want the Info line alone, with the URL's userinfo removed", got)
+	if strings.Contains(got, "not written") || strings.Contains(got, planted) || !strings.Contains(got, `url="https://`+URLWithCredentials+`/"`) {
+		t.Fatalf("logged %q, want the Info line alone, with the URL's authority as the mark of its credentials", got)
 	}
 }
 

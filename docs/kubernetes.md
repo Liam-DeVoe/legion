@@ -5422,7 +5422,7 @@ A role holding any other value is reported `stale_address` rather than `alive` (
 tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371`, `ENVOY_URL https://envoy.internal.example, now
 https://ENVOY.INTERNAL.EXAMPLE`, or `agent-secrets-token audience=agent-secrets expiry=3600s
 path=token, now audience=agent-secrets-next expiry=3600s path=token`).
-The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, adding `xxxxx@` when userinfo is present.
+The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, or, when userinfo is present, its scheme and `[a URL with credentials]`, since a password holding an unencoded `@` leaves its tail after the last `@`, where a host would be.
 Path, query and fragment never appear, which also protects a value an earlier daemon accepted before the current endpoint grammar refused queries and fragments, and a value that yields no scheme and host is named only `xxxxx`.
 `ENVOY_NATS_URL` is named entry by entry from the URLs the loader accepted, never by splitting the joined value, since raw commas are valid in userinfo.
 A role this daemon started always compares equal, so only the roles a daemon under another configuration started are ever reported, from the boot that re-adopts them; nobody runs a command for it.
@@ -7679,7 +7679,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, a URL's userinfo and query removed whole and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's query removed, a URL whose authority carries userinfo shown as its scheme and `[a URL with credentials]`, and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name

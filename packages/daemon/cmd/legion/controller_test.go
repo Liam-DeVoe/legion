@@ -1325,7 +1325,7 @@ func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
 			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 		}})
 		code, _, errb := c.run()
-		if want := "[legion] starting the controller for demo against " + d.url + "; state in "; code != 0 || !strings.Contains(errb, want) {
+		if want := "[legion] starting the controller for demo against http://[a URL with credentials]; state in "; code != 0 || !strings.Contains(errb, want) {
 			t.Fatalf("legion controller start = %d, stderr %q; want 0 and %q", code, errb, want)
 		}
 		holdsNone(t, errb)
@@ -1336,7 +1336,7 @@ func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
 			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 		}})
 		code, _, errb := c.run()
-		if want := "could not reach the Legion daemon at http://127.0.0.1:1: "; code != 1 || !strings.Contains(errb, want) {
+		if want := "could not reach the Legion daemon at http://[a URL with credentials]: "; code != 1 || !strings.Contains(errb, want) {
 			t.Fatalf("legion controller start = %d, stderr %q; want 1 and %q", code, errb, want)
 		}
 		holdsNone(t, errb)

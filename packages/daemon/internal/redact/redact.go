@@ -44,38 +44,46 @@ import (
 // URLNotPrinted stands for a URL value URL will not print.
 const URLNotPrinted = "(a URL that is not printed: it does not parse as one with a host)"
 
+// URLWithCredentials stands in place of the authority of a URL whose authority holds an "@", in
+// what URL, URLCredentials and the state's endpointOf print: its userinfo is a credential, and a
+// password holding an unencoded "@" leaves its tail after the last "@", which reads as a host
+// (`http://user:p@ssword` names the host `ssword`), so nothing of such an authority is printed.
+const URLWithCredentials = "[a URL with credentials]"
+
 // URL is raw, one value known to be a URL (a setting's, an environment variable's), as a line
-// prints it: read by url.Parse, with its userinfo, query and fragment removed. The rule on text,
-// URLCredentials, finds a URL's end at a character such as "'", which a password may hold, and
-// then keeps the userinfo whole; a value known to be a URL is read whole here instead. A raw that
-// does not parse as a URL with a host, or that still holds an "@" once those parts are gone (a
-// credential holding a "/" written as the user, whose head url.Parse reads as the host), prints as
-// URLNotPrinted. Like URLCredentials and the state's endpointOf, URL prints the host that follows
-// the last "@": a value whose password holds an "@" and that names no host after it
-// (`http://user:p@ssword`) prints the password's tail as that host, which no rule on the value
-// can tell from a host; such a value reaches no daemon, so the line that prints it is a refusal.
+// prints it: read by url.Parse, with its query and fragment removed, and its authority, when it
+// holds an "@", as URLWithCredentials. The rule on text, URLCredentials, finds a URL's end at a
+// character such as "'", which a password may hold; a value known to be a URL is read whole here
+// instead. A raw that does not parse as a URL with a host, or whose path holds an "@" (a
+// credential holding a "/" written as the user, whose head url.Parse reads as the host), prints
+// as URLNotPrinted.
 func URL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return URLNotPrinted
 	}
-	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
-	if shown := u.String(); !strings.Contains(shown, "@") {
-		return shown
+	if strings.Contains(u.EscapedPath(), "@") || strings.Contains(u.Path, "@") {
+		return URLNotPrinted
 	}
-	return URLNotPrinted
+	if u.User != nil {
+		return u.Scheme + "://" + URLWithCredentials + u.EscapedPath()
+	}
+	u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", false, "", ""
+	return u.String()
 }
 
-// URLCredentials is text with the query and the userinfo of every URL written in it removed.
+// URLCredentials is text with the query of every URL written in it removed, and the authority of
+// every URL whose authority holds an "@" written as URLWithCredentials.
 //
 // A URL starts at <scheme>://, where the scheme is a letter followed by letters, digits, "+", "-"
 // or ".". It ends at the first white-space character, `"`, `'`, "`", "<" or ">" after the "://",
 // or at the end of the text, so a URL that an error quotes (Go's %q, as a *url.Error writes its
 // URL) or writes inside <…> ends where the quote does. In the URL:
 //
-//   - the authority runs from after the "://" up to the first "/", "?" or "#". Everything in it up
-//     to and including its last "@" is the userinfo, and it is removed: a password and a token
-//     written as the user name alike;
+//   - the authority runs from after the "://" up to the first "/", "?" or "#". One that holds an
+//     "@" holds userinfo, a password and a token written as the user name alike, and a password
+//     holding an unencoded "@" leaves its tail after the last "@", which reads as a host; such an
+//     authority is written URLWithCredentials, nothing of it kept;
 //   - the fragment starts at the first "#" after the authority, and it stays. A "?" after that "#"
 //     is the fragment's;
 //   - the query runs from the first "?" after the authority up to the fragment, or up to the end
@@ -83,9 +91,10 @@ func URL(raw string) string {
 //
 // A URL written in the path or the fragment of another (a redirect's target, an archived page)
 // is a URL of its own, under the same rule. One written in a query goes with that query. Nothing
-// else changes: the scheme, the host and its port, the path, the fragment and every word around
-// the URLs stay as written. The rule removes rather than masks, so neither a part nor the length of
-// a credential is left, and URLCredentials(URLCredentials(s)) == URLCredentials(s).
+// else changes: the scheme, an authority with no "@", the path, the fragment and every word around
+// the URLs stay as written. Neither a part nor the length of a credential is left, and
+// URLCredentials(URLCredentials(s)) == URLCredentials(s): URLWithCredentials holds a space, which
+// ends the URL it stands in.
 //
 // A text the rule does not change, a text with no "://" above all, is returned as it is, with no
 // allocation. The rule takes time linear in the text's length, a run of "://" that nothing ends
@@ -95,16 +104,18 @@ func URLCredentials(text string) string {
 		return text
 	}
 	var out strings.Builder
-	// text[:kept] is written to out or removed. Every removal starts after a "://", so kept is 0
-	// until the first one.
+	// text[:kept] is written to out or replaced. Every replacement starts after a "://", so kept
+	// is 0 until the first one.
 	kept := 0
-	remove := func(from, to int) {
+	replace := func(from, to int, with string) {
 		if kept == 0 {
 			out.Grow(len(text))
 		}
 		out.WriteString(text[kept:from])
+		out.WriteString(with)
 		kept = to
 	}
+	remove := func(from, to int) { replace(from, to, "") }
 	// A URL's query is removed once the search for the next "://" passes its start: a URL in the
 	// path before it has the same query, and a userinfo of that URL comes first in the text.
 	query, fragment := -1, -1
@@ -146,8 +157,8 @@ func URLCredentials(text string) string {
 		host := min(slash.from(text, at), question.from(text, at), hash.from(text, at), end)
 		// [at, host) ends at or before the "/" of the next "://", so the userinfo's searches read
 		// spans apart from one another, the whole text once at most.
-		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
-			remove(at, at+u+1)
+		if strings.IndexByte(text[at:host], '@') >= 0 {
+			replace(at, host, URLWithCredentials)
 		}
 		frag := min(hash.from(text, host), end)
 		if q := question.from(text, host); q < frag {

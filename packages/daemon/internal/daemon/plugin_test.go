@@ -791,7 +791,7 @@ func TestLogPlugins(t *testing.T) {
 		PiLegion: "https://" + credential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123",
 		PiEnvoy:  "9.6.1", Contract: api.DaemonAPIVersion}, "legion.yaml")
 	got := buf.String()
-	if !strings.Contains(got, `"piLegion":"https://xxxxx@cache.example/pi-legion.tgz"`) {
+	if !strings.Contains(got, `"piLegion":"https://[a URL with credentials]/pi-legion.tgz"`) {
 		t.Fatalf("logPlugins with a private tarball URL wrote %q, want its piLegion masked as the state shows it", got)
 	}
 	for _, secret := range []string{credential, "madeUpSignature0123"} {

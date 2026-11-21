@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // sourceToken is the read-only token the tests' Source mints, and the bearer the fake GitHub
@@ -546,18 +547,21 @@ func closedAddress(t *testing.T) string {
 // of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
 // a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
 // its query whole, and its user name (it masks only a password). The read is refused with a cause
-// that names the failure and the URL's host and path, and holds no part of the credential.
+// that names the failure and the URL's path, its host too where it carries no userinfo (the mark
+// of a URL with credentials stands for an authority that does), and holds no part of the
+// credential.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := closedAddress(t)
 	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
 	for _, tc := range []struct {
 		name, redirect string
-		// transport is what Go's client writes of the credential into the read's own error.
-		transport string
+		// transport is what Go's client writes of the credential into the read's own error, and
+		// authority what the cause names in the URL's authority's place.
+		transport, authority string
 	}{
-		{"a token in the redirect's query", "http://" + dead + download + "?token=" + plantedToken, "?token=" + plantedToken},
-		{"a token as the redirect's user name", "http://" + plantedToken + "@" + dead + download, plantedToken + "@"},
-		{"a token as the redirect's password", "http://" + plantedUserinfo + "@" + dead + download, "user:***@"},
+		{"a token in the redirect's query", "http://" + dead + download + "?token=" + plantedToken, "?token=" + plantedToken, dead},
+		{"a token as the redirect's user name", "http://" + plantedToken + "@" + dead + download, plantedToken + "@", redact.URLWithCredentials},
+		{"a token as the redirect's password", "http://" + plantedUserinfo + "@" + dead + download, "user:***@", redact.URLWithCredentials},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			api := githubtest.Server(t, githubtest.Spec{Token: sourceToken, Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -589,7 +593,7 @@ func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t
 				t.Fatalf("the read through the redirect to %s was served, want it refused", dead)
 			}
 			cause := err.Error()
-			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "http://` + dead + download + `": `; !strings.HasPrefix(cause, want) {
+			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "http://` + tc.authority + download + `": `; !strings.HasPrefix(cause, want) {
 				t.Errorf("the cause is %q, want it to begin %q: the URL's host and path, and nothing of its credential", cause, want)
 			}
 			if part := partOf(cause, plantedToken); part != "" {
