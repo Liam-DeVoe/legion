@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -127,8 +128,8 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 		"null":                          `null`,
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
-			if _, err := decodeSentinel(SentinelKey, SessionFamily, []byte(value)); !errors.Is(err, ErrMalformedRecord) {
-				t.Fatalf("decodeSentinel(%q) = %v, want ErrMalformedRecord", value, err)
+			if _, err := decodeSentinel(SentinelKey, SessionFamily, []byte(value)); !errors.Is(err, ErrMalformedSentinel) || errors.Is(err, ErrNoSentinel) {
+				t.Fatalf("decodeSentinel(%q) = %v, want ErrMalformedSentinel", value, err)
 			}
 		})
 	}
@@ -177,7 +178,7 @@ func TestASentinelsFamilyRoundTrips(t *testing.T) {
 // Each store reads only a sentinel that names its own family (KVStore the session family's, a
 // PGStore the one NewPGStore was given):
 // a key alone cannot tell two stores apart, so a well-formed sentinel naming another family, or one
-// naming none, under the store's sentinel key is a missing sentinel, never a marker read. The
+// naming none, under the store's sentinel key is a malformed sentinel, never a marker read. The
 // control in each store is a sentinel of its own family, read. Without the family, PGStore read
 // another store's sentinel as its own: Dispatch's store took a daemon's done marker, which a creator
 // in the fixed mode would obey.
@@ -190,8 +191,8 @@ func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 	}
 	refused := func(t *testing.T, store, family string, state StoreState, err error) {
 		t.Helper()
-		if !errors.Is(err, ErrNoSentinel) || !errors.Is(err, ErrMalformedRecord) {
-			t.Fatalf("%s reading a sentinel of the family %q = %+v, %v; want ErrNoSentinel, malformed", store, family, state, err)
+		if !errors.Is(err, ErrMalformedSentinel) || errors.Is(err, ErrNoSentinel) {
+			t.Fatalf("%s reading a sentinel of the family %q = %+v, %v; want ErrMalformedSentinel, never a missing sentinel", store, family, state, err)
 		}
 		if family != "" && (!errors.Is(err, ErrSentinelFamily) || !strings.Contains(err.Error(), family)) {
 			t.Fatalf("%s reading a sentinel of the family %q = %v; want ErrSentinelFamily naming it", store, family, err)
@@ -233,6 +234,77 @@ func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 	if state, err := live.store.State(ctx); err != nil || state.Family != SessionFamily {
 		t.Fatalf("control: KVStore of session reading its own family's sentinel = %+v, %v", state, err)
 	}
+}
+
+// A sentinel row that is there but is not its store's own exact sentinel is never a missing
+// sentinel, in either store: a creator in the fixed mode reads ErrNoSentinel as no marker (Dispatch
+// and the daemons do), so such a row must be a failed read, which never runs fixed names over a
+// store a newer build may have converted, and it still refuses every call in the fresh mode. The
+// rows are another family's sentinel, a sentinel under another key, one carrying a field this
+// build does not know (as a newer operator build's could), and the server's STREAM.INFO answer. The
+// control in each store is the absent row, the one missing sentinel.
+func TestAMalformedSentinelIsNeverNoMarker(t *testing.T) {
+	ctx := context.Background()
+	// noMarker is how a fixed-mode creator reads a store's sentinel: ErrNoSentinel is no marker.
+	noMarker := func(err error) bool { return errors.Is(err, ErrNoSentinel) }
+	malformed := func(key, family string) map[string]string {
+		return map[string]string{
+			"another family's sentinel":        fmt.Sprintf(`{"key":%q,"family":"daemon/legion-other","cutover":"done"}`, key),
+			"a sentinel under another key":     fmt.Sprintf(`{"key":"envoy.sentinel/daemon/legion-other","family":%q,"cutover":"done"}`, family),
+			"a field this build does not know": fmt.Sprintf(`{"key":%q,"family":%q,"cutover":"done","epoch":2}`, key, family),
+			"a STREAM.INFO answer":             `{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0}`,
+		}
+	}
+	refused := func(t *testing.T, row string, err error) {
+		t.Helper()
+		if noMarker(err) || !errors.Is(err, ErrMalformedSentinel) || !IsSelectionStateLost(err) {
+			t.Fatalf("State over %s = %v; want ErrMalformedSentinel, which is no missing sentinel and refuses every call", row, err)
+		}
+	}
+	absent := func(t *testing.T, err error) {
+		t.Helper()
+		if !noMarker(err) {
+			t.Fatalf("control: State with no sentinel row = %v, want ErrNoSentinel", err)
+		}
+	}
+	pgRows := func(t *testing.T, store *PGStore, put func(data string)) {
+		_, err := store.State(ctx)
+		absent(t, err)
+		for row, data := range malformed(PGSentinelKey(store.family), store.family) {
+			put(data)
+			_, err := store.State(ctx)
+			refused(t, row, err)
+		}
+	}
+	t.Run("PGStore", func(t *testing.T) {
+		db := newMemPG()
+		store := NewPGStore(DispatchFamily, db)
+		pgRows(t, store, func(data string) {
+			db.rows[PGSentinelKey(DispatchFamily)] = pgRow{data: []byte(data), revision: 1}
+		})
+	})
+	t.Run("PGStore on a real Postgres", func(t *testing.T) {
+		pool := pgTestDatabase(t)
+		store := NewPGStore(DispatchFamily, pool)
+		pgRows(t, store, func(data string) {
+			if _, err := pool.Exec(ctx, `insert into `+IntakeConsumersTable+` (logical, record, revision) values ($1, $2, 1)
+				on conflict (logical) do update set record = excluded.record`, PGSentinelKey(DispatchFamily), data); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	t.Run("KVStore", func(t *testing.T) {
+		live := newLiveStore(t, testnats.URL(t), nil)
+		_, err := live.store.State(ctx)
+		absent(t, err)
+		for row, data := range malformed(SentinelKey, SessionFamily) {
+			if _, err := live.js.Publish(ctx, "$KV."+SessionBucket+"."+SentinelKey, []byte(data)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := live.store.State(ctx)
+			refused(t, row, err)
+		}
+	})
 }
 
 // pgRow is one row of memPG: the record's bytes and the revision, or err.
@@ -288,8 +360,8 @@ func TestThePGStoreWritesAndReadsOnlySelfKeyedRecords(t *testing.T) {
 		t.Fatalf("Read of a row holding another key's record = %v, want ErrMalformedRecord naming legion-go-other", err)
 	}
 	db.rows[PGSentinelKey(family)] = pgRow{data: []byte(`{"cutover":"done"}`), revision: 2}
-	if _, err := store.State(ctx); !errors.Is(err, ErrNoSentinel) {
-		t.Fatalf("State of a sentinel row carrying no key = %v, want ErrNoSentinel", err)
+	if _, err := store.State(ctx); !errors.Is(err, ErrMalformedSentinel) {
+		t.Fatalf("State of a sentinel row carrying no key = %v, want ErrMalformedSentinel", err)
 	}
 }
 

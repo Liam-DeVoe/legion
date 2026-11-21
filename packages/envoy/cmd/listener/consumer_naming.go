@@ -129,19 +129,19 @@ func awaitFixedNaming(ctx context.Context, gated gatedConnection, logger *loggin
 
 // sentinelRefusal is why err, a read of the selection bucket in the fresh mode, refuses every
 // call over a bucket that exists: its sentinel key (consumernames.SentinelKey) holds nothing
-// ("absent"), a sentinel of another store's family ("another family"), or a value that is no
-// sentinel ("malformed"). ok is false for any other answer, a missing bucket and an admitted
-// sentinel among them.
+// ("absent", consumernames.ErrNoSentinel), a sentinel of another store's family ("another family")
+// or a value that is no sentinel of its own ("malformed", both consumernames.ErrMalformedSentinel).
+// ok is false for any other answer, a missing bucket and an admitted sentinel among them.
 func sentinelRefusal(err error) (reason string, ok bool) {
 	switch {
-	case !errors.Is(err, consumernames.ErrNoSentinel):
+	case errors.Is(err, consumernames.ErrNoSentinel):
+		return "absent", true
+	case !errors.Is(err, consumernames.ErrMalformedSentinel):
 		return "", false
 	case errors.Is(err, consumernames.ErrSentinelFamily):
 		return "another family", true
-	case errors.Is(err, consumernames.ErrMalformedRecord):
-		return "malformed", true
 	}
-	return "absent", true
+	return "malformed", true
 }
 
 // startingSelectionHealth is /healthz's answer while the listener has not bound its durable

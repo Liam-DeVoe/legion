@@ -70,9 +70,12 @@ revision:
   nothing after it, carrying the key it was read under, with every field well formed. Any principal
   with a JetStream API grant can have the server store its answer under any key of the bucket
   through a request's reply subject, and one with a direct get can copy another key's message
-  there whole. So any other value is `ErrMalformedRecord` for that key alone, and under the
-  sentinel's key a missing sentinel (`ErrNoSentinel`), as is a sentinel that names another family,
-  or none (`ErrSentinelFamily`).
+  there whole. So any other value is `ErrMalformedRecord` for that key alone. Under the sentinel's
+  key any value but the store's own exact sentinel is `ErrMalformedSentinel`: a sentinel that
+  names another family or none (`ErrSentinelFamily`), one under another key, and one with a field
+  this build does not know among them. It is never `ErrNoSentinel`, which is an absent sentinel
+  alone, so a creator in the fixed mode that reads `ErrNoSentinel` as no marker reads a malformed
+  one as a failed read.
 - **The family fence.** A record's current, retired names and candidate must be
   `<Prefix(logical)>~<nuid>` names of its own key. Its operation's old name may also be the key's
   fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`.
@@ -140,7 +143,8 @@ missing marker cannot tell a store before its cutover from one whose state was l
 | State | Error |
 | --- | --- |
 | the bucket or table is missing | `ErrNoStore` (only the server's own "stream not found", 10059; a read no server answers is a failed read) |
-| the sentinel is missing, malformed, or of another family | `ErrNoSentinel` |
+| the sentinel is absent (no row; in the bucket, no message or a delete or purge marker) | `ErrNoSentinel` |
+| the sentinel key holds anything but the store's own exact sentinel: malformed, another family's, under another key, or with a field this build does not know | `ErrMalformedSentinel` (`ErrSentinelFamily` too for another family's) |
 | the cutover has not run, or was rolled back | `ErrCutoverNotRun` |
 | a key whose last message is a KV delete or purge marker | `ErrRecordDeleted` |
 | a key holding something other than its own record | `ErrMalformedRecord` |

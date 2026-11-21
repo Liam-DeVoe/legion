@@ -251,11 +251,11 @@ func TestAFreshSessionKeyHoldingAnotherSessionsRecordIsRefusedForThatSessionAlon
 	}
 }
 
-// The sentinel's key holding the server's STREAM.INFO answer is a missing sentinel: a registration
-// is refused 503 consumer_error with nothing created, and the selection health is ErrNoSentinel.
-// Today's decode takes the answer for a sentinel with no cutover marker, so the store read as one
-// whose cutover has not run rather than one whose sentinel is lost.
-func TestAFreshSentinelKeyHoldingAStreamInfoAnswerIsAMissingSentinel(t *testing.T) {
+// The sentinel's key holding the server's STREAM.INFO answer is a malformed sentinel: a
+// registration is refused 503 consumer_error with nothing created, and the selection health is
+// ErrMalformedSentinel. Today's decode takes the answer for a sentinel with no cutover marker, so
+// the store read as one whose cutover has not run rather than one whose sentinel is lost.
+func TestAFreshSentinelKeyHoldingAStreamInfoAnswerIsAMalformedSentinel(t *testing.T) {
 	uri, admin := selectionHub(t)
 	stored := storeStreamInfoAnswer(t, admin, consumernames.SentinelKey)
 	var lenient consumernames.StoreState
@@ -271,7 +271,7 @@ func TestAFreshSentinelKeyHoldingAStreamInfoAnswerIsAMissingSentinel(t *testing.
 	if names := consumersOf(t, admin, sessionID); len(names) != 0 {
 		t.Fatalf("the stream holds %v for %s after the refusal, want no consumer", names, sessionID)
 	}
-	if health := delivery.consumers.SelectionHealth(context.Background()); !errors.Is(health, consumernames.ErrNoSentinel) {
-		t.Fatalf("the selection health = %v, want %v", health, consumernames.ErrNoSentinel)
+	if health := delivery.consumers.SelectionHealth(context.Background()); !errors.Is(health, consumernames.ErrMalformedSentinel) {
+		t.Fatalf("the selection health = %v, want %v", health, consumernames.ErrMalformedSentinel)
 	}
 }

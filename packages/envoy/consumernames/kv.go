@@ -160,10 +160,11 @@ func (s *KVStore) State(ctx context.Context) (StoreState, error) {
 	return state, err
 }
 
-// sentinel reads the sentinel and its revision. A value under SentinelKey that is not the session
-// family's sentinel (decodeSentinel) is a missing sentinel, naming the key and the value's
-// sequence: a sentinel naming Dispatch's or a daemon's store under the session bucket's key is none
-// of its own.
+// sentinel reads the sentinel and its revision. A key never written, or whose last message is a
+// delete or purge marker, is a missing sentinel (ErrNoSentinel); a value under SentinelKey that is
+// not the session family's sentinel (decodeSentinel) is ErrMalformedSentinel, naming the key and
+// the value's sequence: a sentinel naming Dispatch's or a daemon's store under the session bucket's
+// key is none of its own.
 func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	data, revision, err := s.last(ctx, SentinelKey)
 	if errors.Is(err, ErrNoRecord) || errors.Is(err, ErrRecordDeleted) {
@@ -174,7 +175,7 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	}
 	state, err := decodeSentinel(SentinelKey, SessionFamily, data)
 	if err != nil {
-		return StoreState{}, 0, fmt.Errorf("%w: the bucket %s's %s at sequence %d holds no sentinel (%w)", ErrNoSentinel, s.bucket, SentinelKey, revision, err)
+		return StoreState{}, 0, fmt.Errorf("consumer names: the bucket %s's %s at sequence %d: %w", s.bucket, SentinelKey, revision, err)
 	}
 	return state, revision, nil
 }

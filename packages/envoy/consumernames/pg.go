@@ -63,8 +63,9 @@ type PGStore struct {
 // and its sentinel must name family (StoreState.Family).
 func NewPGStore(family string, db PGQuerier) *PGStore { return &PGStore{db: db, family: family} }
 
-// State implements Store: it reads the family's sentinel row. A row whose record is not the
-// family's sentinel (decodeSentinel) is a missing sentinel.
+// State implements Store: it reads the family's sentinel row. No row is a missing sentinel
+// (ErrNoSentinel); a row whose record is not the family's sentinel (decodeSentinel) is
+// ErrMalformedSentinel, never a missing one.
 func (s *PGStore) State(ctx context.Context) (StoreState, error) {
 	key := PGSentinelKey(s.family)
 	data, revision, err := s.row(ctx, key)
@@ -76,7 +77,7 @@ func (s *PGStore) State(ctx context.Context) (StoreState, error) {
 	}
 	state, err := decodeSentinel(key, s.family, data)
 	if err != nil {
-		return StoreState{}, fmt.Errorf("%w: %s's %s row at revision %d holds no sentinel (%w)", ErrNoSentinel, IntakeConsumersTable, key, revision, err)
+		return StoreState{}, fmt.Errorf("consumer names: %s's %s row at revision %d: %w", IntakeConsumersTable, key, revision, err)
 	}
 	return state, nil
 }

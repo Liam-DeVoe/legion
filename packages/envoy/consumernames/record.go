@@ -197,7 +197,8 @@ type StoreState struct {
 // Store keeps the selection records of one family.
 type Store interface {
 	// State reads the store's sentinel. A store that is missing is ErrNoStore, a sentinel that is
-	// missing ErrNoSentinel.
+	// absent ErrNoSentinel, and a sentinel key holding anything but the store's own exact sentinel
+	// ErrMalformedSentinel.
 	State(ctx context.Context) (StoreState, error)
 	// Read reads logical's record and its revision. A key never written is ErrNoRecord; a key
 	// whose last write is a delete is ErrRecordDeleted; a missing store is ErrNoStore.
@@ -238,9 +239,18 @@ var (
 	ErrCutoverNotRun = errors.New("consumer names: the cutover has not run")
 	// ErrNoStore is a selection store that is missing: the KV bucket or the table.
 	ErrNoStore = errors.New("consumer names: the selection store is missing")
-	// ErrNoSentinel is a store whose sentinel is missing, so a lost record cannot be told from a
-	// new key.
+	// ErrNoSentinel is a store whose sentinel is absent: its key holds nothing, so a lost record
+	// cannot be told from a new key. It is the one sentinel error a creator in the fixed mode may
+	// read as no marker; a sentinel key holding anything else is ErrMalformedSentinel.
 	ErrNoSentinel = errors.New("consumer names: the selection store's sentinel is missing")
+	// ErrMalformedSentinel is a store whose sentinel key holds something other than the store's own
+	// exact sentinel (decodeSentinel): another JSON document, a field this build does not know (a
+	// newer build's sentinel among them), a sentinel under another key, or one that names another
+	// family (ErrSentinelFamily). It is never a missing sentinel: a creator in the fixed mode reads
+	// it as a failed read, so it never runs fixed names over a store whose marker it cannot read,
+	// and the fresh mode refuses every call over it. Only an operator's rewrite of the sentinel ends
+	// it.
+	ErrMalformedSentinel = errors.New("consumer names: the selection store's sentinel key holds no sentinel of its own")
 	// ErrRecordDeleted is a key whose last write is a delete or a purge marker.
 	ErrRecordDeleted = errors.New("consumer names: the selection record was deleted")
 	// ErrMalformedRecord is a key whose value is not that key's selection record: another JSON
@@ -250,7 +260,7 @@ var (
 	// holding a direct get can copy another key's message there whole, so a value is never read as
 	// a record on its shape alone (decodeRecord). It fails closed for that key alone: nothing is
 	// created or bound from it, and only an operator's repair of the key ends it. Under the
-	// sentinel's key such a value is a missing sentinel (ErrNoSentinel).
+	// sentinel's key such a value is ErrMalformedSentinel instead.
 	ErrMalformedRecord = errors.New("consumer names: the key holds no selection record of its own")
 	// ErrNoRecord is a key never written.
 	ErrNoRecord = errors.New("consumer names: no selection record")
@@ -270,8 +280,8 @@ var (
 	// before its context ended.
 	ErrBusy = errors.New("consumer names: another process's operation is in flight")
 	// ErrSentinelFamily is a well-formed sentinel under a store's sentinel key that names another
-	// family than the store's own (KVStore's SessionFamily, NewPGStore's family): a missing
-	// sentinel, as ErrNoSentinel.
+	// family than the store's own (KVStore's SessionFamily, NewPGStore's family): a malformed
+	// sentinel, ErrMalformedSentinel.
 	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
 	// creates it: its start differs from what the operation reserved, or a setting no correction in
@@ -281,10 +291,11 @@ var (
 )
 
 // IsSelectionStateLost reports whether err refuses a call because selection state is lost: a
-// missing store, sentinel or key, a key whose last write is a delete, or a key whose value is not
-// its record.
+// missing store, sentinel or key, a sentinel key holding no sentinel of its own, a key whose last
+// write is a delete, or a key whose value is not its record.
 func IsSelectionStateLost(err error) bool {
-	return errors.Is(err, ErrNoStore) || errors.Is(err, ErrNoSentinel) || errors.Is(err, ErrRecordDeleted) || errors.Is(err, ErrMalformedRecord)
+	return errors.Is(err, ErrNoStore) || errors.Is(err, ErrNoSentinel) || errors.Is(err, ErrMalformedSentinel) ||
+		errors.Is(err, ErrRecordDeleted) || errors.Is(err, ErrMalformedRecord)
 }
 
 // decodeRecord reads data as the record of key: one JSON object of Record's fields and nothing
@@ -303,14 +314,14 @@ func decodeRecord(key string, data []byte) (Record, error) {
 
 // decodeSentinel reads data as the sentinel under key of a store of family, as decodeRecord reads a
 // record: anything else, a sentinel of another family among them (ErrSentinelFamily), is
-// ErrMalformedRecord, which the store answers as ErrNoSentinel.
+// ErrMalformedSentinel, which no store answers as a missing sentinel.
 func decodeSentinel(key, family string, data []byte) (StoreState, error) {
 	var state StoreState
 	if err := decodeStrict(data, &state); err != nil {
-		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
+		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedSentinel, err)
 	}
 	if err := state.check(key, family); err != nil {
-		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
+		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedSentinel, err)
 	}
 	return state, nil
 }

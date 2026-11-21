@@ -493,8 +493,14 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 					t.Fatalf("ReadMarker over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
 				}
 			case tc.unread:
-				if err == nil || errors.Is(err, ErrConvertedStore) || !errors.Is(err, consumernames.ErrNoSentinel) {
-					t.Fatalf("ReadMarker over a bucket whose marker it cannot read = %v; want the unread sentinel's error, no conversion, so the start reads again", err)
+				// No sentinel is the missing one; a value under its key that is no sentinel is malformed,
+				// never a missing sentinel.
+				unread := consumernames.ErrNoSentinel
+				if tc.raw != nil {
+					unread = consumernames.ErrMalformedSentinel
+				}
+				if err == nil || errors.Is(err, ErrConvertedStore) || !errors.Is(err, unread) {
+					t.Fatalf("ReadMarker over a bucket whose marker it cannot read = %v; want %v, no conversion, so the start reads again", err, unread)
 				}
 			default:
 				if err != nil {

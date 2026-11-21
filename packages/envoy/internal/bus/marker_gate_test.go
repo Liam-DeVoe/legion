@@ -113,8 +113,8 @@ func TestAFixedModeReconnectMakesNoConsumerCallUntilItReadsTheMarker(t *testing.
 				}
 			}
 			if tc.gate && !tc.created && !tc.converted {
-				if _, hookErr := consumers.client.HookStall(); hookErr == nil || !errors.Is(hookErr, consumernames.ErrNoSentinel) {
-					t.Fatalf("the reconnect's marker read = %v; want it failed on the unreadable sentinel, and retried", hookErr)
+				if _, hookErr := consumers.client.HookStall(); hookErr == nil || !errors.Is(hookErr, consumernames.ErrMalformedSentinel) {
+					t.Fatalf("the reconnect's marker read = %v; want it failed on the malformed sentinel, and retried", hookErr)
 				}
 			}
 		})
@@ -278,7 +278,7 @@ func todaysReconnectCheck(s *SessionConsumers, converted func(error)) {
 
 // storeStreamInfoOverTheSentinel has the server store its STREAM.INFO answer for the selection
 // bucket's stream under the sentinel's key, through a request's reply subject, and waits until the
-// sentinel reads as missing.
+// sentinel reads as malformed.
 func storeStreamInfoOverTheSentinel(t *testing.T, conn *natsgo.Conn) {
 	t.Helper()
 	if err := conn.PublishRequest("$JS.API.STREAM.INFO.KV_"+consumernames.SessionBucket, "$KV."+consumernames.SessionBucket+"."+consumernames.SentinelKey, nil); err != nil {
@@ -288,7 +288,7 @@ func storeStreamInfoOverTheSentinel(t *testing.T, conn *natsgo.Conn) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, err := store.State(context.Background())
-		if errors.Is(err, consumernames.ErrNoSentinel) && strings.Contains(err.Error(), "unknown field") {
+		if errors.Is(err, consumernames.ErrMalformedSentinel) && strings.Contains(err.Error(), "unknown field") {
 			return
 		}
 		if time.Now().After(deadline) {

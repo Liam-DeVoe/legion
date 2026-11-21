@@ -125,8 +125,8 @@ func TestAKeyHoldingNoRecordOfItsOwnIsRefusedNamingTheKeyAndItsSequence(t *testi
 		if err := json.Unmarshal(data, &lenient); err != nil || lenient.Cutover != "" {
 			t.Fatalf("control: today's decode of the answer = %+v, %v; want a sentinel with no marker, taken", lenient, err)
 		}
-		if _, err := live.store.State(ctx); !errors.Is(err, ErrNoSentinel) || !strings.Contains(err.Error(), SentinelKey) {
-			t.Fatalf("State = %v, want ErrNoSentinel naming %s", err, SentinelKey)
+		if _, err := live.store.State(ctx); !errors.Is(err, ErrMalformedSentinel) || errors.Is(err, ErrNoSentinel) || !strings.Contains(err.Error(), SentinelKey) {
+			t.Fatalf("State = %v, want ErrMalformedSentinel naming %s, never a missing sentinel", err, SentinelKey)
 		}
 	})
 }
