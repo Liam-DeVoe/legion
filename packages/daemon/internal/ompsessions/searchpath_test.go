@@ -31,7 +31,7 @@ const noPool = poolVariable + " is unset, so the pooled leg has no pool to run t
 	"setting from one transaction to the next, so a pin a direct connection alone holds would pass here and fail " +
 	"there. Start PgBouncer 1.25.2 in transaction mode in front of the server LEGION_TEST_PG_DSN names, as CI's " +
 	"daemon-go job does, and set " + poolVariable + " to what it prints (it needs Docker):\n" +
-	"  " + poolVariable + "=$(packages/daemon/scripts/test-pgbouncer.sh --port 6433)"
+	"  export " + poolVariable + "=\"$(packages/daemon/scripts/test-pgbouncer.sh --port 6433)\""
 
 // pinnedPath is search_path as every transaction of the package must read it: pg_catalog, and
 // the session's own temporary schema, which a name of a function or an operator never reaches.

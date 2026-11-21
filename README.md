@@ -162,8 +162,8 @@ environment (`LEGION_TEST_PG_DSN` for the daemon's). One of them, `internal/omps
 transaction mode that `LEGION_TEST_PGBOUNCER_DSN` names: without it the test skips naming the
 variable, and on GitHub Actions it fails. `packages/daemon/scripts/test-pgbouncer.sh` starts that
 pool in Docker in front of the server `LEGION_TEST_PG_DSN` names and prints the URL, as CI's
-daemon-go job does: `LEGION_TEST_PGBOUNCER_DSN=$(packages/daemon/scripts/test-pgbouncer.sh --port
-6433)`, and `docker rm -f legion-test-pgbouncer-6433` after. On a host without Docker, the daemon's NATS
+daemon-go job does: `export LEGION_TEST_PGBOUNCER_DSN="$(packages/daemon/scripts/test-pgbouncer.sh
+--port 6433)"`, and `docker rm -f -v legion-test-pgbouncer-6433` after. On a host without Docker, the daemon's NATS
 tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)
 and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
 (`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
