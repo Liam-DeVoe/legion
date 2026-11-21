@@ -112,6 +112,7 @@ func (child normalizedChild) isText() bool {
 }
 
 func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node) error {
+	edits := editsOf(txn, frag)
 	pchildren := normalizePNodeContent(want)
 	ychildren := frag.Children()
 	left, right := 0, 0
@@ -181,9 +182,8 @@ func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node
 			for left+run < len(ychildren)-right && left+run < len(pchildren)-right && !sameKind(ychildren[left+run], pchildren[left+run]) {
 				run++
 			}
-			countWalk(left)
-			frag.Delete(txn, left, run)
-			if err := insertPChildren(txn, frag, left, pchildren[left:left+run]); err != nil {
+			edits.delete(left, run)
+			if err := edits.insert(left, pchildren[left:left+run]); err != nil {
 				return err
 			}
 			left += run
@@ -198,10 +198,12 @@ func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node
 		}
 	}
 	if deleteCount > 0 {
-		countWalk(left)
-		frag.Delete(txn, left, deleteCount)
+		edits.delete(left, deleteCount)
 	}
-	return insertPChildren(txn, frag, left, pchildren[left:len(pchildren)-right])
+	if inserted := pchildren[left : len(pchildren)-right]; len(inserted) > 0 {
+		return edits.insert(left, inserted)
+	}
+	return nil
 }
 
 // sameKind reports whether updateChildren can keep ychild for pchild: a text for a text, or an
@@ -285,44 +287,73 @@ func liveAttrs(node *Node) Attrs {
 	return attrs
 }
 
-// emptyChildren is an empty slice of ygo's unexported node type, which insertPChildren's batch must
-// be to pass to YXmlFragment.Insert. It comes from Children of a detached element, which returns
-// its buffered children, none, without walking any document; Children of the fragment being
-// written would walk every item it holds. The element is never inserted anywhere, so its type name
-// is never read. It is built once, so a batch allocates only its own nodes.
+// emptyChildren is an empty slice of ygo's unexported node type, which fragmentEdits.insert's
+// batch must be to pass to YXmlFragment.Insert. It comes from Children of a detached element,
+// which returns its buffered children, none, without walking any document; Children of the
+// fragment being written would walk every item it holds. The element is never inserted anywhere,
+// so its type name is never read. It is built once, so a batch allocates only its own nodes.
 var emptyChildren = crdt.NewYXmlElement("paragraph").Children()
 
-// insertPChildren creates the Yjs type of each of children and inserts them into frag at index in
-// one call. ygo's fragment insert walks the fragment's children to index (leftChildAt), and an
-// element no document holds yet copies the children it buffers on every insert, so inserting a
-// fragment's n children one at a time took n walks, time quadratic in n (LEGION-465). One call
-// walks to index once, and writes what one insert per child at consecutive indexes wrote: each
-// child's origin is the child before it, and its right origin the child that stood at index. It is
-// how y-prosemirror writes a fragment's new children (updateYFragment's tail insert, and
-// createTypeFromElementNode's). A call still walks to index, so its cost grows with index as well
-// as with children.
-func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, children []normalizedChild) error {
-	if len(children) == 0 {
-		return nil
+// childEdits makes every change a write makes to one fragment's children by position: it is the
+// one way Update deletes or inserts a fragment's children, so a test can read each such call a
+// write makes (RecordChildEditsForTest). Each method makes one ygo call. ygo's fragment Delete and
+// Insert walk the fragment from its first child to the index they are given (deleteChildRange,
+// leftChildAt), so a write's calls are its walks: replacing a run of n children costs one delete
+// and one insert at the run's first index, where one call per child cost n walks, time quadratic in
+// n. A change inside ygo, or one that reaches the fragment around this interface, makes no call a
+// test can read.
+type childEdits interface {
+	// delete removes length children at index: one YXmlFragment.Delete.
+	delete(index, length int)
+	// insert creates the Yjs type of each of children, none of them empty, and inserts them at
+	// index: one YXmlFragment.Insert.
+	insert(index int, children []normalizedChild) error
+}
+
+// editsOf is the childEdits of frag in txn: fragmentEdits, reported to the recorder a test set
+// (RecordChildEditsForTest), and only then.
+func editsOf(txn *crdt.Transaction, frag *crdt.YXmlFragment) childEdits {
+	edits := fragmentEdits{txn: txn, frag: frag}
+	if record := childEditRecorder.Load(); record != nil {
+		return recordedEdits{edits: edits, record: *record}
 	}
+	return edits
+}
+
+// fragmentEdits is childEdits on frag, written in txn.
+type fragmentEdits struct {
+	txn  *crdt.Transaction
+	frag *crdt.YXmlFragment
+}
+
+func (e fragmentEdits) delete(index, length int) {
+	e.frag.Delete(e.txn, index, length)
+}
+
+// insert inserts children in one call, and an element no document holds yet copies the children
+// it buffers on every insert as well, so inserting n children one at a time cost n walks
+// (LEGION-465). One call walks to index once, and writes what one insert per child at consecutive
+// indexes wrote: each child's origin is the child before it, and its right origin the child that
+// stood at index. It is how y-prosemirror writes a fragment's new children (updateYFragment's tail
+// insert, and createTypeFromElementNode's).
+func (e fragmentEdits) insert(index int, children []normalizedChild) error {
 	nodes := slices.Grow(slices.Clip(emptyChildren), len(children))
 	for _, child := range children {
 		if child.isText() {
-			text, err := createTypeFromTextNodes(txn, child.text)
+			text, err := createTypeFromTextNodes(e.txn, child.text)
 			if err != nil {
 				return err
 			}
 			nodes = append(nodes, text)
 			continue
 		}
-		element, err := createTypeFromElementNode(txn, child.element)
+		element, err := createTypeFromElementNode(e.txn, child.element)
 		if err != nil {
 			return err
 		}
 		nodes = append(nodes, element)
 	}
-	countWalk(index)
-	frag.Insert(txn, index, nodes...)
+	e.frag.Insert(e.txn, index, nodes...)
 	return nil
 }
 
@@ -356,8 +387,10 @@ func createTypeFromElementNode(txn *crdt.Transaction, node *Node) (*crdt.YXmlEle
 			element.SetAttributeValue(txn, key, yjsAttributeValue(value))
 		}
 	}
-	if err := insertPChildren(txn, &element.YXmlFragment, 0, normalizePNodeContent(node.Children)); err != nil {
-		return nil, err
+	if children := normalizePNodeContent(node.Children); len(children) > 0 {
+		if err := editsOf(txn, &element.YXmlFragment).insert(0, children); err != nil {
+			return nil, err
+		}
 	}
 	return element, nil
 }

@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,44 +16,48 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Saving a pathological body costs work linear in it, at every size a caller may send. Two
-// defects made a save quadratic, and the row holds each to the work it did, which a busy machine
-// cannot move, where it held the save's time before and failed on loaded runners (39 times
-// against a bound of 32, and 72 times, both on correct code).
+// TestSavingAPathologicalBodyIsBounded holds the two defects that made saving a pathological body
+// quadratic to the work each one does, which a busy machine cannot move. It held the save's time
+// before, and correct code failed it on loaded runners (39 times against a bound of 32, and 72).
 //
-// Postgres's text-search parser tries to read a host name wherever letters or digits meet an
-// underscore, and scans on to the end of the whitespace-free run each time, so a run such as
-// `a_a_a_…` cost time quadratic in its length: 64 KiB of `a_` saved in 46 s. search_text (migration
-// 0056) breaks every run with a space after its sixteenth underscore-joined segment, which bounds
-// the rescans, and each search trigger hands the parser search_text's answer. The parser's work
-// never reaches a count this test can read; its input does. So the row holds the input: the
-// triggers of the two tables these saves write read their text through search_text
-// (assertSearchTriggersNormalise), and search_text leaves no run of more than searchTextSegments
-// segments in the text of each save (searchRunSegments), counted before it is saved. With
-// search_text answering its input unchanged, 64 KiB of `a_` reads as one run of 32,763 segments.
+// Postgres's text-search parser rescans a whitespace-free run from every point where letters or
+// digits meet an underscore, so a run of `a_` cost time quadratic in its length: 64 KiB of it saved
+// in 46 s. search_text (migration 0056) breaks a run after its sixteenth underscore-joined segment.
+// The parser's work reaches no count a test can read; its input does. So the row holds that every
+// trigger function writing the search vector of the two tables these saves write passes the
+// saved text to the parser only through search_text (assertSearchTriggersNormalise), and that
+// search_text leaves no run of more than searchTextSegments segments in each `a_` save
+// (searchRunSegments). With search_text answering its input unchanged, 1 KiB of `a_` reads as one
+// run of 507 segments. The documents trigger strips ask blocks from search_text's answer, which can
+// join two runs into one again: that defect is older than this row, is fixed apart from it, and no
+// count here reads it.
 //
-// pmdoc's Update wrote each new block at its own index, and ygo walks a fragment from its first
-// child to the index it is given, so replacing a quote of n headings with a quote of n rules took
-// n²/2 steps: 10.5 s of CPU at 21,844 blocks, the most one write's element limit allows of it,
-// where it takes 1.5 s with one insert for the run. The row counts those steps
-// (pmdoc.CountWalksForTest): a replacement may walk past no more children than its document holds
-// blocks. With an insert for each block, 682 blocks walk past 232,221.
+// pmdoc's Update wrote each new block with its own insert, and ygo walks a fragment from its first
+// child to the index each insert or delete names, so replacing a quote of n headings with a quote
+// of n rules took n²/2 steps: 3.9 to 4.3 s of CPU at 21,844 blocks, the most one write's element
+// limit allows of it, against 0.68 to 0.69 s with one insert for the run (2026-11-21). Update makes
+// every positional insert and delete through one interface, and the row reads each call it makes
+// (pmdoc.RecordChildEditsForTest): a run of replaced blocks after two kept ones must be exactly
+// one delete and one insert at index 2. A write that deletes the run one block at a time makes n
+// deletes, and one that inserts it one block at a time n inserts.
 //
-// The ladders keep their sizes, each save is answered 201, and the largest of each is the most a
-// caller can send: a mebibyte of document, contracts.DispatchBlockUnits characters of comment, and
-// 21,844 replaced blocks. Written as paragraph text, the larger document runs make more elements
-// than one write may (TestUploadRefusesADocumentTooLargeToStore), so each run is a code block's
-// text, which the document stores and search indexes whole; pmdoc's linear-time test holds the
-// parser on the same runs. An issue title is capped at 1,000 characters (contracts.IssueTitleMax),
-// and its index reads it through search_text too.
+// The largest save of each ladder is the most a caller can send: a mebibyte of document,
+// contracts.DispatchBlockUnits characters of comment, and 21,844 blocks in the replaced quote. Each
+// document's run is a code block's text, which the document stores and search indexes whole:
+// written as paragraph text, the larger runs make more elements than one write may
+// (TestUploadRefusesADocumentTooLargeToStore). The `a_b*` and `)_` documents check only that each
+// save is answered 201: search_text finds no run in them to break, and pmdoc's growth tests hold
+// their parse.
 //
-// What no count here holds: a change to the save that costs CPU and walks no more children and
-// leaves search_text's runs as they are, in Postgres or in Go.
+// What no count here holds: a change inside ygo; a change in pmdoc that reaches the fragment around
+// that interface, or makes more than one ygo call inside one of its methods; and a save that costs
+// more CPU without making another call or leaving a longer search_text run, in Go or in Postgres.
+// The count that load cannot move for that last is the instructions the save executes, and this box
+// gives a test no hardware counter (kernel.perf_event_paranoid is 4).
 //
-// Settlement is held off, so no settlement writes a document while a replacement's walks are
-// counted, and the test server's shutdown, which would otherwise spend its drain budget settling
-// mebibyte documents, finds no document loaded and leaves each to resume. No test in this package
-// calls t.Parallel, so no other write runs beside the one counted.
+// Settlement is held off, so no settlement writes a document while a replacement's calls are
+// recorded; the test server's shutdown settles each document still loaded, after every count is
+// read. No test in this package calls t.Parallel, so no other write runs beside the one recorded.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
@@ -61,16 +66,19 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	for _, test := range []struct {
 		shape string
 		sizes []int
+		runs  bool
 	}{
-		{"a_", []int{1 << 10, 64 << 10, 1 << 20}},
-		{"a_b*", []int{2 << 10, 128 << 10, 1 << 20}},
-		{")_", []int{256, 16 << 10, 256 << 10}},
+		{"a_", []int{1 << 10, 64 << 10, 1 << 20}, true},
+		{"a_b*", []int{2 << 10, 128 << 10, 1 << 20}, false},
+		{")_", []int{256, 16 << 10, 256 << 10}, false},
 	} {
 		t.Run("document "+test.shape, func(t *testing.T) {
 			for _, size := range test.sizes {
 				const fence = "```\n"
 				body := fence + strings.Repeat(test.shape, (size-2*len(fence)-1)/len(test.shape)) + "\n" + fence
-				assertSearchRunsBounded(t, database, fmt.Sprintf("a document of %s of `%s`", sizeText(size), test.shape), body)
+				if test.runs {
+					assertSearchRunsBounded(t, database, fmt.Sprintf("a document of %s of `%s`", sizeText(size), test.shape), body)
+				}
 				documents++
 				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 					"name": fmt.Sprintf("pathological-%d.md", documents),
@@ -96,34 +104,58 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 			}
 		}
 	})
-	// Replacing a quote of many headings with a quote of as many rules, every block changing type,
-	// is one run of replaced blocks: Update deletes the run with one call and inserts its
-	// replacements with another, each walking to the run's first index.
+	// A quote of two rules and then many headings, rewritten as a quote of the same two rules and
+	// as many rules again, is one run of replaced blocks after two kept ones: Update makes exactly
+	// one delete of the run and one insert of its replacements, both at the run's first index, 2.
 	t.Run("replacing many blocks", func(t *testing.T) {
-		const from, to = "> #\n", "> ***\n"
+		const kept, from, to = "> ***\n> ***\n", "> #\n", "> ***\n"
 		owner := "/api/v1/issues/" + issue.Key + "/artifacts"
-		for _, blocks := range []int{682, 5_461, 21_844} {
+		for _, blocks := range []int{682, 5_461, 21_842} {
 			documents++
 			name := fmt.Sprintf("many-blocks-%d.md", documents)
 			upload := func(body []byte, fields map[string]string) {
 				response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
 				if response.Code != http.StatusCreated {
-					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
+					t.Fatalf("upload %d blocks after the kept rules: status=%d body=%.200s", blocks, response.Code, response.Body.String())
 				}
 			}
-			upload([]byte(strings.Repeat(from, blocks)), map[string]string{"name": name})
+			upload([]byte(kept+strings.Repeat(from, blocks)), map[string]string{"name": name})
 			fields := map[string]string{"name": name, "precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, owner, name))}
-			var walked atomic.Int64
-			stop := pmdoc.CountWalksForTest(&walked)
-			upload([]byte(strings.Repeat(to, blocks)), fields)
-			stop()
-			t.Logf("replacing a quote of %d headings with a quote of %d rules walked past %d children, at most %d", blocks, blocks, walked.Load(), blocks)
-			if walked.Load() > int64(blocks) {
-				t.Fatalf("replacing a quote of %d headings with a quote of %d rules walked past %d children, want at most the %d blocks it writes: the write walks to each block it inserts",
-					blocks, blocks, walked.Load(), blocks)
+			edits := recordChildEdits(func() { upload([]byte(kept+strings.Repeat(to, blocks)), fields) })
+			want := []pmdoc.ChildEdit{{Index: 2, Count: blocks}, {Insert: true, Index: 2, Count: blocks}}
+			t.Logf("replacing %d headings after 2 kept rules with as many rules made %s", blocks, childEditsText(edits))
+			if !slices.Equal(edits, want) {
+				t.Fatalf("replacing %d headings after 2 kept rules with as many rules made %s, want %v: each call walks the quote from its first child",
+					blocks, childEditsText(edits), want)
 			}
 		}
 	})
+}
+
+// recordChildEdits runs write and answers every positional call it made to a fragment's children,
+// in order (pmdoc.RecordChildEditsForTest), restoring the recorder it found however write ends.
+func recordChildEdits(write func()) []pmdoc.ChildEdit {
+	var mu sync.Mutex
+	var edits []pmdoc.ChildEdit
+	restore := pmdoc.RecordChildEditsForTest(func(edit pmdoc.ChildEdit) {
+		mu.Lock()
+		defer mu.Unlock()
+		edits = append(edits, edit)
+	})
+	defer restore()
+	write()
+	mu.Lock()
+	defer mu.Unlock()
+	return slices.Clone(edits)
+}
+
+// childEditsText writes edits as a failure names them: every call when there are few, else the
+// count and the first three and the last.
+func childEditsText(edits []pmdoc.ChildEdit) string {
+	if len(edits) <= 6 {
+		return fmt.Sprintf("%d positional calls, %v", len(edits), edits)
+	}
+	return fmt.Sprintf("%d positional calls, %v … %v", len(edits), edits[:3], edits[len(edits)-1])
 }
 
 // searchTextSegments is the most underscore-joined segments search_text (migration 0056) leaves
@@ -153,11 +185,12 @@ func assertSearchRunsBounded(t *testing.T, database *store.Store, what, text str
 	}
 }
 
-// assertSearchTriggersNormalise holds the triggers that index what this test saves to reading it
-// through search_text: the one trigger function of each table that writes the row's search
-// vector, read from the catalog as the database runs it, applies search_text to the column it
-// indexes. A trigger that handed the parser the raw text would index the same lexemes, so no
-// stored vector tells the two apart.
+// assertSearchTriggersNormalise holds the triggers that index what this test saves to passing the
+// saved text to the parser only through search_text: in every trigger function of each table that
+// writes the row's search vector, read from the catalog as the database runs it, each read of the
+// column it indexes is the whole argument of search_text (searchTextReads). A trigger that also
+// handed the parser the raw text would index the same lexemes, so no stored vector tells the two
+// apart.
 func assertSearchTriggersNormalise(t *testing.T, database *store.Store) {
 	t.Helper()
 	for table, column := range map[string]string{"artifact_versions": "markdown", "comments": "body"} {
@@ -165,7 +198,7 @@ func assertSearchTriggersNormalise(t *testing.T, database *store.Store) {
 			select p.proname, p.prosrc
 			from pg_trigger tr
 			join pg_proc p on p.oid = tr.tgfoid
-			where tr.tgrelid = $1::regclass and not tr.tgisinternal and p.prosrc like '%new.search :=%'`, table)
+			where tr.tgrelid = $1::regclass and not tr.tgisinternal and p.prosrc ~* 'new\s*\.\s*search\s*:?='`, table)
 		if err != nil {
 			t.Fatalf("read the search triggers of %s: %v", table, err)
 		}
@@ -181,13 +214,69 @@ func assertSearchTriggersNormalise(t *testing.T, database *store.Store) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("read the search triggers of %s: %v", table, err)
 		}
-		if len(writers) != 1 {
-			t.Fatalf("%s has %d trigger functions that write its search vector (%v), want one", table, len(writers), writers)
+		if len(writers) == 0 {
+			t.Fatalf("no trigger function of %s writes its search vector: nothing was read", table)
 		}
 		for name, source := range writers {
-			if want := "search_text(new." + column + ")"; !strings.Contains(source, want) {
-				t.Fatalf("%s's search trigger %s does not read %s through search_text (%s):\n%s", table, name, column, want, source)
+			reads, normalised := searchTextReads(source, column)
+			if reads == 0 || normalised != reads {
+				t.Fatalf("%s's search trigger %s reads new.%s %d times, %d of them as search_text(new.%s), want every read and at least one:\n%s",
+					table, name, column, reads, normalised, column, source)
 			}
+		}
+	}
+}
+
+// searchTextReads counts the reads of new.<column> in a trigger function's source, and how many of
+// them are the whole argument of search_text, as search_text(new.<column>). It reads the source
+// lowercased, with its whitespace and double quotes taken out, so neither case, spacing nor a
+// quoted identifier hides a read.
+func searchTextReads(source, column string) (reads, normalised int) {
+	compact := strings.ReplaceAll(strings.ToLower(strings.Join(strings.Fields(source), "")), `"`, "")
+	read, wrapper := "new."+column, "search_text("
+	identifier := func(at int) bool {
+		if at < 0 || at >= len(compact) {
+			return false
+		}
+		c := compact[at]
+		return c == '_' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+	}
+	for from := 0; ; {
+		found := strings.Index(compact[from:], read)
+		if found < 0 {
+			return reads, normalised
+		}
+		at, end := from+found, from+found+len(read)
+		from = end
+		if identifier(at-1) || identifier(end) {
+			continue
+		}
+		reads++
+		if strings.HasSuffix(compact[:at], wrapper) && end < len(compact) && compact[end] == ')' {
+			normalised++
+		}
+	}
+}
+
+// searchTextReads counts a read of the indexed column as normalised only when it is search_text's
+// whole argument, whatever its case, spacing or quoting; a second, raw read beside a normalised one
+// is counted as a read that is not.
+func TestSearchTextReadsCountsEveryRawRead(t *testing.T) {
+	for _, test := range []struct {
+		source            string
+		reads, normalised int
+	}{
+		{`new.search := search_vector('', search_text(new.body));`, 1, 1},
+		{`new.search := search_vector('', search_text(new.body)) || to_tsvector('simple', new.body);`, 2, 1},
+		{`NEW.search := search_vector('', SEARCH_TEXT( NEW . "body" ));`, 1, 1},
+		{`new.search := to_tsvector('simple', new.body);`, 1, 0},
+		{`new.search := search_vector('', search_text(new.body || ' ' || new.title));`, 1, 0},
+		{`new.search := search_vector(new.bodytext, search_text(new.body));`, 1, 1},
+		{`new.search := search_vector('', search_text(new.title));`, 0, 0},
+	} {
+		reads, normalised := searchTextReads(test.source, "body")
+		if reads != test.reads || normalised != test.normalised {
+			t.Errorf("searchTextReads(%q) = %d reads, %d normalised, want %d and %d", test.source, reads, normalised, test.reads, test.normalised)
 		}
 	}
 }
