@@ -4074,6 +4074,26 @@ No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
 
+**Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
+command of a hold through the broker's records, one command at a time: while one command's intent
+is pending every other is refused, but its own pending intent admits it again, its rerun after a
+crash, so the operator runs one command of a hold at a time (assumption A2), and the journal cannot
+tell a rerun from a second process. A command whose own check refuses after its intent
+writes a `stop` entry naming what it left, and `hold abort` ends the hold once a command has
+stopped and no other command's intent is pending; `hold release` follows only a complete record or
+one whose stops all left nothing changed. In `hub-restore`, before a done `hold prove`, `hold abort`
+passes its disk check only with each target's disk its step-1 one. After a done prove, `hold abort`
+is admitted only once the pending command's latest entry is a `stop` (a census that cannot read a
+stream, say), or once its own latest entry is a stop, and is refused otherwise; it then releases
+the row, its entry carrying the stop's record of what was left, after `envoy-infra hold abort`
+compares each disk with the done prove's record. After a failed re-prove on a disk that moved,
+restore that target back onto the done prove's disk, then run `hold abort`. If the proven disk is
+gone (a 404 by name, or that name now has another numeric id), `hold abort` writes a stop naming
+it: restore that target onto another disk, run `hold prove` there, and run `hold abort` again,
+which reruns the reconcile for the stores its stop named and releases over the new prove's disks.
+The residual: on this path clients reach the restored and proven hub before its census, until a
+`streams-census` hold runs clean.
+
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can

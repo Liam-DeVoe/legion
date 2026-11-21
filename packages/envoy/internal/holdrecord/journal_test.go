@@ -2,6 +2,7 @@ package holdrecord_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -56,14 +57,18 @@ func lose(served http.Handler) func(http.ResponseWriter, *http.Request) bool {
 	}
 }
 
-// row reads the hold row, restoring the first one, released, when there is none.
+// row reads the hold row, writing the first one, released with no hold id, by Bootstrap when there
+// is none.
 func row(t *testing.T, c *holdrecord.Client) holdrecord.Row {
 	t.Helper()
 	ctx := context.Background()
 	got, err := c.Row(ctx)
 	var refusal *holdrecord.RouteError
 	if errors.As(err, &refusal) && refusal.Code == "no_row" {
-		got, err = c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "first-row", "the first row")
+		if err := c.Bootstrap(ctx); err != nil {
+			t.Fatalf("bootstrap the first row: %v", err)
+		}
+		got, err = c.Row(ctx)
 	}
 	if err != nil {
 		t.Fatalf("read the hold row: %v", err)
@@ -587,6 +592,87 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// The first row is Bootstrap's alone: RestoreRow restores a lost row, so a released row with no
+	// hold id is refused before anything is sent, naming Bootstrap. With the row deleted mid-hold,
+	// RestoreRow of the held row with its hold id still follows restore_gen once. Fails if RestoreRow
+	// follows restore_gen for a released row with no hold id: it lands that row at gen 8, mid-hold.
+	t.Run("RestoreRow refuses the first row's shape and still follows restore_gen for a held row", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-lost", holdrecord.WorkflowBucketsCreate, nil)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "", "the first row")
+		if err == nil || !strings.Contains(err.Error(), "Bootstrap") {
+			t.Fatalf("RestoreRow of a released row with no hold id, mid-hold, answered %+v, %v; want a refusal naming Bootstrap", got, err)
+		}
+		var refusal *holdrecord.RouteError
+		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
+			t.Fatalf("after the refused restore Row answered %v, want no_row", err)
+		}
+		restored, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-lost", "restored after a delete")
+		if err != nil || restored.Gen <= 1 || restored.Phase != natsgrant.OperatorPhaseHeld || restored.HoldID != "h-lost" {
+			t.Fatalf("RestoreRow of the held row = %+v, %v; want held h-lost at restore_gen", restored, err)
+		}
+	})
+
+	// Bootstrap writes the first row, gen 1, released, no hold id, once. With the row there it
+	// answers row_exists; with the row deleted mid-hold, the log holds entries, and it answers the
+	// route's 409 as it is, a RestoreGenError naming restore_gen, writing nothing.
+	t.Run("Bootstrap writes the first row once and answers any 409 as it is", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		if err := c.Bootstrap(ctx); err != nil {
+			t.Fatalf("Bootstrap on an empty log: %v", err)
+		}
+		first, err := c.Row(ctx)
+		if err != nil || first.Gen != 1 || first.Phase != natsgrant.OperatorPhaseReleased || first.HoldID != "" {
+			t.Fatalf("after Bootstrap the row is %+v, %v; want gen 1, released, no hold id", first, err)
+		}
+		var refusal *holdrecord.RouteError
+		if err := c.Bootstrap(ctx); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
+			t.Fatalf("Bootstrap with the row there answered %v, want 409 row_exists", err)
+		}
+		hold(t, c, "h-boot", holdrecord.WorkflowBucketsCreate, nil)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		var highest int64
+		if err := r.Pool.QueryRow(ctx, `select max(gen) from nats_hold_log`).Scan(&highest); err != nil {
+			t.Fatal(err)
+		}
+		err = c.Bootstrap(ctx)
+		var mismatch *holdrecord.RestoreGenError
+		if !errors.As(err, &mismatch) || mismatch.RestoreGen != uint64(highest)+1 || !errors.As(err, &refusal) || refusal.Code != "gen_mismatch" {
+			t.Fatalf("Bootstrap with the log at gen %d answered %v, want a RestoreGenError naming restore_gen %d (409 gen_mismatch)", highest, err, highest+1)
+		}
+		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
+			t.Fatalf("after the refused Bootstrap Row answered %v, want no_row: it wrote a row", err)
+		}
+	})
+
+	// VerifyKeys answers the keys the client verifies the hold's rows under, as a copy: a caller
+	// that flips a byte of a key it got, or replaces one, changes nothing the client verifies with.
+	// Fails if VerifyKeys answers the client's own slice or keys: the row then reads as unknown.
+	t.Run("VerifyKeys answers a copy of the keys the client verifies with", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		row(t, c)
+		keys := c.VerifyKeys()
+		if len(keys) != 1 || !keys[0].Equal(r.VerifyKey) {
+			t.Fatalf("VerifyKeys answered %v, want the rig's one key", keys)
+		}
+		keys[0][0] ^= 0xff
+		keys[0] = make(ed25519.PublicKey, ed25519.PublicKeySize)
+		if _, err := c.Row(ctx); err != nil {
+			t.Fatalf("after the caller changed the keys VerifyKeys answered, Row answered %v, want the verified row", err)
+		}
+		if again := c.VerifyKeys(); len(again) != 1 || !again[0].Equal(r.VerifyKey) {
+			t.Fatalf("VerifyKeys answered %v after the caller's change, want the rig's one key", again)
+		}
+	})
+
 	t.Run("in hub-restore the census needs a done prove", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
@@ -700,6 +786,88 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 		if _, err := c.Admit(ctx, "h-abort3", cmd("hold prove"), map[string]string{"restored.A": "disk-7"}); err != nil {
 			t.Fatalf("hold prove after a stopped abort: %v", err)
+		}
+	})
+
+	// After a done prove, a census that stops (UNKNOWN) admits hold abort, its intent carrying the
+	// census's record of what it left; hold release stays refused, since hub-restore's completion is
+	// its clean census. The abort then releases the row, over the proven disks, which the hold's
+	// command compares with the done prove's record outside the journal (t-10's check), and its done
+	// entry completes the record.
+	t.Run("hub-restore: after a done prove, a stopped census admits hold abort, which releases the row", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-hubstop", holdrecord.WorkflowHubRestore, twoDisks)
+		run(t, c, "h-hubstop", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-7"}, map[string]string{"disk.A": "disk-7", "disk_id.A": "7"})
+		if _, err := c.Admit(ctx, "h-hubstop", cmd("streams census"), nil); err != nil {
+			t.Fatal(err)
+		}
+		const left = "UNKNOWN: KV_envoy_roles' info cannot be read"
+		if err := c.AppendStopLeft(ctx, "h-hubstop", "streams census", "the run is not clean", left); err != nil {
+			t.Fatalf("the census's stop: %v", err)
+		}
+		_, err := c.Admit(ctx, "h-hubstop", cmd(holdrecord.CommandRelease), nil)
+		refused(t, "hold release after the census's stop", err, holdrecord.ErrOutOfOrder, "not complete")
+		if _, err := c.Admit(ctx, "h-hubstop", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after a done prove and the census's stop: %v", err)
+		}
+		d, _ := journal(t, c, "h-hubstop")
+		abort, carried := last(t, d), false
+		for _, v := range abort.Inputs {
+			carried = carried || v == "streams census: "+left
+		}
+		if abort.Command != holdrecord.CommandAbort || abort.State != "intent" || !carried {
+			t.Fatalf("the journal ends %+v, want hold abort's intent carrying the census's record %q", abort, "streams census: "+left)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-hubstop", "aborted over the proven disks"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-hubstop", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-hubstop"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
+		}
+	})
+
+	// Rules (1) and (2): after a failed re-prove, abort's disk check finds the done prove's disk
+	// gone and its stop names it; the operator restores onto another disk and proves it, and abort,
+	// admitted again after its own stop, releases the row over the new epoch's disk.
+	t.Run("hub-restore: an abort that finds the proven disk gone stops, and after a new prove runs again", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-gone", holdrecord.WorkflowHubRestore, twoDisks)
+		run(t, c, "h-gone", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-7"}, map[string]string{"disk.A": "disk-7", "disk_id.A": "7"})
+		if _, err := c.Admit(ctx, "h-gone", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-8"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-gone", holdrecord.CommandProve, "disk-8 is not attached", holdrecord.LeftUnchanged); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-gone", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("abort after the failed re-prove: %v", err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-gone", holdrecord.CommandAbort, "the done prove's disk of A is gone: disk-7 answers 404", holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("abort's gone-disk stop: %v", err)
+		}
+		run(t, c, "h-gone", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-9"}, map[string]string{"disk.A": "disk-9", "disk_id.A": "9"})
+		if _, err := c.Admit(ctx, "h-gone", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("abort after its own stop and the new prove: %v", err)
+		}
+		d, _ := journal(t, c, "h-gone")
+		if p, _ := holdrecord.Proven(d); p.DiskIDs["A"] != "9" {
+			t.Fatalf("the abort reads the done prove's disk %q, want the new epoch's 9", p.DiskIDs["A"])
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-gone", "aborted over the new epoch's disk"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-gone", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-gone"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
 		}
 	})
 
@@ -1017,6 +1185,48 @@ func TestTheHoldJournal(t *testing.T) {
 		d, _ := journal(t, a, "h-ended")
 		if e := last(t, d); e.Command != holdrecord.CommandRelease || e.State != "done" || !d.Complete {
 			t.Fatalf("after the release the journal ends %+v with complete %v, want release's done and the completion kept", e, d.Complete)
+		}
+	})
+
+	// A run cut after its intent leaves what it changed unknown: its rerun's stop cannot record
+	// unchanged, which AppendStopLeft refuses naming the rule, and hold release is refused over the
+	// stop that names what the runs left; hold abort ends the hold.
+	t.Run("a rerun after a cut run cannot stop as unchanged, so hold release stays refused", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		for i, x := range []struct {
+			w       holdrecord.Workflow
+			command string
+		}{{holdrecord.WorkflowCutover, "replay"}, {holdrecord.WorkflowBucketsCreate, "buckets create"}, {holdrecord.WorkflowStreamsUpdate, "streams update"}} {
+			holdID := "h-cut-" + strconv.Itoa(i)
+			hold(t, c, holdID, x.w, nil)
+			if _, err := c.Admit(ctx, holdID, cmd(x.command), nil); err != nil {
+				t.Fatal(err)
+			}
+			// The first run is cut after its intent: no entry follows it. Its rerun is admitted.
+			if _, err := c.Admit(ctx, holdID, cmd(x.command), nil); err != nil {
+				t.Fatalf("%s: the rerun after the cut run: %v", x.command, err)
+			}
+			err := c.AppendStopLeft(ctx, holdID, x.command, "its check refuses", holdrecord.LeftUnchanged)
+			if err == nil || !strings.Contains(err.Error(), "ended with no entry") {
+				t.Fatalf("%s: the rerun's unchanged stop after a cut run answered %v, want a refusal naming the run that ended with no entry", x.command, err)
+			}
+			const left = "unknown: an earlier run ended with no entry"
+			if err := c.AppendStopLeft(ctx, holdID, x.command, "its check refuses", left); err != nil {
+				t.Fatalf("%s: the rerun's stop naming what the runs left: %v", x.command, err)
+			}
+			_, err = c.Admit(ctx, holdID, cmd(holdrecord.CommandRelease), nil)
+			refused(t, x.command+": release after the cut run's rerun stopped", err, holdrecord.ErrOutOfOrder, "not complete")
+			if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandAbort), nil); err != nil {
+				t.Fatalf("%s: abort after the rerun's stop: %v", x.command, err)
+			}
+			current := row(t, c)
+			if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, holdID, "aborted"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.AppendDone(ctx, holdID, holdrecord.CommandAbort, nil); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 

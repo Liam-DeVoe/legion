@@ -617,7 +617,8 @@ func routes() []apiRoute {
 		// id other than the row's 409 hold_mismatch.
 		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
 		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
-		// was stored and its signature; a record below its floor is 409 below_floor.
+		// was stored and its signature; a record below its floor, or one the floor has seen that
+		// is now absent though no route deleted it, is 409 below_floor.
 		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
 		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
 		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released:
