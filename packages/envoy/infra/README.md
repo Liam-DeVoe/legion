@@ -2793,6 +2793,9 @@ to read, and assumes the wiring of the deployment the alarms were written for: t
 deliveries come from Dispatch's GitHub App (`legion-envoy`), whose redelivery sweep retries them,
 and that Slack retries an event three times.
 A listener fed otherwise pages the same way, with descriptions that overstate what is retried.
+CloudWatch takes an alarm description of at most 1,024 characters, so the component refuses a
+`logGroupName` that would make any of these descriptions longer, naming the alarm, before it
+registers anything (`reconnect-hooks-stalled`'s, the longest, leaves room for about a hundred).
 
 Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn` and
 `internalUrl`, `http://<cloudMapServiceName>.<cloudMapNamespaceName>:9020`.
