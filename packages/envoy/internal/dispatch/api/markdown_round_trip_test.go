@@ -1,13 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,89 +285,208 @@ type roundTripReplaced struct {
 	rendering   string
 }
 
-// roundTripRefusals is every text of TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText,
-// each with the scope its refusal holds for, which is whether a replacement keeps the rule too.
-// Scoped upload: text past the bytes one document holds; text holding U+0000; a file holding a
-// byte that is not UTF-8, which no JSON string carries; and the parse's refusals, which a
-// replacement's parse makes alike - 12,000 list items and text Go's strings.TrimSpace empties,
-// each past the elements one write may make, markdown the parser refuses, markdown whose
-// rendering no reader reads back, and an ask that breaks its content rule in such markdown, which
-// that refusal names instead (askRefusalInstead). Scoped new-document, which a replacement relaxes
-// where the document it replaces holds the same or leaves the block unchanged: text within the
-// bytes whose rendering, which the seed weighs, passes them, twice; an ask block that breaks its
-// content rule; a block id named on two blocks, alone, beside a list the store respells, and in
-// markdown whose rendering no reader reads back, which the most permissive replacement refuses for
-// that read-back; and a check CI proves breaking each of the three rules its attributes keep.
+// textRefusalsFile is the list of the texts an upload refuses for the text alone, one JSON object
+// a row in a JSON array. roundTripRefusals reads it for the route tests here, and the end-to-end
+// specs of packages/dispatch/e2e read it by a relative path against a running Dispatch, so both
+// take their rows from one list. JSON takes no comments, so this is its description. A row is a
+// roundTripRefusal, its members named as that type's fields: name; text, a list of parts joined in
+// order; sent, ["inline", "file"] or ["file"]; status; code; words, "" where the row names none;
+// scope, "upload" or "new-document" (contracts.TextRefusalUpload and
+// contracts.TextRefusalNewDocument); and replaced, absent where it is the zero value, with
+// {status, code, words} or {rendering}, each id the parse mints written "minted". Every member but
+// replaced is written on every row. A part is one of these, so the large texts are generated
+// rather than stored:
+//
+//   - {"text": s}: s as written;
+//   - {"repeat": s, "times": n}: s n times;
+//   - {"repeat": s, "bytes": n}: s repeated and cut to its first n bytes;
+//   - {"base64": s}: the bytes s decodes to, for bytes no JSON string carries, such as 0xFF.
+const textRefusalsFile = "testdata/text-refusals.json"
+
+// textRefusalRow is a row of textRefusalsFile as JSON writes it, and textRefusalPart a part of its
+// text.
+type textRefusalRow struct {
+	Name     string            `json:"name"`
+	Text     []textRefusalPart `json:"text"`
+	Sent     []string          `json:"sent"`
+	Status   int               `json:"status"`
+	Code     string            `json:"code"`
+	Words    string            `json:"words"`
+	Scope    string            `json:"scope"`
+	Replaced struct {
+		Status    int    `json:"status"`
+		Code      string `json:"code"`
+		Words     string `json:"words"`
+		Rendering string `json:"rendering"`
+	} `json:"replaced"`
+}
+
+type textRefusalPart struct {
+	Text   *string `json:"text"`
+	Base64 *string `json:"base64"`
+	Repeat string  `json:"repeat"`
+	Times  int     `json:"times"`
+	Bytes  int     `json:"bytes"`
+}
+
+// textRefusalText is the text parts stand for (textRefusalsFile), or an error naming the first
+// part that is none of the four.
+func textRefusalText(parts []textRefusalPart) (string, error) {
+	var text strings.Builder
+	for index, part := range parts {
+		literal, encoded, repeated := part.Text != nil, part.Base64 != nil, part.Repeat != ""
+		switch {
+		case literal && !encoded && !repeated && part.Times == 0 && part.Bytes == 0:
+			text.WriteString(*part.Text)
+		case encoded && !literal && !repeated && part.Times == 0 && part.Bytes == 0:
+			decoded, err := base64.StdEncoding.DecodeString(*part.Base64)
+			if err != nil {
+				return "", fmt.Errorf("part %d: %w", index, err)
+			}
+			text.Write(decoded)
+		case repeated && !literal && !encoded && part.Times > 0 && part.Bytes == 0:
+			text.WriteString(strings.Repeat(part.Repeat, part.Times))
+		case repeated && !literal && !encoded && part.Bytes > 0 && part.Times == 0:
+			text.WriteString(strings.Repeat(part.Repeat, part.Bytes/len(part.Repeat)+1)[:part.Bytes])
+		default:
+			return "", fmt.Errorf(`part %d is none of {"text": s}, {"base64": s}, {"repeat": s, "times": n} and {"repeat": s, "bytes": n}, s not empty and n above 0`, index)
+		}
+	}
+	return text.String(), nil
+}
+
+// roundTripRefusals is every row of textRefusalsFile, the texts of
+// TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText, each with the scope its refusal holds
+// for, which is whether a replacement keeps the rule too. Scoped upload: text past the bytes one
+// document holds; text holding U+0000; a file holding a byte that is not UTF-8, which no JSON
+// string carries; and the parse's refusals, which a replacement's parse makes alike - 12,000 list
+// items and text Go's strings.TrimSpace empties, each past the elements one write may make,
+// markdown the parser refuses, markdown whose rendering no reader reads back, and an ask that
+// breaks its content rule, which is a new document's, in such markdown, which that refusal names
+// instead (askRefusalInstead). Scoped new-document, which a replacement relaxes where the document
+// it replaces holds the same or leaves the block unchanged: text within the bytes whose rendering,
+// which the seed weighs, passes them, twice; an ask block that breaks its content rule; a block id
+// named on two blocks, alone, beside a list the store respells as well, which main answered
+// unchanged, and in markdown whose rendering no reader reads back, where the repeat is refused
+// before the read-back, which main's parse and a new document's seed never reach, and the most
+// permissive replacement reaches it and is refused it; and a check CI proves breaking each of the
+// three rules its attributes keep (ciCheckBreaks).
+//
+// The texts are built to the sizes checked here, and a row's words are the constant's where the
+// Go code names one, the CI checks' as ciCheckRefusal writes them.
 func roundTripRefusals(t *testing.T) []roundTripRefusal {
 	t.Helper()
-	words := strings.Repeat("word ", maxDocumentMarkdownBytes/len("word "))
-	pastBytes := words + "past\n"
-	if len(pastBytes) <= maxDocumentMarkdownBytes {
+	raw, err := os.ReadFile(textRefusalsFile)
+	if err != nil {
+		t.Fatalf("read the text refusals: %v", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var rows []textRefusalRow
+	if err := decoder.Decode(&rows); err != nil {
+		t.Fatalf("decode %s: %v", textRefusalsFile, err)
+	}
+	refusals := make([]roundTripRefusal, 0, len(rows))
+	named := make(map[string]roundTripRefusal, len(rows))
+	for _, row := range rows {
+		text, err := textRefusalText(row.Text)
+		if err != nil {
+			t.Fatalf("%s: the text of %q: %v", textRefusalsFile, row.Name, err)
+		}
+		if _, ok := named[row.Name]; ok {
+			t.Fatalf("%s names two rows %q", textRefusalsFile, row.Name)
+		}
+		refusal := roundTripRefusal{
+			name: row.Name, text: text, sent: row.Sent, status: row.Status, code: row.Code, words: row.Words, scope: row.Scope,
+			replaced: roundTripReplaced{
+				status: row.Replaced.Status, code: row.Replaced.Code, words: row.Replaced.Words, rendering: row.Replaced.Rendering,
+			},
+		}
+		refusals = append(refusals, refusal)
+		named[row.Name] = refusal
+	}
+	rowNamed := func(name string) roundTripRefusal {
+		t.Helper()
+		refusal, ok := named[name]
+		if !ok {
+			t.Fatalf("%s holds no row named %q", textRefusalsFile, name)
+		}
+		return refusal
+	}
+
+	if pastBytes := rowNamed("text past the bytes one document holds").text; len(pastBytes) <= maxDocumentMarkdownBytes {
 		t.Fatalf("the text is %d bytes, want more than a document's %d", len(pastBytes), maxDocumentMarkdownBytes)
 	}
 	// A paragraph line at the bytes one document holds, with no final line feed: the rendering ends
 	// it with one, a byte past the bytes.
-	unended := words[:len(words)-1] + "ss"
+	unended := rowNamed("text at the bytes whose rendering adds a final line feed").text
 	if len(unended) != maxDocumentMarkdownBytes || strings.HasSuffix(unended, "\n") {
 		t.Fatalf("the text is %d bytes, want a document's %d with no final line feed", len(unended), maxDocumentMarkdownBytes)
 	}
 	// 1,100 paragraphs of one backtick each, which pairs with no other, so the parse reads it as
 	// text and the rendering writes it escaped, a byte more each, after a paragraph that leaves the
 	// text a thousand bytes short of the cap.
-	ticks := strings.Repeat("a`\n\n", 1_100)
-	escaped := words[:maxDocumentMarkdownBytes-1_000-len(ticks)-2] + "\n\n" + ticks
-	if len(escaped) != maxDocumentMarkdownBytes-1_000 {
+	if escaped := rowNamed("text whose rendering escapes 1,100 backticks past the bytes").text; len(escaped) != maxDocumentMarkdownBytes-1_000 {
 		t.Fatalf("the text is %d bytes, want a thousand short of a document's %d", len(escaped), maxDocumentMarkdownBytes)
 	}
-	blank := strings.Repeat("\u00a0\n\n", 20_000)
-	if strings.TrimSpace(blank) != "" {
+	if blank := rowNamed("text strings.TrimSpace empties, past the elements one write may make").text; strings.TrimSpace(blank) != "" {
 		t.Fatal("the no-break space paragraphs are not blank to strings.TrimSpace")
 	}
-	both, fileOnly := []string{"inline", "file"}, []string{"file"}
-	upload, newDocument := contracts.TextRefusalUpload, contracts.TextRefusalNewDocument
-	refusals := []roundTripRefusal{
-		{name: "text past the bytes one document holds", text: pastBytes, sent: both,
-			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: contracts.MarkdownDocumentTooLarge, scope: upload},
-		{name: "12,000 list items, past the elements one write may make", text: strings.Repeat("- a\n", 12_000), sent: both,
-			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "more than 65536 elements", scope: upload},
-		{name: "text at the bytes whose rendering adds a final line feed", text: unended, sent: both,
-			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "this change would make the document's markdown", scope: newDocument},
-		{name: "text whose rendering escapes 1,100 backticks past the bytes", text: escaped, sent: both,
-			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "this change would make the document's markdown", scope: newDocument},
-		{name: "text strings.TrimSpace empties, past the elements one write may make", text: blank, sent: both,
-			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "more than 65536 elements", scope: upload},
-		{name: "text holding U+0000", text: "# Notes\n\nA\x00B\n", sent: both,
-			status: http.StatusBadRequest, code: "NUL_CHARACTER", words: "holds a NUL character (U+0000) at character 11", scope: upload},
-		{name: "a file holding a byte that is not UTF-8", text: "# Notes\n\nA\xffB\n", sent: fileOnly,
-			status: http.StatusBadRequest, code: "INVALID_UTF8", words: "file holds a byte that is not UTF-8 (0xFF) at character 11", scope: upload},
-		{name: "an ask block that breaks its content rule", text: askAfterOptions, sent: both,
-			status: http.StatusBadRequest, code: "INVALID_ASK_BLOCK", words: "holds a paragraph after its options", scope: newDocument},
-		{name: "markdown the parser refuses", text: "<details>x</details>", sent: both,
-			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", scope: upload},
-		{name: "markdown whose rendering no reader reads back", text: misreadRendering, sent: both,
-			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: "cannot be read back", scope: upload},
-		// The ask's content rule is a new document's, but where the rendering does not read back
-		// the parse's own refusal names the ask instead, which every upload makes.
-		{name: "an ask that breaks its content rule in markdown whose rendering no reader reads back", text: askAfterOptions + "\n" + misreadRendering, sent: both,
-			status: http.StatusBadRequest, code: "INVALID_ASK_BLOCK", words: "holds a paragraph after its options", scope: upload},
-		{name: "a block id named on two blocks", text: repeatedCheckID, sent: both,
-			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: `block id "c1" would name two blocks`, scope: newDocument,
-			replaced: roundTripReplaced{rendering: mintedCheckID}},
-		// The store respells the list beside the repeat as well, which main answered unchanged.
-		{name: "a block id named on two blocks beside a list the store respells", text: "* a\n\n" + repeatedCheckID, sent: both,
-			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: `block id "c1" would name two blocks`, scope: newDocument,
-			replaced: roundTripReplaced{rendering: "- a\n\n" + mintedCheckID}},
-		// The repeat is refused before the read-back, which main's parse and a new document's seed
-		// never reach; the most permissive replacement reaches it and is refused it.
-		{name: "a block id named on two blocks in markdown whose rendering no reader reads back", text: repeatedCheckID + "\n" + misreadRendering, sent: both,
-			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: `block id "c1" would name two blocks`, scope: newDocument,
-			replaced: roundTripReplaced{status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: "cannot be read back"}},
-	}
+
+	constants := map[string]string{"text past the bytes one document holds": contracts.MarkdownDocumentTooLarge}
 	for _, rule := range ciCheckBreaks {
-		refusals = append(refusals, roundTripRefusal{name: "a check proved by CI with " + rule.name, text: "Intro.\n\n" + ciCheckBlock("c2", rule.markdown), sent: both,
-			status: http.StatusBadRequest, code: "INVALID_CI_CHECK", words: ciCheckRefusal("c2", rule.rule), scope: newDocument})
+		constants["a check proved by CI with "+rule.name] = ciCheckRefusal("c2", rule.rule)
+	}
+	for name, words := range constants {
+		if got := rowNamed(name).words; got != words {
+			t.Fatalf("%s gives %q the words %q, want %q", textRefusalsFile, name, got, words)
+		}
 	}
 	return refusals
+}
+
+// roundTripDeclaredRefusal matches a refusal a route's description names: a three-digit status
+// and then an upper-case code of letters, digits and underscores, as in "400 INVALID_UTF8".
+var roundTripDeclaredRefusal = regexp.MustCompile(`\b[0-9]{3} [A-Z][A-Z0-9_]*\b`)
+
+// TestEveryRefusalTheRoundTripsDeclareHasATextRefusalRow binds textRefusalsFile to the round
+// trips' contract: each refusal the descriptions of POST /api/v1/markdown/round-trip and POST
+// /api/v1/markdown/file-round-trip name, which the OpenAPI document publishes, is the status and
+// code of at least one row, so a refusal the contract declares cannot go without a text that
+// proves it. The pairs are read from the route table itself, not from a copy of it.
+//
+// The inline round trip's description also names the route's own refusal of a body past its
+// bound, 413 CAP_EXCEEDED, which is no refusal of a text. It needs no exclusion: it is the pair of
+// the refusal of text past the bytes one document holds, which the description names too and rows
+// prove, and a pair is all this test asks a row for.
+func TestEveryRefusalTheRoundTripsDeclareHasATextRefusalRow(t *testing.T) {
+	held := map[string]bool{}
+	for _, refusal := range roundTripRefusals(t) {
+		held[fmt.Sprintf("%d %s", refusal.status, refusal.code)] = true
+	}
+	declared, described := map[string]bool{}, 0
+	for _, route := range (&server{}).routes() {
+		if name := route.Method + " " + route.Pattern; name != markdownRoundTripRoute && name != fileRoundTripRoute {
+			continue
+		}
+		described++
+		for _, pair := range roundTripDeclaredRefusal.FindAllString(route.Description, -1) {
+			declared[pair] = true
+		}
+	}
+	if described != 2 || len(declared) == 0 {
+		t.Fatalf("the route table holds %d of the two round trips, which name %d refusals; want both, naming at least one", described, len(declared))
+	}
+	var missing []string
+	for pair := range declared {
+		if !held[pair] {
+			missing = append(missing, pair)
+		}
+	}
+	slices.Sort(missing)
+	if len(missing) > 0 {
+		t.Fatalf("the round trips declare %s, and no row of %s is refused with it", strings.Join(missing, ", "), textRefusalsFile)
+	}
 }
 
 // roundTripOf is the round trip of text sent as kind - "inline" as the markdown round trip's
