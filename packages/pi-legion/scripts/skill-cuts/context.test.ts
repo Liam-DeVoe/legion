@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -678,7 +679,14 @@ test("a profile of N files at one commit is read with its tree and ceil(N/50) Gr
     root: path.join(root, "scratch"),
   };
   const built = await buildContext(c, arm, options);
-  expect(files.length).toBe(120);
+  // The build wrote exactly the profile's 120 files under the three skills' directories.
+  const written = dirs.flatMap((each) => {
+    const skill = path.join(built.skillsDir, path.basename(each));
+    return readdirSync(skill, { recursive: true, encoding: "utf8" })
+      .filter((name) => statSync(path.join(skill, name)).isFile())
+      .map((name) => `${each}/${name}`);
+  });
+  expect(written.toSorted()).toEqual(files.map((file) => file.path).toSorted());
   expect(callsOf(log)).toEqual({ tree: 1, graphql: Math.ceil(120 / 50), blob: 0, other: 0 });
   for (const file of files) {
     const at = path.join(built.skillsDir, file.path.replace(/^skills\//, ""));

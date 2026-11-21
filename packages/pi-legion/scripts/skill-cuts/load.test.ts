@@ -733,7 +733,9 @@ describe("skill-cuts load with saved captures", () => {
             { name: "alpha", hint: "Use for the alpha checklist." },
             { name: "beta", hint: "Use for the beta greeting." },
           ],
-          requestHeaders: { "anthropic-version": "2023-06-01" },
+          // A header the gateway's client never adds itself, so a run carries it only when the
+          // capture's headers go with it.
+          requestHeaders: { "anthropic-version": "2023-06-01", "anthropic-beta": "made-up-beta-1" },
           hintCalls: [],
           // A saved capture holds the harness-string rule's record, or it is refused.
           harness: { head: null, replaced: [] },
@@ -853,10 +855,10 @@ describe("skill-cuts load with saved captures", () => {
       ["near-1", 2, true, profile, sha256(profile)],
     ]);
     expect(summary.tested).toEqual({ name: "alpha", renamedFrom: null, changed: "nothing" });
-    // Each run went with the header the host sent, and no output holds the key.
+    // Each run went with the headers the host sent, and no output holds the key.
     const sent = recorder.requests.slice(before);
-    expect(sent.every((request) => request.headers["anthropic-version"] === "2023-06-01")).toBe(
-      true
+    expect(sent.map((request) => request.headers["anthropic-beta"])).toEqual(
+      Array(6).fill("made-up-beta-1")
     );
     const log = readFileSync(path.join(out, "requests.jsonl"), "utf8");
     expect(

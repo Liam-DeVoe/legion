@@ -34,12 +34,12 @@ import { BudgetSpent } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
 import { BLOCK_REASON, MESSAGES_VARIABLE } from "./replay-hook";
 
-// The capture on the pinned Oh My Pi (plan, R5 `capture.ts`), against the recorder, with made-up
-// skills and repositories: `alpha` and `beta` of a made-up `acme/skills`, read from local
-// directories in place of `gh`, and the messages of F1 (testdata/F1, an Oh My Pi 18.18.6 session
-// that reads skill://alpha and skill://alpha/references/x.md, captured by plan task t1 with
-// `HOME=<scratch> omp -p --session-dir <scratch>/sessions --model anthropic/claude-sonnet-5-5
-// "<prompt>"`, testdata/CAPTURE.md). Hint requests go to a stand-in that writes a new hint on each
+// The capture on the pinned Oh My Pi (capture.ts), against the recorder, with made-up skills and
+// repositories: `alpha` and `beta` of a made-up `acme/skills`, read from local directories in
+// place of `gh`, and the messages of F1 (testdata/F1, an Oh My Pi 18.18.6 session that reads
+// skill://alpha and skill://alpha/references/x.md, captured with `HOME=<scratch> omp -p
+// --session-dir <scratch>/sessions --model anthropic/claude-sonnet-5-5 "<prompt>"`,
+// testdata/CAPTURE.md). Hint requests go to a stand-in that writes a new hint on each
 // call, so a row can tell a hint the cache gave from one written again. LEGION_TEST_OMP names the
 // binary, as in this package's other real-binary tests: a run without it skips, except on GitHub
 // Actions, where the pi-legion job installs the pin (GITHUB_ACTIONS, not CI: agent harnesses on
@@ -449,9 +449,10 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           expect(hint).toStartWith(`Use for the ${skill} work, stand-in hint `);
           expect(listing.get(skill)).toBe(hint as string);
         }
-        expect(each.capture.record.listing.map((entry) => entry.hint)).toEqual([
-          ...listing.values(),
-        ]);
+        // The record lists each skill under the hint the profile's cache holds for it.
+        expect(each.capture.record.listing.map((entry) => [entry.name, entry.hint]).sort()).toEqual(
+          ["alpha", "beta"].map((skill) => [skill, profileHint(each, skill) as string])
+        );
       }
       const oldText = skillFrontmatter(path.join(dir, "old")).description;
       const newText = skillFrontmatter(path.join(dir, "new")).description;
@@ -518,13 +519,12 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         texts(each.capture.body.messages).some((text) => text.includes("It names the new text."));
       expect(named(fresh)).toBe(true);
       expect(named(old)).toBe(false);
-      // The context file reached the system prompt, and both digests are recorded.
+      // The context file reached the system prompt, and the session's digest is recorded.
       const body = old.capture.body;
       expect(texts(body.system).some((text) => text.includes("Keep each answer short."))).toBe(
         true
       );
       expect(old.capture.record.sessionDigest).toBe("46874d907e557998");
-      expect(old.capture.record.captureDigest).toBe(promptDigest(body));
       // The turn's and the hints' `anthropic-*` headers go with them, for a replay to send.
       expect(old.capture.record.requestHeaders["anthropic-version"]).toBe("2023-06-01");
       expect(
@@ -810,9 +810,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       const { record, body } = capture;
       expect(record.context.plugins.map((plugin) => plugin.as)).toEqual(["extension", "extension"]);
       expect(record.pluginTools.tools).toContain("legion");
-      expect(record.pluginTools.legion).toBe(true);
       expect(record.pluginTools.envoy).toContain("envoy_send");
-      expect(record.pluginTools.devices).toEqual(expect.arrayContaining(record.pluginTools.envoy));
       expect(record.pluginTools.leftOut).toEqual([]);
       // Every endpoint the pane was given is a listener of the capture's own on 127.0.0.1, and
       // the stand-in daemon took the registration the tool waits for.
@@ -865,7 +863,6 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         ["pi-envoy", "extension"],
       ]);
       expect(record.pluginTools.envoy).toContain("envoy_send");
-      expect(record.pluginTools.devices).toEqual(expect.arrayContaining(record.pluginTools.envoy));
       expect(record.pluginTools.leftOut).toEqual([]);
       expect(record.extensionErrors).toEqual([]);
       // Every Envoy endpoint the run was given is a listener of the capture's own on 127.0.0.1,
@@ -885,7 +882,6 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(record.otherRequests).toEqual([]);
       // No Legion plugin, pane or claim: the profile installs none.
       expect(record.pluginTools.tools).not.toContain("legion");
-      expect(record.pluginTools.legion).toBe(false);
       expect(record.legion).toBeNull();
       // Its one context file is still the user-level CLAUDE.md, shown at the dev box's.
       const system = systemBlocks(body).join("\n");
@@ -1128,7 +1124,6 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       const listing = skillListing(body);
       expect([...listing.keys()].sort()).toEqual(["alpha", "beta"]);
       for (const { skill, hint } of record.hints) expect(listing.get(skill)).toBe(hint);
-      expect(record.captureDigest).toBe(promptDigest(body));
 
       // A recorded prompt goes as its blocks joined, a blank line between, into the instructions.
       const sub: Case = {

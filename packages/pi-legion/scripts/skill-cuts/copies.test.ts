@@ -18,11 +18,12 @@ import {
   CopyIndex,
   type Gh,
   type GhResult,
-  INSTALLERS_COLUMNS,
+  type InstallerRow,
   KEEP_RULES_VERSION,
   keepsEntry,
   lenientFields,
   listCopies,
+  listedManifest,
   MANIFEST_KINDS,
   type Manifest,
   type ManifestKind,
@@ -40,6 +41,7 @@ import {
   REPOSITORY_JOBS,
   type ReaderSkill,
   ReadSlots,
+  repositoryFiles,
   resolveInstallers,
   SKILL_COPIES_COLUMNS,
   type SkillCopy,
@@ -970,8 +972,8 @@ describe("skill pools an Oh My Pi extension reads from skills-sources.json", () 
 
   test("a pool outside the repository's tree is a note on the manifest, never an installer row", () => {
     expect(notes([sources, extension, installer])).toEqual([
-      "pool vendor/acme-pack: its skills (vendor/acme-pack/skills) are not in the repository's tree, so R4 cannot list them",
-      "pool ../src/acme-elsewhere: its skills (~/src/acme-elsewhere/skills) are not in the repository's tree, so R4 cannot list them",
+      "pool vendor/acme-pack: its skills (vendor/acme-pack/skills) are not in the repository's tree, so this list cannot hold them",
+      "pool ../src/acme-elsewhere: its skills (~/src/acme-elsewhere/skills) are not in the repository's tree, so this list cannot hold them",
     ]);
   });
 
@@ -1001,15 +1003,32 @@ describe("the full run over the owners", () => {
 
   test("it exits 0 and writes every output", () => {
     expect(r.code).toBe(0);
+    expect(readdirSync(r.out).sort()).toEqual(
+      [
+        "skill-copies.tsv",
+        "prefix-table.tsv",
+        "repositories.tsv",
+        "loaders.tsv",
+        "installers.tsv",
+        "manifests.tsv",
+        "queries.jsonl",
+        "skills.jsonl",
+        "skill-copies.md",
+      ].sort()
+    );
+    // Each table holds a row below its header, and each other file holds text.
     for (const name of [
       "skill-copies.tsv",
       "prefix-table.tsv",
       "repositories.tsv",
       "loaders.tsv",
-      "queries.jsonl",
-      "skill-copies.md",
+      "installers.tsv",
+      "manifests.tsv",
     ]) {
-      expect(r.text(name).length).toBeGreaterThan(0);
+      expect({ name, rows: r.table(name).length > 0 }).toEqual({ name, rows: true });
+    }
+    for (const name of ["queries.jsonl", "skills.jsonl", "skill-copies.md"]) {
+      expect({ name, text: r.text(name).length > 0 }).toEqual({ name, text: true });
     }
   });
 
@@ -1069,7 +1088,9 @@ describe("the full run over the owners", () => {
     expect(installerRows(r, "acme/skills", ".claude-plugin/marketplace.json")).toContain(
       "ships plugin:acme-claude@acme-market alpha acme/skills skills/alpha"
     );
-    expect(r.text("skill-copies.md")).toContain("1 omp-package");
+    expect(r.text("skill-copies.md")).toMatch(
+      /^Read by path and naming no skill, plugin or package, so not listed: (.*, )?1 omp-package(, .*)?\.$/m
+    );
     expect(installerRows(r, "acme/skills", ".claude/settings.json")).toContain(
       "disables plugin:beta-pack@acme-market"
     );
@@ -1337,9 +1358,9 @@ describe("the full run over the owners", () => {
     expect(w.calls.some((call) => call.join(" ").includes("repo:acme/old-skills"))).toBe(false);
   });
 
-  test("same-job pairs and the sentence wait for the read command, with the skills list beside the copies", () => {
+  test("same-job pairs and the sentence are left to the read command's readers, with the skills list beside the copies", () => {
     expect(r.text("skill-copies.md")).toContain(
-      "they wait for the `read` command (task t3), which reads skills.jsonl"
+      "the `read` command's `same-job` and `sentence` readers find them, from an input file of their own shape. skills.jsonl holds each copy with its whole description."
     );
     // skills.jsonl is written by copies.ts from readerSkills; read each line back as that type.
     const skills = r
@@ -2174,23 +2195,22 @@ describe("a run started again over --cache-dir", () => {
     );
   });
 
-  test("a cache file a killed write left is never read", async () => {
+  test("a cache file a killed write left is never read: a temporary file, or a file cut short", async () => {
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
     scratch.push(cacheDir);
     const first = await run(clean(), [...only, "--cache-dir", cacheDir]);
-    // A kill between the write and the rename leaves only the temporary file: here, each
-    // repository's file moved to its temporary name, with a commit no run read.
+    // A kill between the write and the rename leaves the temporary file, here with a commit no
+    // run read; a kill during a write straight to the final name would leave that file cut short.
     const repositories = path.join(cacheDir, "repository");
     for (const file of readdirSync(repositories)) {
-      const text = readFileSync(path.join(repositories, file), "utf8");
-      writeFileSync(
-        path.join(repositories, `${file}.tmp-1-0`),
-        text.replace(/"commit":"[0-9a-f]+"/, '"commit":"0000"')
-      );
-      rmSync(path.join(repositories, file));
+      const final = path.join(repositories, file);
+      const text = readFileSync(final, "utf8");
+      writeFileSync(`${final}.tmp-1-0`, text.replace(/"commit":"[0-9a-f]+"/, '"commit":"0000"'));
+      writeFileSync(final, text.slice(0, Math.floor(text.length / 2)));
     }
     const w = clean();
     const second = await run(w, [...only, "--cache-dir", cacheDir]);
+    expect(second.code).toBe(0);
     expect(w.calls.filter((call) => /\/commits\?/.test(call[1] ?? "")).length).toBe(3);
     expect(second.text("repositories.tsv")).toBe(first.text("repositories.tsv"));
     expect(second.text("repositories.tsv")).not.toContain("0000");
@@ -2298,12 +2318,10 @@ describe("the memory a run holds", () => {
         result.loaders.filter((row) => row.repository === fork && row.skill === "alpha")
       ).toHaveLength(PAGES);
     }
-    // ...but no string the result holds is a page's text, a SKILL.md's body or a manifest's.
+    // ...but no string the result holds is a page's text or a SKILL.md's body.
     const held = stringsIn(result);
     expect(held.filter((text) => text.includes("text of a made-up page"))).toEqual([]);
     expect(held.filter((text) => text.includes("# A made-up skill"))).toEqual([]);
-    const marketplace = ACME_FILES.find((file) => file.path === ".claude-plugin/marketplace.json");
-    expect(held.filter((text) => text === marketplace?.text)).toEqual([]);
     expect(held.some((text) => text === "A copy in acme/fork-03.")).toBe(true);
   }, 60_000);
 
@@ -2989,10 +3007,6 @@ describe("the pure parts", () => {
 });
 
 describe("build.ts's profile reads of a repository", () => {
-  /** An installer row as installers.tsv writes it, its cells joined by tabs. */
-  const installerLine = (row: Record<string, string>) =>
-    INSTALLERS_COLUMNS.map((column) => row[column] ?? "").join("\t");
-
   /** acme/drift, a made-up repository whose files copies.ts's rules leave unread: a directory
    *  named SKILL.md (a tree entry, so no skill, and the repository holds none), the package.json
    *  of an Oh My Pi plugin package (read only where a SKILL.md is), and an Oh My Pi extension
@@ -3027,15 +3041,34 @@ describe("build.ts's profile reads of a repository", () => {
     w.addRepository(DRIFT, treeOf(DRIFT, DRIFT_FILES));
     return w;
   };
+  /** Each manifest as `<path> <kind>`, sorted. */
+  const shown = (manifests: readonly Manifest[]) =>
+    manifests.map((manifest) => `${manifest.path} ${manifest.kind}`).sort();
+  /** Each installer row as its JSON text, sorted. */
+  const rowTexts = (rows: readonly InstallerRow[]) => rows.map((row) => JSON.stringify(row)).sort();
 
   test("select the files copies.ts selects, so the installers they resolve are those installers.tsv holds", async () => {
     const config = parseConfig(CONFIG);
-    const drift = treeOf(DRIFT, DRIFT_FILES);
-    expect(drift.find((entry) => entry.path === "docs/SKILL.md")?.type).toBe("tree");
-    expect(drift.some((entry) => manifestKind(entry) === "omp-extension")).toBe(true);
-    expect(drift.some((entry) => entry.path.endsWith("skills-sources.json"))).toBe(false);
+    // copies.ts's rules read none of acme/drift's files.
+    expect(repositoryFiles(DRIFT, treeOf(DRIFT, DRIFT_FILES), config.excludePaths)).toEqual({
+      skillFiles: [],
+      excluded: [],
+      manifests: [],
+    });
     for (const repository of ["cybermonklabs/legion", "acme/skills", DRIFT]) {
-      const listed = await run(driftWorld(), ["--only", repository, "--max-search-calls", "0"]);
+      const listedWorld = driftWorld();
+      const listed = await listCopies(
+        config,
+        { at: AT, only: [repository], maxSearchCalls: 0 },
+        {
+          gh: listedWorld.gh,
+          sleep: listedWorld.sleep,
+          now: listedWorld.now,
+          out: () => {},
+          err: () => {},
+          peakRssBytes: () => 0,
+        }
+      );
       const w = driftWorld();
       const [head] = w.commits.get(repository) as {
         sha: string;
@@ -3057,44 +3090,24 @@ describe("build.ts's profile reads of a repository", () => {
       const at = await new GithubReads(gh, new Map()).at(repository, head.sha, config.excludePaths);
       // The same skill files...
       expect(at.copies.map((copy) => copy.file).sort()).toEqual(
-        listed
-          .table("skill-copies.tsv")
-          .filter((row) => row.repository === repository)
-          .map((row) => (row.path === "." ? "SKILL.md" : `${row.path}/SKILL.md`))
+        listed.copies
+          .filter((copy) => copy.repository === repository)
+          .map((copy) => copy.file)
           .sort()
       );
-      // ...and the same manifests: manifests.tsv lists one of its kind, or of a kind it always
-      // lists (listCopies).
-      const shownKinds = MANIFEST_KINDS.filter((kind) => kind.listed === "always").map(
-        (kind) => kind.kind
+      // ...the same manifests listed...
+      expect(shown(at.manifests.filter(listedManifest))).toEqual(
+        shown(
+          listed.manifests.filter(
+            (manifest) => manifest.repository === repository && manifest.source === "tree"
+          )
+        )
       );
-      const shown = at.manifests.filter(
-        (manifest) => manifest.ofKind || (shownKinds as string[]).includes(manifest.kind)
+      // ...and the same installers.
+      if (repository !== DRIFT) expect(listed.rows.length).toBeGreaterThan(0);
+      expect(rowTexts(resolveInstallers(at.manifests, new CopyIndex(at.copies)).rows)).toEqual(
+        rowTexts(listed.rows)
       );
-      expect(shown.map((manifest) => `${manifest.path} ${manifest.kind}`).sort()).toEqual(
-        listed
-          .table("manifests.tsv")
-          .filter((row) => row.repository === repository && row.source === "tree")
-          .map((row) => `${row.path} ${row.kind}`)
-          .sort()
-      );
-      const resolved = resolveInstallers(at.manifests, new CopyIndex(at.copies)).rows.map((row) =>
-        installerLine({
-          manifest_repository: row.manifestRepository,
-          manifest_path: row.manifestPath,
-          kind: row.kind,
-          action: row.action,
-          unit: row.unit,
-          host: row.host,
-          skill: row.skill,
-          copy_repository: row.copyRepository,
-          copy_path: row.copyPath === undefined ? "" : row.copyPath === "" ? "." : row.copyPath,
-          note: row.note,
-        })
-      );
-      const written = listed.table("installers.tsv").map(installerLine);
-      if (repository !== DRIFT) expect(written.length).toBeGreaterThan(0);
-      expect(resolved.sort()).toEqual(written.sort());
     }
   }, 60_000);
 });

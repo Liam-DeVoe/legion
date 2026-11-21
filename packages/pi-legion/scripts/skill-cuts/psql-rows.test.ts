@@ -5,15 +5,18 @@ import path from "node:path";
 import { z } from "zod";
 import { PULL_START, PullCheck, PullRow, psqlRows } from "./psql-rows";
 
-// psql-rows.ts on F7: psql's own output under the store command's flags, captured from the two
-// test databases of R1's fixture proof (count.test.ts makes the same two). Capture, from
-// packages/pi-legion/scripts/skill-cuts, with the pod's test server (LEGION_TEST_PG_DSN), FIRST
-// and SECOND the URLs of the two databases made on it:
+// psql-rows.ts on F7: psql's own output under the store command's flags, captured from two test
+// databases loaded as count.test.ts's fixture proof loads its first two. Capture, from
+// packages/pi-legion/scripts/skill-cuts, in a shell where LEGION_TEST_PG_DSN is the URL of the
+// pod's test server (its path a database name, no query string):
 //
-//   createdb -h 127.0.0.1 -p 5433 -U legion_test "skillcuts_first_$(date +%s)"   (and _second_)
+//   N=$(date +%s); SERVER=${LEGION_TEST_PG_DSN%/*}
+//   createdb --maintenance-db="$LEGION_TEST_PG_DSN" "skillcuts_first_$N"
+//   createdb --maintenance-db="$LEGION_TEST_PG_DSN" "skillcuts_second_$N"
+//   FIRST=$SERVER/skillcuts_first_$N; SECOND=$SERVER/skillcuts_second_$N
 //   F1=testdata/F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80
 //   bun fixturedb.ts --dsn "$FIRST" $F1.jsonl $F1/ProductiveChicken.jsonl \
-//     testdata/F4/projects/-legion-scratch-tmp-infra4676-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl
+//     testdata/F4/projects/-legion-scratch-tmp-acme-1-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl
 //   bun fixturedb.ts --dsn "$SECOND" testdata/F1b.jsonl
 //   store() { psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction \
 //     -c 'SET TRANSACTION READ ONLY' -f - "$1"; }
@@ -32,23 +35,23 @@ import { PULL_START, PullCheck, PullRow, psqlRows } from "./psql-rows";
 //     mtimeRange("2026-11-20"), "2026-11-20T00:00:00Z", "2026-11-22T00:00:00Z", ["Fixture"]))' \
 //     | store "$FIRST" > testdata/F7-tasks.txt
 //   bun -e 'import { sessionsSql } from "./countsql"; process.stdout.write(sessionsSql(["83af4b8e0c75a050",
-//     "0da7427e81182998", "5ebda8a6e0707d07", "0000000000000000"]))' | store "$FIRST" > testdata/F7-sessions.txt
+//     "0da7427e81182998", "1e93689d7698bd6a", "0000000000000000"]))' | store "$FIRST" > testdata/F7-sessions.txt
 //   echo "SELECT json_build_object('o', -1, 'c', E'first line | one\\nsecond line | two')::text AS part;" \
 //     | store "$FIRST" > testdata/F7-newline-pipe.txt
 //
+// count.test.ts's capture of the models query runs next, in the same shell; then drop both
+// databases (`dropdb --maintenance-db="$LEGION_TEST_PG_DSN" "skillcuts_first_$N"`, and _second_).
+//
 // fixturedb.ts splits each file into two parts in the middle of a line, so F7-pull.txt holds F1's
 // session as the file row (offset -1, empty) and two parts, each piece one slice (`k` 0).
-// F7-pull.txt was captured again when pull.sql's rows became {"o", "k", "c"} (a piece cut into
-// slices of at most 1 MiB); F7-empty.txt is the same bytes under both forms.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1_SESSION = "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl";
 const F1_SUBAGENT =
   "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80/ProductiveChicken.jsonl";
 const F4_SESSION =
-  "F4/projects/-legion-scratch-tmp-infra4676-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl";
-const F1_PROFILE =
-  "/legion/scratch/tmp/infra4676/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
+  "F4/projects/-legion-scratch-tmp-acme-1-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl";
+const F1_PROFILE = "/legion/scratch/tmp/acme-1/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
 
 function f7(name: string): string {
   return readFileSync(path.join(TESTDATA, name), "utf8");
@@ -105,7 +108,7 @@ test("the first database's count: alpha read and referenced once, the missing sk
     {
       skill: "alpha",
       kind: "read",
-      copy: "/legion/scratch/tmp/infra4676/t1-runs/f3/marketplace/plugins/acme-tools/skills/alpha/SKILL.md",
+      copy: "/legion/scratch/tmp/acme-1/t1-runs/f3/marketplace/plugins/acme-tools/skills/alpha/SKILL.md",
       day: "2026-11-20",
       files: 1,
       hashes: [fileHash(F4_SESSION)],
@@ -123,7 +126,7 @@ test("the first database's count: alpha read and referenced once, the missing sk
     {
       skill: "beta",
       kind: "read",
-      copy: "/legion/scratch/tmp/infra4676/t1-runs/f3/config/plugins/cache/acme-market/acme-tools/0.1.0/skills/beta/SKILL.md",
+      copy: "/legion/scratch/tmp/acme-1/t1-runs/f3/config/plugins/cache/acme-market/acme-tools/0.1.0/skills/beta/SKILL.md",
       day: "2026-11-20",
       files: 1,
       hashes: [fileHash(F4_SESSION)],
@@ -137,7 +140,7 @@ test("the first database's count: alpha read and referenced once, the missing sk
     mtime_to: Date.parse("2026-11-21T00:00:00Z"),
     files: 3,
     parts: 6,
-    bytes: 185931,
+    bytes: 185790,
     lines_parsed: 15,
     bad_lines: 0,
     shared_call_ids: 0,
@@ -176,7 +179,7 @@ test("a transcript pull's rows join into the file's text, the file row first", (
   expect(rows.map((row) => [PullRow.parse(row).o, PullRow.parse(row).k])).toEqual([
     [-1, 0],
     [0, 0],
-    [8479, 0],
+    [8461, 0],
   ]);
   expect(pulled(rows)).toBe(readFileSync(path.join(TESTDATA, F1_SESSION), "utf8"));
 });
@@ -286,16 +289,16 @@ test.each([
 test("a pull with a part left out, a row twice or out of order, a slice left out, or a row of another shape is refused", () => {
   const rows = psqlRows(f7("F7-pull.txt"));
   expect(() => pulled([rows[0], rows[2]])).toThrow(
-    "the part at offset 8479 does not start where the text before it ends (0)"
+    "the part at offset 8461 does not start where the text before it ends (0)"
   );
   expect(() => pulled([...rows, rows[2]])).toThrow(
-    "pull rows give the piece at offset 8479, slice 0, twice"
+    "pull rows give the piece at offset 8461, slice 0, twice"
   );
   expect(() => pulled([...rows, rows[1]])).toThrow(
-    "the piece at offset 0, slice 0, comes after the one at offset 8479, slice 0"
+    "the piece at offset 0, slice 0, comes after the one at offset 8461, slice 0"
   );
   expect(() => pulled([...rows].reverse())).toThrow(
-    "the part at offset 8479 does not start where the text before it ends (0)"
+    "the part at offset 8461 does not start where the text before it ends (0)"
   );
   expect(() =>
     pulled([

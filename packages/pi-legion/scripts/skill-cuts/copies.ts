@@ -1,13 +1,14 @@
 /**
- * The runner's R4 without reads: every skill copy of the configured GitHub owners' repositories,
- * the manifests and installers that ship, install or load each, the files outside a skill that name
- * one, and the copy-path prefix table R1's attribution reads.
+ * The list of skill copies, without their reads (attribute.ts counts those): every skill copy of
+ * the configured GitHub owners' repositories, the manifests and installers that ship, install or
+ * load each, the files outside a skill that name one, and the copy-path prefix table attribute.ts
+ * places each read by.
  *
  *   bun scripts/skill-cuts/copies.ts --config <skill-cuts.json> --at <ISO instant> --out <dir>
  *     [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *
- * Task t7 adds it to cli.ts as `skill-cuts copies`; `main(argv, io)` and the pure parts are exported
- * for that and for copies.test.ts, which injects the command runner (`io.gh`).
+ * cli.ts runs it as `skill-cuts copies`; `main(argv, io)` and the pure parts are exported for
+ * that and for copies.test.ts, which injects the command runner (`io.gh`).
  *
  * It reads GitHub only through `gh` (`gh repo list`, `gh api`), with whatever token the pod's `gh`
  * already uses: this file holds no token, sets no GH_TOKEN and needs none of its own. The pod's gh
@@ -74,9 +75,10 @@
  *    comes from); only those of their kind are listed, the rest counted.
  * 5. Loaders by code search. For each skill name, one `gh api -i -X GET search/code` for the quoted
  *    name, once per owner whose listing succeeded (`org:` or `user:`, as `users/<owner>` gives its
- *    type) or, with `--only`, once per named repository (`repo:`). One search stands for the brief's
- *    five patterns (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the
- *    quoted name): `searchTerms` says why. Each hit file is read by its path at its repository's
+ *    type) or, with `--only`, once per named repository (`repo:`). One search stands for the five
+ *    patterns a file can name a skill by (`skill://<name>`, `/skill:<name>`, `skills/<name>`,
+ *    `<plugin>:<name>` and the quoted name): `searchTerms` says why. Each hit file is read by its
+ *    path at its repository's
  *    commit of step 1 (GraphQL batches of 50, routed by owner, a REST read where a batch fails),
  *    once for every name whose search hit it, and dropped once checked; it is kept only where the
  *    skill's name is in it as a whole name (not inside a longer name), outside a skill;
@@ -120,10 +122,11 @@
  *    host's user skills at `**\/.omp/agent/skills/<name>/` or `**\/.claude/skills/<name>/`. Each
  *    row maps the prefix to its repository copy. A row whose repository the configuration's
  *    `targets` do not name is left out of the table and reported in `skill-copies.md`, so the
- *    implementer adds it.
- * 7. Same-job pairs and the follow-the-code sentence are the `read` command's (task t3):
- *    `readerSkills` is the seam that takes the skills list, and `skills.jsonl` holds it. No model is
- *    called here.
+ *    operator can add that repository to `targets`.
+ * 7. Same-job pairs and the follow-the-code sentence are not found here, and no model is called:
+ *    `skills.jsonl` holds each copy with its whole description (`readerSkills`), and no command
+ *    reads it. The `read` command's `same-job` and `sentence` readers take an input file of their
+ *    own shape (readers.ts's `SameJobInput` and `SentenceInput`).
  *
  * Output under `--out`. Each `.tsv` starts with a row of its column names; no cell holds a tab or
  * a line break (`tsvCell` writes one as `\t`, `\n` or `\r`, and a backslash as `\\`; `parseTsv`
@@ -133,8 +136,8 @@
  *                     frontmatter description), fork, archived (yes or no), parent (a fork's),
  *                     installers (`<action> <unit> (<repository>:<manifest path>)`, joined by
  *                     `; `), loaded_by (each file that loads the skill: `<repository>:<path>
- *                     (<how>)`, joined by `; `). Task t7's attribute.ts reads these columns in this
- *                     order and adds its reads columns after them.
+ *                     (<how>)`, joined by `; `). attribute.ts reads these columns in this order and
+ *                     adds its reads columns after them.
  *   prefix-table.tsv  `PREFIX_TABLE_COLUMNS`: prefix (a pattern: `**\/` at its start is any
  *                     leading directories, `*` is one path segment's text; `prefixMatches` is the
  *                     one matcher), repository, path, name, via (the unit and manifest it comes from).
@@ -146,7 +149,7 @@
  *   installers.tsv    `INSTALLERS_COLUMNS`: each installer row, one per manifest, unit and copy.
  *   manifests.tsv     `MANIFESTS_COLUMNS`: each manifest file read, its kind and what it says.
  *   queries.jsonl     every search query (and every fork scan) with its counts, hits, failures.
- *   skills.jsonl      `readerSkills`: each copy with its whole description, for t3's readers.
+ *   skills.jsonl      `readerSkills`: each copy with its whole description; no command reads it.
  *   skill-copies.md   the repositories read and not listable, the shared names, the loaders and the
  *                     installers, the prefix rows outside the targets, and every failure.
  */
@@ -1832,6 +1835,16 @@ export const MANIFEST_KINDS = [
 
 export type ManifestKind = (typeof MANIFEST_KINDS)[number]["kind"];
 
+/** The manifest kinds manifests.tsv lists whether or not the file is of its kind. */
+const ALWAYS_LISTED: ReadonlySet<ManifestKind> = new Set(
+  MANIFEST_KINDS.filter((kind) => kind.listed === "always").map((kind) => kind.kind)
+);
+
+/** Whether manifests.tsv lists `manifest`: a file of its kind, or one of a kind it always lists. */
+export function listedManifest(manifest: Pick<Manifest, "ofKind" | "kind">): boolean {
+  return manifest.ofKind || ALWAYS_LISTED.has(manifest.kind);
+}
+
 /** The manifest kind of a tree entry, by its path (and, for a link, its mode). */
 export function manifestKind(
   entry: Pick<TreeEntry, "path" | "mode" | "type">
@@ -2572,7 +2585,7 @@ function nameGlob(pattern: string): RegExp {
 }
 
 /** What the installers give: their rows, the units that ship skills, the prefix rows, and notes on
- *  manifests whose skills R4 cannot list (a skill pool outside the repository's tree). */
+ *  manifests whose skills this list cannot hold (a skill pool outside the repository's tree). */
 export interface Resolved {
   readonly rows: InstallerRow[];
   readonly units: Unit[];
@@ -2806,7 +2819,7 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
   // the extension linked into Oh My Pi by an installer of that repository (dotfiles-skills.ts
   // answers `resources_discover` with each pool's skills directory). Each pool whose skills are in
   // the tree installs them into Oh My Pi; a pool outside it (another checkout, a vendor clone, a
-  // home directory) is a note, since R4 cannot list its skills.
+  // home directory) is a note, since this list cannot hold its skills.
   for (const { manifest, fact } of factsOf(manifests, "skill-sources")) {
     const sameRepository = <T>(entries: { manifest: Manifest; fact: T }[]) =>
       entries.filter((entry) => entry.manifest.repository === manifest.repository);
@@ -2842,7 +2855,7 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
         notes.push({
           repository: manifest.repository,
           path: manifest.path,
-          note: `pool ${source.root}: its skills (${skills}) are not in the repository's tree, so R4 cannot list them`,
+          note: `pool ${source.root}: its skills (${skills}) are not in the repository's tree, so this list cannot hold them`,
         });
         continue;
       }
@@ -3136,8 +3149,8 @@ export const COMMON_WORD_NAMES: Readonly<Record<string, true>> = {
  * The search terms for a skill name: the quoted name, each run between colons quoted alone, since
  * the pod's gh refuses a quoted search word that holds a colon (`a:b` is sent as `"a" "b"`).
  *
- * One search for the quoted name, per owner, stands for the five patterns the brief names
- * (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the quoted name):
+ * One search for the quoted name, per owner, stands for the five patterns a file can name a skill
+ * by (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the quoted name):
  *   - every one of the five holds the name, and GitHub's code search reads punctuation as a break
  *     between words, so a file that matches any of them holds the name's own words in a row, which
  *     is what the quoted name matches;
@@ -3718,8 +3731,8 @@ function insideSkill<T extends Pick<SkillCopy, "path" | "file">>(
   );
 }
 
-/** The skills list the same-job and follow-the-code readers of task t3 take: each copy with its
- *  whole description. This is the seam; no model is called here. */
+/** The skills list for the same-job and follow-the-code readers: each copy with its whole
+ *  description. It is written to skills.jsonl; no command reads it, and no model is called here. */
 export interface ReaderSkill {
   readonly repository: string;
   readonly path: string;
@@ -3877,7 +3890,7 @@ export interface CopiesResult {
   readonly manifests: Manifest[];
   readonly notOfKind: Map<string, number>;
   readonly rows: InstallerRow[];
-  /** Notes on manifests whose skills R4 cannot list (`Resolved.notes`). */
+  /** Notes on manifests whose skills this list cannot hold (`Resolved.notes`). */
   readonly notes: ManifestNote[];
   readonly prefixes: PrefixRow[];
   readonly offTargets: PrefixRow[];
@@ -3946,7 +3959,7 @@ function markdown(result: CopiesResult): string {
       `${result.searchCalls} code search calls (budget ${Number.isFinite(result.budget) ? result.budget : "none"}). ` +
       `Peak resident memory ${Math.round(result.peakBytes / 1024 ** 2)} MiB (the run stops above ${MEMORY_LIMIT_BYTES / 1024 ** 2} MiB).`,
     "",
-    "Same-job pairs and the follow-the-code sentence are not in this list yet: they wait for the `read` command (task t3), which reads skills.jsonl.",
+    "Same-job pairs and the follow-the-code sentence are not in this list: the `read` command's `same-job` and `sentence` readers find them, from an input file of their own shape. skills.jsonl holds each copy with its whole description.",
     "",
     "## Repositories that could not be listed or read",
     ""
@@ -4386,21 +4399,18 @@ async function readAll(
   github.checkMemory();
   io.err(`copies: reading ${read.length} manifest files`);
   failures.push(...manifestFailures);
-  const alwaysListed = new Set<ManifestKind>(
-    MANIFEST_KINDS.filter((kind) => kind.listed === "always").map((kind) => kind.kind)
-  );
   // Every manifest read is resolved (a package.json without omp.skills still names the package an
-  // npm-sourced plugin comes from); only those of their kind are listed.
-  const manifests = read.filter((manifest) => manifest.ofKind || alwaysListed.has(manifest.kind));
+  // npm-sourced plugin comes from); only those `listedManifest` takes are listed.
+  const manifests = read.filter(listedManifest);
   const notOfKind = new Map<string, number>();
   for (const manifest of read) {
-    if (!manifest.ofKind && !alwaysListed.has(manifest.kind))
+    if (!listedManifest(manifest))
       notOfKind.set(manifest.kind, (notOfKind.get(manifest.kind) ?? 0) + 1);
   }
 
   // 5. Code search: each name, with the plugins that ship it. Its searches started beside the
-  // tree reads (`SearchQueues`): one per name and scope (`searchTerms` says why one stands for the
-  // brief's five).
+  // tree reads (`SearchQueues`): one per name and scope (`searchTerms` says why one stands for all
+  // five patterns).
   failures.push(...ownerFailures);
   const names = [...new Set(copies.map((copy) => copy.name))].sort();
   const pluginsOf = new Map<string, string[]>();

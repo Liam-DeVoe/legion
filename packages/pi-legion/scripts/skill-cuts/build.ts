@@ -1,7 +1,8 @@
 /**
- * The builders of the runner's inputs (the plan's R2 "Candidates" and "Cases", "The case context", and
- * R6's load test): `build-cases` turns real sessions into the case file the `behaviour` commands
- * read (cases.ts), and `build-tasks` writes the tasks file the load test reads (load.ts).
+ * The builders of the runner's inputs (the behaviour test's candidate sessions, their cases and
+ * each case's context, and the load test's tasks): `build-cases` turns real sessions into the
+ * case file the `behaviour` commands read (cases.ts), and `build-tasks` writes the tasks file the
+ * load test reads (load.ts).
  * `main(argv, io)` runs either; `argv` starts with the command's name, so cli.ts can pass its own
  * whole. A store is read only with the configuration's `psqlCommand` (config.ts), one query a
  * call, each a SELECT of this runner's SQL (countsql.ts); every model call is a reader of
@@ -9,17 +10,18 @@
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       --cut <id> --skill <name> --old <skill dir at the cut's base> --sessions <file>
- *       --seed <n> --copies <R4 out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
- *       [--budget-usd <n>] [--concurrency <n>]
+ *       --seed <n> --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
+ *       [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>]
+ *       [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
- *       the cut's base> --copies <R4 out dir> --count <count dir> --reprofile <cases.jsonl>
+ *       the cut's base> --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
  *       --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
- *       --copies <R4 out dir> --count <count dir> --context-session <store>:<hash>]
+ *       --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
  *   bun scripts/skill-cuts/build.ts build-tasks --first-read --config <skill-cuts.json>
  *       --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>]
- *       --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <R4 out dir>
+ *       --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <copies out dir>
  *       --count <count dir>]
  *
  * **build-cases.** `--sessions` holds the candidate sessions, one JSON line each:
@@ -30,8 +32,8 @@
  * or the readers' dollars at list price reach `--budget-usd`, when no further reader call starts
  * and the build stops (exit 3) with what it has.
  *
- * **The stop rule** (the architect's, 2026-11-20T19:07:23Z; `stopBy`): before the build reads a
- * further session, after each session decided, it stops (exit 4) as soon as
+ * **The stop rule** (`stopBy`): before the build reads a further session, after each session
+ * decided, it stops (exit 4) as soon as
  * `--stop-zero-case-usd` (STOP_ZERO_CASE_USD unless given) is spent with no case built; or, once
  * at least `--stop-after-sessions` (STOP_AFTER_SESSIONS) are decided, when the cost projected to
  * `--max` cases from its own cases and spend so far (max × spent ÷ cases, unbounded with no case)
@@ -209,8 +211,8 @@
  * message comes later, or never) is read from its claim. The case's `evidence` says which form
  * gave the role.
  *
- * **The profile** (plan, "The case context"), from the files of R4's `copies --out` directory
- * (prefix-table.tsv, installers.tsv, manifests.tsv, repositories.tsv), the session's own reads and
+ * **The profile**, from the files of the copies output (`copies --out`: prefix-table.tsv,
+ * installers.tsv, manifests.tsv, repositories.tsv), the session's own reads and
  * each unit's repositories at the session's start, each part with its evidence in the case:
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
  *   read result before the step is under; for a path no row maps, each unit of the prefix rows of
@@ -218,18 +220,19 @@
  *   Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package the
  *   worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
- *   is installed alone. A read whose skill none of those units ships at the session's start (R4
- *   names a unit as the manifests name it later: a marketplace or plugin renamed since, whose
- *   old name the read's plugin cache directory shows) adds each unit of the prefix rows that the
- *   same manifests give at the session's start (copies.ts's rules, below) and that its path is
- *   under, and that unit's copy is the one the session read.
+ *   is installed alone. A read whose skill none of those units ships at the session's start (the
+ *   copies output names a unit as the manifests name it later: a marketplace or plugin renamed
+ *   since, whose old name the read's plugin cache directory shows) adds each unit of the prefix
+ *   rows that the same manifests give at the session's start (copies.ts's rules, below) and that
+ *   its path is under, and that unit's copy is the one the session read.
  * - Commits: each repository at the last commit of its default branch (repositories.tsv, else
  *   GitHub's) at or before the session's start. Every GitHub read goes through `gh api`
  *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches.
  * - Skills: what each unit ships at that commit, not what installers.tsv lists, which is what it
- *   ships at the later commit R4 read. Each repository of a unit (its manifest's, and those of
- *   the copies installers.tsv lists for it) is read at its commit as copies.ts reads one: its
- *   tree, each `SKILL.md` outside the configuration's `excludePaths`, and each manifest file by
+ *   ships at the later commit the copies output read. Each repository of a unit (its manifest's,
+ *   and those of the copies installers.tsv lists for it) is read at its commit as copies.ts reads
+ *   one: its tree, each `SKILL.md` outside the configuration's `excludePaths`, and each manifest
+ *   file by
  *   its path; copies.ts's `resolveInstallers` then gives each unit's skills (the prepack script's
  *   list for a package, a plugin's `skills/`, an installer's linked directory), by name. Two units
  *   that ship copies of one name install the one the session read (its first read of that name,
@@ -249,10 +252,11 @@
  *   `.claude/` of the repository that installs its units. That is the one repository of the
  *   profile's units that holds Claude Code's settings there (`.claude/settings.json`, copies.ts's
  *   claude-settings manifest) at the session's start, and its `.claude/CLAUDE.md` at that commit
- *   (context.ts writes it under the working directory, where Oh My Pi reads it as the project's
- *   `.claude/CLAUDE.md`; load.ts gives Claude Code it as user memory). Each one R4's output or the
- *   session does not name is listed as left out: for a devbox, when no repository or more than
- *   one of its units holds those settings, or that one has no CLAUDE.md then. A subagent's case
+ *   (context.ts writes it as `CLAUDE.md` in a scratch Claude Code config directory that the
+ *   capture names in CLAUDE_CONFIG_DIR, where Oh My Pi reads it as its user-level file; load.ts
+ *   gives Claude Code it as user memory). Each one the copies output or the session does not name
+ *   is listed as left out: for a devbox, when no repository or more than one of its units holds
+ *   those settings, or that one has no CLAUDE.md then. A subagent's case
  *   has none: its recorded prompt holds them. Its units and skills are read as its store's
  *   context's are.
  *
@@ -272,7 +276,7 @@
  * `<out>.summary.json` lists, per case, the skills added and removed. A case whose profile cannot
  * be built, or no longer installs its skill, is left out and named, and the command exits 1.
  *
- * **build-tasks** (plan, R6 "Load test"): the tasks reader reads the skill's name and description
+ * **build-tasks** (the load test's tasks): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
  * per store and per UTC day of the configuration's window for first user messages holding them;
  * the distinct messages (at most TASK_MESSAGES, spread evenly over the stores' rows in path order)
@@ -291,11 +295,11 @@
  * inputs goes on from them with no terms call and no query already recorded; a finished build is
  * left as it is; other inputs are refused. The found file is removed once the tasks are written.
  *
- * **build-tasks --first-read** (plan, R6 "Positive control") writes the control's need tasks from
- * the sessions file of the skill, unchosen: see `buildControlTasks`.
+ * **build-tasks --first-read** (the load test's positive control) writes the control's need
+ * tasks from the sessions file of the skill, unchosen: see `buildControlTasks`.
  *
- * **--profiles-out** (both modes; the architect's decision of 2026-11-20T20:06Z): each task runs
- * in the rebuilt context of the session it came from. For each task from a session, the session
+ * **--profiles-out** (both modes): each task runs in the rebuilt context of the session it came
+ * from. For each task from a session, the session
  * is pulled again and its profile rebuilt as build-cases rebuilds a case's at the session's start
  * (`sessionProfile`: the context, `caseProfile` from every read of its branch with `--copies` and
  * `--count`, a subagent's recorded system prompt and tools), less the tested skill, and written
@@ -311,10 +315,10 @@
  * place (`offeredMessages`, `candidateDrops`), in `--first-read` when the session is tried
  * (`skillNotListed`); and a `--context-session` whose context does not list it is refused.
  *
- * **--model <model>** (both modes; the architect's design of 2026-11-21T04:09:32Z: a load test
- * runs on one model, and the tasks taken from real sessions come only from sessions on it): a
- * candidate session is kept only when its first request ran on `<model>`, as the session's file
- * names it and R1's model table writes it (`firstReplyModel`: its last `model_change` before its
+ * **--model <model>** (both modes: a load test runs on one model, and the tasks taken from real
+ * sessions come only from sessions on it): a candidate session is kept only when its first request
+ * ran on `<model>`, as the session's file names it and attribute.ts's models table writes it
+ * (`firstReplyModel`: its last `model_change` before its
  * first assistant message, a thinking suffix left out, so `<gateway>/openai/gpt-6.1-sol` and
  * `openai/gpt-6.1-sol` are two models). Every other session is dropped and counted
  * (`other-model`): in the reader's mode each offered message's session is pulled and the next
@@ -444,7 +448,7 @@ export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3, stoppedByCost: 4
 /** The most sessions build-cases reads at once, unless `--concurrency` says otherwise. */
 export const BUILD_CONCURRENCY = 4;
 /** The stop rule's bounds, unless `--stop-projected-usd`, `--stop-after-sessions` and
- *  `--stop-zero-case-usd` say otherwise (the architect's rule, 2026-11-20T19:07:23Z). */
+ *  `--stop-zero-case-usd` say otherwise (README.md, "build-cases and build-tasks"). */
 export const STOP_PROJECTED_USD = 200;
 export const STOP_AFTER_SESSIONS = 40;
 export const STOP_ZERO_CASE_USD = 60;
@@ -1348,18 +1352,20 @@ function messagesBefore(
         (each, at) => at < boundary && each.id === compaction.data.firstKeptEntryId
       )
     : -1;
-  if (
-    entry === undefined ||
-    !compaction.success ||
-    kept < 0 ||
-    entry.preserveData !== undefined ||
-    entry.providerReplayThroughEntryId !== undefined ||
-    entry.method === "snapcompact" ||
-    (isObject(entry.details) && entry.details.kind === "experimental-context-rollover")
-  ) {
+  // A compaction this file does not rebuild the messages after, and why.
+  let unsupported: string | undefined;
+  if (entry === undefined || !compaction.success)
+    unsupported = "is not a compaction this file reads";
+  else if (kept < 0) unsupported = "keeps no entry of the branch";
+  else if (entry.preserveData !== undefined || entry.providerReplayThroughEntryId !== undefined)
+    unsupported = "keeps provider data";
+  else if (entry.method === "snapcompact") unsupported = "is a snapcompact compaction";
+  else if (isObject(entry.details) && entry.details.kind === "experimental-context-rollover")
+    unsupported = "is an experimental context rollover";
+  if (entry === undefined || !compaction.success || unsupported !== undefined) {
     return {
       drop: "compaction-unsupported",
-      detail: `the compaction at branch entry ${boundary} keeps no entry of the branch, or keeps provider data`,
+      detail: `the compaction at branch entry ${boundary} ${unsupported}`,
     };
   }
   const summary = SessionMessage.parse({
@@ -1418,7 +1424,7 @@ function notServed(models: readonly string[], servedIds: ReadonlySet<string>): s
     : `the session's models from the skill's read on, ${named}: no route of the gateway serves any of them; no servedModels entry has their ids`;
 }
 
-/** `model` as R1's model table writes a session's model (attribute.ts's `sessionModel`): as the
+/** `model` as attribute.ts's models table writes a session's model (`sessionModel`): as the
  *  session's file names it, its provider path kept and a thinking suffix left out. */
 function modelForm(model: string): string {
   return sessionModel({ model, source: "model_change" }, new Set())?.model ?? model;
@@ -1426,8 +1432,8 @@ function modelForm(model: string): string {
 
 /** The model the first request of the session `t` ran on, as `build-tasks --model` compares it:
  *  the last `model_change` of its branch before its first assistant message (before the branch's
- *  end when it has none), as build-cases reads a session's model before a point of it, in R1's
- *  form (`modelForm`); undefined when no model_change comes before it. */
+ *  end when it has none), as build-cases reads a session's model before a point of it, in the
+ *  models table's form (`modelForm`); undefined when no model_change comes before it. */
 function firstReplyModel(t: Transcript): string | undefined {
   const reply = t.items.find((item) => item.slim.role === "assistant");
   const model = lastBefore(t.branch, reply?.at ?? t.branch.length, modelChange);
@@ -1643,7 +1649,7 @@ export interface Evidence {
   readonly source: string;
 }
 
-/** R4's output, as the profile reads it (`readR4`): its prefix rows, installer rows and
+/** The copies output, as the profile reads it (`readR4`): its prefix rows, installer rows and
  *  manifests, and each repository's default branch. */
 interface Copies {
   readonly prefixes: readonly PrefixTableRow[];
@@ -2049,7 +2055,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       if ((row.copy_path ?? "") === "") {
         evidence.push({
           item: `left out: the plugin ${row.unit}`,
-          source: `installers.tsv: ${via.repository}:${via.manifest} installs it, and R4 read no repository copy of it${row.note ? ` (${row.note})` : ""}`,
+          source: `installers.tsv: ${via.repository}:${via.manifest} installs it, and the copies output read no repository copy of it${row.note ? ` (${row.note})` : ""}`,
         });
         continue;
       }
@@ -2061,10 +2067,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
 
   // What each unit ships at the session's start. installers.tsv says what it ships at the commit
-  // R4 read, which is later; so each repository of a unit is read at its commit of the session's
-  // start (its tree, its SKILL.md files and its manifests) and resolved by copies.ts's own rules
-  // (`resolveInstallers`). A skill the unit did not ship yet is left out, one it shipped then and
-  // not since is installed, and every skill of the profile is in its repository at its commit.
+  // the copies output read, which is later; so each repository of a unit is read at its commit
+  // of the session's start (its tree, its SKILL.md files and its manifests) and resolved by
+  // copies.ts's own rules (`resolveInstallers`). A skill the unit did not ship yet is left out,
+  // one it shipped then and not since is installed, and every skill of the profile is in its
+  // repository at its commit.
   const listed = (via: Via) =>
     copies.installers.filter(
       (row) =>
@@ -2121,9 +2128,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         Object.hasOwn(MEMBER_ACTIONS, row.action)
     );
   // A read whose skill no unit ships at the session's start, though the repository its unit comes
-  // from was read at that commit: R4 names the unit as the manifests name it at the later commit R4
-  // read, and a marketplace or a plugin renamed since leaves that unit empty then (the read's path
-  // names the plugin cache directory `<marketplace>___<plugin>___<version>` of the name it had).
+  // from was read at that commit: the copies output names the unit as the manifests name it at
+  // the later commit it read, and a marketplace or a plugin renamed since leaves that unit empty
+  // then (the read's path names the plugin cache directory `<marketplace>___<plugin>___<version>`
+  // of the name it had).
   // The prefix rows the same manifests give at the session's start (copies.ts's rules,
   // `resolved.prefixes`) place the read at the unit that installed it then, and at its copy.
   const placedAtStart = new Set<string>();
@@ -2177,7 +2185,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       offers.push({
         copy,
         how,
-        source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which R4 read later, does not list it"}`,
+        source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
       });
     }
     for (const row of later) {
@@ -2188,7 +2196,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       if (shipped) continue;
       evidence.push({
         item: `left out: skill ${row.skill} (${copy.repo} ${copy.path})`,
-        source: `installers.tsv, which R4 read later, lists it for ${id}; ${id} does not ship it at the session's start (${start})`,
+        source: `installers.tsv, which the copies output read later, lists it for ${id}; ${id} does not ship it at the session's start (${start})`,
       });
     }
     const pluginOf = (): { repo: string; path: string; name: string } | undefined => {
@@ -2307,7 +2315,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     if (project === undefined) {
       evidence.push({
         item: `left out: the instructions file of the project ${input.project}`,
-        source: "manifests.tsv of R4's output holds no legion-project manifest of that project",
+        source:
+          "manifests.tsv of the copies output holds no legion-project manifest of that project",
       });
     } else {
       contextFiles.push({ repo: project.repository ?? "", path: `project:${project.path ?? ""}` });
@@ -2757,7 +2766,7 @@ async function caseOf(
   }
   const firstAt = t.items[first.index]?.at ?? 0;
   record.model = lastBefore(t.branch, firstAt, modelChange);
-  // The copy the session read, placed by attribute.ts's own rules from the same count and R4
+  // The copy the session read, placed by attribute.ts's own rules from the same count and copies
   // output as the sessions file, so the builder keeps what attribute.ts counted for the cut's
   // copy: a read in a checkout or one the store's context places, as well as one the prefix table
   // maps.
@@ -3187,11 +3196,11 @@ function byModel(sessions: readonly SessionRecord[]): Record<string, ModelCounts
   return counts;
 }
 
-/** R4's output under `copiesDir` as the profile reads it (attribute.ts's `readR4`, the one reader
- *  of it), and attribute.ts's placing of reads for the count under `countDir` and that output, the
- *  two attribute.ts made the sessions files from. Throws a refusal when R4's output cannot be read
- *  as attribute.ts reads it, when the two do not place reads as attribute.ts does, or when the
- *  count holds no query of a configured store. */
+/** The copies output under `copiesDir` as the profile reads it (attribute.ts's `readR4`, the one
+ *  reader of it), and attribute.ts's placing of reads for the count under `countDir` and that
+ *  output, the two attribute.ts made the sessions files from. Throws a refusal when that output
+ *  cannot be read as attribute.ts reads it, when the two do not place reads as attribute.ts does,
+ *  or when the count holds no query of a configured store. */
 function readCopiesAndPlacer(
   config: SkillCutsConfig,
   countDir: string,
@@ -3407,7 +3416,7 @@ const CasesInputs = z.strictObject({
 });
 type CasesInputs = z.infer<typeof CasesInputs>;
 
-/** The files of R4's output that build-cases reads (readCopies, and attribute.ts's readR4). */
+/** The files of the copies output that build-cases reads (readCopies, and attribute.ts's readR4). */
 const COPIES_READ = [
   "installers.tsv",
   "loaders.tsv",
@@ -4392,10 +4401,10 @@ interface CandidateDrop {
 }
 
 /**
- * The first user messages the tasks reader is offered, as build-tasks has always chosen them: the
- * first message of each distinct text, at most TASK_MESSAGES spread evenly over them (`spread`).
- * With `--model` (`model`, in R1's form) or `--profiles-out` (`plan`), each offered message's
- * session is pulled: a message is offered only when its first request ran on `model`
+ * The first user messages the tasks reader is offered: the first message of each distinct text,
+ * at most TASK_MESSAGES spread evenly over them (`spread`). With `--model` (`model`, in the models
+ * table's form) or `--profiles-out` (`plan`), each offered message's session is pulled: a message
+ * is offered only when its first request ran on `model`
  * (`firstReplyModel`), and, with `plan`, its session is rebuilt (`sessionProfile`) and the message
  * offered only when its context lists the skill (`listsSkill`). One on another model, one whose
  * context does not list the skill, or one that cannot be pulled or rebuilt, is dropped and
@@ -4515,8 +4524,8 @@ async function offeredMessages(
   return { offered: numbered(accepted), distinct: groups.size, built, drops, queries };
 }
 
-/** The model `--model` names (`value`), in R1's form (`modelForm`), or undefined when it names
- *  none. Refuses a blank one. */
+/** The model `--model` names (`value`), in the models table's form (`modelForm`), or undefined
+ *  when it names none. Refuses a blank one. */
 function modelOption(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim() === "") {
@@ -4871,7 +4880,7 @@ const READ_FIRST: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `build-tasks --first-read`: the positive control's tasks (plan, R6 "Positive control"). The
+ * `build-tasks --first-read`: the load test's positive control's tasks. The
  * sessions of `--sessions` (`{"store", "hash", "path"?}`, the sessions file attribute.ts writes
  * for the skill) are taken in judge.ts's `blindOrder` under `--seed`, one at a time: each is
  * pulled, and kept when its first assistant message loads the skill by load.ts's rule

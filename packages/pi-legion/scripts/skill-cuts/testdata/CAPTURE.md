@@ -7,10 +7,11 @@ in its header. The scan at the end says how each file was checked for keys and p
 Versions: Oh My Pi 18.18.6 (`/opt/omp/bin/omp`), Claude Code 2.1.311, Bun 1.4.4, gh 2.98.0. `jq` in
 the commands below is the pod's `jq`, which is jaq 3.1.1.
 
-`$R` is the scratch directory `/legion/scratch/tmp/infra4676/t1-runs` and `$TOOLS` is
-`/legion/scratch/tmp/infra4676/t1-tools`, both scratch outside the repository. Every Oh My Pi and Claude
-Code run below starts from `env -i`, so none of the pod's own Oh My Pi settings (its profile, its
-config overlays, its session store) reaches the run.
+`$R` is the scratch directory `/legion/scratch/tmp/acme-1/t1-runs` and `$TOOLS` is
+`/legion/scratch/tmp/acme-1/t1-tools`, both scratch outside the repository ("The scratch
+directory's name" says why each fixture writes `acme-1` there). Every Oh My Pi and Claude Code run
+below starts from `env -i`, so none of the pod's own Oh My Pi settings (its profile, its config
+overlays, its session store) reaches the run.
 
 ## Words replaced in the Oh My Pi fixtures
 
@@ -31,10 +32,10 @@ word of the same grammar, in the same case, and every other byte was kept:
 | invoice, invoices | bill, bills |
 | work order, work orders | job ticket, job tickets |
 
-The replacement was `bun $TOOLS/neutral-words.ts --write <file>...` over every file here but the
-F7 text files and `F1b.jsonl`, run after the captures below; then F1b was made again from the
-changed F1 with its command below. 33 words were replaced, all in five files (no customer, invoice
-or work order occurred):
+The replacement was the word replacement of "The scratch tools" (`fixturewords.ts --write
+<file>...`) over every file here but the F7 text files and `F1b.jsonl`, run after the captures
+below; then F1b was made again from the changed F1 with its command below. 33 words were replaced,
+all in five files (no customer, invoice or work order occurred):
 
 | File | Words replaced |
 | --- | --- |
@@ -44,14 +45,35 @@ or work order occurred):
 | `F2-request.json` | 11: contract 3, Contract 1, contracts 1, deliver 3, Delivery 1, delivery 1, delivered 1 |
 | `F2-request-thinking-low.json` | 11: the same as `F2-request.json` |
 
-So these files differ from what Oh My Pi wrote and sent in those words only: F1's
-`system-prompt-digest` is the digest of the prompt before the change, and the F5 bodies were made
-from F2 before it.
+So these files differ from what Oh My Pi wrote and sent in those words, and in the scratch
+directory's name (next section), only: F1's `system-prompt-digest` is the digest of the prompt
+before the change, and the F5 bodies were made from F2 before it.
+
+## The scratch directory's name
+
+The scratch directories of these captures (`$R`, `$TOOLS`, `$O`, and Claude Code's install
+directory) sat in one directory whose name was the issue key of the work that made them. Every
+fixture here, and this file, writes `acme-1` in its place, F4's directory name too. The
+replacement, from `packages/pi-legion/scripts/skill-cuts`, with `KEY` that name (left out of this
+file):
+
+```sh
+mv "testdata/F4/projects/-legion-scratch-tmp-$KEY-t1-runs-f3-work" \
+  testdata/F4/projects/-legion-scratch-tmp-acme-1-t1-runs-f3-work
+rg -l --null "$KEY" testdata -g '!CAPTURE.md' | xargs -0 sed -i "s/$KEY/acme-1/g"
+```
+
+Then every F7 file was captured again with the commands its section names, since F4's path hash,
+the files' byte counts and the pull's second offset follow from the replaced bytes. The values
+computed from the bytes before the replacement are kept as recorded: F1's `system-prompt-digest`,
+the `shapeHash`, `hash` and `tail` digests Claude Code wrote in F4, and each headers file's
+`content-length`. Every other byte is as captured, but for the words of the section above.
 
 ## The scratch tools
 
-These lived in `$TOOLS` and are described here by what they do; the committed recorder and replay
-hook of the runner are built from them.
+These lived in `$TOOLS` and are described here by what they do; the runner's recorder and replay
+hook are built from them. The scan and the word replacement are in the repository, beside this
+directory, and run from `packages/pi-legion`.
 
 - **recorder** (`bun recorder.ts <port> <out dir> <reply.sse>...`): a stand-in Anthropic Messages
   endpoint on `127.0.0.1`. It stores each POST body byte for byte as `<out>/request-<n>.json`, and
@@ -64,13 +86,12 @@ hook of the runner are built from them.
 - **tool-use reply** (`tool-use-bash.sse`): the same stream shape holding one `tool_use` block, a
   `bash` call whose command is `touch $R/f2/marker-the-block-must-stop`, with
   `stop_reason: tool_use`.
-- **replay hook** (`replay-hook.ts`, after the planner's spike hook): `REPLAY_MESSAGES` names a
-  JSON file holding an array of Oh My Pi message objects. Its `context` handler returns that array
-  in place of the run's own first message (the placeholder prompt), followed by every message the
-  run itself added after it. Its `tool_call` handler returns `{block: true, reason: "blocked by the
-  replay hook: no tool runs in a capture"}` for every call. Each event is logged as one JSON line
-  to `REPLAY_LOG`. `REPLAY_CONTROL_NO_BLOCK=1` leaves the `tool_call` handler out (the control run
-  below only).
+- **replay hook** (`replay-hook.ts`): `REPLAY_MESSAGES` names a JSON file holding an array of Oh
+  My Pi message objects. Its `context` handler returns that array in place of the run's own first
+  message (the placeholder prompt), followed by every message the run itself added after it. Its
+  `tool_call` handler returns `{block: true, reason: "blocked by the replay hook: no tool runs in a
+  capture"}` for every call. Each event is logged as one JSON line to `REPLAY_LOG`.
+  `REPLAY_CONTROL_NO_BLOCK=1` leaves the `tool_call` handler out (the control run below only).
 - **recording proxy** (`ANTHROPIC_BASE_URL=<gateway> bun proxy.ts <port> <out dir>`): listens on
   `127.0.0.1` and forwards each request to the real gateway at `$ANTHROPIC_BASE_URL`. It drops the
   caller's auth headers and signs the forwarded request with the gateway key, which it reads from
@@ -84,12 +105,14 @@ hook of the runner are built from them.
   stdout is the reply body as received; the first stderr line is the status and the kept response
   headers (`content-type`, `request-id`, and `llm_provider-request-id`, the gateway's copy of the
   same id); the second stderr line lists only the names of the headers left out.
-- **scan** (`bun scan.ts <dir>`): the check in "The scan" below.
-- **neutral words** (`bun neutral-words.ts [--write] <file>...`): in each line that holds the
-  model provider's name (any case), replaces each word of the table in "Words replaced in the Oh My
-  Pi fixtures" with its neutral word, in the word's case, keeping every other byte. A word right
-  after a JSON escape (`\n`, `\u2014`) counts as a word, as it does once the JSON is decoded. It
-  prints, per file, the count of each word it replaced; without `--write` it changes nothing.
+- **scan** (`bun scripts/skill-cuts/fixturescan.ts --key-file <file> --terms <file> <dir>`): the
+  check in "The scan" below.
+- **word replacement** (`bun scripts/skill-cuts/fixturewords.ts [--write] <file>...`): in each
+  line that holds the model provider's name (any case), replaces each word of the table in "Words
+  replaced in the Oh My Pi fixtures" with its neutral word, in the word's case, keeping every other
+  byte. A word right after a JSON escape (`\n`, `\u2014`) counts as a word, as it does once the
+  JSON is decoded. It prints, per file, the count of each word it replaced; without `--write` it
+  changes nothing. Run over every file here, it replaces none now.
 
 ## F1: an Oh My Pi session directory (`F1/`)
 
@@ -110,13 +133,13 @@ cp -a $R/f1/sessions/. F1/
 ```
 
 The directory is as Oh My Pi wrote it, but for the words of "Words replaced in the Oh My Pi
-fixtures": the session file
+fixtures" and the scratch directory's name: the session file
 `2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl` (reads of `skill://alpha`,
 of `skill://alpha/references/x.md`, and of `skill://gamma`, whose result is the error
 `Unknown skill: gamma`; then a `task` call and a `wait`), and under the directory of the same
 name less `.jsonl` the subagent's transcript `ProductiveChicken.jsonl` (its one read, of
-`skill://beta`) and its output `ProductiveChicken.md`. No path was rewritten: the scratch paths
-name neither the pod nor a person.
+`skill://beta`) and its output `ProductiveChicken.md`. No other path was rewritten: the scratch
+paths name neither the pod nor a person.
 
 ## F1b: F1's session with its `alpha` read copied a day later (`F1b.jsonl`)
 
@@ -187,8 +210,8 @@ run's output is a fixture.
 ## F3 and F4: a Claude Code run that calls `Skill` and `Read` (`F3-*`, `F4/`)
 
 Claude Code was installed under the scratch directory only:
-`npm install --prefix /legion/scratch/tmp/infra4676/claude-code @anthropic-ai/claude-code@2.1.311`.
-`$F` is `$R/f3`, and `claude` is `/legion/scratch/tmp/infra4676/claude-code/node_modules/.bin/claude`.
+`npm install --prefix /legion/scratch/tmp/acme-1/claude-code @anthropic-ai/claude-code@2.1.311`.
+`$F` is `$R/f3`, and `claude` is `/legion/scratch/tmp/acme-1/claude-code/node_modules/.bin/claude`.
 
 A made-up local marketplace `$F/marketplace`: `.claude-plugin/marketplace.json` names the
 marketplace `acme-market` and its one plugin `acme-tools` at `./plugins/acme-tools`;
@@ -219,7 +242,7 @@ cp $F/proxy/request-1.headers.json F3-request-first.headers.json
 cp $F/proxy/request-3.json F3-request-last.json
 cp $F/proxy/request-3.headers.json F3-request-last.headers.json
 cp $F/stream.jsonl F3-stream.jsonl
-mkdir -p F4/projects && cp -a $F/config/projects/-legion-scratch-tmp-infra4676-t1-runs-f3-work F4/projects/
+mkdir -p F4/projects && cp -a $F/config/projects/-legion-scratch-tmp-acme-1-t1-runs-f3-work F4/projects/
 ```
 
 The run made three requests (`POST /v1/messages?beta=true`, each answered 200): the first holds
@@ -251,7 +274,7 @@ In the order sent (one call each; each shape came back on its first send):
 | `F5-thinking` | `F2-request-thinking-low.json` | `Think the three alpha steps through before you answer, then reply with the alpha checklist as three short lines. Call no tool.` | a `thinking` block with its signature, then a text block |
 | `F5-cache-read` | `F2-request.json` | none: `body-skill-read.json`, the body of `F5-skill-read`, sent again | one `read`; `cache_read_input_tokens` 12912, `cache_creation_input_tokens` 0 |
 
-`F5-judge` is the judge reply, captured by plan task t3 once `prompts/judge.md` existed. Its body
+`F5-judge` is the judge reply, captured once `prompts/judge.md` existed. Its body
 is the one the runner's judge builds (`judgeBody` of `judge.ts`, with `prompts/judge.md` as this
 commit holds it) for a case made from F2's replayed history (`$R/f2/history.json`, made by the
 command of F2 above): the criterion "Pass: The step reads references/x.md (a read of
@@ -259,8 +282,8 @@ skill://alpha/references/x.md) before it writes any alpha step or its result." a
 writes the alpha steps or their results without reading references/x.md first.", the line
 "1. Read \`references/x.md\` before the first step.", the history as the messages before the step
 (its read result of `skill://alpha` left out by the judge), and `F5-text`'s reply as the step. A
-scratch script, `judge-body.ts`, printed that body with those inputs, from the scratch directory
-`$D` (`/legion/scratch/tmp/infra4676/t3d.PhGG14`), and it was sent as the others were:
+scratch script, `judge-body.ts`, printed that body with those inputs, from a scratch directory `$D`
+outside the repository, and it was sent as the others were:
 
 ```sh
 bun $D/judge-body.ts $R/f2/history.json F5-text.sse > $D/body-judge.json
@@ -272,8 +295,6 @@ head -1 $D/reply-judge.err | jq . > F5-judge.headers.json
 It came back on its first send: a `thinking` block, then the text
 `{"verdict": "fail", "reason": "The step makes no tool call to read …"}`, `end_turn`;
 `cache_creation_input_tokens` 710, all of them a one-hour cache write.
-
-F7 is captured once its query exists; it is not here yet.
 
 ## F6: GitHub's answers for the lister, and made-up manifests (`F6-*`)
 
@@ -317,7 +338,7 @@ holds 14,265 entries with `truncated: false`; the cut keeps 105 (78 blobs, 27 tr
 answered `total_count: 325`, `incomplete_results: false`, 30 items on its first page. Without the
 replacements, the base64 round trip leaves each `content` byte for byte as GitHub sent it. The
 agent definition `packages/pi-legion/agents/thermonuclear-deep-review.md` is read as one example
-of the `autoloadSkills` manifest kind beside the files the plan names.
+of the `autoloadSkills` manifest kind beside the manifest files above.
 
 Made-up files, each in the shape of a real file of its kind that no public repository of this owner
 holds, under `F6-madeup/` as one made-up repository's tree:
@@ -337,22 +358,18 @@ holds, under `F6-madeup/` as one made-up repository's tree:
 from its `session_init` line (`grep -v '"type":"model_change"' <F1 subagent file> > F1c.jsonl`).
 `F1d.jsonl` is F1b's first two lines, its title and session lines, so its head holds no model line
 (`head -n 2 F1b.jsonl > F1d.jsonl`).
-The `F7-*.txt` files are psql's output under the store command's flags for `count.sql` and
-`models.sql` on fixture databases that `fixturedb.ts` loads from F1, F1b, F1c, F1d and F4. Their
-exact capture commands are in the headers of `psql-rows.test.ts` (the count, the pull, the tasks
-query and the edge shapes) and `count.test.ts` (the models query), and `count.test.ts` checks each
-query's rows against its capture.
-
-`F7-pull.txt` was captured again, with the same database and the command now in
-`psql-rows.test.ts`'s header, when `pull.sql`'s rows changed from `{"o", "c"}` to `{"o", "k",
-"c"}`: `pull.sql` now cuts each piece of a file into slices of at most 1 MiB and `k` numbers the
-slices of one piece, so a file row that holds a whole older file of hundreds of MB no longer
-comes as one row. F1's pieces are each one slice, so the new capture is the old one with `"k" :
-0` in each row. `F7-empty.txt` was not captured again: the new query gives the same bytes.
+The `F7-*.txt` files are psql's output under the store command's flags for `count.sql`,
+`models.sql` and the queries of the pull, the tasks and the sessions, on fixture databases that
+`fixturedb.ts` loads from F1, F1b, F1c, F1d and F4. Their capture commands are in the headers of
+`psql-rows.test.ts` (the count, the pull, the tasks and sessions queries and the edge shapes) and
+`count.test.ts` (the models query, run next in the same shell). They run as written from
+`packages/pi-legion/scripts/skill-cuts`, in a shell where `LEGION_TEST_PG_DSN` is the test
+server's URL, and make, fill and drop databases of their own on it; every F7 file here was
+captured with them. `count.test.ts` checks each query's rows against its capture.
 
 ## F8 and F9: Oh My Pi's Responses body for `openai/gpt-6.1-sol`, and the gateway's replies (`F8-*`, `F9-*`)
 
-`$O` is the scratch directory `/legion/scratch/tmp/infra4676/openai-route.ByGhxu`, outside the
+`$O` is the scratch directory `/legion/scratch/tmp/acme-1/openai-route.ByGhxu`, outside the
 repository, which held two scratch scripts:
 
 - **measure** (`bun $O/measure.ts <out dir> <thinking>`, run from `packages/pi-legion`): a stand-in
@@ -441,26 +458,37 @@ request's `instructions` and `tools` echoed. The one value changed is each respo
 in every event that holds it, and every other byte is as received.
 
 Checked with `public_leak_check.py check-public-text` and `check-private-names.sh` (both clean),
-and with the scan below, whose only hits in F8 and F9 are values of kinds it does not know, each
-an opaque value the API made: the Responses item ids (`item_id`), the `call_id`s, the reasoning
-item's `encrypted_content` and the `llm_provider-x-request-id` header; and the closing
-`data: [DONE]`, which is no JSON. It finds no piece of the key, no key or token shape and no
-private name in them.
+and with the scan below, which counts the opaque values the API made as known kinds (the
+Responses item ids, `item_id`, the `call_id`s, the reasoning item's `encrypted_content` and the
+`llm_provider-x-request-id` header) and passes over the closing `data: [DONE]`, which is no JSON.
+It finds no piece of the key, no key or token shape and no private name in them.
 
 ## The scan
 
-`bun $TOOLS/scan.ts packages/pi-legion/scripts/skill-cuts/testdata` reads every file here, and the
-decoded content of each GitHub contents answer. It fails on any piece of 16 characters of the
-gateway key (read from the key file inside the scan and printed nowhere); on any key or token
-shape (an `sk-` key, a GitHub token or fine-grained token prefix, an AWS key id, a PEM block
-header, a `Bearer` credential, the key header's name); on any private name (the session store
-names, the gateway host, an IP address other than `127.0.0.1`, a person's name or email other than
-the example and no-reply addresses, the private organization's and the company's names, the key
-alias or team, the old plugin name); and on any run of 32 or more hex digits, or of 16 or more
-characters mixing capitals, small letters and digits, that is not the value of a JSON key of a
-known kind (an id, a git object id in a GitHub URL, a thinking signature, Claude Code's
-`metadata.user_id` with its random device id, or a Claude Code request digest or blob hash) or,
-in a plain text file such as this one, a git object id that a GitHub answer here gives as a `sha`.
-JSON files are read value by value, JSONL line by line and SSE by its data lines.
+From `packages/pi-legion`, with the gateway key's file and a terms file of the private names:
+
+```sh
+bun scripts/skill-cuts/fixturescan.ts --key-file <key file> --terms <terms file> scripts/skill-cuts/testdata
+```
+
+It reads every file here, and the decoded content of each GitHub contents answer, and fails on
+any piece of 16 characters of the key (read inside the scan and printed nowhere); on any key or
+token shape (an `sk-` key, a GitHub token or fine-grained token prefix, an AWS key id, a PEM block
+header, a `Bearer` credential, the key header's name); on an IP address other than `127.0.0.1`,
+and an email address other than the example and no-reply ones; on any private name of the terms
+file; and on any run of 32 or more hex digits, or of 16 or more characters mixing capitals, small
+letters and digits, that is not the value of a JSON key of a known kind (an id, a git object id in
+a GitHub URL, a thinking signature, a Responses reasoning item's encrypted content, Claude Code's
+`metadata.user_id` with its random device id, or a Claude Code request digest or blob hash), nor a
+run another file here holds as the value of such a key (a git object id a GitHub answer gives as a
+`sha`, or an id in a pull row's piece of a line cut in the middle). JSON files are read value by
+value, JSONL and the psql captures line by line, SSE by its data lines. A hit of a private name
+gives the terms file's line, never the name.
+
+The terms file is the operator's, one regular expression per line, matched in any case, and stays
+outside the repository, since the names it lists are private: the session stores' names, the
+gateway's host, the people's names, the private organization's and the company's names, the key
+alias or team, the old plugin name, and the issue key "The scratch directory's name" replaces.
+With those, every file here passes. From the repository's root,
 `.github/scripts/check-private-names.sh packages/pi-legion/scripts/skill-cuts/testdata` runs
 beside it.

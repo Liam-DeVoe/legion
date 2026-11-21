@@ -58,10 +58,11 @@ import {
 // appended to: its first three quarters in the file row, in slices of PART_CHARS characters, and
 // the rest in parts of PART_CHARS from the file row's byte length on, so a pull pages.
 // The gateway is a stand-in built on recorder.ts; GitHub is a stand-in gh over made-up
-// repositories (REPOSITORIES), each as it was at the one commit SHA. The copies output (R4's) is
-// of a later read: it lists a skill `newer` that no repository held at SHA, and not `older`,
-// which acme/skills held then. The count is three made-up query outputs, one per store. Every
-// skill, repository, store and path here is made up, and nothing reaches a network.
+// repositories (REPOSITORIES), each as it was at the one commit SHA. The copies output is of a
+// later read: it lists a skill `newer` that no repository held at SHA, and not `older`, which
+// acme/skills held then. The count is three made-up query outputs, one per store. Every skill,
+// repository and store here is made up, every path is made up or F1's (F1_SKILLS, the skills
+// directory of F1's scratch profile, testdata/CAPTURE.md), and nothing reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(
@@ -69,8 +70,8 @@ const F1 = path.join(
   "F1",
   "2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl"
 );
-const F1_SKILLS =
-  "/legion/scratch/tmp/infra4676/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
+/** The skills directory F1's session read its skills from: its scratch profile's. */
+const F1_SKILLS = "/legion/scratch/tmp/acme-1/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
 const PART_CHARS = 200;
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const LINE = "2. Write each step's result on one line.";
@@ -327,8 +328,9 @@ const SESSIONS: Record<
   },
   // Before its read of alpha, the session reads zeta from Oh My Pi's cache of a plugin of
   // acme/market's marketplace under the name the marketplace had at the session's start
-  // (old-market); R4's prefix table names the plugin under its later name (new-market), whose
-  // unit ships nothing at that commit. acme/market holds Claude Code's settings too.
+  // (old-market); the copies output's prefix table names the plugin under its later name
+  // (new-market), whose unit ships nothing at that commit. acme/market holds Claude Code's
+  // settings too.
   "renamed-plugin": {
     store: "store_a",
     change: readFirst("2e7a000", "skill://zeta", OLD_MARKET_ZETA, "# zeta\n"),
@@ -807,7 +809,8 @@ const USER_RULES = "# Made-up user rules\n\nAnswer each question in one line.\n"
  *  Claude Code's settings and user memory in `.claude/`, as a dev box's config repository does.
  *  acme/other holds its own alpha and delta, which its installer links the same way. acme/market
  *  holds zeta and a marketplace that ships it in its plugin zeta-tools, under the marketplace's
- *  name at SHA (old-market; R4's later read names it new-market), and Claude Code's settings. */
+ *  name at SHA (old-market; the copies output, read later, names it new-market), and Claude
+ *  Code's settings. */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -1439,6 +1442,7 @@ describe("build-cases over every made-up session", () => {
       const check = summary.sessions.find(
         (each) => each.hash === fileHash(sessionPath(nameOf(c)))
       )?.restatementCheck;
+      expect(check?.before).toBeNumber();
       expect(check?.read).toBe(check?.before as number);
     }
   });
@@ -1524,7 +1528,7 @@ describe("build-cases over every made-up session", () => {
       "user-skills:omp does not ship it at the session's start"
     );
     expect(evidence["skill older (acme/skills skills/older)"]).toContain(
-      "installers.tsv, which R4 read later, does not list it"
+      "installers.tsv, which the copies output read later, does not list it"
     );
     // A package ships what its prepack script lists at the commit.
     expect(byName("legion")?.profile.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
@@ -1773,7 +1777,7 @@ describe("build-cases over every made-up session", () => {
     );
   });
 
-  test("a read whose unit R4 names by a later name ships nothing at the session's start, so the prefix rows its manifest gives at that commit place it at the unit that installed it then", () => {
+  test("a read whose unit the copies output names by a later name ships nothing at the session's start, so the prefix rows its manifest gives at that commit place it at the unit that installed it then", () => {
     const c = byName("renamed-plugin");
     expect(c?.profile.skills.find((skill) => skill.name === "zeta")).toEqual({
       repo: "acme/market",
@@ -1794,7 +1798,7 @@ describe("build-cases over every made-up session", () => {
       `message 2 reads [Skill file: ${OLD_MARKET_ZETA}], under the prefix row **/plugins/cache/plugins/old-market___zeta-tools___*/skills/zeta/ that the manifests of acme/market at ${SHA} give by copies.ts's rules; no unit installers.tsv names for the read ships zeta at that commit`
     );
     expect(evidence["skill zeta (acme/market skills/zeta)"]).toBe(
-      `acme/market at ${SHA}: plugin:zeta-tools@old-market ships it (acme/market:.claude-plugin/marketplace.json); installers.tsv, which R4 read later, does not list it; message 2 reads this copy`
+      `acme/market at ${SHA}: plugin:zeta-tools@old-market ships it (acme/market:.claude-plugin/marketplace.json); installers.tsv, which the copies output read later, does not list it; message 2 reads this copy`
     );
   });
 
@@ -1872,8 +1876,9 @@ describe("build-cases over every made-up session", () => {
       [...skill.matchAll(/<file path="([^"]+)">\n([\s\S]*?)\n<\/file>/g)].map((match) => ({
         file: match[1] ?? "",
         lines: (match[2] ?? "").split("\n").map((line) => {
-          const [, number, text] = /^(\d+): (.*)$/.exec(line) ?? [];
-          return { number: Number(number), text };
+          const shown = /^(\d+): (.*)$/.exec(line);
+          if (shown === null) throw new Error(`a line shown with no number: ${line}`);
+          return { number: Number(shown[1]), text: shown[2] };
         }),
       }));
     const lineNumber = base["SKILL.md"].indexOf(LINE) + 1;
@@ -2097,6 +2102,8 @@ test("the seed fixes the order the sessions are taken in, and --max stops at tha
   expect(runs[0]?.summary.order).toEqual(expected("11"));
   expect(runs[1]?.summary.order).toEqual(runs[0]?.summary.order ?? []);
   expect(runs[2]?.summary.order).toEqual(expected("12"));
+  // The two seeds give two orders, so the runs above can tell whether the seed is read.
+  expect(expected("12")).not.toEqual(expected("11"));
   for (const run of runs) {
     expect(run.cases).toHaveLength(1);
     const first = run.summary.sessions.find((each) => each.outcome.startsWith("case "));
@@ -2407,13 +2414,14 @@ describe("build-cases goes on from where a run stopped", () => {
 
   test("a run that goes on from other inputs is refused, naming each difference, and leaves the files as they were", async () => {
     const before = readFileSync(`${killed}.summary.json`, "utf8");
-    const refused: string[] = [];
-    expect(await main(buildArgs(sessions, killed, "6"), io(refused))).toBe(2);
-    expect(refused.join("\n")).toContain("--seed was 5, now 6");
+    const seedRefused: string[] = [];
+    expect(await main(buildArgs(sessions, killed, "6"), io(seedRefused))).toBe(2);
+    expect(seedRefused.join("\n")).toContain("--seed was 5, now 6");
     const other = sessionsFile("resume-other.jsonl", names.slice(1));
-    expect(await main(buildArgs(other, killed, "5"), io(refused))).toBe(2);
-    expect(refused.join("\n")).toContain(`--sessions was ${sessions}`);
-    expect(refused.join("\n")).toContain("holds a build of other inputs");
+    const sessionsRefused: string[] = [];
+    expect(await main(buildArgs(other, killed, "5"), io(sessionsRefused))).toBe(2);
+    expect(sessionsRefused.join("\n")).toContain(`--sessions was ${sessions}`);
+    expect(sessionsRefused.join("\n")).toContain("holds a build of other inputs");
     expect(readFileSync(`${killed}.summary.json`, "utf8")).toBe(before);
   });
 });
@@ -2730,12 +2738,19 @@ test("build-tasks refuses --sessions, --seed and --max without --first-read, and
   const out = path.join(scratch, "control-refused", "tasks.jsonl");
   const from = recorder.requests.length;
   const logged = readFileSync(psqlLog, "utf8").length;
-  const lines: string[] = [];
   const pick = ["build-tasks", "--config", config, "--key-file", keyFile, "--skill", old];
-  expect(
-    await main([...pick, "--store", "store_a", "--sessions", sessions, "--out", out], io(lines))
-  ).toBe(2);
-  expect(lines.join("\n")).toContain("--sessions goes with --first-read only");
+  for (const [flag, value] of [
+    ["--sessions", sessions],
+    ["--seed", "1"],
+    ["--max", "5"],
+  ]) {
+    const lines: string[] = [];
+    expect(await main([...pick, "--store", "store_a", flag, value, "--out", out], io(lines))).toBe(
+      2
+    );
+    expect(lines.join("\n")).toContain(`${flag} goes with --first-read only`);
+  }
+  const lines: string[] = [];
   expect(await main([...controlArgs(sessions, out, "1"), "--store", "store_a"], io(lines))).toBe(2);
   expect(lines.join("\n")).toContain("--first-read takes its sessions from --sessions");
   expect(recorder.requests.length).toBe(from);
@@ -2768,8 +2783,8 @@ test("removeSecrets takes out each secret shape and counts it, and leaves plain 
   }
 });
 
-/** The entries of `text` and the messages of its branch, read whole: as the builder read a
- *  transcript before it read one from a spool, line by line. */
+/** The entries of `text` and the messages of its branch, read from the whole text at once: what a
+ *  transcript read from its spool, line by line, must give. */
 function readWhole(text: string): { entries: SessionEntry[]; messages: SessionMessage[] } {
   const lines = text.split("\n");
   const entries: SessionEntry[] = [];
@@ -2805,6 +2820,7 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
     name: "written",
     text: `${sessionText("good")}${JSON.stringify(note)}\r\n{"type":"message","message":{"ro`,
   });
+  const refusedNames: string[] = [];
   for (const { name, text } of texts) {
     const file = path.join(dir, `${name}.jsonl`);
     writeFileSync(file, text);
@@ -2816,6 +2832,7 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
       for (const chunk of [7, SPOOL_CHUNK]) {
         expect(() => readTranscript(file, chunk)).toThrow((error as Error).message);
       }
+      refusedNames.push(name);
       continue;
     }
     for (const chunk of [7, 4096, SPOOL_CHUNK]) {
@@ -2836,7 +2853,7 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
       expect(JSON.stringify(t.items)).not.toContain(LINE);
     }
   }
-  expect(texts.map((each) => each.name)).toContain("broken");
+  expect(refusedNames).toEqual(["broken"]);
 });
 
 /** A sessions file of `count` sessions no store holds, each with no path. */
@@ -3006,6 +3023,7 @@ test("the pull reads the store command's output row by row with psqlRows' checks
     chmodSync(command, 0o755);
     return command;
   };
+  const parsing: number[] = [];
   for (const [n, output] of outputs.entries()) {
     const command = printing(String(n), output);
     const spool = path.join(dir, `${n}.jsonl`);
@@ -3016,6 +3034,7 @@ test("the pull reads the store command's output row by row with psqlRows' checks
       fault = (error as Error).message;
     }
     if (fault === undefined) {
+      parsing.push(n);
       expect(await pullTranscript(command, "store_a", "/sessions/x.jsonl", spool)).toEqual({
         bytes: 2,
         calls: 1,
@@ -3028,6 +3047,9 @@ test("the pull reads the store command's output row by row with psqlRows' checks
       }).toEqual({ n, error: `Error: ${fault}` });
     }
   }
+  // Only the two whole tables parse, with a last newline and without; every other output is a
+  // fault, so the pull is checked on both.
+  expect(parsing).toEqual([0, 1]);
   // An imported file appended to: the file row's two slices, then a part at the file row's byte
   // length, whose DEL psql prints as \x7F; and a part at 0 after them, which overlaps the file row.
   const head = ["part", "-----", row(-1, "ab"), row(-1, "c\n", 1)];
@@ -3263,6 +3285,22 @@ test("build-tasks refuses --profiles-out without --copies and --count, or withou
     [
       [...pick, "--store", "store_a", "--out", out, "--copies", copiesDir],
       "--copies goes with --profiles-out only",
+    ],
+    [
+      [...pick, "--store", "store_a", "--out", out, "--count", countDir],
+      "--count goes with --profiles-out only",
+    ],
+    [
+      [
+        ...pick,
+        "--store",
+        "store_a",
+        "--out",
+        out,
+        "--context-session",
+        "store_a:0123456789abcdef",
+      ],
+      "--context-session goes with --profiles-out only",
     ],
     [
       [

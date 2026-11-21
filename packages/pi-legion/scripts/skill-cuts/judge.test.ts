@@ -45,12 +45,12 @@ import { PROMPTS_DIR, parsePrompt } from "./readers";
 // "<prompt>"`): 0 the user's prompt, 1 a read of skill://alpha, 2 its result, 3 a read of
 // skill://alpha/references/x.md, 4 its result, 5 a read of the missing skill://gamma, 6 its
 // result, 7 a `task` call. F5 holds the gateway's replies to bodies made from F2's replayed
-// history (`bun $TMPDIR/infra4676/send.ts <body.json> > F5-<shape>.sse`); F5-judge is its reply to
-// the judge's own body (`judgeBody`) for a case made from that history and F5-text's reply. F9
-// holds the gateway's Responses API replies (openai/gpt-6.1-sol's) to bodies made from F8, the
-// F2-like history Oh My Pi sent for that model (`bun send-openai.ts <body.json> >
-// F9-<shape>.sse`). The gateway's fetch is a fake that answers with them, or with a synthetic
-// judgement: no test here reaches a network.
+// history (`bun $TOOLS/send.ts <body.json> <F2 headers.json>`); F5-judge is its reply to the
+// judge's own body (`judgeBody`) for a case made from that history and F5-text's reply (`bun
+// $TOOLS/send.ts <judge body.json>`). F9 holds the gateway's Responses API replies
+// (openai/gpt-6.1-sol's) to bodies made from F8, the F2-like history Oh My Pi sent for that model
+// (`bun $O/send-openai.ts <body.json>`). The gateway's fetch is a fake that answers with them, or
+// with a synthetic judgement: no test here reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(

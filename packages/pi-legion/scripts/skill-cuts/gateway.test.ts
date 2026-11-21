@@ -25,13 +25,13 @@ import {
   toolCalls,
 } from "./gateway";
 
-// The gateway's client, on F5 and F9 (testdata/): the model gateway's replies to request bodies
-// made from F2 and F8, captured by plan task t1 (testdata/CAPTURE.md, "F5") with
-// `bun $TMPDIR/infra4676/send.ts <body.json> > F5-<shape>.sse`, a scratch script that posts the
-// body to the gateway's `/v1/messages` with the key read inside it, and by the OpenAI route's task
-// ("F8 and F9") with `bun send-openai.ts <body.json> > F9-<shape>.sse`, its twin for
-// `/v1/responses`; each body sets `stream`, so each reply is an SSE stream, kept with its
-// `content-type` and `request-id` headers. Every fetch here is a fake: no test reaches a network.
+// The gateway's client, on F5 and F9 (testdata/, captured as testdata/CAPTURE.md says in "F5" and
+// in "F8 and F9"): the model gateway's replies to request bodies made from F2 and F8. Each F5
+// reply came from `bun $TOOLS/send.ts <body.json> <F2 headers.json>`, a scratch script that posts
+// the body to the gateway's `/v1/messages` with the key read inside it, and each F9 reply from
+// `bun $O/send-openai.ts <body.json>`, its twin for `/v1/responses`; each body sets `stream`, so
+// each reply is an SSE stream, kept with its `content-type` and request-id headers. Every fetch
+// here is a fake: no test reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const scratch = temporaryDirectory("skill-cuts-gateway", { real: true });
@@ -438,9 +438,12 @@ test("refuses a body whose model has no price before any call, and takes a price
 
   const price = { input: 1, output: 1, cacheWriteShort: 1, cacheWriteLong: 1, cacheRead: 1 };
   const priced = world(() => f5("text"), { prices: { "acme-model-1": price } });
-  // The reply says claude-sonnet-5-5 answered, so that model's own price counts it.
+  // The reply says claude-sonnet-5-5 answered, so that model's own price counts it: F5-text's
+  // usage at its list price is 592 x 2 + 96 x 10 + 12912 x 0.10, where the price passed in would
+  // give 592 + 96 + 12912.
   const reply = await priced.gateway.send({ ...BODY, model: "acme-model-1" });
   expect(reply.spent.model).toBe("claude-sonnet-5-5");
+  expect(reply.spent.usd).toBeCloseTo((592 * 2 + 96 * 10 + 12912 * 0.1) / 1e6, 10);
   expect(priced.sent).toHaveLength(1);
 });
 

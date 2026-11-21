@@ -30,11 +30,11 @@ import {
 } from "./fixturedb";
 import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 
-// R1's fixture proof of count.sql (plan, "The SQL is committed and proven on fixtures") and of
-// models.sql, and the pieces they stand on: countsql.ts's filling and fixturedb.ts's loading. The
-// proof needs the pod's test server (LEGION_TEST_PG_DSN) and psql, and runs each query with the
-// store command's own flags; without the server it is skipped with a printed line (the pi-legion
-// CI job has none). It makes six databases of its own on that server and drops them at the end:
+// The fixture proof of count.sql (the read count) and of models.sql, and the pieces they stand on:
+// countsql.ts's filling and fixturedb.ts's loading. The proof needs the pod's test server
+// (LEGION_TEST_PG_DSN) and psql, and runs each query with the store command's own flags; without
+// the server it is skipped with a printed line (the pi-legion CI job has none). It makes six
+// databases of its own on that server and drops them at the end:
 // F1's session, its subagent and F4 in the first; F1b in the second; F1's session in the third,
 // cut into three parts inside its `alpha` read call line; and, for models.sql, in the fourth: F1c
 // (F1's subagent with its model_change line taken out, so its model is its session_init's) cut
@@ -46,20 +46,23 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // commands of count.sql's and pull.sql's), so a change to the SQL that changes a result fails here
 // until F7 is captured again.
 //
-// F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, with FIRST the
-// first database as psql-rows.test.ts loads it and MODELS a fourth made the same way:
+// F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, in the shell
+// that ran psql-rows.test.ts's capture commands (its N, SERVER, FIRST, F1 and store()):
 //
+//   createdb --maintenance-db="$LEGION_TEST_PG_DSN" "skillcuts_models_$N"
+//   MODELS=$SERVER/skillcuts_models_$N
 //   grep -v '"type":"model_change"' $F1/ProductiveChicken.jsonl > testdata/F1c.jsonl
 //   head -n 2 testdata/F1b.jsonl > testdata/F1d.jsonl
 //   bun fixturedb.ts --dsn "$MODELS" --line '"type":"thinking_level_change"' testdata/F1c.jsonl
 //   bun fixturedb.ts --dsn "$MODELS" testdata/F1d.jsonl
 //   bun fixturedb.ts --dsn "$MODELS" --line '"type":"title"' testdata/F1b.jsonl
 //   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-20 \
-//     --query models | $PSQL "$FIRST" > testdata/F7-models-first.txt
+//     --query models | store "$FIRST" > testdata/F7-models-first.txt
 //   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-20 \
-//     --query models | $PSQL "$MODELS" > testdata/F7-models-second.txt
+//     --query models | store "$MODELS" > testdata/F7-models-second.txt
 //   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-21 \
-//     --query models | $PSQL "$MODELS" > testdata/F7-models-later.txt
+//     --query models | store "$MODELS" > testdata/F7-models-later.txt
+//   dropdb --maintenance-db="$LEGION_TEST_PG_DSN" "skillcuts_models_$N"
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(TESTDATA, "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80");
@@ -67,7 +70,7 @@ const F1_SESSION = `${F1}.jsonl`;
 const F1_SUBAGENT = `${F1}/ProductiveChicken.jsonl`;
 const F4_SESSION = path.join(
   TESTDATA,
-  "F4/projects/-legion-scratch-tmp-infra4676-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl"
+  "F4/projects/-legion-scratch-tmp-acme-1-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl"
 );
 const F1B = path.join(TESTDATA, "F1b.jsonl");
 const F1C = path.join(TESTDATA, "F1c.jsonl");
@@ -239,9 +242,10 @@ describe("fixturedb.ts loads a fixture as the store keeps a file", () => {
   });
 
   test("a cut never splits a UTF-8 character, and a line too short to cut is refused", () => {
-    const bytes = new TextEncoder().encode("{}\n\u00e9\u00e9\u00e9\u00e9\n{}\n");
-    const [cut] = cutOffsets(bytes, { parts: 2 });
-    expect(((bytes[cut ?? 0] ?? 0) & 0xc0) === 0x80).toBe(false);
+    // The line "a€€" is bytes 3 to 9; its middle, byte 6, is the first euro sign's last byte, so
+    // the cut moves back over two continuation bytes to that sign's first byte, 4.
+    const bytes = new TextEncoder().encode("{}\na€€\n{}\n");
+    expect(cutOffsets(bytes, { parts: 2 })).toEqual([4]);
     expect(() =>
       cutOffsets(new TextEncoder().encode("{}\nx\n{}\n"), { parts: 3, line: "x" })
     ).toThrow("too short");
@@ -737,7 +741,7 @@ describe.skipIf(serverDsn === undefined)(
           [fileHash(storedPath(F1_SESSION)), sonnet, "model_change"],
         ],
         // Each file is whole in its head: its every part starts below 262144.
-        summary: expect.objectContaining({ files: 3, with_model: 3, bytes: 185931, bad_lines: 0 }),
+        summary: expect.objectContaining({ files: 3, with_model: 3, bytes: 185790, bad_lines: 0 }),
       });
     });
 
@@ -755,7 +759,7 @@ describe.skipIf(serverDsn === undefined)(
       expect(readFileSync(F1B, "utf8").split("\n")[2]).toContain('"type":"model_change"');
       expect(models(later)).toEqual({
         files: [[fileHash(storedPath(F1B)), "anthropic/claude-sonnet-5-5", "model_change"]],
-        summary: expect.objectContaining({ files: 1, with_model: 1, bytes: 19740 }),
+        summary: expect.objectContaining({ files: 1, with_model: 1, bytes: 19716 }),
       });
     });
 

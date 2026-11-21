@@ -47,9 +47,9 @@ import {
 // attribute.ts on F7, count.sql's and models.sql's own output under the store command's flags
 // (testdata/F7-count-first.txt and F7-count-second.txt, whose capture commands psql-rows.test.ts's
 // header gives, and F7-models-first.txt, F7-models-second.txt and F7-models-later.txt, whose
-// count.test.ts's header gives), and on made-up R4 tables of made-up repositories (acme/skills,
-// acme/tools, acme/dotfiles, acme/cc, acme/kiln, ...), each in the columns copies.ts writes. Other
-// query outputs are made here in F7's shape: a psql table of rows, read back with the parsers.
+// count.test.ts's header gives), and on made-up copies outputs (copies.ts's tables) of made-up
+// repositories (acme/skills, acme/tools, acme/dotfiles, acme/cc, acme/kiln, ...). Other query
+// outputs are made here in F7's shape: a psql table of rows, read back with the parsers.
 //
 // F7-count-first.txt holds, for store_a and the day 2026-11-20:
 // - H1 (F1's session): a read of alpha at F1_PROFILE/alpha/SKILL.md, and of its references/x.md;
@@ -71,11 +71,10 @@ import {
 // checkout rule places neither.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
-const F1_PROFILE =
-  "/legion/scratch/tmp/infra4676/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
-const F3 = "/legion/scratch/tmp/infra4676/t1-runs/f3";
+const F1_PROFILE = "/legion/scratch/tmp/acme-1/t1-runs/f1/home/.omp/profiles/fixture/agent/skills";
+const F3 = "/legion/scratch/tmp/acme-1/t1-runs/f3";
 const H1 = "83af4b8e0c75a050";
-const H2 = "5ebda8a6e0707d07";
+const H2 = "1e93689d7698bd6a";
 const H3 = "0da7427e81182998";
 const H1B = "2e8fca5c3950db03";
 const H1C = "cf863e47a559fcca";
@@ -996,11 +995,11 @@ test("each ranked skill's sessions file holds the copy's reading sessions after 
         name: "sessions/alpha.jsonl",
         text: [
           // store_a: H1 by the prefix table, H2 by its context, H1B by the prefix table.
-          { store: "store_a", hash: H1B },
           { store: "store_a", hash: H2 },
+          { store: "store_a", hash: H1B },
           { store: "store_a", hash: H1 },
-          { store: "store_b", hash: H4 },
           { store: "store_b", hash: H2 },
+          { store: "store_b", hash: H4 },
         ]
           .map((line) => `${JSON.stringify(line)}\n`)
           .join(""),
@@ -1141,7 +1140,7 @@ test("the command writes the count, its report, each cut's ranking and the model
   const sessionsOf = (skill: string) =>
     readFileSync(path.join(out, "skills-1", "sessions", `${skill}.jsonl`), "utf8");
   expect(sessionsOf("alpha")).toBe(
-    [H1B, H2, H1].map((hash) => `${JSON.stringify({ store: "store_a", hash })}\n`).join("")
+    [H2, H1B, H1].map((hash) => `${JSON.stringify({ store: "store_a", hash })}\n`).join("")
   );
   expect([sessionsOf("beta"), sessionsOf("gone")]).toEqual(["", ""]);
   expect(result.out).toContain(`${path.join(out, "skills-1", "sessions")}/ (3 files)`);
@@ -1244,7 +1243,7 @@ test("the command writes the count, its report, each cut's ranking and the model
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
   for (const line of [
     "End time 2026-11-22T00:00:00Z. The window is [2026-11-20T00:00:00Z, 2026-11-22T00:00:00Z), 2 days.",
-    "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 4 | 2 | 4 | 205671 | 0 | 0 |",
+    "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 4 | 2 | 4 | 205506 | 0 | 0 |",
     "- store_a starts after the window's start: its records span 2026-11-20T02:00:00Z to the end time, 1.9 of the window's 2 days.",
     '- The transcript store is not read: the cluster store that a pod reads holds no Claude Code transcript until the Claude Code transcripts are moved into it, so this count holds no Claude Code session. "Claude Code" below lists the skills that leaves out.',
     "None: each query of the window has its output, and the run log lists no failure.",
