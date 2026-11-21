@@ -248,8 +248,8 @@ The document socket's heartbeat re-checks the browser credential it was admitted
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`; `access.CredentialCovers` is the same list rule in Go).
-A personal token's list is its row's `projects`, which Settings and `POST` and `PATCH /api/v1/me/agent-tokens` write:
-at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list of the caller's own credential, and a credential that lists projects mints no token that lists none.
+A personal token's list is its row's `projects`, which Settings, `POST /api/v1/me/agent-tokens` and `PATCH /api/v1/me/agent-tokens/{id}` write:
+at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
 A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list; every other credential lists none.
 A full member's list decides only which private projects the credential reads and writes: it reads and writes every public project its person sees, whatever it lists, and a private project only when it lists it and its person sees it.
 A restricted member's list narrows what that person sees to the projects it lists, whatever the deployment holds.
@@ -265,7 +265,7 @@ A broker token an operator's entry scoped to one project keeps the write scope s
 
 A caller is an open viewer when its person is not a restricted member, whatever its credential lists.
 An open viewer reads every person and every row of the whole deployment, and every session and role but those below (`access.SessionClause`, `access.RoleClause`).
-No caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
+Apart from a session's own credential, which always reads its session, no caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
 A session that has acted in no project is judged, while a project is private, by the projects the listener names for it in Dispatch's stored copy of the listener's sessions (the `route_roster` row): a session the listener sends no projects for is read by no caller but itself, and an open viewer reads one whose list names only projects it sees, an empty list included.
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
@@ -323,7 +323,7 @@ A broker token that does name a person, and every other credential, reaches the 
 A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 An open viewer whose credential proves no session — a full member's browser cookie or personal agent token, a Kubernetes service-account token and the shared token — is refused by the project and session checks only a write to an object of a project it does not see, which answers as missing, and, where its credential lists a project, a write of the whole deployment.
-With no private project in the deployment, such a caller sees every project, and neither check refuses it anything.
+With no private project in the deployment, such a caller sees every project, so the checks refuse it only that write of the whole deployment.
 A read-only token lists no project, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
@@ -4568,7 +4568,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
-  Only the sessions the caller may see are listed: one whose listed projects (the projects the listener names for it, which no row answers) include one the caller sees, and any other that `access.SessionClause` passes, for an open viewer every one but those that have acted in a private project it does not see and, while a project is private, those that have acted in none and are listed with a project it does not see.
+  Only the sessions the caller may see are listed: those `access.SessionClause` passes, for an open viewer every one but those that have acted in a private project it does not see and, while a project is private, those that have acted in none and are listed with a project it does not see.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4687,7 +4687,7 @@ Each item below names a path with its method and identity, then its purpose.
   `scopes` defaults to the set the caller's own credential holds;
   a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
   `projects` is the list of projects the token may use, at most 16, each one the caller sees, stored sorted with each key once, else `400 TOKEN_PROJECTS_INPUT`;
-  it defaults to the list of the caller's own credential, and a credential that lists projects mints no token that lists none.
+  it defaults to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
   A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
   at the person's own browser, `projects_hidden: true` marks a token that lists a project the person no longer sees, and it is absent everywhere else.
 
@@ -4708,7 +4708,7 @@ Each item below names a path with its method and identity, then its purpose.
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
   `projects` is the projects the credential lists, sorted, and absent when it lists none, and for a full member's broker-issued token while no project is private, as before lists existed (a full member's list decides only which private projects it reads, and it reads every public project whatever it lists; a restricted member's list decides every project it reads);
   `private_projects` is those of `projects` the caller must treat as private, sorted, and absent when there is none: a private project's key, a key the credential no longer sees whatever its project's visibility, and a key that names no project, so a key is public exactly when it is in `projects` and not here, and the field tells nothing of a project the caller cannot see;
-  `project` is deprecated, and its value comes from that list alone: the one key of a one-key list, and null for any other list, an empty one included).
+  `project` is deprecated: the one project the credential's writes are held to, where they are held to one (a credential whose list holds its writes and names one key, or a broker-issued token an operator's entry scoped to one project), and null for every other credential).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
   Either shape carries `member_kind: "restricted"` when the person the caller is or acts for is a restricted member, and leaves it out for everyone else;
   a member kind that cannot be read is `503 IDENTITY_UNAVAILABLE`.
