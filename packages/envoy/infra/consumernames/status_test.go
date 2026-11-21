@@ -3,10 +3,12 @@ package consumernames
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -210,4 +212,83 @@ func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
 	}
 	require.NotContains(t, stdout, "hold.barrier", "status read the barrier key as a record")
 	require.NotContains(t, stdout, "BLOCKER session ses_a")
+}
+
+// statusGoneStore makes project's daemon store one whose database does not exist on the test's
+// Postgres server, as a deleted project leaves it, and answers the --daemon-database value naming
+// it: the stack's env hands status a pool on that database, which answers SQLSTATE 3D000, and the
+// file names it on the server's address, with instance on its second line (censusStoreFileFor).
+func (h *stack) statusGoneStore(project, database, instance string) string {
+	h.t.Helper()
+	_, server := censusStore(h.t, "SERVER-"+project)
+	entry := censusStoreFileFor(h.t, project, server, database, instance)
+	_, file, _ := strings.Cut(entry, "=")
+	raw, err := os.ReadFile(file)
+	require.NoError(h.t, err)
+	url, _, _ := strings.Cut(string(raw), "\n")
+	pool, err := pgxpool.New(h.t.Context(), url)
+	require.NoError(h.t, err)
+	h.t.Cleanup(pool.Close)
+	h.mu.Lock()
+	h.dbs[daemonFamily(project)] = pool
+	h.mu.Unlock()
+	return entry
+}
+
+// status, while a broker cutover row names a daemon whose store is gone (its database answers
+// SQLSTATE 3D000 at exactly the address the daemon's Deployment names, by the census's rule for the
+// daemon stores, censusReadDaemonStore), reports that store gone, with the database, the instance,
+// the instance the operator's file states and the server's answer, and goes on: a complete reading
+// exits 0. A 3D000 the rule does not confirm (the Deployment names another database) stays
+// UNKNOWN, naming why. Control: under the earlier rule (statusRules.goneUnknown) the gone store is
+// a failed read, and status is UNKNOWN for good while the cutover row names it, as no command
+// removes a broker cutover row.
+func TestTheStatusReportsAGoneDaemonStore(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	_, err = h.records().PutCutover(ctx, daemonFamily("GONE"), selection.CutoverDone, id)
+	require.NoError(t, err)
+	require.NoError(t, h.release(id))
+	dropped := censusDroppedDatabase()
+	h.censusDeploy(censusDeployment("GONE", dropped, censusInstance))
+	gone := h.statusGoneStore("GONE", dropped, censusInstance)
+	h.censusDeploy(censusDeployment("ELSEWHERE", "daemon_elsewhere", censusInstance))
+	elsewhere := h.statusGoneStore("ELSEWHERE", censusDroppedDatabase(), censusInstance)
+	h.database(familyDispatch, dispatchMigrations...)
+	status := func(entries ...string) (int, string, string) {
+		t.Helper()
+		args := []string{actionStatus, "--dispatch-database-file", "dispatch.url"}
+		for _, entry := range entries {
+			args = append(args, "--daemon-database", entry)
+		}
+		return h.run(args...)
+	}
+
+	previous := statusRules
+	t.Cleanup(func() { statusRules = previous })
+	statusRules = statusRuleSet{goneUnknown: true}
+	code, _, stderr := status(gone)
+	statusRules = statusRuleSet{}
+	require.Equal(t, 2, code, "control: under the earlier rule the gone store is a failed read: %s", stderr)
+	require.Contains(t, stderr, "daemon/GONE's sentinel")
+	require.Contains(t, stderr, "SQLSTATE 3D000")
+
+	code, stdout, stderr := status(gone)
+	require.Equal(t, 0, code, "status beside a gone store: %s%s", stdout, stderr)
+	require.Contains(t, stdout, "cutover daemon/GONE: done (hold "+id)
+	require.Contains(t, stdout, "store daemon/GONE: gone: database "+dropped+" on instance "+censusInstance+" (the operator's file states "+censusInstance+"): ")
+	require.Contains(t, stdout, "(SQLSTATE 3D000)")
+	require.NotContains(t, stdout, "BLOCKER daemon/GONE", "status counted the gone store as a blocker")
+	require.Contains(t, stdout, "blockers: ")
+
+	code, stdout, stderr = status(gone, elsewhere)
+	require.Equal(t, 2, code, "a 3D000 the rule does not confirm: %s%s", stdout, stderr)
+	require.Contains(t, stderr, "daemon/ELSEWHERE's store answers SQLSTATE 3D000, and the census's rule does not confirm it gone")
+	require.Contains(t, stderr, "Deployment legion/legion-daemon-elsewhere reads database \"daemon_elsewhere\"")
+	require.Contains(t, stdout, "store daemon/GONE: gone: ", "status went on past the gone store")
 }

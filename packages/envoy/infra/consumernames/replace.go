@@ -48,13 +48,14 @@ const (
 //
 // It is a command of the hold's consumer-cleanup workflow (consumerCleanupAdmit, input listener):
 // its intent is its admission, after the held re-read, and its done entry names the durable, the
-// name it replaced and the new current with its start. A refusal or an UNKNOWN after its intent
-// writes its stop, which records what every run of the command in this hold left
-// (admission.stopped): nothing while no run wrote a record, made or deleted a consumer, or put
-// this hold's barrier key, which a run puts before it reads the record (admission.barrier) and
-// nothing replace does deletes. A Step 0 that settled an open operation wrote the record, and a
-// Replace that failed may have reserved, created or published a name, so a stop after either
-// records the record.
+// name it replaced and the new current with its start. Every exit after its intent, a refusal, an
+// UNKNOWN and a done entry whose write failed alike, writes its stop, which records what every run
+// of the command in this hold left (admission.stopped): nothing while no run wrote a record, made
+// or deleted a consumer, or put this hold's barrier key, which a run puts before it reads the
+// record (admission.barrier) and nothing replace does deletes; an UNKNOWN's records what the run
+// read and could not read (leftUnknown), never unchanged. A Step 0 that settled an open operation
+// wrote the record, and a Replace that failed may have reserved, created or published a name, so a
+// stop after either records the record.
 func (r *run) replaceListener(ctx context.Context) error {
 	if err := core.CheckMachineID("--listener", r.o.listener); err != nil {
 		return err
@@ -83,6 +84,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	} else if err != nil {
 		return a.stopped(ctx, unknownf(err, "the info of %s", selectionStreamName), true, nothing)
 	}
+	r.read("the info of " + selectionStreamName)
 	store, err := r.store(ctx, familySession)
 	if err != nil {
 		return a.stopped(ctx, err, true, nothing)
@@ -100,6 +102,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	}); err != nil {
 		return a.stopped(ctx, err, true, nothing)
 	}
+	r.read(fmt.Sprintf("%s's record %s behind the bucket barrier", durable, m.Logical))
 	// Step 0 writes the record only when it holds an open operation: settled is whether this
 	// run's Select may have written it, a record it could not read first counting as one it may.
 	settled := (read != nil && !errors.Is(read, selection.ErrNoRecord) && !errors.Is(read, selection.ErrRecordDeleted)) ||
@@ -123,6 +126,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	if err != nil {
 		return a.stopped(ctx, unknownf(err, "the info of %s", notifications), !settled, account)
 	}
+	r.read("the info of " + notifications)
 	start := clampStart(info.AckFloor.Stream+1, stream.State)
 	replaced, err := names.Replace(ctx, sel, start, replaceCreate(nc, info.Config, m))
 	if err != nil {
@@ -139,7 +143,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	outputs := map[string]string{"durable": durable, "replaced": old, "current": replaced.Record.Current,
 		"start": formatSeq(replaced.Record.Start), "deleted": strconv.Itoa(deleted)}
 	if err := a.done(ctx, outputs); err != nil {
-		return unknownf(err, "%s's done entry, after it replaced %s by %s", a.command, old, replaced.Record.Current)
+		return a.stopped(ctx, err, false, fmt.Sprintf("this run replaced %s by %s in %s's record %s, and deleted %d of its retired names", old, replaced.Record.Current, durable, m.Logical, deleted))
 	}
 	return nil
 }

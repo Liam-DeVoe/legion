@@ -109,10 +109,13 @@ func (r *run) createBucketCutover(ctx context.Context) error {
 	}
 	var left createBucketLeft
 	outputs, err := r.createBucketCutoverHeld(ctx, cohort.Boundary, replicas, &left)
+	if err == nil {
+		err = a.done(ctx, outputs)
+	}
 	if err != nil {
 		return createBucketStopped(ctx, a, err, &left)
 	}
-	return a.done(ctx, outputs)
+	return nil
 }
 
 // createBucketCutoverHeld is create-bucket's work after its intent, each change it makes counted
@@ -128,6 +131,7 @@ func (r *run) createBucketCutoverHeld(ctx context.Context, boundary uint64, repl
 	if err != nil {
 		return nil, err
 	}
+	r.read("the stream of " + selectionStreamName)
 	store, err := r.store(ctx, familySession)
 	if err != nil {
 		return nil, err
@@ -166,11 +170,17 @@ func (r *run) createBucketCutoverHeld(ctx context.Context, boundary uint64, repl
 		if info, _, err = createBucketStream(ctx, nc, true); err != nil {
 			return err
 		}
-		sentinel, found, err = createBucketSentinel(ctx, nc)
-		return err
+		if sentinel, found, err = createBucketSentinel(ctx, nc); err != nil || found || len(createBucketKeys(info, r.o.holdID)) > 0 {
+			return err
+		}
+		// The empty bucket this run adopts may hold other holds' barrier keys, each of which must
+		// be exactly one (createBucketCheckValues), as every value create-bucket --after-loss adopts
+		// is.
+		return createBucketCheckValues(ctx, nc, info.State.LastSeq)
 	}); err != nil {
 		return nil, err
 	}
+	r.read(selectionStreamName + "'s keys and sentinel behind the bucket barrier")
 	keys := createBucketKeys(info, r.o.holdID)
 	switch {
 	case len(keys) == 0 && !found:
@@ -260,16 +270,21 @@ func (l *createBucketLeft) bucketDeleted() {
 // createBucketStopped ends a refusal after the command's intent with its stop (admission.stop,
 // which writes the stop entry where the workflow's table makes the command Stoppable), the reason
 // naming what this run left, and answers err with that named: an UNKNOWN stays UNKNOWN. The stop
-// records what every run of the command in this hold left (admission.left): holdrecord.LeftUnchanged
-// only when this run and each earlier one changed nothing, so a barrier key or a bucket an earlier
-// run left still counts. Under the control's earlier rule (leftRuleSet.ownRunOnly) it records this
-// run alone.
+// records what every run of the command in this hold left (admission.leftAfter):
+// holdrecord.LeftUnchanged only when this run and each earlier one changed nothing, so a barrier
+// key or a bucket an earlier run left still counts, and an UNKNOWN's under leftUnknown, never
+// unchanged. Under the control's earlier rule (leftRuleSet.ownRunOnly) it records this run alone.
 func createBucketStopped(ctx context.Context, a *admission, err error, left *createBucketLeft) error {
+	if !stopsAfter(err) {
+		return fmt.Errorf("%w; it left %s", err, left)
+	}
 	reason := fmt.Sprintf("%v; it left %s", err, left)
 	var recorded string
 	switch {
 	case !leftRules.ownRunOnly:
-		recorded = a.left(ctx, !left.changed(), left.String())
+		recorded = a.leftAfter(ctx, err, !left.changed(), left.String())
+	case isUnknown(err) && !leftRules.unknownAsAccount:
+		recorded = leftUnknown(a.r.reads, err, left.String())
 	case left.changed():
 		recorded = left.String()
 	default:
@@ -361,16 +376,15 @@ func createBucketConfigDiff(got jetstream.StreamConfig, replicas int) []string {
 	return diff
 }
 
-// createBucketKeys are the keys info, the bucket's stream read with its subjects, holds, but this
-// hold's barrier key (hold.barrier.<hold id>), which every held command writes before it reads and
-// every reader ignores. A stream whose subjects the answer does not hold in full (num_subjects
-// past the subjects listed) answers one key more than it lists, so it is never read as empty.
+// createBucketKeys are the keys info, the bucket's stream read with its subjects, holds, but every
+// hold's barrier key (createBucketBarrierKey), which a held command puts before it reads and every
+// reader ignores. A stream whose subjects the answer does not hold in full (num_subjects past the
+// subjects listed) answers one key more than it lists, so it is never read as empty.
 func createBucketKeys(info *jetstream.StreamInfo, holdID string) []string {
 	prefix := "$KV." + selection.SessionBucket + "."
-	barrier := "hold.barrier." + holdID
 	var keys []string
 	for subject := range info.State.Subjects {
-		if key := strings.TrimPrefix(subject, prefix); key != barrier {
+		if key := strings.TrimPrefix(subject, prefix); !createBucketBarrierKey(key, holdID) {
 			keys = append(keys, key)
 		}
 	}
@@ -379,6 +393,20 @@ func createBucketKeys(info *jetstream.StreamInfo, holdID string) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// createBucketBarrierKey reports whether key is a hold's barrier key, hold.barrier.<hold id>
+// (strictBarrierPrefix), which create-bucket and create-bucket --after-loss read as no key of the
+// bucket: no command reads one as a record, and only the whole bucket's delete removes one
+// (holdrecord.Barrier). So a bucket with no sentinel that holds only another hold's barrier key,
+// as a run of that hold leaves it when it put its barrier and stopped short of the sentinel, is
+// the empty bucket each of them takes. Under the earlier rule a row's control sets
+// (createBucketIgnoresEveryBarrier unset) only this hold's key, holdID's, is one.
+func createBucketBarrierKey(key, holdID string) bool {
+	if !createBucketIgnoresEveryBarrier {
+		return key == strictBarrierPrefix+holdID
+	}
+	return strings.HasPrefix(key, strictBarrierPrefix)
 }
 
 // createBucketSentinelRead is the bucket's sentinel as its stream's leader answers it.
@@ -531,10 +559,13 @@ func (r *run) createBucketAfterLoss(ctx context.Context) error {
 	}
 	var left createBucketLeft
 	outputs, err := r.createBucketAfterLossHeld(ctx, a, in, gen, recorded, backup, replicas, &left)
+	if err == nil {
+		err = a.done(ctx, outputs)
+	}
 	if err != nil {
 		return createBucketStopped(ctx, a, err, &left)
 	}
-	return a.done(ctx, outputs)
+	return nil
 }
 
 // createBucketAfterLossHeld is create-bucket --after-loss's work after its intent, each change it
@@ -568,6 +599,7 @@ func (r *run) createBucketAfterLossHeld(ctx context.Context, a *admission, in cr
 			return nil, hubError(err, "the held re-read, the postcheck's step 1")
 		}
 	}
+	r.read("the protected streams, the postcheck's step 1")
 	outcome, made, err := r.createBucketRecover(ctx, a, nc, js, store, in, backup, replicas, step1, left)
 	if err != nil {
 		return nil, err
@@ -575,6 +607,7 @@ func (r *run) createBucketAfterLossHeld(ctx context.Context, a *admission, in cr
 	if err := r.createBucketPostcheck(ctx, nc, step1, made); err != nil {
 		return nil, err
 	}
+	r.read("the postcheck")
 	fmt.Fprintf(r.stdout, "%s: %s; replay from %d, backup %s; postcheck passed\n", selection.SessionBucket, outcome, in.ReplayFrom, in.BackupSHA256)
 	return map[string]string{"bucket": selection.SessionBucket, "replay_from": formatSeq(in.ReplayFrom),
 		"backup_sha256": in.BackupSHA256, "outcome": outcome, "change": string(made.kind)}, nil
@@ -746,6 +779,7 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 		if err != nil {
 			return "", made, err
 		}
+		r.read(selectionStreamName + "'s keys and sentinel behind the bucket barrier")
 		switch adopt.action {
 		case createBucketAdopted:
 			return adopt.why, made, nil
@@ -831,6 +865,12 @@ func (r *run) createBucketCheckRestored(ctx context.Context, a *admission, nc *n
 // restored again. It is a var so its row's control can run the command without the rule, which
 // then reads the leftover as another recovery's bucket and stops.
 var createBucketRestoresLeftover = true
+
+// createBucketIgnoresEveryBarrier is createBucketBarrierKey's rule: every hold's barrier key is no
+// key of the bucket's. It is a var so its row's control can run the command under the earlier
+// rule, which took this hold's key alone for none, and so read a bucket holding another hold's
+// barrier key and no sentinel as not this hold's, which no command of this package then took.
+var createBucketIgnoresEveryBarrier = true
 
 // What createBucketAdopt decides for a present bucket.
 const (

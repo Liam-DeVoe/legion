@@ -35,7 +35,8 @@ const replayWrites = 8
 // open under a start it was not reserved at. Everything that can refuse it, the key, the store and
 // the stream's sequences, is read before its intent entry, so such a refusal leaves the journal as
 // it was; a refusal after its intent (a record that does not read, a write the store refuses past
-// its retries or does not answer) is its stop (createBucketStopped), naming what the run left.
+// its retries or does not answer, a done entry whose write fails) is its stop
+// (createBucketStopped), naming what the run left.
 func (r *run) replay(ctx context.Context) error {
 	err := r.replayRun(ctx)
 	return connRefusal(r.nc, err)
@@ -87,10 +88,13 @@ func (r *run) replayRun(ctx context.Context) error {
 	}
 	var left createBucketLeft
 	outputs, err := r.replayHeld(ctx, nc, store, m, &left)
+	if err == nil {
+		err = a.done(ctx, outputs)
+	}
 	if err != nil {
 		return createBucketStopped(ctx, a, err, &left)
 	}
-	return a.done(ctx, outputs)
+	return nil
 }
 
 // replayHeld is replay's work after its intent: K's record read (behind the bucket's barrier for
@@ -118,6 +122,7 @@ func (r *run) replayHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 		if err != nil {
 			return nil, err
 		}
+		r.read(fmt.Sprintf("%s's record in %s's store", m.Logical, m.Family))
 		written = replayRecord(old, r.o.from)
 		left.unsure = fmt.Sprintf("%s's record in %s's store, if its unanswered write landed", m.Logical, m.Family)
 		_, err = store.Write(ctx, m.Logical, written, revision)

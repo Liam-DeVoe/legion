@@ -519,27 +519,10 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "another-stream", state.StreamID, "the refused rerun wrote nothing")
 		require.ErrorIs(t, h.release(id), holdrecord.ErrOutOfOrder, "hold release is refused over a stop that changed something")
-		inputs := h.enrollAbort(id)
+		inputs := h.abortHold(id)
 		require.Contains(t, slices.Collect(maps.Values(inputs)), enrollCommand+": "+left, "hold abort's intent carries what the stop left")
 		require.Equal(t, "released", string(h.row().Phase))
 	})
-}
-
-// enrollAbort ends hold id the way `hold abort` writes its journal and the row: its admission,
-// whose intent carries each stop's record of what its command left (returned), the row's move to
-// released, and its done entry.
-func (h *stack) enrollAbort(id string) map[string]string {
-	h.t.Helper()
-	ctx := context.Background()
-	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil)
-	require.NoError(h.t, err, "hold abort is admitted once enroll stopped")
-	intent := h.lastEntry(id, "")
-	require.Equal(h.t, holdrecord.CommandAbort, intent.Command)
-	row := h.row()
-	_, err = h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, id, "the test's abort")
-	require.NoError(h.t, err)
-	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, holdrecord.CommandAbort, nil))
-	return intent.Inputs
 }
 
 // enrollStream is the notification stream's identity and last sequence, read as the operator.
@@ -782,4 +765,56 @@ func TestEnrollRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, id, state.Hold, "control: the enroll marked the store")
 	require.NoError(t, h.release(id))
+}
+
+// enroll reads the daemon store's checkpoints after its intent, and a consumer_positions table it
+// cannot read (a stream_seq that is no number) is UNKNOWN, an exit after its intent: enroll writes
+// its stop, recording what it left as unknown (leftUnknownPrefix), naming each reading it made and
+// the one it could not make, never unchanged; hold release is refused over it, and hold abort is
+// admitted and ends the hold, its intent carrying what the stop left. Control, run first: under the
+// earlier rule that an UNKNOWN exit writes no stop (leftRuleSet.unknownNoStop), enroll's intent
+// stays pending, and hold release and hold abort are both refused, so the UNKNOWN left the hold
+// only enroll's rerun, which ended the same way.
+func TestEnrollStopsOnAnUnknownRead(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	const project = "ENRUNKN"
+	family := daemonFamily(project)
+	db := h.database(family, daemonMigrations[1])
+	_, err := db.Exec(ctx, `create table consumer_positions (consumer text primary key, stream_seq text not null)`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `insert into consumer_positions (consumer, stream_seq) values ($1, 'no sequence')`, daemonFixedPrefix+project+"-wake")
+	require.NoError(t, err)
+	id := h.heldHold(holdrecord.WorkflowEnroll)
+	release, abort := holdrecord.Request{Command: holdrecord.CommandRelease}, holdrecord.Request{Command: holdrecord.CommandAbort}
+	unknown := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := h.enrollRun(id, project)
+		require.Equal(t, 2, code, stderr)
+		require.Contains(t, stderr, "UNKNOWN "+family+"'s checkpoints")
+		return h.lastEntry(id, enrollCommand)
+	}
+
+	leftWith(t, leftRuleSet{unknownNoStop: true})
+	require.Equal(t, "intent", unknown().State, "control: under the earlier rule the UNKNOWN leaves enroll's intent pending")
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrBusy, "control: hold release over the pending intent")
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), abort), holdrecord.ErrBusy, "control: hold abort over the pending intent")
+
+	leftWith(t, leftRuleSet{})
+	stop := unknown()
+	require.Equal(t, "stop", stop.State, "the UNKNOWN after enroll's intent ends in its stop entry")
+	left := stop.Outputs[stopLeftKey]
+	require.True(t, strings.HasPrefix(left, leftUnknownPrefix), "the stop records %q", left)
+	require.Contains(t, left, leftUnknownPrefix+"read "+family+"'s marker, the broker's cutover records, the consumers of "+notifications+
+		"; unread "+family+"'s checkpoints: ", "the stop names what enroll read and what it could not read")
+	require.Contains(t, left, "no run of enroll in this hold wrote this hold's store marker or the family's broker cutover record")
+	require.Contains(t, left, "earlier runs of "+enrollCommand+" in this hold: run 1 ended with no entry", "the stop names the run the control left pending")
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over the UNKNOWN stop")
+	inputs := h.abortHold(id)
+	require.Contains(t, slices.Collect(maps.Values(inputs)), enrollCommand+": "+left, "hold abort's intent carries what the stop left")
+	require.Equal(t, "released", string(h.row().Phase))
+	_, err = selection.NewPGStore(db).State(ctx)
+	require.ErrorIs(t, err, selection.ErrNoSentinel, "the UNKNOWN enroll wrote the store's marker")
 }

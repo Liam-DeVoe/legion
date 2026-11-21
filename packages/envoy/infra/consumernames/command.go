@@ -339,15 +339,13 @@ func (o options) usageProblem() string {
 	return strings.Join(problems, "; ")
 }
 
-// report writes err's line and answers the exit code: 0 for none, 2 for an UNKNOWN reading (an
-// *Unknown, or holdrecord.ErrUnknown, a row or record that does not verify), and 1 for every
-// refusal.
+// report writes err's line and answers the exit code: 0 for none, 2 for an UNKNOWN reading
+// (isUnknown), and 1 for every refusal.
 func report(stderr io.Writer, action string, err error) int {
 	if err == nil {
 		return 0
 	}
-	var unknown *Unknown
-	if errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown) {
+	if isUnknown(err) {
 		line := err.Error()
 		if !strings.HasPrefix(line, "UNKNOWN") {
 			line = "UNKNOWN " + line
@@ -357,6 +355,13 @@ func report(stderr io.Writer, action string, err error) int {
 	}
 	fmt.Fprintf(stderr, "envoy-infra consumer-names %s: %v\n", action, err)
 	return 1
+}
+
+// isUnknown reports whether err is an UNKNOWN reading: an *Unknown, or holdrecord.ErrUnknown, a
+// row or record that does not verify.
+func isUnknown(err error) bool {
+	var unknown *Unknown
+	return errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown)
 }
 
 // Unknown is a reading that is not whole: the command acts on nothing it did not read, and exits

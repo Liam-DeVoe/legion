@@ -882,9 +882,12 @@ const restoreNoBarrier = "this run changed no selection record, consumer, cutove
 // selection bucket's records, before it saved the restore set: a stop names every change its
 // command's runs made and did not undo, and the key comes before the save. A malformed value in the
 // bucket makes --prepare UNKNOWN after its barrier, saving no set and writing no record; its stop
-// names the key, and hold release is refused over it. Control: under the earlier rule that the key
-// is no change (leftRuleSet.barrierNoChange), the same refusal records unchanged, and hold release
-// is admitted over it.
+// names the key, and hold release is refused over it. The refusal is UNKNOWN, so its stop records
+// what it left as unknown (leftUnknownPrefix) whatever the key's rule. Controls: under the earlier
+// rules that the key is no change (leftRuleSet.barrierNoChange) and an UNKNOWN's stop records its
+// run's account (leftRuleSet.unknownAsAccount), the same refusal records unchanged, and hold release
+// is admitted over it; under the first of them alone it records unknown, and hold release is
+// refused.
 func TestARestorePrepareStopNamesTheBarrierKeyItPut(t *testing.T) {
 	restoreStoppableOrSkip(t, restoreCommandPrepare)
 	rig := newRestoreRig(t)
@@ -909,9 +912,13 @@ func TestARestorePrepareStopNamesTheBarrierKeyItPut(t *testing.T) {
 		return stop
 	}
 
-	leftWith(t, leftRuleSet{barrierNoChange: true})
-	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+	leftWith(t, leftRuleSet{barrierNoChange: true, unknownAsAccount: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change and an UNKNOWN as its account, the stop records unchanged")
 	require.NoError(t, holdrecord.Decide(rig.journal(rollback), release), "control: hold release is admitted over the unchanged stop")
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.True(t, strings.HasPrefix(refused().Outputs["left"], leftUnknownPrefix), "with the key no change, the UNKNOWN's stop records unknown")
+	require.ErrorIs(t, holdrecord.Decide(rig.journal(rollback), release), holdrecord.ErrOutOfOrder, "hold release over the UNKNOWN's stop")
 
 	leftWith(t, leftRuleSet{})
 	require.Contains(t, refused().Outputs["left"], restoreNoBarrier)

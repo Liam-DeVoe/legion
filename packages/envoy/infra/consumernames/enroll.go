@@ -43,21 +43,19 @@ const enrollCommand = "consumer-names enroll"
 // entry, which completes the hold's record. A stream that carries no identity refuses the
 // enrolment: the daemon could never count its last floor.
 //
-// Every refusal of its own checks writes a stop entry (admission.stop) that records what every run
-// of enroll in this hold left outside the journal (enrollLeft): holdrecord.LeftUnchanged while no
-// run has written this hold's store marker or the family's broker cutover record, which it reads
-// at its start, since an earlier run may have crashed after a write; else each of those that
-// exists, which counts as changed, so hold release is refused and the way out is enroll's rerun
-// (admitted again, as it has no done entry) or hold abort. A rerun finds this hold's marker or
-// cutover record, skips what is written and completes, keeping the boundary and identity its marker
-// already records (a marker of this hold that lacks either is written again with them). A reading
-// or a write whose outcome it cannot know is UNKNOWN and writes no stop: what it changed is not
-// known, and the intent stays pending for its rerun, which reads again.
+// Every exit after its intent writes a stop entry that records what every run of enroll in this
+// hold left outside the journal (enrollLeft, enrollProgress): holdrecord.LeftUnchanged while no run
+// has written this hold's store marker or the family's broker cutover record, which it reads at
+// its start, since an earlier run may have crashed after a write; else each of those that exists,
+// and a write whose answer was lost, each of which counts as changed, so hold release is refused
+// and the way out is enroll's rerun (admitted again, as it has no done entry) or hold abort. A
+// rerun finds this hold's marker or cutover record, skips what is written and completes, keeping
+// the boundary and identity its marker already records (a marker of this hold that lacks either is
+// written again with them). A reading or a write whose outcome it cannot know is UNKNOWN: its stop
+// (admission.end) records what the run read and could not read (leftUnknown), never unchanged.
 func (r *run) enroll(ctx context.Context) error {
 	project := r.o.daemon
-	family := daemonFamily(project)
-	logicals := enrollLogicalNames(project)
-	for _, logical := range logicals {
+	for _, logical := range enrollLogicalNames(project) {
 		if err := selection.CheckKey(logical); err != nil {
 			return fmt.Errorf("--daemon %q names no daemon whose consumers can be named: %w", project, err)
 		}
@@ -66,6 +64,43 @@ func (r *run) enroll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	family := daemonFamily(project)
+	var p enrollProgress
+	err = r.enrollHeld(ctx, a, project, &p)
+	unchanged, account := p.account(family, r.o.holdID)
+	return a.end(ctx, err, unchanged, account)
+}
+
+// enrollProgress is what a run of enroll knows of this hold's own writes since its intent, which
+// the stop of an exit that wrote none records (account).
+type enrollProgress struct {
+	// marker and broker: this hold's store marker and the family's broker cutover record done
+	// under this hold, read or written: what every run of enroll in this hold left (enrollLeft).
+	marker, broker bool
+	// unsure is a write whose answer was lost, which may or may not have landed.
+	unsure string
+}
+
+// account is this run's account of what enroll's runs in this hold left, for its stop
+// (admission.end): unchanged while neither this hold's store marker nor the family's broker
+// cutover record is written and no write's answer was lost, else each of them.
+func (p enrollProgress) account(family, holdID string) (bool, string) {
+	left := enrollLeft(family, holdID, p.marker, p.broker)
+	switch {
+	case p.unsure != "" && left == holdrecord.LeftUnchanged:
+		return false, p.unsure
+	case p.unsure != "":
+		return false, left + "; " + p.unsure
+	case left == holdrecord.LeftUnchanged:
+		return true, "no run of enroll in this hold wrote this hold's store marker or the family's broker cutover record"
+	}
+	return false, left
+}
+
+// enrollHeld is enroll's work after its intent, what it knows of this hold's own writes kept in p.
+func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *enrollProgress) error {
+	family := daemonFamily(project)
+	logicals := enrollLogicalNames(project)
 	db, err := r.database(ctx, family)
 	if err != nil {
 		return err
@@ -90,21 +125,22 @@ func (r *run) enroll(ctx context.Context) error {
 	case err != nil:
 		return unknownf(err, "%s's marker", family)
 	}
-	markerOwn := markerFound && marker.Cutover == selection.CutoverDone && marker.Hold == r.o.holdID
-	if markerFound && !markerOwn && (marker.Cutover == selection.CutoverDone || marker.Cutover == selection.CutoverRolledBack) {
+	r.read(family + "'s marker")
+	p.marker = markerFound && marker.Cutover == selection.CutoverDone && marker.Hold == r.o.holdID
+	if markerFound && !p.marker && (marker.Cutover == selection.CutoverDone || marker.Cutover == selection.CutoverRolledBack) {
 		findings = append(findings, fmt.Sprintf("the store's marker reads %s from %s", marker.Cutover, enrollHoldName(marker.Hold)))
 	}
 	cutovers, err := r.records.Cutovers(ctx)
 	if err != nil {
 		return unknownf(err, "the broker's cutover records")
 	}
-	brokerOwn := false
+	r.read("the broker's cutover records")
 	for _, row := range cutovers {
 		if row.Family != family {
 			continue
 		}
 		if row.State == selection.CutoverDone && row.HoldID == r.o.holdID {
-			brokerOwn = true
+			p.broker = true
 			continue
 		}
 		findings = append(findings, fmt.Sprintf("the broker holds the cutover record %s %s from %s", family, row.State, enrollHoldName(row.HoldID)))
@@ -113,6 +149,7 @@ func (r *run) enroll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.read("the consumers of " + notifications)
 	for _, name := range listed {
 		if slices.Contains(logicals, selection.LogicalOf(name)) {
 			findings = append(findings, fmt.Sprintf("%s lists consumer %s", notifications, name))
@@ -125,23 +162,27 @@ func (r *run) enroll(ctx context.Context) error {
 	case err != nil:
 		return unknownf(err, "%s's checkpoints", family)
 	}
+	r.read(family + "'s checkpoints")
 	findings = append(findings, checkpoints...)
 	if !noTable {
 		rows, err := enrollSelectionRows(ctx, store)
 		if err != nil {
 			return unknownf(err, "%s's selection rows", family)
 		}
+		r.read(family + "'s selection rows")
 		findings = append(findings, rows...)
 	}
 	stream, err := streamInfo(ctx, nc, notifications)
 	if err != nil {
 		return unknownf(err, "the info of %s", notifications)
 	}
+	r.read("the info of " + notifications)
 	streamID := selection.StreamIdentity(stream)
 	shared, err := r.enrollSharedAddress(ctx, project)
 	if err != nil {
 		return err
 	}
+	r.read("the daemons' Deployments")
 	var problems []string
 	if len(findings) > 0 {
 		problems = append(problems, fmt.Sprintf("%s's store is not new: %s", family, strings.Join(findings, "; ")))
@@ -152,11 +193,11 @@ func (r *run) enroll(ctx context.Context) error {
 	switch {
 	case streamID == "":
 		problems = append(problems, fmt.Sprintf("%s carries no stream identity (%s), which the enrolled daemon tags each last floor with", notifications, selection.StreamIdentityMetadataKey))
-	case markerOwn && marker.StreamID != "" && marker.StreamID != streamID:
+	case p.marker && marker.StreamID != "" && marker.StreamID != streamID:
 		problems = append(problems, fmt.Sprintf("this hold's marker records stream identity %s, and %s carries %s", marker.StreamID, notifications, streamID))
 	}
 	if len(problems) > 0 {
-		return a.stop(ctx, strings.Join(problems, "; "), enrollLeft(family, r.o.holdID, markerOwn, brokerOwn))
+		return a.stop(ctx, strings.Join(problems, "; "), enrollLeft(family, r.o.holdID, p.marker, p.broker))
 	}
 
 	// Before its first write, the held re-read again (plan §3a, "Every held command"), so no writer
@@ -166,33 +207,38 @@ func (r *run) enroll(ctx context.Context) error {
 	}
 	// The writes. A marker of this hold keeps the boundary it recorded, the lower one.
 	boundary := stream.State.LastSeq + 1
-	if markerOwn && marker.Boundary > 0 {
+	if p.marker && marker.Boundary > 0 {
 		boundary = marker.Boundary
 	}
-	if !(markerOwn && marker.Boundary > 0 && marker.StreamID != "") {
+	if !(p.marker && marker.Boundary > 0 && marker.StreamID != "") {
+		p.unsure = family + "'s store marker, if its unanswered write landed"
 		err := enrollWriteMarker(ctx, db, store, marker, revision, markerFound, r.o.holdID, boundary, streamID)
 		var refused *enrollRefusal
 		switch {
 		case errors.As(err, &refused):
-			return a.stop(ctx, fmt.Sprintf("%s's marker: %v", family, err), enrollLeft(family, r.o.holdID, markerOwn, brokerOwn))
+			p.unsure = ""
+			return a.stop(ctx, fmt.Sprintf("%s's marker: %v", family, err), enrollLeft(family, r.o.holdID, p.marker, p.broker))
 		case err != nil:
 			return unknownf(err, "%s's marker", family)
 		}
-		markerOwn = true
+		p.unsure, p.marker = "", true
 	}
-	if !brokerOwn {
+	if !p.broker {
+		p.unsure = "the broker's cutover record " + family + ", if its unanswered write landed"
 		_, err := r.records.PutCutover(ctx, family, selection.CutoverDone, r.o.holdID)
 		var route *holdrecord.RouteError
 		switch {
 		case errors.As(err, &route):
-			return a.stop(ctx, fmt.Sprintf("the broker refused the cutover record %s: %v", family, err), enrollLeft(family, r.o.holdID, markerOwn, brokerOwn))
+			p.unsure = ""
+			return a.stop(ctx, fmt.Sprintf("the broker refused the cutover record %s: %v", family, err), enrollLeft(family, r.o.holdID, p.marker, p.broker))
 		case err != nil:
 			return unknownf(err, "the broker's cutover record %s, after the store's marker was written", family)
 		}
+		p.unsure, p.broker = "", true
 	}
 	outputs := map[string]string{"family": family, "cutover": selection.CutoverDone, "boundary": formatSeq(boundary), "stream_id": streamID}
 	if err := a.done(ctx, outputs); err != nil {
-		return unknownf(err, "enroll's done entry, after %s's marker and cutover record were written", family)
+		return err
 	}
 	fmt.Fprintf(r.stdout, "enroll: %s: the store's marker and the broker's cutover record read %s under hold %s; boundary %s, stream identity %s\n",
 		family, selection.CutoverDone, r.o.holdID, formatSeq(boundary), streamID)

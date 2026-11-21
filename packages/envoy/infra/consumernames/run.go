@@ -70,7 +70,14 @@ type run struct {
 	databases   map[string]Database
 	// closeDatabases are the closes env.database answered for the stores it opened.
 	closeDatabases []func()
+	// reads name what a held command read since its intent, in order (read): what the stop of an
+	// UNKNOWN exit after it records as read (leftUnknown).
+	reads []string
 }
+
+// read records that a held command read what since its intent, for the stop of an UNKNOWN exit
+// after it (leftUnknown).
+func (r *run) read(what string) { r.reads = append(r.reads, what) }
 
 // close closes the run's operator connection, the latest one reconnect made, and every store it
 // opened (env.database).
@@ -395,7 +402,10 @@ func sleep(ctx context.Context, d time.Duration) error {
 }
 
 // admission is a held command admitted to its hold: its intent entry is written, and it ends
-// with its done entry or, when its own check refuses, its stop entry.
+// with its done entry or its stop entry. Every exit after the intent writes one of them (end,
+// stopped): a refusal, an UNKNOWN and a done entry whose write failed alike, so no run leaves its
+// intent pending but one cut short before it can write (a kill, or a broker it can no longer
+// reach).
 type admission struct {
 	r        *run
 	command  string
@@ -405,6 +415,9 @@ type admission struct {
 	// counts the key as a change (left, barrierLeft), since none of those commands deletes the
 	// bucket.
 	barrier bool
+	// ended is set once the run wrote its done entry or tried its stop entry: end then writes no
+	// other stop.
+	ended bool
 }
 
 // admit reads the row, which must be held under the run's hold id, runs the held re-read
@@ -436,17 +449,32 @@ func (r *run) intent(ctx context.Context, command string, inputs map[string]stri
 	if err != nil {
 		return nil, err
 	}
+	r.reads = nil
 	return &admission{r: r, command: command, workflow: w}, nil
 }
 
 // reread is the held re-read again (heldReread), which an admitted command runs before each of
-// its mutation steps. Its refusal leaves the command's intent pending: the way out is the rerun,
-// once whatever it found is gone.
-func (a *admission) reread(ctx context.Context) error { return a.r.heldReread(ctx) }
+// its mutation steps. Its refusal or UNKNOWN is an exit after the intent like any other, which the
+// command ends with its stop (end, stopped); the way out is then the rerun, once whatever it found
+// is gone, or hold abort.
+func (a *admission) reread(ctx context.Context) error {
+	if err := a.r.heldReread(ctx); err != nil {
+		return err
+	}
+	a.r.read("the held re-read")
+	return nil
+}
 
-// done writes the command's done entry with outputs (holdrecord.Client.AppendDone).
+// done writes the command's done entry with outputs (holdrecord.Client.AppendDone). A write that
+// fails is UNKNOWN, as it may have landed: its caller ends it with the command's stop like every
+// other exit after the intent, and a done entry that did land refuses that stop
+// (holdrecord.ErrNoIntent), which the stop's caller names after the error.
 func (a *admission) done(ctx context.Context, outputs map[string]string) error {
-	return a.r.records.AppendDone(ctx, a.r.o.holdID, a.command, outputs)
+	if err := a.r.records.AppendDone(ctx, a.r.o.holdID, a.command, outputs); err != nil {
+		return unknownf(err, "whether %s's done entry was written", a.command)
+	}
+	a.ended = true
+	return nil
 }
 
 // stop writes the command's stop entry with reason and left, what every run of the command in this
@@ -457,6 +485,7 @@ func (a *admission) done(ctx context.Context, outputs map[string]string) error {
 // is not Stoppable, the intent stays pending, so only its rerun is admitted (holdrecord.ErrBusy for
 // any other).
 func (a *admission) stop(ctx context.Context, reason, left string) error {
+	a.ended = true
 	refusal := errors.New(reason)
 	if !holdrecord.Stoppable(a.workflow, a.command) {
 		return refusal
@@ -467,15 +496,59 @@ func (a *admission) stop(ctx context.Context, reason, left string) error {
 	return refusal
 }
 
+// end ends err, how a's command's work after its intent ended: as it is when it is nil, or when
+// the work wrote its done entry or tried its stop entry itself; else with a's stop (stopped), which
+// records this run's (unchanged, account) among what every run of the command left. So an exit
+// that no step of the command stops for itself, an UNKNOWN reading among them, still ends in the
+// command's stop, and the hold keeps its way out.
+func (a *admission) end(ctx context.Context, err error, unchanged bool, account string) error {
+	if err == nil || a.ended {
+		return err
+	}
+	return a.stopped(ctx, err, unchanged, account)
+}
+
 // stopped ends err, a refusal or an UNKNOWN after a's intent, with a's stop (stop), which records
-// what every run of a's command in this hold left (left: unchanged when this run changed nothing
-// outside the journal, and account what it did change), and answers err as it is, so an UNKNOWN
-// stays UNKNOWN; a stop entry the broker refused is named after it.
+// what every run of a's command in this hold left (leftAfter: unchanged when this run changed
+// nothing outside the journal, and account what it did change), and answers err as it is, so an
+// UNKNOWN stays UNKNOWN; a stop entry the broker refused is named after it.
 func (a *admission) stopped(ctx context.Context, err error, unchanged bool, account string) error {
-	if serr := a.stop(ctx, err.Error(), a.left(ctx, unchanged, account)); errors.Unwrap(serr) != nil {
+	if !stopsAfter(err) {
+		return err
+	}
+	if serr := a.stop(ctx, err.Error(), a.leftAfter(ctx, err, unchanged, account)); errors.Unwrap(serr) != nil {
 		return fmt.Errorf("%w; and its stop entry: %w", err, errors.Unwrap(serr))
 	}
 	return err
+}
+
+// stopsAfter reports whether err, an exit after a command's intent, writes the command's stop: it
+// does, but under the earlier rule a row's control sets (leftRuleSet.unknownNoStop), where an
+// UNKNOWN wrote none.
+func stopsAfter(err error) bool { return !leftRules.unknownNoStop || !isUnknown(err) }
+
+// leftAfter is what a's stop after err records as left (left): for an UNKNOWN (isUnknown), this
+// run's account under leftUnknown, which is never holdrecord.LeftUnchanged; for any other, this
+// run's (unchanged, account).
+func (a *admission) leftAfter(ctx context.Context, err error, unchanged bool, account string) string {
+	if isUnknown(err) && !leftRules.unknownAsAccount {
+		return a.left(ctx, false, leftUnknown(a.r.reads, err, account))
+	}
+	return a.left(ctx, unchanged, account)
+}
+
+// leftUnknown is a stop's account of what its run left after err, an UNKNOWN exit:
+// leftUnknownPrefix, then `read` and what the run read since its intent (reads, run.read), then
+// `unread` and what it could not read (err), then account, what the run changed. A run that could
+// not read part of what it acts on cannot say what it left there, so its stop counts as changed
+// (holdrecord's rule admits hold release only over stops that recorded holdrecord.LeftUnchanged),
+// and the way out is the command's rerun to its done entry, or hold abort.
+func leftUnknown(reads []string, err error, account string) string {
+	read := "nothing since its intent"
+	if len(reads) > 0 {
+		read = listNames(reads)
+	}
+	return leftUnknownPrefix + "read " + read + "; unread " + strings.TrimPrefix(err.Error(), "UNKNOWN ") + "; " + account
 }
 
 // left is what a's stop records as left: what every run of a's command in this hold left
@@ -517,7 +590,22 @@ type leftRuleSet struct {
 	// barrierAfterDelete: the barrier key counts once the run put it, though the run deleted the
 	// bucket that held it after (create-bucket --after-loss before this rule).
 	barrierAfterDelete bool
+	// unknownNoStop: an UNKNOWN exit after its command's intent writes no stop entry, so the intent
+	// stays pending and the hold admits the command's rerun alone, hold release and hold abort
+	// refused (convert's and enroll's UNKNOWN exits, and every command's lost done entry, before
+	// this rule).
+	unknownNoStop bool
+	// unknownAsAccount: an UNKNOWN exit's stop records its run's own account as a refusal's stop
+	// does, holdrecord.LeftUnchanged when the run changed nothing (cleanup's, replace's,
+	// create-bucket's, replay's, repair-sentinel's and the restore commands' UNKNOWN exits before
+	// this rule).
+	unknownAsAccount bool
 }
+
+// leftUnknownPrefix begins what the stop of an UNKNOWN exit records as left (leftUnknown), the one
+// mark every stop of this package's commands gives such a stop, which never reads
+// holdrecord.LeftUnchanged.
+const leftUnknownPrefix = "unknown: "
 
 // leftRules is the rule every stop of this package follows; a row's control alone changes it.
 var leftRules leftRuleSet

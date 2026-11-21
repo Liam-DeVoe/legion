@@ -3,6 +3,7 @@ package consumernames
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -296,8 +297,13 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 			require.NotContains(t, stdout, "deleted")
 			last := h.lastEntry(id, "")
 			require.Equal(t, "consumer-names cleanup stop", last.Command+" "+last.State, "the UNKNOWN cleanup ends in its stop entry")
-			require.Equal(t, "this run deleted no consumer and wrote no record; it put "+barrierLeft, last.Outputs["left"],
-				"the stop records a deletion or a record, or leaves out the barrier key")
+			// An UNKNOWN exit's stop records its left as unknown, naming what it read and the
+			// value it could not read, then the run's own account, which is what it was before.
+			left := last.Outputs["left"]
+			require.True(t, strings.HasPrefix(left, leftUnknownPrefix), "the UNKNOWN cleanup's stop records its left as unknown: %q", left)
+			require.Contains(t, left, "unread the values of "+c.key, "the stop names the value it could not read")
+			require.True(t, strings.HasSuffix(left, "this run deleted no consumer and wrote no record; it put "+barrierLeft),
+				"the stop records a deletion or a record, or leaves out the barrier key: %q", left)
 			nc, _ = h.operator()
 			require.Contains(t, censusConsumers(t, nc), retired, "the refused cleanup deleted ses_a's retired name")
 			record, _, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(ctx, "ses_a")
@@ -338,7 +344,10 @@ func TestRestorePrepareRefusesAMalformedSelectionValue(t *testing.T) {
 			require.Contains(t, stderr, c.key)
 			last := rig.lastEntry(rollback, restoreCommandPrepare)
 			require.Equal(t, "stop", last.State, "the refused restore --prepare ends in its stop entry")
-			require.Equal(t, restoreNoBarrier, last.Outputs["left"], "the stop records a record or a consumer, or leaves out the barrier key")
+			left := last.Outputs["left"]
+			require.True(t, strings.HasPrefix(left, leftUnknownPrefix), "the UNKNOWN restore --prepare's stop records its left as unknown: %q", left)
+			require.Contains(t, left, "unread the values of "+c.key, "the stop names the value it could not read")
+			require.True(t, strings.HasSuffix(left, restoreNoBarrier), "the stop records a record or a consumer, or leaves out the barrier key: %q", left)
 			require.Nil(t, rig.record(familySession, "keyed").Restore, "the refused restore --prepare wrote keyed's restore")
 			malformedRefused(t, c.key, value)
 		})

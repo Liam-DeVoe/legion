@@ -267,9 +267,9 @@ func createBucketCheckValues(ctx context.Context, nc *nats.Conn, last uint64) er
 // barrier, for a bucket with no sentinel, by each key's last message and the count of its keys,
 // never by a sequence: a load publishes each record again, so its sequences start over (plan v66).
 // It answers held, each of walk's keys whose last message is the walk's (createBucketSameEntry);
-// extra, how many of the bucket's keys (info's num_subjects) are neither one of those nor this
-// hold's barrier; and foreign, the first of walk's keys whose last message is another than the
-// walk's.
+// extra, how many of the bucket's keys (info's num_subjects) are neither one of those nor a
+// hold's barrier key (createBucketBarrierKey, by info's subjects, which the caller read); and
+// foreign, the first of walk's keys whose last message is another than the walk's.
 func createBucketWalkHolds(ctx context.Context, nc *nats.Conn, info *jetstream.StreamInfo, walk *createBucketWalk, holdID string) (held map[string]bool, extra uint64, foreign string, err error) {
 	held = map[string]bool{}
 	for _, entry := range walk.Entries {
@@ -286,10 +286,11 @@ func createBucketWalkHolds(ctx context.Context, nc *nats.Conn, info *jetstream.S
 		held[entry.Key] = true
 	}
 	counted := uint64(len(held))
-	if _, found, err := replayLeaderRead(ctx, nc, selection.SessionBucket, "hold.barrier."+holdID); err != nil {
-		return nil, 0, "", err
-	} else if found {
-		counted++
+	prefix := "$KV." + selection.SessionBucket + "."
+	for subject := range info.State.Subjects {
+		if createBucketBarrierKey(strings.TrimPrefix(subject, prefix), holdID) {
+			counted++
+		}
 	}
 	if info.State.NumSubjects > counted {
 		extra = info.State.NumSubjects - counted

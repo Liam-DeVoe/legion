@@ -86,9 +86,30 @@ type convertRule struct {
 // converts each logical name to a fresh name at its safe start (convertRule.convertName), lists
 // again until a listing holds no fixed name, then writes each family's broker cutover row done
 // and its store's marker cutover = done, marks the set complete, and writes its done entry. It is
-// resumable: a rerun settles an open operation (Step 0) and goes on from the saved set.
+// resumable: a rerun settles an open operation (Step 0) and goes on from the saved set. Every exit
+// after its intent ends in its stop (admission.end): its own refusals name what they found
+// (convertLeft), and any other refusal or UNKNOWN records what convert's runs left by
+// convertProgress, an UNKNOWN under leftUnknown, so the hold always has its way out.
 func (r *run) convert(ctx context.Context) error {
 	return connRefusal(r.nc, convertRule{}.run(ctx, r))
+}
+
+// convertProgress is what a run of convert knows of its saved set since its intent, which the
+// stop of an exit that wrote none records (account).
+type convertProgress struct {
+	set convertSet
+	// saved: a run of convert in this hold saved set, so every change it made can follow.
+	saved bool
+}
+
+// account is this run's account of what convert's runs in this hold left, for its stop
+// (admission.end): unchanged while no run saved its set, since every change a run makes comes
+// after that save (convertLeft's rule), else convertLeft's record of the saved set.
+func (p convertProgress) account(holdID string) (bool, string) {
+	if !p.saved {
+		return true, "no run of convert in this hold saved its set, and every change a run makes comes after that save"
+	}
+	return false, convertLeft(holdID, p.set, true)
 }
 
 // convertNoStart is a logical name convert has no safe start for, and why.
@@ -101,6 +122,14 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 	if err != nil {
 		return err
 	}
+	var p convertProgress
+	err = c.held(ctx, r, a, &p)
+	unchanged, account := p.account(r.o.holdID)
+	return a.end(ctx, err, unchanged, account)
+}
+
+// held is convert's work after its intent, what it knows of its saved set kept in p.
+func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertProgress) error {
 	cohort, _, found, err := readPrepareCohort(ctx, r.records, r.o.holdID)
 	if err != nil {
 		return err
@@ -108,6 +137,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 	if !found {
 		return a.stop(ctx, fmt.Sprintf("hold %s has no cohort record: consumer-names prepare --hold %s did not run before hold set, so no fixed name's floor before the hold is known", r.o.holdID, r.o.holdID), convertLeft(r.o.holdID, convertSet{}, false))
 	}
+	r.read(fmt.Sprintf("hold %s's cohort record", r.o.holdID))
 	nc, _, err := r.conn(ctx)
 	if err != nil {
 		return unknownf(err, "the operator's connection")
@@ -120,32 +150,40 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 	if err != nil {
 		return hubError(err, "the declared servers")
 	}
+	r.read("the declared servers")
 	barrier := writerhold.MetaBarrier{Hub: op.Hub, Declared: declared, HoldID: r.o.holdID}
 
 	set, gen, found, err := readConvertSet(ctx, r.records, r.o.holdID)
 	if err != nil {
 		return err
 	}
-	if !found {
+	if found {
+		p.set, p.saved = set, true
+		r.read(fmt.Sprintf("convert's saved set of %d fixed names", len(set.Names)))
+	} else {
 		listed, err := c.list(ctx, nc, barrier)
 		if err != nil {
 			return err
 		}
-		if set, err = c.collect(ctx, nc, cohort, listed); err != nil {
+		r.read("a listing of " + notifications + " behind the meta barrier")
+		if p.set, err = c.collect(ctx, nc, cohort, listed); err != nil {
 			return err
 		}
-		set = c.withDispatch(r, set)
+		r.read("the info of each fixed name it listed")
+		p.set = c.withDispatch(r, p.set)
 	}
-	if refusal, err := c.checkStores(ctx, r, set); err != nil || refusal != "" {
+	if refusal, err := c.checkStores(ctx, r, p.set); err != nil || refusal != "" {
 		if err != nil {
 			return err
 		}
-		return a.stop(ctx, refusal, convertLeft(r.o.holdID, set, found))
+		return a.stop(ctx, refusal, convertLeft(r.o.holdID, p.set, found))
 	}
+	r.read("the store of each of its families: " + strings.Join(c.families(r, p.set), ", "))
 	if !found {
-		if gen, err = c.saveSet(ctx, r, set, 0); err != nil {
+		if gen, err = c.saveSet(ctx, r, p.set, 0); err != nil {
 			return err
 		}
+		p.saved = true
 	}
 	// Before its first mutation of the hub, the held re-read again (plan §3a, "Every held
 	// command").
@@ -155,7 +193,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 
 	var noStart []convertNoStart
 	converted := 0
-	for _, name := range set.Names {
+	for _, name := range p.set.Names {
 		done, missing, err := c.convertName(ctx, r, nc, name, cohort.member(name.Fixed))
 		if err != nil {
 			return err
@@ -168,17 +206,19 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		}
 	}
 	if len(noStart) > 0 {
-		return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, set, true))
+		return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, p.set, true))
 	}
+	r.read(fmt.Sprintf("the record and consumers of each of the %d saved names", len(p.set.Names)))
 
 	// List again: a fixed name still present is converted, whatever its family's marker says, and
 	// convert goes on only from a listing that holds none.
 	clean := false
-	for range convertListings {
+	for listing := range convertListings {
 		listed, err := c.list(ctx, nc, barrier)
 		if err != nil {
 			return err
 		}
+		r.read(fmt.Sprintf("listing %d of %s after the conversions", listing+1, notifications))
 		var fixed []convertSetName
 		for _, name := range listed {
 			if m, ok := classify(name); ok {
@@ -191,7 +231,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		}
 		added := false
 		for i, name := range fixed {
-			if set.has(name.Fixed) {
+			if p.set.has(name.Fixed) {
 				continue
 			}
 			info, err := consumerInfo(ctx, nc, notifications, name.Fixed)
@@ -202,22 +242,22 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 				config := info.Config
 				fixed[i].Config = &config
 			}
-			set.Names = append(set.Names, fixed[i])
+			p.set.Names = append(p.set.Names, fixed[i])
 			added = true
 		}
 		if added {
-			if refusal, err := c.checkStores(ctx, r, set); err != nil || refusal != "" {
+			if refusal, err := c.checkStores(ctx, r, p.set); err != nil || refusal != "" {
 				if err != nil {
 					return err
 				}
-				return a.stop(ctx, refusal, convertLeft(r.o.holdID, set, true))
+				return a.stop(ctx, refusal, convertLeft(r.o.holdID, p.set, true))
 			}
-			if gen, err = c.saveSet(ctx, r, set, gen); err != nil {
+			if gen, err = c.saveSet(ctx, r, p.set, gen); err != nil {
 				return err
 			}
 		}
 		for _, name := range fixed {
-			for _, saved := range set.Names {
+			for _, saved := range p.set.Names {
 				if saved.Fixed != name.Fixed {
 					continue
 				}
@@ -234,7 +274,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 			}
 		}
 		if len(noStart) > 0 {
-			return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, set, true))
+			return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, p.set, true))
 		}
 	}
 	if !clean {
@@ -247,9 +287,10 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 	if err != nil {
 		return unknownf(err, "%s's state for the daemons' boundary", notifications)
 	}
+	r.read(notifications + "'s state for the daemons' boundary")
 	daemon := convertDaemonMark{boundary: stream.State.LastSeq + 1, streamID: selection.StreamIdentity(stream)}
 	session := convertSessionMark{boundary: cohort.Boundary, hold: r.o.holdID}
-	families := c.families(r, set)
+	families := c.families(r, p.set)
 	for _, family := range families {
 		if _, err := r.records.PutCutover(ctx, family, selection.CutoverDone, r.o.holdID); err != nil {
 			return fmt.Errorf("write the %s family's broker cutover row: %w", family, err)
@@ -257,17 +298,18 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		if err := c.markDone(ctx, r, family, daemon, session); err != nil {
 			return err
 		}
+		r.read(family + "'s store marker")
 	}
-	set.Complete = true
-	if _, err = c.saveSet(ctx, r, set, gen); err != nil {
+	p.set.Complete = true
+	if _, err = c.saveSet(ctx, r, p.set, gen); err != nil {
 		return err
 	}
-	if err := a.done(ctx, map[string]string{"converted": strconv.Itoa(converted), "names": strconv.Itoa(len(set.Names)),
+	if err := a.done(ctx, map[string]string{"converted": strconv.Itoa(converted), "names": strconv.Itoa(len(p.set.Names)),
 		"families": strings.Join(families, ",")}); err != nil {
 		return err
 	}
 	fmt.Fprintf(r.stdout, "hold %s: converted %d of %d fixed names; the final listing holds no fixed name; cutover done for %s\n",
-		r.o.holdID, converted, len(set.Names), strings.Join(families, ", "))
+		r.o.holdID, converted, len(p.set.Names), strings.Join(families, ", "))
 	return nil
 }
 
@@ -413,7 +455,7 @@ func (c convertRule) checkStores(ctx context.Context, r *run, set convertSet) (s
 	for _, family := range c.families(r, set) {
 		st, err := r.store(ctx, family)
 		if err != nil {
-			return convertStoreRefusal(family, err), nil
+			return convertStoreRefusal(r.o, family, err), nil
 		}
 		// Whether the store is there at all: convert acts on nothing this read answers, and each
 		// read it acts on is behind the bucket barrier (readStore).
@@ -424,7 +466,7 @@ func (c convertRule) checkStores(ctx context.Context, r *run, set convertSet) (s
 			return fmt.Sprintf("the selection bucket %s cannot hold the session family's records (%v): consumer-names create-bucket --hold %s comes before convert",
 				selection.SessionBucket, err, r.o.holdID), nil
 		case family != familySession && errors.Is(err, selection.ErrNoStore):
-			return convertStoreRefusal(family, err), nil
+			return convertStoreRefusal(r.o, family, err), nil
 		case family != familySession && errors.Is(err, selection.ErrNoSentinel):
 		default:
 			return "", unknownf(err, "the %s family's store", family)
@@ -433,13 +475,25 @@ func (c convertRule) checkStores(ctx context.Context, r *run, set convertSet) (s
 	return "", nil
 }
 
-// convertStoreRefusal names the store a family's conversion needs and cannot reach.
-func convertStoreRefusal(family string, err error) string {
+// convertStoreRefusal names the store a family's conversion needs and cannot reach, and its remedy.
+// For Dispatch that is --dispatch-database-file while o names no store for it or the file cannot be
+// read, and Dispatch's migration that makes intake_consumers (dispatchIntakeConsumersMigration) when
+// the flag names a store without that table (selection.ErrNoStore): a flag the operator gave is no
+// remedy.
+func convertStoreRefusal(o options, family string, err error) string {
 	if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
 		return fmt.Sprintf("the Legion daemon of project %s has fixed names to convert and its store cannot hold them (%v): give --daemon-database %s=<file>, and boot the project once so its migration makes intake_consumers", project, err, project)
 	}
+	if o.dispatchDatabaseFile != "" && errors.Is(err, selection.ErrNoStore) {
+		return fmt.Sprintf("Dispatch has fixed names to convert and its store, which --dispatch-database-file names, has no %s table (%v): Dispatch's boot makes the table with its migration %s, so deploy the Dispatch release that carries it, then run convert again",
+			selection.IntakeConsumersTable, err, dispatchIntakeConsumersMigration)
+	}
 	return fmt.Sprintf("Dispatch has fixed names to convert and its store cannot hold them (%v): give --dispatch-database-file <file>", err)
 }
+
+// dispatchIntakeConsumersMigration is the migration of Dispatch's database that makes its
+// intake_consumers table (internal/dispatch/store/migrations), which Dispatch's boot applies.
+const dispatchIntakeConsumersMigration = "20261121002206_intake_consumers"
 
 // convertDaemonMark is what every daemon store's sentinel gains beside its marker: the boundary,
 // ENVOY_NOTIFICATIONS' last sequence + 1 at the cutover, where the daemon's first create of a new

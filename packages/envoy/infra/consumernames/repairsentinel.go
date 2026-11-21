@@ -64,12 +64,12 @@ func (r *run) repairSentinelRun(ctx context.Context) error {
 	}
 	var left createBucketLeft
 	was, err := r.repairHeld(ctx, nc, store, want, value, &left)
+	if err == nil {
+		inputs["sentinel_was"] = was
+		err = a.done(ctx, inputs)
+	}
 	if err != nil {
 		return createBucketStopped(ctx, a, err, &left)
-	}
-	inputs["sentinel_was"] = was
-	if err := a.done(ctx, inputs); err != nil {
-		return err
 	}
 	fmt.Fprintf(r.stdout, "repair-sentinel: %s of %s reads the broker's records: cutover %s, boundary %d, hold %s (it held %s)\n",
 		selection.SentinelKey, selectionStreamName, want.Cutover, want.Boundary, want.Hold, was)
@@ -154,6 +154,7 @@ func (r *run) repairHeld(ctx context.Context, nc *nats.Conn, store familyStore, 
 		}); err != nil {
 			return "", err
 		}
+		r.read("the last message of " + selection.SentinelKey + " behind the bucket barrier")
 		write, was, err := repairDecide(last, found, value)
 		if err != nil || !write {
 			return was, err

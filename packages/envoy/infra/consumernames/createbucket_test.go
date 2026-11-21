@@ -208,34 +208,6 @@ func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, re
 	return dir, info.CachedInfo().State.Msgs
 }
 
-// createBucketRefuseDone is a hook of the stack's broker (holdrecordtest.Broker.Intercept) that
-// loses command's done entry: its write is answered 503, as a broker the command can no longer
-// reach would leave it, so the command ends after its last step and before it completes.
-func createBucketRefuseDone(command string) func(http.ResponseWriter, *http.Request) bool {
-	return func(w http.ResponseWriter, r *http.Request) bool {
-		if r.Method != http.MethodPut || r.URL.Path != "/v1/nats-hold/records" {
-			return false
-		}
-		body, err := io.ReadAll(r.Body)
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		if err != nil {
-			return false
-		}
-		var put struct {
-			Kind  string          `json:"kind"`
-			Value holdrecord.Done `json:"value"`
-		}
-		if json.Unmarshal(body, &put) != nil || put.Kind != "done" || len(put.Value.Ops) == 0 {
-			return false
-		}
-		if last := put.Value.Ops[len(put.Value.Ops)-1]; last.Command != command || last.State != "done" {
-			return false
-		}
-		http.Error(w, "the test's broker lost this write", http.StatusServiceUnavailable)
-		return true
-	}
-}
-
 // createBucketCutDialer dials as nats.go does, and once, when a connection writes the restore's
 // second data chunk (a PUB to $JS.SNAPSHOT.RESTORE.<stream>.<n> with a payload, not the empty
 // request that ends the restore), ends the run (cut, the run's ctx's cancel) and closes that
@@ -603,7 +575,9 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		createBucketConsumer(t, nc, orphan, createBucketSessionMetadata("ses_gone"))
 		createBucketConsumer(t, nc, kept["ses_live"].Current, createBucketSessionMetadata("ses_live"))
 
-		h.s.Broker.Intercept(createBucketRefuseDone(createBucketAfterLossCommand))
+		// A broker the command can no longer reach once its last step is done loses its done entry,
+		// and the stop entry that would follow it (refuseEntries): the run's intent stays pending.
+		h.s.Broker.Intercept(refuseEntries(createBucketAfterLossCommand, "done", "stop"))
 		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
 		h.s.Broker.Intercept(nil)
 		require.NotEqual(t, 0, code, "the run whose done entry was lost exited 0\n%s", stderr)
@@ -782,8 +756,9 @@ func leftWith(t *testing.T, rules leftRuleSet) {
 // with another hold's sentinel: it puts this hold's barrier key before it reads, then stops, and
 // its stop names the key. Run 2, with --replicas 3, stops at the bucket's configuration before any
 // barrier, having changed nothing itself; its stop names run 1, whose key is still there, so it is
-// not unchanged. Control: under the earlier rule that a stop records its own run alone
-// (leftRuleSet.ownRunOnly), the same refusal records unchanged.
+// not unchanged. Control: under the earlier rules that a stop records its own run alone
+// (leftRuleSet.ownRunOnly) and an UNKNOWN's stop its run's account (leftRuleSet.unknownAsAccount,
+// since run 2's refusal is UNKNOWN), the same refusal records unchanged.
 func TestACreateBucketStopCountsTheBarrierKeyAnEarlierRunPut(t *testing.T) {
 	createBucketRequireStoppable(t, holdrecord.WorkflowCutover, createBucketCommand)
 	h := newStack(t)
@@ -810,9 +785,9 @@ func TestACreateBucketStopCountsTheBarrierKeyAnEarlierRunPut(t *testing.T) {
 		return stop
 	}
 
-	leftWith(t, leftRuleSet{ownRunOnly: true})
+	leftWith(t, leftRuleSet{ownRunOnly: true, unknownAsAccount: true})
 	require.Equal(t, holdrecord.LeftUnchanged, refusedBeforeTheBarrier().Outputs["left"],
-		"control: a stop that records its own run alone records unchanged")
+		"control: a stop that records its own run alone, its UNKNOWN as its account, records unchanged")
 
 	leftWith(t, leftRuleSet{})
 	left := refusedBeforeTheBarrier().Outputs["left"]
@@ -863,4 +838,133 @@ func TestARecoveryStopLeavesOutTheBarrierKeyItsDeleteTook(t *testing.T) {
 
 	leftWith(t, leftRuleSet{barrierAfterDelete: true})
 	require.Contains(t, run().Outputs["left"], barrierLeft, "control: under the earlier rule the stop names the deleted key")
+}
+
+// A create-bucket whose done entry is lost, after it made the bucket and its sentinel, writes its
+// stop, recording what it left as unknown, and hold abort is then the way out
+// (requireALostDoneStops, with its control: the intent left pending under the earlier rule). The
+// rerun adopts the bucket the first run made.
+func TestACreateBucketWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	createBucketNotifications(t, h, 0)
+	id := h.prepared(holdrecord.WorkflowCutover)
+	createBucketCohort(t, h.records(), id, 2)
+	h.held(id)
+	h.requireALostDoneStops(id, createBucketCommand, func() (int, string, string) {
+		return h.run("create-bucket", "--hold", id)
+	})
+}
+
+// A create-bucket --after-loss whose done entry is lost, after it made the bucket and wrote its
+// sentinel, writes its stop, recording what it left as unknown, and hold abort is then the way out
+// (requireALostDoneStops, with its control: the intent left pending under the earlier rule). The
+// rerun adopts the bucket by its sentinel.
+func TestARecoveryWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	createBucketNotifications(t, h, 0)
+	id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+	h.requireALostDoneStops(id, createBucketAfterLossCommand, func() (int, string, string) {
+		return h.run("create-bucket", "--hold", id, "--after-loss")
+	})
+}
+
+// A bucket with no sentinel whose one key is another hold's barrier key, hold.barrier.<that hold>,
+// as a run of that hold leaves it when it put its barrier and stopped short of the sentinel, holds
+// no record: every hold's barrier key is no key of the bucket's (createBucketKeys), so each
+// create-bucket takes it as the empty bucket it is. create-bucket writes its sentinel with this
+// hold's B into it, leaving the other hold's key; create-bucket --after-loss with no backup adopts
+// it and writes its sentinel; from a walk it deletes it and loads the walk, as it does its own cut
+// load's leftover. Control, first in each: under the earlier rule, which took this hold's barrier
+// key alone for no key (createBucketIgnoresEveryBarrier unset), each finds the bucket not its own,
+// and no command of this package took it.
+func TestCreateBucketTakesABucketHoldingAnotherHoldsBarrier(t *testing.T) {
+	ctx := context.Background()
+	const other = "another-hold"
+	otherKey := "$KV." + selection.SessionBucket + ".hold.barrier." + other
+	// leftover makes the bucket that other's run left: the configuration create-bucket sends,
+	// holding other's barrier key alone.
+	leftover := func(t *testing.T, h *stack) {
+		t.Helper()
+		nc, js := h.operator()
+		_, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(1))
+		require.NoError(t, err)
+		require.NoError(t, createBucketAwaitLeader(ctx, nc))
+		require.NoError(t, holdrecord.Barrier(ctx, js, selection.SessionBucket, other))
+	}
+	everyBarrier := func(t *testing.T, every bool) {
+		t.Helper()
+		previous := createBucketIgnoresEveryBarrier
+		createBucketIgnoresEveryBarrier = every
+		t.Cleanup(func() { createBucketIgnoresEveryBarrier = previous })
+	}
+
+	t.Run("create-bucket", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 0)
+		id := h.prepared(holdrecord.WorkflowCutover)
+		createBucketCohort(t, h.records(), id, 4)
+		h.held(id)
+		leftover(t, h)
+
+		everyBarrier(t, false)
+		code, _, stderr := h.run("create-bucket", "--hold", id)
+		require.Equal(t, 2, code, "control: the earlier rule: %s", stderr)
+		require.Contains(t, stderr, "exists and is not this hold's: it holds 1 keys (hold.barrier."+other+"), no sentinel")
+
+		everyBarrier(t, true)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id)
+		require.Equal(t, 0, code, stderr)
+		require.Contains(t, stdout, "which held no key: its sentinel written with boundary 4")
+		info, _, sentinel, found := createBucketState(h)
+		require.True(t, found)
+		require.Equal(t, createBucketJSON(selection.StoreState{Boundary: 4, Hold: id}), createBucketJSON(sentinel.state))
+		require.Contains(t, info.State.Subjects, otherKey, "create-bucket removed the other hold's barrier key")
+		require.Equal(t, "done", h.lastEntry(id, createBucketCommand).State)
+	})
+
+	t.Run("create-bucket --after-loss", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 0)
+		id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+		leftover(t, h)
+
+		everyBarrier(t, false)
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
+		require.Equal(t, 1, code, "control: the earlier rule: %s", stderr)
+		require.Contains(t, stderr, "selection bucket exists and is not this recovery's: "+selection.SessionBucket+" holds 1 keys (hold.barrier."+other+"), no sentinel")
+
+		everyBarrier(t, true)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
+		require.Equal(t, 0, code, stderr)
+		require.Contains(t, stdout, "adopted: it held no key; its sentinel written")
+		require.True(t, h.journal(id).Complete)
+		info, _, sentinel, found := createBucketState(h)
+		require.True(t, found)
+		require.Equal(t, id, sentinel.state.Hold)
+		require.Contains(t, info.State.Subjects, otherKey, "the recovery removed the other hold's barrier key")
+	})
+
+	t.Run("create-bucket --after-loss from a walk", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 3)
+		records := createBucketWalkOfRecords(t, 3)
+		dir := filepath.Join(t.TempDir(), "walk")
+		createBucketWriteWalk(t, dir, records, 1, uint64(len(records)))
+		id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+		leftover(t, h)
+
+		everyBarrier(t, false)
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+		require.Equal(t, 1, code, "control: the earlier rule: %s", stderr)
+		require.Contains(t, stderr, "selection bucket exists and is not this recovery's: "+selection.SessionBucket+" holds 1 keys that are no record of the walk")
+
+		everyBarrier(t, true)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+		require.Equal(t, 0, code, stderr)
+		require.Contains(t, stdout, "restored and its sentinel written")
+		require.True(t, h.journal(id).Complete)
+		info, _, _, found := createBucketState(h)
+		require.True(t, found)
+		require.NotContains(t, info.State.Subjects, otherKey, "the walk's load kept the deleted bucket's key")
+	})
 }

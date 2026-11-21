@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -634,4 +636,79 @@ func TestConvertRereadCatchesAWriterConnectedAcrossTheHold(t *testing.T) {
 	code, _, stderr = rig.run(actionConvert, "--hold", id)
 	require.Zero(t, code, stderr)
 	require.Empty(t, rig.fixedNames())
+}
+
+// convert's store check reads Dispatch's store, whose sentinel row holds no store state, so convert
+// cannot tell whether that store can hold the conversion: UNKNOWN (the default case of
+// convertRule.checkStores), an exit after its intent. convert writes its stop, recording what it
+// left as unknown (leftUnknownPrefix), naming what it read and the store it could not read, never
+// unchanged: hold release is refused over it, and hold abort is admitted and ends the hold, its
+// intent carrying what the stop left. Control, run first: under the earlier rule that an UNKNOWN
+// exit writes no stop (leftRuleSet.unknownNoStop), convert's intent stays pending, and hold release
+// and hold abort are both refused: a repeating UNKNOWN left the hold only convert's rerun.
+func TestConvertStopsOnAnUnknownStoreAndHoldAbortEndsIt(t *testing.T) {
+	rig := newConvertRig(t, 0)
+	ctx := context.Background()
+	rig.publish("notifications.agent.u1", 2)
+	rig.fixed("s-u1", "notifications.agent.u1", 0)
+	db := rig.database(familyDispatch, dispatchMigrations...)
+	_, err := db.Exec(ctx, `insert into intake_consumers (logical, record, revision) values ($1, '"no store state"', 1)`, selection.PGSentinelKey)
+	require.NoError(t, err)
+	id, _ := rig.heldForConvert()
+	release, abort := holdrecord.Request{Command: holdrecord.CommandRelease}, holdrecord.Request{Command: holdrecord.CommandAbort}
+	unknown := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := rig.run(actionConvert, "--hold", id, "--dispatch-database-file", "dispatch.url")
+		require.Equal(t, 2, code, stderr)
+		require.Contains(t, stderr, "UNKNOWN the dispatch family's store")
+		require.Equal(t, []string{"s-u1"}, rig.fixedNames(), "the UNKNOWN convert changed a fixed name")
+		return rig.lastEntry(id, actionConvert)
+	}
+
+	leftWith(t, leftRuleSet{unknownNoStop: true})
+	require.Equal(t, "intent", unknown().State, "control: under the earlier rule the UNKNOWN leaves convert's intent pending")
+	require.ErrorIs(t, holdrecord.Decide(rig.journal(id), release), holdrecord.ErrBusy, "control: hold release over the pending intent")
+	require.ErrorIs(t, holdrecord.Decide(rig.journal(id), abort), holdrecord.ErrBusy, "control: hold abort over the pending intent")
+
+	leftWith(t, leftRuleSet{})
+	stop := unknown()
+	require.Equal(t, "stop", stop.State, "the UNKNOWN after convert's intent ends in its stop entry")
+	left := stop.Outputs[stopLeftKey]
+	require.True(t, strings.HasPrefix(left, leftUnknownPrefix+"read hold "+id+"'s cohort record, "), "the stop records %q", left)
+	require.Contains(t, left, "; unread the dispatch family's store: ", "the stop names the store convert could not read")
+	require.Contains(t, left, "no run of convert in this hold saved its set")
+	require.Contains(t, left, "earlier runs of "+actionConvert+" in this hold: run 1 ended with no entry", "the stop names the run the control left pending")
+	require.ErrorIs(t, holdrecord.Decide(rig.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over the UNKNOWN stop")
+	inputs := rig.abortHold(id)
+	require.Contains(t, slices.Collect(maps.Values(inputs)), actionConvert+": "+left, "hold abort's intent carries what the stop left")
+	require.Equal(t, "released", string(rig.row().Phase))
+}
+
+// A Dispatch store with no intake_consumers table, its database never migrated by Dispatch's
+// migration that makes it, stops convert before it changes anything, and the stop names that
+// migration when --dispatch-database-file names the store: the flag the operator gave is no remedy.
+// Control, run first: the same store with no flag, which convert reaches because its set holds
+// Dispatch's durables, names the flag.
+func TestConvertNamesDispatchsMigrationForAStoreWithNoTable(t *testing.T) {
+	rig := newConvertRig(t, 0)
+	durable := dispatchDurables()[0]
+	rig.publish("notifications.dispatch.one", 2)
+	rig.fixed(durable, "notifications.dispatch.one", 0)
+	rig.database(familyDispatch, dispatchMigrations[0])
+	id, _ := rig.heldForConvert()
+	migration := strings.TrimSuffix(filepath.Base(dispatchMigrations[len(dispatchMigrations)-1]), ".up.sql")
+	stopped := func(args ...string) string {
+		t.Helper()
+		code, _, stderr := rig.run(append([]string{actionConvert, "--hold", id}, args...)...)
+		require.Equal(t, 1, code, stderr)
+		stop := rig.lastEntry(id, actionConvert)
+		require.Equal(t, "stop", stop.State)
+		require.Equal(t, []string{durable}, rig.fixedNames(), "convert changed a fixed name before it stopped")
+		return stop.Outputs["reason"]
+	}
+
+	require.Contains(t, stopped(), "give --dispatch-database-file <file>", "control: with no flag the refusal names the flag")
+	reason := stopped("--dispatch-database-file", "dispatch.url")
+	require.Contains(t, reason, migration, "the refusal does not name Dispatch's migration")
+	require.NotContains(t, reason, "give --dispatch-database-file", "the refusal names a flag the operator gave")
 }

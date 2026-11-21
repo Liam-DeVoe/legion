@@ -56,14 +56,15 @@ These are `writerhold.HubFlags`, the flags `envoy-infra hold` and `envoy-infra b
 | `--verify-keys K` | none | every command: `BROKER_NATS_HOLD_SIGNING_KEYS`, the keys every row and record is verified under |
 | `--nats URL` | none | every command, once for each of the hub's client URLs |
 | `--signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing` | none | every command but `status` |
-| `--kube-namespace`, `--statefulset`, `--configmap` | `envoy`, `envoy-nats`, `envoy-nats-config` | every held command: the hub's Kubernetes objects, reached through the in-cluster configuration or KUBECONFIG's, beside the Compute API; `cleanup --gone` and `enroll` list the Deployments of namespace `legion` through the same client |
+| `--kube-namespace`, `--statefulset`, `--configmap` | `envoy`, `envoy-nats`, `envoy-nats-config` | every held command: the hub's Kubernetes objects, reached through the in-cluster configuration or KUBECONFIG's, beside the Compute API; `cleanup --gone` and `enroll` list the Deployments of namespace `legion` through the same client, and so does `status` for a daemon store whose database answers that it does not exist |
 | `--probe-token-file F` | none | `restore --finish`, which refuses to run without it: the hold probe's token |
 
 Their values are the ones `envoy-infra hold` takes. `--minters-report` is accepted, as every
 command of the hold accepts it, and no `consumer-names` command reads it. Below, `<hold flags>`
 stands for `--broker-url`, `--token-file`, `--verify-keys`, `--signing-key-secret` and each
 `--nats`, and the Kubernetes flags where their defaults are not the hub's. `status` takes them all
-and reads neither the signing key nor Kubernetes.
+and reads no signing key; it reads Kubernetes only to list the daemons' Deployments, for a daemon
+store whose database answers that it does not exist.
 
 ### The stores' flags
 
@@ -94,15 +95,15 @@ Each Legion daemon runs as a Deployment in namespace `legion` that carries three
 | `envoy-infra.consumer-names/store-instance` | the connection name of the Cloud SQL instance that holds it |
 
 `envoy-infra streams census` and `cleanup --gone` read a daemon's store only at the address its
-Deployment names. The store is unreconciled, and neither reads it, unless exactly one Deployment
-names the project, that Deployment carries both store annotations, no other Deployment names the
-same database on the same instance, the `--daemon-database` file's URL names that database, and
-the file's second line is that instance. At that address, a server that answers SQLSTATE 3D000
-(the database does not exist) makes the store gone. Every other answer leaves it unreconciled:
-a server that does not answer, any other SQLSTATE (57P01 and 57P03, which a dying server answers
-in the seconds after its instance is deleted, among them), and a database with no
-`intake_consumers` table. `enroll` reads the Deployments only to refuse a store whose database and
-instance another Deployment names too.
+Deployment names, and `status` calls a store gone only at that address. The store is unreconciled,
+and none of them reads it, unless exactly one Deployment names the project, that Deployment
+carries both store annotations, no other Deployment names the same database on the same instance,
+the `--daemon-database` file's URL names that database, and the file's second line is that
+instance. At that address, a server that answers SQLSTATE 3D000 (the database does not exist)
+makes the store gone. Every other answer leaves it unreconciled: a server that does not answer,
+any other SQLSTATE (57P01 and 57P03, which a dying server answers in the seconds after its
+instance is deleted, among them), and a database with no `intake_consumers` table. `enroll` reads
+the Deployments only to refuse a store whose database and instance another Deployment names too.
 
 ### Output and exit codes
 
@@ -126,19 +127,20 @@ envoy-infra consumer-names status --broker-url U --token-file F --verify-keys K 
 ```
 
 `status` runs only while the hold row is `released`, so run it before a hold and after one; it
-takes `<hold flags>` too, and reads neither the signing key nor Kubernetes. `--hold` takes any
-hold's id; the `row:` line names the latest. It reads the hold row; with `--hold`, that hold's
-journal; the broker's cutover rows; every consumer name of `ENVOY_NOTIFICATIONS`; every key of the
-selection bucket, by sequence (`STREAM.INFO` and `STREAM.MSG.GET`, the two reads the released
-grant holds on it); Dispatch's table, always; and the table of each daemon that a
-`--daemon-database`, a broker cutover row or a consumer on the stream, fixed or fresh, names. It
-changes nothing. Each Postgres store needs its flag, and reads only its file's first line: a store
-no flag names makes the reading UNKNOWN, and the UNKNOWN line names each such store and its flag
-(`daemon/P's store: no --daemon-database P=<file> names it`), so a first run tells which daemons
-the next needs. While a hold is set, `envoy-infra hold status --hold ID` prints the row and that
-hold's journal instead. What `status` reads before a hold can change before `convert` runs:
-`prepare` lists the fixed names again, `create-bucket` makes the bucket, and every client runs
-until `hold set`.
+takes `<hold flags>` too, and reads no signing key. `--hold` takes any hold's id; the `row:` line
+names the latest. It reads the hold row; with `--hold`, that hold's journal; the broker's cutover
+rows; every consumer name of `ENVOY_NOTIFICATIONS`; every key of the selection bucket, by sequence
+(`STREAM.INFO` and `STREAM.MSG.GET`, the two reads the released grant holds on it); Dispatch's
+table, always; and the table of each daemon that a `--daemon-database`, a broker cutover row or a
+consumer on the stream, fixed or fresh, names. It changes nothing. Each Postgres store needs its
+flag, and reads its file's first line: a store no flag names makes the reading UNKNOWN, and the
+UNKNOWN line names each such store and its flag (`daemon/P's store: no --daemon-database P=<file>
+names it`), so a first run tells which daemons the next needs. Only for a daemon store whose
+database answers that it does not exist does it read the file's second line and the daemons'
+Deployments in Kubernetes (below). While a hold is set, `envoy-infra hold status --hold ID` prints
+the row and that hold's journal instead. What `status` reads before a hold can change before
+`convert` runs: `prepare` lists the fixed names again, `create-bucket` makes the bucket, and every
+client runs until `hold set`.
 
 It prints, in this order:
 
@@ -149,6 +151,7 @@ It prints, in this order:
 | `  N. COMMAND STATE` | each journal entry: the command and `intent`, `done` or `stop` |
 | `cutover F: STATE (hold H, hold_gen N)` | the broker's cutover row of family F, `done` or `rolled_back`, the hold that wrote it, and the `hold_gen` the broker recorded with it |
 | `store F: missing` | F's store does not exist: the bucket, or the family's `intake_consumers` table |
+| `store F: gone: database D on instance I (the operator's file states S): ANSWER` | daemon F's store is gone: its database answers SQLSTATE 3D000 at exactly the address F's Deployment names. No `BLOCKER` line; see below |
 | `store F (WHERE): no sentinel` | the store exists and holds no sentinel |
 | `store F (WHERE): cutover=C boundary=B replay_from=R orphans=[...] hold=H` | the store's sentinel. WHERE is the bucket's stream or `intake_consumers`; `cutover` and `hold` read `-` when empty, `boundary` and `replay_from` `0`, `orphans` `[]` |
 | `store F (WHERE): sentinel UNKNOWN, its value is malformed` | the bucket's sentinel holds a value that is no exact store state; `status` then exits 2 |
@@ -165,9 +168,15 @@ row, the journal, the cutover rows, the hub or the consumer names stops it there
 names, a store read that failed and a malformed value do not: it prints every family it read and
 every `BLOCKER` line, then exits 2 with no `blockers:` line.
 
-A daemon store that is gone, its database deleted, reads as a failed read: `status` does not apply
-the Deployment rule, so it stays UNKNOWN while a broker cutover row or a consumer on the stream
-names that daemon, and no command removes a broker cutover row. An UNKNOWN reading's `BLOCKER`
+A daemon store whose database answers SQLSTATE 3D000 (the database does not exist) is read again
+by the Deployment rule ([The daemons' Deployments](#the-daemons-deployments)), with the
+Deployments listed through the hold's Kubernetes flags. When the server at the Deployment's address
+answers 3D000, `status` prints the store `gone` and goes on, so a broker cutover row that names a
+deleted project no longer keeps every reading UNKNOWN; no command removes that row. Any other
+answer the rule finds (an address that is not the Deployment's, or that another Deployment names
+too, a server that answers otherwise) keeps the store UNKNOWN, naming why: `daemon/P's store
+answers SQLSTATE 3D000, and the census's rule does not confirm it gone: ...`. A gone store's
+consumers stay on the stream until `cleanup --gone P` removes them. An UNKNOWN reading's `BLOCKER`
 lines are each true of the store they name; what it does not show is the stores it could not read.
 
 ### The `BLOCKER` lines
@@ -192,11 +201,11 @@ marker `done` over it, keeping the other fields it reads. A sentinel that does n
 UNKNOWN at its store check; after a cutover, [a sentinel repair](#a-sentinel-repair) writes the
 session one again. `convert` reads records with the selection library's decode, not `status`'s
 strict one: a record that does not decode is UNKNOWN when `convert` reaches it, after it has saved
-its set. `replay --key K` reads with the same decode, and on such a record refuses or stops,
-leaving no intent pending, where `convert` would leave its own; on a record that decodes it writes
-K's record anew, which also clears an open operation, retiring its names. A record `replay` refuses
-is one `convert` would stop on with its intent pending, and no command of this package rewrites it.
-The cutover rows do not stop `convert`: it writes each of its families' rows `done`.
+its set. `replay --key K` reads with the same decode, and on such a record refuses or stops; on a
+record that decodes it writes K's record anew, which also clears an open operation, retiring its
+names. A record `replay` refuses is one `convert` stops on as UNKNOWN at every run, and no command
+of this package rewrites it, so `hold abort` ends such a hold. The cutover rows do not stop
+`convert`: it writes each of its families' rows `done`.
 
 Before a first cutover, with one session, one listener and one daemon `P`, `status` reads, for
 example:
@@ -249,7 +258,7 @@ status --hold ID` and in each command's refusal.
      end the hold (`hold release`, or `hold abort` when another command has changed something) and
      start again from `hold prepare`;
    - the hub's reach, the declared servers, the meta barrier and its listing, and the info of each
-     fixed name it lists: a refusal or an UNKNOWN, with no stop entry;
+     fixed name it lists: a refusal or an UNKNOWN, each a stop (below);
    - the stores of its families: the `session` family always; `dispatch` when
      `--dispatch-database-file` is given or its set holds `delivery-events` or `delivery-jobs`;
      each daemon whose `--daemon-database` is given or whose fixed names its set holds. Its set is
@@ -260,19 +269,22 @@ status --hold ID` and in each command's refusal.
        (...): consumer-names create-bucket --hold ID comes before convert`, for a missing bucket
        or a bucket with no sentinel;
      - `Dispatch has fixed names to convert and its store cannot hold them (...): give
-       --dispatch-database-file <file>`, for no flag, a file it cannot read, or a missing table;
-       for a missing table the remedy is Dispatch's migration, which the message does not name;
+       --dispatch-database-file <file>`, for no flag or a file it cannot read;
+     - `Dispatch has fixed names to convert and its store, which --dispatch-database-file names,
+       has no intake_consumers table (...): Dispatch's boot makes the table with its migration
+       20261121002206_intake_consumers, so deploy the Dispatch release that carries it, then run
+       convert again`, for a missing table when the flag is given;
      - `the Legion daemon of project P has fixed names to convert and its store cannot hold them
        (...): give --daemon-database P=<file>, and boot the project once so its migration makes
        intake_consumers`, the same for a daemon.
 
-     Any other failed read of a store is UNKNOWN, with no stop entry: a Postgres sentinel that does
-     not decode, and a daemon store whose database is gone. So before `hold prepare`, remove a gone
-     daemon's consumers with `cleanup --gone` in a `consumer-cleanup` hold, and give `convert` no
-     flag for it: with no flag and no name of it on the stream, it is none of `convert`'s families.
-     When the Deployment rule leaves that store unreconciled (no single Deployment names the
-     project with both store annotations), `cleanup --gone` removes nothing, and no command of this
-     package removes those consumers.
+     Any other failed read of a store is UNKNOWN, a stop recorded `unknown: ...` (below): a
+     Postgres sentinel that does not decode, and a daemon store whose database is gone. So before
+     `hold prepare`, remove a gone daemon's consumers with `cleanup --gone` in a `consumer-cleanup`
+     hold, and give `convert` no flag for it: with no flag and no name of it on the stream, it is
+     none of `convert`'s families. When the Deployment rule leaves that store unreconciled (no
+     single Deployment names the project with both store annotations), `cleanup --gone` removes
+     nothing, and no command of this package removes those consumers.
 
 Then `convert` saves its set, the hold's record of kind `convert` and key `set`: its first change.
 It runs the held re-read again before its first change to the hub. After that, a stop records the
@@ -286,23 +298,29 @@ rerun or `hold abort`. Two refusals come only after it has converted names:
   record saved gives one;
 - a listing that still holds a fixed name after 8 listings, each converting what it lists: UNKNOWN.
 
-A refusal or an UNKNOWN with no stop entry leaves `convert`'s intent pending: the hold then admits
-only `convert`'s rerun, which goes on from the saved set if one was saved, and refuses `hold
-release` and `hold abort` too. While what refused it stands, every rerun ends the same way and
-writes no stop either, and the journal admits no other command. This holds for each refusal and
-UNKNOWN above with no stop entry: among them a session sentinel that does not decode, the
-open-replace case, a record `convert` cannot decode, and the 8 listings.
+Every exit after `convert`'s intent ends in its stop entry, an UNKNOWN's too, so no intent is left
+pending for its rerun alone. A refusal's stop records what every run of `convert` in the hold left,
+as above. An UNKNOWN's stop records `unknown: read <what the run read>; unread <what it could not
+read>; <what the run changed>`, never `unchanged`: a reading that is not whole cannot say what it
+left there. `hold release` is refused over it, and the way out is `convert`'s rerun, which goes on
+from the saved set if one was saved and is done once what made it UNKNOWN is gone, or `hold
+abort`, whose intent carries the stop's record. Among them: a session sentinel that does not
+decode, the open-replace case, a record `convert` cannot decode, the 8 listings, and a done entry
+whose write fails, which may have landed.
 
 ## The held commands
 
 Every command but `status`, `backup` and `prepare` is held. It reads the hold row, which must be
 `held` under `--hold`, then runs the held re-read, then writes its intent in the hold's journal,
-the decision and the entry one write, and ends with its done entry or a stop entry. `convert`,
-`cleanup`, `cleanup --gone`, `enroll` and `create-bucket --after-loss` run the re-read again before
-their first change to the hub or a store.
+the decision and the entry one write, and ends with its done entry or a stop entry: every exit
+after its intent writes its stop, a refusal's, an UNKNOWN's and a failed done entry's alike, so no
+command leaves its intent pending but a run cut short (a kill, or a broker it can no longer reach).
+`convert`, `cleanup`, `cleanup --gone`, `enroll` and `create-bucket --after-loss` run the re-read
+again before their first change to the hub or a store.
 
 The held re-read reads again what `hold set` read, on the command's own connection; a refusal or an
-UNKNOWN of any step stops the command before it writes anything:
+UNKNOWN of any step stops the command before it writes anything, or, for the re-read again after
+the intent, ends it in its stop:
 
 - the hold's journal;
 - the render's precondition, which names the auth service's user, and every declared server;
@@ -333,6 +351,11 @@ The journal's rules, from the hold's table (`internal/holdrecord`):
   put the key is not `unchanged`, and one before it can be. `convert` puts it only after it has
   saved its set (its store check reads the bucket's sentinel directly), and `cleanup --gone` and
   `enroll` never put it.
+- The stop of an UNKNOWN exit records `unknown: read <what the run read since its intent>; unread
+  <what it could not read>; <what the run changed>`, and how each earlier run of the command in the
+  hold ended; never `unchanged`, since a reading that is not whole cannot say what it left. A done
+  entry whose write fails is UNKNOWN too (`whether <command>'s done entry was written`): it may
+  have landed, and then the stop's write is refused, naming it.
 - `hold release` ends a hold whose record is complete, or one with no done entry but `hold set`'s,
   no stop that recorded anything but `unchanged`, and a stop as each command's latest entry.
   Otherwise the way out is the stopped command's rerun, or `hold abort`, which every one of these
@@ -389,17 +412,18 @@ else 1. With the bucket missing, it creates `envoy_session_consumers` (one value
 good, on file storage) and writes its sentinel with B and the hold's id, and prints `created
 envoy_session_consumers at N copies, its sentinel with boundary B`. A bucket it finds present, on
 its first run or a rerun, it adopts only when the bucket's stream has the configuration
-`create-bucket` sends and the bucket holds no key but this hold's barrier (it writes the sentinel:
-`adopted envoy_session_consumers, which held no key: ...`) or only its sentinel with this hold's B
-(`adopted ..., whose sentinel already holds this hold's boundary B`). Any other bucket is UNKNOWN
-(`selection bucket envoy_session_consumers exists and is not this hold's`, or a line naming each
-field of its configuration that differs), and `create-bucket` never deletes it. So run it when
-`status` printed `store session: missing`, or `store session (...): no sentinel` with no `record
-session` line. A bucket that holds another hold's barrier key and no sentinel, which `status`
-prints the same way, is UNKNOWN to it, and neither `repair-sentinel` nor `create-bucket
---after-loss` takes it: no command of this package does. A bucket whose sentinel `status` prints,
-such as the one a rollback leaves, needs no `create-bucket`: `convert` writes its own B and hold
-into that sentinel.
+`create-bucket` sends and the bucket holds no key but hold barrier keys, this hold's or another's
+(it writes the sentinel: `adopted envoy_session_consumers, which held no key: ...`), or only its
+sentinel with this hold's B (`adopted ..., whose sentinel already holds this hold's boundary B`).
+Any other bucket is UNKNOWN (`selection bucket envoy_session_consumers exists and is not this
+hold's`, or a line naming each field of its configuration that differs), and `create-bucket` never
+deletes it. So run it when `status` printed `store session: missing`, or `store session (...): no
+sentinel` with no `record session` line. Every hold's barrier key, `hold.barrier.<hold id>`, is no
+key of the bucket's to `create-bucket` and `create-bucket --after-loss`: a bucket with no sentinel
+that holds only another hold's barrier key, as a run of that hold leaves it when it stops after its
+barrier and before the sentinel, is the empty bucket each takes. A bucket whose sentinel `status`
+prints, such as the one a rollback leaves, needs no `create-bucket`: `convert` writes its own B and
+hold into that sentinel.
 A bucket that holds records and no sentinel is UNKNOWN to `create-bucket`, `repair-sentinel` stops
 on it, and `create-bucket --after-loss` takes it only when each of its keys holds a walk's value
 (`--backup`): it adopts a bucket holding all of the walk's records, and deletes and loads again one
@@ -437,8 +461,9 @@ starts there.
   only this hold's barrier; it is empty with no backup; or it holds another recovery's sentinel,
   whose lower `replay_from` is kept (a run that would raise it stops). The leftover of this
   recovery's own cut load or restore, a bucket with no sentinel that holds some of the walk's
-  records, or nothing after a snapshot of some, is deleted and made again. Anything else stops it:
-  `selection bucket exists and is not this recovery's`.
+  records, or nothing after a snapshot of some, is deleted and made again. A hold's barrier key,
+  this hold's or another's, is none of the bucket's keys in these rules but the snapshot's. Anything
+  else stops it: `selection bucket exists and is not this recovery's`.
 - It writes the sentinel in replay mode: `cutover` the broker's `session` cutover row's state (else
   the one the bucket's or the walk's sentinel held), the boundary that sentinel held, `replay_from`,
   the orphans (each `session~` consumer no record selects, listed after the load), the backup's
@@ -550,13 +575,13 @@ created and each marker it set; a rerun goes on from the phase each record holds
 `cleanup --hold ID [--final] <hold flags> <store flags>`, in a `consumer-cleanup` hold. It reads
 every store before it deletes anything: the bucket, Dispatch's table, and each daemon's that a
 broker cutover row or `--daemon-database` names. A store no flag names stops it, recorded
-`unchanged`; a malformed value in the bucket is UNKNOWN, and it deletes nothing, its stop naming
-the barrier key it put. It deletes each retired name the server holds and the record does not
-still select (its current, its open operation's candidate or old name), and drops from the record
-each retired name the server reports absent. It deletes no name by a pattern. It prints `cleanup F
-K: deleted [...], dropped from retired [...]` for each record it changed, then `cleanup: N records
-with retired names, D names deleted, X dropped from retired`. A delete or a write that failed stops
-it, recording what it deleted.
+`unchanged`; a malformed value in the bucket is UNKNOWN, and it deletes nothing, its stop
+recording `unknown: ...` and naming the barrier key it put. It deletes each retired name the
+server holds and the record does not still select (its current, its open operation's candidate
+or old name), and drops from the record each retired name the server reports absent. It deletes
+no name by a pattern. It prints `cleanup F K: deleted [...], dropped from retired [...]` for each
+record it changed, then `cleanup: N records with retired names, D names deleted, X dropped from
+retired`. A delete or a write that failed stops it, recording what it deleted.
 
 ### `cleanup --gone`
 
@@ -600,8 +625,9 @@ Otherwise, after the held re-read again, it writes the store's marker `cutover` 
 the boundary (the stream's last sequence + 1) and the stream's identity, then the broker's cutover
 row `daemon/P` `done`, and prints `enroll: daemon/P: the store's marker and the broker's cutover
 record read done under hold ID; boundary B, stream identity S`. Its done entry completes the hold.
-A rerun keeps what this hold wrote. A read or write whose outcome it cannot know is UNKNOWN with no
-stop entry, so only its rerun is admitted.
+A rerun keeps what this hold wrote. A read or write whose outcome it cannot know is UNKNOWN: its
+stop records `unknown: ...` and each write whose answer was lost, so `hold release` is refused and
+the way out is its rerun or `hold abort`.
 
 ### `repair-sentinel`
 

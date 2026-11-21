@@ -206,3 +206,19 @@ func TestReplayReplacesAMalformedSessionRecord(t *testing.T) {
 	require.NoError(t, err, "ses_bad's value after replay is no exact record: %s", value)
 	require.Equal(t, selection.Record{Start: 3}, record)
 }
+
+// A replay whose done entry is lost, after it wrote the key's record, writes its stop, recording
+// what it left as unknown, and hold abort is then the way out (requireALostDoneStops, with its
+// control: the intent left pending under the earlier rule).
+func TestAReplayWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	createBucketNotifications(t, h, 3)
+	id := h.prepared(holdrecord.WorkflowCutover)
+	createBucketCohort(t, h.records(), id, 1)
+	h.held(id)
+	code, _, stderr := h.run("create-bucket", "--hold", id)
+	require.Equal(t, 0, code, stderr)
+	h.requireALostDoneStops(id, replayCommand, func() (int, string, string) {
+		return h.run("replay", "--hold", id, "--key", "ses_lost", "--from", "2")
+	})
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -100,7 +101,20 @@ type statusFamily struct {
 	// malformed are keys whose value is not exactly a value of their kind (readSelectionValue),
 	// each with why: status reads none of them, and reports each UNKNOWN.
 	malformed map[string]string
+	// gone names a daemon store the census's rule found gone (daemonGoneText), "" for any other.
+	gone string
 }
+
+// statusRuleSet is the rules status reads a store by. Every field set is an earlier rule, which
+// only a row's control sets, to show that the row fails under it.
+type statusRuleSet struct {
+	// goneUnknown: a daemon store whose database answers SQLSTATE 3D000 is a failed read, UNKNOWN,
+	// as every other (status before it read such a store by the census's rule).
+	goneUnknown bool
+}
+
+// statusRules are the rules status runs by; a row's control alone changes them.
+var statusRules statusRuleSet
 
 // status reads, with the row released, every family's store and the notification stream's
 // consumers, and prints: the row; with --hold, that hold's journal; the broker's cutover rows;
@@ -224,7 +238,8 @@ func statusSessionFamily(ctx context.Context, nc *nats.Conn) (statusFamily, erro
 
 // statusPGFamily reads family's intake_consumers table: its sentinel row and every record
 // (selection.PGStore.List). A family whose store no flag names is an error, which status reports
-// as UNKNOWN; a missing table is a missing store.
+// as UNKNOWN; a missing table is a missing store; and a daemon store whose database answers
+// SQLSTATE 3D000 is read again by the census's rule (statusGone).
 func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, error) {
 	f := statusFamily{family: family, where: selection.IntakeConsumersTable, records: map[string]selection.Record{}}
 	if file, flagName := r.o.storeFile(family); file == "" {
@@ -242,7 +257,8 @@ func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, 
 		return f, nil
 	case errors.Is(err, selection.ErrNoSentinel):
 	case err != nil:
-		return f, fmt.Errorf("%s's sentinel: %w", family, err)
+		f.gone, err = r.statusGone(ctx, family, err)
+		return f, err
 	default:
 		f.state = &state
 	}
@@ -255,12 +271,41 @@ func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, 
 	return f, nil
 }
 
+// statusGone answers err, the failed first read of family's store, as status reports it: a daemon
+// store whose database answers SQLSTATE 3D000 (censusUndefinedDatabase) is read again by the
+// census's rule for the daemon stores, at exactly the address the daemon's Deployment names
+// (daemonStoreByRule), and is gone, named by daemonGoneText, when the server there answers 3D000;
+// status then goes on, so a broker cutover row naming a deleted project, which no command removes,
+// does not keep every reading UNKNOWN. Anything else the rule reads is an error naming why, and so
+// is any other failure: status stays UNKNOWN on the store.
+func (r *run) statusGone(ctx context.Context, family string, err error) (string, error) {
+	project, daemon := strings.CutPrefix(family, familyDaemonPrefix)
+	var pg *pgconn.PgError
+	if !daemon || statusRules.goneUnknown || !errors.As(err, &pg) || pg.Code != censusUndefinedDatabase {
+		return "", fmt.Errorf("%s's sentinel: %w", family, err)
+	}
+	store, closeStore, rerr := r.daemonStoreByRule(ctx, project)
+	defer closeStore()
+	switch {
+	case rerr != nil:
+		return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule could not read it again (its answer: %v): %w", family, pg.Code, pg, rerr)
+	case store.gone != nil:
+		return daemonGoneText(*store.gone), nil
+	case store.unreconciled != "":
+		return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule does not confirm it gone: %s (its answer: %v)", family, pg.Code, store.unreconciled, pg)
+	}
+	return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule does not confirm it gone: it answers at the address its Deployment names (its answer: %v)", family, pg.Code, pg)
+}
+
 // statusPrintFamily prints f's store and records, each malformed key as UNKNOWN, and answers its
 // blockers.
 func statusPrintFamily(out io.Writer, f statusFamily, held map[string]bool) []string {
 	var blockers []string
 	_, sentinelMalformed := f.malformed[selection.SentinelKey]
 	switch {
+	case f.gone != "":
+		fmt.Fprintf(out, "store %s: gone: %s\n", f.family, f.gone)
+		return nil
 	case !f.present:
 		fmt.Fprintf(out, "store %s: missing\n", f.family)
 		return append(blockers, fmt.Sprintf("%s: its store is missing", f.family))

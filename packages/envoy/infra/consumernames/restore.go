@@ -187,6 +187,7 @@ func (r *run) restoreReach(ctx context.Context, left *restoreLeft) (*restoreRun,
 	if err != nil {
 		return nil, err
 	}
+	r.read("the info of " + notifications + " and the broker's cutover rows")
 	return &restoreRun{r: r, nc: nc, records: records, streamID: selection.StreamIdentity(info),
 		lastSeq: info.State.LastSeq, cutovers: cutovers, stores: map[string]familyStore{}, left: left}, nil
 }
@@ -687,6 +688,7 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 	if err != nil {
 		return err
 	}
+	r.read(fmt.Sprintf("the saved set of %d names", len(set.Names)))
 	var unresolved []string
 	phases := map[string]int{}
 	for _, name := range set.Names {
@@ -699,6 +701,7 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 			unresolved = append(unresolved, name.Family+"/"+name.Logical)
 		}
 	}
+	r.read(fmt.Sprintf("the record and target of each of the %d saved names", len(set.Names)))
 	op, err := r.operatorHub(ctx)
 	if err != nil {
 		return err
@@ -707,6 +710,7 @@ func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *re
 	if err != nil {
 		return hubUnknown(err, "the hub's restart")
 	}
+	r.read("the declared servers")
 	outputs := map[string]string{"names": strconv.Itoa(len(set.Names)), "no_start": strings.Join(unresolved, " ")}
 	for _, server := range declared {
 		outputs[restoreServerID+server.Pod] = server.Varz.ServerID
@@ -872,6 +876,7 @@ func (r *run) restoreKeyAdmitted(ctx context.Context, a *admission, m member, le
 	if err != nil {
 		return err
 	}
+	r.read(fmt.Sprintf("%s/%s's record and its name in the saved set", name.Family, name.Logical))
 	phase, err := rr.settle(ctx, name, r.o.from)
 	if err != nil {
 		return err
@@ -957,6 +962,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 	if err != nil {
 		return err
 	}
+	r.read("the saved set and the server ids restore --prepare recorded")
 	var unresolved []string
 	for _, name := range set.Names {
 		st, err := rr.store(ctx, name.Family)
@@ -971,6 +977,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 			unresolved = append(unresolved, name.Family+"/"+name.Logical)
 		}
 	}
+	r.read(fmt.Sprintf("the record of each of the %d saved names", len(set.Names)))
 	if len(unresolved) > 0 {
 		return fmt.Errorf("these names have no settled start, so nothing is restarted or created: %s; give each its start with restore --key <K> --from <seq> --hold %s",
 			strings.Join(unresolved, ", "), r.o.holdID)
@@ -996,6 +1003,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 	if err != nil {
 		return err
 	}
+	r.read("the hub's restart, its proof and its barrier")
 	var creates []restoreSetName
 	fence := false
 	for _, name := range set.Names {
@@ -1008,6 +1016,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 			creates = append(creates, name)
 		}
 	}
+	r.read(fmt.Sprintf("the record and live target of each of the %d saved names after the restart", len(set.Names)))
 	if fence {
 		// A target this run saw present after its restart, and deleted: its server-side writer
 		// may still write until its server restarts once more.
@@ -1298,23 +1307,24 @@ func restoreServersRestarted(recorded map[string]string, after writerhold.Declar
 
 // restoreStop writes a restore command's stop entry (admission.stop), its reason cause and what
 // this run left (restoreLeft), its record of what every run of the command in this hold left
-// (admission.left), and answers the same text with cause wrapped, so an UNKNOWN cause still exits
-// 2. Every error after a restore command's intent comes here: restore --prepare, --key and
-// --finish are each Stoppable in rollback, so the stop ends the intent and the hold is never left
-// with only a rerun admissible. Where the workflow's table holds the command not Stoppable,
-// admission.stop writes nothing, and the intent stays pending. admission.stop answers a plain
-// error when its stop entry is written, and one wrapping the write's error when it is not. A
-// test's kill (restoreKill) writes nothing, as a killed process writes nothing.
+// (admission.leftAfter, an UNKNOWN cause's under leftUnknown), and answers the same text with cause
+// wrapped, so an UNKNOWN cause still exits 2. Every error after a restore command's intent comes
+// here, a done entry whose write failed among them: restore --prepare, --key and --finish are each
+// Stoppable in rollback, so the stop ends the intent and the hold is never left with only a rerun
+// admissible. Where the workflow's table holds the command not Stoppable, admission.stop writes
+// nothing, and the intent stays pending. admission.stop answers a plain error when its stop entry
+// is written, and one wrapping the write's error when it is not. A test's kill (restoreKill)
+// writes nothing, as a killed process writes nothing.
 func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLeft) error {
 	var kill *restoreKill
 	if errors.As(cause, &kill) {
 		return cause
 	}
 	what := fmt.Errorf("%w; %s", cause, left)
-	if restoreRules.noStopEntry {
+	if restoreRules.noStopEntry || !stopsAfter(cause) {
 		return what
 	}
-	if err := errors.Unwrap(a.stop(ctx, what.Error(), a.left(ctx, left.empty(), left.String()))); err != nil {
+	if err := errors.Unwrap(a.stop(ctx, what.Error(), a.leftAfter(ctx, cause, left.empty(), left.String()))); err != nil {
 		return errors.Join(what, fmt.Errorf("and its stop entry: %w", err))
 	}
 	return what

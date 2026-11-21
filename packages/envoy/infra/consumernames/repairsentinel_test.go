@@ -390,3 +390,26 @@ func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
 		require.NoError(t, err, "the readers' strict decode takes the rewritten sentinel")
 	})
 }
+
+// A repair-sentinel whose done entry is lost writes its stop, recording what it left as unknown,
+// and hold abort is then the way out (requireALostDoneStops, with its control: the intent left
+// pending under the earlier rule). The broker's records give the sentinel a cutover hold's
+// create-bucket and convert would leave: its cohort record's B, and the session family's cutover
+// row done under it; the bucket's sentinel already holds it, so each run leaves it as it is.
+func TestARepairSentinelWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	createBucketNotifications(t, h, 0)
+	cutover := h.prepared(holdrecord.WorkflowCutover)
+	createBucketCohort(t, h.records(), cutover, 2)
+	h.held(cutover)
+	nc, _ := h.operator()
+	createBucketMakeBucket(t, nc, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: cutover})
+	_, err := h.records().PutCutover(ctx, familySession, selection.CutoverDone, cutover)
+	require.NoError(t, err)
+	require.NoError(t, h.release(cutover))
+	repair := h.heldHold(holdrecord.WorkflowSentinelRepair)
+	h.requireALostDoneStops(repair, repairCommand, func() (int, string, string) {
+		return h.run(repairWord, "--hold", repair)
+	})
+}

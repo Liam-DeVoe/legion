@@ -443,3 +443,25 @@ func TestAReplaceStopNamesTheBarrierKeyItPut(t *testing.T) {
 	require.Contains(t, refused().Outputs["left"], "this run wrote no record and made or deleted no consumer; it put "+barrierLeft)
 	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over a stop that left the key")
 }
+
+// A replace whose done entry is lost, after it replaced the durable, writes its stop, recording
+// what it left as unknown, and hold abort is then the way out (requireALostDoneStops, with its
+// control: the intent left pending under the earlier rule). Each run replaces the durable again
+// from its record's current.
+func TestAReplaceWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	h.replaceNotificationStream()
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	nc, store := h.replaceOp()
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	durable := bus.ListenerDurable("replace-lost")
+	current := selection.FreshName(durable)
+	replaceMake(t, nc, replaceBadConfig(current, durable, nats.NewInbox(), 1))
+	_, err = store.Write(ctx, selection.DurableKey(durable), selection.Record{Current: current, Start: 1}, 0)
+	require.NoError(t, err)
+	h.requireALostDoneStops(id, replaceCommand, func() (int, string, string) {
+		return h.run(actionReplace, "--hold", id, "--listener", "replace-lost")
+	})
+}

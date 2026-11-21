@@ -330,9 +330,12 @@ func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
 // A cleanup stop counts this hold's barrier key, which the run put before it walked the selection
 // bucket (cleanupSessionTargets): a stop names every change its command's runs made and did not
 // undo. The bucket holds a malformed value, so cleanup is UNKNOWN after its barrier and deletes
-// nothing; its stop names the key, and hold release is refused over it. Control: under the earlier
-// rule that the key is no change (leftRuleSet.barrierNoChange), the same refusal records unchanged,
-// and hold release is admitted over it.
+// nothing; its stop names the key, and hold release is refused over it. The refusal is UNKNOWN, so
+// its stop records what it left as unknown (leftUnknownPrefix) whatever the key's rule. Controls:
+// under the earlier rules that the key is no change (leftRuleSet.barrierNoChange) and an UNKNOWN's
+// stop records its run's account (leftRuleSet.unknownAsAccount), the same refusal records
+// unchanged, and hold release is admitted over it; under the first of them alone it records
+// unknown, and hold release is refused.
 func TestACleanupStopNamesTheBarrierKeyItPut(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
@@ -355,9 +358,13 @@ func TestACleanupStopNamesTheBarrierKeyItPut(t *testing.T) {
 		return stop
 	}
 
-	leftWith(t, leftRuleSet{barrierNoChange: true})
-	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+	leftWith(t, leftRuleSet{barrierNoChange: true, unknownAsAccount: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change and an UNKNOWN as its account, the stop records unchanged")
 	require.NoError(t, holdrecord.Decide(h.journal(id), release), "control: hold release is admitted over the unchanged stop")
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.True(t, strings.HasPrefix(refused().Outputs["left"], leftUnknownPrefix), "with the key no change, the UNKNOWN's stop records unknown")
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over the UNKNOWN's stop")
 
 	leftWith(t, leftRuleSet{})
 	left := refused().Outputs["left"]
@@ -373,4 +380,43 @@ func cleanupIntentOf(d holdrecord.Done, command string) holdrecord.Operation {
 		}
 	}
 	return holdrecord.Operation{}
+}
+
+// cleanupHold is a consumer-cleanup hold, set, on a hub with the notification stream and the
+// selection bucket, which every held re-read of the hold finds present.
+func (h *stack) cleanupHold() string {
+	h.t.Helper()
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(h.t.Context(), nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(h.t, err)
+	return id
+}
+
+// A cleanup whose done entry is lost, an exit after its intent that is UNKNOWN since the write may
+// have landed, writes its stop, recording what it left as unknown, and hold abort is then the way
+// out (requireALostDoneStops, with its control: the intent left pending under the earlier rule).
+func TestACleanupWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	h.database(familyDispatch, dispatchMigrations...)
+	id := h.cleanupHold()
+	h.requireALostDoneStops(id, cleanupCommand, func() (int, string, string) {
+		return h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url")
+	})
+}
+
+// A cleanup --gone whose done entry is lost, after it found the daemon's store gone and removed
+// what it lists, writes its stop, recording what it left as unknown, and hold abort is then the way
+// out (requireALostDoneStops, with its control: the intent left pending under the earlier rule).
+func TestACleanupGoneWhoseDoneEntryIsLostStops(t *testing.T) {
+	h := newStack(t)
+	id := h.cleanupHold()
+	_, server := censusStore(t, "SERVER")
+	dropped := censusDroppedDatabase()
+	h.censusDeploy(censusDeployment("GONE", dropped, censusInstance))
+	gone := censusStoreFileFor(t, "GONE", server, dropped, censusInstance)
+	h.requireALostDoneStops(id, cleanupGoneCommand, func() (int, string, string) {
+		return h.run(actionCleanup, "--hold", id, "--gone", "GONE", "--daemon-database", gone)
+	})
 }

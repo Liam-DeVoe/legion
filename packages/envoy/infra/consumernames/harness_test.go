@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -301,6 +303,88 @@ func (h *stack) lastEntry(id, command string) holdrecord.Operation {
 		}
 	}
 	return last
+}
+
+// refuseEntries is a hook of the stack's broker (holdrecordtest.Broker.Intercept) that loses each
+// write of a hold's journal whose last entry is command's in one of states: the write is answered
+// 503 and does not land, as a broker the command can no longer reach leaves it.
+func refuseEntries(command string, states ...string) func(http.ResponseWriter, *http.Request) bool {
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/nats-hold/records" {
+			return false
+		}
+		body, err := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if err != nil {
+			return false
+		}
+		var put struct {
+			Kind  string          `json:"kind"`
+			Value holdrecord.Done `json:"value"`
+		}
+		if json.Unmarshal(body, &put) != nil || put.Kind != "done" || len(put.Value.Ops) == 0 {
+			return false
+		}
+		if last := put.Value.Ops[len(put.Value.Ops)-1]; last.Command != command || !slices.Contains(states, last.State) {
+			return false
+		}
+		http.Error(w, "the test's broker lost this write", http.StatusServiceUnavailable)
+		return true
+	}
+}
+
+// requireALostDoneStops runs command, by run, twice in hold id with its done entry lost
+// (refuseEntries): an exit after its intent, UNKNOWN, as the write may have landed. The first run,
+// the control, is under the earlier rule that an UNKNOWN exit writes no stop
+// (leftRuleSet.unknownNoStop): its intent stays pending, and hold release and hold abort are both
+// refused ErrBusy. The second, under the rule, writes its stop, recording what it left as
+// leftUnknownPrefix with the done entry unread: hold release is refused over it (ErrOutOfOrder), and
+// hold abort admitted.
+func (h *stack) requireALostDoneStops(id, command string, run func() (int, string, string)) {
+	h.t.Helper()
+	release, abort := holdrecord.Request{Command: holdrecord.CommandRelease}, holdrecord.Request{Command: holdrecord.CommandAbort}
+	lost := func() (holdrecord.Operation, int, string) {
+		h.t.Helper()
+		h.s.Broker.Intercept(refuseEntries(command, "done"))
+		code, _, stderr := run()
+		h.s.Broker.Intercept(nil)
+		require.NotZero(h.t, code, "%s exited 0 with its done entry lost", command)
+		return h.lastEntry(id, command), code, stderr
+	}
+
+	leftWith(h.t, leftRuleSet{unknownNoStop: true})
+	last, _, _ := lost()
+	require.Equal(h.t, "intent", last.State, "control: under the earlier rule a lost done entry leaves %s's intent pending", command)
+	require.ErrorIs(h.t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrBusy, "control: hold release over %s's pending intent", command)
+	require.ErrorIs(h.t, holdrecord.Decide(h.journal(id), abort), holdrecord.ErrBusy, "control: hold abort over %s's pending intent", command)
+
+	leftWith(h.t, leftRuleSet{})
+	last, code, stderr := lost()
+	require.Equal(h.t, "stop", last.State, "%s's lost done entry ends in its stop entry", command)
+	require.Equal(h.t, 2, code, "%s with its done entry lost is UNKNOWN: %s", command, stderr)
+	require.Contains(h.t, stderr, "UNKNOWN whether "+command+"'s done entry was written")
+	left := last.Outputs[stopLeftKey]
+	require.True(h.t, strings.HasPrefix(left, leftUnknownPrefix), "%s's stop records %q, not %s...", command, left, leftUnknownPrefix)
+	require.Contains(h.t, left, "; unread whether "+command+"'s done entry was written")
+	require.ErrorIs(h.t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over %s's UNKNOWN stop", command)
+	require.NoError(h.t, holdrecord.Decide(h.journal(id), abort), "hold abort after %s's UNKNOWN stop", command)
+}
+
+// abortHold ends hold id the way `hold abort` writes its journal and the row: its admission, whose
+// intent carries each stop's record of what its command left (returned), the row's move to
+// released, and its done entry.
+func (h *stack) abortHold(id string) map[string]string {
+	h.t.Helper()
+	ctx := context.Background()
+	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil)
+	require.NoError(h.t, err, "hold abort is admitted once a command stopped")
+	intent := h.lastEntry(id, "")
+	require.Equal(h.t, holdrecord.CommandAbort, intent.Command)
+	row := h.row()
+	_, err = h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, id, "the test's abort")
+	require.NoError(h.t, err)
+	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, holdrecord.CommandAbort, nil))
+	return intent.Inputs
 }
 
 // cutoverRow is the broker's cutover row of family, and false when there is none.
