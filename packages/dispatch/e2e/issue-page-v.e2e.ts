@@ -43,7 +43,7 @@ import {
   tree,
 } from "./issue-page-g";
 import { activePreset, focusInside, identityBlockBottom, openPreset } from "./issue-page-i";
-import { refuseTreeRead, treeReadRoute } from "./issue-page-t";
+import { refuseTreeRead, treeReadRoute } from "./issue-page-t-tree";
 import {
   asRecorder,
   boxesPastTheirCard,

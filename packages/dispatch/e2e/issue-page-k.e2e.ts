@@ -44,7 +44,7 @@ import {
   seedPlanMarks,
   stepLayouts,
 } from "./issue-page-k";
-import { refuseTreeRead } from "./issue-page-t";
+import { refuseTreeRead } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 

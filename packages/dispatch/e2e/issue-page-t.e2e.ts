@@ -24,6 +24,21 @@ import {
 } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import {
+  drawnRowReadings,
+  fixtureSeed,
+  type KeyedRow,
+  keyedRows,
+  type NamedSeed,
+  parentIndex,
+  type RowReading,
+  SEEDS,
+  type SeededIssue,
+  type SeedFixture,
+  seedKeys,
+  sortedFields,
+  steadily,
+} from "./issue-page-t";
+import {
   besideViewRead,
   blocksReads,
   convertedGate,
@@ -35,27 +50,14 @@ import {
   decisionsViewGate,
   decisionTimes,
   drawnNodes,
-  drawnRowReadings,
-  fixtureSeed,
   footLineGate,
   headerStatus,
   heldAnswer,
-  type KeyedRow,
-  keyedRows,
-  type NamedSeed,
   owedUnless,
-  parentIndex,
   partUGate,
   R2_COUNTED_KINDS,
   R2_ROW_KINDS,
-  type RowReading,
-  SEEDS,
-  type SeededIssue,
-  type SeedFixture,
   seedEventsLanded,
-  seedKeys,
-  sortedFields,
-  steadily,
   type TreeAnswerWatch,
   type TreeView,
   treeAnswerOf,
@@ -64,7 +66,7 @@ import {
   viewAnswerOf,
   viewCount,
   viewNodeIds,
-} from "./issue-page-t";
+} from "./issue-page-t-tree";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -74,7 +76,8 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * (`?view=`), read on the real stack. Each row turns the new page on for alice with `phase`
  * (1440 by 900), seeds one of the issues of `e2e/issue-layout-seed.ts`, opens it with
  * `gotoIssue`, and reads it through `unfoldEveryBranch`, `pickPreset`, `watchApiRequests` and
- * `expectLoadSettled` (`e2e/traffic.ts`) and the helpers of `e2e/issue-page-t.ts`.
+ * `expectLoadSettled` (`e2e/traffic.ts`) and the helpers of `e2e/issue-page-t.ts` and
+ * `e2e/issue-page-t-tree.ts`.
  *
  * The rows are the four of the Verification document's browser checks, by their titles:
  *
