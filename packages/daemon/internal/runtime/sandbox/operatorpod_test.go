@@ -226,9 +226,9 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		// in-cluster DISPATCH_URL the runtime hands every agent.
 		{name: "Dispatch's public dashboard", pod: env("DISPATCH_PUBLIC_URL", "https://dispatch.example.org")},
 		{name: "a public dashboard with no scheme", pod: env("DISPATCH_PUBLIC_URL", "dispatch.example.org"),
-			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "dispatch.example.org", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
+			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "dispatch.example.org", which is not an http or https URL with no userinfo, query or fragment, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
 		{name: "a public dashboard on another scheme", pod: env("DISPATCH_PUBLIC_URL", "ftp://dispatch.example.org"),
-			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "ftp://dispatch.example.org", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
+			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "ftp://dispatch.example.org", which is not an http or https URL with no userinfo, query or fragment, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
@@ -267,7 +267,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	}
 	// A value that can hold no userinfo, query or fragment is quoted as written; one that holds
 	// an "@", "?" or "#" is printed without them (redact.URL), as the fixture's userinfo row shows.
-	const refusal = ", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads"
+	const refusal = ", which is not an http or https URL with no userinfo, query or fragment, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads"
 	for _, value := range append(fixture.Invalid, fixture.AgentsOnly...) {
 		shown := fmt.Sprintf("%+q", value)
 		if strings.ContainsAny(value, "@?#") {
@@ -289,6 +289,14 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	for _, value := range []string{"https://madeUpDashHead0123/madeUpDashTail0123@dispatch.example.org", "https://madeUpDashHead0123?madeUpDashTail0123@dispatch.example.org"} {
 		err := check(value)
 		if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to " + redact.URLNotPrinted + refusal; err == nil || err.Error() != want {
+			t.Errorf("CheckPod(%q) = %v, want %q", value, err, want)
+		}
+	}
+	// A made-up token in the query or the fragment, which every dashboard link the agents build
+	// would carry: refused, and named without the query or the fragment.
+	for _, value := range []string{"https://dispatch.example.org/?token=madeUpDashToken0123456789", "https://dispatch.example.org/#access_token=madeUpDashToken0123456789"} {
+		err := check(value)
+		if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to https://dispatch.example.org/" + refusal; err == nil || err.Error() != want {
 			t.Errorf("CheckPod(%q) = %v, want %q", value, err, want)
 		}
 	}

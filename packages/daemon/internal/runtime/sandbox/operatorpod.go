@@ -178,7 +178,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	// stop every agent's Dispatch writes. Both sides hold to
 	// packages/contracts/fixtures/dispatch-public-url.json.
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
-		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %s, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", dashboardShown(value))
+		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %s, which is not an http or https URL with no userinfo, query or fragment, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", dashboardShown(value))
 	}
 	volumes := legionVolumeNames(exchange)
 	for i, volume := range pod.Volumes {
@@ -306,16 +306,20 @@ func dashboardShown(value string) string {
 // dashboardURL is whether value is a DISPATCH_PUBLIC_URL boot lets through: a rule narrower than
 // the URL standard's parser the agents' dispatch command reads the value with (envoy-client's
 // dispatchSettings), so boot accepts only values the agents accept, and refuses some they would
-// take (userinfo, a trailing dot, IPv4 shorthand, an internationalized name). It is http or https
-// with no userinfo and no "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/",
-// "?" or "#" written as the user lands there, its head read as the host every dashboard link the
-// agents build would name); a plain host, which is a DNS name of ASCII letters, digits and
-// hyphens (no label empty, longer than 63 or starting `xn--`, and a last label neither all digits
-// nor `0x`, which the agents read as an IPv4 address), a four-octet dotted IPv4 address, or a
-// bracketed IPv6 address with no zone; and, when it names one, a port from 1 to 65535.
+// take (userinfo, a query or a fragment, a trailing dot, IPv4 shorthand, an internationalized
+// name). It is http or https with no userinfo, no "@" past its host (natsurl.UserinfoPastHost: a
+// credential holding a "/", "?" or "#" written as the user lands there, its head read as the host
+// every dashboard link the agents build would name), and no query or fragment, an empty one
+// included: a dashboard's base address has neither, and a token there (`?token=<token>`,
+// `#access_token=<token>`) would ride into every link the agents build. Its host is a plain host,
+// a DNS name of ASCII letters, digits and hyphens (no label empty, longer than 63 or starting
+// `xn--`, and a last label neither all digits nor `0x`, which the agents read as an IPv4 address),
+// a four-octet dotted IPv4 address, or a bracketed IPv6 address with no zone; and, when it names
+// one, its port is from 1 to 65535.
 func dashboardURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil || natsurl.UserinfoPastHost(parsed) {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil || natsurl.UserinfoPastHost(parsed) ||
+		strings.ContainsAny(value, "?#") {
 		return false
 	}
 	if port := parsed.Port(); port != "" {
