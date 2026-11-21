@@ -163,6 +163,29 @@ func TestAPullRequestTwoIssuesLinkInItsTwoFormsServesTheFirstKey(t *testing.T) {
 	wantListed(t, ctx, pool, "ACME-157")
 }
 
+// Two issues that link one pull request, one by the name its repository has today and one by the
+// name it had before a rename, hold one pull request: dispatch attribution counts it once among
+// the links in two cases, as it counts the pull request's two forms (links_in_two_cases groups a
+// link under its canonical name, refs.CanonicalRepoSQL). acme/old is renamed to acme/new. The
+// control is the pair of ACME-193 and ACME-194, which link two pull requests, one by each name,
+// and count nothing.
+func TestTwoIssuesThatLinkAPullRequestUnderTwoNamesCountOnceInTwoCases(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "RENM-1", "ACME-191", "ACME-192", "ACME-193", "ACME-194")
+	renameStatementRepo(t, ctx, pool)
+	changeIssueLink(t, ctx, pool, "ACME-191", "https://github.com/acme/new/pull/191", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-192", "https://github.com/acme/old/pull/191", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-193", "https://github.com/acme/new/pull/193", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-194", "https://github.com/acme/old/pull/194", "url", true)
+	counts, err := ReadAttributionCounts(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.LinksInTwoCases != 1 {
+		t.Errorf("dispatch attribution counts %d links in two cases, want 1: acme/new#191 under its two names", counts.LinksInTwoCases)
+	}
+}
+
 // The second source: an issue links a GitHub issue that the body of the pull request cites. The
 // external create writes only such links, with the kind github_issue.
 func TestAGitHubIssueLinkOfACitedIssueMadeAfterTheHeadIsStoredReachesEveryReader(t *testing.T) {
