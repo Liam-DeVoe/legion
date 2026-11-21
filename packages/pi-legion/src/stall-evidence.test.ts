@@ -401,8 +401,9 @@ test("a phase worker's session tells the issue's own live architect, with the ev
 });
 
 // The publisher's first build can run Envoy's token command, and the event loop goes on serving
-// the session meanwhile: its claim can end inside that wait. The notice carries the claim the
-// session holds when it publishes, so one whose claim has ended is not sent under the old one.
+// the session meanwhile: its claim can end, or be replaced, inside that wait. The notice was built
+// from the claim the session held before the wait, so it is sent only while the session still
+// holds that claim: one whose claim ended or changed is not sent under the old one.
 test("a notice whose claim ended while the publisher was built is not sent under the ended claim", async () => {
   const rig = tellerRig();
   const building = Promise.withResolvers<void>();
@@ -420,6 +421,26 @@ test("a notice whose claim ended while the publisher was built is not sent under
   expect(rig.published).toEqual([]);
   expect(rig.warnings.map((warning) => warning.message)).toContain(
     "legion: this session's claim ended before its owner was told"
+  );
+});
+
+test("a notice whose claim changed while the publisher was built is not sent under the old claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = claimOf({ issue: "INFRA-1275" });
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim changed before its owner was told"
   );
 });
 

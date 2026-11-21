@@ -1,8 +1,11 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -10,12 +13,14 @@ import {
   statSync,
   symlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
+import { processEnded, processRunning } from "@legion/test-fixtures/process-end";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type ActiveDispatchConfig,
@@ -33,6 +38,7 @@ import {
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
+import { hasErrnoCode } from "../errors";
 import { killGroup } from "../process-group";
 
 // Both sections resolve one `credential` object (`ActiveDispatchConfig`, `EnabledEnvoySettings`).
@@ -1393,67 +1399,32 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
-  function gone(pid: number): boolean {
-    return endsWithin(pid, 1_000);
-  }
-
-  /** Whether the process with this pid has ended within `ms`: it no longer exists, or it is a
-   * zombie waiting for whatever adopted it to reap it, which is ended all the same. */
-  function endsWithin(pid: number, ms: number): boolean {
-    const zombie = (): boolean => {
-      try {
-        return /\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf-8"));
-      } catch {
-        // No /proc here (macOS), or the process is already gone: `kill` below answers.
-        return false;
-      }
-    };
-    for (const deadline = Date.now() + ms; Date.now() < deadline; Bun.sleepSync(20)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
-      if (zombie()) return true;
-    }
-    return false;
-  }
-
-  /** How long a command's group may take to end once its process has: the watch in the group
-   * (`groupWatchedBy`) must be scheduled, see its pipe close and kill the group, and that is no
-   * faster than any other process on a loaded machine. The command runner's own bound. */
-  const GROUP_END_MS = 10_000;
-
   test("that exits 0 is its value at once, and a process it left running is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
     const lingeringSecret = fixtureSecret("linger");
+    // The child it leaves sleeps far past the test's timeout, so only the kill ends it in time.
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: {
         ...dispatchOn,
-        token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
+        token: `!sleep 600 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
       },
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
     const left = await inScratchTmp(async () => {
-      const started = Date.now();
       dispatch = await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
     });
     expect(dispatch).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: lingeringSecret,
     });
-    expect(elapsed).toBeLessThan(2_000);
     const child = Number(readFileSync(pidFile, "utf-8").trim());
     expect(child).toBeGreaterThan(0);
-    expect(gone(child)).toBe(true);
+    // Killed as the command exits, so its end is the event: the per-test timeout is the only bound.
+    await processEnded(child);
     expect(left).toEqual([]);
   }, 20_000);
 
@@ -1461,10 +1432,11 @@ describe("a ! command in envoy.json", () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
+    // The child it starts sleeps far past the test's timeout, so only the kill ends it in time.
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: {
         ...dispatchOn,
-        token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
+        token: `!echo canary; sleep 600 & echo $! > ${pidFile}; sleep 30 # ${home}`,
       },
     });
     const cwd = tempDir();
@@ -1485,7 +1457,9 @@ describe("a ! command in envoy.json", () => {
       notice: null,
       error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
     });
-    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
+    // Killed with the command's group at the timeout: its end is the event, and the per-test
+    // timeout is the only bound.
+    await processEnded(Number(readFileSync(pidFile, "utf-8").trim()));
     expect(left).toEqual([]);
   }, 60_000);
 
@@ -1544,7 +1518,8 @@ ${end === "release" ? exit : ""}
         env: {
           PATH: process.env.PATH ?? "",
           TMPDIR: scratch,
-          COMMAND: `!echo ${secret}; sleep 60 & echo $! > ${pidFile}; wait`,
+          // The child sleeps far past the test's timeout, so only the group's end ends it in time.
+          COMMAND: `!echo ${secret}; sleep 600 & echo $! > ${pidFile}; wait`,
           FILE: file,
           RELEASE: release,
         },
@@ -1560,7 +1535,7 @@ ${end === "release" ? exit : ""}
           if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
         }
         // The control: while the reading process runs, the command's child is there.
-        expect(gone(pid)).toBe(false);
+        expect(processRunning(pid)).toBe(true);
         expect(readdirSync(scratch)).toEqual([]);
         if (end === "release") writeFileSync(release, "");
         else child.kill(end);
@@ -1569,8 +1544,9 @@ ${end === "release" ? exit : ""}
         if (code === null) expect(child.signalCode).toBe("SIGKILL");
         else expect(child.exitCode).toBe(code);
         // The watch ends the group once the kernel has closed the pipe the process held; it is a
-        // process of its own, so that takes as long as the machine takes to schedule it.
-        expect(endsWithin(pid, GROUP_END_MS)).toBe(true);
+        // process of its own, so that takes as long as the machine takes to schedule it, and the
+        // per-test timeout is the only bound.
+        await processEnded(pid);
         expect(readdirSync(scratch)).toEqual([]);
       } finally {
         child.kill("SIGKILL");
@@ -1978,37 +1954,62 @@ describe("askgateSetting", () => {
 // The settings read reads files beside its commands: envoy.json, a checkout's, the files a
 // `*_FILE` variable names. A read of one waits on the disk, and a synchronous one holds the whole
 // process while it waits: on a loaded disk an open alone has taken over a second. Each file here is
-// a FIFO, whose read waits until something writes it, and two writers race for it: the first tick
-// of this process's own 10 ms interval, and a writer started beside it that writes after 2 s.
-// What the read gets says whether the event loop ran while it waited, however loaded the machine.
+// a FIFO, whose read waits until something writes it, and two writers race for it: this process's
+// own 10 ms interval, which writes it itself at the first tick a reader has it open, and a writer
+// started beside it that writes other text after `LATE_WRITER_MS`. What the read gets says whether
+// the event loop ran while it waited, however loaded the machine.
 describe("a file the settings read reads", () => {
-  /** A FIFO at `file` that the first tick of this process's 10 ms interval writes `ticked` into,
-   * and that a writer started now writes `held` into after 2 s when no tick has: a read of it gets
-   * `ticked` only if this process's event loop ran while the read waited. Returns the stop. */
+  /** When the late writer writes. A read that waits without holding the event loop gets the
+   *  tick's text within one tick of its open: from the race's start to the tick's write took 10 to
+   *  151 ms (median 12 ms) over 165 reads of these four rows, 40 runs at a 1-minute load of 700 to
+   *  1070 on this repository's 288-CPU dev box, 2026-11-21. 5 s is 33 times the slowest, past the
+   *  three times `docs/testing.md` asks; only the control, and a read that holds the loop, wait it
+   *  out. */
+  const LATE_WRITER_MS = 5_000;
+
+  /** A FIFO at `file` that this process's 10 ms interval writes `ticked` into, at the first tick a
+   * reader has it open, and that a writer started now writes `held` into after `LATE_WRITER_MS`: a
+   * read of it gets `ticked` only if this process's event loop ran while the read waited. Returns
+   * the stop. */
   function raceForFifo(file: string, ticked: unknown, held: unknown): () => void {
     mkdirSync(path.dirname(file), { recursive: true });
     expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0);
     const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
-    const writers = [
-      Bun.spawn(["/bin/sh", "-c", 'sleep 2; printf %s "$1" > "$2"', "_", text(held), file], {
-        stdout: "ignore",
-        stderr: "ignore",
-        detached: true,
-      }),
-    ];
+    const late = Bun.spawn(
+      [
+        "/bin/sh",
+        "-c",
+        'sleep "$1"; printf %s "$2" > "$3"',
+        "_",
+        `${LATE_WRITER_MS / 1000}`,
+        text(held),
+        file,
+      ],
+      { stdout: "ignore", stderr: "ignore", detached: true }
+    );
+    // A write-only open that does not block is refused (ENXIO) while no reader has the FIFO open,
+    // so each tick tries it again; the first that opens writes the text whole (far below the
+    // pipe's atomic write size), closes, and the ticks stop. The read then gets the text and the
+    // end of the file.
     const ticker = setInterval(() => {
+      let fd: number;
+      try {
+        fd = openSync(file, constants.O_WRONLY | constants.O_NONBLOCK);
+      } catch (error) {
+        if (hasErrnoCode(error, "ENXIO")) return;
+        clearInterval(ticker);
+        throw error;
+      }
       clearInterval(ticker);
-      writers.push(
-        Bun.spawn(["/bin/sh", "-c", 'printf %s "$1" > "$2"', "_", text(ticked), file], {
-          stdout: "ignore",
-          stderr: "ignore",
-          detached: true,
-        })
-      );
+      try {
+        writeSync(fd, text(ticked));
+      } finally {
+        closeSync(fd);
+      }
     }, 10);
     return () => {
       clearInterval(ticker);
-      for (const writer of writers) killGroup(writer.pid);
+      killGroup(late.pid);
     };
   }
 

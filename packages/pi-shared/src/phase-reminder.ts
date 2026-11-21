@@ -314,9 +314,11 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * run ended acknowledges nothing.
    */
   const tellArchitect = async (record: LegionIssue | undefined): Promise<void> => {
-    // The publisher first: its first build can run Envoy's token command, and the worker's own
-    // turn may end the run meanwhile. What is read after it is the run as it stands, which may
-    // need no notice any more.
+    // A run whose claim has ended builds no publisher: its first build can run Envoy's token
+    // command, which would trade a broker token for a notice that is not sent.
+    if (deps.claim() === undefined) return;
+    // The worker's own turn may end the run, or its claim may end, while the publisher is built.
+    // What is read after it is the run as it stands, which may need no notice any more.
     const publish = await deps.publisher();
     if (!architectDue()) return;
     const claim = deps.claim();

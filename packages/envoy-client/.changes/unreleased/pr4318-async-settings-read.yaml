@@ -8,8 +8,10 @@ body: |-
   `sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`, `readEnvoyConfig`,
   `askgateSetting`, `readSecretFile`, `bearerSource`, `natsSeedFromEnvironment`, `dispatchUrl` and
   `sessionDispatchUrl` return Promises of what they returned before; a `deviceOf` option answers a
-  Promise. A read that starts while the same command runs waits for that run, so a command still
-  runs once per process; a read with `commands: "kept"` still never runs one. `sessionSettings`
+  Promise. A read that starts while the same command runs, in any copy of this module at or after
+  this change, waits for that run, so a command still runs once per process among such copies (a
+  copy bundled before this change starts a run of its own); a read with `commands: "kept"` still
+  never runs one. `sessionSettings`
   resolves Dispatch and Envoy at once.
   A command's process group ends with the process however the process ends, a signal or a crash
   included, and its output is in a file with no name, so no exit leaves the value on disk.

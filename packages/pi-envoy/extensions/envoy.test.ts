@@ -1300,10 +1300,16 @@ async function bootDirectSession(
           if (replies.length >= waiter.count) waiter.resolve();
           else replyWaiters.push(waiter);
         }
-        // Typed JSON, as Dispatch answers every write: an untyped 2xx is something in Dispatch's
-        // place (`foreign-2xx`, dispatch-http.ts), so the reply would fail and the session would
-        // post its failure as a second reply after the row had read the first.
-        return Response.json({}, { status: 201 });
+        // Typed JSON carrying the request's key back, as Dispatch's keyed layer answers every
+        // keyed write (`acceptResponse`): this Dispatch says it runs that layer, and an answer
+        // with neither is something in Dispatch's place (`foreign-2xx`, dispatch-http.ts), so the
+        // reply would fail and the session would post its failure as a second reply after the row
+        // had read the first.
+        const key = new Headers(init?.headers).get("Idempotency-Key");
+        return Response.json(
+          {},
+          { status: 201, ...(key !== null && { headers: { "Idempotency-Key": key } }) }
+        );
       }
       const read = await options.dispatch?.(url, init);
       if (read !== undefined) return read;
@@ -16066,6 +16072,21 @@ console.log(JSON.stringify(args));
         workDirectories.push(gate);
         const started = join(gate, "started");
         const go = join(gate, "go");
+        // The delivery's own end. Its command's work ends by recording the message as taken and
+        // settling its claim (`runShellCommandTurn`), and the host has left the session by then, so
+        // the record cannot reach that session's transcript, and the last step says so in the log.
+        // (The frame's own answer on its inbox is no such sign here: the move's pass closed the
+        // session's relay, which answered the frame `nak` then.)
+        const ended = Promise.withResolvers<void>();
+        const stopSink = logger.registerLogSink((entry) => {
+          if (
+            entry.level === "warn" &&
+            entry.message ===
+              "envoy: a delivery was not recorded in the session it was addressed to"
+          ) {
+            ended.resolve();
+          }
+        });
         try {
           const { agent, fixture, replied, replies } = await bootShellSession(
             "shell-command-broker-left-while-running",
@@ -16103,19 +16124,19 @@ console.log(JSON.stringify(args));
 
           // Held only while the delivery ran: once it has ended, a later pass forgets the
           // session's client like any other session this process left, so a call for it trades
-          // afresh. The delivery ends a few turns after its reply lands (it records the message
-          // as taken first), so passes run until one forgets it, within a bound.
-          const deliveryTrades = () => broker.traded.filter((one) => one === "ses_delivery").length;
-          for (let pass = 0; pass < 100 && deliveryTrades() === 1; pass += 1) {
-            await fixture.handlers.get("session_switch")?.(
-              { reason: "new" },
-              { ...sessionContext(`ses_later_${pass}`), cwd: other }
-            );
-            await brokerTokenFor(process.env, "ses_delivery")();
-            if (deliveryTrades() === 1) await Bun.sleep(50);
-          }
-          expect(deliveryTrades()).toBe(2);
+          // afresh. The hold ends with the command's work, in the same run of microtasks as that
+          // log line and with no I/O between, so one turn of the event loop after it runs that
+          // end, and then one pass.
+          await ended.promise;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          await fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            { ...sessionContext("ses_later"), cwd: other }
+          );
+          await brokerTokenFor(process.env, "ses_delivery")();
+          expect(broker.traded.filter((one) => one === "ses_delivery")).toHaveLength(2);
         } finally {
+          stopSink();
           broker.stop();
         }
       }, 30_000);

@@ -538,12 +538,12 @@ is kept for the process, shared across module instances (one map on `globalThis`
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,
 each bundle this module; a change to an entry's shape takes a new key), and keyed by the command,
 its file and its working directory. A read that starts while the same command runs, in any of
-those instances, waits for that run rather than starting another (a second map, of the runs under
-way, under `Symbol.for("legion.envoy-config.command-runs.v1")`). A command that ran out of time is
-kept as failed for the life of the process: a hanging
-command never runs again in that process, since each run would hold every read waiting on it for
-the whole 10 s. A
-failure that ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
+those instances at or after this change, waits for that run rather than starting another (a second
+map, of the runs under way, under `Symbol.for("legion.envoy-config.command-runs.v1")`); a bundle
+from before it keeps no such map, so a read in it starts a run of its own. A command that ran out
+of time is kept as failed for the life of the process: a hanging command never runs again in that
+process, since each run would hold every read waiting on it for the whole 10 s. A failure that
+ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
 and then the command runs again, so a cause that clears (a keyring unlocked after the session
 started) needs no restart. The `dispatch` command is one process per call, and each Claude Code
 hook one per event, so a `!` token runs once for each. A non-zero

@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
-import { killGroup, spawnWatched, type WatchedCommand } from "./process-group";
+import { spawnWatched, type WatchedCommand } from "./process-group";
 import { sendable } from "./secret-file";
 
 /** Where a caller runs: one of the three plugin hosts (and the `dispatch` command, which takes its
@@ -359,9 +359,10 @@ const FAILURE_KEPT_MS = 60_000;
  * entry a newer one wrote. */
 const COMMAND_OUTCOMES: unique symbol = Symbol.for("legion.envoy-config.commands.v1");
 /** The runs under way, by the same key, beside the kept outcomes and shared the same way: a read
- * that starts while its command runs, in any bundle of this module, waits for that run rather than
- * starting another. An entry, a promise of the `KeptOutcome` its run keeps, lives only while the run
- * does; its shape is its contract across bundles, under the same rule as the outcomes'. */
+ * that starts while its command runs, in any bundle of this module at or after this map was added,
+ * waits for that run rather than starting another; a bundle from before it starts a run of its own.
+ * An entry, a promise of the `KeptOutcome` its run keeps, lives only while the run does; its shape
+ * is its contract across bundles, under the same rule as the outcomes'. */
 const COMMAND_RUNS: unique symbol = Symbol.for("legion.envoy-config.command-runs.v1");
 const processGlobal = globalThis as typeof globalThis & {
   [COMMAND_OUTCOMES]?: Map<string, KeptOutcome>;
@@ -431,7 +432,7 @@ async function runCommand(
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      killGroup(child.pid);
+      endGroup();
     }, COMMAND_TIMEOUT_MS);
     try {
       await child.exited;

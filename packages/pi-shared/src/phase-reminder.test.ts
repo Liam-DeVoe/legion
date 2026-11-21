@@ -144,6 +144,8 @@ function rig(options: {
   /** The publisher's build, which settles before the publisher is handed over, as a first build
    *  that runs Envoy's token command does; the publisher is at hand at once otherwise. */
   readonly buildPublisher?: () => Promise<void>;
+  /** The session's claim: the implementer's throughout unless a case names one. */
+  readonly claim?: () => typeof implementer | undefined;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -159,7 +161,7 @@ function rig(options: {
       timers.push({ callback, delayMs });
     },
     saveEntry: (entry) => entries.push(entry),
-    claim: () => implementer,
+    claim: options.claim ?? (() => implementer),
     readRecord: async () => options.record,
     publisher: async () => {
       await options.buildPublisher?.();
@@ -267,6 +269,27 @@ test("a notice whose publisher was still being built when the run ended tells no
   expect(published).toHaveLength(1);
   expect(published[0]?.message).toContain("has let 2 phase reminders go unanswered");
   expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// A run whose claim has ended sends no notice, so it builds no publisher for one either: the
+// first build can run Envoy's token command, and a broker trade would buy a token for nothing.
+test("a run whose claim has ended builds no publisher for its notice", async () => {
+  let claimed = true;
+  let builds = 0;
+  const { reminder, timers, published } = rig({
+    claim: () => (claimed ? implementer : undefined),
+    buildPublisher: async () => {
+      builds += 1;
+    },
+  });
+
+  // The run reaches the threshold, and its claim ends before the reminder that would tell.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  claimed = false;
+  await fireLast(timers);
+  expect(builds).toBe(0);
+  expect(published).toEqual([]);
 });
 
 // A failure other than "no live session holds the role" is not dropped: the next delivered

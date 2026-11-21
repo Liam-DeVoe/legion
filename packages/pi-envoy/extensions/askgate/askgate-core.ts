@@ -256,7 +256,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
-import { killGroup, spawnWatched } from "@legion/envoy-client/process-group";
+import { spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -1811,22 +1811,21 @@ export async function spawnDryRun(
     stderr: "pipe",
   });
   let timedOut = false;
-  const kill = () => killGroup(child.pid);
   const timer = setTimeout(() => {
     timedOut = true;
-    kill();
+    endGroup();
   }, timeoutMs);
-  signal?.addEventListener("abort", kill, { once: true });
+  signal?.addEventListener("abort", endGroup, { once: true });
   try {
     const [stdout, stderr] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
-      child.exited.finally(kill),
+      child.exited.finally(endGroup),
     ]);
     return { exitCode: child.exitCode, stdout, stderr, timedOut };
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener("abort", kill);
+    signal?.removeEventListener("abort", endGroup);
     endGroup();
   }
 }

@@ -22,6 +22,7 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { processEnded } from "@legion/test-fixtures/process-end";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -3302,33 +3303,12 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(result.timedOut).toBe(true);
     expect(Date.now() - began).toBeLessThan(2_000);
   });
-  /** Whether the process with this pid has ended within `ms`: it no longer exists, or it is a
-   *  zombie waiting for whatever adopted it to reap it, which is ended all the same. */
-  function endsWithin(pid: number, ms: number): boolean {
-    const zombie = (): boolean => {
-      try {
-        return /\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, "utf8"));
-      } catch {
-        // No /proc here (macOS), or the process is already gone: `kill` below answers.
-        return false;
-      }
-    };
-    for (const deadline = Date.now() + ms; Date.now() < deadline; Bun.sleepSync(20)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
-      if (zombie()) return true;
-    }
-    return false;
-  }
   test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
     const pidFile = path.join(work, "dry-run-helper.pid");
-    const began = Date.now();
     // The helper inherits the script's stdout, so a read that waited for the pipe to close would
-    // wait for the helper.
-    const result = await core.spawnDryRun(`sleep 30 & echo $! > '${pidFile}'; echo out`, {
+    // wait for the helper until the 5 s limit, and answer timed out. It sleeps far past the test's
+    // timeout, so only the kill ends it in time.
+    const result = await core.spawnDryRun(`sleep 600 & echo $! > '${pidFile}'; echo out`, {
       cwd: work,
       env: { PATH: process.env.PATH ?? "", HOME: work },
       timeoutMs: 5_000,
@@ -3336,8 +3316,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
     try {
       expect(result).toMatchObject({ exitCode: 0, stdout: "out\n", timedOut: false });
-      expect(Date.now() - began).toBeLessThan(2_000);
-      expect(endsWithin(helper, 1_000)).toBe(true);
+      // Killed as the script ends, so its end is the event: the per-test timeout is the only bound.
+      await processEnded(helper);
     } finally {
       try {
         process.kill(helper, "SIGKILL");
@@ -3372,7 +3352,9 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     try {
       expect(await new Response(runs.stderr).text()).toBe("");
       expect(runs.signalCode).toBe("SIGKILL");
-      expect(endsWithin(helper, 2_000)).toBe(true);
+      // The watch ends the group once the kernel has closed the pipe the runner held: its end is
+      // the event, and the per-test timeout is the only bound.
+      await processEnded(helper);
     } finally {
       try {
         process.kill(helper, "SIGKILL");
