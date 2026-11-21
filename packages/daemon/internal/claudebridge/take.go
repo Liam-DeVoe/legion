@@ -393,8 +393,8 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 // runningOwn is whether the held value names the task whose turn is running and whose text that
 // turn took: Claude Code re-emitted it (taskRun.taken). Only such a turn's end holds the number
 // finished (runEnded). A turn whose text Claude Code never re-emitted is reported as no task's
-// (result), so its end marks nothing finished, and the bridge takes a newer revision of that
-// number the moment the turn ends.
+// and names the task held (result), so its end marks nothing finished, and the bridge takes a
+// newer revision of that number the moment the turn ends.
 func (b *bridge) runningOwn() bool {
 	return b.inRun && b.run.taken && b.task != nil && b.task.number == b.run.task
 }
@@ -426,7 +426,7 @@ func (b *bridge) takePending() bool {
 func (b *bridge) pendingAnswer() *TakePendingAnswer {
 	answer := &TakePendingAnswer{Pending: b.takePending()}
 	if b.inRun && b.task != nil && b.owes(b.task.number) && !b.runningOwn() &&
-		(b.held == nil || b.task.number != b.held.number) {
+		b.task.number != b.heldNumber() {
 		answer.Waiting = b.task.number
 	}
 	return answer

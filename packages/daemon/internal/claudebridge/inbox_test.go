@@ -253,9 +253,10 @@ func TestInboxTakePendingIsFalseForTheRunningTasksOwnNumberWrittenAgain(t *testi
 
 // The running task's own number written again during a turn whose text Claude Code never
 // re-emitted (the bridge started task 7's turn and Claude Code dropped its text): that turn's end
-// marks nothing finished (its result names task 0), so the bridge takes the newer revision the
-// moment the turn ends. That take is the next turn, so the take is pending in the turn (R6), and a
-// Stop hook told otherwise blocks the stop with a reminder ahead of the take.
+// marks nothing finished (its result names no task, and names the task held), so the bridge takes
+// the newer revision the moment the turn ends. That take is the next turn, so the take is pending
+// in the turn (R6), and a Stop hook told otherwise blocks the stop with a reminder ahead of the
+// take.
 func TestInboxTakePendingCountsTheRunningTasksNumberWrittenAgainWhenItsTextWasDropped(t *testing.T) {
 	d := newTaskDaemon(t)
 	d.answerTake = func(take claim.TakeRequest) (int, any) {

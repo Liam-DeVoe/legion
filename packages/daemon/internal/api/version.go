@@ -3149,7 +3149,7 @@ package api
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request from
 // 2026-11-21T02:54:37Z to 02:58:57Z found 203 (#2230, #3993, #4065, #4175, #4553, #4592 and
 // #4661), 204 (#3831 and #4030) and 205 (#4573) declared by open pull requests, so 206 was the
-// lowest number above 203 that none declared. It takes 209 at the forward merge of 2026-11-21
+// lowest number above 203 that none declared. It took 209 at the forward merge of 2026-11-21
 // that brought #3993's branch in at 7ade1c0c32a4798795dc5ba22e30e5a6009a6e07, which declares 207,
 // the entry right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
 // one of the 357 open pull requests from 2026-11-21T05:46:01Z to 05:57:04Z found 207 (#3993,

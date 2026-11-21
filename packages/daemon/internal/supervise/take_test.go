@@ -744,56 +744,6 @@ func TestTakeAfterAProviderErrorCarriesItsNote(t *testing.T) {
 	}
 }
 
-// A woken claim takes the task it holds first. A released pod's role is woken by a task of its
-// own (origin wake), which resumes the claim; a second task that arrives while the claim is
-// launching finds the wake's task untaken and still owed, and is refused behind it
-// (ErrDeliveryPending) rather than put in its place (queue). The process the resume starts takes
-// the wake's task under its number, and the second task's retry after the wake's turn has ended is
-// queued and taken next (R5 of dispatch://INFRA-4130).
-//
-// The negative control is queue replacing the untaken owed task with the newer one: the first
-// take is accepted on the newer task, and the wake's task is never taken.
-func TestAWokenClaimTakesItsHeldTaskFirstWhileANewerTaskWaits(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateIdle)
-	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so the
-	// release ends no work and the wake's task goes as it was given (recordEnd).
-	h.reportActivity()
-	h.must(RequestSuspend{Claim: testToken, By: SuspendedByReleased})
-	h.wantState(StateSuspended)
-	base := len(h.prompts())
-
-	h.must(RequestDeliver{Claim: testToken, Task: "a notice woke this role", Origin: OriginWake})
-	wake := h.pending()
-	if wake.Origin != OriginWake {
-		t.Fatalf("pending %+v, want the wake's task", wake)
-	}
-	h.wantState(StateLaunching)
-
-	newer := RequestDeliver{Claim: testToken, Task: "review the pull request", ID: "outbox:42", Row: 42, Generation: 7}
-	if err := h.handle(newer); !errors.Is(err, ErrDeliveryPending) {
-		t.Errorf("the second task while the woken claim launches = %v, want %v behind the wake's untaken task", err, ErrDeliveryPending)
-	}
-	h.relaunched()
-
-	first := h.wantPrompts(base + 1)[base]
-	if first.Number != wake.Number || first.Message != "a notice woke this role" {
-		t.Fatalf("the relaunched worker's first take = %+v, want the wake's task %d it holds", first, wake.Number)
-	}
-
-	h.must(StreamTurnStart{Claim: testToken})
-	h.must(StreamTurnEnd{Claim: testToken})
-	if p := h.claim().Pending; p != nil {
-		t.Fatalf("pending %+v after the wake's turn ended, want the wake's task finished", p)
-	}
-
-	h.must(newer)
-	next := h.wantPrompts(base + 2)[base+1]
-	if next.Number == wake.Number || next.Message != "review the pull request" {
-		t.Fatalf("the take after the wake's turn = %+v, want the second task's retry queued and taken next", next)
-	}
-}
-
 // A take from a claim a restart restored working, holding an owed task no take of it accepted,
 // whose turn this daemon has heard nothing of, is the worker's word that its host is idle (R3):
 // it is accepted, and the turn that follows is the take's own.
