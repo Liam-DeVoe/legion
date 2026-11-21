@@ -1191,6 +1191,64 @@ check "with the checkout: the body keeps its notes and gets the digest under ## 
   "$(is "$(<"$work/edited.md")" "$(printf 'Generated notes\n\n## Worker image\n\n`%s`' "$ref")")"
 
 echo
+echo "Case: release.yaml's codex-envoy publish reads npm's E404 from npm's error-code line alone"
+# The publish job's 'codex-envoy: Publish to npm' step asks npm for the package's name, and takes a
+# failure that npm answers E404 as a package npm does not have yet: a warning, exit 0, nothing
+# published. npm appends a registry body's `error` field to its own message line, so npm 11.19.1
+# against a registry whose 504 carries {"error":"npm error code E404"} prints `npm error code
+# E504` and then `npm error 504 Gateway Timeout - GET <url> - npm error code E404` (measured in an
+# issue pod, dispatch://INFRA-1545, round 52). That is a registry that failed, not a package npm
+# lacks: the step must fail it rather than skip the release with a green step. The step's `run:`
+# is read out of the workflow by name and run under the shell GitHub runs a `run:` with, against a
+# stub npm first on PATH that answers `view <name> name` as $NPM_PUB_TEST says (e404 or e504body),
+# `view <name>@<version> version` with a failure (no such version), and logs `publish`.
+mkdir -p "$work/codex-pub/bin"
+cat > "$work/codex-pub/bin/npm" <<'NPM'
+#!/usr/bin/env bash
+{ printf '[%s]' "$@"; printf '\n'; } >> "$NPM_PUB_DIR/calls"
+case "$1 $3" in
+  "view name")
+    case $NPM_PUB_TEST in
+      e404)
+        echo "npm error code E404"
+        echo "npm error 404 Not Found - GET https://registry.npmjs.org/@example%2fcodex - Not found"
+        ;;
+      e504body)
+        echo "npm error code E504"
+        echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fcodex - npm error code E404"
+        ;;
+    esac >&2
+    exit 1 ;;
+  "view version") exit 1 ;;
+  "publish "*) exit 0 ;;
+esac
+NPM
+chmod +x "$work/codex-pub/bin/npm"
+codex_step=$(workflow_step_run publish '"codex-envoy: Publish to npm"')
+check "the publish job's codex-envoy step asks npm for the package's name" \
+  "$(contains "$codex_step" 'read_name=\$(npm view "\$NAME" name 2>&1)')"
+# run_codex_step <mode>: that step's body with the environment the job gives it; leaves rc, out
+# (combined) and the stub npm's calls in calls.
+run_codex_step() {
+  : > "$work/codex-pub/calls"
+  set +e
+  out=$(cd "$work/codex-pub" && env NPM_PUB_DIR="$work/codex-pub" NPM_PUB_TEST="$1" NAME=@example/codex \
+    VERSION=1.2.3 STEM=example-codex-1.2.3 RUNNER_TEMP="$work/codex-pub" \
+    PATH="$work/codex-pub/bin:$PATH" bash -e -o pipefail -c "$codex_step" 2>&1)
+  rc=$?
+  set -e
+  calls=$(<"$work/codex-pub/calls")
+}
+run_codex_step e404
+check "npm's E404: the step exits 0 warning that npm has no such package, and publishes nothing" \
+  "$(is "$rc|$(contains "$out" '^::warning::npm has no package @example/codex yet')|$calls" "0|true|[view][@example/codex][name]")"
+run_codex_step e504body
+check "a 504 whose message carries an E404's text: the step fails" "$(is "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero)"
+check "a 504 whose message carries an E404's text: no warning that npm has no such package" \
+  "$(is "$(contains "$out" 'npm has no package')" false)"
+check "a 504 whose message carries an E404's text: nothing is published" "$(is "$calls" "[view][@example/codex][name]")"
+
+echo
 echo "Case 11b: restart leaves the release to a later unfinished run that holds this commit, else starts one"
 # The stub gh, first on PATH in a directory of its own. It logs each call to $GH_TEST_DIR/calls
 # as one line, each argument in brackets. `gh run list` prints $GH_TEST_RUNS, as `gh run list
