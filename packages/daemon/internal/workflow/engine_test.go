@@ -775,7 +775,9 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 // earlier phase a backward row serves is refused BACKWARD_REFUSED with a reason that says how the
 // step ends instead, and nothing moves, nothing is counted, no step result is written and nothing
 // is posted on the issue. A target no backward row serves keeps the refusal that names the row,
-// and the reviewer's move back out of reviewing is still taken.
+// and the reviewer's move back out of reviewing is still taken. Each refusal of the tester finds
+// the run of testing's step open, as the move into testing leaves it, and leaves it open at its
+// one start, with no end written and nothing queued beside its start.
 func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 	seed := func(t *testing.T, at phase.Phase, role claim.Role) *pgxpool.Pool {
 		pool := migratedPool(t)
@@ -791,6 +793,49 @@ func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 		}
 		return result
 	}
+	// openTesting starts the run of testing's step as the move into testing does, in a fact's
+	// transaction and with no boot pass before it (a boot would open the run itself, as one an
+	// earlier release started), and returns the place its count of starts is kept under and what
+	// the outbox holds with that start.
+	openTesting := func(t *testing.T, pool *pgxpool.Pool) (record.StepPlace, []heldRow) {
+		t.Helper()
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+			if err != nil {
+				return err
+			}
+			return engine.StartStepRecord(ctx, tx, *issue)
+		})
+		place, _, _, ok := stepOf(phase.Testing)
+		if !ok {
+			t.Fatal("testing runs no step, so no run of it could be left open")
+		}
+		if row := readStepStartRow(t, pool, "LEGION-208", place); row.starts != 1 || row.run != record.RunOpen {
+			t.Fatalf("the seeded run of testing = %+v, want one start, open", row)
+		}
+		queued := queuedRows(t, pool)
+		if writes := stepWrites(t, pool, "LEGION-208"); len(writes) != 1 || !isStart(writes[0]) || len(queued) != 1 {
+			t.Fatalf("the seeded run of testing queued %+v with step writes %+v, want its start alone", queued, writes)
+		}
+		return place, queued
+	}
+	// stillOpen fails unless the run of testing's step at place is open at its one start, no end
+	// of it is written, and the outbox holds what it held before the refusal.
+	stillOpen := func(t *testing.T, pool *pgxpool.Pool, place record.StepPlace, before []heldRow) {
+		t.Helper()
+		if row := readStepStartRow(t, pool, "LEGION-208", place); row.starts != 1 || row.run != record.RunOpen {
+			t.Fatalf("after the refused move the run of testing is %+v, want it open at its one start", row)
+		}
+		for _, write := range stepWrites(t, pool, "LEGION-208") {
+			if write.EndedAt != nil || write.Result != nil {
+				t.Fatalf("the refused move wrote the step write %+v, want no end and no result", write)
+			}
+		}
+		if queued := queuedRows(t, pool); !reflect.DeepEqual(queued, before) {
+			t.Fatalf("the refused move left the outbox holding %+v, want what it held before, %+v: no step result, no post and no start", queued, before)
+		}
+	}
 	targets := requiredBackwardTargets(phase.Testing)
 	if len(targets) == 0 {
 		t.Fatal("testing has no backward edge to refuse, so nothing was tested")
@@ -798,6 +843,7 @@ func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 	for _, to := range targets {
 		t.Run("the tester to "+string(to), func(t *testing.T) {
 			pool := seed(t, phase.Testing, claim.RoleTester)
+			place, queued := openTesting(t, pool)
 			before := phaseRowOf(t, pool, claim.RoleTester)
 			result := back(t, pool, claim.RoleTester, to)
 			if refusalCode(result) != "BACKWARD_REFUSED" {
@@ -814,17 +860,17 @@ func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
 			if after := phaseRowOf(t, pool, claim.RoleTester); !reflect.DeepEqual(after, before) {
 				t.Fatalf("the refused move took the tester's row from %+v to %+v, want nothing written", before, after)
 			}
-			if rows := queuedRows(t, pool); len(rows) != 0 {
-				t.Fatalf("the refused move queued %+v, want no step result, no post and no start", rows)
-			}
+			stillOpen(t, pool, place, queued)
 		})
 	}
 	t.Run("the tester to a phase no backward row serves", func(t *testing.T) {
 		pool := seed(t, phase.Testing, claim.RoleTester)
+		place, queued := openTesting(t, pool)
 		result := back(t, pool, claim.RoleTester, phase.Reviewing)
 		if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, "no backward row of testing serves reviewing") {
 			t.Fatalf("the tester's move to reviewing = %+v, want BACKWARD_REFUSED naming the row no backward row serves", result.Refusal)
 		}
+		stillOpen(t, pool, place, queued)
 	})
 	t.Run("the reviewer out of reviewing", func(t *testing.T) {
 		pool := seed(t, phase.Reviewing, claim.RoleReviewer)
