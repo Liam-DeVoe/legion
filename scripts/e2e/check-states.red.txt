@@ -46,13 +46,14 @@ go packages/daemon/internal/intake ^TestTheIntakeDecodesACheckStateChangedEvent$
 go packages/daemon/internal/record ^TestTheDaemonKeepsTheNewestStateOfEachCheckAtEachHead$ packages/daemon/internal/record/check_states_test.go
 # v-no-state-of-its-own: the daemon has no state event to apply (no intake.DispatchCheckState),
 # so the test does not build. Its harness's workflow engine and the request log of its stand-in
-# for Dispatch are this change's, in the three helper files.
-go packages/daemon/internal/api ^TestTheTesterMoveReadsNothingOfDispatchButTheHandoff$ packages/daemon/internal/api/check_states_test.go packages/daemon/internal/api/harness_test.go packages/daemon/internal/api/handoff_test.go packages/daemon/internal/api/architect_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# for Dispatch are this change's, in the three helper files, and its state events are built by the
+# shared package checkstatetest.
+go packages/daemon/internal/api ^TestTheTesterMoveReadsNothingOfDispatchButTheHandoff$ packages/daemon/internal/api/check_states_test.go packages/daemon/internal/api/harness_test.go packages/daemon/internal/api/handoff_test.go packages/daemon/internal/api/architect_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 # v-raw-results-move-nothing: the daemon has no state event to hold (no intake.DispatchCheckState),
 # so the test does not build. So for each workflow line below.
-go packages/daemon/internal/workflow ^TestOnlyTheStateEventMovesTheTester$ packages/daemon/internal/workflow/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestOnlyTheStateEventMovesTheTester$ packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 # v-states-at-the-tested-head
-go packages/daemon/internal/workflow ^TestTheMoveReadsTheStatesAtTheTestedHead$ packages/daemon/internal/workflow/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestTheMoveReadsTheStatesAtTheTestedHead$ packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 
 # v-every-check-passes, its two cases: the daemon refuses the tester's completion with no verdict.
 e2e scripts/e2e/check-states.sh pass-goes-to-review scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go
@@ -62,18 +63,18 @@ e2e scripts/e2e/check-states.sh fail-sends-back scripts/e2e/check-states.sh pack
 
 # v-a-conclusive-state-does-not-wait, its two tests: no judgeStates and no state event, so neither
 # builds.
-go packages/daemon/internal/workflow ^TestJudgeStates$ packages/daemon/internal/workflow/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
-go packages/daemon/internal/workflow ^TestTheTestingMoveStateTable$ packages/daemon/internal/workflow/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestJudgeStates$ packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestTheTestingMoveStateTable$ packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 
 # v-the-move-waits: the daemon refuses the tester's completion with no verdict.
 e2e scripts/e2e/check-states.sh completion-before-event scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go
 
 # v-boot-reads-missed-events: a tester's completion names no serial of states (no StatesSerial),
 # and the catch-up takes no state event, so the test does not build.
-go packages/daemon/internal/daemon ^TestTheBootCatchUpTakesTheStateEventsTheDaemonMissed$ packages/daemon/internal/daemon/check_states_catchup_test.go packages/daemon/internal/daemon/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/daemon ^TestTheBootCatchUpTakesTheStateEventsTheDaemonMissed$ packages/daemon/internal/daemon/check_states_catchup_test.go packages/daemon/internal/daemon/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 # v-no-verdict-in-the-handoff: the route has no refusal of a verdict and the daemon no state event,
 # so the test does not build (its helper files as for v-no-state-of-its-own).
-go packages/daemon/internal/api ^TestAPhaseCompletionCarriesNoVerdict$ packages/daemon/internal/api/check_states_test.go packages/daemon/internal/api/harness_test.go packages/daemon/internal/api/handoff_test.go packages/daemon/internal/api/architect_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/api ^TestAPhaseCompletionCarriesNoVerdict$ packages/daemon/internal/api/check_states_test.go packages/daemon/internal/api/harness_test.go packages/daemon/internal/api/handoff_test.go packages/daemon/internal/api/architect_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 # v-stored-notices-lose-the-verdict: the migration that removes the verdict does not exist, and a
 # phase row has no serial of states, so the test file does not build.
 go packages/daemon/internal/record ^TestPhaseVerdictGoneMigrationStripsTheVerdictFromStoredNotices$ packages/daemon/internal/record/store_test.go
@@ -85,9 +86,9 @@ go packages/daemon/internal/record ^TestPhaseVerdictGoneMigrationStripsTheVerdic
 cmd . states-read-scenarios packages/pi-legion/scripts/skill-scenarios/states-read-check.sh -- bash packages/pi-legion/scripts/skill-scenarios/states-read-check.sh
 
 # v-a-testing-step-passes-by-its-checks: no state event, so the test does not build.
-go packages/daemon/internal/workflow ^TestATestingStepPassesWhenItsChecksPass$ packages/daemon/internal/workflow/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestATestingStepPassesWhenItsChecksPass$ packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 # v-an-early-fail-starts-nothing: the same.
-go packages/daemon/internal/workflow ^TestAFailStateBeforeTheTesterCompletesStartsNothing$ packages/daemon/internal/workflow/check_states_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestAFailStateBeforeTheTesterCompletesStartsNothing$ packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 
 # v-no-event-without-a-change: no settler and no state event, so the test does not build.
 go packages/envoy/internal/dispatch/api ^TestOneEventForEachChangeOfAStateAndNoneWhenAResultChangesNoState$ packages/envoy/internal/dispatch/api/check_states_test.go

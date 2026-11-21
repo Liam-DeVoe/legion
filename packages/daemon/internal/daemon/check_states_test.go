@@ -2,17 +2,9 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"maps"
-	"os"
-	"path/filepath"
-	goruntime "runtime"
-	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -28,86 +20,13 @@ const phaseVerdictGoneVersion = 20261121074614
 const entryRigHead = "0000000000000000000000000000000000c0ffee"
 
 // testedFact is the check.state_changed event that decides a tester's completion of issue's
-// testing, and the event id the live consumer would apply it under: k1, the head's one check, yes
-// from the tester where passes, and no for a fail where not, at head, the commit the completion
-// names, since the move reads the states there alone. It is the shared fixture's event
-// (stateChangedEvent) with those fields, decoded by the intake's own decoder of a Dispatch event,
-// at the serial after the highest the daemon holds of issue.
-func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool) (intake.Fact, string) {
+// testing, decoded, and the event id the live consumer would apply it under
+// (checkstatetest.Tested): k1, the head's one check, yes from the tester where passes, and no for a
+// fail where not, at head, the commit the completion names, on acme/widgets where issue has no
+// pull request.
+func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool) (intake.DispatchCheckState, string) {
 	t.Helper()
-	if head == "" {
-		t.Fatal("testedFact needs the head the completion tests: the move reads the states at that head alone")
-	}
-	ctx := context.Background()
-	repo := "acme/widgets"
-	var serial int64
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		t.Fatalf("begin the read of %s's pull request: %v", issue, err)
-	}
-	defer tx.Rollback(ctx)
-	pr, err := record.NewStore().PullRequest(ctx, tx, issue)
-	if err == nil {
-		err = tx.QueryRow(ctx, `select coalesce(max(serial), 0) from check_state_serials where issue = $1`, issue).Scan(&serial)
-	}
-	if err != nil {
-		t.Fatalf("read the pull request and the serials of %s: %v", issue, err)
-	}
-	if pr != nil {
-		repo = pr.Repo
-	}
-	serial++
-	set := map[string]any{"issue": issue, "repo": repo, "head": head, "serial": serial, "checks": []string{"k1"}, "check": "k1",
-		"roles": []string{"tester"}, "ci_case": "", "state": "yes", "reason": ""}
-	if !passes {
-		set["state"], set["reason"], set["roles"] = "no", "fail", []string{}
-	}
-	seq := 1000 + serial
-	event := stateChangedEvent(t, issue, seq, set)
-	project, _, _ := strings.Cut(issue, "-")
-	fact, unread, err := intake.DecodeDispatchEvent(project, issue, event)
-	if _, ok := fact.(intake.DispatchCheckState); !ok || err != nil || len(unread) != 0 {
-		t.Fatalf("the state event of %s at %s decoded to %#v, unread %q, %v; want a check state", issue, head, fact, unread, err)
-	}
-	return fact, fmt.Sprintf("dispatch-event:%s:%d", issue, seq)
-}
-
-// stateChangedEvent is a check.state_changed event of issue at seq, as Dispatch's event log serves
-// it and its durable stream carries it: the check form of
-// packages/contracts/fixtures/dispatch-events/check-state-changed.json with each field of set
-// written over it, appended by the fixture's actor, with the Dispatch event id 5000+seq. The
-// fixture is found from this file's own compiled path, not from the working directory: `go test`
-// runs the package's tests in its own directory, but a live proof's driver, this package's test
-// binary, runs from wherever its script started it (scripts/e2e/lib/live-daemon-proof.sh).
-func stateChangedEvent(t *testing.T, issue string, seq int64, set map[string]any) json.RawMessage {
-	t.Helper()
-	_, source, _, ok := goruntime.Caller(0)
-	if !ok {
-		t.Fatal("locate this test's source, from which the shared fixture of check.state_changed is found")
-	}
-	encoded, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
-	if err != nil {
-		t.Fatalf("read the shared fixture of check.state_changed: %v", err)
-	}
-	var fixture struct {
-		Type      string          `json:"type"`
-		Actor     json.RawMessage `json:"actor"`
-		CheckForm json.RawMessage `json:"check_form"`
-	}
-	if err := json.Unmarshal(encoded, &fixture); err != nil || fixture.Type == "" {
-		t.Fatalf("decode the shared fixture of check.state_changed: %v", err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(fixture.CheckForm, &payload); err != nil {
-		t.Fatalf("decode the fixture's check form: %v", err)
-	}
-	maps.Copy(payload, set)
-	event, err := json.Marshal(map[string]any{"id": 5000 + seq, "issue_key": issue, "seq": seq, "type": fixture.Type, "notify": false,
-		"created_at": "2026-11-21T06:00:00Z", "actor": fixture.Actor, "payload": payload})
-	if err != nil {
-		t.Fatalf("encode the state event of %s at %d: %v", issue, seq, err)
-	}
-	return event
+	return checkstatetest.Tested(t, pool, issue, "acme/widgets", head, passes)
 }
 
 // testedAs applies testedFact's event through intake.ApplyFact and handlers, as the live consumer

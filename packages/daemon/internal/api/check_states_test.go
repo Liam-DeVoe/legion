@@ -2,19 +2,14 @@ package api
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -26,118 +21,35 @@ import (
 
 // applyStates applies one check.state_changed event of issue at head of repo for each of states,
 // the first at serial and each next one at the serial after, through intake.ApplyFact and the
-// harness's workflow (newWorkflowHandoffHarness), as the live consumer applies a fact: each is the
-// payload of packages/contracts/fixtures/dispatch-events/check-state-changed.json with the state's
-// fields, decoded by the intake's own decoder of a Dispatch event. A harness that records facts
-// rather than deciding them applies the events through a workflow of the project's own
-// configuration, which holds them as the daemon's does. A state naming no set carries the set of
-// every check states name; one naming no check is the set form, and no state at all is the set
-// form of a head with no check.
+// harness's workflow (newWorkflowHandoffHarness), as the live consumer applies a fact
+// (checkstatetest.Apply). A harness that records facts rather than deciding them applies the
+// events through a workflow of the project's own configuration, which holds them as the daemon's
+// does.
 func applyStates(t *testing.T, h *harness, issue, repo, head string, serial int64, states ...intake.DispatchCheckState) {
 	t.Helper()
-	engine := h.engine
-	if engine == nil {
-		engine = workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-			Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	checkstatetest.Apply(t, h.store.Pool(), issue, repo, head, serial, states, statesEngine(h))
+}
+
+// statesEngine is the workflow a state event of h applies through: the harness's own, or, for a
+// harness that records facts rather than deciding them, one of the project's own configuration.
+func statesEngine(h *harness) *workflow.Engine {
+	if h.engine != nil {
+		return h.engine
 	}
-	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
-	if err != nil {
-		t.Fatalf("read the shared fixture of check.state_changed: %v", err)
-	}
-	var fixture struct {
-		Type      string          `json:"type"`
-		Actor     json.RawMessage `json:"actor"`
-		CheckForm json.RawMessage `json:"check_form"`
-		SetForm   json.RawMessage `json:"set_form"`
-	}
-	if err := json.Unmarshal(encoded, &fixture); err != nil || fixture.Type == "" {
-		t.Fatalf("decode the shared fixture of check.state_changed: %v", err)
-	}
-	if len(states) == 0 {
-		states = []intake.DispatchCheckState{{Checks: []string{}}}
-	}
-	var named []string
-	for _, state := range states {
-		if state.Check != "" && !slices.Contains(named, state.Check) {
-			named = append(named, state.Check)
-		}
-	}
-	project, _, _ := strings.Cut(issue, "-")
-	for i, state := range states {
-		form := fixture.CheckForm
-		if state.Check == "" {
-			form = fixture.SetForm
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(form, &payload); err != nil {
-			t.Fatalf("decode the fixture's payload: %v", err)
-		}
-		checks := state.Checks
-		if checks == nil {
-			checks = named
-		}
-		if checks == nil {
-			checks = []string{}
-		}
-		at := serial + int64(i)
-		payload["issue"], payload["repo"], payload["head"], payload["checks"], payload["serial"] = issue, repo, head, checks, at
-		payload["pull_requests"] = []int{42}
-		if state.Check != "" {
-			roles := state.Roles
-			if roles == nil {
-				roles = []string{}
-			}
-			payload["check"], payload["check_version"], payload["state"], payload["reason"] = state.Check, 1, state.State, state.Reason
-			payload["roles"], payload["ci_case"] = roles, state.CICase
-		}
-		seq := 1000 + at
-		event, err := json.Marshal(map[string]any{
-			"id": 5000 + seq, "issue_key": issue, "seq": seq, "type": fixture.Type, "notify": false,
-			"created_at": "2026-11-21T06:00:00Z", "actor": fixture.Actor, "payload": payload,
-		})
-		if err != nil {
-			t.Fatalf("encode the event: %v", err)
-		}
-		fact, unread, err := intake.DecodeDispatchEvent(project, issue, event)
-		if _, ok := fact.(intake.DispatchCheckState); !ok || err != nil || len(unread) != 0 {
-			t.Fatalf("the state event of serial %d decoded to %#v, unread %q, %v; want a check state", at, fact, unread, err)
-		}
-		result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "dispatch", fmt.Sprintf("dispatch-event:%s:%d", issue, seq), fact, engine)
-		if err != nil || result.Refusal != nil {
-			t.Fatalf("apply the state event of serial %d: %+v, %v", at, result.Refusal, err)
-		}
-	}
+	return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // testedAs applies, ahead of a tester's completion of issue's testing whose record names no
-// serial, the state event that decides its move: k1, the head's one check, yes from the tester
-// where passes, and no for a fail where not, at head, the commit the completion names, since the
-// move reads the states there alone. It takes the serial after the highest the daemon holds of
-// issue.
+// serial, the state event that decides its move (checkstatetest.Tested): k1, the head's one check,
+// yes from the tester where passes, and no for a fail where not, at head, the commit the
+// completion names, on acme/widgets where issue has no pull request.
 func testedAs(t *testing.T, h *harness, issue, head string, passes bool) {
 	t.Helper()
-	if head == "" {
-		t.Fatal("testedAs needs the head the completion tests: the move reads the states at that head alone")
+	fact, id := checkstatetest.Tested(t, h.store.Pool(), issue, "acme/widgets", head, passes)
+	if result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "dispatch", id, fact, statesEngine(h)); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the state event %s: %+v, %v", id, result.Refusal, err)
 	}
-	repo := "acme/widgets"
-	var serial int64
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		pr, err := record.NewStore().PullRequest(context.Background(), tx, issue)
-		if err != nil {
-			return err
-		}
-		if pr != nil {
-			repo = pr.Repo
-		}
-		return tx.QueryRow(context.Background(), `select coalesce(max(serial), 0) from check_state_serials where issue = $1`, issue).Scan(&serial)
-	}); err != nil {
-		t.Fatalf("read the pull request and the serials of %s: %v", issue, err)
-	}
-	state := intake.DispatchCheckState{Check: "k1", State: "yes", Roles: []string{"tester"}, Checks: []string{"k1"}}
-	if !passes {
-		state = intake.DispatchCheckState{Check: "k1", State: "no", Reason: "fail", Checks: []string{"k1"}}
-	}
-	applyStates(t, h, issue, repo, head, serial+1, state)
 }
 
 // passOf is check's state yes from roles, at a head whose set is checks.

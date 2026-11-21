@@ -5,16 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -22,112 +20,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// checkStatesFixture is packages/contracts/fixtures/dispatch-events/check-state-changed.json,
-// which Envoy's golden test writes from the payload Dispatch publishes: the event's type and
-// actor, and the payload in the check form and in the set form. Every state event these tests
-// apply is one of these two payloads with its fields set, decoded by the intake's own decoder.
-type checkStatesFixture struct {
-	Type      string          `json:"type"`
-	Actor     json.RawMessage `json:"actor"`
-	CheckForm json.RawMessage `json:"check_form"`
-	SetForm   json.RawMessage `json:"set_form"`
-}
-
-func readCheckStatesFixture(t *testing.T) checkStatesFixture {
-	t.Helper()
-	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
-	if err != nil {
-		t.Fatalf("read the shared fixture of check.state_changed: %v", err)
-	}
-	var fixture checkStatesFixture
-	if err := json.Unmarshal(encoded, &fixture); err != nil {
-		t.Fatalf("decode the shared fixture of check.state_changed: %v", err)
-	}
-	if fixture.Type == "" || len(fixture.CheckForm) == 0 || len(fixture.SetForm) == 0 {
-		t.Fatalf("the shared fixture of check.state_changed = %+v, want its type and both forms", fixture)
-	}
-	return fixture
-}
-
-// checkStateEvent is the event of issue's Dispatch event log at seq that carries state, as the
-// log serves it and the durable stream carries it: the fixture's payload of state's form (the set
-// form where state names no check), with each field state names, at issue, repo and head.
-func checkStateEvent(t *testing.T, fixture checkStatesFixture, issue, repo, head string, seq int64, state intake.DispatchCheckState) []byte {
-	t.Helper()
-	form := fixture.CheckForm
-	if state.Check == "" {
-		form = fixture.SetForm
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(form, &payload); err != nil {
-		t.Fatalf("decode the fixture's payload: %v", err)
-	}
-	checks := state.Checks
-	if checks == nil {
-		checks = []string{}
-	}
-	payload["issue"], payload["repo"], payload["head"], payload["checks"], payload["serial"] = issue, repo, head, checks, state.Serial
-	payload["pull_requests"] = []int{42}
-	if state.Check != "" {
-		roles := state.Roles
-		if roles == nil {
-			roles = []string{}
-		}
-		payload["check"], payload["check_version"], payload["state"], payload["reason"] = state.Check, 1, state.State, state.Reason
-		payload["roles"], payload["ci_case"] = roles, state.CICase
-	}
-	event, err := json.Marshal(map[string]any{
-		"id": 5000 + seq, "issue_key": issue, "seq": seq, "type": fixture.Type, "notify": false,
-		"created_at": "2026-11-21T06:00:00Z", "actor": fixture.Actor, "payload": payload,
-	})
-	if err != nil {
-		t.Fatalf("encode the event: %v", err)
-	}
-	return event
-}
-
-// stateSeq is the sequence of issue's Dispatch event log of the state event of serial: a later
-// serial is a later event of the same log, as Dispatch appends them.
-func stateSeq(serial int64) int64 { return 1000 + serial }
-
 // applyStates applies one check.state_changed event of issue at head of repo for each of states,
-// the first at serial and each next one at the serial after, through intake.ApplyFact as the live
-// consumer applies a fact: each is the fixture's payload with the state's fields, decoded by the
-// intake's own decoder of a Dispatch event (the one the live consumer's envelope decoder and the
-// boot catch-up both call), never a write to the store. A state naming no set of checks carries
-// the set of every check states name; one naming no check is the set form. No state at all is the
-// set form of a head with no check.
+// the first at serial and each next one at the serial after, through intake.ApplyFact and engine,
+// as the live consumer applies a fact (checkstatetest.Apply), never a write to the store.
 func applyStates(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue, repo, head string, serial int64, states ...intake.DispatchCheckState) {
 	t.Helper()
-	if len(states) == 0 {
-		states = []intake.DispatchCheckState{{Checks: []string{}}}
-	}
-	var named []string
-	for _, state := range states {
-		if state.Check != "" && !slices.Contains(named, state.Check) {
-			named = append(named, state.Check)
-		}
-	}
-	fixture := readCheckStatesFixture(t)
-	project, _, _ := strings.Cut(issue, "-")
-	for i, state := range states {
-		state.Serial = serial + int64(i)
-		if state.Checks == nil {
-			state.Checks = named
-		}
-		seq := stateSeq(state.Serial)
-		fact, unread, err := intake.DecodeDispatchEvent(project, issue, checkStateEvent(t, fixture, issue, repo, head, seq, state))
-		if err != nil || len(unread) != 0 {
-			t.Fatalf("decode the state event of serial %d: %v, unread %q", state.Serial, err, unread)
-		}
-		if _, ok := fact.(intake.DispatchCheckState); !ok {
-			t.Fatalf("the state event of serial %d decoded to %#v, want a check state", state.Serial, fact)
-		}
-		result, err := intake.ApplyFact(context.Background(), pool, "dispatch", fmt.Sprintf("dispatch-event:%s:%d", issue, seq), fact, engine, admissionStub{})
-		if err != nil || result.Refusal != nil {
-			t.Fatalf("apply the state event of serial %d: %+v, %v", state.Serial, result.Refusal, err)
-		}
-	}
+	checkstatetest.Apply(t, pool, issue, repo, head, serial, states, engine, admissionStub{})
 }
 
 // testedAs applies, ahead of a tester's completion of issue's testing that names no serial, the
@@ -141,43 +39,13 @@ func testedAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue, head stri
 	}
 }
 
-// testedFact is the state event that decides a tester's completion of issue's testing, decoded as
-// applyStates decodes one, and its event id: k1, the head's one check, yes from the tester where
-// passes, and no for a fail where not. head is the head the completion tests, the commit its test
-// record names: the move reads no other (testedHead), so a test names it and this helper reads no
-// head of its own. The event takes the serial after the highest the daemon holds of issue, so it
-// is the newest of its head. A test that applies its facts through a function of its own applies
-// this one there too.
+// testedFact is the state event that decides a tester's completion of issue's testing, decoded,
+// and its event id (checkstatetest.Tested): k1, the head's one check, yes from the tester where
+// passes, and no for a fail where not, at head, on statesRepo where issue has no pull request. A
+// test that applies its facts through a function of its own applies this one there too.
 func testedFact(t *testing.T, pool *pgxpool.Pool, issue, head string, passes bool) (intake.DispatchCheckState, string) {
 	t.Helper()
-	if head == "" {
-		t.Fatal("testedFact needs the head the completion tests: the move reads the states at that head alone")
-	}
-	repo := statesRepo
-	var serial int64
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		pr, err := record.NewStore().PullRequest(context.Background(), tx, issue)
-		if err != nil {
-			return err
-		}
-		if pr != nil {
-			repo = pr.Repo
-		}
-		return tx.QueryRow(context.Background(), `select coalesce(max(serial), 0) from check_state_serials where issue = $1`, issue).Scan(&serial)
-	})
-	state := passOf("k1", "tester")
-	if !passes {
-		state = stateOf("k1", "no", "fail")
-	}
-	state.Checks, state.Serial = []string{"k1"}, serial+1
-	seq := stateSeq(state.Serial)
-	project, _, _ := strings.Cut(issue, "-")
-	fact, unread, err := intake.DecodeDispatchEvent(project, issue, checkStateEvent(t, readCheckStatesFixture(t), issue, repo, head, seq, state))
-	decoded, ok := fact.(intake.DispatchCheckState)
-	if err != nil || len(unread) != 0 || !ok {
-		t.Fatalf("decode the state event of serial %d at %s: %#v, unread %q, %v", state.Serial, head, fact, unread, err)
-	}
-	return decoded, fmt.Sprintf("dispatch-event:%s:%d", issue, seq)
+	return checkstatetest.Tested(t, pool, issue, statesRepo, head, passes)
 }
 
 // stateOf is check's state with reason, from roles.
@@ -390,7 +258,7 @@ func TestOnlyTheStateEventMovesTheTester(t *testing.T) {
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"))
 
-	fixture := readCheckStatesFixture(t)
+	fixture := checkstatetest.ReadFixture(t)
 	recorded, err := json.Marshal(map[string]any{
 		"id": 9001, "issue_key": "LEGION-208", "seq": 1500, "type": "result.recorded", "notify": false,
 		"created_at": "2026-11-21T06:00:00Z", "actor": fixture.Actor, "payload": map[string]any{
@@ -411,8 +279,8 @@ func TestOnlyTheStateEventMovesTheTester(t *testing.T) {
 			t.Fatalf("apply the result.recorded event: %+v, %v", result.Refusal, err)
 		}
 	}
-	if k1 := r.held(headOne).States["k1"]; k1.State != "yes" || k1.Seq != stateSeq(1) {
-		t.Fatalf("after the recorded fail the daemon holds k1 at %s as %+v, want yes at the sequence of its own event, %d", headOne, k1, stateSeq(1))
+	if k1 := r.held(headOne).States["k1"]; k1.State != "yes" || k1.Seq != checkstatetest.Seq(1) {
+		t.Fatalf("after the recorded fail the daemon holds k1 at %s as %+v, want yes at the sequence of its own event, %d", headOne, k1, checkstatetest.Seq(1))
 	}
 	assertPhase(t, r.pool, phase.Testing)
 
@@ -804,8 +672,8 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			},
 			event: func(r *statesRig) { r.states(headOne, 1, ofSet(stateOf("k1", "no", "fail"), "k1", "k2")) },
 			then: func(r *statesRig) {
-				if k1 := r.held(headOne).States["k1"]; k1.State != "yes" || k1.Seq != stateSeq(2) {
-					r.t.Fatalf("the daemon holds k1 as %+v, want yes at sequence %d", k1, stateSeq(2))
+				if k1 := r.held(headOne).States["k1"]; k1.State != "yes" || k1.Seq != checkstatetest.Seq(2) {
+					r.t.Fatalf("the daemon holds k1 as %+v, want yes at sequence %d", k1, checkstatetest.Seq(2))
 				}
 				r.waitsSaying("the move waits for the states of k2 at " + headOne)
 			},
@@ -844,10 +712,9 @@ func (stateEventFails) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Resul
 // leaves all four.
 func TestAStateEventIsStoredInTheFactsOwnTransaction(t *testing.T) {
 	r := newStatesRig(t, phase.Testing)
-	fixture := readCheckStatesFixture(t)
 	state := intake.DispatchCheckState{Check: "k1", State: "no", Reason: "fail", Roles: []string{"implementer"}, CICase: "not_completed",
 		Checks: []string{"k1", "k2"}, Serial: 3}
-	fact, _, err := intake.DecodeDispatchEvent("LEGION", "LEGION-208", checkStateEvent(t, fixture, "LEGION-208", statesRepo, headOne, stateSeq(3), state))
+	fact, _, err := intake.DecodeDispatchEvent("LEGION", "LEGION-208", checkstatetest.Event(t, "LEGION-208", statesRepo, headOne, checkstatetest.Seq(3), state))
 	if err != nil {
 		t.Fatalf("decode the state event: %v", err)
 	}
@@ -882,7 +749,7 @@ func TestAStateEventIsStoredInTheFactsOwnTransaction(t *testing.T) {
 	}
 	held, reached, processed := stored()
 	want := record.CheckState{Issue: "LEGION-208", Repo: statesRepo, Head: headOne, Check: "k1", State: "no", Reason: "fail", CICase: "not_completed",
-		Roles: []string{"implementer"}, Seq: stateSeq(3)}
+		Roles: []string{"implementer"}, Seq: checkstatetest.Seq(3)}
 	if !reflect.DeepEqual(held.Checks, []string{"k1", "k2"}) || !reflect.DeepEqual(held.States, map[string]record.CheckState{"k1": want}) || !reached || processed != 1 {
 		t.Fatalf("after the apply the store holds the set %v, states %+v, serial 3 %t and %d processed records; want [k1 k2], k1 %+v, the serial and the record", held.Checks, held.States, reached, processed, want)
 	}

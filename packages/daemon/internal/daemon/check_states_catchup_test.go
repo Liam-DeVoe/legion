@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -76,11 +77,11 @@ func (d *stateLogs) readsOf(key string) []string {
 }
 
 // passedAt is the state event at seq of issue's check: yes from the tester at head, at serial, the
-// head's set of checks being checks.
+// head's set of checks being checks (checkstatetest.Event).
 func passedAt(t *testing.T, issue string, seq, serial int64, head, check string, checks ...string) json.RawMessage {
 	t.Helper()
-	return stateChangedEvent(t, issue, seq, map[string]any{"issue": issue, "repo": "acme/widgets", "head": head, "serial": serial,
-		"checks": checks, "check": check, "state": "yes", "reason": "", "roles": []string{"tester"}, "ci_case": ""})
+	return checkstatetest.Event(t, issue, "acme/widgets", head, seq,
+		intake.DispatchCheckState{Check: check, State: "yes", Roles: []string{"tester"}, Checks: checks, Serial: serial})
 }
 
 // checkStatesRig is the daemon's workflow runtime over a fresh store of project ACME, against
