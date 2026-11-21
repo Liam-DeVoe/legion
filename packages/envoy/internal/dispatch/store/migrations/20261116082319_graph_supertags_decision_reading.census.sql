@@ -7,6 +7,8 @@
 -- (requireNoRouteOrCommandWritesAType in cmd/dispatch/supertag_nodes_test.go), so every row it
 -- rewrites is a type node an earlier migration wrote, and it states every new value it gives one.
 -- It refuses no row and rewrites no row a person or an agent wrote, and it reads no existing row
--- of another table. The number of existing rows this migration would refuse or rewrite is
--- therefore 0.
+-- of another table. Each of its statements is an `insert … values` of literal rows or an `update`
+-- that sets literals on the rows its `where` names by their primary key in literal values, so it
+-- reads no row of its own tables beyond the ones it names. The number of existing rows this
+-- migration would refuse or rewrite is therefore 0.
 select 0;

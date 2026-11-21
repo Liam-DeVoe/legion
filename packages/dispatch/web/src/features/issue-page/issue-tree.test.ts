@@ -24,6 +24,7 @@ import type {
   ReferenceTarget,
   RequirementCoverage,
 } from "../../api/types";
+import { withEntries } from "../issue/decision-entries";
 import { askResolutionBadge } from "../refs/actor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { usePlainHeadline } from "../refs/plain-text";
@@ -321,8 +322,9 @@ function decision(
 
 /** The entry the decisions read answers beside the agent's decision `decision` of `document`
  *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it, the document's block it
- *  stands at, and the members the read takes from that node, each null where an agent's
- *  decision holds none. */
+ *  stands at, the asks its `from_ask` settles, and the members the read takes from that node,
+ *  each null where an agent's decision holds none. A person's decision is an ask's entry, which
+ *  settles no other ask. */
 function entryOf(
   decision: Decision,
   document: Pick<Artifact, "id" | "ref_key"> = {
@@ -347,6 +349,7 @@ function entryOf(
       block_id: decision.block_id,
       ref: decision.ref.slice(0, decision.ref.indexOf("#")),
     },
+    from_ask: decision.kind === "person" ? [] : (decision.asks ?? []),
     kept: decision.kept,
     kept_by: decision.kept?.kept_by ?? null,
     kept_text_sum: decision.kept === null ? null : decision.text_sha256,
@@ -372,11 +375,11 @@ function entryOf(
 }
 
 /** The decisions read over the agents' decisions `made` of the spec, as this build's server
- *  answers it: an entry of the store for each (`entries`), the same decisions in the old shape
- *  (`decisions`), and no decisions document, which is retired. */
+ *  answers it: an entry of the store for each (`entries`), which is all the tree reads of it, so
+ *  the old `decisions` member holds none of them, and no decisions document, which is retired. */
 function decisions(made: readonly Decision[]): IssueDecisions {
   return {
-    decisions: [...made],
+    decisions: [],
     document: null,
     entries: made.map((one) => entryOf(one)),
     open_questions: [],
@@ -1820,6 +1823,40 @@ test("a decision sits under the ask it answers, and one that answers none under 
   ]);
 });
 
+// A server of the release before answers the Decisions read with no `entries`: its decisions are
+// the sections of the issue's decisions document, each with the asks it cites. A page of this
+// build that reaches it during a roll reads them as entries (`withEntries`), so the tree still
+// draws each agent's section as a decision under the question it settles, with what it shaped.
+test("a Decisions read of the release before, with no entries, still places its decisions", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const section = decision("h-store", "Answers the issue's own question.", ["r1"]);
+  const read = withEntries(
+    {
+      decisions: [
+        {
+          ...section,
+          asks: ["ask-own"],
+          ref: `dispatch://${KEY}/artifact/decisions-md#b-h-store`,
+          text: "## Answers the issue's own question.\n\nThe words of the section.",
+        },
+      ],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
+  const root = buildIssueTree({
+    asks: [question("ask-own", { state: "answered" })],
+    decisions: read,
+    issue: issueDetails([spec]),
+  });
+
+  const id = blockNodeId("decisions-md", "h-store");
+  expect(nodeOf(root, id)?.type).toBe("decision");
+  expect(placementsOf(root, id).map((one) => one.parent)).toEqual(["ask-own"]);
+  expect(nodeOf(root, id)?.chips.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r1`]);
+});
+
 // A read of the release before built a decision's asks and links paragraph by paragraph and
 // kept every repeat, so a decision whose two paragraphs cite one question and link one statement
 // named each twice; this build's read names each tie once, from the decision's node. A repeat is
@@ -1961,7 +1998,7 @@ test("a person's decision is the answered ask's own node, which carries what it 
       requirement("r1", "The requirement the question in the spec raised."),
     ]),
     decisions: {
-      decisions: [...decided, settling],
+      decisions: [],
       document: null,
       entries: [...entries, entryOf(settling)],
       open_questions: [],
@@ -2063,7 +2100,7 @@ test("a reading sits under the ask or the decision it reads", () => {
   };
   const decided = decision("d1", "Read it once.", []);
   const read: IssueDecisions = {
-    decisions: [personal, decided],
+    decisions: [],
     document: null,
     entries: [
       {
@@ -2510,7 +2547,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
         spec_artifact_id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
       },
       decisions: {
-        decisions: [reviewed],
+        decisions: [],
         document: null,
         entries: [entryOf(reviewed, spec)],
         open_questions: [],

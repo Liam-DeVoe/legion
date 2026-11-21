@@ -1,5 +1,6 @@
-import type { Actor, Decision, IssueDecisions } from "../../../api/types";
+import type { Actor, IssueDecisions, DecisionEntry as ReadEntry } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
+import { isDecisionEntry } from "../../issue/decision-entries";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import { type ChangeComment, inReviewList } from "../decision-review";
@@ -39,11 +40,11 @@ import { type DecisionState, isReader } from "../page-words";
  * so the view holds it, and the filter draws it as a row of its own kind, which the page focuses.
  *
  * An agent's decision is a `decision` block of the spec or of another of the issue's documents,
- * drawn as that block's node; a person's decision is the answered ask itself (`Decision.kind`),
- * which the decisions read names by the ask's own address and which draws no decision node of
- * its own (`tree-drafts.ts`'s `addDecisions`). So the ask's entry is the person's decision, and
- * it carries the statements that decision's `shaped` ties name: the person's decision reaches
- * every statement it shaped.
+ * drawn as that block's node; a person's decision is the answered ask itself
+ * (its entry's `kind`), which the decisions read names by the ask's own address and which draws
+ * no decision node of its own (`tree-drafts.ts`'s `addDecisions`). So the ask's entry is the
+ * person's decision, and it carries the statements that decision's `shaped` ties name: the
+ * person's decision reaches every statement it shaped.
  *
  * What the filter draws none of is an agent's reading of a person's answer (R2, R9: "No
  * restatement of a person's answer appears anywhere in the view"): a `reading` block, which
@@ -57,17 +58,16 @@ import { type DecisionState, isReader } from "../page-words";
  * ## What today's reads hold, and what they do not
  *
  * - **The `shaped` tie** is a link from a decision's own block, or an answered ask's, to a block
- *   of the spec (`Decision.links`), which is the edge as the decisions read carries it; the tuple
- *   is the decision model's. A tie counts where its far end is a statement of this issue, read
- *   from the tree.
- * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
+ *   of the spec (an entry's `shaped`), which is the edge as the decisions read carries it; the
+ *   tuple is the decision model's. A tie counts where its far end is a statement of this issue,
+ *   read from the tree.
+ * - **When a decision was made** is the time its words last changed (an entry's `changed_at`);
  *   the decisions read holds no other time for one.
  * - **A Change** is a comment a person anchored to the decision's words since it last changed
  *   (`decision-review.ts`'s `decisionChanges`); the decisions read holds no state for it.
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
- *   the read's `entries` (`DecisionEntry`); the `decisions` member this model reads, as the tree
- *   does, holds no author and one yes or no, `unsure`, which the row draws as the one word it
- *   has.
+ *   the read's entries too; the tree draws them on the decision's node, and this model reads of
+ *   an entry only its ties, its time and how it stands, as the tree reads them.
  */
 
 /** The parts, in the order the filter draws them (R2). */
@@ -235,7 +235,9 @@ export function decisionsParts({
 }): DecisionsParts {
   const placed = placements(root);
   const kept = view === undefined ? undefined : idsOf(view);
-  const rows = new Map((decisions?.decisions ?? []).map((row) => [row.ref, row]));
+  const rows = new Map(
+    (decisions?.entries ?? []).filter(isDecisionEntry).map((row) => [row.ref, row])
+  );
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>
     placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement";
@@ -259,7 +261,7 @@ export function decisionsParts({
     if (node.type === "ask") {
       const askId = askIdOf(node) ?? "";
       // A person's decision is the answered ask itself, which the decisions read names by the
-      // ask's own address (`Decision.kind`), the address the ask's node carries: its `shaped`
+      // ask's own address (its entry's `kind`), the address the ask's node carries: its `shaped`
       // ties are the statements the person's decision shaped.
       const own = rows.get(node.reference ?? "");
       const shapes = own?.kind === "person" ? shapesOf(own, nodeIdOf, placed) : [];
@@ -408,7 +410,10 @@ function pathOf(node: TreeNode): { readonly path?: string } {
 /** How a decision stands (`NODE_STATE_WORDS.decision`), read as the tree reads it
  *  (`tree-drafts.ts`'s `decisionState`): replaced first, then a change a person asked for, then
  *  waiting for review, then kept as it reads now. A decision in none of them draws no state. */
-function standingOf(row: Decision, changed: boolean): DecisionState | undefined {
+function standingOf(
+  row: Pick<ReadEntry, "kept" | "replaced" | "waiting_review">,
+  changed: boolean
+): DecisionState | undefined {
   if (row.replaced) return "replaced";
   if (changed) return "change_requested";
   if (row.waiting_review) return "waiting_review";
@@ -417,12 +422,12 @@ function standingOf(row: Decision, changed: boolean): DecisionState | undefined 
 
 /** The statements of this issue `row`'s ties name, each once, in the ties' own order. */
 function shapesOf(
-  row: Decision,
+  row: Pick<ReadEntry, "shaped">,
   nodeIdOf: (reference: string) => string | undefined,
   placed: ReadonlyMap<string, Placement>
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
-  for (const link of row.links ?? []) {
+  for (const link of row.shaped ?? []) {
     const statement =
       link.to.ref === undefined ? undefined : placed.get(nodeIdOf(link.to.ref) ?? "");
     if (statement === undefined || statement.node.type !== "requirement") continue;

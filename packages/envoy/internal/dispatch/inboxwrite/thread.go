@@ -265,14 +265,11 @@ func queueKeepRow(b *store.WriteBatch, thread thread, w Write, login string, eve
 // the reply waited for the root among them - ends with the reply, as the trigger ends it; and no
 // dismissal of the root can commit between the two, since the route marks one only under the
 // root's `for update`.
-func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) error {
+func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) {
 	b.Queue(fmt.Sprintf("take the root message %s", root), `select 1 from messages where id = $1::uuid for key share`, root)
 	dismissed := graphstore.MarkedIn(`select login from user_agent_thread_dismissed where message_id = $4::uuid`, root)
-	if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event); err != nil {
-		return fmt.Errorf("retract the dismissals of message %s: %w", root, err)
-	}
+	graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event)
 	failpoint.Queue(b, fail)
 	b.Queue(fmt.Sprintf("clear the dismissals of message %s", root),
 		`delete from user_agent_thread_dismissed where message_id = $1::uuid`, root)
-	return nil
 }

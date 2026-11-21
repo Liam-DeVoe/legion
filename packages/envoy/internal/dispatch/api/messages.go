@@ -546,7 +546,7 @@ func (s *server) createStoredMessage(
 	// issue's spec, which no read of the row can answer yet; and so is the message's node, out of
 	// which the blocks and the citations are stated (refs.WrittenItem).
 	referenceChanges, indexWrite, indexed, err := s.planPendingItem(
-		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey},
+		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey},
 		refs.WrittenItem(stored.node), createdAt, issueKey != nil,
 	)
 	if err != nil {
@@ -587,9 +587,7 @@ func (s *server) createStoredMessage(
 				return err
 			}
 		}
-		if err := graphstore.QueueNodes(b, stored.written); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
 		nodeKind, nodeAddress := stored.rowNode()
 		b.Queue("", `
@@ -614,13 +612,9 @@ func (s *server) createStoredMessage(
 		if issueKey != nil {
 			refs.QueueStamp(b, "message", message.ID)
 		}
-		if err := graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		// What the message's body is in the store, under the same event (planPendingItem).
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		// Who wrote it, under the same event, as a comment's author is recorded
 		// (graphstore.QueueAuthored), and then its record in its thread. A message whose row
 		// names no node records neither, as a comment left out of the store records none: the
@@ -649,18 +643,14 @@ func (s *server) createStoredMessage(
 		// nothing of it. The target is read here and not at validation, since a person's reply
 		// that names none takes its thread root's above.
 		if message.Target != nil {
-			if err := graphstore.QueueNodes(b, attemptOpened); err != nil {
-				return err
-			}
+			graphstore.QueueNodes(b, attemptOpened)
 			b.Queue("", `
 				insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
 				                                urgency, connected_only, node_kind, node_address)
 				values ($1, 1, $2, '', 'pending', $3, $4, $5, $6, $7)
 			`, messageID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly), attemptKind, attemptAddress)
-			if err := graphstore.QueueCaused(b, attemptOpened, graphstore.LatestEvent); err != nil {
-				return err
-			}
-			return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, attemptKey)
+			graphstore.QueueCaused(b, attemptOpened, graphstore.LatestEvent)
+			graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, attemptKey)
 		}
 		return nil
 	}); err != nil {

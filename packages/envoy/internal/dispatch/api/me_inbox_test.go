@@ -270,7 +270,9 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 	// relation to anybody.
 	seed.tuples(meInboxTuple(delivered.kind, delivered.id, graphstore.TuplePartOf, graphstore.KindIssue, "CORE-1", at(5)))
 	seed.write(func(ctx context.Context, tx pgx.Tx) error {
-		return graphstore.Authored(ctx, tx, written.kind, written.id, model.Actor{Kind: "user", ID: alice}, at(11), graphstore.NoEvent)
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return graphstore.QueueAuthored(b, written.kind, written.id, model.Actor{Kind: "user", ID: alice}, at(11), graphstore.NoEvent)
+		})
 	})
 	seed.toPerson(
 		meInboxTuple(delivered.kind, delivered.id, meInboxDelivered, graphstore.KindPerson, alice, at(10)),
@@ -477,7 +479,9 @@ func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
 		seed := meInboxSeed{t: t, database: database}
 		seed.node(graphstore.KindComment, comment, graphstore.VisibilityProject, author, at(minute))
 		seed.write(func(ctx context.Context, tx pgx.Tx) error {
-			return graphstore.Authored(ctx, tx, graphstore.KindComment, comment, author, at(minute), graphstore.NoEvent)
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				return graphstore.QueueAuthored(b, graphstore.KindComment, comment, author, at(minute), graphstore.NoEvent)
+			})
 		})
 		aliases, err := graphstore.CurrentOut(context.Background(), database.Pool, graphstore.KindSession, session, []string{graphstore.TupleAliasOf})
 		if err != nil || !slices.ContainsFunc(aliases, func(alias graphstore.Tuple) bool {

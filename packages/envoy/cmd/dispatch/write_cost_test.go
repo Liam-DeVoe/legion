@@ -7,8 +7,8 @@ package main
 // This change's check c-write-cost: no write path this child changes gets slower.
 //
 // The test is TestNoWritePathThisChildChangesGetsSlower at the end of this file; everything
-// above it is the corpus it writes and the five paths it measures. graph_cost_test.go holds the
-// two arms, the clock and the order statistic the two cost measurements share.
+// above it is the corpus it writes and the paths it measures (writeCostPaths). graph_cost_test.go
+// holds the two arms, the clock and the order statistic the two cost measurements share.
 
 import (
 	"context"
@@ -67,8 +67,8 @@ const (
 	// writeCostTickWait bounds the wait for a tick to run. One comes within
 	// docs.BlockIndexReconcileInterval (30 s) of the pass's lease being given back.
 	writeCostTickWait = 5 * time.Minute
-	// writeCostTickPath names the tick among the five, which the run measures differently from
-	// the four that are requests, and writeCostOverPath the 8,001-block request, whose own
+	// writeCostTickPath names the tick among the paths, which the run measures differently from
+	// the ones that are requests, and writeCostOverPath the 8,001-block request, whose own
 	// absolute bound is read beside the table: a name written out at each of those sites would
 	// quietly read no reading at all the day one of them was renamed.
 	writeCostTickPath = "reconciliation tick"
@@ -193,7 +193,7 @@ func costPointerCount(blocks int) int {
 	return blocks * writeCostPointersPerThousand / 1000
 }
 
-// ───── the five paths ─────────────────────────────────────────────────────
+// ───── the paths ──────────────────────────────────────────────────────────
 
 // writeCostCommentCreate is one comment create on the issue of 2,000 earlier comments. On this
 // child's arm the write also makes the comment's node, its author's node and their tuples.
@@ -223,20 +223,14 @@ func writeCostDeliveryRecord(t *testing.T, corpus *writeCostCorpus, _ int) time.
 // this version moves, which is the edit a person makes: Dispatch carries a block's id across
 // versions, so the index sees one new block and the rest unchanged. -1 instead is the whole
 // document rewritten, every block new to the index, which a bulk action makes and a person
-// does not. The write replaces the document's version, so it names that version's token, read
-// before the write is timed.
+// does not. The body, which names the token of the version it replaces (documentUpload), is read
+// and encoded before the clock starts.
 func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks, run, changedOnly int) time.Duration {
 	t.Helper()
-	artifacts := "/api/v1/issues/" + corpus.issue + "/artifacts"
-	body, err := json.Marshal(map[string]any{
-		"name":         name,
-		"content":      costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly),
-		"precondition": corpus.arm.server.uploadBase(t, artifacts, name),
-	})
-	if err != nil {
-		t.Fatalf("encode the version: %v", err)
-	}
-	taken, _ := corpus.arm.timed(t, http.MethodPost, artifacts, string(body), http.StatusCreated)
+	body := corpus.arm.server.documentUpload(t, corpus.issue, name,
+		costDocumentText(blocks, writeCostNesting, costPointerCount(blocks), corpus.targets, run+1, changedOnly), costLogin)
+	taken, _ := corpus.arm.timed(t, http.MethodPost, "/api/v1/issues/"+corpus.issue+"/artifacts",
+		body, http.StatusCreated)
 	return taken
 }
 
@@ -254,24 +248,12 @@ func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks
 func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 	t.Helper()
 	arm := corpus.arm
-	// Each write replaces its tick document's version, so it names that version's token, read
-	// before the pass's lease is held.
-	bases := make([]map[string]string, len(corpus.tick))
-	for index, document := range corpus.tick {
-		bases[index] = map[string]string{"document": arm.server.documentToken(t, document)}
-	}
 	release := costHoldBlockIndex(t, arm)
 	for index := range corpus.tick {
-		body, err := json.Marshal(map[string]any{
-			"name":         writeCostTickName(index),
-			"content":      costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
-			"precondition": bases[index],
-		})
-		if err != nil {
-			release()
-			t.Fatalf("encode the tick document: %v", err)
-		}
-		arm.server.call(t, http.MethodPost, "/api/v1/issues/"+corpus.issue+"/artifacts", string(body), http.StatusCreated)
+		body := arm.server.documentUpload(t, corpus.issue, writeCostTickName(index),
+			costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
+			dispatchTestLogin)
+		arm.server.call(t, http.MethodPost, "/api/v1/issues/"+corpus.issue+"/artifacts", body, http.StatusCreated)
 	}
 	owed := arm.count(t, `select count(*) from document_block_versions where version is null`)
 	if owed != int64(len(corpus.tick)) {
@@ -306,7 +288,7 @@ func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 
 // ───── the run ────────────────────────────────────────────────────────────
 
-// writeCostPath is one of the five paths, as the run measures it on either arm.
+// writeCostPath is one of the paths writeCostPaths lists, as the run measures it on either arm.
 type writeCostPath struct {
 	name string
 	// absolute is the bound this path carries beyond the relative one, zero for a path that
@@ -356,16 +338,17 @@ func writeCostPaths() []writeCostPath {
 
 // No write path this child changes gets slower.
 //
-// Five write paths are measured at this child's head and at the commit this branch forked from,
-// in one run, interleaved, over one corpus written to each arm by one seeding pass: a comment
-// create, a comment delivery record, a document version of 1,999 blocks, one of 8,001 blocks and
+// Every write path writeCostPaths lists is measured at this child's head and at the commit this
+// branch forked from, in one run, interleaved, over one corpus written to each arm by one seeding
+// pass: a comment create, a comment delivery record, a document version of 1,999 blocks with one
+// block changed, one of the same document with every block rewritten, one of 8,001 blocks and
 // one reconciliation tick. Every reading is printed, so a swinging one is visible rather than
 // hidden in a summary, and the statistic each path is held to is a real order statistic by
 // nearest rank. How many readings a path takes, and which statistic decides it, follows what
 // the path costs. The two comment paths cost tens of milliseconds, so they take 200 readings
 // and their p99, the 198th, decides: at twenty readings the p99 is the slowest of them, and one
 // scheduling hiccup of this pod would decide the cell - measured here, where eighteen quiet
-// readings of a comment create, 17.0 to 32.1 ms, were failed by two of 85.9 and 100.5. The two
+// readings of a comment create, 17.0 to 32.1 ms, were failed by two of 85.9 and 100.5. The
 // document versions and the tick cost seconds, so they keep the 20 readings R18 fixes, because
 // 200 readings of a 40-second tick is hours of wall time for nothing, and their p50 decides
 // with their p99 printed beside it.
@@ -437,7 +420,7 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 	requireWriteCostReachesTheStore(t, head, corpora[head])
 	readings := map[string]map[*costArm]costReading{}
 	for _, path := range writeCostPaths() {
-		// The four request paths are measured with the block-index pass held off on both arms,
+		// The request paths are measured with the block-index pass held off on both arms,
 		// so no tick of either server's own runs inside a measured window: the versions these
 		// writes leave owed are indexed after the window, not inside it. The tick path takes
 		// that lease itself, for the window in which it writes its batch.
@@ -916,7 +899,7 @@ func requireWriteCostReachesTheStore(t *testing.T, head *costArm, corpus *writeC
 			head.server.Output.String())
 	}
 	t.Logf("this child's arm: the measured paths reach the store - %d comment node(s) and %d session node(s) stand before the measurement. "+
-		"What a delivery record writes in its own request is the session's node and its base attributes (graphstore.Reached); the "+
+		"What a delivery record writes in its own request is the session's node and its base attributes (graphstore.QueueReached); the "+
 		"delivered_to tuple of a delivery is the outbox publisher's, written when it records the batch of that event "+
 		"(outbox.deliveredGraph), out of this request and on both arms alike.",
 		comments, sessions)
@@ -962,16 +945,8 @@ func createCostIssue(t *testing.T, arm *costArm, project, title string) string {
 // version write path, and names the token of the version it replaces.
 func costUploadDocument(t *testing.T, arm *costArm, issue, name, content string) string {
 	t.Helper()
-	artifacts := "/api/v1/issues/" + issue + "/artifacts"
-	upload := map[string]any{"name": name, "content": content}
-	if base := arm.server.uploadBase(t, artifacts, name); base != nil {
-		upload["precondition"] = base
-	}
-	body, err := json.Marshal(upload)
-	if err != nil {
-		t.Fatalf("encode %s: %v", name, err)
-	}
-	created := arm.server.call(t, http.MethodPost, artifacts, string(body), http.StatusCreated)
+	body := arm.server.documentUpload(t, issue, name, content, dispatchTestLogin)
+	created := arm.server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", body, http.StatusCreated)
 	var answer struct {
 		Artifact struct {
 			ID string `json:"id"`

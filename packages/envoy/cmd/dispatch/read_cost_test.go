@@ -310,16 +310,8 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 // name the issue holds replaces that document's version, so it names that version's token.
 func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, content string) string {
 	t.Helper()
-	artifacts := "/api/v1/issues/" + issue + "/artifacts"
-	upload := map[string]any{"name": name, "content": content}
-	if base := arm.server.uploadBase(t, artifacts, name); base != nil {
-		upload["precondition"] = base
-	}
-	body, err := json.Marshal(upload)
-	if err != nil {
-		t.Fatalf("encode %s: %v", name, err)
-	}
-	answer := arm.server.send(t, http.MethodPost, artifacts, string(body), asUser(login))
+	body := arm.server.documentUpload(t, issue, name, content, login)
+	answer := arm.server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", body, asUser(login))
 	if answer.status != http.StatusCreated {
 		t.Fatalf("%s: upload %s as %s: status %d: %s", arm.name, name, login, answer.status, answer.body)
 	}

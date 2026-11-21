@@ -270,7 +270,8 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	// The event, and under it what the attempt's row now holds (graphstore.QueueAttempted), in one
 	// batch.
 	appended, err := s.appendEventThen(ctx, tx, event, func(b *store.WriteBatch) error {
-		return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, number))
+		graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, number))
+		return nil
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -497,7 +498,8 @@ func (s *server) recordPendingMessageDelivery(
 				return pendingMessageDelivery{}, err
 			}
 			receipt, err := s.appendEventThen(ctx, tx, messageDeliveryReceipt(message, actor, stranded, resolved.title), func(b *store.WriteBatch) error {
-				return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, stranded.Attempt))
+				graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, stranded.Attempt))
+				return nil
 			})
 			if err != nil {
 				return pendingMessageDelivery{}, err
@@ -598,7 +600,8 @@ func claimAttempt(ctx context.Context, tx pgx.Tx, messageID string, pending *pen
 		b.Queue("", claim, args...).QueryRow(func(row pgx.Row) error {
 			return row.Scan(&pending.claimedAt, &pending.resolved.attemptSessionID)
 		})
-		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.MessageAttempt(messageID, pending.attempt))
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.MessageAttempt(messageID, pending.attempt))
+		return nil
 	})
 }
 
@@ -687,9 +690,7 @@ func (s *server) insertMessageDeliveryAttempt(
 	key := graphstore.MessageAttempt(message.ID, pending.attempt)
 	nodeKind, nodeAddress, opened := graphstore.AttemptOpened(key, graphstore.AttemptWriter, at)
 	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, opened); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, opened)
 		b.Queue("", `
 			insert into message_deliveries (message_id, attempt, delivery, session_id, state, claimed_at,
 			                                requested_by, connected_only, node_kind, node_address)
@@ -701,10 +702,9 @@ func (s *server) insertMessageDeliveryAttempt(
 			returning claimed_at, `+model.ConnectedOnlySQL+`
 		`, message.ID, pending.attempt, resolved.Delivery, resolved.attemptSessionID, requester, nodeKind, nodeAddress,
 		).QueryRow(func(row pgx.Row) error { return row.Scan(&pending.claimedAt, &pending.connectedOnly) })
-		if err := graphstore.QueueCaused(b, opened, graphstore.NoEvent); err != nil {
-			return err
-		}
-		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+		graphstore.QueueCaused(b, opened, graphstore.NoEvent)
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+		return nil
 	})
 }
 
@@ -768,10 +768,11 @@ func (s *server) completeMessageDelivery(
 		// the settle made of the attempt, under the same receipt, as the receipt's actor writes it
 		// (graphstore.QueueAttempted).
 		func(b *store.WriteBatch, settled model.MessageDelivery) error {
-			if _, err := graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent); err != nil {
+			if err := graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent); err != nil {
 				return err
 			}
-			return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, settled.Attempt))
+			graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, settled.Attempt))
+			return nil
 		},
 	)
 }
@@ -1001,7 +1002,7 @@ func (s *server) planMessageReply(
 		return plan, err
 	}
 	plan.changes, plan.write, plan.indexed, err = s.planPendingItem(
-		ctx, tx, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
+		ctx, tx, who, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
 		refs.WrittenItem(plan.stored.node), plan.createdAt, message.IssueKey != nil,
 	)
 	if err != nil {
@@ -1200,7 +1201,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		// The receipt, and under it what the attempt's row now holds (graphstore.QueueAttempted).
 		receipt, err := s.appendEventThen(r.Context(), tx, messageDeliveryReceipt(message, actor, updated, ""), func(b *store.WriteBatch) error {
-			return graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, updated.Attempt))
+			graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, updated.Attempt))
+			return nil
 		})
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -1240,7 +1242,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			}, actor, answered.CreatedAt, answered.ID); err != nil {
 				return err
 			}
-			return graphstore.QueueAttempted(b, actor, answered.ID, graphstore.MessageAttempt(message.ID, input.Attempt))
+			graphstore.QueueAttempted(b, actor, answered.ID, graphstore.MessageAttempt(message.ID, input.Attempt))
+			return nil
 		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1360,9 +1363,7 @@ func (s *server) insertSessionReply(
 	nodeKind, nodeAddress := stored.rowNode()
 	var reply model.Message
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, stored.written); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address)
@@ -1414,13 +1415,9 @@ func (s *server) insertSessionReply(
 		if reply.IssueKey != nil {
 			refs.QueueStamp(b, "message", reply.ID)
 		}
-		if err := graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		// What the reply's body is in the store, under the same event (planPendingItem).
-		if err := graphstore.QueueCaused(b, plan.indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, plan.indexed, graphstore.LatestEvent)
 		if !stored.projected {
 			return nil
 		}

@@ -203,6 +203,12 @@ export interface ProofDocumentProps {
   /** Called beside the document's own refresh once the server has recorded an answer written in
    *  one of its decision blocks, so a host that selected the question learns it was answered. */
   onAskAnswered?(askId: string): void;
+  /** Called with this document's live editor as the document makes it, and with `undefined` as
+   *  it tears that editor down: a host that acts on the editor's view itself - a row of an
+   *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
+  onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
    *  outside the Proof schema, a history that cannot load, or any other failed admission. The
@@ -262,6 +268,7 @@ export function ProofDocument({
   isClosed,
   owner,
   onAskAnswered,
+  onEditorHandle,
   onToolbarChange,
   onUnavailable,
   onVersionChange,
@@ -293,6 +300,10 @@ export function ProofDocument({
   const activeMarkId = anchoredThread?.markId ?? undefined;
   const activeMarkIdRef = useRef(activeMarkId);
   activeMarkIdRef.current = activeMarkId;
+  // The host's hold on the editor, read through a ref like the mark above, so a host that
+  // re-renders reopens nothing.
+  const onEditorHandleRef = useRef(onEditorHandle);
+  onEditorHandleRef.current = onEditorHandle;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -520,8 +531,8 @@ export function ProofDocument({
   }, []);
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
   // versions) refresh once it lands, since the server's ask node now holds the outcome the block
-  // shows, though the answer writes no version, and a host that selected the question hears of
-  // its answer too.
+  // shows and the answer writes one version, which changes only the block's server-owned
+  // attributes, and a host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
@@ -752,6 +763,7 @@ export function ProofDocument({
         connectionRef.current = undefined;
       }
       setEditorHandle((current) => (current === editor ? undefined : current));
+      if (editor !== undefined) onEditorHandleRef.current?.(undefined);
       disposeEditorBindings = undefined;
       editor = undefined;
       document = undefined;
@@ -1043,6 +1055,7 @@ export function ProofDocument({
                   editor = handle;
                   editorRef.current = handle;
                   setEditorHandle(handle);
+                  onEditorHandleRef.current?.(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
                 })
                 .catch(reportLoadFailure);
@@ -1328,6 +1341,7 @@ export function ProofDocument({
                   <button
                     aria-label={`${count} references on block`}
                     className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    data-block-references={block.id}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -975,7 +976,7 @@ func (r *attemptRig) requireEveryAttemptRowIsANode(unmarked ...string) {
 	kinds, err := r.database.Pool.Query(ctx, `
 		select distinct kind from graph_tuples
 		where from_kind = $1 and to_kind = $2 and kind <> all($3)
-	`, graphstore.KindDeliveryAttempt, graphstore.KindValue, graphstore.BaseAttributes())
+	`, graphstore.KindDeliveryAttempt, graphstore.KindValue, graphstoretest.BaseAttributes())
 	if err != nil {
 		r.t.Fatalf("read the value kinds of the attempts: %v", err)
 	}

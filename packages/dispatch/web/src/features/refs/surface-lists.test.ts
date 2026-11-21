@@ -1785,6 +1785,17 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "picks.includes(option.label)",
   },
   {
+    file: `${FEATURES}/issue-page/slots/body.tsx`,
+    holds:
+      "the page's own heading for an address whose block or children the tree holds no node of (`ABSENT_LINES`)",
+    written: "heading",
+  },
+  {
+    file: `${FEATURES}/issue-page/useTreeKeymap.ts`,
+    holds: "the page's own word for an answer, in the label of the tree's answer key",
+    written: "CONTROL_LABELS.answer",
+  },
+  {
     file: `${FEATURES}/issue/AssigneeControl.tsx`,
     holds: "the assignee badge's text colour, a class of the theme's badge tone",
     written: "tone.text",

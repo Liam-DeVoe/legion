@@ -593,7 +593,8 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		fails := failpoint.Planned(r.Context(), failpoint.AgentState)
 		event, err := s.appendEventThen(r.Context(), tx, userAgentStateEvent(actor, sessionID), func(b *store.WriteBatch) error {
 			failpoint.Queue(b, fails)
-			return graphstore.QueueFromPerson(b, at, marks)
+			graphstore.QueueFromPerson(b, at, marks)
+			return nil
 		})
 		if err != nil {
 			s.writeHandlerError(w, err)

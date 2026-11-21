@@ -29,7 +29,10 @@ import (
 // a carry case of docs takes the change since the version he approved - a version
 // whose text is byte for byte the approved version's with no ask block in it
 // decided since, among others; then Dispatch carries the approval to it (docs
-// writes that carry). A person's answer to an ask writes no version.
+// writes that carry). A person's answer, resolve, decline, close or reopen of an ask writes one
+// version, whose only change is the server-owned attributes of the ask's block - `state`, and
+// `answered_by` and `answered_at` where the ask is answered - and R10's carry carries a standing
+// approval across it.
 // A request for approval is an ask of kind "approval" with fixed options, so it reaches the
 // human through the Inbox like any question; one opened on a document with an
 // earlier approval carries that approval's version, time and approver
@@ -894,7 +897,10 @@ func (s *server) openApprovalAsk(
 	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
 	askNode := graphstore.PlanUncaused(nodes, facts)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	nodeKind, nodeAddress := graphstore.AskRowNode(ask.ID, marked)
@@ -942,15 +948,11 @@ func (s *server) openApprovalAsk(
 	// (asks.PlanFollowNewAsk), dated by the request's created_at.
 	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		if _, err := follow.Queue(b, graphstore.LatestEvent); err != nil {
 			return err
 		}
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		return recording.Queue(b, graphstore.LatestEvent)
 	}); err != nil {
 		return nil, nil, err
@@ -1067,7 +1069,8 @@ func (s *server) renewApprovalAsk(
 		heldCause = graphstore.LatestEvent
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueCaused(b, held, heldCause)
+		return nil
 	}); err != nil {
 		return nil, err
 	}

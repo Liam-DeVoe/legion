@@ -8,11 +8,15 @@
 // first key column of a named index and whether a scan's condition names it, which is what
 // tells a read served by an index from one that reads the whole index and filters it, and it
 // holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
-// statement settles on (GenericPlan), which is the plan an index is lost in.
-// dispatch/api, dispatch/refs and broker/requests each pin an index's reach with these checks,
-// so they live here once rather than as a second (or third) hand copy of the same recursive
-// walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
-// code across packages (see internal/stacktest's identical reasoning).
+// statement settles on (GenericPlan), which is the plan an index is lost in. For a statement over
+// a batch of rows (batch.go) it runs the statement a writer sent, after the statements it sent
+// first, under each plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the
+// batch once and each named table by a probe of one row's key (UnprobedReads,
+// RequireEachRowProbedOnce), with a control that must fail it (RequireTheCheckFails).
+// dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/grapherase and cipher/requests each
+// pin a plan with these checks, so they live here once rather than as a second (or third) hand
+// copy of the same recursive walk; it is an ordinary package rather than a _test.go file because
+// Go cannot share test-only code across packages (see internal/stacktest's identical reasoning).
 package explaintest
 
 import (
@@ -37,7 +41,8 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
 // and its place under its own parent, what an analyzed plan measured of it (its loops, the rows
 // each answered and the rows its Filter removed each time, and the rows an index-only scan fetched
-// from the heap, all 0 in a plan explained without ANALYZE), the CTE it scans, and its children.
+// from the heap, all 0 in a plan explained without ANALYZE), the CTE it scans, the alias the
+// statement gives the relation it reads, and its children.
 type planNode struct {
 	NodeType            string            `json:"Node Type"`
 	RelationName        string            `json:"Relation Name"`
@@ -52,6 +57,7 @@ type planNode struct {
 	RowsRemovedByFilter float64           `json:"Rows Removed by Filter"`
 	HeapFetches         float64           `json:"Heap Fetches"`
 	CTEName             string            `json:"CTE Name"`
+	Alias               string            `json:"Alias"`
 	Plans               []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
@@ -66,7 +72,7 @@ type planNode struct {
 func (n planNode) asNode() Node {
 	found := Node{
 		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
-		CTE: n.CTEName, Subplan: n.subplan,
+		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
 		Loops: n.ActualLoops, Rows: n.ActualRows, RemovedByFilter: n.RowsRemovedByFilter,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
 		HeapFetches: n.HeapFetches,
@@ -243,12 +249,13 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // Filter refused each time, which with Rows is what an index scan read through its index before
 // it filtered them (EXPLAIN reports it per loop, as it does Rows); HeapFetches is how many rows an
 // index-only scan fetched from the heap, since the visibility map did not mark their pages
-// all-visible.
+// all-visible. Alias is the name the statement gives the relation the node reads, which a
+// condition of another node spells that relation's columns with.
 type Node struct {
-	Type, Relation, Index, CTE, Subplan string
-	Loops, Rows, RemovedByFilter        float64
-	Filter, IndexCond, RecheckCond      string
-	HeapFetches                         float64
+	Type, Relation, Index, CTE, Alias, Subplan string
+	Loops, Rows, RemovedByFilter               float64
+	Filter, IndexCond, RecheckCond             string
+	HeapFetches                                float64
 }
 
 // String names the node as a failure message cites it: its type, and whichever of the relation,

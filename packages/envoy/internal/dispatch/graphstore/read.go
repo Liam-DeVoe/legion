@@ -243,6 +243,35 @@ func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, erro
 // every node write writes (nodeArrays binds one array per column).
 const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties`
 
+// ProjectedTable is one table that projects the store: each of its rows names the node it is the
+// projection of by its node_kind and node_address, which migration 20261109022248 gave comments,
+// document_blocks and block_refs, and 20261116114515 messages, with a foreign key to graph_nodes.
+// Issue is the column naming the issue that owns a row itself, empty for a table whose rows are
+// owned through their document alone, and Artifact the column naming the document that owns it,
+// empty for a table whose rows no document owns: a comment is an issue's or a document's
+// (comments_one_owner, migration 0009), a block and a block reference are their document's, and a
+// message is its issue's or, sent on no issue, nobody's, as its write takes no owner then. Key is
+// the table's primary key, the order a reader takes a node's rows of it in and how it names each.
+type ProjectedTable struct{ Table, Issue, Artifact, Key string }
+
+// ProjectedTables are the tables that project the store, the one list of them the tree's
+// production code reads: the erase walks every one by (node_kind, node_address) rather than by the
+// node's kind, to read, lock and delete a node's rows of them (grapherase), so a kind that gains a
+// projection carries no second list there to keep in step. censustest.ProjectedColumns holds the
+// columns of each that the store states, and graphcensus's
+// TestTheProjectedColumnsListEveryTableTheStoreProjects holds its tables to these. asks and
+// ask_followers, which migration 20261116094058 gave the same pair, project only an ask's node,
+// and the erase deletes, locks and lists neither: it refuses an ask's node while its asks row
+// stands (graphcensus.ObjectRowStands), and a follower row goes with its asks row. An asks row
+// still says what its ask's node states, which the erase's blockers read (grapherase's
+// readBlockers).
+var ProjectedTables = []ProjectedTable{
+	{Table: "comments", Issue: "issue_key", Artifact: "artifact_id", Key: "id"},
+	{Table: "document_blocks", Artifact: "artifact_id", Key: "artifact_id, block_id"},
+	{Table: "block_refs", Artifact: "artifact_id", Key: "artifact_id, block_id, to_kind, to_id, kind"},
+	{Table: "messages", Issue: "issue_key", Key: "id"},
+}
+
 // NodesOfKind answers every node of one kind, in id order. It reads through the primary key
 // (kind, id), whose leading column it binds, so a kind the store holds few of costs that few
 // rows however many nodes the store holds. The block schema's supertag and attribute nodes are

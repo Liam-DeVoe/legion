@@ -158,8 +158,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 		gone.State = graphstore.StateGone
-		var err error
-		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
+		goneNode = graphstore.PlanUncaused([]graphstore.Node{gone}, nil)
+		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, goneNode)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return
 		}
@@ -184,13 +187,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	event, err := s.appendEventThen(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
 	), func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, goneNode, graphstore.LatestEvent); err != nil {
-			return err
+		graphstore.QueueCaused(b, goneNode, graphstore.LatestEvent)
+		if len(marks) > 0 {
+			graphstore.QueueFromPerson(b, marks[0].At, marks)
 		}
-		if len(marks) == 0 {
-			return nil
-		}
-		return graphstore.QueueFromPerson(b, marks[0].At, marks)
+		return nil
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)

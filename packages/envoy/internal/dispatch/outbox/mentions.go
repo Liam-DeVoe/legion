@@ -1203,10 +1203,8 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 				if err := deps.Broker.QueueAppend(b, receipt, func(appended model.Event) { receipts = append(receipts, appended) }); err != nil {
 					return err
 				}
-				if err := graphstore.QueueAttempted(b, event.Actor, graphstore.LatestEvent,
-					graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt)); err != nil {
-					return err
-				}
+				graphstore.QueueAttempted(b, event.Actor, graphstore.LatestEvent,
+					graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt))
 			}
 			return nil
 		}); err != nil {

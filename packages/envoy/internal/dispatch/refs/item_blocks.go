@@ -899,9 +899,7 @@ func (i ItemIndexing) Queue(b *store.WriteBatch) error {
 	i.queueStateLock(b)
 	if i.changed {
 		if len(i.stated.Nodes) > 0 {
-			if err := graphstore.QueueNodes(b, i.stated); err != nil {
-				return fmt.Errorf("write the block nodes of %s %s: %w", i.kind, i.itemID, err)
-			}
+			graphstore.QueueNodes(b, i.stated)
 		}
 		if err := i.queueBlocks(b); err != nil {
 			return err

@@ -243,7 +243,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
-	referenceChanges, indexed, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, indexed, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -300,10 +300,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// comment.edited that records it, queued right after that event, and then the participation of
 	// each person it newly mentions.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		return graphstore.QueueToPerson(b, mentionedIn)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		graphstore.QueueToPerson(b, mentionedIn)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

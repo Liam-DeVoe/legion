@@ -12,10 +12,10 @@ import (
 )
 
 // An ask block's answer state is the attribute node ask/answer_state in the store
-// (schemanodes.StoreName), because `state` is a base attribute of every node: a block node whose
-// `state` tuple read `answered` would be a node with no live state, which the census counts as a
-// difference. While another build serves (serveTwoBuilds), settlement also keeps the answer state
-// in the block's markdown as the attribute `state`, for that build's pages
+// (schemanodes.StoreName), because `state` is a base attribute of every node: a block node
+// whose `state` tuple read `answered` would be a node with no live state, which the census counts
+// as a difference. While another build serves (serveTwoBuilds), settlement also keeps the answer
+// state in the block's markdown as the attribute `state`, for that build's pages
 // (rollWindowAskAttributes), so a version can hold a block whose markdown says
 // `state="answered"`, as every version the release before wrote can.
 //

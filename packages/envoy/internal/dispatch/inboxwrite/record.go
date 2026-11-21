@@ -18,7 +18,6 @@ package inboxwrite
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -436,7 +435,9 @@ func withOwedParticipants(members []member, owed []graphstore.Tuple) []member {
 // Queue queues the record on a write phase's batch, right after the write's event, whose id the
 // tuples carry as event (graphstore.LatestEvent for an event the batch appends right before, which
 // nothing between them may follow with another), in Record's steps and order. Each tuple an
-// answer's catch-up owes carries the event of the write it belongs to instead.
+// answer's catch-up owes carries the event of the write it belongs to instead. The store's queue
+// writers it calls answer nothing, their refusals failing Send (graphstore.QueueWrite); its error
+// is that of a step of its own that cannot be queued.
 func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	w, thread := r.w, r.thread
 
@@ -445,13 +446,9 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	if r.owed.cites {
 		queueMarkCitations(b, w.NodeID)
 	}
-	if err := graphstore.QueueToPerson(b, r.owed.people); err != nil {
-		return fmt.Errorf("record what ask %s owes of its create and its older answer: %w", w.NodeID, err)
-	}
+	graphstore.QueueToPerson(b, r.owed.people)
 	if len(r.owed.others) > 0 {
-		if err := graphstore.QueueWrite(b, nil, r.owed.others); err != nil {
-			return fmt.Errorf("record what ask %s owes of its create: %w", w.NodeID, err)
-		}
+		graphstore.QueueWrite(b, nil, r.owed.others)
 	}
 
 	// 1. A takes part in T. An ask's create also reaches the person the ask waits on, who takes
@@ -465,16 +462,14 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		}
 		if r.person != "" {
 			people = append(people, taking)
-		} else if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{taking}); err != nil {
-			return fmt.Errorf("record that %s/%s takes part in %s/%s: %w", r.authorKind, r.authorID, thread.kind, thread.id, err)
+		} else {
+			graphstore.QueueWrite(b, nil, []graphstore.Tuple{taking})
 		}
 	}
 	if w.Arm == Opens {
 		people = append(people, waitingOnTuples(w.NodeID, r.waiting, r.person, w.At, w.Who, event)...)
 	}
-	if err := graphstore.QueueToPerson(b, people); err != nil {
-		return fmt.Errorf("record who takes part in %s/%s by %s/%s: %w", thread.kind, thread.id, w.NodeKind, w.NodeID, err)
-	}
+	graphstore.QueueToPerson(b, people)
 	if w.Arm == TakesPart {
 		return nil
 	}
@@ -482,9 +477,7 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	if w.Arm == Replies {
 		// A session's reply to a message brings its root back to everyone who dismissed it.
 		if r.clears {
-			if err := queueAgentDismissalsClear(b, thread.id, r.failClear, w, event); err != nil {
-				return err
-			}
+			queueAgentDismissalsClear(b, thread.id, r.failClear, w, event)
 		}
 
 		// 2. Every row of T, locked in one pass.
@@ -508,17 +501,13 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		if r.starter != "" && r.starter != r.person && !starterDelivered {
 			delivered(r.starter)
 		}
-		if err := graphstore.QueueToPerson(b, deliveries); err != nil {
-			return fmt.Errorf("deliver %s/%s to the participants of %s/%s: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
-		}
+		graphstore.QueueToPerson(b, deliveries)
 		failpoint.Queue(b, r.failThreads)
 
 		// 4. Each of their dismissals of T that stands ends, and each row of T those people hold
 		// moves.
 		if len(r.delivered) > 0 {
-			if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, thread.kind, thread.id, graphstore.MarkedBy(r.delivered), w.At, w.Who, event); err != nil {
-				return fmt.Errorf("retract the dismissals of %s/%s: %w", thread.kind, thread.id, err)
-			}
+			graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, thread.kind, thread.id, graphstore.MarkedBy(r.delivered), w.At, w.Who, event)
 		}
 		queueMoveRows(b, thread, w, r.moved)
 	}

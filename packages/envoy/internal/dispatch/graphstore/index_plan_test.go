@@ -95,7 +95,12 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // each read's answer against a reference that walks the whole log in Go, so an index that
 // answers fewer rows than the log holds fails here rather than passing as a faster plan; and it
 // reads the migration files and the catalog, so an index moved to a later migration - where an
-// existing deployment would build it on a full table - fails too, and so does a dropped one.
+// existing deployment would build it on a full table - fails too, and so does a dropped one, and
+// so does any index outside the set that a migration's create index statement declares on
+// graph_tuples, however that statement spells the index and the table (indexDeclaration,
+// TestIndexesOfReadsEveryCreateIndexSpelling). The scan of the files reads create index
+// statements alone: an index a constraint makes, a primary key or a unique constraint of a create
+// table or an alter table, is not one it reads.
 //
 // Each read is explained under both plan-cache modes (planCacheModes), and each plan of each
 // mode is held to one rule: it reads graph_tuples through one of the four read indexes, that
@@ -1277,15 +1282,24 @@ var laterGraphNodesIndexes = []requiredGraphIndex{
 	},
 }
 
-// declaredIndex is one create index a migration file holds.
+// declaredIndex is one create index a migration file holds, with the statement that declares
+// it. An index declared under no name of its own has the empty name: Postgres makes one up.
 type declaredIndex struct {
-	migration       string
-	name, table     string
-	keys, predicate string
-	unique          bool
+	migration, statement string
+	name, table          string
+	keys, predicate      string
+	unique               bool
 	// concurrent is a build `create index concurrently` in a migration whose first line is
 	// `-- pgmigrate:non-transactional`, the one way such a build reaches the database.
 	concurrent bool
+}
+
+// called is how a failure names the index: by its name, or as one Postgres names.
+func (index declaredIndex) called() string {
+	if index.name == "" {
+		return "an index under no name of its own, which Postgres names,"
+	}
+	return index.name
 }
 
 // requireIndexSetOfTheFirstMigration reads the migration files in version order and holds the
@@ -1373,8 +1387,8 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 				continue
 			}
 			if !strings.Contains(index.predicate, "to_kind") {
-				t.Errorf("%s (%s) in %s keys the far end under no to_kind predicate: a value and an address share that key, and a key over to_id itself refuses the insert of a long value",
-					index.name, index.keys, index.migration)
+				t.Errorf("%s (%s) in %s keys the far end under no to_kind predicate: a value and an address share that key, and a key over to_id itself refuses the insert of a long value: %s",
+					index.called(), index.keys, index.migration, index.statement)
 			}
 		}
 	}
@@ -1387,8 +1401,8 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		for _, index := range indexes {
 			inTheSet := slices.ContainsFunc(requiredGraphIndexes, func(want requiredGraphIndex) bool { return want.name == index.name })
 			if index.table == "graph_tuples" && !inTheSet {
-				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and no other",
-					index.migration, index.name, index.keys, wherePart(index.predicate), graphTupleReadIndexes)
+				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and no other; the statement: %s",
+					index.migration, index.called(), index.keys, wherePart(index.predicate), graphTupleReadIndexes, index.statement)
 			}
 		}
 	}
@@ -1523,9 +1537,28 @@ func readMigration(t *testing.T, file string) string {
 	return string(body)
 }
 
-// indexDeclaration matches one create index up to the semicolon that ends it; no index of this
-// tree writes a semicolon inside its own definition.
-var indexDeclaration = regexp.MustCompile(`(?is)\bcreate\s+(unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?([a-z0-9_]+)\s+on\s+([a-z0-9_]+)\s*([^;]*);`)
+// indexDeclaration matches one create index up to the semicolon that ends it, in every form
+// Postgres takes one in: in either case; unique or not; concurrently or not; if not exists or
+// not; under a name of its own, or none, which Postgres then makes up; on the table, or on only
+// the table; and with the table under its schema or not. Each name is a SQL identifier, bare or
+// quoted (sqlIdentifier, read through sqlName). It captures whether the index is unique, whether
+// it is built concurrently, its name, its table and what follows the table. No index of this tree
+// writes a semicolon inside its own definition.
+var indexDeclaration = regexp.MustCompile(`(?is)\bcreate\s+(unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?` +
+	`(?:(` + sqlIdentifier + `)\s+)?on\s+(?:only\s+)?(?:` + sqlIdentifier + `\s*\.\s*)?(` + sqlIdentifier + `)\s*([^;]*);`)
+
+// sqlIdentifier matches one SQL identifier: a bare one, or a quoted one, inside which a doubled
+// quote stands for one.
+const sqlIdentifier = `(?:[a-z_][a-z0-9_$]*|"(?:[^"]|"")+")`
+
+// sqlName is the name an identifier sqlIdentifier matched names, as Postgres reads it: a bare
+// one folded to lower case, a quoted one as written, without its quotes.
+func sqlName(identifier string) string {
+	if quoted, ok := strings.CutPrefix(identifier, `"`); ok {
+		return strings.ReplaceAll(strings.TrimSuffix(quoted, `"`), `""`, `"`)
+	}
+	return strings.ToLower(identifier)
+}
 
 // indexPredicateStart matches where an index's key list ends and its partial predicate begins.
 var indexPredicateStart = regexp.MustCompile(`(?is)\)\s*where\b`)
@@ -1542,8 +1575,10 @@ var lineComment = regexp.MustCompile(`(?m)^[ \t]*--.*$`)
 func withoutLineComments(body string) string { return lineComment.ReplaceAllString(body, "") }
 
 // indexesOf is every index one migration file declares, with its key list and predicate written
-// the way requiredGraphIndexes writes them. body is the file with its comments taken out, so
-// whether the file runs outside the runner's transaction is read off firstLine, the file's own.
+// the way requiredGraphIndexes writes them, its name and its table as Postgres reads them
+// (sqlName), the table without its schema, and the statement as it is written, on one line. body
+// is the file with its comments taken out, so whether the file runs outside the runner's
+// transaction is read off firstLine, the file's own.
 func indexesOf(migration, body, firstLine string) []declaredIndex {
 	nonTransactional := strings.TrimSpace(firstLine) == "-- pgmigrate:non-transactional"
 	var indexes []declaredIndex
@@ -1551,8 +1586,9 @@ func indexesOf(migration, body, firstLine string) []declaredIndex {
 		keys, predicate := splitIndexBody(match[5])
 		indexes = append(indexes, declaredIndex{
 			migration:  migration,
-			name:       match[3],
-			table:      match[4],
+			statement:  strings.TrimSpace(whitespaceRun.ReplaceAllString(match[0], " ")),
+			name:       sqlName(match[3]),
+			table:      sqlName(match[4]),
 			keys:       keys,
 			predicate:  predicate,
 			unique:     strings.TrimSpace(match[1]) != "",
@@ -1560,6 +1596,85 @@ func indexesOf(migration, body, firstLine string) []declaredIndex {
 		})
 	}
 	return indexes
+}
+
+// TestIndexesOfReadsEveryCreateIndexSpelling holds indexesOf to reading the name, the table and
+// the rest of the index out of each spelling of a create index that indexDeclaration lists, one
+// row a spelling, so an index a migration declares in any of them is one the index-set scan
+// reads rather than one it passes over. It reads no database.
+func TestIndexesOfReadsEveryCreateIndexSpelling(t *testing.T) {
+	for _, row := range []struct {
+		spelling, statement string
+		want                declaredIndex
+	}{
+		{
+			spelling: "under a name of its own", statement: `create index graph_tuples_named on graph_tuples (kind, to_id) where to_kind <> 'value';`,
+			want: declaredIndex{name: "graph_tuples_named", table: "graph_tuples", keys: "kind, to_id", predicate: "to_kind <> 'value'"},
+		},
+		{
+			spelling: "under no name, which Postgres makes up", statement: `create index on graph_tuples (kind);`,
+			want: declaredIndex{name: "", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "under a quoted name holding a doubled quote", statement: `create index "Graph ""Quoted"" Index" on graph_tuples (kind);`,
+			want: declaredIndex{name: `Graph "Quoted" Index`, table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "on a quoted table", statement: `create index graph_tuples_quoted_table on "Graph_Tuples" (kind);`,
+			want: declaredIndex{name: "graph_tuples_quoted_table", table: "Graph_Tuples", keys: "kind"},
+		},
+		{
+			spelling: "on the table under its schema", statement: `create index graph_tuples_schema on public.graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_schema", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "on the table under its quoted schema, spaced round the dot", statement: `create index graph_tuples_quoted_schema on "public" . graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_quoted_schema", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "on only the table", statement: `create index graph_tuples_only on only graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_only", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "in upper case", statement: `CREATE UNIQUE INDEX GRAPH_TUPLES_UPPER ON GRAPH_TUPLES (FROM_KIND, KIND) WHERE SOURCE_EVENT <> 0;`,
+			want: declaredIndex{name: "graph_tuples_upper", table: "graph_tuples", keys: "from_kind, kind", predicate: "source_event <> 0", unique: true},
+		},
+		{
+			spelling: "unique", statement: `create unique index graph_tuples_unique on graph_tuples (from_kind, md5(to_id)) where to_kind = 'value';`,
+			want: declaredIndex{name: "graph_tuples_unique", table: "graph_tuples", keys: "from_kind, md5(to_id)", predicate: "to_kind = 'value'", unique: true},
+		},
+		{
+			spelling: "if not exists", statement: `create index if not exists graph_tuples_maybe on graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_maybe", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "concurrently", statement: `create index concurrently graph_tuples_concurrent on graph_tuples (kind);`,
+			want: declaredIndex{name: "graph_tuples_concurrent", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "concurrently, under no name", statement: `create index concurrently on graph_tuples (kind);`,
+			want: declaredIndex{name: "", table: "graph_tuples", keys: "kind"},
+		},
+		{
+			spelling: "every option at once, over several lines", statement: "create unique index concurrently if not exists\n\tgraph_tuples_every\n\ton only public.graph_tuples (\n\t\tfrom_kind,\n\t\tkind\n\t)\n\twhere source_event <> 0;",
+			want: declaredIndex{name: "graph_tuples_every", table: "graph_tuples", keys: "from_kind, kind", predicate: "source_event <> 0", unique: true},
+		},
+	} {
+		const migration = "0_spelling.up.sql"
+		read := indexesOf(migration, "create table unrelated (id bigint);\n"+row.statement+"\nselect 1;\n", "")
+		if len(read) != 1 {
+			t.Errorf("%s: indexesOf reads %d indexes out of %q, want one", row.spelling, len(read), row.statement)
+			continue
+		}
+		got := read[0]
+		row.want.migration = migration
+		row.want.statement = strings.TrimSpace(whitespaceRun.ReplaceAllString(row.statement, " "))
+		if got != row.want {
+			t.Errorf("%s: indexesOf reads %q as %q unique=%v on %q (%s)%s, statement %q; want %q unique=%v on %q (%s)%s, statement %q",
+				row.spelling, row.statement, got.name, got.unique, got.table, got.keys, wherePart(got.predicate), got.statement,
+				row.want.name, row.want.unique, row.want.table, row.want.keys, wherePart(row.want.predicate), row.want.statement)
+		}
+	}
 }
 
 // splitIndexBody takes an index's key list and its partial predicate out of what follows the

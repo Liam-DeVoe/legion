@@ -22,6 +22,7 @@ import {
   decision,
   decisionNode,
   decisionsRead,
+  entryOf,
   issueDetails,
   issueTree,
   KEY,
@@ -223,11 +224,16 @@ test("the review list is read from the shaped ties alone", () => {
 
   // The one rule, as the count of what waits on the reader reads it too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
-  expect(made.map((row) => inReviewList(row, isStatement))).toEqual([true, true, false, false]);
+  expect(made.map((row) => inReviewList(entryOf(row), isStatement))).toEqual([
+    true,
+    true,
+    false,
+    false,
+  ]);
   // A decision that does not wait is no entry of the list, whatever its ties.
   expect(
     inReviewList(
-      decision("kept", { links: [shaped(specRef("s1"))], waiting_review: false }),
+      entryOf(decision("kept", { links: [shaped(specRef("s1"))], waiting_review: false })),
       isStatement
     )
   ).toBe(false);
@@ -384,7 +390,7 @@ test("a decision the reader asked to change leaves the review list and carries t
   // The one rule the count of what waits on the reader reads too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
   expect(
-    inReviewList(decision("asked", { links: [shaped(specRef("s1"))] }), isStatement, true)
+    inReviewList(entryOf(decision("asked", { links: [shaped(specRef("s1"))] })), isStatement, true)
   ).toBe(false);
   expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
 });

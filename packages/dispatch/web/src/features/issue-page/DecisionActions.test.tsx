@@ -12,6 +12,7 @@ import type {
   ArtifactText,
   Decision,
   DecisionEntry,
+  DecisionKeep,
   IssueDecisions,
 } from "../../api/types";
 import {
@@ -93,8 +94,9 @@ const decision: Decision = {
 };
 
 /** The entry the decisions read answers beside the agent's decision `row` of the spec
- *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it and the spec's block it
- *  stands at, each member an agent's decision holds none of null. */
+ *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it, the spec's block it
+ *  stands at and the asks its `from_ask` settles, each member an agent's decision holds none of
+ *  null. */
 function entryOf(row: Decision): DecisionEntry {
   const node = `${document_.ref_key}#${row.block_id}`;
   return {
@@ -113,6 +115,7 @@ function entryOf(row: Decision): DecisionEntry {
       block_id: row.block_id,
       ref: `dispatch://${KEY}/spec`,
     },
+    from_ask: row.asks ?? [],
     kept: row.kept,
     kept_by: row.kept?.kept_by ?? null,
     kept_text_sum: row.kept === null ? null : row.text_sha256,
@@ -138,11 +141,11 @@ function entryOf(row: Decision): DecisionEntry {
 }
 
 /** The decisions read over the agent's decisions `rows` of the spec, as this build's server
- *  answers it: an entry for each, the same decisions in the old shape, and no decisions
- *  document, which is retired. */
+ *  answers it: an entry for each, which is all the controls read of it, so the old `decisions`
+ *  member holds none of them, and no decisions document, which is retired. */
 function readOf(rows: readonly Decision[]): IssueDecisions {
   return {
-    decisions: [...rows],
+    decisions: [],
     document: null,
     entries: rows.map(entryOf),
     open_questions: [],
@@ -215,6 +218,48 @@ test("the change form opens with the caret in its field", async () => {
     ).toBe(field);
   } finally {
     unmount();
+  }
+});
+
+// A Keep the server took is the reader's at once: the decisions read the tree, its count and the
+// Decisions tab draw from holds the decision's entry kept and no longer waiting for review, so
+// nothing draws it as waiting until that read is asked again.
+test("a Keep marks the decision's entry in the decisions read kept and no longer waiting", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["decisions", KEY], read);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
+  const kept: DecisionKeep = {
+    artifact_id: document_.id,
+    block_id: "d1",
+    changed_version: 1,
+    kept_at: "2026-11-06T00:00:00Z",
+    kept_by: "alice",
+  };
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(kept);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
+    await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([document_.id, "d1", "sum"]);
+    await waitFor(() =>
+      expect(client.getQueryData<IssueDecisions>(["decisions", KEY])?.entries?.[0]).toMatchObject({
+        kept,
+        kept_by: "alice",
+        waiting_review: false,
+      })
+    );
+    expect(screen.queryByRole("button", { name: CONTROL_LABELS.keep_decision })).toBeNull();
+  } finally {
+    view.unmount();
+    decisions.mockRestore();
+    keep.mockRestore();
   }
 });
 
@@ -718,7 +763,8 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
   const written = "The presets read dispatch://CORE-7 first.";
   const text = `## One tree, five presets\n\n${written}`;
   const cited: Decision = { ...decision, text, text_tree: displayTree(text) };
-  const answer = { ...read, decisions: [cited] };
+  // The read's entry for the decision, which is what the controls read (`readOf`).
+  const answer = readOf([cited]);
   const createComment = spyOn(api, "createComment").mockImplementation(
     () => new Promise<never>(() => {})
   );

@@ -896,9 +896,10 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
 	), func(b *store.WriteBatch) error {
 		failpoint.Queue(b, fails)
-		return graphstore.QueueFromPerson(b, at, []graphstore.Tuple{
+		graphstore.QueueFromPerson(b, at, []graphstore.Tuple{
 			personMark(actor, graphstore.TupleReadThrough, kind, root, readThrough, true, graphstore.LatestEvent),
 		})
+		return nil
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)

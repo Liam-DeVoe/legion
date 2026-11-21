@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -30,7 +31,7 @@ func TestAnAskReconciledTwiceInOneTransactionHoldsTheSecondsCitations(t *testing
 	defer tx.Rollback(ctx)
 	queued, ledger := queueWrites(ctx, tx)
 	for _, rewording := range []struct{ previous, question string }{{asked, first}, {first, second}} {
-		reader := refs.NewReader(queued, tx, "ask", ask, graphEdgeServer)
+		reader := refs.NewReader(queued, tx, model.Actor{Kind: "user", ID: "alice"}, "ask", ask, graphEdgeServer)
 		_, step, cited, err := planEditedAskReferences(queued, tx, reader, ask, rewording.previous, rewording.question)
 		if err != nil {
 			t.Fatalf("plan the references of %q: %v", rewording.question, err)
@@ -39,7 +40,8 @@ func TestAnAskReconciledTwiceInOneTransactionHoldsTheSecondsCitations(t *testing
 			t.Fatalf("queue the references of %q: %v", rewording.question, err)
 		}
 		if err := write(queued, tx, func(b *store.WriteBatch) error {
-			return graphstore.QueueCaused(b, cited, graphstore.NoEvent)
+			graphstore.QueueCaused(b, cited, graphstore.NoEvent)
+			return nil
 		}); err != nil {
 			t.Fatalf("queue the citations of %q: %v", rewording.question, err)
 		}

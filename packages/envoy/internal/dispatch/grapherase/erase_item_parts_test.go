@@ -48,11 +48,10 @@ func openAttempt(ctx context.Context, tx pgx.Tx, key graphstore.AttemptKey, inse
 	}
 	kind, address, opened := graphstore.AttemptOpened(key, graphstore.AttemptWriter, at)
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, opened); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, opened)
 		b.Queue("open the attempt", insert, append(args, kind, address)...)
-		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+		return nil
 	}); err != nil {
 		return graphstore.Uncaused{}, err
 	}
@@ -62,15 +61,16 @@ func openAttempt(ctx context.Context, tx pgx.Tx, key graphstore.AttemptKey, inse
 // indexItem indexes the body of comment or message itemID, whose row the calling transaction
 // holds, as this release's item writers index one (api's planItemWrite): its blocks and the
 // mentions each holds (refs.PlanItemIndex), then its own references (refs.PlanItemReplace), from
-// one reading of body, queued as one write phase. It answers what the pass states in the store,
-// held for the cause the caller gives it: the block nodes, each block's part_of and links, and
-// the item's citations.
+// one reading of body, queued as one write phase. The bodies its callers index write no short id,
+// so the reading resolves for nobody (refs.NewReader). It answers what the pass states in the
+// store, held for the cause the caller gives it: the block nodes, each block's part_of and links,
+// and the item's citations.
 func indexItem(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string, at time.Time) (graphstore.Uncaused, error) {
 	index, err := refs.ReadItemIndex(ctx, tx, kind, itemID)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	located := refs.NewReader(ctx, tx, string(kind), itemID, eraseServerURL).Mentions(body)
+	located := refs.NewReader(ctx, tx, model.Actor{}, string(kind), itemID, eraseServerURL).Mentions(body)
 	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, eraseServerURL, at, located, nil)
 	if err != nil {
 		return graphstore.Uncaused{}, err
@@ -172,8 +172,11 @@ func TestTheEraseOfAMessageTakesItsRowAndItsParts(t *testing.T) {
 		at := time.Now().UTC()
 		row := graphstore.MessageRow{ID: message, IssueKey: "CORE-1", Target: "session:s1"}
 		nodes, tuples, _ := graphstore.MessageFacts([]graphstore.Node{graphstore.MessageNode(message, "CORE", nil, author, at)}, nil, row, author, at, graphstore.NoEvent)
-		held, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
-		if err != nil {
+		held := graphstore.PlanUncaused(nodes, tuples)
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, held)
+			return nil
+		}); err != nil {
 			return graphstore.Uncaused{}, err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -182,7 +185,9 @@ func TestTheEraseOfAMessageTakesItsRowAndItsParts(t *testing.T) {
 		`, message, `{"kind":"user","id":"`+writer+`"}`, at); err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		if err := graphstore.Authored(ctx, tx, graphstore.KindMessage, message, author, at, graphstore.NoEvent); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return graphstore.QueueAuthored(b, graphstore.KindMessage, message, author, at, graphstore.NoEvent)
+		}); err != nil {
 			return graphstore.Uncaused{}, err
 		}
 		indexed, err := indexItem(ctx, tx, refs.ItemMessage, message, "A message nobody may keep.", at)

@@ -193,7 +193,8 @@ func (s *server) announceAskSnooze(
 		fails := failpoint.Planned(r.Context(), failpoint.AskSnooze)
 		event, err = s.appendEventThen(r.Context(), tx, event, func(b *store.WriteBatch) error {
 			failpoint.Queue(b, fails)
-			return graphstore.QueueFromPerson(b, at, []graphstore.Tuple{mark})
+			graphstore.QueueFromPerson(b, at, []graphstore.Tuple{mark})
+			return nil
 		})
 	}
 	if err == nil {

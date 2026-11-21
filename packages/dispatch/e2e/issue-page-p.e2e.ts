@@ -11,12 +11,14 @@ import {
   getArtifactVersion,
   getAsk,
   getIssue,
+  getIssueDecisions,
   patchIssue,
   requestApproval,
   reviewArtifact,
   setGatedSteps,
 } from "./api";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
+import { focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import {
   actionsMenuDrop,
@@ -38,7 +40,6 @@ import {
   holdReviewReads,
   IPHONE_13,
   identityBand,
-  issueDecisions,
   issueHeader,
   LABELS_READING,
   type LabelsAgainstTheCount,
@@ -1023,11 +1024,15 @@ test("the count of what waits is a control that opens the Decisions address @pho
       },
       asAgent
     );
+    // The read's entries for the issue's `decision` blocks - an entry that names no document is
+    // an ask's - each with the blocks its `shaped` attribute names.
     expect(
-      ((await issueDecisions(decided.key)).decisions ?? []).map((decision) => ({
-        names: (decision.links ?? []).map((link) => link.to.block_id),
-        waiting: decision.waiting_review,
-      })),
+      ((await getIssueDecisions(decided.key)).entries ?? [])
+        .filter((entry) => entry.document !== null)
+        .map((decision) => ({
+          names: (decision.shaped ?? []).map((link) => link.to.block_id),
+          waiting: decision.waiting_review,
+        })),
       "the server does not read the agent's decision as waiting for review"
     ).toEqual([{ names: ["r1"], waiting: true }]);
     expect((await getIssue(decided.key)).open_asks ?? [], "an ask of the issue is open").toEqual(
@@ -1600,6 +1605,11 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
   await page.setViewportSize({ height: 420, width });
   await gotoIssue(page, `/issues/${key}`);
   await expectHeaderDrawn(page);
+  // The outline opens with the focus on the first question that waits on the reader and holds
+  // that row on screen until the reader acts or the focus leaves it, so the page's
+  // growth below would scroll back to it: the focus lands, then leaves the tree.
+  await expect(page.locator("[data-node-row]:focus"), "the load focused no row").toHaveCount(1);
+  await focusThePage(page);
   await page.evaluate(() => {
     const page = document.querySelector("[data-issue-page]");
     if (page instanceof HTMLElement) page.style.minHeight = "2000px";

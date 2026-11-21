@@ -435,9 +435,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
     // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
     // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
-    // container, the only renderer whose pixels this comparison is ever against
-    // (`packages/dispatch/AGENTS.md`, "Accessibility and visual review": baselines come only
-    // from the pinned container).
+    // container, the only renderer whose pixels this comparison is ever against.
     layers: bothLayers,
     name: "person",
     path: (seed) => `/people/${encodeURIComponent(seed.person)}`,

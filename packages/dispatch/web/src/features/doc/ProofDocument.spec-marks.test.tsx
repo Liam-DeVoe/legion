@@ -19,6 +19,7 @@ import type {
   Version,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import type { DecisionsRead } from "../issue/decision-entries";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
 
@@ -71,6 +72,7 @@ const decisions: IssueDecisions = {
         block_id: "d-1",
         ref: "dispatch://CORE-1/artifact/choices-md",
       },
+      from_ask: [],
       kept: null,
       kept_by: null,
       kept_text_sum: null,
@@ -158,9 +160,9 @@ function readOf(version: number | null): DocumentRead {
   };
 }
 
-function stubReads(readVersion: number | null) {
+function stubReads(readVersion: number | null, decisionsRead: IssueDecisions = decisions) {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(spec);
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisions);
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead);
   const getDocumentRead = spyOn(api, "getDocumentRead").mockResolvedValue(readOf(readVersion));
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(parts);
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue(blocks);
@@ -263,6 +265,65 @@ test("with no read version the Spec tab shows no line and marks no changed block
       ])
     );
     expect(screen.queryByText(/Changed since you last read/)).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    reads.restore();
+  }
+});
+
+// A server of the release before answers the Decisions read with no `entries`: its decisions are
+// the sections of the issue's decisions document, each with the links it shaped and the server's
+// own `stale`. A page of this build that reaches it during a roll still marks the block a
+// decision's link went out of date on, rather than marking nothing.
+test("a Decisions read of the release before, with no entries, still marks the stale block", async () => {
+  const before: DecisionsRead = {
+    decisions: [
+      {
+        asks: [],
+        block_id: "h-two-steps",
+        changed_at: "2026-10-04T00:00:00Z",
+        changed_version: 3,
+        heading: "Ship it in two steps",
+        kept: null,
+        kind: "agent",
+        links: [
+          {
+            created_at: "2026-10-01T00:00:00Z",
+            created_version: 1,
+            from_block: "h-two-steps",
+            stale: true,
+            to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
+          },
+        ],
+        ref: "dispatch://CORE-1/artifact/decisions-md#b-h-two-steps",
+        replaced: false,
+        text: "## Ship it in two steps\n\nThe flag goes first.",
+        text_sha256: "sum-two-steps",
+        unsure: false,
+        waiting_review: true,
+      },
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const reads = stubReads(null, before as IssueDecisions);
+  const { editors, sync } = renderProofDocument({
+    document: spec,
+    queryClient: createQueryClient(),
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("editor missing");
+
+    await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(editor.blockMarks.at(-1)).toEqual([
+        { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },
+      ])
+    );
   } finally {
     cleanup();
     reads.restore();

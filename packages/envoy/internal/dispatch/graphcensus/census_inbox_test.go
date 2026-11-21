@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // inboxCensus is a database the census of dispatch://INFRA-1152 is read over: the project CENS
@@ -598,7 +599,7 @@ func TestTheCensusSnapshotIsBoundedByItsDeadline(t *testing.T) {
 	f := newInboxCensus(t)
 	ctx := context.Background()
 	url := f.writes.database.Pool.Config().ConnString()
-	conn, err := connect(ctx, url, applicationName)
+	conn, err := store.Connect(ctx, url, applicationName)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

@@ -151,10 +151,7 @@ var itemRowWriters = map[string]map[string]string{
 		"moveRows": "the issue's owner lock, which the decisions step's restore takes first in the " +
 			"transaction it opens (restoreIssueDecisions, lockArtifactOwner)",
 	},
-	"internal/dispatch/graphcensus/backfill.go": {
-		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
-			"reads the rows (LockCommentOwners): the backfill's comment batch (writeCommentBatch) and " +
-			"the block-index tick's read of the events after its cursor (docs' readEventsAfterCursor)",
+	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
 			"opens (lockAskOwners, events.LockOwnerRows)",
 	},
@@ -191,6 +188,12 @@ var itemRowWriters = map[string]map[string]string{
 		"deleteReadState": "the owner lock of every owner the erase writes under, which the erase's " +
 			"transaction takes before the node's row and its read-state rows (lockOwnersThenNode, " +
 			"events.LockOwnerRows); it deletes read-state rows, tables this scan cannot read",
+	},
+	"internal/dispatch/refs/comment_nodes.go": {
+		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
+			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
+			"writeCommentBatch) and the block-index tick's read of the events after its cursor " +
+			"(docs' readEventsAfterCursor)",
 	},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
@@ -409,8 +412,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 			"request makes; its lock-step driver holds the restore behind the issue's owner lock " +
 			"(docs' TestTheDecisionsStepsWritersTakeTheStoreLockOrder)",
 	},
-	"internal/dispatch/graphcensus/backfill.go": {
-		"Queue": itemRowCallersTransaction,
+	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +
 			"holds it behind both owners' locks (graphcensus' " +
 			"TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows)",
@@ -432,6 +434,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 			"after it took every owner lock; its lock-step test holds the erase behind the owner lock " +
 			"before the node's row (grapherase's TestTheEraseTakesTheStoreLockOrder)",
 	},
+	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
 		"markItemBlocksOwed":   itemRowCallersTransaction,

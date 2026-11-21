@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The census of dispatch://INFRA-1152 (R6, R9): every projection the one inbox read uses, held
@@ -227,11 +228,11 @@ var commentPointerProjection = projection{
 	// A comment left out of the store - an anchor or an owner past the bound - and one whose
 	// replies_to_block is past it states no pointer by design (graphstore.CommentPointerFacts).
 	pastBound: `
-		select count(*) from comments c` + commentStoreJoins + `
-		where not (` + commentInTheStore + `) or not ` + fits(`coalesce(c.replies_to_block, '')`),
+		select count(*) from comments c` + refs.CommentStoreJoins + `
+		where not (` + refs.CommentInTheStore + `) or not ` + fits(`coalesce(c.replies_to_block, '')`),
 	unmarked: `
-		select count(*) from comments c` + commentStoreJoins + `
-		where not c.tuples_stored and ` + commentInTheStore + ` and ` + fits(`coalesce(c.replies_to_block, '')`),
+		select count(*) from comments c` + refs.CommentStoreJoins + `
+		where not c.tuples_stored and ` + refs.CommentInTheStore + ` and ` + fits(`coalesce(c.replies_to_block, '')`),
 	populations: createdPopulations(`comments c`, `c.created_at`, `c.tuples_stored`),
 	emptyAgrees: true,
 }
@@ -282,11 +283,11 @@ var commentMentionProjection = func() projection {
 		// A mention of a comment the store leaves out, and a target or a session past the bound,
 		// states no tuple by design (api's mentionStored).
 		pastBound: `
-		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + commentStoreJoins + `
-		where not (` + commentInTheStore + `) or ` + routeID + ` is null or not ` + fits(`coalesce(m.resolved_session_id, '')`),
+		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + refs.CommentStoreJoins + `
+		where not (` + refs.CommentInTheStore + `) or ` + routeID + ` is null or not ` + fits(`coalesce(m.resolved_session_id, '')`),
 		unmarked: `
-		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + commentStoreJoins + `
-		where not m.tuples_stored and ` + commentInTheStore + ` and ` + routeID + ` is not null and ` + fits(`coalesce(m.resolved_session_id, '')`),
+		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + refs.CommentStoreJoins + `
+		where not m.tuples_stored and ` + refs.CommentInTheStore + ` and ` + routeID + ` is not null and ` + fits(`coalesce(m.resolved_session_id, '')`),
 		populations: createdPopulations(`comment_mentions m join comments c on c.id = m.comment_id`, `c.created_at`, `m.tuples_stored`),
 		emptyAgrees: true,
 	}
@@ -603,13 +604,13 @@ var userThreadsMarked = `u.marked_seq is not null and ` + userThreadsKeyed
 
 // userThreadsKeyed is true of a user_threads row u whose person the store can key, of a thread
 // the store does not leave out on purpose: a comment thread whose root is past the store's address
-// bound (commentInTheStore) has no node its marks could point at, and the backfill marks no row of
-// it (userThreadsOwed). Such a row is counted with the addresses past the bound, and every other
-// row is held or is the unmarked class.
+// bound (refs.CommentInTheStore) has no node its marks could point at, and the backfill marks no
+// row of it (userThreadsOwed). Such a row is counted with the addresses past the bound, and every
+// other row is held or is the unmarked class.
 var userThreadsKeyed = fits(`u.login`) + `
 	  and not (u.kind = '` + graphstore.KindComment + `' and exists (
-		select 1 from comments c` + commentStoreJoins + `
-		where c.id = u.thread_id and not (` + commentInTheStore + `)))`
+		select 1 from comments c` + refs.CommentStoreJoins + `
+		where c.id = u.thread_id and not (` + refs.CommentInTheStore + `)))`
 
 // userThreadsRowOf is true where the person n.id holds a user_threads row of the thread held names,
 // with more predicates over that row u.

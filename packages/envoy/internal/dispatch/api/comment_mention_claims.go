@@ -285,7 +285,8 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 			refreshed, err = collectMentionClaims(rows)
 			return err
 		})
-		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, mentionAttemptKeys(queued)...)
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, mentionAttemptKeys(queued)...)
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -341,7 +342,8 @@ func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) 
 			where d.comment_id = held.comment_id and d.target = held.target and d.attempt = held.attempt
 			  and d.state = 'pending' and d.claimed_at = held.claimed_at
 		`, comments, targets, attempts, claimed)
-		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, mentionAttemptKeys(held)...)
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, mentionAttemptKeys(held)...)
+		return nil
 	})
 }
 
@@ -376,7 +378,8 @@ func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claime
 			}
 			return rows.Err()
 		})
-		return graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.CommentAttempt(key.comment, key.target, key.attempt))
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.CommentAttempt(key.comment, key.target, key.attempt))
+		return nil
 	}); err != nil {
 		return time.Time{}, false, err
 	}

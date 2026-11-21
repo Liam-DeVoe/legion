@@ -1783,7 +1783,8 @@ packages/envoy-client/README.md	no
 packages/envoy/AGENTS.md	no
 packages/envoy/README.md	no
 packages/envoy/cmd/agent-secrets/README.md	no
-packages/envoy/cmd/broker/README.md	no
+packages/envoy/cmd/cipher/README.md	no
+packages/envoy/cmd/cipherd/README.md	no
 packages/envoy/cmd/dispatch/AGENTS.md	no
 packages/envoy/cmd/dispatch/README.md	no
 packages/envoy/deploy/README.md	no

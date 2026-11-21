@@ -172,18 +172,15 @@ const (
 // A row that names no node is passed over: an older build wrote it during a roll, or its address
 // is past the store's bound (AttemptOpened), and its old reading answers it until the backfill
 // takes it once. The node is not written again: its row's foreign key holds it, and appending a
-// tuple locks no row, so this adds no step to its caller's lock order.
-func QueueAttempted(b *store.WriteBatch, who model.Actor, event int64, keys ...AttemptKey) error {
+// tuple locks no row, so this adds no step to its caller's lock order. A writer that cannot be
+// encoded fails Send rather than this call, which answers nothing (QueueWrite).
+func QueueAttempted(b *store.WriteBatch, who model.Actor, event int64, keys ...AttemptKey) {
 	moved, args := attemptMoved(keys, attemptNow)
 	if moved == "" {
-		return nil
-	}
-	writer, err := json.Marshal(who.Recorded())
-	if err != nil {
-		return fmt.Errorf("encode the writer of the delivery attempts: %w", err)
+		return
 	}
 	whoParam, eventParam := "$"+strconv.Itoa(len(args)+1), "$"+strconv.Itoa(len(args)+2)
-	b.Queue("state the delivery attempts", `
+	b.QueueBuilt("state the delivery attempts", `
 		with `+moved+`
 		insert into graph_tuples (`+tupleWriteColumns+`)
 		select '`+KindDeliveryAttempt+`', moved.id, moved.kind, moved.to_kind, moved.to_id, moved.at,
@@ -191,8 +188,13 @@ func QueueAttempted(b *store.WriteBatch, who model.Actor, event int64, keys ...A
 		from attempt_moved moved
 		order by `+attemptMovedOrder+`
 		on conflict do nothing
-	`, append(args, writer, event)...)
-	return nil
+	`, func() ([]any, error) {
+		writer, err := json.Marshal(who.Recorded())
+		if err != nil {
+			return nil, fmt.Errorf("encode the writer of the delivery attempts: %w", err)
+		}
+		return append(args, writer, event), nil
+	})
 }
 
 // Attempted is QueueAttempted run at once, as a batch of its own, for a transition's writer with
@@ -202,7 +204,8 @@ func QueueAttempted(b *store.WriteBatch, who model.Actor, event int64, keys ...A
 // what the node already states before it appends.
 func Attempted(ctx context.Context, tx pgx.Tx, keys ...AttemptKey) error {
 	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		return QueueAttempted(b, AttemptWriter, NoEvent, keys...)
+		QueueAttempted(b, AttemptWriter, NoEvent, keys...)
+		return nil
 	})
 }
 

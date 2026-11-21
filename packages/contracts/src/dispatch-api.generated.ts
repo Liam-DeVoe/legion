@@ -339,7 +339,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names, or that differs from it only in the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve or decline writes does; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -990,7 +990,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential grants the caller may revoke (?approver=me only). */
+    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. */
     get: operations["getApiV1CredentialGrants"];
     put?: never;
     post?: never;
@@ -1009,7 +1009,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a credential grant as the caller, its approver or its enrollment's operator. */
+    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. */
     post: operations["postApiV1CredentialGrantsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -1060,7 +1060,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. */
+    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. */
     post: operations["postApiV1CredentialRequestsByIdDismiss"];
     delete?: never;
     options?: never;
@@ -1643,7 +1643,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple, {kind, id, title?}: title is a session's, the newest title it stamped on anything it wrote, absent for a person and for a session that stamped none), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. open_questions are the issue's open asks whose block is in its spec, oldest first. document and decisions are kept for one release for a page of the release before, and answer from the store: decisions is each decision node and each answered ask of entries in its old shape (kind agent or person, links from shaped, kept and waiting_review from the node), and document is the dispatch:// address of the issue's decisions document while one an earlier release stored still stands, null once it is retired or where there is none. No read answers from that document's text. */
+    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple, {kind, id, title?}: title is a session's, the newest title it stamped on anything it wrote, absent for a person and for a session that stamped none), from_ask (a decision's, the id of each ask its from_ask tuples reach; [] on an ask), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. open_questions are the issue's open asks whose block is in its spec, oldest first. document and decisions are kept for one release for a page of the release before, and answer from the store: decisions is each decision node and each answered ask of entries in its old shape (kind agent or person, links from shaped, kept and waiting_review from the node), and document is the dispatch:// address of the issue's decisions document while one an earlier release stored still stands, null once it is retired or where there is none. No read answers from that document's text. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -2449,7 +2449,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets. */
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none. */
     get: operations["getApiV1PeopleByLoginNodes"];
     put?: never;
     post?: never;
@@ -4578,6 +4578,7 @@ export interface components {
       declined: boolean;
       declined_note: null | string;
       document: components["schemas"]["DecisionEntryDocument"] | null;
+      from_ask: string[] | null;
       kept: components["schemas"]["DecisionKeep"] | null;
       kept_by: null | string;
       kept_text_sum: null | string;
