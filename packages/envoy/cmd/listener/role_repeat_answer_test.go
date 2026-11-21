@@ -228,4 +228,22 @@ func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testi
 		}
 		heldForward(t, rig.harness.client, bob)
 	})
+
+	// The record is of the request, not the key alone: the same sender's forward of the same key to
+	// another role is another request, and the repeat to the first role answers that role's forward.
+	t.Run("case: the sender's repeat to a role it took answers that role's forward, not another role's under the same key", func(t *testing.T) {
+		roleA, roleB := "role-echo-cross-a-"+id.New(), "role-echo-cross-b-"+id.New()
+		bob, carol := "ses_role_echo_cross_bob_"+id.New(), "ses_role_echo_cross_carol_"+id.New()
+		alice := "ses_role_echo_cross_alice_" + id.New()
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, bob, roleA, nil)
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, carol, roleB, nil)
+		key := uuid.NewString()
+		held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+roleA, map[string]any{"idempotency_key": key})).
+			requireHeld(t, "Alice's publish to role A", heldForward(t, rig.harness.client, bob), false)
+		held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+roleB, map[string]any{"idempotency_key": key, "message": "role B's different message"})).
+			requireHeld(t, "Alice's publish to role B under the same key", heldForward(t, rig.harness.client, carol), false)
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, alice, roleA, nil)
+		repeat := held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+roleA, map[string]any{"idempotency_key": key}))
+		repeat.requireHeld(t, "Alice's repeat to role A after she took it", heldForward(t, rig.harness.client, bob), true)
+	})
 }

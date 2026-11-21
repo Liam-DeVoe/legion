@@ -116,13 +116,25 @@ func forwardRefused(err error) bool {
 	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied)
 }
 
-// confirm records that the stream stored the message under dedupeKey for sessionID through the
-// route. The route's own record (listenerDeps.confirmed) is what a later send of the same key
-// reads, so envoy-client's retry of a send skips a recipient the first attempt stored it for; the
-// delivery handlers' cache is told too, so they do not deliver the same key to it again.
-func (d *listenerDeps) confirm(dedupeKey, sessionID string, sequence uint64) {
-	d.confirmed.RecordStored(dedupeKey, sessionID, sequence)
-	d.delivery.dedupeCache.Record(dedupeKey, sessionID)
+// confirm records that the stream stored item, the message under its dedupe key, for sessionID
+// through the route, at sequence. The route's own record (listenerDeps.confirmed) is what a later
+// send of the same key reads, so envoy-client's retry of a send skips a recipient the first
+// attempt stored it for; the delivery handlers' cache is told too, so they do not deliver the same
+// key to it again. It also records the forward under the request that made it
+// (forwardRequest), which a later echo of the same request reads (settledBeforeForward).
+func (d *listenerDeps) confirm(item contracts.Envelope, sessionID string, sequence uint64) {
+	d.confirmed.RecordStored(item.DedupeKey, sessionID, sequence)
+	d.confirmed.RecordForward(forwardRequest(item), sessionID, sequence)
+	d.delivery.dedupeCache.Record(item.DedupeKey, sessionID)
+}
+
+// forwardRequest is the key the route's record keeps a role forward under for an echo to read:
+// everything that makes two role sends the same request, which a repeat of one has in common with
+// it - the sender (source and source_session), the role topic and the dedupe key - so a repeat
+// reads the forward of its own request and never one another sender, or the same sender to
+// another role, made under the same key.
+func forwardRequest(item contracts.Envelope) string {
+	return strings.Join([]string{item.Source, item.SourceSession, item.Topic, item.DedupeKey}, "\x00")
 }
 
 // roleSend is one role message through the publish route. The route does not publish on the role
@@ -383,12 +395,14 @@ func (s *roleSend) timedOut() {
 // the refusal sendHandler gives, recorded capability_refused as sendHandler records it.
 //
 // An echo is answered with its own envelope, which no forward stored, unless the route's record
-// names a forward of the same dedupe key that the stream stored for another holder
-// (dedupe.Cache.LatestStored): a session that sent to the role, took it, and repeats under the
-// same key. That repeat is answered as that stored forward (deliveredHeld on the earlier holder's
-// subject), never with the new envelope built for the repeat, whose event_id no stored message
-// carries. The record is this listener's and lasts its window (ten minutes): a repeat another
-// listener answers, or one after the window, is answered as the echo it is.
+// names a forward the stream stored for another holder for the same request: the same sender,
+// role and dedupe key (forwardRequest, dedupe.Cache.Forward) - a session that sent to the role,
+// took it, and repeats. That repeat is answered as that stored forward (deliveredHeld on the
+// earlier holder's subject), never with the new envelope built for the repeat, whose event_id no
+// stored message carries. The record is this listener's and lasts its window (ten minutes): a
+// repeat another listener answers, or one after the window, is answered as the echo it is, with
+// its own envelope, which the stream does not hold; no stream lookup finds the earlier forward by
+// the request alone, since its message id names the earlier holder's subject.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,
@@ -404,7 +418,7 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 	case forwardAllowed:
 		return false
 	case forwardEcho:
-		if earlier, seq, stored := s.d.confirmed.LatestStored(s.item.DedupeKey); stored && earlier != s.holder {
+		if earlier, seq, stored := s.d.confirmed.Forward(forwardRequest(s.item)); stored && earlier != s.holder {
 			s.deliveredHeld(ctx, earlier, seq, sendSkipped)
 			break
 		}
@@ -521,7 +535,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			// many attempts this send makes.
 			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
-				d.confirm(item.DedupeKey, send.holder, ack.Sequence)
+				d.confirm(item, send.holder, ack.Sequence)
 				send.record.charge.stored()
 				if ack.Duplicate {
 					send.deliveredHeld(ctx, send.holder, ack.Sequence, sendDelivered)

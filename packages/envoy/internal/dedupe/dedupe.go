@@ -19,12 +19,12 @@ type Key struct {
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[Key]entry
-	// latest is, for each dedupe key, the newest delivery recorded with a stored copy
-	// (RecordStored with a sequence), whichever session it went to (LatestStored).
-	latest map[string]stored
-	ttl    time.Duration
-	clock  func() time.Time
-	stop   chan struct{}
+	// forwards is, for each request key its recorder names (RecordForward), the newest stored
+	// copy that request's delivery made: the session it went to and the copy's sequence.
+	forwards map[string]stored
+	ttl      time.Duration
+	clock    func() time.Time
+	stop     chan struct{}
 }
 
 // entry is one recorded delivery: when it was recorded, and the stream sequence of the copy it
@@ -34,8 +34,8 @@ type entry struct {
 	sequence uint64
 }
 
-// stored is the newest delivery of one dedupe key that stored a copy: the session it went to,
-// when it was recorded, and the copy's stream sequence.
+// stored is the newest stored copy one request's delivery made: the session it went to, when it
+// was recorded, and the copy's stream sequence.
 type stored struct {
 	sessionID string
 	at        time.Time
@@ -51,11 +51,11 @@ func New(ttl time.Duration) *Cache {
 // NewWithClock creates a dedupe cache with an injectable clock for testing.
 func NewWithClock(ttl time.Duration, clock func() time.Time) *Cache {
 	c := &Cache{
-		entries: make(map[Key]entry),
-		latest:  make(map[string]stored),
-		ttl:     ttl,
-		clock:   clock,
-		stop:    make(chan struct{}),
+		entries:  make(map[Key]entry),
+		forwards: make(map[string]stored),
+		ttl:      ttl,
+		clock:    clock,
+		stop:     make(chan struct{}),
 	}
 	go c.cleanup()
 	return c
@@ -87,24 +87,29 @@ func (c *Cache) Record(dedupeKey, sessionID string) {
 }
 
 // RecordStored marks a (dedupeKey, sessionID) pair as delivered by the copy the stream holds at
-// sequence, which Stored hands back to a later reader of the pair, and LatestStored to a reader of
-// the key alone, where sequence names a copy.
+// sequence, which Stored hands back to a later reader of the pair.
 func (c *Cache) RecordStored(dedupeKey, sessionID string, sequence uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.clock()
-	c.entries[Key{DedupeKey: dedupeKey, SessionID: sessionID}] = entry{at: now, sequence: sequence}
-	if sequence != 0 {
-		c.latest[dedupeKey] = stored{sessionID: sessionID, at: now, sequence: sequence}
-	}
+	c.entries[Key{DedupeKey: dedupeKey, SessionID: sessionID}] = entry{at: c.clock(), sequence: sequence}
 }
 
-// LatestStored reports the session the newest delivery of dedupeKey recorded with a stored copy
-// went to within the TTL window, whichever session that was, and the copy's stream sequence.
-func (c *Cache) LatestStored(dedupeKey string) (sessionID string, sequence uint64, ok bool) {
+// RecordForward records that the request request names, a key of its recorder's own that holds
+// everything that makes two requests the same request, was delivered to sessionID by the copy the
+// stream holds at sequence, which Forward hands back to a later reader of the request whichever
+// session it went to.
+func (c *Cache) RecordForward(request, sessionID string, sequence uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.forwards[request] = stored{sessionID: sessionID, at: c.clock(), sequence: sequence}
+}
+
+// Forward reports the session the newest delivery of request recorded by RecordForward went to
+// within the TTL window, and the stream sequence of the copy it stored.
+func (c *Cache) Forward(request string) (sessionID string, sequence uint64, ok bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	s, ok := c.latest[dedupeKey]
+	s, ok := c.forwards[request]
 	if !ok || c.clock().Sub(s.at) > c.ttl {
 		return "", 0, false
 	}
@@ -116,9 +121,6 @@ func (c *Cache) Clear(dedupeKey, sessionID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.entries, Key{DedupeKey: dedupeKey, SessionID: sessionID})
-	if c.latest[dedupeKey].sessionID == sessionID {
-		delete(c.latest, dedupeKey)
-	}
 }
 
 // Len returns the number of entries currently in the cache.
@@ -146,9 +148,9 @@ func (c *Cache) cleanup() {
 					delete(c.entries, k)
 				}
 			}
-			for k, s := range c.latest {
+			for k, s := range c.forwards {
 				if now.Sub(s.at) > c.ttl {
-					delete(c.latest, k)
+					delete(c.forwards, k)
 				}
 			}
 			c.mu.Unlock()
