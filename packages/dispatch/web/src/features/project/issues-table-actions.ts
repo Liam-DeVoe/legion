@@ -195,6 +195,8 @@ export function useIssueTableActions({
     // write landed while it ran, or ended without Dispatch's verdict (the reader stopped it) and
     // so may have landed. A write Dispatch refused (`ApiError`) changed nothing.
     let mayHaveChanged = false;
+    // Whether the action answered what it changed. Only such an action clears the selection.
+    let answered = false;
     const unwatch = writes.onOutcome((outcome) => {
       if (
         outcome.kind === "landed" ||
@@ -206,9 +208,9 @@ export function useIssueTableActions({
       const changed = await action();
       if (changed !== undefined) {
         mayHaveChanged = true;
+        answered = true;
         setNotice({ kind: "success", text: said });
         setMoved(new Set(changed));
-        clearSelection();
       }
     } catch (error) {
       if (error instanceof ApiError && error.code === "POSSIBLE_DUPLICATE" && duplicate)
@@ -226,10 +228,17 @@ export function useIssueTableActions({
       // and the notice says why the list is not read yet (`useReadBound`). An action that changed
       // nothing - every write refused, or none made - lets them go at once, while the list is
       // still read again behind them.
+      // An action that answered what it changed clears the selection in the same batch that lets
+      // its controls go. So the selection bar, held, stays until that read settles or the
+      // deadline passes, and its hand-off reads the view the action left. A marked row that left
+      // the view is not in it, and the focus goes to the row now at its place
+      // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
+      // checkbox. An action that failed or changed nothing keeps the selection.
       const listed = client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
       if (mayHaveChanged) await holdThrough(listed);
+      if (answered) clearSelection();
       setBusy(false);
     }
   };

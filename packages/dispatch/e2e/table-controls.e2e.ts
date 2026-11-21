@@ -4395,9 +4395,9 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
       await expect(button, `${where}: ${step} on page ${last} is still pressable`).toBeDisabled();
     }
 
-    // A bar action: Take out of epic, held busy while its write is out and pressable by nobody
-    // meanwhile. The focus stays on it while it is busy, and once the write lands and the bar
-    // goes with the selection it hands the focus to the row marked.
+    // A bar action: Take out of epic, held busy while its write is out and through the list's
+    // re-read, and pressable by nobody meanwhile. The focus stays on it while it is busy, and once
+    // the re-read settles and the bar goes with the selection it hands the focus to the row marked.
     const first = await page.locator("[data-issue-row]").first().getAttribute("data-issue-row");
     const box = page.getByRole("checkbox", { exact: true, name: `Select ${first}` });
     await box.focus();
