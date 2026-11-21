@@ -155,35 +155,46 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", issue.Key, "handoff_commit", commit, "repo", r.repo, "branch", claim.IssueBranch(issue.Key)))
 
 	// message-refused: a worker's backward move whose reason went as a message of its own (the
-	// move wrote no status), and a status write whose reason Dispatch refused beside it: a close in
-	// the first rendering, a reviewer's backward move in the second. Each reason is the daemon's
-	// sentence and then another author's words, a worker's or the architect's, so each notice
-	// quotes the first line in a block of its own, named by that author and the time the refused
-	// row was queued.
+	// move wrote no status), a status write whose reason Dispatch refused beside it, of a close and
+	// of a reviewer's backward move, and a message of the daemon's own. A reason opens with the
+	// daemon's sentence and goes on with another author's words, a worker's or the architect's: the
+	// notice gives that sentence as a field (refused_move, refused_close) and quotes those words
+	// alone in a block of their own, named by that author and the time the refused row was queued.
+	// The daemon's own line is quoted whole, by the daemon.
 	{
 		from := []phase.Phase{phase.Implementing, phase.Merging}[r.n-1]
 		to := []phase.Phase{phase.Planning, phase.Retro}[r.n-1]
 		queued := r.at(59)
 		// workflow's backwardMoveReason: the move and the role that asked, then that role's words.
+		words := goldenHostile[r.n-1][5] + " " + r.words("refused/body", 600)
 		body := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request: ", from, to, phase.RoleFor(from)) +
-			goldenHostile[r.n-1][5] + " " + r.words("refused/body", 600) + "\n" + r.words("refused/rest", 80)
+			words + "\n" + r.words("refused/rest", 80)
 		refused := messagePostRefused(issue.Key, record.MessagePost{Body: body}, goldenErr("BODY_TOO_LONG: "+r.words("refused/answer", 40)))
 		b.notice(r, "message", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(body)), "begins", refusedPreview(body),
-				"words.begins.by", phase.RoleFor(from), "words.begins.at", queued))
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(body)), "refused_move", phase.Pair(from, to),
+				"begins", refusedPreview(words), "words.begins.by", phase.RoleFor(from), "words.begins.at", queued))
+		own := r.words("refused/own", 300) + "\n" + r.words("refused/own-rest", 80)
+		refused = messagePostRefused(issue.Key, record.MessagePost{Body: own}, goldenErr("BODY_TOO_LONG: "+r.words("refused/own-answer", 40)))
+		b.notice(r, "message-own", arch, refusedQuotedAt(refused, queued),
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(own)), "begins", refusedPreview(own),
+				"words.begins.by", texts.ByDaemon, "words.begins.at", queued))
+		// A close's reason, the daemon's sentence and then the architect's.
 		status := []string{"done", "icebox"}[r.n-1]
-		// A close's reason, the daemon's sentence and then the architect's, in the first rendering;
-		// a reviewer's backward move refused beside its status in the second.
-		reason := intake.CloseRoot{Reason: r.words("refused/reason", 300)}.Message()
-		var by claim.Role = arch
-		if r.n == 2 {
-			reason, by = "Legion moved this issue from reviewing back to implementing at the reviewer's request: "+r.words("refused/reason", 300), claim.RoleReviewer
-		}
-		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status, Reason: reason},
+		reason := r.words("refused/reason", 300)
+		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status, Reason: intake.CloseRoot{Reason: reason}.Message()},
 			goldenErr("STATUS_REFUSED: "+r.words("refused/status", 30)), statusWrites{status: r.n == 1})
 		b.notice(r, "status", arch, refusedQuotedAt(refused, queued),
 			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", r.n == 1, "reason_posted", false,
-				"begins", refusedPreview(reason), "words.begins.by", by, "words.begins.at", queued))
+				"refused_close", texts.BeforeFirstPhase, "begins", refusedPreview(reason), "words.begins.by", arch, "words.begins.at", queued))
+		// A reviewer's backward move refused beside its status.
+		moved := r.words("refused/moved", 300)
+		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status,
+			Reason: "Legion moved this issue from reviewing back to implementing at the reviewer's request: " + moved},
+			goldenErr("STATUS_REFUSED: "+r.words("refused/move-status", 30)), statusWrites{status: r.n == 2})
+		b.notice(r, "status-move", arch, refusedQuotedAt(refused, queued),
+			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", r.n == 2, "reason_posted", false,
+				"refused_move", phase.Pair(phase.Reviewing, phase.Implementing), "begins", refusedPreview(moved),
+				"words.begins.by", claim.RoleReviewer, "words.begins.at", queued))
 	}
 
 	// design-approved, design-changes-requested, carried-gate-opened.

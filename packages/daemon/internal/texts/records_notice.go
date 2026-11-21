@@ -212,20 +212,31 @@ const (
 // that is the daemon's own text (MessageRefusedRecord.Begins).
 const ByDaemon = "daemon"
 
+// BeforeFirstPhase is what a message-refused notice's refused_close says: the refused line is the
+// close its architect made of the issue before its first phase (MessageRefusedRecord.RefusedClose).
+const BeforeFirstPhase = "before_first_phase"
+
 // MessageRefusedRecord is the notice of a Dispatch write the daemon could not make (the daemon's
 // messagePostRefused and statusWriteRefused): what Dispatch refused (one of the Refused words) and
-// its answer. A refused message gives its length in characters and its first line. A refused
-// status write gives the status, whether the status is set, whether the reason posted beside it
-// is on the issue, and, where it is not, the reason's length and first line. That first line
-// (Begins) can hold another author's words: a worker's backward move posts the daemon's sentence,
-// then the worker's own words. So it is a words field, which the words object names with its
-// author, the role whose words it carries or ByDaemon for the daemon's own line, and with the
-// time the daemon queued the write.
+// its answer. A refused message gives its length in characters and how its first line begins. A
+// refused status write gives the status, whether the status is set, whether the reason posted
+// beside it is on the issue, and, where it is not, the reason's length and how its first line
+// begins. Two first lines open with the daemon's own sentence and go on with another author's
+// words: a worker's backward move, whose move and asker the sentence states, and a close before
+// the issue's first phase, whose words are the architect's. Of such a line the record gives the
+// daemon's sentence as a field, RefusedMove (the move, "<from>-<to>") or RefusedClose
+// (BeforeFirstPhase), and the other author's words alone in Begins. Every other first line,
+// such a sentence with no words after it among them, is the daemon's own, and Begins gives it
+// whole. Begins is a words field, which the words object names with its author, the role whose
+// words it holds (the asker of the move, the architect of the close) or ByDaemon for the
+// daemon's own line, and with the time the daemon queued the write.
 type MessageRefusedRecord struct {
 	NoticeHead
 	Refused        string               `json:"refused"`
 	DispatchAnswer string               `json:"dispatch_answer"`
 	Length         int                  `json:"length,omitempty"`
+	RefusedMove    string               `json:"refused_move,omitempty"`
+	RefusedClose   string               `json:"refused_close,omitempty"`
 	Begins         string               `json:"begins,omitempty" texts:"words"`
 	Status         string               `json:"status,omitempty"`
 	StatusSet      *bool                `json:"status_set,omitempty"`
@@ -523,9 +534,10 @@ const (
 // word), the pull request and the head, the head the reviewer approved where it is not the head,
 // the review that ends the round (EndsRound, which keeps APPROVE of head <sha>), the reason the
 // daemon set a review aside, and, for a head GitHub will not merge, its merge state, the checks and
-// the commit statuses of that head that did not pass, the checks of that head GitHub skipped under
-// the key that says a skipped check ran nothing on the head (skipped_ran_nothing), the count of
-// the checks and statuses that passed and the command that lists them.
+// the commit statuses of that head that did not pass, the checks of that head GitHub skipped
+// (skipped) with the field that says once that a skipped check ran nothing on the head
+// (each_skipped_check, CheckConclusion), the count of the checks and statuses that passed and the
+// command that lists them.
 type ReviewStuckRecord struct {
 	NoticeHead
 	Role              claim.Role        `json:"role,omitempty"`
@@ -540,7 +552,8 @@ type ReviewStuckRecord struct {
 	SetAside          string            `json:"set_aside,omitempty"`
 	MergeState        string            `json:"merge_state,omitempty"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
+	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`
@@ -640,18 +653,26 @@ type SessionLostRecord struct {
 	Detail string      `json:"detail"`
 }
 
+// LookupFailed is what a session-forgotten notice's launcher_lookup says: the pod's launcher could
+// not look the session up by its id (SessionForgottenRecord.LauncherLookup).
+const LookupFailed = "failed"
+
 // SessionForgottenRecord is the notice that a worker's claim forgot the session it recorded
-// because the pod's launcher, older than the release that added the kind, could not look that
-// session up by its id, and Oh My Pi did not resume it by that id (workflow's sessionLost): the
-// role, the phase and the session forgotten. It is a kind of its own, and not session-lost,
-// because the kind is the notice's one-line message and that session was not lost: nothing of it
-// was deleted, and a store may hold it still. No earlier release decodes the kind, so the way back
-// of migration 20261120042902 deletes its unsent rows.
+// (workflow's sessionLost): the role, the phase, the session forgotten, and why it was forgotten,
+// as dispatch://INFRA-4108's R3 has each of its texts say: the pod's launcher, older than the
+// release that added the kind, could not look that session up by its id (LauncherLookup,
+// LookupFailed), and Oh My Pi did not resume it by that id (ResumedByID, false on every notice of
+// the kind). It is a kind of its own, and not session-lost, because the kind is the notice's
+// one-line message and that session was not lost: nothing of it was deleted, and a store may hold
+// it still. No earlier release decodes the kind, so the way back of migration 20261120042902
+// deletes its unsent rows.
 type SessionForgottenRecord struct {
 	NoticeHead
-	Role    claim.Role  `json:"role,omitempty"`
-	Phase   phase.Phase `json:"phase,omitempty"`
-	Session string      `json:"session"`
+	Role           claim.Role  `json:"role,omitempty"`
+	Phase          phase.Phase `json:"phase,omitempty"`
+	Session        string      `json:"session"`
+	LauncherLookup string      `json:"launcher_lookup"`
+	ResumedByID    bool        `json:"resumed_by_id"`
 }
 
 // SessionStoreFaultRecord is the notice that no worker of the issue can start because the session

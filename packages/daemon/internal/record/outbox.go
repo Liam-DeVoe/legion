@@ -550,11 +550,16 @@ type Notice struct {
 	WaitingFor  []string `json:"waiting_for,omitempty"`
 	Repo        string   `json:"repo,omitempty"`
 	Branch      string   `json:"branch,omitempty"`
-	// What Dispatch refused, and its answer (message-refused). Status is also the status of a
-	// child-status, a status-reasserted and an unslotted notice.
+	// What Dispatch refused, and its answer (message-refused): its length, the daemon's sentence
+	// its first line opens with where that line goes on with another author's words (the backward
+	// move it states, or that it is the architect's close before the first phase), and that
+	// author's words, or the daemon's whole line. Status is also the status of a child-status, a
+	// status-reasserted and an unslotted notice.
 	Refused        string `json:"refused,omitempty"`
 	DispatchAnswer string `json:"dispatch_answer,omitempty"`
 	Length         int    `json:"length,omitempty"`
+	RefusedMove    string `json:"refused_move,omitempty"`
+	RefusedClose   string `json:"refused_close,omitempty"`
 	Begins         string `json:"begins,omitempty"`
 	Status         string `json:"status,omitempty"`
 	StatusSet      *bool  `json:"status_set,omitempty"`
@@ -588,8 +593,8 @@ type Notice struct {
 	Relaunch *texts.RelaunchFacts `json:"relaunch,omitempty"`
 	// The head that conflicts with its base and why the daemon asked for its merge forward
 	// (checks-red), and a stuck review round (review-stuck) with the checks and the commit
-	// statuses of its head, the checks GitHub skipped among them under the key that says a
-	// skipped check ran nothing on the head.
+	// statuses of its head, the checks GitHub skipped among them, beside the field that says once
+	// that a skipped check ran nothing on the head.
 	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
 	Head              string                  `json:"head,omitempty"`
 	Why               string                  `json:"why,omitempty"`
@@ -599,14 +604,18 @@ type Notice struct {
 	SetAside          string                  `json:"set_aside,omitempty"`
 	MergeState        string                  `json:"merge_state,omitempty"`
 	NotPassed         []texts.CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string                `json:"skipped_ran_nothing,omitempty"`
+	Skipped           []string                `json:"skipped,omitempty"`
+	EachSkippedCheck  string                  `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []texts.StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int                    `json:"passed,omitempty"`
 	ListPassed        string                  `json:"list_passed,omitempty"`
 	// The session that wrote a status and the status it wrote (status-reasserted), and the session
-	// a claim forgot (session-forgotten).
-	Session string `json:"session,omitempty"`
-	Wrote   string `json:"wrote,omitempty"`
+	// a claim forgot with why it was forgotten: the launcher's failed lookup and that Oh My Pi did
+	// not resume it by its id (session-forgotten).
+	Session        string `json:"session,omitempty"`
+	Wrote          string `json:"wrote,omitempty"`
+	LauncherLookup string `json:"launcher_lookup,omitempty"`
+	ResumedByID    *bool  `json:"resumed_by_id,omitempty"`
 	// The runtime's account of a lost session or a faulty session store, and how often the
 	// daemon tries again.
 	Detail     string `json:"detail,omitempty"`

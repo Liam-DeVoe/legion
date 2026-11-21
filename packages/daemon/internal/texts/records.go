@@ -36,13 +36,27 @@ type RoleHead struct {
 // GitHub gave its run (failure, timed_out, cancelled, action_required and the rest) where the
 // settlement carried one, else failed or cancelled (dispatch://INFRA-4135 R1). A list of them is
 // the table of the checks that did not pass. A record names the checks GitHub skipped in a list
-// of their own, under the key skipped_ran_nothing: a skipped check ran nothing on the head, so it
-// is neither a pass nor a failure, and the key says that once, for the whole list
-// (dispatch://INFRA-4135 R1), so no field holds a fixed sentence. The record counts the checks
-// that passed beside both lists.
+// of their own, under the key skipped, the conclusion's own name (dispatch://INFRA-4135 R1), and
+// says once, in a field of its own beside that list, that a skipped check ran nothing on the head
+// (each_skipped_check: ran_nothing, EachSkippedCheck), so it is neither a pass nor a failure and
+// no field holds a fixed sentence. The record counts the checks that passed beside both lists.
 type CheckConclusion struct {
 	Check      string `json:"check"`
 	Conclusion string `json:"conclusion"`
+}
+
+// RanNothing is what a record's each_skipped_check says of every check its skipped list names:
+// the check ran nothing on the head (dispatch://INFRA-4135 R1).
+const RanNothing = "ran_nothing"
+
+// EachSkippedCheck is the value of a record's each_skipped_check beside its list of the checks
+// GitHub skipped: RanNothing where the list names a check, so the record says it once, and ""
+// (no key) where the list names none.
+func EachSkippedCheck(skipped []string) string {
+	if len(skipped) == 0 {
+		return ""
+	}
+	return RanNothing
 }
 
 // StatusState is one commit status that did not pass on a head: its context and its state as

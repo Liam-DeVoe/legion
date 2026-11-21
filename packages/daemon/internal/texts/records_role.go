@@ -13,17 +13,18 @@ import (
 
 // CISettledRecord is the CI settlement on a pull request's head (workflow's tellChecks): the pull
 // request, the head, the issue's phase (which the urgency rule reads), each check that did not
-// pass with its conclusion, each check GitHub skipped under the key that says a skipped check ran
-// nothing on the head (skipped_ran_nothing, CheckConclusion), each commit status that did not
-// pass with its state, the count of the checks and statuses that passed, and the command that
-// lists them.
+// pass with its conclusion, each check GitHub skipped (skipped) with the field that says once that
+// a skipped check ran nothing on the head (each_skipped_check, CheckConclusion), each commit
+// status that did not pass with its state, the count of the checks and statuses that passed, and
+// the command that lists them.
 type CISettledRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
 	Head              string            `json:"head"`
 	Phase             phase.Phase       `json:"phase"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
+	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
 	ListPassed        string            `json:"list_passed"`
@@ -55,16 +56,17 @@ type GateMovedRecord struct {
 // ApprovedRoundStuckRecord is the message to the reviewer that the round it approved is stuck
 // because GitHub will not merge the head (workflow's tellStuckMergeState): the pull request, the
 // head, its merge state, each check of that head that did not pass, each check of that head GitHub
-// skipped under the key that says a skipped check ran nothing on the head (skipped_ran_nothing),
-// each commit status of that head that did not pass, the count of the checks and statuses that
-// passed, and the command that lists them.
+// skipped (skipped) with the field that says once that a skipped check ran nothing on the head
+// (each_skipped_check, CheckConclusion), each commit status of that head that did not pass, the
+// count of the checks and statuses that passed, and the command that lists them.
 type ApprovedRoundStuckRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
 	Head              string            `json:"head"`
 	MergeState        string            `json:"merge_state"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
+	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
 	ListPassed        string            `json:"list_passed"`
@@ -189,8 +191,11 @@ func (r HookPromptRecord) Text() (string, error) {
 // what it made), UpdateEvidenceStep (put a scratch file needed as evidence on Dispatch),
 // UpdateAnswerOp (the answer) and UpdateThen (end the turn); its R2's rule for background work
 // that ends after the answer, UpdateLateBackgroundWork (push what it made and answer again with
-// the same round, before that turn ends); and UpdateEarlyEnd, when every answer brings the
-// round's end forward, its R1's rule: only once no role is in a turn or reports background work.
+// the same round, before that turn ends); UpdateEarlyEnd, when every answer brings the round's
+// end forward, its R1's rule: only once no role is in a turn or reports background work; and
+// UpdateNamedServices, the second of the four things its R2's steps say: a named service that the
+// role started is in no activity report and holds nothing (and goes with the pod, which
+// goes_with_pod says).
 const (
 	UpdateAnswerOp           = "ready_for_update"
 	UpdateRestartsIn         = "same_session"
@@ -199,6 +204,7 @@ const (
 	UpdateThen               = "end_turn"
 	UpdateLateBackgroundWork = "push_and_answer_again"
 	UpdateEarlyEnd           = "when_no_turn_or_background_work"
+	UpdateNamedServices      = "in_no_report_hold_nothing"
 )
 
 // updateGoesWithPod is what goes with the pod when an update round ends, for a pod whose volume
@@ -220,10 +226,11 @@ var updateGoesWithPod = []string{"turn", "subagents", "background_jobs", "named_
 // again, and that the daemon holds the next task until it runs again. The five steps of
 // dispatch://INFRA-4203's R2 come in its order, each a field: push_to, background_work, evidence,
 // answer and then; late_background_work after them is its R2's rule for background work that
-// ends after the answer; and every_answer_brings_it_forward says that every answer brings the end
+// ends after the answer; every_answer_brings_it_forward says that every answer brings the end
 // forward only once no role is in a turn or reports background work (dispatch://INFRA-4203 R1
-// and R3). NewUpdateAsk sets them all. The readers' prompts give the steps, and say what each of
-// these fields names.
+// and R3); and named_services, beside goes_with_pod, says that a named service the role started
+// is in no report and holds nothing (its R2). NewUpdateAsk sets them all. The readers' prompts
+// give the steps, and say what each of these fields names.
 type UpdateAskRecord struct {
 	RoleHead
 	Round                      string    `json:"round"`
@@ -242,6 +249,7 @@ type UpdateAskRecord struct {
 	NoAnswerDelaysIt           bool      `json:"no_answer_delays_it"`
 	KeptByPushOnly             bool      `json:"kept_by_push_only"`
 	GoesWithPod                []string  `json:"goes_with_pod"`
+	NamedServices              string    `json:"named_services"`
 	Restart                    string    `json:"restart"`
 	NextTaskHeld               bool      `json:"next_task_held"`
 }
@@ -267,6 +275,7 @@ func NewUpdateAsk(issue, round, pod string, images, settings []string, endsAt ti
 		NoAnswerDelaysIt:           true,
 		KeptByPushOnly:             true,
 		GoesWithPod:                append([]string(nil), updateGoesWithPod...),
+		NamedServices:              UpdateNamedServices,
 		Restart:                    UpdateRestartsIn,
 		NextTaskHeld:               true,
 	}

@@ -784,11 +784,13 @@ func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
 	return checks
 }
 
-// skippedFacts is the want of a sample that names the head's checks GitHub skipped
-// (skipped_ran_nothing): their count and the first of them.
+// skippedFacts is the want of a sample that names the head's checks GitHub skipped (skipped):
+// their count, the first of them, and the field that says once that a skipped check ran nothing
+// on the head (each_skipped_check).
 func (c goldenCheckRuns) skippedFacts(want map[string]string) map[string]string {
-	want["skipped_ran_nothing#"] = strconv.Itoa(len(c.skipped))
-	want["skipped_ran_nothing[0]"] = c.skipped[0]
+	want["skipped#"] = strconv.Itoa(len(c.skipped))
+	want["skipped[0]"] = c.skipped[0]
+	want["each_skipped_check"] = texts.RanNothing
 	return want
 }
 

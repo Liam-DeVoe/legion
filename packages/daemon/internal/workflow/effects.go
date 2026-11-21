@@ -287,19 +287,36 @@ func backwardMoveAsked(from, to phase.Phase) string {
 	return fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
 }
 
-// BackwardMoveAsker is the role whose own words a backward move's reason carries after the
-// daemon's sentence (backwardMoveReason), for a text that opens with that sentence, such as the
+// AskedMove is a worker's backward move as the daemon's sentence that opens its reason states it
+// (backwardMoveReason): the phase it left, the phase it went to, the role that asked (the role
+// running the phase left), and that role's own words after the sentence, "" where it gave none.
+type AskedMove struct {
+	From  phase.Phase
+	To    phase.Phase
+	Asker claim.Role
+	Words string
+}
+
+// BackwardMoveOf is the backward move that text states, for a text that opens with the daemon's
+// sentence of a move back the daemon counts (backwardMoveAsked, phase.BackwardPairs), such as the
 // first line of the reason a refused post quotes; false for a text that opens with no such
-// sentence. It reads the sentence of each move back the daemon counts (phase.BackwardPairs), so it
-// reads what backwardMoveReason writes and nothing else.
-func BackwardMoveAsker(text string) (claim.Role, bool) {
+// sentence. It reads the sentence with backwardMoveAsked itself, so it reads what
+// backwardMoveReason writes and nothing else: the words are what follows the sentence's ": ", and
+// a move that gave none, whose sentence the daemon closes on its own, has none.
+func BackwardMoveOf(text string) (AskedMove, bool) {
 	for _, pair := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(pair)
-		if strings.HasPrefix(text, backwardMoveAsked(from, to)) {
-			return phase.RoleFor(from), true
+		rest, asked := strings.CutPrefix(text, backwardMoveAsked(from, to))
+		if !asked {
+			continue
 		}
+		words, said := strings.CutPrefix(rest, ": ")
+		if !said {
+			words = ""
+		}
+		return AskedMove{From: from, To: to, Asker: phase.RoleFor(from), Words: words}, true
 	}
-	return "", false
+	return AskedMove{}, false
 }
 
 // backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch
@@ -1135,6 +1152,7 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 			if stuck.Cause == texts.CauseMergeState && pr != nil {
 				tally := tallyChecks(headRuns(*pr), headStatuses(*pr))
 				task.MergeState, task.NotPassed, task.Skipped = stuck.MergeState, tally.notPassed, tally.skipped
+				task.EachSkippedCheck = texts.EachSkippedCheck(tally.skipped)
 				task.NotPassedStatuses, task.Passed, task.ListPassed = tally.notPassedStatuses, &tally.passed, texts.ListPassed(pr.Repo, pr.Number)
 			}
 		}

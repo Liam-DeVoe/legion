@@ -2708,9 +2708,11 @@ This release adds fields to the payloads that its outbox queues:
 
 - A checks-red notice carries `why`, and for a held issue `hold`, beside the notice keys above.
 
-- A review-stuck notice of a head GitHub will not merge carries that head's checks, and names each check GitHub skipped under `skipped_ran_nothing`, the key that says a skipped check ran nothing on that head.
+- A review-stuck notice of a head GitHub will not merge carries that head's checks, names each check GitHub skipped under `skipped`, and says once under `each_skipped_check` that a skipped check ran nothing on that head.
 
-- A message-refused notice carries `words`, which names its first line (`begins`) with that line's author and the time its write was queued.
+- A message-refused notice carries `words`, which names its first line (`begins`) with that line's author and the time its write was queued, and, where that line opened with the daemon's sentence of a backward move or of a close, `refused_move` or `refused_close`.
+
+- A session-forgotten notice carries `launcher_lookup` and `resumed_by_id`, which say why the session was forgotten.
 
 - An architect-stalled notice whose count a project's pause moved carries `counted_from`, `counted_from_event` and `pause_id`, and a project-paused notice carries `words`, which names its pause's reason.
 

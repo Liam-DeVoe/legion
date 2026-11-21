@@ -355,7 +355,7 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 		// line is the line of the woken role's task that names its skipped checks, "" for none.
 		line string
 	}{
-		{"the wake on only skipped checks", onlySkipped, "skipped_ran_nothing[2]: envoy-go,envoy-go-race"},
+		{"the wake on only skipped checks", onlySkipped, "skipped[2]: envoy-go,envoy-go-race"},
 		{"the wake on no skipped run and no word", settlement("head1"), ""},
 	} {
 		t.Run(wake.name, func(t *testing.T) {

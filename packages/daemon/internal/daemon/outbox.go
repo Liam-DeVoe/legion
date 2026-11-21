@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -622,8 +623,8 @@ const messageRefusedPreview = 200
 // block over its own bound among them, so the row is finished and the message is on no issue.
 // Nothing else would tell anyone, since the message is the daemon's only word on the issue for
 // what it carries. The record names what was refused, Dispatch's own refusal (bounded as a far
-// side's error text is, storetext.FarSideError), how long the message is in characters and its
-// first line, with that line's author (quoteRefused).
+// side's error text is, storetext.FarSideError), how long the message is in characters and how
+// its first line begins (quoteRefused).
 func messagePostRefused(issue string, payload record.MessagePost, cause error) texts.MessageRefusedRecord {
 	refused := texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
 		Refused: texts.RefusedMessage, DispatchAnswer: storetext.FarSideError(cause.Error())}
@@ -631,40 +632,40 @@ func messagePostRefused(issue string, payload record.MessagePost, cause error) t
 	return refused
 }
 
-// quoteRefused sets on refused how long the refused body is in characters and its first line
-// (refusedPreview), and names that line in the notice's words object with its author
-// (refusedLineBy), so the card draws the line in a block of its own: it can carry a worker's
-// words. The line's time is the refused row's, which refusedNoticeRow gives it.
+// quoteRefused sets on refused how long the refused body is in characters and how its first line
+// begins, in a block of its own (begins, cut by refusedPreview) that the notice's words object
+// names with its author, so the card draws it apart from the notice's fields. Two bodies the
+// outbox posts are the daemon's sentence and then another author's words: a backward move's
+// reason, beside its status or as a message of its own where the move writes none, whose words
+// are those of the role that asked, and a close's reason, whose words are the architect's. The
+// sentence is read with the workflow's own writer of it, the move's with workflow.BackwardMoveOf
+// and the close's lead with intake.CloseRootLead, and becomes a field (refused_move:
+// <from>-<to>, refused_close: before_first_phase), so the block holds the other author's words
+// alone, under that author's name. Every other first line, a move's sentence that gave no words
+// among them, is the daemon's own, whole, by texts.ByDaemon: every other body the outbox posts is
+// a message the workflow or the supervision writes of its own facts. The line's time is the
+// refused row's, which refusedNoticeRow gives it.
 func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
-	refused.Length, refused.Begins = utf8.RuneCountInString(body), refusedPreview(body)
-	if refused.Begins != "" {
-		refused.Words = map[string]texts.WordsMeta{"begins": {By: refusedLineBy(refused.Begins)}}
+	refused.Length = utf8.RuneCountInString(body)
+	line, _, _ := strings.Cut(body, "\n")
+	by := texts.ByDaemon
+	if move, asked := workflow.BackwardMoveOf(line); asked && move.Words != "" {
+		refused.RefusedMove, line, by = phase.Pair(move.From, move.To), move.Words, string(move.Asker)
+	} else if words, closed := strings.CutPrefix(line, intake.CloseRootLead); closed && words != "" {
+		refused.RefusedClose, line, by = texts.BeforeFirstPhase, words, string(claim.RoleArchitect)
+	}
+	if refused.Begins = refusedPreview(line); refused.Begins != "" {
+		refused.Words = map[string]texts.WordsMeta{"begins": {By: by}}
 	}
 }
 
-// refusedPreview is the first line of a body a notice quotes, cut to messageRefusedPreview.
-func refusedPreview(body string) string {
-	first, _, _ := strings.Cut(body, "\n")
+// refusedPreview is the first line of a text a notice quotes, cut to messageRefusedPreview.
+func refusedPreview(text string) string {
+	first, _, _ := strings.Cut(text, "\n")
 	if runes := []rune(first); len(runes) > messageRefusedPreview {
 		return string(runes[:messageRefusedPreview]) + "…"
 	}
 	return first
-}
-
-// refusedLineBy is the author of the first line of a body the outbox posts on an issue, the line a
-// refused post's notice quotes. A status write's reason is one of two texts, each the daemon's
-// sentence and then another author's words: a backward move's, whose words are those of the role
-// that asked (workflow.BackwardMoveAsker), and a close's, whose words are the architect's
-// (intake.CloseRootLead). Every other body the outbox posts is a message the workflow or the
-// supervision writes of its own facts, so its line is the daemon's (texts.ByDaemon).
-func refusedLineBy(line string) string {
-	if role, asked := workflow.BackwardMoveAsker(line); asked {
-		return string(role)
-	}
-	if strings.HasPrefix(line, intake.CloseRootLead) {
-		return string(claim.RoleArchitect)
-	}
-	return texts.ByDaemon
 }
 
 // refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,

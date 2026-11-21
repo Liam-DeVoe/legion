@@ -1543,10 +1543,12 @@ func SessionLostNotice(issue string, role claim.Role, at phase.Phase, detail str
 }
 
 // SessionForgottenNotice is the session-forgotten notice of issue: the role whose claim forgot the
-// session it recorded, which the pod's launcher could not look up by its id and Oh My Pi did not
-// resume by that id, the issue's phase and the session forgotten.
+// session it recorded, the issue's phase, the session forgotten, and why it was forgotten, as
+// fields (dispatch://INFRA-4108 R3): the pod's launcher could not look the session up by its id
+// (launcher_lookup: failed), and Oh My Pi did not resume it by that id (resumed_by_id: false).
 func SessionForgottenNotice(issue string, role claim.Role, at phase.Phase, session string) texts.SessionForgottenRecord {
-	return texts.SessionForgottenRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionForgotten, Issue: issue}, Role: role, Phase: at, Session: session}
+	return texts.SessionForgottenRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionForgotten, Issue: issue}, Role: role, Phase: at,
+		Session: session, LauncherLookup: texts.LookupFailed, ResumedByID: false}
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start

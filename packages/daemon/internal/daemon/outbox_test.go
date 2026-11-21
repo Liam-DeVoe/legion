@@ -927,8 +927,9 @@ func refusedWrites(notice record.Notice) (status, reason string) {
 // same: it is what the issue's lifecycle stands on, and the daemon's own record already reads
 // done. The architect is told what Dispatch refused, that the status stands, and how the reason
 // began, since the reason is on no issue and nothing else would say so. A close's reason is the
-// daemon's sentence and then the architect's words, so the words object names that first line as
-// the architect's, at the time the status row was queued.
+// daemon's sentence and then the architect's words, so the notice gives the sentence as a field
+// (refused_close: before_first_phase) and quotes the architect's words alone in begins, which the
+// words object names as the architect's, at the time the status row was queued.
 func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -967,9 +968,9 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 	status, posted := refusedWrites(notice)
 	if notice.Kind != texts.MessageRefused || notice.Issue != "LEGION-208" || notice.Refused != texts.RefusedStatus ||
 		notice.Status != "done" || status != "true" || posted != "false" ||
-		notice.Begins != "Closed by its architect before its first phase: the human decided no change." || notice.Length != len([]rune(reason)) ||
+		notice.RefusedClose != texts.BeforeFirstPhase || notice.Begins != "the human decided no change." || notice.Length != len([]rune(reason)) ||
 		!strings.Contains(notice.DispatchAnswer, refusal.Error()) {
-		t.Fatalf("the notice = %+v, want it naming the status it set, the reason not posted with its length and first line alone, and Dispatch's refusal", notice)
+		t.Fatalf("the notice = %+v, want it naming the status it set, the reason not posted with its length, the close as a field and the architect's words of its first line alone, and Dispatch's refusal", notice)
 	}
 	if quoted, named := notice.Words["begins"]; !named || quoted.By != string(claim.RoleArchitect) || quoted.At.IsZero() {
 		t.Fatalf("the notice's words object names begins as %+v (named %v), want it named as the architect's words, with the time the row was queued", quoted, named)
@@ -1140,8 +1141,9 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 		t.Fatalf("decode the notice: %v", err)
 	}
 	if status, posted := refusedWrites(notice); notice.Kind != texts.MessageRefused || notice.Status != "done" || status != "true" ||
-		posted != "false" || notice.Begins != reason || !strings.Contains(notice.DispatchAnswer, refusal.Error()) {
-		t.Fatalf("the notice = %+v, want it naming the status that stands, the refused reason and Dispatch's refusal", notice)
+		posted != "false" || notice.RefusedClose != texts.BeforeFirstPhase || notice.Begins != "the human decided no change." ||
+		!strings.Contains(notice.DispatchAnswer, refusal.Error()) {
+		t.Fatalf("the notice = %+v, want it naming the status that stands, the refused close and its reason, and Dispatch's refusal", notice)
 	}
 }
 

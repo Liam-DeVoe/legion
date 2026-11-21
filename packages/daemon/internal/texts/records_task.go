@@ -55,9 +55,10 @@ const (
 // (ReviewedHead), the review that ends it (EndsRound), and why the daemon set aside a review that
 // would otherwise have decided it (SetAside). A round GitHub will not merge from names, as its
 // review-stuck notice does, the merge state GitHub reports for the head, each check and each
-// commit status of that head that did not pass, each check of that head GitHub skipped under the
-// key that says a skipped check ran nothing on the head (skipped_ran_nothing), the count of the
-// checks and statuses that passed and the command that lists them.
+// commit status of that head that did not pass, each check of that head GitHub skipped (skipped)
+// with the field that says once that a skipped check ran nothing on the head (each_skipped_check,
+// CheckConclusion), the count of the checks and statuses that passed and the command that lists
+// them.
 type PhaseAssignmentRecord struct {
 	TaskHead
 	Title             string            `json:"title"`
@@ -78,7 +79,8 @@ type PhaseAssignmentRecord struct {
 	SetAside          string            `json:"set_aside,omitempty"`
 	MergeState        string            `json:"merge_state,omitempty"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped           []string          `json:"skipped_ran_nothing,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
+	EachSkippedCheck  string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`
@@ -159,27 +161,41 @@ const (
 	WokenByRetry = "retry"
 )
 
+// The rule of the last look's verdict, in the terms of dispatch://INFRA-904's R7, which
+// dispatch://INFRA-4533's R1 has the last look's task state: a requirement of the issue that only
+// the deploy can show and that is still unobserved at the last look is a fail
+// (CheckLookRecord.UnobservedRequirement), and the last look's pending is only for an issue with
+// no such requirement (CheckLookRecord.Pending).
+const (
+	LastLookUnobservedRequirement = "fail"
+	LastLookPending               = "only_with_no_deploy_only_requirement"
+)
+
 // CheckLookRecord is the task of a look of a closed issue's production check (workflow's
 // checkTask). Its first line is its lead, kept word for word, since the legion tool's
 // description names it; the lead names the issue and its title, so they are no fields.
 //
 // The fields: the look, what woke it (one of the WokenBy words), the cause of a retried look
-// that nobody reported, whether it is the last look, the pull request, the merge commit (absent
-// where the record holds none), and the check's bound in whole days with the time of the last
-// look. The pending summary that named the wake goes in the summary block, by the checking role.
+// that nobody reported, whether it is the last look and, on the last look alone, the rule of its
+// verdict (UnobservedRequirement and Pending, the LastLook words), the pull request, the merge
+// commit (absent where the record holds none), and the check's bound in whole days with the time
+// of the last look. The pending summary that named the wake goes in the summary block, by the
+// checking role.
 type CheckLookRecord struct {
-	Issue       string    `json:"-"`
-	Title       string    `json:"-"`
-	Kind        Kind      `json:"kind"`
-	Look        int       `json:"look"`
-	WokenBy     string    `json:"woken_by"`
-	RetryOf     string    `json:"retry_of,omitempty"`
-	Last        bool      `json:"last,omitempty"`
-	PullRequest string    `json:"pull_request"`
-	MergeCommit string    `json:"merge_commit,omitempty"`
-	BoundDays   int       `json:"bound_days,omitempty"`
-	LastLook    time.Time `json:"last_look,omitzero"`
-	Summary     *Words    `json:"summary"`
+	Issue                 string    `json:"-"`
+	Title                 string    `json:"-"`
+	Kind                  Kind      `json:"kind"`
+	Look                  int       `json:"look"`
+	WokenBy               string    `json:"woken_by"`
+	RetryOf               string    `json:"retry_of,omitempty"`
+	Last                  bool      `json:"last,omitempty"`
+	UnobservedRequirement string    `json:"unobserved_requirement,omitempty"`
+	Pending               string    `json:"pending,omitempty"`
+	PullRequest           string    `json:"pull_request"`
+	MergeCommit           string    `json:"merge_commit,omitempty"`
+	BoundDays             int       `json:"bound_days,omitempty"`
+	LastLook              time.Time `json:"last_look,omitzero"`
+	Summary               *Words    `json:"summary"`
 }
 
 // Lead is the first line of the look task: Production check of <KEY>: <title>. The title is a
@@ -296,14 +312,14 @@ type KeptDecision struct {
 // which kept the pod, its workspace and the work not pushed (StoppedByRelease, StoppedByPause).
 //
 // A CI settlement names the pull request, the head, the issue's phase, the checks and the commit
-// statuses that did not pass, the checks GitHub skipped under the key that says a skipped check
-// ran nothing on the head (skipped_ran_nothing), the count of the checks and statuses that passed
-// and the command that lists them. A message to the role's topic names the topic and the facts
-// dispatch://INFRA-2846's R7 requires: how long Envoy keeps a role message, the field a kept card
-// shows, that a kept card can come before this task,
-// that Envoy tells the sender when it drops one, the setting a message that is not kept is sent
-// with, and that its sender sends it again. A message to the session names the session. The
-// backstop names the role it was armed for. A wake of another word gives its detail.
+// statuses that did not pass, the checks GitHub skipped (skipped) with the field that says once
+// that a skipped check ran nothing on the head (each_skipped_check, CheckConclusion), the count of
+// the checks and statuses that passed and the command that lists them. A message to the role's
+// topic names the topic and the facts dispatch://INFRA-2846's R7 requires: how long Envoy keeps a
+// role message, the field a kept card shows, that a kept card can come before this task, that
+// Envoy tells the sender when it drops one, the setting a message that is not kept is sent with,
+// and that its sender sends it again. A message to the session names the session. The backstop
+// names the role it was armed for. A wake of another word gives its detail.
 type PodWakeRecord struct {
 	TaskHead
 	Wake                 string            `json:"wake"`
@@ -311,7 +327,8 @@ type PodWakeRecord struct {
 	Head                 string            `json:"head,omitempty"`
 	Phase                phase.Phase       `json:"phase,omitempty"`
 	NotPassed            []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped              []string          `json:"skipped_ran_nothing,omitempty"`
+	Skipped              []string          `json:"skipped,omitempty"`
+	EachSkippedCheck     string            `json:"each_skipped_check,omitempty"`
 	NotPassedStatuses    []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed               *int              `json:"passed,omitempty"`
 	ListPassed           string            `json:"list_passed,omitempty"`

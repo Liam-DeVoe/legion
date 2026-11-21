@@ -179,8 +179,11 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 					t.Errorf("%s #%d names the commit status %q %s, want %s", settled.kind, r.n, context, got, want)
 				}
 			}
-			if skipped := list(values, "skipped_ran_nothing"); !slices.Equal(skipped, checks.skipped) || len(skipped) != 5 {
+			if skipped := list(values, "skipped"); !slices.Equal(skipped, checks.skipped) || len(skipped) != 5 {
 				t.Errorf("%s #%d names the checks %v skipped, want the 5 %v", settled.kind, r.n, skipped, checks.skipped)
+			}
+			if values["each_skipped_check"] != texts.RanNothing {
+				t.Errorf("%s #%d says of each skipped check %q, want %q once beside the list", settled.kind, r.n, values["each_skipped_check"], texts.RanNothing)
 			}
 			if values["passed"] != "57" || checks.passed != 30 || checks.statusesPassed != 27 {
 				t.Errorf("%s #%d counts %s that passed, want the 30 checks and the 27 commit statuses, 57", settled.kind, r.n, values["passed"])

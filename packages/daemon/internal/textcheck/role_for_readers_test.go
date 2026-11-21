@@ -62,7 +62,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/texts/rules.go", fn: "ciSettledUrgency"}:                     {calls: 1, test: "TestEachKindHasTheUrgencyItsRuleGives"},
 	{file: "internal/workflow/architect_start.go", fn: "carriedPhase"}:            {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
-	{file: "internal/workflow/effects.go", fn: "BackwardMoveAsker"}:               {calls: 1, test: "TestBackwardMoveAskerReadsTheRoleOfEveryBackwardReason"},
+	{file: "internal/workflow/effects.go", fn: "BackwardMoveOf"}:                  {calls: 1, test: "TestBackwardMoveOfReadsTheMoveTheAskerAndTheWordsOfEveryBackwardReason"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                      {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "PhaseAssignment"}:                 {calls: 1, test: "TestABackwardMoveReasonReachesTheNextTaskInABlock"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                         {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},

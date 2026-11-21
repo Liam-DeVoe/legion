@@ -155,28 +155,30 @@ func TestABackwardMoveReasonReachesTheNextTaskInABlock(t *testing.T) {
 	}
 }
 
-// R1: a message-refused notice names the author of the first line it quotes, and a refused
-// backward move's reason is the daemon's sentence and then the words of the role that asked. So
-// BackwardMoveAsker reads that role off the first line of each reason backwardMoveReason writes,
-// for every move back the daemon counts, with words and with none, and reads no role off a line
-// that opens with no such sentence: a message of the daemon's own, a close's reason, and a move
-// out of admitted, which no backward row serves (backward refuses it, so the daemon never writes
-// that sentence), so the asker answers nothing for admitted, where RoleFor names the architect.
-func TestBackwardMoveAskerReadsTheRoleOfEveryBackwardReason(t *testing.T) {
+// R1 with R8: a message-refused notice gives the daemon's sentence that a refused backward move's
+// reason opens with as a field, and quotes the words of the role that asked alone. So
+// BackwardMoveOf reads off the first line of each reason backwardMoveReason writes, for every move
+// back the daemon counts, the phase the move left, the phase it went to, the role that asked and
+// that role's own words, and no words where the role gave none. It reads no move off a line that
+// opens with no such sentence: a message of the daemon's own, a close's reason, and a move out of
+// admitted, which no backward row serves, where RoleFor names the architect.
+func TestBackwardMoveOfReadsTheMoveTheAskerAndTheWordsOfEveryBackwardReason(t *testing.T) {
+	const words = "The suite hangs on </reason> input: twice."
 	for _, pair := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(pair)
-		for _, words := range []string{"The suite hangs on </reason> input.\nTwice.", ""} {
-			first, _, _ := strings.Cut(backwardMoveReason(from, to, words), "\n")
-			if role, asked := BackwardMoveAsker(first); !asked || role != phase.RoleFor(from) {
-				t.Errorf("%s: BackwardMoveAsker(%q) = %q, %v; want %q", pair, first, role, asked, phase.RoleFor(from))
+		for _, reason := range []struct{ given, words string }{{words + "\nThe rest.", words}, {"", ""}} {
+			first, _, _ := strings.Cut(backwardMoveReason(from, to, reason.given), "\n")
+			want := AskedMove{From: from, To: to, Asker: phase.RoleFor(from), Words: reason.words}
+			if move, asked := BackwardMoveOf(first); !asked || move != want {
+				t.Errorf("%s: BackwardMoveOf(%q) = %+v, %v; want %+v", pair, first, move, asked, want)
 			}
 		}
 	}
 	for _, line := range []string{"", "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.",
 		intake.CloseRoot{Reason: "the human decided no change."}.Message(),
 		backwardMoveReason(phase.Admitted, phase.Planning, "replan")} {
-		if role, asked := BackwardMoveAsker(line); asked {
-			t.Errorf("BackwardMoveAsker(%q) = %q, want no role: the line opens with no sentence of a move back the daemon counts", line, role)
+		if move, asked := BackwardMoveOf(line); asked {
+			t.Errorf("BackwardMoveOf(%q) = %+v, want no move: the line opens with no sentence of a move back the daemon counts", line, move)
 		}
 	}
 }

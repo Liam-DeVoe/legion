@@ -607,15 +607,16 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 
 // CISettledMessage is the ci-settled message of issue for the settlement standing for pr's head
 // (settledChecks): the pull request, the head it settled on, the issue's phase (at), each check
-// that did not pass with what it came to, each check GitHub skipped, each commit status the record
-// keeps for that head in state failure or error with its state, the count of the checks and
-// statuses that passed, and the command that lists them all (tallyChecks).
+// that did not pass with what it came to, each check GitHub skipped with the field that says once
+// that such a check ran nothing (texts.EachSkippedCheck), each commit status the record keeps for
+// that head in state failure or error with its state, the count of the checks and statuses that
+// passed, and the command that lists them all (tallyChecks).
 func CISettledMessage(issue string, pr record.PullRequest, at phase.Phase) texts.CISettledRecord {
 	settled := settledChecks(pr)
 	tally := tallyChecks(settled.shown, settled.statuses)
 	return texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: issue}, PullRequest: pullRequestRef(pr),
-		Head: settled.head, Phase: at, NotPassed: tally.notPassed, Skipped: tally.skipped, NotPassedStatuses: tally.notPassedStatuses,
-		Passed: tally.passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
+		Head: settled.head, Phase: at, NotPassed: tally.notPassed, Skipped: tally.skipped, EachSkippedCheck: texts.EachSkippedCheck(tally.skipped),
+		NotPassedStatuses: tally.notPassedStatuses, Passed: tally.passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
@@ -1291,8 +1292,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the first names the reason the daemon set a review aside that would otherwise have decided it
 // (setAside), the only thing that says why the round has no decision. A round GitHub will not
 // merge from names the merge state GitHub reports for the head, each check run GitHub reported on
-// that head that did not pass with what it came to, each one GitHub skipped, each commit status
-// the record keeps for that head in state failure or error, where the checked head is that head
+// that head that did not pass with what it came to, each one GitHub skipped with the field that
+// says once that such a check ran nothing (texts.EachSkippedCheck), each commit status the record
+// keeps for that head in state failure or error, where the checked head is that head
 // (headStatuses), the count of the checks and statuses that passed, and the command that lists
 // them (tallyChecks): the daemon reads no ruleset, so a check the base requires that never ran is
 // in none of them.
@@ -1303,6 +1305,7 @@ func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, ap
 	if cause == texts.CauseMergeState {
 		tally := tallyChecks(headRuns(pr), headStatuses(pr))
 		stuck.MergeState, stuck.NotPassed, stuck.Skipped = string(pr.MergeState), tally.notPassed, tally.skipped
+		stuck.EachSkippedCheck = texts.EachSkippedCheck(tally.skipped)
 		stuck.NotPassedStatuses, stuck.Passed, stuck.ListPassed = tally.notPassedStatuses, &tally.passed, texts.ListPassed(pr.Repo, pr.Number)
 	} else {
 		stuck.EndsRound = texts.EndsRound(pr.HeadSHA)
@@ -1313,14 +1316,16 @@ func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, ap
 // ApprovedRoundStuckMessage is the approved-round-stuck message of issue to its reviewer, whose
 // approval of pr's head GitHub will not merge from: the pull request, the head, the merge state
 // GitHub reports for it, each check run GitHub reported on that head that did not pass with what
-// it came to, each one GitHub skipped, each commit status the record keeps for that head in state
-// failure or error (headStatuses), the count of the checks and statuses that passed, and the
-// command that lists them (tallyChecks).
+// it came to, each one GitHub skipped with the field that says once that such a check ran nothing
+// (texts.EachSkippedCheck), each commit status the record keeps for that head in state failure or
+// error (headStatuses), the count of the checks and statuses that passed, and the command that
+// lists them (tallyChecks).
 func ApprovedRoundStuckMessage(issue string, pr record.PullRequest) texts.ApprovedRoundStuckRecord {
 	tally := tallyChecks(headRuns(pr), headStatuses(pr))
 	return texts.ApprovedRoundStuckRecord{RoleHead: texts.RoleHead{Kind: texts.ApprovedRoundStuck, Issue: issue}, PullRequest: pullRequestRef(pr),
 		Head: pr.HeadSHA, MergeState: string(pr.MergeState), NotPassed: tally.notPassed, Skipped: tally.skipped,
-		NotPassedStatuses: tally.notPassedStatuses, Passed: tally.passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
+		EachSkippedCheck: texts.EachSkippedCheck(tally.skipped), NotPassedStatuses: tally.notPassedStatuses, Passed: tally.passed,
+		ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // tellStuckMergeState tells the architect and the reviewer of the one stuck cause a review

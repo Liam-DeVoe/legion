@@ -154,10 +154,16 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"issue", "handoff_commit", "repo", "branch"}},
 	{kind: texts.MessageRefused, from: "daemon/outbox.go:messagePostRefused, statusWriteRefused",
 		keys: []string{"issue", "refused"}},
-	{kind: texts.MessageRefused, variants: []string{"message"}, from: "daemon/outbox.go:messagePostRefused (its length)",
+	{kind: texts.MessageRefused, variants: []string{"message", "message-own"}, from: "daemon/outbox.go:messagePostRefused (its length)",
 		keys: []string{"length"}},
-	{kind: texts.MessageRefused, variants: []string{"status"}, from: "daemon/outbox.go:statusWriteRefused (the status, whether it is set)",
+	{kind: texts.MessageRefused, variants: []string{"status", "status-move"}, from: "daemon/outbox.go:statusWriteRefused (the status, whether it is set)",
 		keys: []string{"status", "status_set"}},
+	{kind: texts.MessageRefused, variants: []string{"message", "status-move"}, from: "daemon/outbox.go:messagePostRefused, statusWriteRefused at a86c31c9 " +
+		"(the first line it quoted, whose daemon's sentence names the move back and the role that asked: workflow/effects.go's backwardMoveReason)",
+		keys: []string{"refused_move", "words.begins.by"}},
+	{kind: texts.MessageRefused, variants: []string{"status"}, from: "daemon/outbox.go:statusWriteRefused at a86c31c9 " +
+		"(the first line it quoted, whose daemon's sentence says that the architect closed the issue before its first phase: intake.CloseRootLead)",
+		keys: []string{"refused_close", "words.begins.by"}},
 	{kind: texts.DesignApproved, from: "workflow/gate.go:gateRegistered, applyArtifact (version, actor, ref)",
 		keys: []string{"issue", "version", "actor"}, links: []string{"ref"}},
 	{kind: texts.DesignChangesRequested, from: "workflow/gate.go:tellChanges (version, reason, actor, ref)",
@@ -322,12 +328,13 @@ var goldenMainFacts = []goldenFactsOf{
 var goldenStatusKeys = []string{"not_passed_statuses#", "not_passed_statuses[0].context", "not_passed_statuses[0].state", "passed"}
 
 // goldenSkippedKeys is where a sample of a head's CI names the checks GitHub skipped
-// (dispatch://INFRA-4135's R1): their count, and the first. main's text at 6d50ef31 names each
-// check by GitHub's word, a skipped one skipped, and says once that a skipped check ran nothing on
-// this head; the record names the skipped checks in a list of their own, apart from the checks
-// that did not pass and from the count of those that passed, under the key that says that once
-// (skipped_ran_nothing).
-var goldenSkippedKeys = []string{"skipped_ran_nothing#", "skipped_ran_nothing[0]"}
+// (dispatch://INFRA-4135's R1): their count, the first, and the field that says once that a
+// skipped check ran nothing on the head. main's text at 6d50ef31 names each check by GitHub's
+// word, a skipped one skipped, and says once that a skipped check ran nothing on this head; the
+// record names the skipped checks in a list of their own, apart from the checks that did not pass
+// and from the count of those that passed, under the key skipped, and says the rest in a field of
+// its own (each_skipped_check: ran_nothing).
+var goldenSkippedKeys = []string{"skipped#", "skipped[0]", "each_skipped_check"}
 
 // goldenCutTurnNote is the cut-turn note of a task taken back, word for word as main's
 // interruptedTask wrote it (supervise/delivery.go and relaunch.go's relaunchSentence at b4a566cb,
@@ -400,6 +407,25 @@ var goldenKept = []goldenKeptOf{
 		keys:   []string{"evidence", "then", "late_background_work"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"evidence": "scratch_files_on_dispatch", "then": "end_turn", "late_background_work": "push_and_answer_again"}
+		}},
+	{kind: texts.UpdateAsk, what: "that a named service the role started is in no report and holds nothing, in a field of its own beside goes_with_pod, which says that it goes with the pod",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4203's R2, the second of the four things its steps say",
+		keys:   []string{"named_services"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"named_services": "in_no_report_hold_nothing"}
+		}},
+	{kind: texts.SessionForgotten, what: "why the session was forgotten: the pod's launcher could not look it up by its id, and Oh My Pi did not resume it by that id",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4108's R3",
+		keys:   []string{"launcher_lookup", "resumed_by_id"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"launcher_lookup": "failed", "resumed_by_id": "false"}
+		}},
+	{kind: texts.CheckLook, variants: []string{"bound-last"}, what: "the rule of the last look's verdict beside last: true: a requirement only the deploy can show that is still unobserved there is a fail, " +
+		"and its pending is only for an issue with no such requirement",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4533's R1, which states dispatch://INFRA-904's R7",
+		keys:   []string{"unobserved_requirement", "pending"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"unobserved_requirement": "fail", "pending": "only_with_no_deploy_only_requirement"}
 		}},
 	{kind: texts.ReviewStuck, variants: []string{"undecided", "approved-other-code"}, what: "the phrase `APPROVE of head <sha>` in the reason of a round a review ends",
 		keptBy: "dispatch://INFRA-3498's R4",
