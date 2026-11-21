@@ -5,7 +5,7 @@
     "notifications.agent.>",
     "notifications.role.PRIV.>",
     "notifications.envoy.deliver.*",
-    "notifications.envoy.relayreply.>",
+    "notifications.envoy.relayreply.m.>",
     "notifications.envoy.resume.>",
     "notifications.envoy.exceptions.notifications.agent.>",
     "notifications.envoy.exceptions.notifications.role.PRIV.>",
@@ -90,6 +90,6 @@
   "subscribe": [
     "_INBOX_envoy_edge_m.>",
     "notifications.envoy.deliver.*",
-    "notifications.envoy.relayreply.>"
+    "notifications.envoy.relayreply.m.>"
   ]
 }

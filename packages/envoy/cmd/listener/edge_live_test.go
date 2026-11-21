@@ -85,7 +85,11 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 		"dispatch": natsgrant.Dispatch("example-dispatch"),
 		"shared":   natsgrant.ListenerHost("example-shared"),
 		// The observer stands in for the relay socket's serving replica: it reads the session's
-		// relay subject and answers on whatever reply subject a frame names.
+		// relay subject and answers on whatever reply subject a frame names. At this head the edge's
+		// relay names its receipts under its inbox prefix, so the observer publishes there: reach no
+		// rendered grant holds, since Session publishes _INBOX.> and Edge no inbox. The receipt
+		// family the edge's own grant publishes (natsgrant.EdgeRelayReplyPrefix) is the relay
+		// socket's of #4658.
 		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
 	}
 	var static []testnats.StaticUser
@@ -338,10 +342,12 @@ func edgeRoleEnvelope(summary string) contracts.Envelope {
 }
 
 // An edge session claims a role of its project. A message published on the role's subject while
-// no shared listener runs reaches no one: the edge listener subscribes no role lane, so it takes
-// no share of any role's messages. Once a shared listener runs, as its own user, the next message
-// is taken from the role lane by it, which resolves the edge session as the holder and forwards
-// the message to the session's agent subject, and the edge listener relays it to the session.
+// no shared listener runs is taken by no one: the edge listener subscribes no role lane, so it
+// takes no share of any role's messages. Once a shared listener runs, as its own user, the next
+// message is taken from the role lane by it, which resolves the edge session as the holder and
+// forwards the message to the session's agent subject, and the edge listener relays it to the
+// session. So the first frame the session is relayed is that second message: had the edge taken
+// the first, the first frame would be the first message.
 func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
@@ -355,9 +361,6 @@ func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
 
 	if err := rig.dispatch.Publish(edgeRoleEnvelope("before a shared listener runs")); err != nil {
 		t.Fatalf("publish the role message: %v", err)
-	}
-	if envelope, ok := nextRelayFrame(t, frames, 5*time.Second); ok {
-		t.Fatalf("a role message reached the edge session with no shared listener running: %q on %s:\n%s", envelope.PayloadSummary, envelope.Topic, edge.Output.String())
 	}
 
 	shared := rig.startShared(t)

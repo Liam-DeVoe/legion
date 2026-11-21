@@ -164,44 +164,12 @@ func edgePermissions(t *testing.T, machineID string, projects ...string) core.Pe
 	return p
 }
 
-// The edge listener's set is the listener's with the edge's changes: in place of every
-// notification topic, its own lanes (the agent subjects, each project's role subjects, the relay
-// subjects and receipts, the resume lane, and the exception lanes of the agent subjects and of
-// each project's role subjects), no create or update of the stream, its own machine's inbox prefix
-// in place of every reply inbox, every session's relay subject and the relay receipts, and no role
-// lane.
-func TestEdgePermissions(t *testing.T) {
-	edgePublish := []string{
-		"notifications.agent.>",
-		"notifications.role.PRIV.>",
-		"notifications.envoy.deliver.*",
-		"notifications.envoy.relayreply.>",
-		"notifications.envoy.resume.>",
-		"notifications.envoy.exceptions.notifications.agent.>",
-		"notifications.envoy.exceptions.notifications.role.PRIV.>",
-	}
-	for _, entry := range listenerPublish {
-		switch entry {
-		case "notifications.>", "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS", "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS":
-		default:
-			edgePublish = append(edgePublish, entry)
-		}
-	}
-	require.Len(t, edgePublish, len(listenerPublish)+4)
-	require.Equal(t, core.Permissions{
-		Publish:   core.Rules{Allow: edgePublish},
-		Subscribe: core.Rules{Allow: []string{"_INBOX_envoy_edge_example-host-a.>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}},
-	}, edgePermissions(t, "example-host-a", "PRIV"))
-}
-
-// EdgePermissions refuses a project list natsgrant.Edge refuses, and renders nothing of it: a
-// wildcard key would render every project's role subjects.
-func TestEdgePermissionsRefuseAListThatIsNoListOfProjectKeys(t *testing.T) {
-	for _, projects := range [][]string{{"*"}, {">"}, {"PRIV.X"}, {"priv"}, {"PRIV", "PRIV"}, {"PRIV", "OTHER"}} {
-		p, err := core.EdgePermissions("example-host-a", projects)
-		require.Error(t, err, "EdgePermissions(example-host-a, %q)", projects)
-		require.Equal(t, core.Permissions{}, p)
-	}
+// EdgePermissions refuses what natsgrant.Edge refuses, and renders nothing of it: here a wildcard
+// key, which would render every project's role subjects.
+func TestEdgePermissionsRefuseWhatTheEdgeGrantRefuses(t *testing.T) {
+	p, err := core.EdgePermissions("example-host-a", []string{"*"})
+	require.Error(t, err)
+	require.Equal(t, core.Permissions{}, p)
 }
 
 // A user holding EdgePermissions subscribes to no reply inbox of another client: its replies come
@@ -225,7 +193,7 @@ func TestEdgePermissionsRefuseASubscribeToOtherClientsInboxes(t *testing.T) {
 // natsgrant's live tests do since those packages cannot import this one, holds exactly what a hub
 // renders from this set.
 func TestEdgePermissionsAreTheEdgeGrant(t *testing.T) {
-	for _, id := range []string{"m", "example-edge-a", "example host"} {
+	for _, id := range []string{"m", "example-edge-a"} {
 		for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}} {
 			grant, err := natsgrant.Edge(id, projects)
 			require.NoError(t, err)

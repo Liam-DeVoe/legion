@@ -86,3 +86,13 @@ func TestParseServicesRefusals(t *testing.T) {
 		})
 	}
 }
+
+// An edge listener's entry that gives it every project (*) or its exchange's projects (-) is
+// refused by its own rule, naming the form an edge entry takes, before its scope is read as a
+// list of project keys: an edge listener serves only the projects its entry names.
+func TestAnEdgeEntryOfEveryOrTheExchangeProjectsIsRefusedNamingWhy(t *testing.T) {
+	for _, scope := range []string{allProjectsScope, exchangeScope} {
+		_, err := ParseServices("edge-listener/edge-a/" + scope + "=" + edgeAccount)
+		require.ErrorContains(t, err, "an edge listener serves only the projects its entry names", "scope %q", scope)
+	}
+}

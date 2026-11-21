@@ -149,10 +149,13 @@ func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
 
-// RelayReplyPrefix begins the receipt subject of a relay frame that an edge listener sends, in
-// place of a reply inbox: an edge listener's grant subscribes this family and publishes no reply
-// inbox (natsgrant.Edge). No stream subject captures it (StreamCaptures), so a receipt travels
-// over core NATS, as the frame does, and the stream stores none.
+// RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
+// receipts are this prefix, its machine id, a dot and a token (natsgrant.EdgeRelayReplyPrefix),
+// and its grant publishes and subscribes only its own machine's (natsgrant.Edge). The relay
+// socket of #4658 is the first to use it; at this head no program names a receipt here, and the
+// edge's session relay takes its receipts under its connection's inbox. No stream subject
+// captures it (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the
+// stream stores none.
 const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
