@@ -166,10 +166,13 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 // The publish rule: an edge session publishes only a role subject of its project in the form
 // that names the project, for a role that works for that project (contracts.ClaimProject): a
 // Legion role of the project, or a free-form role under it. Anything else is 403
-// topic_not_published, a Legion role of another project named under this one among it.
+// topic_not_published, a Legion role of another project named under this one among it. A publish
+// the rule takes reaches the role's holder, and one to a role of the project that no session holds
+// is the 404 unclaimed, since the edge's grant keeps no role message for a next holder
+// (keepForNextHolder).
 func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_publisher"
+	const sessionID, holder = "ses_edge_publisher", "ses_edge_publisher_holder"
 	token := rig.personToken(sessionID, "PRIV")
 	for _, topic := range []string{
 		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
@@ -184,13 +187,22 @@ func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 		body := fmt.Sprintf(`{"topic":%q,"message":"from the edge","source":"agent","source_session":%q}`, topic, sessionID)
 		requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "topic_not_published", "a publish to "+topic)
 	}
-	for _, role := range []string{contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester"), contracts.RoleSubject("PRIV", "lead-reviewer")} {
-		body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, role, sessionID)
-		recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body)
-		if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-			t.Fatalf("a publish to %s: status %d (%s), want it taken", role, recorder.Code, recorder.Body.String())
-		}
+	holderToken := rig.personToken(holder, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, holderToken, holder), http.StatusOK, "the holder's registration")
+	var published []contracts.Envelope
+	for _, held := range []struct{ claim, topic string }{
+		{"legion-priv-priv-1-tester", contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester")},
+		{"PRIV.lead-reviewer", contracts.RoleSubject("PRIV", "lead-reviewer")},
+	} {
+		claim := fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, holder, held.claim)
+		requireStatus(t, rig.call(t, http.MethodPost, holderToken, "/v1/roles/set", claim), http.StatusOK, "the holder's claim of "+held.claim)
+		published = append(published, publishToHeldRole(t, rig, token, sessionID, held.topic))
 	}
+	requireFrames(t, standIn.collect(t, len(published), 10*time.Second), published...)
+	unheld := contracts.RoleSubject("PRIV", "legion-priv-priv-2-tester")
+	body := fmt.Sprintf(`{"topic":%q,"message":"for no holder","source":"agent","source_session":%q}`, unheld, sessionID)
+	requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusNotFound, "unclaimed", "a publish to "+unheld+", a role of PRIV no session holds")
 }
 
 // The send rule: an edge session sends only to a session whose token lists one of its token's
@@ -638,15 +650,20 @@ func TestAnEdgeSendNamesItsOwnSession(t *testing.T) {
 }
 
 // A publish at the edge is the session's own, as a send is: a publish to a role subject of PRIV
-// under another source, or naming no source session, is refused 403 sender_not_session, and one as
-// agent naming the token's session is taken. Control: with edge mode off, the first refused
-// publish is taken.
+// under another source, or naming no source session, is refused 403 sender_not_session, and the
+// role's holder receives none of them; one as agent naming the token's session reaches the holder
+// with that session as its sender. Control: with edge mode off, the first refused publish is taken.
 func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
 	rig := newEdgeRig(t)
-	const sender = "ses_edge_publish_sender"
+	const sender, holder, role = "ses_edge_publish_sender", "ses_edge_publish_holder", "legion-priv-priv-1-tester"
 	token := rig.personToken(sender, "PRIV")
 	requireStatus(t, rig.subscribe(t, token, sender), http.StatusOK, "the sender's registration")
-	topic := contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester")
+	holderToken := rig.personToken(holder, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, holderToken, holder), http.StatusOK, "the holder's registration")
+	requireStatus(t, rig.call(t, http.MethodPost, holderToken, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, holder, role)),
+		http.StatusOK, "the holder's claim of "+role)
+	topic := contracts.RoleSubject("PRIV", role)
 	for _, refused := range []struct{ source, sourceSession string }{
 		{"dispatch", ""}, {"human", sender}, {"agent", ""},
 	} {
@@ -654,9 +671,11 @@ func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
 		requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "sender_not_session",
 			fmt.Sprintf("a publish as source %q with source_session %q", refused.source, refused.sourceSession))
 	}
-	body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, topic, sender)
-	if recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body); recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-		t.Fatalf("a publish as agent from %s: status %d (%s), want it taken", sender, recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	published := publishToHeldRole(t, rig, token, sender, topic)
+	got := standIn.collect(t, 1, 10*time.Second)[0].item
+	if got.EventID != published.EventID || got.Source != "agent" || got.SourceSession != sender {
+		t.Fatalf("the holder's first frame is %s from source %q, source_session %q, want %s from agent and %s: a refused publish reached it",
+			got.EventID, got.Source, got.SourceSession, published.EventID, sender)
 	}
 }
 

@@ -240,10 +240,12 @@ func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 // renewed, and the answer's warnings name it, as a claim of that role at the edge is refused. A
 // message on that role's lane after the registration then reaches no holder, and the session's
 // role of the token's project stays and is renewed. A role message the lane forwarded to the
-// session's agent subject before the registration, or after a later claim another writer makes,
-// is not this row's: the relay's check of each frame's topic holds those frames. Controls: with
-// edge mode off, and with the edge's release (edgeTopicHold.releaseRefusedRoles) releasing
-// nothing, the INFRA claim still names the session after the registration, and the row fails.
+// session's agent subject before the registration still reaches it
+// (TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration), and so does one forwarded under a
+// later claim another writer makes: the relay's check of each frame's topic, which #4730 adds,
+// holds those frames. Controls: with edge mode off, and with the edge's release
+// (edgeTopicHold.releaseRefusedRoles) releasing nothing, the INFRA claim still names the session
+// after the registration, and the row fails.
 func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const moved, privIssues = "ses_edge_role_moved", "notifications.dispatch.issue.PRIV.>"
@@ -293,6 +295,53 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	if frames[0].item.EventID != sentinel.EventID {
 		t.Fatalf("the moved session's first frame is %s on %s, want PRIV's event: a message of INFRA's role reached it", frames[0].item.EventID, frames[0].item.Topic)
 	}
+}
+
+// A role message the role lane forwarded to a session's own agent subject before its edge
+// registration still reaches the session after that registration released the role: an edge
+// listener runs with its grant, which turns the frame takeover off (takeOverFrame), and nothing
+// else at the edge holds a frame already forwarded. This row states that gap, as the edge section
+// of packages/envoy/README.md does: the relay's check of each frame's topic, which #4730 adds,
+// withholds the frame, and once it is in, this row fails and is turned to require the frame
+// withheld. Here the session holds INFRA's role through another listener, the shared listener's
+// role lane forwards a message of that role to it, and the session then registers at the edge
+// under a PRIV token. Controls: with edge mode off, the role is not released and the row fails;
+// with the rig's listener running without the edge's grant, the takeover copies the frame to the
+// role's kept lane, the session's first frame is the PRIV event, and the row fails.
+func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID, infraRole = "ses_edge_forwarded_before", "legion-infra-infra-5-tester"
+	rig.placeElsewhere(t, sessionID, "INFRA")
+	if _, err := rig.deps.registry.SetRole(sessionID, "shared-listener", infraRole, false); err != nil {
+		t.Fatalf("claim %s for %s on the other listener: %v", infraRole, sessionID, err)
+	}
+	testwait.Eventually(t, "the role claim copy to name the claim", func() bool {
+		held, err := rig.deps.registry.RolesHeldBy(sessionID)
+		return err == nil && slices.Contains(held, infraRole)
+	})
+	// The lane records the forward and stores it on the holder's own subject before the call that
+	// took the message returns.
+	cfg := wireTestRoleForwarder(t, rig.harness.config)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+infraRole, "edge-forwarded-before-"+id.New())
+	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
+	if !cfg.attemptCache.Seen(item.DedupeKey, sessionID) && !cfg.dedupeCache.Seen(item.DedupeKey, sessionID) {
+		t.Fatalf("UNKNOWN: the role lane forwarded INFRA's %s message to no session, so the row has no frame to see", infraRole)
+	}
+
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID, "notifications.dispatch.issue.PRIV.>"), http.StatusOK,
+		"the session's registration at the edge")
+	if claim, err := rig.deps.registry.RoleClaim(t.Context(), infraRole); err != nil || (claim.Revision != 0 && claim.HolderSessionID == sessionID) {
+		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): the role was not released, so a frame of it is not one the release left", infraRole, claim, err)
+	}
+	sentinel, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
+	// The relay sends in stream order, so the forward, stored first, is the first frame unless the
+	// relay holds it.
+	if first := standIn.collect(t, 1, 10*time.Second)[0].item; first.EventID != item.EventID {
+		t.Fatalf("the session's first frame at the edge is %s on %s, not INFRA's %s message forwarded before the registration: the relay held that frame, "+
+			"as #4730's check of each frame's topic does; turn this row to require it withheld", first.EventID, first.Topic, infraRole)
+	}
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), sentinel)
 }
 
 // A registration at the edge releases a claim of another project's role also while the role claim
