@@ -266,31 +266,6 @@ export const INERT_REFERENCE = "[data-dispatch-ref], [data-dispatch-picture]";
  *  it (a reference card's two lines of its target, a reply's quote of its parent). */
 export const RENDERED_BODY = ".dispatch-markdown:not([data-markdown-preview])";
 
-/** The reference each element in scope matching `selector` names, in the order they are drawn:
- *  a Dispatch picture's `data-dispatch-picture`, any other's `data-dispatch-ref`. */
-export function referenceTargetsIn(scope: Locator, selector: string): Promise<string[]> {
-  return scope
-    .locator(selector)
-    .evaluateAll((elements) =>
-      elements.map(
-        (element) =>
-          element.getAttribute("data-dispatch-picture") ??
-          element.getAttribute("data-dispatch-ref") ??
-          ""
-      )
-    );
-}
-
-/** The `data-dispatch-href` of every title a document editor draws in scope, in the order it
- *  draws them (`@legion/proof-editor`'s reference decorations). */
-export function editorTitlesIn(scope: Locator): Promise<string[]> {
-  return scope
-    .locator("a.dispatch-reference")
-    .evaluateAll((elements) =>
-      elements.map((element) => element.getAttribute("data-dispatch-href") ?? "")
-    );
-}
-
 /** A margin thread's collapsed card: the toggle holding its one-line preview. On the phone
  *  layout the margin is a bottom sheet, which this opens first. */
 export async function collapsedMarginThread(

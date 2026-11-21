@@ -911,13 +911,14 @@ test("every issue tab and a project's document get the margin once their own con
     },
   ];
 
-  const alice = await asUser(browser, "alice");
-  try {
+  // One page, loaded afresh at each address, with no key and no click: either would end the
+  // shell's hold by itself (`web/src/features/shell/content-drawn.ts`), and the row is about what
+  // ends it without the reader. Each `goto` loads a new document, so the hold starts again in a
+  // module of its own and is armed again from that document's address, as on a landing in a tab
+  // of its own. What a tab keeps across its loads is its sessionStorage, and no landing here
+  // writes any.
+  await withAlice(browser, async (page) => {
     for (const { content, path, withMargin } of landings) {
-      // A page of its own, with no key and no click: either would end the shell's hold by
-      // itself (`web/src/features/shell/content-drawn.ts`), and the row is about what ends it
-      // without the reader.
-      const page = await alice.newPage();
       await page.goto(path);
       await expect(await content(page), path).toBeVisible();
       // Well under `HOLD_LIMIT_MS`: a landing whose own content never ends the hold gets its
@@ -926,11 +927,8 @@ test("every issue tab and a project's document get the margin once their own con
         timeout: 2_000,
       });
       if (withMargin !== undefined) await expect(withMargin(page), path).toBeVisible();
-      await page.close();
     }
-  } finally {
-    await alice.close();
-  }
+  });
 });
 
 /** Counts the page's requests for the margin's own chunk (`web/src/features/margin/
