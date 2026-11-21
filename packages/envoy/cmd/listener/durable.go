@@ -159,45 +159,57 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 }
 
 // ensureFixedDurable is startListenerSubscription's create in the fixed naming mode: the durable
-// named consumer, created or its policy corrected in place. Each write first asks the client's
-// marker gate (bus.Client.MarkerUnread), so a shut gate creates and corrects nothing.
+// named consumer, created or its policy corrected in place (correctListenerDurable). Each write
+// first asks the client's marker gate (bus.Client.MarkerUnread), so a shut gate creates and
+// corrects nothing.
 func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) error {
 	info, err := listenerDurable(client, consumer)
 	switch {
 	case err != nil:
 		return err
 	case info == nil:
-		// The deliver subject is a random inbox, not a derivable name: on a
-		// shared NATS account a predictable subject would let any client
-		// hold interest on it — shadow-reading deliveries and making the
-		// consumer look push-bound so the listener could never attach.
-		config := nats.ConsumerConfig{
-			Durable:        consumer,
-			DeliverSubject: nats.NewInbox(),
-		}
-		applyListenerConsumerPolicy(&config, subjects)
+		config := listenerDurableConfig(consumer, subjects)
 		if err := client.MarkerUnread(); err != nil {
 			return err
 		}
-		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
-			return err
-		}
-	default:
-		// Only a field the policy writes can differ: the copy shares every other one, the
-		// server-set metadata included, and listenerDurable has already refused any ack policy
-		// but explicit.
-		corrected := info.Config
-		applyListenerConsumerPolicy(&corrected, subjects)
-		if !reflect.DeepEqual(corrected, info.Config) {
-			if err := client.MarkerUnread(); err != nil {
-				return err
-			}
-			if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected); err != nil {
-				return err
-			}
-		}
+		_, err := client.JS().AddConsumer(bus.Stream, &config)
+		return err
 	}
-	return nil
+	return correctListenerDurable(client, info, subjects)
+}
+
+// listenerDurableConfig is the configuration the listener creates its durable named name with, in
+// either naming mode: the canonical policy on subjects (applyListenerConsumerPolicy), delivering to
+// a random inbox. The deliver subject is a random inbox, not a derivable name: on a shared NATS
+// account a predictable subject would let any client hold interest on it, shadow-reading deliveries
+// and making the consumer look push-bound so the listener could never attach. The fresh mode adds
+// its start and metadata.
+func listenerDurableConfig(name string, subjects []string) nats.ConsumerConfig {
+	config := nats.ConsumerConfig{Durable: name, DeliverSubject: nats.NewInbox()}
+	applyListenerConsumerPolicy(&config, subjects)
+	return config
+}
+
+// correctListenerDurable brings the durable info describes to the canonical policy on subjects, in
+// place, in either naming mode: a setting NATS cannot change in place is refused
+// (listenerDurableRefusal), and any other drift is updated once the client's marker gate admits it
+// (a client with no gate always does). Only a field the policy writes can differ: the copy shares
+// every other one, the server-set metadata included. opts bound the update (the fresh mode's
+// context).
+func correctListenerDurable(client *bus.Client, info *nats.ConsumerInfo, subjects []string, opts ...nats.JSOpt) error {
+	if err := listenerDurableRefusal(info.Name, info.Config); err != nil {
+		return err
+	}
+	corrected := info.Config
+	applyListenerConsumerPolicy(&corrected, subjects)
+	if reflect.DeepEqual(corrected, info.Config) {
+		return nil
+	}
+	if err := client.MarkerUnread(); err != nil {
+		return err
+	}
+	_, err := client.JS().UpdateConsumer(bus.Stream, &corrected, opts...)
+	return err
 }
 
 // errListenerDurableBindExhausted marks a bind still refused at its deadline: something other than

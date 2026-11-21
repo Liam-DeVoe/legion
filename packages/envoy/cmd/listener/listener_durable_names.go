@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -150,12 +149,8 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	var createdHere string
 	sel, created, err := names.Ensure(ctx, key, consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
-			// The deliver subject is a random inbox, as today's create gives it (startListenerSubscription).
-			config := nats.ConsumerConfig{
-				Durable:        name,
-				DeliverSubject: nats.NewInbox(),
-				Metadata:       map[string]string{consumernames.LogicalMetadataKey: durable},
-			}
+			config := listenerDurableConfig(name, subjects)
+			config.Metadata = map[string]string{consumernames.LogicalMetadataKey: durable}
 			switch start.Native {
 			case consumernames.NativeAll:
 				config.DeliverPolicy = nats.DeliverAllPolicy
@@ -164,7 +159,6 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 			default:
 				config.DeliverPolicy, config.OptStartSeq = nats.DeliverByStartSequencePolicy, start.Seq
 			}
-			applyListenerConsumerPolicy(&config, subjects)
 			info, err := client.JS().AddConsumer(bus.Stream, &config, nats.Context(ctx))
 			var api *nats.APIError
 			switch {
@@ -201,15 +195,8 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	if err := names.Owns(key, protocolInfo(info)); err != nil {
 		return "", err
 	}
-	if err := listenerDurableRefusal(current, info.Config); err != nil {
+	if err := correctListenerDurable(client, info, subjects, nats.Context(ctx)); err != nil {
 		return "", err
-	}
-	corrected := info.Config
-	applyListenerConsumerPolicy(&corrected, subjects)
-	if !reflect.DeepEqual(corrected, info.Config) {
-		if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected, nats.Context(ctx)); err != nil {
-			return "", err
-		}
 	}
 	return current, nil
 }
