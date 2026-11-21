@@ -12,7 +12,7 @@ import (
 
 // StepPlace is one place of a task where a step runs: the task, the kind of step (step, retro or
 // merge) and its place in the task, from 1 for a step and 0 for a retro or a merge, which no plan
-// names (workflow's stepOf).
+// names (workflow's stepOfWalk).
 type StepPlace struct {
 	Task  string
 	Kind  string

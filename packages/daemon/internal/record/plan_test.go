@@ -667,7 +667,7 @@ func TestPlanTasksOfReadsEachIssuesTaskAtItsGenerationInOneQuery(t *testing.T) {
 
 // Where a task stands names the place a step runs at, for the count of its starts and for its
 // record (record.StepPlace, the key of step_starts): the task, the kind and the place, in the words
-// the count of starts already writes (workflow's stepOf), so the start the walk counts for a task at
+// the count of starts already writes (workflow's placeOnWalk), so the start the walk counts for a task at
 // its place is the row of step_starts that the end of that run reads, and the plan keeps no count of
 // its own.
 func TestATaskPlaceNamesThePlaceItsStartsAreCountedAt(t *testing.T) {

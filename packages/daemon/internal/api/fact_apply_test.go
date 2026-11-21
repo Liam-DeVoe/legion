@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The places of today's fixed phases where a step runs (workflow's stepOf), which a start
+// The places of today's fixed phases where a step runs (workflow's placeOnWalk), which a start
 // records its agent under.
 var (
 	implementingPlace = record.StepPlace{Task: "default", Kind: "step", Place: 2}
@@ -140,7 +140,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/project/resume":               {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
-		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
+		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's Walk.PlaceOf)"},
 		"POST /legion/v1/children/rerun": {none: "its child is out of the workflow, at phase done, which runs no step"},
 		"POST /legion/v1/handoff/complete": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
