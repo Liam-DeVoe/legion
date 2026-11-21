@@ -679,8 +679,12 @@ type rolePushWant struct {
 	// noMetaedit is whether the recording jj must see no metaedit.
 	noMetaedit bool
 	// ids are the lines `legion jj: revision `<argument>` names other commits after the step; …
-	// in <k> words of its option, …` the push prints, in order.
-	ids []rolePushIDs
+	// in <k> word(s) of its option, …` the push prints, in order: those of more than one word, and
+	// those of one word too where oneWord is set. A row that leaves oneWord unset reads no line of
+	// a revision the step gives as its ids in one word, which the step gives any argument that names
+	// a commit it rewrote by that commit's id.
+	ids     []rolePushIDs
+	oneWord bool
 	// pushed, when not nil, checks the words of the real push, which a recording jj ahead of the
 	// real one saw (oneRealPush).
 	pushed func(words []string)
@@ -732,14 +736,14 @@ type rolePushPrinted struct{ role, old, new string }
 var rolePushRewriteLine = regexp.MustCompile(`^legion jj: ([a-z]+): ([0-9a-f]{40}) -> ([0-9a-f]{40})$`)
 
 // rolePushIDs is one line `legion jj: revision `<argument>` names other commits after the step;
-// the push gets the <n> commits … by their ids, in <k> words of its option, each under <bound>
+// the push gets the <n> commit(s) … by their ids, in <k> word(s) of its option, each under <bound>
 // bytes`: the argument, n, k and the bound.
 type rolePushIDs struct {
 	argument              string
 	commits, words, bound int
 }
 
-var rolePushIDsLine = regexp.MustCompile("^legion jj: revision `(.*)` names other commits after the step; the push gets the ([0-9]+) commits it named before the step, as the step left them, by their ids, in ([0-9]+) words of its option, each under ([0-9]+) bytes$")
+var rolePushIDsLine = regexp.MustCompile(`^legion jj: revision ` + "`(.*)`" + ` names other commits after the step; the push gets the ([0-9]+) commit\(s\) it named before the step, as the step left them, by their ids, in ([0-9]+) word\(s\) of its option, each under ([0-9]+) bytes$`)
 
 // rolePushNumbers is each of parts as a number; each is digits alone (rolePushIDsLine).
 func rolePushNumbers(parts ...string) []int {
@@ -897,8 +901,12 @@ func (f *rolePushFixture) check(want rolePushWant, code int, stderr string, dive
 			t.Errorf("the push printed %q, want the line to name %q", line, want.cannotSetNames)
 		}
 	}
-	if !slices.Equal(lines.ids, want.ids) {
-		t.Errorf("the push printed %v of a revision it gives as ids in more than one word, want %v; it printed:\n%s", lines.ids, want.ids, stderr)
+	ids := lines.ids
+	if !want.oneWord {
+		ids = slices.DeleteFunc(slices.Clone(ids), func(l rolePushIDs) bool { return l.words == 1 })
+	}
+	if !slices.Equal(ids, want.ids) {
+		t.Errorf("the push printed %v of a revision it gives as ids, want %v (one-word lines read: %v); it printed:\n%s", lines.ids, want.ids, want.oneWord, stderr)
 	}
 	f.checkRewrites(want, lines.rewrites, landed, stderr)
 	for commit, author := range want.same {
@@ -1445,8 +1453,8 @@ func rolePushRevsetRows() []rolePushArgsRow {
 		// D is a number that starts the id of one commit of the repository, hidden ones included:
 		// a commit of C's change that a describe hid. jj reads the argument with D a number, which
 		// names C alone among the commits a metaedit can rewrite, so the step follows C, and the
-		// real push gets the argument as the role wrote it, D a number still, less C and with the
-		// commit the step made of C.
+		// real push gets the ids of the commits the argument named before the step, the commit the
+		// step made of C in place of C.
 		{name: "-r ancestors(<C>, <D>), D a number that starts the id of a hidden commit of C's change", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			f.track("legion/K-1")
 			c := work(f, "main", "work")
@@ -1489,13 +1497,13 @@ func rolePushRevsetRows() []rolePushArgsRow {
 
 // A commit id inside a revision argument's revset, each of `C1 | C2`, a prefix of C in present(),
 // the D of `D-`, the C of `ancestors(C, D)`, C1 beside @, and the commit id of @ on its own, is the
-// rewritten commit in the real push, and the argument goes to it as the role wrote it, less the
-// commits the step rewrote and with the commits it made of them: the remote's commits have their
-// trailers' authors, the step prints each rewrite, and no change is divergent. The D of
-// `ancestors(C, D)` is a number that starts the id of a hidden commit whose change has one visible
-// commit, and stays a number. A write in @ that no command has snapshotted reaches the remote, and
-// so it does where the commit id is one @ had before a rewrite of @ hid it. `::C` has a test of its
-// own, TestTheRealPushsArgumentCarriesNoIDOfACommitTheStepLeftAlone.
+// rewritten commit in the real push, which gets the ids of the commits the argument named before
+// the step, each commit the step rewrote as the commit it made of it and @ as @: the remote's
+// commits have their trailers' authors, the step prints each rewrite, and no change is divergent.
+// The D of `ancestors(C, D)` is a number that starts the id of a hidden commit whose change has
+// one visible commit, and jj reads it as a number. A write in @ that no command has snapshotted
+// reaches the remote, and so it does where the commit id is one @ had before a rewrite of @ hid
+// it. `::C` has a test of its own, TestTheRealPushsArgumentCarriesNoIDOfACommitTheStepLeftAlone.
 func TestACommitIDInsideARevsetSendsTheRewrittenCommit(t *testing.T) {
 	t.Parallel()
 	rolePushRunArgs(t, "", rolePushRevsetRows())
@@ -1505,23 +1513,32 @@ func TestACommitIDInsideARevsetSendsTheRewrittenCommit(t *testing.T) {
 var rolePushFullID = regexp.MustCompile(`[0-9a-f]{40}`)
 
 // `jj git push -r ::<C>`, a tracked bookmark on C (-r sends a bookmark that points at the commit,
-// and jj refuses to make a remote bookmark for one that tracks nothing): the real push's argument
-// carries no id of a commit the step left alone. jj reads the argument among the commits the step
-// can rewrite, C alone, so a recording jj ahead of the real one sees the real push's argument hold
-// the ids of C's change and of no other commit, the seed's and the root's among them: its length
-// grows with the commits the step rewrote, not with C's history. The remote gets the rewritten C
-// with its trailer's author, the step prints the rewrite, and no change is divergent.
+// and jj refuses to make a remote bookmark for one that tracks nothing), on a history of five
+// commits under C that origin holds (rolePushFixture.history), with the step's bound of a word of
+// ids lowered to rolePushOneWordBound bytes, under the 132 bytes of the argument's primary form
+// and over the 341 of the ids of the eight commits it names: the real push's argument carries no
+// id of a commit the step left alone. jj reads the argument among the commits the step can
+// rewrite, C alone, so a recording jj ahead of the real one sees the real push's argument, a word
+// under the bound, hold the ids of C's change and of no other commit, the history's, the seed's
+// and the root's among them: where the ids of what it names pass the bound, its length grows with
+// the commits the step rewrote, not with C's history. The remote gets the rewritten C with its
+// trailer's author, the step prints the rewrite, and no change is divergent.
 func TestTheRealPushsArgumentCarriesNoIDOfACommitTheStepLeftAlone(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
 	rolePushRunArgs(t, rolePushRecords, []rolePushArgsRow{
 		{name: "-r ::<C>, a tracked bookmark on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			f.history(5)
+			f.bound = rolePushOneWordBound
 			f.track("legion/K-1")
 			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 			f.bookmark("legion/K-1", c.commit)
 			want := rolePushSends("legion/K-1", c, "implementer", impl)
 			want.pushed = func(words []string) {
 				revision := words[len(words)-1]
+				if len(revision) >= rolePushOneWordBound {
+					f.t.Errorf("the real push's revision %q is %d bytes, want under %d", revision, len(revision), rolePushOneWordBound)
+				}
 				for _, id := range rolePushFullID.FindAllString(revision, -1) {
 					if change := f.changeOf(id); change != c.change {
 						f.t.Errorf("the real push's revision %q holds %s, a commit of change %q that the step left alone; want ids of C's change %s alone", revision, id, change, c.change)

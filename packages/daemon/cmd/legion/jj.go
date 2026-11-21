@@ -86,7 +86,8 @@ func jjStepped(words []string) string {
 // (report). After a step that changes nothing more (errJJAsWritten), past a dry run it cannot
 // read, a metaedit that jj refuses because the commit it would make exists already
 // (jjStep.metaedit), or a push whose command would pass jjArgMax bytes (jjStep.checkArgMax), only
-// a commit that a metaedit of the step moved counts as replaced. The push that runs after the
+// a commit that a metaedit of the step moved counts as replaced, and every argument is held to
+// the commits it named before the step only where a metaedit ran. The push that runs after the
 // step, or after the line of a table it cannot use, gets wrappedJJStepped set to the digest of the
 // words it runs with; the step's own commands do not.
 //
@@ -149,7 +150,9 @@ var jjDryRunFlags = []string{"--dry-run", "--ignore-working-copy", "--color=neve
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
 // table, where it is not that role's identity, by one jj metaedit --update-author for each role.
 // Each revision argument reaches each pass of the dry run and the real push in the words
-// revisionGiven gives it, which name the commits it named before the step, as the step left them.
+// revisionGiven gives it, which name the commits it named before the step, as the step left them:
+// once a metaedit of the step has run, every argument is held to them, whether or not it moved the
+// argument's own commits.
 // Each of its jj commands runs next, one after another, as a child in this process's group, with
 // the caller's repository and configuration options (jjPush.options) and --ignore-working-copy, so
 // it takes no snapshot.
@@ -159,15 +162,12 @@ type jjStep struct {
 	env    []string // the environment of each, the loop guard's variable set
 	table  map[legionclaim.Role]runtime.GitIdentity
 	stderr io.Writer
-	// revisionSets are the commits each revision argument names before any rewrite, by its place
-	// in push.revisions: every commit jj resolves it to, by full id, with whether it is the
-	// working-copy commit (readRevisions), or none where jj refuses the read or where no commit of
-	// the argument is one the step can rewrite.
-	revisionSets [][]jjSent
-	// revisionCommits are the commits of each revision argument, by its place in push.revisions:
-	// those of the argument that the step can rewrite, as jj resolves it (readRevisions), each
-	// followed from that read.
-	revisionCommits [][]*jjFollowed
+	// revisions are what the step keeps of each revision argument, by its place in push.revisions
+	// (jjArgument).
+	revisions []jjArgument
+	// edited is whether a metaedit of the step has run, the fill of a commit with no author
+	// included: from then on every revision argument is held to its set (revisionGiven).
+	edited bool
 	// followed is each commit the step follows through its rewrites (advance).
 	followed []*jjFollowed
 	// rewrites are the commits a metaedit of the step rewrote or found rewritten already, in
@@ -196,10 +196,10 @@ type jjRewrite struct {
 }
 
 // jjStepFailure is a command of the step that failed: legion jj ends with code, after output,
-// what the command printed on standard error, and runs no push. Three go on past one:
-// readRevisions and revisionGiven, past the failure of their reads of a revision argument (ids,
-// readRevision), and metaedit, past jj's refusal to make a commit that exists already
-// (jjCommitExists) and the failure of its read of that commit.
+// what the command printed on standard error, and runs no push. Four go on past one:
+// readRevisions, revisionSet and revisionGiven, past the failure of their reads of a revision
+// argument (readRevision, ids), and metaedit, past jj's refusal to make a commit that exists
+// already (jjCommitExists) and the failure of its read of that commit.
 type jjStepFailure struct {
 	code   int
 	output string
@@ -210,8 +210,9 @@ func (f jjStepFailure) Error() string { return fmt.Sprintf("a command of the ste
 // errJJAsWritten is a step that has printed its one line of what it could not do and changes
 // nothing more: read what the push sends (unreadable), set an author where jj refuses to make a
 // commit that exists already (metaedit), or set authors where the push's command would then pass
-// jjArgMax bytes (checkArgMax). The push then runs as the role wrote it, but for a revision
-// argument with a commit a metaedit of the step moved (jjStep.given).
+// jjArgMax bytes (checkArgMax). The push then runs as the role wrote it, but where a metaedit of the
+// step ran: each revision argument is then held to the commits it named before the step, each one
+// that metaedit moved as the commit that replaced it (jjStep.given).
 var errJJAsWritten = errors.New("the step changes nothing more; the push runs as written")
 
 // rewrite runs the step: the read of each revision argument (readRevisions), the dry run and the
@@ -341,22 +342,6 @@ func (s *jjStep) fullHeads(given []jjGiven, heads []string) ([]string, error) {
 	return full, nil
 }
 
-// revisionTerms is each revision argument as given, a pass of its dry run, gives it, in terms of
-// a revset: the one word of an argument, less what stands in front of it, in parentheses, or each
-// id of one that given gives as the ids of its commits, so that a read of them goes to as many
-// revsets as keep each under jjWordBound bytes (jjWords).
-func (s *jjStep) revisionTerms(given []jjGiven) []string {
-	var terms []string
-	for i, g := range given {
-		if g.ids != nil {
-			terms = append(terms, g.ids...)
-			continue
-		}
-		terms = append(terms, "("+g.words[0][s.push.revisions[i].offset:]+")")
-	}
-	return terms
-}
-
 // jjStartingWith is each of items whose commit id, as id reads it, starts with short.
 func jjStartingWith[T any](items []T, id func(T) string, short string) []T {
 	var matches []T
@@ -393,11 +378,11 @@ func jjEachOnce[T any](revsets []string, read func(string) ([]T, error), id func
 // run's new commits (fullHeads), every commit of which whose role is in the table and whose
 // author's email is not that role's. It decides before its first metaedit, never after, whether
 // the push's command would still be under jjArgMax bytes once each revision argument has the
-// words the step gives it after that rewrite (checkArgMax); where it would not, it rewrites
+// words the step may give it after that rewrite (checkArgMax); where it would not, it rewrites
 // nothing. It runs one metaedit for each role with such commits, in claim.Roles' order, each in as
 // many parts as keep each command under jjArgMax bytes (metaedit), and reads the set again before
 // each metaedit after its first, from what the dry run's new commits stand for after the one
-// before. Nothing to rewrite runs no metaedit.
+// before. Nothing to rewrite runs no metaedit, and reads no set of a revision argument.
 func (s *jjStep) setAuthors(heads []string) error {
 	if len(heads) == 0 {
 		return nil
@@ -415,17 +400,15 @@ func (s *jjStep) setAuthors(heads []string) error {
 		}
 	}
 	roles := map[legionclaim.Role]bool{}
-	var rewrites []string
 	for _, c := range set {
 		if s.misauthored(c) {
 			roles[c.role] = true
-			rewrites = append(rewrites, c.commit.commit)
 		}
 	}
-	if len(rewrites) == 0 {
+	if len(roles) == 0 {
 		return nil
 	}
-	if err := s.checkArgMax(rewrites); err != nil {
+	if err := s.checkArgMax(); err != nil {
 		return err
 	}
 	first := true
@@ -490,20 +473,23 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 // metaedit runs `jj metaedit --update-author` over commits under role's identity: the caller's
 // options first, then that identity as the command's last --config user.name and user.email,
 // each a TOML string (workspace.TOMLString), since a --config of the push's outranks JJ_USER and
-// JJ_EMAIL, which are set to the same. It runs in parts, in order, each over as many of commits as
-// keep its command, arguments and environment, under jjArgMax bytes (jjSize), and at least one:
-// one metaedit of some 35,000 commits would pass that limit. After each part it follows every
-// followed commit through it (advance), so that the next part names each of its commits by the
-// commit that stands for it then, and records each commit of the part as one role rewrote. A
-// commit's timestamps are whole seconds, so the commit a part would make of one of its commits can
-// exist already: an earlier rewrite of that commit in the same second made it, a refused push's
-// step among them, and a `jj undo` or a `jj op restore` may have hidden it since. jj then refuses
-// the whole part and changes nothing (jjExistingCommit). Where that commit can stand for one of
-// commits (existing), the step records that one's rewrite, and the metaedit runs again over the
-// rest of commits, if any. Each pass, a part or such a refusal, leaves one commit fewer at least,
-// so the passes end. Otherwise the step prints one line that names jj's error, and answers
-// errJJAsWritten. Any other failure is answered as it is: a jjStepFailure runs no push.
+// JJ_EMAIL, which are set to the same. It reads the set of each revision argument first, before
+// any rewrite (revisionSets), and marks the step edited once its command has run. It runs in
+// parts, in order, each over as many of commits as keep its command, arguments and environment,
+// under jjArgMax bytes (jjSize), and at least one: one metaedit of some 35,000 commits would pass
+// that limit. After each part it follows every followed commit through it (advance), so that the
+// next part names each of its commits by the commit that stands for it then, and records each
+// commit of the part as one role rewrote. A commit's timestamps are whole seconds, so the commit
+// a part would make of one of its commits can exist already: an earlier rewrite of that commit in
+// the same second made it, a refused push's step among them, and a `jj undo` or a `jj op restore`
+// may have hidden it since. jj then refuses the whole part and changes nothing
+// (jjExistingCommit). Where that commit can stand for one of commits (existing), the step records
+// that one's rewrite, and the metaedit runs again over the rest of commits, if any. Each pass, a
+// part or such a refusal, leaves one commit fewer at least, so the passes end. Otherwise the step
+// prints one line that names jj's error, and answers errJJAsWritten. Any other failure is
+// answered as it is: a jjStepFailure runs no push.
 func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
+	s.revisionSets()
 	identity := s.table[role]
 	env := withVariable(withVariable(slices.Clone(s.env), "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
 	config := []string{"--config", "user.name=" + workspace.TOMLString(identity.Name), "--config", "user.email=" + workspace.TOMLString(identity.Email)}
@@ -542,6 +528,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 			if err != nil {
 				return err
 			}
+			s.edited = true
 			for _, c := range commits[:n] {
 				s.rewrites = append(s.rewrites, jjRewrite{role: role, commit: c})
 			}
@@ -826,8 +813,8 @@ func (s *jjStep) report() {
 // step could not read: its first line that the step could not read or act on, jj's refusal of a
 // commit with no author that the step cannot fill among them (dryRunFilled), or a commit id of a
 // block that the step could not place among the commits it read (fullHeads), and answers
-// errJJAsWritten (asWritten): the push then runs with the role's own words, but for a revision
-// argument with a commit a metaedit of the step moved (jjStep.given).
+// errJJAsWritten (asWritten): the push then runs with the role's own words, but where a metaedit of
+// the step ran, past which each revision argument is held to its set (jjStep.given).
 func (s *jjStep) unreadable(line string) error {
 	return s.asWritten("read what the push sends", line)
 }
@@ -836,7 +823,8 @@ func (s *jjStep) unreadable(line string) error {
 // it could not read (unreadable), jj's refusal to make a commit that exists already (metaedit), or
 // the revision argument with which the push's command would pass jjArgMax bytes (checkArgMax). It
 // answers errJJAsWritten: the step changes nothing more, and the push runs as the role wrote it,
-// but for a revision argument with a commit a metaedit of the step moved (jjStep.given).
+// but where a metaedit of the step ran, past which each revision argument is held to its set
+// (jjStep.given).
 func (s *jjStep) asWritten(what, line string) error {
 	fmt.Fprintf(s.stderr, "legion jj: could not %s: %s; the push runs as written\n", what, line)
 	return errJJAsWritten

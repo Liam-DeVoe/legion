@@ -8,11 +8,10 @@ import (
 )
 
 // A revision argument that the step gives in more than one word repeats its option as the role
-// spelled it (jjStep.words): the word of the option stands again before each word after the first
-// of a value that follows it, and each word of a value attached to its option carries the option.
-// Every other word stays as the role wrote it, and the dry run's words leave out those that stay
-// on the real push alone. The bytes the step counts for each argument against jjArgMax
-// (givenSize), with the push's other words, are those of the real push's words (jjSize).
+// spelled it (jjStep.words, jjPush.revisionWords): the word of the option stands again before each
+// word after the first of a value that follows it, and each word of a value attached to its option
+// carries the option. Every other word stays as the role wrote it, and the dry run's words leave
+// out those that stay on the real push alone.
 func TestARevisionArgumentInSeveralWordsRepeatsItsOption(t *testing.T) {
 	t.Parallel()
 	s := &jjStep{push: readJJPush([]string{"--quiet", "git", "push", "-r", "a", "--revisions=b", "--named", "nm=c", "-cd"})}
@@ -31,13 +30,6 @@ func TestARevisionArgumentInSeveralWordsRepeatsItsOption(t *testing.T) {
 	}
 	if got, want := s.words(given, false), append([]string{"--quiet"}, dry...); !slices.Equal(got, want) {
 		t.Errorf("the real push's words are %q, want %q", got, want)
-	}
-	size := jjSize("--quiet", "git", "push", "-r", "--named")
-	for i, g := range given {
-		size += s.givenSize(i, g)
-	}
-	if want := jjSize(s.words(given, false)...); size != want {
-		t.Errorf("the step counts %d bytes for the real push's words, want %d", size, want)
 	}
 }
 

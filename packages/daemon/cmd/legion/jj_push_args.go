@@ -1,6 +1,7 @@
 package main
 
 import (
+	"iter"
 	"slices"
 	"strings"
 )
@@ -34,6 +35,27 @@ type jjPush struct {
 func (p jjPush) revision(i int) (prefix, argument string) {
 	r := p.revisions[i]
 	return p.args[r.index][:r.offset], p.args[r.index][r.offset:]
+}
+
+// revisionWords is each word that revision argument i takes of the command where words hold it,
+// with the revset that word holds: each of words, whose revset is what follows what stands in front
+// of the argument (revision), and, where the argument's value follows its option (`-r <ids>`), the
+// word of that option again, which holds no revset (""), before each of words after the first. A
+// value attached to its option (`-r<ids>`, `--revisions=<ids>`) has the option in each of words
+// already. jj takes -c and -r more than once and sends the union of what they name; --named names
+// one commit, so its argument is never in more than one word.
+func (p jjPush) revisionWords(i int, words []string) iter.Seq2[string, string] {
+	r := p.revisions[i]
+	return func(yield func(word, revset string) bool) {
+		for k, word := range words {
+			if k > 0 && r.offset == 0 && !yield(p.args[r.index-1], "") {
+				return
+			}
+			if !yield(word, word[r.offset:]) {
+				return
+			}
+		}
+	}
 }
 
 // jjRevision is one revision argument of a push: the value of -c/--change or
