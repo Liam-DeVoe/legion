@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,9 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // Every text below is written for these tests; none comes from Dispatch.
@@ -359,20 +359,15 @@ func TestAKeepRestartKeepsTheDatabasesSeedMark(t *testing.T) {
 		t.Skip("DISPATCH_TEST_DATABASE_URL names no Postgres server")
 	}
 	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, dsn)
+	// A file copy of template1, dropped when the test ends (docs/testing.md, "A database a Go test
+	// creates").
+	dbURL := testdb.DatabaseOn(t, dsn, "dispatch_harness_seed")
+	parsed, err := url.Parse(dbURL)
 	if err != nil {
-		t.Fatal(err)
+		// url.Parse's own error quotes the URL, whose userinfo is a credential.
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
-	defer admin.Close(ctx)
-	name := "dispatch_harness_seed_" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	if _, err := admin.Exec(ctx, "create database "+pgx.Identifier{name}.Sanitize()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { admin.Exec(context.Background(), "drop database if exists "+pgx.Identifier{name}.Sanitize()) })
-	dbURL, err := databaseURL(dsn, name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	name := strings.TrimPrefix(parsed.Path, "/")
 	if mark, err := databaseSeeded(ctx, dbURL, name, true); err != nil || mark != "" {
 		t.Fatalf("a database no start marked: %q, %v", mark, err)
 	}

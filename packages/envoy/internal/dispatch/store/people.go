@@ -37,10 +37,11 @@ func NewPgPeopleStore(pool *Pool, keys auth.SigningKeys, revoker RefreshTokenRev
 	return &PgPeopleStore{pool: pool, seal: newRefreshTokenSeal(keys), revoker: revoker}
 }
 
-// Record notes that email has signed in, keeping any membership it already holds.
+// Record notes that email has signed in, keeping any membership it already holds. Its error names
+// no email: the request's own access-log line names the caller, and a handler logs this error.
 func (s *PgPeopleStore) Record(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email); err != nil {
-		return fmt.Errorf("record person %q: %w", email, err)
+		return fmt.Errorf("record a person's sign-in: %w", err)
 	}
 	return nil
 }
@@ -48,12 +49,13 @@ func (s *PgPeopleStore) Record(ctx context.Context, email string) error {
 // retirePlainBeforeSignIn retires email's refresh token when the row holds it in plain text, so a
 // sign-in that replaces it (SignIn or SignInSubject) never forgets one the pool still accepts.
 // When the pool does not revoke it, this logs that at ERROR, naming the person to sign out at the
-// pool since no later boot will see the token, and proceeds.
+// pool since no later boot will see the token, and proceeds. A read that fails is an error that
+// names no email, as Record's is.
 func (s *PgPeopleStore) retirePlainBeforeSignIn(ctx context.Context, email string) error {
 	var stored *string
 	err := s.pool.QueryRow(ctx, `select refresh_token from people where email = $1`, email).Scan(&stored)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("read the refresh token the sign-in of %q replaces: %w", email, err)
+		return fmt.Errorf("read the refresh token a sign-in replaces: %w", err)
 	}
 	if stored != nil && !strings.HasPrefix(*stored, sealedRefreshTokenPrefix) {
 		switch err := s.retire(ctx, email, *stored); {

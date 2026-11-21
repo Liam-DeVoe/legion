@@ -1,5 +1,3 @@
-import { setTimeout as sleep } from "node:timers/promises";
-
 import type { Page } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
@@ -89,20 +87,27 @@ const HOLD_MS = 30_000;
  * and a text that shows anywhere in the hold - the review, the writer's window, the wait for the
  * sweep - fails the row where one look at one instant would pass it. A post commits with the
  * text's `posted` state, so `posting` is still held.
+ *
+ * The reads are one `expect.poll`'s, every 200 ms until the text posts or `HOLD_MS` ends. A count
+ * that is not 0 fails the row at the read that took it: an assertion that throws in the polled
+ * function ends the poll at once, since Playwright retries only the matcher the poll ends in.
  */
 async function expectHiddenUntilPosted(id: string, shown: () => Promise<number>): Promise<void> {
-  const deadline = Date.now() + HOLD_MS;
   let counts = 0;
-  for (;;) {
-    const count = await shown();
-    const { state } = await getHeld(id);
-    if (state === "posted") break;
-    expect(state, `the held text ${id} failed`).not.toBe("failed");
-    expect(count, `what the page drew of ${id} while it was ${state}`).toBe(0);
-    counts += 1;
-    expect(Date.now(), `${id} was still ${state} after ${HOLD_MS} ms`).toBeLessThan(deadline);
-    await sleep(200);
-  }
+  await expect
+    .poll(
+      async () => {
+        const count = await shown();
+        const { state } = await getHeld(id);
+        if (state === "posted") return state;
+        expect(state, `the held text ${id} failed`).not.toBe("failed");
+        expect(count, `what the page drew of ${id} while it was ${state}`).toBe(0);
+        counts += 1;
+        return state;
+      },
+      { intervals: [200], message: `${id} was still held after ${HOLD_MS} ms`, timeout: HOLD_MS }
+    )
+    .toBe("posted");
   // A text that posted before the first count proves nothing of its hold.
   expect(counts, `${id} posted before the page was counted once`).toBeGreaterThan(0);
 }
@@ -110,6 +115,8 @@ async function expectHiddenUntilPosted(id: string, shown: () => Promise<number>)
 /** What the open Inbox draws of held asks: its rows, its count, and alice's Inbox as read. */
 async function inboxShown(page: Page): Promise<number> {
   const rows = await page.locator("[data-inbox-row]").count();
+  // One instant's badge is what each read means to take: the poll that calls this reads it
+  // again every 200 ms, and a held ask shows its number at no instant of the hold.
   const counted = /\d/.test((await inboxCountBadge(page).textContent()) ?? "") ? 1 : 0;
   return rows + counted + (await getInbox({ login: "alice" })).length;
 }

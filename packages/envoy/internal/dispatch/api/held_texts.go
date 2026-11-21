@@ -662,7 +662,9 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 		}
 		return heldDryRun{answered: answer}, nil
 	default:
-		return heldDryRun{}, fmt.Errorf("a held write of %T has no path to run", write.request)
+		// The request is no part of the text: a write's request can hold its caller (heldReplay's
+		// Caller), and an error a handler logs carries nothing of an actor.
+		return heldDryRun{}, errors.New("a held write of a kind this server has no path for cannot run")
 	}
 	if errors.Is(err, errHeldDryRun) {
 		return dry, nil

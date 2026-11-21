@@ -1363,9 +1363,11 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // to one session — decides it instead, so such a caller need not name itself at all. A body
 // actor is then only an agreement: one that names the same session is taken, for its Origin,
 // which nothing else carries; one that names any other writer is 403 ACTOR_SESSION_MISMATCH,
-// naming the session the credential proved, rather than silently recording the write as a
-// session the caller merely asked for. Every credential that proves no session — a cookie, a
-// personal token, a Kubernetes service-account token — keeps the rule above exactly.
+// rather than silently recording the write as a session the caller merely asked for. The refusal
+// names no session, so no error this resolution returns carries an actor's id to a handler's log
+// line; GET /api/v1/whoami answers the caller the session its credential proved. Every credential
+// that proves no session — a cookie, a personal token, a Kubernetes service-account token — keeps
+// the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
 	if authenticated.Kind == "session" && authenticated.ID != "" {
 		// A body that names no writer at all leaves the session to the credential; one that names
@@ -1373,7 +1375,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
-				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
+				"this request's credential proves a session, and its actor names another writer: leave actor out, or name that session (GET /api/v1/whoami answers it)")
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
@@ -1601,8 +1603,8 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 		session := credential.Session
 		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
 			if session != "" && named != session {
-				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
-					"this request's credential acts for session %s; its session parameter names another session", session))
+				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden,
+					"this request's credential proves a session, and its session parameter names another: leave session out, or name that session (GET /api/v1/whoami answers it)")
 				return model.Actor{}, false
 			}
 			session = named
@@ -1648,8 +1650,8 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 		return actor, true
 	}
 	if actor.Act.Session != "" && actor.Act.Session != named {
-		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
-			"this request acts for session %s; its actor names another session", actor.Act.Session))
+		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden,
+			"this request acts for a session, and its actor names another: leave actor out, or name the session the request acts for")
 		return model.Actor{}, false
 	}
 	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.

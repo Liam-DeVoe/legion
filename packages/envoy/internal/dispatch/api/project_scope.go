@@ -402,8 +402,8 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
 			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
-				"this request's credential acts for session %s; %s %s writes into session %s",
-				proved, route.Method, route.Pattern, addressed))
+				"this request's credential proves a session, and %s %s writes into another: address the session the credential proves (GET /api/v1/whoami answers it)",
+				route.Method, route.Pattern))
 			return
 		}
 		handler(w, r)

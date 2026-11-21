@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Dispatch's errors no longer name a person's login or a session id in the places a request's
+  identity reaches: the people store's record and sign-in reads, the ask follower writes and
+  reads, a held write's dry run, and the Envoy client, which names a read of the listener by its
+  route's pattern (`GET /v1/registry/{session_id}`) in its errors and its log lines, and a role
+  send it refuses by its role alone. `403 ACTOR_SESSION_MISMATCH` and `403 SESSION_SCOPE` keep
+  their codes, and their messages name no session. Where the caller's credential proved the
+  session, the message points at `GET /api/v1/whoami`, which answers it.

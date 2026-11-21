@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -74,7 +75,8 @@ func confirmedJustNow(membership auth.PersonMembership) bool {
 }
 
 // People are named by lowercase email; the table refuses any other spelling, so no writer can
-// make one person two rows.
+// make one person two rows. The refusal names no email: a handler logs it, and the request's own
+// access-log line already names the caller.
 func TestPeopleTableRefusesAnEmailThatIsNotLowercase(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t)
@@ -83,9 +85,32 @@ func TestPeopleTableRefusesAnEmailThatIsNotLowercase(t *testing.T) {
 	}
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	for _, email := range []string{"Sami@d.example", ""} {
-		if err := people.Record(ctx, email); err == nil {
+		err := people.Record(ctx, email)
+		if err == nil {
 			t.Errorf("Record(%q) was accepted", email)
+		} else if email != "" && strings.Contains(err.Error(), email) {
+			t.Errorf("Record(%q)'s refusal names the email: %v", email, err)
 		}
+	}
+}
+
+// A sign-in whose read of the refresh token it replaces fails, here on a context already ended,
+// is an error that carries the cause and names no email, as Record's refusal names none.
+func TestASignInWhoseReadOfTheReplacedTokenFailsNamesNoEmail(t *testing.T) {
+	database := openTestStore(t)
+	if err := database.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	const email = "unnamed-signer@d.example"
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := people.SignIn(ended, email, "refresh-1")
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "read the refresh token a sign-in replaces") {
+		t.Fatalf("a sign-in on an ended context = %v, want the failed read of the token it replaces", err)
+	}
+	if strings.Contains(err.Error(), email) {
+		t.Fatalf("the failed sign-in names the email: %v", err)
 	}
 }
 

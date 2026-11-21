@@ -1031,16 +1031,11 @@ func mergedJSON(payload any, name string, value any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(object)+len(name)+len(member)+5)
-	encoded = append(encoded, object[:len(object)-1]...)
+	key := `"` + name + `":`
 	if len(object) > 2 {
-		encoded = append(encoded, ',')
+		key = "," + key
 	}
-	encoded = append(encoded, '"')
-	encoded = append(encoded, name...)
-	encoded = append(encoded, `":`...)
-	encoded = append(encoded, member...)
-	return append(encoded, '}'), nil
+	return slices.Concat(object[:len(object)-1], []byte(key), member, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {
