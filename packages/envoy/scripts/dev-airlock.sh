@@ -94,6 +94,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 
 usage() {
   cat <<'EOF'
@@ -355,7 +357,7 @@ await() {
   exit 1
 }
 
-await "dev-broker.sh" 300 "$DEV_BROKER_LOG" '^dev-broker: ready\.$' "$DEV_BROKER_PID"
+await "dev-broker.sh" 300 "$DEV_BROKER_LOG" "^${DEV_BROKER_BANNER[1]//./\\.}\$" "$DEV_BROKER_PID"
 
 # --- What dev-broker.sh left behind. Its work directory is the one export this script needs by
 # name; the files under it are the ones its banner documents, and each is checked here rather
@@ -368,16 +370,11 @@ first_match() { grep -oEm1 "$1" "$2" 2>/dev/null | head -n1 || true; }
 # nothing, so half an address is never read as the whole one.
 logged_addr() { jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" 2>/dev/null || true; }
 
-# dev-broker.sh prints each path it exports with printf %q, so the value is read as the shell that
+# The banner's exports are read from its own block of dev-broker.sh's log alone (lib/rig-banner.sh):
+# the log holds its processes' output too, and a line there that looks like an export runs nothing.
+# dev-broker.sh prints each path it exports with printf %q, so a value is read as the shell that
 # sources the line reads it: a work directory under a TMPDIR with a space in its name is one word.
-# The line read is the banner's own, `  export DEV_BROKER_DIR=...` from the line's start, and it is
-# evaluated in a subshell, so no other text of the broker's log is read and nothing it sets stays.
-BASE_DIR_LINE="$(sed -n 's/^  export \(DEV_BROKER_DIR=.*\)$/\1/p' "$DEV_BROKER_LOG" 2>/dev/null | head -n1 || true)"
-BASE_DIR=""
-if [ -n "$BASE_DIR_LINE" ]; then
-  # shellcheck disable=SC2153 # DEV_BROKER_DIR is what the evaluated banner line sets
-  BASE_DIR="$( (eval "$BASE_DIR_LINE" && printf '%s' "$DEV_BROKER_DIR") 2>/dev/null)" || BASE_DIR=""
-fi
+BASE_DIR="$(rig_banner_value "$DEV_BROKER_LOG" "${DEV_BROKER_BANNER[@]}" DEV_BROKER_DIR)"
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
   echo "dev-airlock: dev-broker.sh printed no DEV_BROKER_DIR" >&2
   exit 1
@@ -399,7 +396,7 @@ for needed in "$BROKER_BIN" "$AGENT_SECRETS_BIN" "$STANDS_BIN" "$ACCOUNT_TOKEN_F
   fi
 done
 
-APPROVER_LOGIN="$(first_match 'export AGENT_SECRETS_APPROVER=[^[:space:]]+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
+APPROVER_LOGIN="$(rig_banner_value "$DEV_BROKER_LOG" "${DEV_BROKER_BANNER[@]}" AGENT_SECRETS_APPROVER)"
 ISSUER_URL="$(first_match 'issuer listening url=[^[:space:]]+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
 if [ -z "$APPROVER_LOGIN" ] || [ -z "$ISSUER_URL" ]; then
   echo "dev-airlock: dev-broker.sh printed no approver or no issuer URL" >&2

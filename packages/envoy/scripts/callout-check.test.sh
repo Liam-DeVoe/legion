@@ -335,19 +335,30 @@ run_check other-words
 echo "PASS: a probe not admitted in words that are not the server's FAILs lines 3 and 4"
 
 # (l) With nothing exported, the check starts dev-stack.sh --callout from its own directory and
-# reads the banner the stack prints. A copy of the check sits beside a stand-in dev-stack.sh that
-# prints such a banner as the real one does, each path through printf %q, under a directory whose
-# name holds a space and a quote, with the placeholder line no shell evaluates; then it runs until
-# it is stopped. Read as a shell reads each line, the banner's PATH and token file are whole paths,
-# so the check passes all six lines as in (a), and on exit it stops the stack it started. A reader
-# that cuts each line at its "=" reads the escaped text instead and finds no natsprobe (exit 2).
+# reads the banner the stack prints. A copy of the check, and of lib/rig-banner.sh it sources, sits
+# beside a stand-in dev-stack.sh that prints such a banner as the real one does, from its first line
+# to its last, each path through printf %q, under a directory whose name holds a space and a quote,
+# with the placeholder line no shell evaluates; then it runs until it is stopped. Ahead of the
+# banner and after it, the stand-in prints a line that looks like an export and would run a command
+# when evaluated, as a process of the stack's could print one. Read from the banner's own block,
+# each line as a shell reads it, the banner's PATH and token file are whole paths and neither other
+# line runs, so the check passes all six lines as in (a), and on exit it stops the stack it started.
+# A reader that cuts each line at its "=" reads the escaped text instead and finds no natsprobe (exit
+# 2); one that evaluates every export line of the log runs both commands.
 started="${temporary_dir}/started"
 stack_dir="${temporary_dir}/a dev-stack's dir"
-mkdir -p "$started" "$stack_dir"
+mkdir -p "$started/lib" "$stack_dir"
 cp "$check" "${started}/callout-check.sh"
+cp "${check%/*}/lib/rig-banner.sh" "${started}/lib/rig-banner.sh"
 ln -s "$fake_bin_dir" "${stack_dir}/bin"
 : >"${stack_dir}/exchange-token"
 prepare_case
+ahead="${started}/an export ahead of the banner ran"
+after="${started}/an export after the banner ran"
+# shellcheck disable=SC2016 # the decoy lines hold a literal $(...), which only a reader's eval runs
+printf '  export DECOY_AHEAD=$(: >%s)\n' "$(printf %q "$ahead")" >"${started}/ahead"
+# shellcheck disable=SC2016
+printf '  export DECOY_AFTER=$(: >%s)\n' "$(printf %q "$after")" >"${started}/after"
 cat >"${started}/banner" <<EOF
 
 dev-stack: ready.
@@ -363,17 +374,21 @@ dev-stack: ready.
   export DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:7003
 
   export AGENT_SECRETS_SESSION=<this process's own session name>
+
+  Press Ctrl-C to stop every process and drop both databases.
 EOF
 {
   printf '#!/usr/bin/env bash\n'
   printf 'trap %q TERM\n' ": >$(printf %q "${started}/stopped"); exit 0"
-  printf 'cat %q\n' "${started}/banner"
+  printf 'cat %q %q %q\n' "${started}/ahead" "${started}/banner" "${started}/after"
   printf 'while :; do sleep 0.1; done\n'
 } >"${started}/dev-stack.sh"
 status=0
 output="$(env -u DEV_STACK_CALLOUT -u AGENT_SECRETS_URL -u NATS_URLS -u DEV_STACK_EXCHANGE_TOKEN_FILE \
   -u DEV_STACK_EXCHANGE_SESSION -u DEV_STACK_BROKER_PIDS -u DEV_STACK_NATS_MONITOR_URL \
   TMPDIR="$temporary_dir" bash "${started}/callout-check.sh" 2>"${started}/stderr")" || status=$?
+[ ! -e "$ahead" ] || fail "a stack the check starts: a line of the stack's output ahead of its banner was evaluated"
+[ ! -e "$after" ] || fail "a stack the check starts: a line of the stack's output after its banner was evaluated"
 for index in "${!want[@]}"; do
   [ "$(line $((index + 1)))" = "${want[$index]}" ] ||
     fail "a stack the check starts: line $((index + 1)) is '$(line $((index + 1)))', want '${want[$index]}'; it said: $(cat "${started}/stderr")"
@@ -382,4 +397,4 @@ done
 [ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] ||
   fail "a stack the check starts: want 'all 6 assertions passed' and exit 0, got exit $status; it said: $(cat "${started}/stderr")"
 [ -e "${started}/stopped" ] || fail "the check did not stop the stack it started"
-echo "PASS: with nothing exported the check starts the stack, reads each path its banner prints through printf %q as a shell does, passes all six lines and stops the stack"
+echo "PASS: with nothing exported the check starts the stack, reads its banner's own block, each path printed through printf %q as a shell reads it, runs no export line of the log outside it, passes all six lines and stops the stack"
