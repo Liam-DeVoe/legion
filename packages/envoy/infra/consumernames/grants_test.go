@@ -3,6 +3,7 @@ package consumernames
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,14 +122,24 @@ func (h *grantsHub) watch(t *testing.T) func() []string {
 }
 
 // grantsRig is one run's reach: the broker's hold routes on a Postgres schema of its own
-// (holdrecordtest), whose row starts released at gen 1, a hub, and the family databases a run
-// names.
+// (holdrecordtest), whose row starts released at gen 1, a hub, the family databases a run names,
+// and the permissions violations the server reported on the command's connection (refused).
 type grantsRig struct {
 	t       *testing.T
 	broker  *holdrecordtest.Broker
 	records *holdrecord.Client
 	hub     *grantsHub
 	dbs     map[string]*pgxpool.Pool
+
+	mu      sync.Mutex
+	refused []string
+}
+
+// refusals are the permissions violations the server reported on the command's connection.
+func (g *grantsRig) refusals() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.refused)
 }
 
 func grantsNewRig(t *testing.T, servers int, grant natsgrant.Permissions) *grantsRig {
@@ -185,9 +196,24 @@ func (g *grantsRig) database(family string, migrations ...string) {
 func (g *grantsRig) env() env {
 	e := env{
 		records: func(context.Context, options, bool) (*holdrecord.Client, error) { return g.broker.Client(g.t), nil },
+		// The server reports a refused publish or subscription at once, on the connection's async
+		// error handler (nats.go's processTransientError), before any request it refused times out:
+		// the handler records it and closes the connection, which releases every request in flight
+		// (nats.Conn.close, clearPendingRequestCalls), so a removed-grant control ends on the
+		// refusal itself. The connection keeps the refusal as its last error, which the command
+		// names (apiRefusal).
 		connect: func(context.Context, options) (*nats.Conn, error) {
 			return nats.Connect(g.hub.url, nats.UserInfo("operator", "op-pass"), nats.CustomInboxPrefix(natsgrant.OperatorInbox),
-				nats.Name("envoy-infra consumer-names"), nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))
+				nats.Name("envoy-infra consumer-names"), nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second),
+				nats.ErrorHandler(func(nc *nats.Conn, _ *nats.Subscription, err error) {
+					if !errors.Is(err, nats.ErrPermissionViolation) {
+						return
+					}
+					g.mu.Lock()
+					g.refused = append(g.refused, err.Error())
+					g.mu.Unlock()
+					go nc.Close()
+				}))
 		},
 		database: func(_ context.Context, _ options, family string) (Database, error) {
 			db, ok := g.dbs[family]
@@ -384,19 +410,27 @@ func TestTheGrantByPhase(t *testing.T) {
 					groups = append(groups, admits)
 				}
 			}
+			// Each control must end on the server's refusal, never on a timeout alone: a timeout also
+			// comes when a request never left, so the connection's own report of the refused publish
+			// (the rig's refusals) has to name a subject the removed entries admit.
 			for _, admits := range groups {
 				less := whole
 				less.Publish = slices.DeleteFunc(slices.Clone(whole.Publish), func(entry string) bool { return slices.Contains(admits, entry) })
-				_, _, code, output, _ := c.run(t, less)
+				g, _, code, output, _ := c.run(t, less)
 				require.NotEqual(t, 0, code, "control: %s succeeded without %s\n%s", c.name, strings.Join(admits, ", "), output)
+				require.True(t, grantsNamesOneOf(strings.Join(g.refusals(), "\n"), admits),
+					"control: the server reported no refused publish of a subject %s admit: %q\n%s", strings.Join(admits, ", "), g.refusals(), output)
 				require.True(t, grantsNamesOneOf(output, admits), "control: %s without %s names no refused subject those entries admit\n%s", c.name, strings.Join(admits, ", "), output)
 				t.Logf("control: %s without %s exits %d, naming the server's refusal", c.name, strings.Join(admits, ", "), code)
 			}
 			less := whole
 			less.Subscribe = nil
-			_, _, code, output, _ = c.run(t, less)
+			g, _, code, output, _ = c.run(t, less)
 			require.NotEqual(t, 0, code, "control: %s succeeded without its inbox's subscribe\n%s", c.name, output)
-			require.Contains(t, output, `Permissions Violation for Subscription to "`+natsgrant.OperatorInbox+`.`, "control: %s without its inbox's subscribe\n%s", c.name, output)
+			refusedSubscribe := `Permissions Violation for Subscription to "` + natsgrant.OperatorInbox + `.`
+			require.True(t, slices.ContainsFunc(g.refusals(), func(r string) bool { return strings.Contains(r, refusedSubscribe) }),
+				"control: the server reported no refused subscribe of the operator's inbox: %q", g.refusals())
+			require.Contains(t, output, refusedSubscribe, "control: %s without its inbox's subscribe\n%s", c.name, output)
 		})
 	}
 }

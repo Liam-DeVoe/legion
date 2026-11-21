@@ -1256,8 +1256,10 @@ func createBucketReconnect(ctx context.Context, nc *nats.Conn) error {
 // createBucketDeleteLeftover deletes what a cut restore of the selection bucket left (plan §3a,
 // "One rerun"): on a clustered hub STREAM.INFO answers 10059 for about 10 s after the cut, then an
 // empty stream appears and stays, so it waits for the stream to appear, deletes it, and reads
-// STREAM.INFO 10059 after the delete. A leftover that does not appear within the wait is UNKNOWN on
-// a clustered hub, naming the bucket; a lone server leaves none.
+// STREAM.INFO 10059 after the delete. A read the hub does not answer right after the delete, while
+// its meta leader settles the removal, is read again within the same wait. A leftover that does
+// not appear within the wait is UNKNOWN on a clustered hub, naming the bucket; a lone server
+// leaves none.
 func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 	clustered := nc.ConnectedClusterName() != ""
 	deadline := time.Now().Add(createBucketLeftoverWait)
@@ -1270,18 +1272,36 @@ func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 			if _, err := apiRequest(ctx, nc, "$JS.API.STREAM.DELETE."+createBucketStreamName, nil); err != nil {
 				return unknownf(err, "the delete of %s's leftover", selection.SessionBucket)
 			}
-			if _, present, err := createBucketStream(ctx, nc, false); err != nil {
-				return err
-			} else if present {
-				return unknownf(nil, "%s's leftover is still present after its delete", selection.SessionBucket)
-			}
-			return nil
+			return createBucketAwaitGone(ctx, nc, deadline)
 		}
 		if !clustered {
 			return nil
 		}
 		if time.Now().After(deadline) {
 			return unknownf(nil, "no leftover of the cut restore of %s appeared within %s", selection.SessionBucket, createBucketLeftoverWait)
+		}
+		if err := createBucketSleep(ctx, time.Second); err != nil {
+			return err
+		}
+	}
+}
+
+// createBucketAwaitGone reads the selection bucket's stream after its delete until STREAM.INFO
+// answers it absent: a read the hub does not answer in time (a timeout or no responder, while the
+// removal settles) is read again until deadline, and any other answer ends it. A stream still
+// present, or no answer by deadline, is UNKNOWN, naming the bucket.
+func createBucketAwaitGone(ctx context.Context, nc *nats.Conn, deadline time.Time) error {
+	for {
+		_, present, err := createBucketStream(ctx, nc, false)
+		switch {
+		case err == nil && present:
+			return unknownf(nil, "%s's leftover is still present after its delete", selection.SessionBucket)
+		case err == nil:
+			return nil
+		case !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrNoResponders):
+			return err
+		case time.Now().After(deadline):
+			return unknownf(err, "read %s after the delete of its leftover", selection.SessionBucket)
 		}
 		if err := createBucketSleep(ctx, time.Second); err != nil {
 			return err
