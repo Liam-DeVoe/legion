@@ -387,8 +387,9 @@ already, so none passes Linux's 131,072-byte limit on one argument, and a word t
 the step leaves alone goes as written.
 Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
 environment together, about 48,000 ids less what the environment takes, with each argument that
-has a commit the step would move counted as the ids of its whole set, does the step decide, before
-any rewrite other than the fill of an empty author that a dry run refused, to set no other author:
+has a commit the step would move counted at the largest of the ids of its whole set, a word of
+100,000 bytes (the primary form's largest) and its own word, does the step decide, before any
+rewrite other than the fill of an empty author that a dry run refused, to set no other author:
 it prints one `legion jj: could not set the author:` line that names the argument, the count and
 the limit, and the push runs as written, but for an argument with a commit that fill moved.
 The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
