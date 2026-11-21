@@ -211,17 +211,32 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // takes the role lane writes), no exception of any other topic and no reply to another client's
 // request. A message on a role lane of its own project that names a role of another project is
 // the shared listeners' role lane to refuse. It holds no create or update of the stream or of any
-// bucket's stream, so it cannot change any stream's configuration - its subjects, its limits, or a
-// republish. On the hub's image a republish to a $JS.API. subject reaches that subject's
-// subscribers and the JetStream API takes no action on it
-// (TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI). Its start reads the stream and
-// refuses when it is
-// missing, and opens each bucket by finding it (bus.EnsureKeyValue): a bucket the server lacks,
-// or holds at fewer copies than the deployment's count, ends the start naming the bucket's create
-// or raise the server refused. The rest of Listener's publish list stays as it is: the stream's
-// info and stored-message get, its durable's calls, JetStream's account info, the KV calls of
-// every bucket of bus.ListenerBuckets but its stream's create and update, the interest bucket's
-// purge and the session consumers' calls.
+// bucket's stream, and no direct get of any bucket, so it cannot change any stream's
+// configuration - its subjects, its limits, or a republish - or delete a stream:
+//   - A republish carries the stored value to its destination with that value as its body, and a
+//     destination under $JS.API. is a request of the account's: on the hub's image an empty value
+//     republished to a stream delete deletes the stream, and a non-empty one is refused as that
+//     request's body (TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI).
+//   - The stream itself answers a direct get, through the account's own JetStream client, on
+//     whatever reply subject the request names, with the stored value as the body. Aimed at
+//     $JS.API., the API takes that value as a request of the account's: a value written as a
+//     stream update changes that stream, and an empty one aimed at a delete deletes it
+//     (TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI). So the edge reads each
+//     bucket with a stream message get (bus.WithStreamMessageReads), whose answer the JetStream API
+//     publishes; that answer, a stream info answer and a stored publish's acknowledgement, aimed the
+//     same way, take no action there in the same row.
+//
+// Its start reads the stream and refuses when it is missing, and finds each bucket it opens
+// (bus.EnsureKeyValue): the interest, role, session and spent-proof buckets end the start, naming
+// the create or raise the server refused, when the server lacks one or holds it at fewer copies
+// than the deployment's count; the Legion agent bucket's open logs one error and is retried in the
+// background, and so is the known-session bucket's, which raises no bucket it finds. Every other
+// listener of this build creates the spent-proof bucket at its start (cmd/listener's
+// ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
+// Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
+// calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
+// stream's create, its update and its direct get, the interest bucket's purge and the session
+// consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -238,8 +253,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // it a subject of two tokens past the prefix: no Envoy program publishes one, since
 // bus.DeliverSubject names a session by one token.
 //
-// What the lists do not hold back, which TestTheEdgeGrantsConsumerCallsReachPastItsPublishList and
-// TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI pin on the hub's image:
+// What the lists do not hold back. TestTheEdgeGrantsConsumerCallsReachPastItsPublishList,
+// TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI and
+// TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt pin the first two on the
+// hub's image; the bucket-stream consumer is read from the server's rule, not run:
 //   - The session consumers' calls name the consumer by *, since each session's consumer is named
 //     for its session (bus.SessionConsumerName). A NATS wildcard matches a whole token and a
 //     consumer name is one token, so no permission can hold these calls to the edge's own
@@ -258,13 +275,16 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     stream delete, takes no action. A stream whose subjects take the deliver subject - another
 //     stream of the account, a key-value bucket's stream among them - stores the delivery under
 //     its stream subject, as a message of that stream and never as a key, and counts it toward
-//     that stream's limits. That is the one write this route has, and it needs some other client
-//     to subscribe the deliver subject, since the edge subscribes none a stream takes.
+//     that stream's limits. A consumer created with an idle heartbeat also sends its heartbeats,
+//     empty status messages with no stored subject, to the deliver subject: a heartbeat aimed at a
+//     stream delete deletes that stream. Each of these needs some other client to subscribe the
+//     deliver subject, since the edge subscribes none a stream takes and no $JS.API. subject, and
+//     no Envoy client subscribes one.
 //   - Its KV calls include a consumer on each bucket's stream (CONSUMER.CREATE.KV_<bucket>.>),
 //     and that stream does not carry the notification subjects, so such a consumer can deliver a
-//     bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept and resume subjects
-//     wherever a client subscribes them: the cycle refusal holds only for the notification
-//     stream's own consumers.
+//     bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept, resume and takeover
+//     subjects wherever a client subscribes them: the cycle refusal holds only for the
+//     notification stream's own consumers.
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
@@ -285,7 +305,7 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 		jsAPI + "STREAM.UPDATE." + bus.Stream,
 	}
 	for _, bucket := range bus.ListenerBuckets() {
-		removed = append(removed, jsAPI+"STREAM.CREATE."+kvStream+bucket, jsAPI+"STREAM.UPDATE."+kvStream+bucket)
+		removed = append(removed, jsAPI+"STREAM.CREATE."+kvStream+bucket, jsAPI+"STREAM.UPDATE."+kvStream+bucket, jsAPI+"DIRECT.GET."+kvStream+bucket+".>")
 	}
 	publish := []string{contracts.AgentTopicPrefix + ">"}
 	for _, project := range projects {
