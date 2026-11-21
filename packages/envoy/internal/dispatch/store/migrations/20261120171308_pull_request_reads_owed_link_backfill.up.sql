@@ -14,11 +14,12 @@
 -- oweLinkedRead), spelled out here because a migration is frozen text:
 --   * A link names a pull request where it is https://github.com/<owner>/<name>/pull/<number> or
 --     .../issues/<number>, its scheme and host in any letter case and `pull` or `issues` in any
---     case, every character of it ASCII, the owner 1 to 39 letters, digits, `-` and `_`, the name
---     1 to 100 letters, digits, `.`, `-` and `_` and not `.` or `..`, and the number 1 to
---     2147483647 with no zero before it. An /issues/ link that names an issue of GitHub owes one
---     read too, which GitHub answers as no pull request and the reconcile settles
---     (pullRequestAbsent), as for a link write.
+--     case, every character of it ASCII, the owner a letter or digit and then up to 38 letters,
+--     digits, `-` and `_` (refs.GitHubOwnerPattern), the name 1 to 100 letters, digits, `.`, `-`
+--     and `_`, not `.` or `..`, and not empty, `.` or `..` once it is lowercased and one trailing
+--     `.git` is trimmed (refs.SplitGitHubRepo), and the number 1 to 2147483647 with no zero before
+--     it. An /issues/ link that names an issue of GitHub owes one read too, which GitHub answers
+--     as no pull request and the reconcile settles (pullRequestAbsent), as for a link write.
 --   * The read is owed under the repository's canonical name (refs.CanonicalRepoSQL: the greatest
 --     renamed_to of the repo_projects rows of that name in any letter case), or under the link's
 --     own name where the canonical name is no name GitHub can have.
@@ -56,11 +57,12 @@ from (
 		select p.m[1] || '/' || p.m[2] as given, p.m[4] as digits
 		from (
 			select regexp_match(lower(left(l.url, 19)) || substr(l.url, 20),
-				'^https://github\.com/([A-Za-z0-9_-]{1,39})/([A-Za-z0-9._-]{1,100})/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
+				'^https://github\.com/([A-Za-z0-9][A-Za-z0-9_-]{0,38})/([A-Za-z0-9._-]{1,100})/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
 			from issue_external_links l
 			where octet_length(l.url) = length(l.url)
 		) p
 		where lower(p.m[3]) in ('pull', 'issues') and p.m[2] not in ('.', '..')
+			and regexp_replace(lower(p.m[2]), '\.git$', '') not in ('', '.', '..')
 	), linked as materialized (
 		select p.given, case when p.digits::bigint <= 2147483647 then p.digits::int end as number
 		from parsed p

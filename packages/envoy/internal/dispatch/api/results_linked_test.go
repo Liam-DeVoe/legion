@@ -295,13 +295,18 @@ func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
 }
 
 // A linked pull request of a repository whose name GitHub's naming rule refuses is set aside and
-// named. The issue links a pull request of `acme/.git`, which the links' own pattern takes, since
-// GitHub's names take `.git`, and which refs.SplitGitHubRepo refuses, since the name is empty
-// once a trailing `.git` is trimmed: so Dispatch asks GitHub nothing about it, and the repository
-// counts for nothing, as one Dispatch cannot read does. The commit no repository holds is refused
-// 400 RESULT_COMMIT_UNKNOWN, and the refusal names the repository it set aside and that GitHub's
-// naming rule refuses its name, and does not name it as a repository Dispatch could not read,
-// which a grant of the App would not mend.
+// named. The link rule refuses a link that spells such a name (delivery.linkedPullRequest holds a
+// link's own name to refs.SplitGitHubRepo), so the name comes from a rename: the issue links
+// oldco/gizmo#3, and oldco/gizmo's renamed_to is `acme/.git`, which the settings route refuses
+// and which a row stored before that refusal, or by direct SQL, can still hold. The link names
+// the pull request under that canonical name, which refs.SplitGitHubRepo refuses, since the name
+// is empty once a trailing `.git` is trimmed: so Dispatch asks GitHub nothing about it, and the
+// repository counts for nothing, as one Dispatch cannot read does. The commit no repository holds
+// is refused 400 RESULT_COMMIT_UNKNOWN, and the refusal names the repository it set aside and
+// that GitHub's naming rule refuses its name, and does not name it as a repository Dispatch could
+// not read, which a grant of the App would not mend. A second issue links acme/.git#4 itself, a
+// link the rule refuses: it names no repository, so its refusal sets nothing aside and asks
+// GitHub nothing about acme/.git either.
 //
 // The negative control is the refusal as linkCannotCount left it, which read the name rule's
 // answer as one about a repository Dispatch cannot read and then kept only such repositories, so
@@ -311,8 +316,13 @@ func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 	linked := &linkedGitHub{held: map[string][]string{"acme/widgets": {headCommit}}, pulls: map[string]string{}}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELG", "acme/widgets", "A link GitHub's naming rule refuses").Key
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+		values ('oldco/gizmo', 'RELG', '{"kind":"system","id":"api-test"}'::jsonb, false, 'acme/.git')`); err != nil {
+		t.Fatalf("store oldco/gizmo as renamed to acme/.git: %v", err)
+	}
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
-	linkPullRequests(t, handler, issue, "https://github.com/acme/.git/pull/3")
+	linkPullRequests(t, handler, issue, "https://github.com/oldco/gizmo/pull/3")
 	eventsBefore := resultEventsOn(t, database, issue)
 
 	recorded := recordResult(t, handler, issue, resultBody("k1", "pass", commit, nil))
@@ -330,11 +340,22 @@ func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 	if asked, _, _ := strings.Cut(text, "; "); strings.Contains(asked, "acme/.git") {
 		t.Errorf("the refusal reads %q, want acme/.git, which it never asked about the commit, not named as asked", text)
 	}
-	if reads, asks := linked.counts("acme/.git"); reads != 0 || asks != 0 {
-		t.Errorf("the record asked GitHub about acme/.git %d and %d times, want never", reads, asks)
-	}
 	if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
 		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
+	}
+
+	direct := issueOfProject(t, handler, "RELG", "Zulu refused link", twoChecks)
+	linkPullRequests(t, handler, direct, "https://github.com/acme/.git/pull/4")
+	recorded = recordResult(t, handler, direct, resultBody("k1", "pass", commit, nil))
+	code, text = refusalOf(t, recorded)
+	if recorded.Code != http.StatusBadRequest || code != "RESULT_COMMIT_UNKNOWN" {
+		t.Fatalf("the link acme/.git#4: status=%d body=%s, want 400 RESULT_COMMIT_UNKNOWN", recorded.Code, recorded.Body.String())
+	}
+	if strings.Contains(text, "set aside") || strings.Contains(text, "acme/.git") {
+		t.Errorf("the refusal of a result of %s reads %q, want no repository set aside: its link names no pull request", direct, text)
+	}
+	if reads, asks := linked.counts("acme/.git"); reads != 0 || asks != 0 {
+		t.Errorf("the records asked GitHub about acme/.git %d and %d times, want never", reads, asks)
 	}
 }
 

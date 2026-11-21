@@ -112,3 +112,36 @@ func TestALinkToARepositoryTheAppIsNotInstalledOnIsReadOnceUntilTheLinkIsWritten
 		t.Errorf("upstream/project#41, linked once, was read %d times; want one", reads)
 	}
 }
+
+// A link spelled in other letters than the owed row of its pull request is named in
+// unreadable_links too: a pull request is owed once in any letter case (delivery.oweLinkedRead),
+// so the second spelling's owe goes into the row the first wrote, and the results read finds that
+// row in any case. One issue of acme/tools links upstream/project#42, of a repository the App is
+// not installed on, as Upstream/Project and as upstream/project: one row is owed, under
+// Upstream/Project, the spelling first in byte order, and the first pass records it unreadable.
+// Both links name it. Control: upstream/project#44, linked once as its row is spelled. When the
+// read looked the row up in the link's own letters, the upstream/project link was not named
+// (review F2 of #4209 at 4ccee6c7e6).
+func TestEachSpellingOfALinkToARepositoryTheAppIsNotInstalledOnIsNamed(t *testing.T) {
+	handler, database, served, _ := readThroughGitHub(t, "acme/tools")
+	issue := issueInRepository(t, handler, "UPSC", "acme/tools", "Links an upstream report twice")
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{
+		{"url": "https://github.com/Upstream/Project/pull/42"},
+		{"url": "https://github.com/upstream/project/pull/42"},
+		{"url": "https://github.com/upstream/project/pull/44"},
+	}})
+	if owed, want := owedReads(t, database), []string{"Upstream/Project#42 failure", "upstream/project#44 failure"}; !slices.Equal(owed, want) {
+		t.Fatalf("after the links, the owed reads are %q; want %q: one row of #42 in any letter case", owed, want)
+	}
+	onePass(t, database, served)
+	listed := unreadableLinksOf(t, handler, issue.Key)
+	slices.Sort(listed)
+	want := []string{
+		"https://github.com/Upstream/Project/pull/42 since=set",
+		"https://github.com/upstream/project/pull/42 since=set",
+		"https://github.com/upstream/project/pull/44 since=set",
+	}
+	if !slices.Equal(listed, want) {
+		t.Errorf("the results of %s name unreadable_links %q; want %q: each spelling of a link the App cannot read", issue.Key, listed, want)
+	}
+}

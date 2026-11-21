@@ -297,11 +297,12 @@ func seedBackfillCorpus(t *testing.T, ctx context.Context, pool *store.Pool) []s
 // the backfill, where a link write moves both: the way back deletes by that time, and no read is
 // in flight while a migration runs. The rows are also pinned here, so a change of the link write
 // shows in this test as well as in the comparison: among them an /issues/ link, a number of ten
-// digits, an owner GitHub's sign-up refuses that the rule takes, two spellings of #122 owed once,
-// a link of #123 and #143 in another letter case than the read owed already, which owes no second
-// row, a head row stored under the name before a rename (#106 and #107), and the scheme, the host
-// and `pull` in capitals (#133, #134, #142), while `.`, `..`, a zero before the number, another
-// host and every other near miss of the corpus owe nothing.
+// digits, an owner that ends in `_` (#130), two spellings of #122 owed once, a link of #123 and
+// #143 in another letter case than the read owed already, which owes no second row, a head row
+// stored under the name before a rename (#106 and #107), and the scheme, the host and `pull` in
+// capitals (#133, #134, #142), while `.`, `..`, a name that is empty, `.` or `..` once a trailing
+// `.git` is trimmed (#112, #114, #148, #149), an owner that starts with `-` or `_` (#129, #147),
+// a zero before the number, another host and every other near miss of the corpus owe nothing.
 func TestTheLinkBackfillOwesWhatALinkWriteOwes(t *testing.T) {
 	writes := storetest.Open(t)
 	ctx := t.Context()
@@ -336,12 +337,9 @@ func TestTheLinkBackfillOwesWhatALinkWriteOwes(t *testing.T) {
 
 	long := strings.Repeat("o", 39) + "/" + strings.Repeat("n", 100)
 	pinned := []string{
-		"-acme/widgets#129 failure reads=0 refused_as=none refused_since=none link",
 		"ACME/widgets#122 failure reads=0 refused_as=none refused_since=none link",
 		"Acme/Gadgets#143 failure reads=0 refused_as=none refused_since=none",
 		"Acme/Widgets#104 failure reads=0 refused_as=none refused_since=none link",
-		"acme/..git#114 failure reads=0 refused_as=none refused_since=none link",
-		"acme/.git#112 failure reads=0 refused_as=none refused_since=none link",
 		"acme/widgets#1000000000 failure reads=0 refused_as=none refused_since=none link",
 		"acme/widgets#101 failure reads=0 refused_as=none refused_since=none link",
 		"acme/widgets#105 failure reads=0 refused_as=none refused_since=none link",

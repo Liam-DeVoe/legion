@@ -12,8 +12,9 @@ import (
 
 // linkCorpus is the links the tests of the link rule read, one shape each: links of a pull
 // request the rule takes, in each form, letter case and name, and the near misses it refuses.
-// The last is a host spelled with U+0130, which lower() folds to the ASCII i: only the rule's
-// test that every character is ASCII refuses it, in SQL as in Go.
+// #146 is a host spelled with U+0130, which lower() folds to the ASCII i: only the rule's test
+// that every character is ASCII refuses it, in SQL as in Go. #147 to #149 are owners and names no
+// repository of GitHub can have (refs.SplitGitHubRepo).
 var linkCorpus = []string{
 	"https://github.com/acme/widgets/pull/101",
 	"https://github.com/acme/widgets/pull/102",
@@ -70,6 +71,9 @@ var linkCorpus = []string{
 	"https://github.com/",
 	"github.com/acme/widgets/pull/145",
 	"https://g\u0130thub.com/acme/widgets/pull/146",
+	"https://github.com/_acme/widgets/pull/147",
+	"https://github.com/acme/...git/pull/148",
+	"https://github.com/acme/.GIT/pull/149",
 }
 
 // The link rule in SQL is the link rule in Go: for each link of the corpus, LinkedPullRequestSQL
@@ -82,13 +86,7 @@ var linkCorpus = []string{
 func TestTheLinkRuleInSQLIsTheLinkRuleInGo(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
-	if _, err := pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
-		values ('oldco/widgets', $1, '{"kind":"system","id":"delivery-test"}'::jsonb, false, 'acme/widgets')
-		on conflict (repo) do update set renamed_to = excluded.renamed_to
-	`, deliveryProject); err != nil {
-		t.Fatalf("record oldco/widgets as renamed to acme/widgets: %v", err)
-	}
+	renameOldcoWidgets(t, ctx, pool)
 	taken, refused := 0, 0
 	for _, link := range linkCorpus {
 		repo, number, ok := linkedPullRequest(link)
@@ -140,5 +138,65 @@ func TestTheLinkRuleInSQLIsTheLinkRuleInGo(t *testing.T) {
 		"https://github.com/oldco/widgets/issues/105", "https://github.com/oldco/widgets/pull/105"})
 	if got := fmt.Sprint(slices.Sorted(slices.Values(links))); got != want {
 		t.Errorf("the links of acme/widgets#105 are %s, want %s", got, want)
+	}
+}
+
+// A link of a repository GitHub cannot have names no pull request, by the rule every read of
+// GitHub splits a name by (refs.SplitGitHubRepo): an owner that starts with `-` or `_`, and a name
+// that is empty, `.` or `..` once it is lowercased and one trailing `.git` is trimmed. No read can
+// reach such a repository, so the link write owes no read of it that each pass would make and
+// refuse (review N5 of #4209 at 4ccee6c7e6). The controls are names GitHub has: a name that keeps
+// a name once `.git` is trimmed, an owner that ends in `_`, and a managed user's login.
+func TestALinkOfARepositoryGitHubCannotHaveNamesNoPullRequest(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	for link, want := range map[string]string{
+		"https://github.com/-acme/widgets/pull/129":       "",
+		"https://github.com/_acme/widgets/pull/147":       "",
+		"https://github.com/acme/.git/pull/112":           "",
+		"https://github.com/acme/..git/pull/114":          "",
+		"https://github.com/acme/...git/issues/148":       "",
+		"https://github.com/acme/.GIT/pull/149":           "",
+		"https://github.com/acme/x.git/pull/113":          "acme/x.git#113",
+		"https://github.com/acme_/w/pull/130":             "acme_/w#130",
+		"https://github.com/mona-cat_octo/widgets/pull/7": "mona-cat_octo/widgets#7",
+	} {
+		got := ""
+		if repo, number, ok := linkedPullRequest(link); ok {
+			got = fmt.Sprintf("%s#%d", repo, number)
+		}
+		if got != want {
+			t.Errorf("%s: Go takes %q, want %q", link, got, want)
+		}
+		var sqlRepo string
+		var sqlNumber int
+		err := pool.QueryRow(ctx, `select lp.repo, lp.number from (select $1::text as u) x cross join lateral `+
+			LinkedPullRequestSQL("x.u")+` lp`, link).Scan(&sqlRepo, &sqlNumber)
+		sqlGot := ""
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			t.Fatalf("%s: %v", link, err)
+		default:
+			sqlGot = fmt.Sprintf("%s#%d", sqlRepo, sqlNumber)
+		}
+		if sqlGot != want {
+			t.Errorf("%s: SQL takes %q, want %q", link, sqlGot, want)
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := OweLinkedPullRequestReads(ctx, tx, []string{"https://github.com/-acme/widgets/pull/129",
+		"https://github.com/acme/.git/pull/112", "https://github.com/acme/..git/pull/114"}); err != nil {
+		t.Fatal(err)
+	}
+	var owed int
+	if err := tx.QueryRow(ctx, `select count(*) from pull_request_reads_owed`).Scan(&owed); err != nil {
+		t.Fatal(err)
+	}
+	if owed != 0 {
+		t.Errorf("the link write of three links of repositories GitHub cannot have owes %d reads, want none", owed)
 	}
 }

@@ -1128,6 +1128,7 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		pulls: map[string]string{
 			"acme/tools#7": "open", "acme/tools#8": "closed", "acme/tools#9": "merged", "acme/sealed#5": "open",
 			"acme/tools#17": "open", "acme/tools#27": "open",
+			"acme/tools#37": "open", "acme/tools#47": "open", "acme/tools#1000000057": "open", "acme/tools#67": "open",
 		},
 		heads:       map[string]int{"acme/tools@" + linkedCommit: 7},
 		uninstalled: []string{"acme/elsewhere"},
@@ -1136,10 +1137,16 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	// The project's mapping to acme/widgets, which every row's issue resolves to.
 	issueInRepository(t, handler, "RELK", "acme/widgets", "Work in two repositories")
+	// oldco/tools is the name acme/tools had before a rename, which a row links by.
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/oldco/tools",
+		map[string]any{"project": "RELK", "renamed_to": "acme/tools"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("record oldco/tools as renamed to acme/tools: status=%d body=%s", response.Code, response.Body.String())
+	}
 
 	// titles are the rows' issues' titles, words no two of them share, so no create is refused as
 	// a possible duplicate of another row's issue.
-	titles := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India"}
+	titles := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India",
+		"Juliet", "Kilo", "Lima", "Mike", "November"}
 	for index, row := range []struct {
 		name   string
 		links  []string
@@ -1210,6 +1217,42 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 			// commit, so the result is stored, taken to be the issue's own repository's.
 			name:  "a link to a pull request of a repository whose commits the App cannot read stores the result",
 			links: []string{"https://github.com/acme/sealed/pull/5"}, commit: nearHeadCommit,
+			readThrough: "acme/widgets",
+		},
+		// The record route reads an issue's links by the one link rule, the link write's
+		// (delivery.LinkedPullRequestSQL), so every form of a link that names an open pull request
+		// of acme/tools makes acme/tools count before any pass has stored its head: the /issues/
+		// form, which `dispatch issue --external` stores, the scheme, the host and `pull` in
+		// capitals, a number of ten digits, and the name before a rename in the /issues/ form and
+		// other letters. Each was refused 400 RESULT_COMMIT_UNKNOWN when the route read links by
+		// a pattern of its own, the lower-case /pull/ form of up to nine digits (review F1 of #4209
+		// at 4ccee6c7e6).
+		{
+			name:  "a link in the /issues/ form makes its repository count",
+			links: []string{"https://github.com/acme/tools/issues/37"}, commit: linkedCommit,
+			readThrough: "acme/tools", stateReads: 1,
+		},
+		{
+			name:  "a link with the scheme, the host and pull in capitals makes its repository count",
+			links: []string{"HTTPS://GITHUB.COM/acme/tools/PULL/47"}, commit: linkedCommit,
+			readThrough: "acme/tools", stateReads: 1,
+		},
+		{
+			name:  "a link of a ten-digit number makes its repository count",
+			links: []string{"https://github.com/acme/tools/pull/1000000057"}, commit: linkedCommit,
+			readThrough: "acme/tools", stateReads: 1,
+		},
+		{
+			name:  "a link by the name before a rename, in the /issues/ form and other letters, makes the renamed repository count",
+			links: []string{"https://github.com/OLDCO/Tools/Issues/67"}, commit: linkedCommit,
+			readThrough: "acme/tools", stateReads: 1,
+		},
+		{
+			// R17 of the spec of several open pull requests, as for the /pull/ link above: no pass
+			// stores a head of a repository the App is not installed on, so a link in the /issues/
+			// form that named nothing here was refused for good.
+			name:  "a link in the /issues/ form to a repository the App is not installed on stores the result",
+			links: []string{"https://github.com/acme/elsewhere/issues/13"}, commit: nearHeadCommit,
 			readThrough: "acme/widgets",
 		},
 	} {

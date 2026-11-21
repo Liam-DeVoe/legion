@@ -269,8 +269,13 @@ const pullRequestURLPrefix = "https://github.com/"
 // of them. So this takes those two forms in any letter case, and no other: no other part, no
 // character outside ASCII, and no zero before the number. An /issues/ link that names an issue
 // owes one read, which GitHub answers as no pull request and the reconcile settles
-// (pullRequestAbsent). ok is false for each other URL, and for a name or a number that no pull
-// request of GitHub can have (checkPullRequestKey). The repository keeps the letters of the link.
+// (pullRequestAbsent). ok is false for each other URL, for a number that no pull request of
+// GitHub can have (checkPullRequestKey), and for an owner or a name that no repository of GitHub
+// can have, by the rule every read of GitHub splits a name by (refs.SplitGitHubRepo): an owner
+// that starts with `-` or `_`, and a name that is empty, `.` or `..` once a trailing `.git` is
+// trimmed, such as `acme/.git` and `acme/..git`. No read can reach such a repository, so a link of
+// it owes no read that each pass would make and refuse. The repository keeps the letters of the
+// link.
 //
 // A link names the pull request under the name its repository is called today
 // (refs.CanonicalRepo), so a link written before a rename names the pull request of the
@@ -302,6 +307,9 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 	if checkPullRequestKey(repo, number) != nil {
 		return "", 0, false
 	}
+	if _, _, err := refs.SplitGitHubRepo(repo); err != nil {
+		return "", 0, false
+	}
 	return repo, number, true
 }
 
@@ -312,20 +320,23 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 // the link write take one link to one pull request. TestTheLinkRuleInSQLIsTheLinkRuleInGo holds
 // it to linkedPullRequest link by link.
 //
-// The pattern is githubRepositoryName's, split at the slash, with the two parts of the path after
-// it; the scheme and the host are compared in lower case, and `pull` and `issues` in any case. A
-// link of a character outside ASCII is no link of a pull request, as in Go: octet_length counts
-// the bytes of UTF-8 text and length its characters. The number is cast to int only where it is
-// at most math.MaxInt32, inside a case, so no order the planner gives the conditions casts a
-// number of ten digits past int's bound.
+// The owner's pattern is refs.GitHubOwnerPattern and the name's githubRepositoryName's, split at
+// the slash, with the two parts of the path after them; the scheme and the host are compared in
+// lower case, and `pull` and `issues` in any case. The name, lowercased and with one trailing
+// `.git` trimmed, must not be empty, `.` or `..`, as refs.SplitGitHubRepo holds it. A link of a
+// character outside ASCII is no link of a pull request, as in Go: octet_length counts the bytes of
+// UTF-8 text and length its characters. The number is cast to int only where it is at most
+// math.MaxInt32, inside a case, so no order the planner gives the conditions casts a number of ten
+// digits past int's bound.
 func LinkedPullRequestSQL(url string) string {
 	prefix := strconv.Itoa(len(pullRequestURLPrefix))
 	inBound := `p.m[4]::bigint <= ` + strconv.Itoa(math.MaxInt32)
 	return `(select p.m[1] || '/' || p.m[2] as repo, case when ` + inBound + ` then p.m[4]::int end as number
 		from (select regexp_match(lower(left(` + url + `, ` + prefix + `)) || substr(` + url + `, ` + prefix + ` + 1),
-			'^https://github\.com/([A-Za-z0-9_-]{1,39})/([A-Za-z0-9._-]{1,100})/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
+			'^https://github\.com/(` + refs.GitHubOwnerPattern + `)/([A-Za-z0-9._-]{1,100})/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
 			where octet_length(` + url + `) = length(` + url + `)) p
 		where lower(p.m[3]) in ('pull', 'issues') and p.m[2] not in ('.', '..')
+			and regexp_replace(lower(p.m[2]), '\.git$', '') not in ('', '.', '..')
 			and case when ` + inBound + ` then true else false end)`
 }
 
@@ -420,6 +431,14 @@ func linkedOwedName(ctx context.Context, tx pgx.Tx, given string, number int) (s
 	return owedName(ctx, tx, given, number)
 }
 
+// owedRowInAnyCase is the FROM clause of the one owed row of pull request $2 of the repository $1
+// in any letter case, aliased o: the row first in byte order of its repository's name where an
+// earlier release left two spellings. oweLinkedRead owes into that row, and UnreadableLinksOf reads
+// it, so a link names the row its owe wrote however the link and the row are spelled. A pull
+// request is owed once in any case, since GitHub reads a name in any case.
+const owedRowInAnyCase = `pull_request_reads_owed o where lower(o.repo) = lower($1) and o.number = $2
+	order by o.repo collate "C" limit 1`
+
 // oweLinkedRead owes the read of pull request number of repoFull, the owed name of a link by hand
 // (OweLinkedPullRequestReads), within the bound of owePullRequestRead, where no head row of that
 // pull request is stored: a row whose repository, under its canonical name, is repoFull in any
@@ -437,8 +456,7 @@ func oweLinkedRead(ctx context.Context, tx pgx.Tx, repoFull string, number int) 
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from pull_request_heads h
 			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1)),
-			(select o.repo from pull_request_reads_owed o where lower(o.repo) = lower($1) and o.number = $2
-				order by o.repo collate "C" limit 1)
+			(select o.repo from `+owedRowInAnyCase+`)
 	`, repoFull, number).Scan(&held, &owedAs); err != nil {
 		return fmt.Errorf("read whether the head of %s#%d is stored for a link: %w", repoFull, number, err)
 	}

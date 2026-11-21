@@ -88,7 +88,9 @@ func wakeUnreadableReads(ctx context.Context, pool *store.Pool, client *githubap
 // (recordOwedReadOutcome), in the order of the links' URLs: a link to a pull request or an issue
 // of a repository the App is not installed on, which no pass reads again until a new owe or an
 // installation of the App makes it readable. A link names its pull request as the owe does
-// (linkedPullRequest, owedName), so the row it finds is the one its owe wrote.
+// (linkedPullRequest, owedName), and it reads the owed row of that pull request the owe writes
+// into, in any letter case (owedRowInAnyCase), so a link spelled in other letters than the row
+// another owe wrote is named too.
 func UnreadableLinksOf(ctx context.Context, pool *store.Pool, issueKey string) ([]model.UnreadableLink, error) {
 	rows, err := pool.Query(ctx, `select url from issue_external_links where issue_key = $1 order by url`, issueKey)
 	if err != nil {
@@ -119,8 +121,9 @@ func UnreadableLinksOf(ctx context.Context, pool *store.Pool, issueKey string) (
 		}
 		var link model.UnreadableLink
 		err = pool.QueryRow(ctx, `
-			select refused_since from pull_request_reads_owed
-			where repo = $1 and number = $2 and unreadable_revision = revision`, repoFull, number).Scan(&link.RefusedSince)
+			select r.refused_since from (select o.refused_since, o.unreadable_revision = o.revision as unreadable
+				from `+owedRowInAnyCase+`) r
+			where r.unreadable`, repoFull, number).Scan(&link.RefusedSince)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			continue
