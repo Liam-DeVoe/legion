@@ -57,8 +57,10 @@ func (s *server) resolveReader(r *http.Request) (model.Actor, error) {
 // MessageClause, DocumentClause and ItemOwnerClause), and that rule reads a listener list only from
 // a stored listener answer that has not passed its expires_at. So such a resolution refreshes the
 // stored answer first (refreshRosterForContent), once, before the request or the re-check it is
-// made for reads anything: a listed session tied to nobody is then judged by its list rather than
-// as one with no list, which passes no viewer but its own. A reader that sees every object - the
+// made for reads anything, taking it only while it has the margin left that the request's reads
+// need: a listed session tied to nobody is then judged by its list rather than as one with no list,
+// which passes no viewer but its own. A handler that waits on the listener after this refreshes
+// again before it reads back (refreshRosterBeforeReadBack). A reader that sees every object - the
 // server's, or an open one of a deployment that holds no private project (R9) - reads nothing for
 // it.
 func (s *server) readerFor(ctx context.Context, actor model.Actor) (model.Actor, error) {

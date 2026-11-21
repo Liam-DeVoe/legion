@@ -1258,11 +1258,11 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 
 // readableMentionTargets is the targets of comment's mentions, in target order, as who reads them
 // in the comment (loadCommentMentions, mentionsReadBy). A mention who does not see is left out, as
-// every read of the comment leaves it out, so the routes that take a mention by its target - a
-// Retry (createCommentDelivery) and a delivery's reply (replyComment) - answer a target who does
-// not see exactly as a target the comment does not mention, count only the mentions who reads for
-// their one-mention default and their target-required refusal, and answer a comment whose every
-// mention who does not see as one with none.
+// every read of the comment leaves it out, so a Retry (createCommentDelivery), which takes a
+// mention by its target, answers a target who does not see exactly as a target the comment does
+// not mention, counts only the mentions who reads for its one-mention default and its
+// target-required refusal, and answers a comment whose every mention who does not see as one with
+// none. A delivery's reply reads them by their targets alone (repliedMentionTargets).
 func (s *server) readableMentionTargets(ctx context.Context, q queryer, who model.Actor, comment model.Comment) ([]string, error) {
 	mentions, err := s.loadCommentMentions(ctx, q, who, []string{comment.ID})
 	if err != nil {
@@ -1272,11 +1272,35 @@ func (s *server) readableMentionTargets(ctx context.Context, q queryer, who mode
 	if err != nil {
 		return nil, err
 	}
-	targets := make([]string, 0, len(readable))
-	for _, mention := range readable {
+	return mentionTargets(readable), nil
+}
+
+// repliedMentionTargets is the targets of comment's mentions, in target order, as a delivery's
+// reply reads them (loadCommentMentions, mentionsRepliedToBy): a mention whose target who does not
+// see is left out, so the reply answers it exactly as a target the comment does not mention,
+// counts only the mentions it reads for its one-mention default and its target-required refusal,
+// and answers a comment whose every mention it does not see as one with none. A mention is not left
+// out for the session it resolved to when the comment was written: the reply is judged by the
+// attempt it answers, which names the session it went to (replyAttemptHidden).
+func (s *server) repliedMentionTargets(ctx context.Context, q queryer, who model.Actor, comment model.Comment) ([]string, error) {
+	mentions, err := s.loadCommentMentions(ctx, q, who, []string{comment.ID})
+	if err != nil {
+		return nil, err
+	}
+	replied, err := mentionsRepliedToBy(ctx, q, who, mentions[comment.ID])
+	if err != nil {
+		return nil, err
+	}
+	return mentionTargets(replied), nil
+}
+
+// mentionTargets is the target of each of mentions, in their order.
+func mentionTargets(mentions []model.Mention) []string {
+	targets := make([]string, 0, len(mentions))
+	for _, mention := range mentions {
 		targets = append(targets, mention.Target)
 	}
-	return targets, nil
+	return targets
 }
 
 // mentionsReadBy is mentions, comment id's, less every one who does not see - by its target, or by
@@ -1421,6 +1445,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The role lookup above may have waited on the listener past what the refresh made with who
+	// covers, and the transaction below reads the comment by the session content rule.
+	s.refreshRosterBeforeReadBack(r.Context(), who)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -1454,11 +1481,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The mention rows are read, not locked: nothing updates or deletes one, their only writer
 	// inserts them under the comment's owner lock (createCommentFor), and this read holds that
 	// lock, so a FOR UPDATE here would guard nothing the advisory lock does not and would open
-	// the transaction id window a statement earlier. They are read as the writer reads them
-	// (readableMentionTargets): a credential that does not see a mention's session, or the private
-	// project its role works for, answers for none of it, and is answered as for a target the
-	// comment does not mention.
-	targets, err := s.readableMentionTargets(r.Context(), tx, who, comment)
+	// the transaction id window a statement earlier. They are read as a reply reads them
+	// (repliedMentionTargets): a credential that does not see a mention's target - its session,
+	// or the private project its role works for - answers for none of it, and is answered as for
+	// a target the comment does not mention. The session the mention resolved to when the
+	// comment was written does not decide: the attempt below is judged by its own session.
+	targets, err := s.repliedMentionTargets(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1489,7 +1517,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
 	`, comment.ID, target, input.Attempt))
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
+	// An attempt pinned to a session the writer does not see is one no row holds, as every read
+	// of the comment's deliveries leaves it out (replyAttemptHidden), whoever replies to it. The
+	// read is made for an attempt no row holds too, so the two cost alike.
+	hidden, hiddenErr := replyAttemptHidden(r.Context(), tx, who, attempt.SessionID)
+	if hiddenErr != nil {
+		s.writeHandlerError(w, hiddenErr)
+		return
+	}
+	if err != nil || hidden {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
 	}

@@ -181,6 +181,8 @@ var referenceDispositions = map[string]referenceDisposition{
 	"search_term_queue.issue_key":               {internalColumn, "a search index queue"},
 	"search_term_stats.project_key":             {internalColumn, "a project's search statistics"},
 	"search_term_totals.project_key":            {internalColumn, "a project's search statistics"},
+	"search_text_versions.issue_key":            {internalColumn, keywordVersionsReadByNoRoute},
+	"search_text_versions.project_key":          {internalColumn, keywordVersionsReadByNoRoute},
 	"session_projects.project_key":              {internalColumn, "what SessionClause reads"},
 	"session_projects.session_id":               {internalColumn, "what SessionClause reads"},
 	"session_owners.session_id":                 {internalColumn, "what SessionContentClause reads"},
@@ -200,6 +202,15 @@ var referenceDispositions = map[string]referenceDisposition{
 	"write_suggestions.source_ask_id":           {ownColumn, "the write the suggestion was made to"},
 	"write_suggestions.source_issue_key":        {ownColumn, "the write the suggestion was made to"},
 }
+
+// keywordVersionsReadByNoRoute is why search_text_versions' issue and project are internal: the
+// table holds each past version of an item's searchable text, which the keyword fill writes from
+// the event log (textversions.Run, DISPATCH_SEARCH_FILL), and no route reads it yet: the one
+// relation over it, store.TextVersions, is joined by no read (cmd/dispatch/settings.go says so of
+// DISPATCH_SEARCH_FILL). Both columns are the item's own issue and project, so they are its owner
+// columns, and a search that comes to read the table binds its fragment on them.
+const keywordVersionsReadByNoRoute = "the keyword fill's past versions of an item's searchable " +
+	"text, which no route reads yet (store.TextVersions is joined by no read)"
 
 // schemaReferenceColumns is every reference column of the migrated schema, as table.column: each
 // column a foreign key holds to one of the objects a read names by id, and each column named for a

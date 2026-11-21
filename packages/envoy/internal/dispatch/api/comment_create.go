@@ -725,7 +725,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	start, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (commentResolution, error) {
-			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			resolved, err := s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			if err == nil && len(mentionTargets) > 0 {
+				// The lookups may have waited a listener take-over out, and the write below reads
+				// its owner by the session content rule.
+				s.refreshRosterBeforeReadBack(ctx, writer)
+			}
+			return resolved, err
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
 			return s.beginCommentWrite(ctx, writer, owner, resolved, write)

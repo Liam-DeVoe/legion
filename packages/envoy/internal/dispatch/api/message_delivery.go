@@ -1134,6 +1134,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The role lookup above may have waited on the listener past what the refresh made with who
+	// covers, and the transaction below reads the message by the session content rule.
+	s.refreshRosterBeforeReadBack(r.Context(), who)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -1193,7 +1196,19 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		select `+messageDeliveryColumns+`
 		from message_deliveries where message_id = $1 and attempt = $2 for update
 	`, message.ID, input.Attempt))
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		return
+	}
+	// An attempt pinned to a session the writer does not see is one no row holds, as every read
+	// of the message's deliveries leaves it out (replyAttemptHidden), whoever replies to it. The
+	// read is made for an attempt no row holds too, so the two cost alike.
+	hidden, hiddenErr := replyAttemptHidden(r.Context(), tx, who, &attempt.SessionID)
+	if hiddenErr != nil {
+		s.writeHandlerError(w, hiddenErr)
+		return
+	}
+	if err != nil || hidden {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}

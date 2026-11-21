@@ -107,18 +107,40 @@ func (s *server) sessionContentHiddenFrom(ctx context.Context, reader model.Acto
 }
 
 // refreshRosterForContent refreshes the stored listener answer before the session content rule
-// reads it (readRouteRoster: the answer this process and every other keeps for routeRosterTTL,
-// fetched once when it has gone stale), since the rule reads a listener list only from a stored
-// answer that has not passed its expires_at, and judges a session of an expired answer by its ties
-// alone. A refresh that fails leaves the stored answer as it was, expired, so the rule judges by
-// the ties: it fails closed. Every resolution of a reader that does not see every object runs it
+// reads it (readRouteRosterLeaving: the answer this process and every other keeps for
+// routeRosterTTL, fetched once when it has gone stale), since the rule reads a listener list only
+// from a stored answer that has not passed its expires_at, and judges a session of an expired answer
+// by its ties alone. It counts the answer stale while it has the margin or less of its life left
+// (rosterCache.contentMargin, three seconds), not only once it has expired, so the reads that
+// follow the refresh in the request read an answer that is still fresh. A refresh that fails
+// leaves the stored answer as it was, which the rule judges by the ties once it has expired: it
+// fails closed. While the listener does not answer, the refresh waits for the one fetch in flight,
+// which routeRosterTimeout (two seconds) bounds, and the fetch then stores the silence for every
+// process to read. Every resolution of a reader that does not see every object runs it
 // (readerFor), so each request, and each re-check of a live socket's reader, refreshes the answer
-// before it reads; the live agent view's asks and the document service's reads of its rooms
-// (docs.Service.SetRosterRefresh) run it too.
+// before it reads; a request that waits on the listener after that refreshes again before it reads
+// back (refreshRosterBeforeReadBack); the live agent view's asks and the document service's reads
+// of its rooms (docs.Service.SetRosterRefresh) run it too.
 func (s *server) refreshRosterForContent(ctx context.Context) {
-	if _, err := s.readRouteRoster(ctx); err != nil && ctx.Err() == nil {
+	if _, err := s.readRouteRosterLeaving(ctx, s.rosters.contentMargin()); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: refresh the listener's sessions before the session content rule reads them; the rule reads an expired answer as no list", "error", err)
 	}
+}
+
+// refreshRosterBeforeReadBack refreshes the stored listener answer again (refreshRosterForContent)
+// for who, a reader that does not see every object, in a handler that waited on the listener after
+// readerFor refreshed it and reads the session content rule after that wait. The margin of the
+// first refresh covers a request's own reads, not a wait on the listener: a role lookup is bounded
+// by the listener client's five seconds, and a send by the take-over window. The handlers that wait
+// so are a delivery's reply (replyComment and replyMessage, after the role lookup), a comment that
+// mentions a target (createCommentFor, after its mention lookups) and the repeat of a keyed send
+// (recoveredMessage, after the send it owes). A reader that sees every object, and a server with no
+// database, read nothing for it (R9).
+func (s *server) refreshRosterBeforeReadBack(ctx context.Context, who model.Actor) {
+	if seesEveryObject(who) || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return
+	}
+	s.refreshRosterForContent(ctx)
 }
 
 // liveReader resolves what stream's caller sees now (readerFor), for liveReadRefusal.

@@ -135,6 +135,18 @@ const (
 	routeRosterSilenceTTL = 5 * time.Second
 )
 
+// routeRosterContentMargin is how much of its life a stored answer must have left for a refresh
+// before a read of the session content rule to take it rather than ask the listener
+// (refreshRosterForContent): routeRosterTTL less routeRosterTimeout, three seconds. The rule
+// reads a listener list only while the stored answer has not passed its expires_at, on every
+// statement that binds it, so an answer the refresh took with a moment left would expire under
+// the request's own later reads. Three seconds is as much as an answer can promise: one a fetch
+// stores was sent up to routeRosterTimeout before it was stored (its TTL counts from sent), so it
+// holds about routeRosterTTL less that when the next refresh reads it. A request that waits on
+// the listener after its refresh, past what the margin covers, refreshes again before it reads
+// the rule (refreshRosterBeforeReadBack).
+const routeRosterContentMargin = routeRosterTTL - routeRosterTimeout
+
 // rosterCache is how this process reads and refreshes the stored listener answer: the TTLs it
 // stores an answer under, its one fetch in flight, and the roster it last built from the stored
 // row, so a read of a row that has not changed decodes nothing.
@@ -168,6 +180,16 @@ type rosterFetch struct {
 	roster routeRoster
 }
 
+// contentMargin is how much of its life a stored answer must have left for the refresh before a
+// read of the session content rule to take it (refreshRosterForContent): routeRosterContentMargin,
+// held under this cache's own ttl less its fetch bound, so an answer this cache's fetch stores is
+// not taken as stale at once under a TTL a test process set shorter than five seconds, and none
+// below zero. Under the deployment's five seconds and two it is the three seconds that constant
+// is; a longer TTL a test process sets leaves it three.
+func (c *rosterCache) contentMargin() time.Duration {
+	return max(0, min(routeRosterContentMargin, c.ttl-cmp.Or(c.timeout, routeRosterTimeout)))
+}
+
 // readRouteRoster answers who is running: the stored answer while it is fresh, else the answer of
 // this process's one fetch in flight, starting it when none is. A listener that is unconfigured,
 // does not answer, answers late, or is refilling its list leaves the roster unanswered with the
@@ -190,6 +212,15 @@ type rosterFetch struct {
 // as storeRouteRoster counts it - and it is the answer the read would have waited for had it
 // reached the lock a moment sooner.
 func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
+	return s.readRouteRosterLeaving(ctx, 0)
+}
+
+// readRouteRosterLeaving is readRouteRoster counting the stored answer stale while it has left of
+// its life or less, by the database's clock: zero for a read that takes the answer until its
+// expires_at, as an issue read and an agents list do, and contentMargin for the refresh before a
+// read of the session content rule, whose later statements read the answer's lists only while it
+// has not passed its expires_at.
+func (s *server) readRouteRosterLeaving(ctx context.Context, left time.Duration) (routeRoster, error) {
 	if s.deps.Envoy == nil {
 		return routeRoster{reason: model.RouteReasonUnreachable}, nil
 	}
@@ -207,11 +238,11 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 		s.storeRouteRoster(ctx, sent, roster)
 		return roster, nil
 	}
-	roster, fresh, now, seen, err := s.storedRouteRoster(ctx)
+	roster, expiresAt, now, seen, err := s.storedRouteRoster(ctx)
 	if err != nil {
 		return routeRoster{}, fmt.Errorf("read the stored listener answer: %w", err)
 	}
-	if fresh {
+	if expiresAt.Sub(now) > left {
 		return roster, nil
 	}
 	cache := &s.rosters
@@ -274,9 +305,10 @@ const routeRosterQuery = `
 	left join route_roster r on true`
 
 // storedRouteRoster reads the route_roster row on the pool, outside any transaction, and answers
-// the roster it holds, whether that is still fresh by the database's clock, that clock's now(),
-// and the row's sent_at, zero for no row. No row reads as not fresh.
-func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, fresh bool, now, sent time.Time, err error) {
+// the roster it holds, the row's expires_at, the database's now(), against which its caller judges
+// how much of the answer's life is left, and the row's sent_at. No row answers a zero expires_at
+// and sent_at, which every caller reads as stale.
+func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, expires, now, sent time.Time, err error) {
 	cache := &s.rosters
 	cache.mu.Lock()
 	built, builtSent := cache.built, cache.builtSent
@@ -291,18 +323,18 @@ func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, fre
 	var sessions []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, routeRosterQuery, known).
 		Scan(&now, &answered, &sentAt, &expiresAt, &reason, &retryAfter, &sessions); err != nil {
-		return routeRoster{}, false, time.Time{}, time.Time{}, err
+		return routeRoster{}, time.Time{}, time.Time{}, time.Time{}, err
 	}
 	if sentAt == nil {
-		return routeRoster{}, false, now, time.Time{}, nil
+		return routeRoster{}, time.Time{}, now, time.Time{}, nil
 	}
 	roster = built
 	if sessions != nil {
 		if roster, err = cache.remember(*sentAt, answered, reason, retryAfter, sessions); err != nil {
-			return routeRoster{}, false, time.Time{}, time.Time{}, err
+			return routeRoster{}, time.Time{}, time.Time{}, time.Time{}, err
 		}
 	}
-	return roster, expiresAt.After(now), now, *sentAt, nil
+	return roster, *expiresAt, now, *sentAt, nil
 }
 
 // remember builds the roster a stored answer holds and keeps it as this process's built roster.

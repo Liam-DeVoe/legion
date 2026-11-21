@@ -15,18 +15,23 @@ import (
 // its session parties, reads a listener list only from a stored listener answer that has not passed
 // its expires_at, and judges a session of an expired one as a session with no list, which a session
 // tied to nobody passes for no viewer but its own. So every request of a reader that does not see
-// every object refreshes the stored answer before it reads (readerFor).
+// every object refreshes the stored answer before it reads (readerFor), and it takes the answer only
+// while it has the margin of its life left that the request's own reads need
+// (rosterCache.contentMargin, three seconds).
 //
 // refreshedListed is listed with PUB by the listener and tied to nobody; carol sends it a direct
 // message. While PRIV is private alice, an open viewer who sees PUB, reads that message in the
 // session's conversation (GET /api/v1/agents/{id}/messages) from a fresh stored answer, and again
-// once that answer's expires_at is a second past: her request refreshes it first. With every
+// once that answer's expires_at is a second past: her request refreshes it first. With the answer
+// still fresh but half the margin from its expires_at, her read asks the listener once, so the
+// statements that follow her refresh never meet an answer that expired under them. With every
 // project public alice sees every object, and her read of the same conversation from an expired
 // answer asks the listener nothing (R9).
 //
 // Controls: the refresh taken out of readerFor, and alice's read from the expired answer holds no
-// message; the refresh made whatever the reader sees, and her read with every project public asks
-// the listener once.
+// message; the margin at zero (contentMargin), and her read with half the margin left asks the
+// listener nothing; the refresh made whatever the reader sees, and her read with every project
+// public asks the listener once.
 func TestAReadRefreshesAnExpiredListenerAnswerBeforeItsContentRule(t *testing.T) {
 	const refreshedListed = "ses-refreshed-listed"
 	var fetches atomic.Int64
@@ -80,9 +85,25 @@ func TestAReadRefreshesAnExpiredListenerAnswerBeforeItsContentRule(t *testing.T)
 			got, refreshedListed, sent)
 	}
 
+	// Fresh, with half the margin left: a refresh that took it would leave the request's later
+	// statements an answer about to expire. The read must ask the listener once.
+	if _, err := seed.database.Pool.Exec(ctx, `update route_roster set expires_at = now() + make_interval(secs => $1)`,
+		(routeRosterContentMargin / 2).Seconds()); err != nil {
+		t.Fatalf("leave the stored listener answer half the margin of its life: %v", err)
+	}
+	before := fetches.Load()
+	if got := read(); !slices.Contains(got, sent) {
+		t.Errorf("PRIV private, the stored answer %s from its expires_at: alice reads %v in %s's conversation, want carol's message %s",
+			routeRosterContentMargin/2, got, refreshedListed, sent)
+	}
+	if asked := fetches.Load() - before; asked != 1 {
+		t.Errorf("PRIV private, the stored answer %s from its expires_at: alice's read asked the listener for its sessions %d times, want 1: a refresh must count an answer with less than %s of its life left as stale",
+			routeRosterContentMargin/2, asked, routeRosterContentMargin)
+	}
+
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	expire()
-	before := fetches.Load()
+	before = fetches.Load()
 	if got := read(); !slices.Contains(got, sent) {
 		t.Errorf("every project public: alice reads %v in %s's conversation, want carol's message %s", got, refreshedListed, sent)
 	}

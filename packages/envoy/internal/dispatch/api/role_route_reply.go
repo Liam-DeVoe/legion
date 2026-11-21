@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,45 +31,56 @@ func (r roleHolderReply) allows(route string) bool {
 }
 
 // messageReplyRoleHolderOf is the lookUpRoleHolderReply of a reply to attempt of message id: the
-// message's target, as who reads it (leaveOutHiddenMessageSessions), and the session the attempt
-// names. A target who does not see is none, as the reply's transaction reads it, so no listener is
-// asked about its role. An id that is no uuid, and a message who does not see (access.MessageClause)
-// or no row holds, ask nothing and name no holder, so the reply's transaction answers them as it
-// always has. The read of what who sees is made whatever the message targets. A read that failed (a
-// statement timeout, a reset connection) is the error, which the route answers 500: whether the
-// session replying holds the role was not read, and a refusal would end a reply that the role's
-// live holder may make again.
+// message's target, as who reads it (leaveOutRoute), and the session the attempt names. A target
+// who does not see is none, as the reply's transaction reads it, so no listener is asked about its
+// role; an attempt pinned to a session who does not see is asked about as an attempt no row holds,
+// as the transaction answers it (replyAttemptHidden). An id that is no uuid, and a message who does
+// not see (access.MessageClause) or no row holds, ask nothing and name no holder, so the reply's
+// transaction answers them as it always has. The read of what who sees is made whatever the message
+// targets and its attempt names. A read that failed (a statement timeout, a reset connection) is
+// the error, which the route answers 500: whether the session replying holds the role was not read,
+// and a refusal would end a reply that the role's live holder may make again.
 func (s *server) messageReplyRoleHolderOf(ctx context.Context, actor, who model.Actor, id string, attempt int) (roleHolderReply, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return roleHolderReply{}, nil
 	}
-	var message model.Message
-	var attemptSession *string
+	var target, attemptSession *string
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select m.target, d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
 		where m.id = $1 and `+access.MessageClause("m", "$3")+`
-	`, id, attempt, refs.VisibilityArg(who)).Scan(&message.Target, &attemptSession)
+	`, id, attempt, refs.VisibilityArg(who)).Scan(&target, &attemptSession)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return roleHolderReply{}, fmt.Errorf("read the route and the attempt that the reply to %s answers: %w", id, err)
 	}
-	if err := leaveOutHiddenMessageSessions(ctx, s.deps.Store.Pool, who, []*model.Message{&message}); err != nil {
+	named := references{}
+	named.nameRoute(target)
+	named.name(sessionReference, pinnedSession(attemptSession))
+	seen, err := seenReferences(ctx, s.deps.Store.Pool, who, named)
+	if err != nil {
 		return roleHolderReply{}, err
 	}
-	if message.Target == nil {
+	seen.leaveOutRoute(&target)
+	if target == nil {
 		return roleHolderReply{}, nil
 	}
-	return s.lookUpRoleHolderReply(ctx, *message.Target, attemptSession, actor)
+	if pinnedHidden(seen, attemptSession) {
+		attemptSession = nil
+	}
+	return s.lookUpRoleHolderReply(ctx, *target, attemptSession, actor)
 }
 
 // replyRoleHolderOf is the lookUpRoleHolderReply of a reply to an attempt of comment id: the
-// mention the reply answers is picked among the comment's mentions as who reads them
-// (mentionsReadBy), as the reply's transaction picks it - the one target names, or the only one
-// when target is nil - and the attempt's session is attempt's of that mention. A mention who does
-// not see is none, as one the comment does not have, so no listener is asked about its role. An id
-// that is no uuid, a comment who does not see (access.ItemOwnerClause) or has not got, and a pick
-// that finds no mention ask nothing and name no holder, so the reply's transaction answers them as
-// it always has. A read that failed is the error, which the route answers 500.
+// mention the reply answers is picked among the comment's mentions as a reply reads them
+// (mentionsRepliedToBy), as the reply's transaction picks it - the one target names, or the only
+// one when target is nil - and the attempt's session is attempt's of that mention. A mention whose
+// target who does not see is none, as one the comment does not have, so no listener is asked about
+// its role; an attempt pinned to a session who does not see is asked about as an attempt no row
+// holds, as the transaction answers it (replyAttemptHidden). An id that is no uuid, a comment who
+// does not see (access.ItemOwnerClause) or has not got, and a pick that finds no mention ask
+// nothing and name no holder, so the reply's transaction answers them as it always has. Its one
+// read of what who sees names every mention's target and every attempt's session, whatever they
+// name. A read that failed is the error, which the route answers 500.
 func (s *server) replyRoleHolderOf(
 	ctx context.Context, actor, who model.Actor, id string, target *string, attempt int,
 ) (roleHolderReply, error) {
@@ -76,7 +88,7 @@ func (s *server) replyRoleHolderOf(
 		return roleHolderReply{}, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select m.target, m.resolved_session_id, d.session_id
+		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $2
 		join comments c on c.id = m.comment_id
@@ -86,41 +98,105 @@ func (s *server) replyRoleHolderOf(
 	if err != nil {
 		return roleHolderReply{}, fmt.Errorf("read the mentions and the attempt that the reply to %s answers: %w", id, err)
 	}
-	var mentions []model.Mention
+	var targets []string
 	attemptSessions := map[string]*string{}
+	named := references{}
 	for rows.Next() {
-		var mention model.Mention
+		var mentioned string
 		var attemptSession *string
-		if err := rows.Scan(&mention.Target, &mention.SessionID, &attemptSession); err != nil {
+		if err := rows.Scan(&mentioned, &attemptSession); err != nil {
 			rows.Close()
 			return roleHolderReply{}, fmt.Errorf("read the mentions and the attempt that the reply to %s answers: %w", id, err)
 		}
-		mentions = append(mentions, mention)
-		attemptSessions[mention.Target] = attemptSession
+		targets = append(targets, mentioned)
+		attemptSessions[mentioned] = attemptSession
+		named.nameRoute(&mentioned)
+		named.name(sessionReference, pinnedSession(attemptSession))
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return roleHolderReply{}, fmt.Errorf("read the mentions and the attempt that the reply to %s answers: %w", id, err)
 	}
-	readable, err := mentionsReadBy(ctx, s.deps.Store.Pool, who, id, mentions)
+	seen, err := seenReferences(ctx, s.deps.Store.Pool, who, named)
 	if err != nil {
 		return roleHolderReply{}, err
 	}
+	replied := slices.DeleteFunc(targets, func(mentioned string) bool { return !seen.holdsRoute(mentioned) })
 	route := ""
 	switch {
 	case target != nil:
-		for _, mention := range readable {
-			if mention.Target == *target {
-				route = mention.Target
-			}
+		if slices.Contains(replied, *target) {
+			route = *target
 		}
-	case len(readable) == 1:
-		route = readable[0].Target
+	case len(replied) == 1:
+		route = replied[0]
 	}
 	if route == "" {
 		return roleHolderReply{}, nil
 	}
-	return s.lookUpRoleHolderReply(ctx, route, attemptSessions[route], actor)
+	attemptSession := attemptSessions[route]
+	if pinnedHidden(seen, attemptSession) {
+		attemptSession = nil
+	}
+	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
+}
+
+// mentionsRepliedToBy is mentions less every one whose target who does not see
+// (references.holdsRoute: a `session:<id>` target of a session who does not see, or a role of a
+// private project who does not see), as a delivery's reply reads them (replyComment). It does not
+// judge a mention by the session it resolved to when its comment was written, as every read of the
+// comment and a Retry do (mentionsReadBy): that resolution (comment_mentions.resolved_session_id)
+// is written once, and a role passes from session to session, so a role's mention resolved to a
+// holder that acted in a project who does not see would refuse the reply of the role's holder now,
+// to whom a Retry sent a later attempt. The session a reply may answer for is the attempt's own,
+// which the reply judges apart (replyAttemptHidden). Its read is made whatever the mentions name,
+// so a comment with a hidden mention costs what one without it costs; a reader that sees every
+// object reads nothing (R9).
+func mentionsRepliedToBy(ctx context.Context, q queryer, who model.Actor, mentions []model.Mention) ([]model.Mention, error) {
+	if seesEveryObject(who) {
+		return mentions, nil
+	}
+	named := references{}
+	for _, mention := range mentions {
+		named.nameRoute(&mention.Target)
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Clone(mentions), func(mention model.Mention) bool { return !seen.holdsRoute(mention.Target) }), nil
+}
+
+// replyAttemptHidden reports whether who does not see pinned, the session a delivery attempt is
+// pinned to (nil or "" for none yet), as every read of the item's deliveries leaves such an
+// attempt out (leaveOutHiddenCommentSessions, leaveOutHiddenMessageSessions). A reply to it is
+// answered as one to an attempt no row holds, whoever replies: the session the attempt is pinned
+// to, through a credential that does not see it, or the role's holder now, whose answer would name
+// that session. Its read is made whatever the attempt names, so an attempt pinned to a hidden
+// session costs what one pinned to none costs; a reader that sees every object reads nothing (R9).
+func replyAttemptHidden(ctx context.Context, q queryer, who model.Actor, pinned *string) (bool, error) {
+	named := references{}
+	named.name(sessionReference, pinnedSession(pinned))
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return false, err
+	}
+	return pinnedHidden(seen, pinned), nil
+}
+
+// pinnedSession is the session an attempt row names, "" for none.
+func pinnedSession(pinned *string) string {
+	if pinned == nil {
+		return ""
+	}
+	return *pinned
+}
+
+// pinnedHidden reports whether seen leaves out the session an attempt is pinned to; an attempt
+// pinned to none is never hidden.
+func pinnedHidden(seen references, pinned *string) bool {
+	session := pinnedSession(pinned)
+	return session != "" && !seen.holds(sessionReference, session)
 }
 
 // lookUpRoleHolderReply asks the listener whether actor holds the role route names, for a reply
