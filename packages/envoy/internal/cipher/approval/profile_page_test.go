@@ -152,7 +152,9 @@ func TestAnApprovalIsBoundToTheProfileItsPagePrinted(t *testing.T) {
 // and its fingerprint, so the approval passes profilesMoved, and the approval's own target check
 // refuses it (requests.ErrTargetRefused). That is the ordinary outcome of the roll, as the judge
 // reads the same refusal, so the page decides nothing and logs the approval refused in the
-// broker's own words, as it logs every other refusal of one, and writes no error line.
+// broker's own words, as it logs every other refusal of one, and writes no error line. The
+// approval lands on the request's page with the refusal's policy code, and that page says the
+// current policy no longer lets the person approve it.
 func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
@@ -187,10 +189,18 @@ func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 	if form == nil {
 		t.Fatalf("the page for %s offers no decision", recordID)
 	}
-	if res := b.FromPage(t, "/approve", decision(form, "approve")); res.Status != http.StatusSeeOther {
+	res := b.FromPage(t, "/approve", decision(form, "approve"))
+	if res.Status != http.StatusSeeOther {
 		t.Fatalf("the approval of a target the rolled profile does not hold = %d, want 303 back to the record:\n%s", res.Status, res.Body)
 	}
 	r.requirePending(t, recordID)
+	to := res.Header.Get("Location")
+	if want := "&refused=" + recordID + ":policy"; !strings.Contains(to, want) {
+		t.Errorf("the refused approval redirects to %q; want it to carry %q", to, want)
+	}
+	if landed := pageText(t, b.Get(t, to).Body); !strings.Contains(landed, "GITHUB_READ: still pending; it was not decided: the current policy no longer lets you approve it.") {
+		t.Errorf("the page the refused approval lands on does not name the policy:\n%s", landed)
+	}
 
 	var outcomes []any
 	for _, logged := range capture.Records() {

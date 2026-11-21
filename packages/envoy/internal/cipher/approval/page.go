@@ -671,23 +671,27 @@ func profileDigests(values []string) map[string]map[string]string {
 // one the page printed none for. So a profile edited since the page, one added to a name the page
 // printed as a stored secret, and one taken away are each a move, since each changes what an
 // approval would grant. A record the broker no longer has, and a machine login, are left to
-// decide's own answer.
+// decide's own answer. It reads each record through requests.Machine.RecordProfiles, which asks
+// Dispatch nothing, so every record is checked while Dispatch is down too: a record Dispatch
+// cannot answer for is then decided by nobody (decide), and the POST's other records as ever,
+// rather than the POST answering 503 for all of them. Skipping such a record here instead would
+// let it through unchecked to a Dispatch that answers again by the time decide reads it.
 func (p *Page) profilesMoved(ctx context.Context, ids []string, printed map[string]map[string]string) (bool, error) {
 	for _, id := range ids {
-		detail, err := p.cfg.Machine.ReadRecord(ctx, id)
+		kind, identifiers, profiles, err := p.cfg.Machine.RecordProfiles(ctx, id)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			continue
 		case err != nil:
 			return false, err
-		case detail.Kind != record.KindAgentSecret:
+		case kind != record.KindAgentSecret:
 			continue
 		}
-		live := make(map[string]string, len(detail.Profiles))
-		for _, profile := range detail.Profiles {
+		live := make(map[string]string, len(profiles))
+		for _, profile := range profiles {
 			live[profile.Name] = profile.Digest
 		}
-		for _, name := range detail.Identifiers {
+		for _, name := range identifiers {
 			if live[name] != printed[id][name] {
 				return true, nil
 			}

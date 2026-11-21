@@ -1902,26 +1902,18 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	}
 	agentSecret := kind == record.KindAgentSecret
 	var enr *record.Enrollment
-	// The live policy, read once, serves each profile the page prints (RecordProfile).
-	var set *policy.Set
+	var profiles []RecordProfile
 	if agentSecret {
 		e := body.Enrollment
 		enr = &e
-		set = m.Policy.Get()
+		profiles = recordProfiles(m.Policy.Get(), obj.Details)
 	}
 	identifiers := make([]string, len(obj.Details))
 	service := ""
-	var profiles []RecordProfile
 	for i, d := range obj.Details {
 		identifiers[i] = d.Identifier
 		if d.Service != "" {
 			service = d.Service
-		}
-		if !agentSecret {
-			continue
-		}
-		if served := set.Secrets[d.Identifier]; served.Profile != nil {
-			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: d.Target().String()})
 		}
 	}
 	detail := RecordDetail{
@@ -1973,6 +1965,55 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		detail.State = "revoked"
 	}
 	return detail, nil
+}
+
+// RecordProfiles reads a record's kind, the names it asks for in its own order, and, for an
+// agent_secret record, each of them the live policy serves as a profile: ReadRecord's Kind,
+// Identifiers and Profiles, its Profiles built the same way (recordProfiles). Unlike ReadRecord,
+// whose SecretProjects asks Dispatch for a name of a project, it asks Dispatch nothing. The approval
+// page checks every record an approval names against it before deciding any
+// (approval.Page.profilesMoved), so that check holds while Dispatch is down: a record of a private
+// project's secret, or of a profile of one, is then still checked, and left to ApplyDecision,
+// which decides it as unavailable (ErrProjectAccessUnavailable), and the approval's other records
+// are decided as ever. pgx.ErrNoRows means no such record.
+func (m *Machine) RecordProfiles(ctx context.Context, recordID string) (kind string, identifiers []string, profiles []RecordProfile, err error) {
+	var canonical string
+	var createdAt time.Time
+	if err := m.Store.Pool.QueryRow(ctx, `select body, kind, created_at from credential_requests where id=$1`, recordID).
+		Scan(&canonical, &kind, &createdAt); err != nil {
+		return "", nil, nil, err
+	}
+	body, err := record.ParseBody(canonical)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	identifiers = make([]string, len(obj.Details))
+	for i, d := range obj.Details {
+		identifiers[i] = d.Identifier
+	}
+	if kind == record.KindAgentSecret {
+		profiles = recordProfiles(m.Policy.Get(), obj.Details)
+	}
+	return kind, identifiers, profiles, nil
+}
+
+// recordProfiles is each name of an agent_secret record's details that set, the live policy read
+// once, serves as a profile, in the details' order, with the target its detail narrows it to
+// (RecordProfile): the scope an approval grants, which ReadRecord prints and RecordProfiles
+// answers alike, so what the approval page printed and what its approval is checked against are
+// one reading of the record.
+func recordProfiles(set *policy.Set, details []record.AuthorizationDetail) []RecordProfile {
+	var profiles []RecordProfile
+	for _, d := range details {
+		if served := set.Secrets[d.Identifier]; served.Profile != nil {
+			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: d.Target().String()})
+		}
+	}
+	return profiles
 }
 
 // ApproverGrant is one live grant a person may revoke, for GET /v1/grants?approver=<login>.

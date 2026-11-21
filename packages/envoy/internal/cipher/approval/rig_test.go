@@ -127,10 +127,12 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	if setup.profiles != "" {
 		reqMachine.Airlock = loader.Profiles.ProxyRules()
 	}
+	// After the airlock rules, as cmd/cipherd orders them: the verifier holds the judge's rules
+	// (requests.NewChainVerifier) from the rules it is given.
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
