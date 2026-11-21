@@ -1726,7 +1726,7 @@ answers:
 - `bounds.answer_seconds` (180): How long one answer may take, its model calls and `gh` calls together.
 
 - `bounds.model_calls` (8): Model calls per answer; the last one allowed offers no tool, so it must be the reply.
-  That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, and to reply now, in the reply form, from what the agent already knows.
+  That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, to reply now, in the reply form, from what the agent already knows, and that a `not_answered` or `needs_work` reply must say in `needs` what it needs, since that call's reply is never asked for again.
   The message is the loop's own instruction to that call, as its system prompt is, so the exchange written into the agent's conversation never holds it.
 
 - `bounds.output_tokens` (4000): Output tokens per model call.

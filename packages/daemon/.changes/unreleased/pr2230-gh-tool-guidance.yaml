@@ -16,8 +16,9 @@ body: |-
   that failed with git's `not a git repository` carries gh's output and then the guidance; the
   guidance is part of what `answer_tool_calls` records for the call. Other refusals keep their own
   reason. The last model call of an answer, the one that offers no tool, carries a short message
-  saying it is the last call and to reply now in the reply form; that message is the loop's own
-  and is never written into the agent's conversation.
+  saying it is the last call, to reply now in the reply form, and that a `not_answered` or
+  `needs_work` reply must say in `needs` what it needs; that message is the loop's own and is
+  never written into the agent's conversation.
 time: 2026-11-18T04:43:18.000000000Z
 custom:
     Issue: pr2230
