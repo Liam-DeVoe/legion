@@ -160,20 +160,11 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		read := func() (nats.KeyValueEntry, error) { return kv.ReadStored(ctx, sessionID, r.recordOf(sessionID)) }
-		if attempt > 0 {
-			// The delete before this one was refused at the revision its read reported. A
-			// record the server wrote - a RePublish of another stream, whose body can read as
-			// this session's - is reported by a direct get at that stream's sequence, so the
-			// retry reads the key's newest message from the stream's leader, with the headers
-			// it is stored with and at the sequence it is stored at.
-			read = func() (nats.KeyValueEntry, error) { return kv.NewestFromLeader(ctx, sessionID) }
-		}
-		entry, answered, err := bus.Bounded(ctx, read)
+		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.ReadStored(ctx, sessionID, r.recordOf(sessionID)) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
-		if errors.Is(err, nats.ErrKeyNotFound) || (err == nil && entry.Operation() != nats.KeyValuePut) {
+		if errors.Is(err, nats.ErrKeyNotFound) {
 			return EntryDeleted, nil
 		}
 		if err != nil {
@@ -196,10 +187,10 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			// fills every field it could read, wherever the bad field sits, so a value
 			// carrying a client instance id or a heartbeat would otherwise be compared against
 			// the caller's and kept — the opposite of what this branch decides. Its revision
-			// is the one the stream's leader reports (ReadStored, or the retry's read), the
-			// sequence the value is stored at: a copy the server stored carries its source's
-			// Nats-Sequence header ahead of its own, and a delete fenced on the revision a
-			// direct get reports for it is refused at every attempt.
+			// is the one the stream's leader reports (ReadStored), the sequence the value is
+			// stored at: a copy the server stored carries its source's Nats-Sequence header
+			// ahead of its own, and a delete fenced on the revision a direct get reports for it
+			// is refused at every attempt.
 			stored = SessionEntry{}
 			r.logger().Warn("session registry deleting a malformed value under a conditional delete",
 				slog.String("key", entry.Key()),
@@ -217,6 +208,25 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)
 		}
 		if errors.Is(err, nats.ErrKeyExists) {
+			// A refusal at the revision a direct get reported can be a record the server
+			// wrote, which a direct get reports at another stream's sequence however its value
+			// reads: such a record belongs to nobody, and it is deleted at the sequence it is
+			// stored at (bus.KeyValue.DeleteServerWritten). Any other refusal is a write that
+			// landed between the read and the delete, and the sequence runs once more for it.
+			dropped, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+				revision, deleted, err := kv.DeleteServerWritten(ctx, sessionID)
+				if !deleted {
+					return 0, err
+				}
+				return revision, err
+			})
+			if !answered {
+				return EntryUnanswered, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
+			}
+			if err == nil && dropped != 0 {
+				r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, dropped))
+				return EntryDeleted, nil
+			}
 			if attempt == 0 {
 				continue
 			}

@@ -16,11 +16,11 @@ import (
 // A RePublish of another stream stores, at a session's key, a body that reads as the session's own
 // record - its key, a machine, a time, its projects and the client instance a conditional delete
 // names - with that stream's headers, so a direct get reports it at that stream's sequence, the
-// control, and a delete fenced there is refused. The conditional delete's retry reads the key from
-// the stream's leader, reads a message the server wrote as no registration, and deletes it at the
-// sequence it is stored at; the plain delete does the same (bus.KeyValue.DeleteAtRead). The
-// leader's read the edge confirms a session by (StoredByWriter) reads the session's own record as
-// a writer's and the republished one as none.
+// control, and a delete fenced there is refused. After that refusal the conditional delete and the
+// plain delete each read the key from the stream's leader, find a message the server wrote, and
+// delete it at the sequence it is stored at (bus.KeyValue.DeleteServerWritten). The leader's read
+// the edge confirms a session by (StoredByWriter) reads the session's own record as a writer's and
+// the republished one as none.
 func TestADeleteOverARepublishedRecordDeletesItAtItsTrueSequence(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)

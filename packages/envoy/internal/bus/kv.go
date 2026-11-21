@@ -504,11 +504,10 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 		if err == nil || !IsCASConflict(err) {
 			return revision, err
 		}
-		leader, leaderErr := kv.NewestFromLeader(ctx, key)
-		if leaderErr != nil || leader.Operation() != nats.KeyValuePut || !WrittenByServer(leader) {
-			return revision, err
+		if written, deleted, dropErr := kv.DeleteServerWritten(ctx, key); deleted {
+			return written, dropErr
 		}
-		return leader.Revision(), kv.Delete(key, nats.LastRevision(leader.Revision()))
+		return revision, err
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return 0, nil
 	case errors.Is(err, ErrRefused):
@@ -516,6 +515,28 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 	default:
 		return 0, err
 	}
+}
+
+// DeleteServerWritten deletes key's newest message when it is one the server wrote
+// (WrittenByServer), at the sequence the stream's leader reports it stored at, fenced there, and
+// reports that sequence and whether it made the delete. It is the step a fenced delete the bucket
+// refused takes (DeleteAtRead, session.SessionRegistry.DeleteIf): a direct get reports such a
+// message at another stream's sequence however its value reads, so the delete fenced on that is
+// refused at every attempt. Any other newest message - a writer's record, a marker, none - is left
+// as it is and answered not deleted, with no error: the refusal stands for its caller to answer.
+// A read of the leader that fails is answered not deleted with its error.
+func (kv KeyValue) DeleteServerWritten(ctx context.Context, key string) (uint64, bool, error) {
+	leader, err := kv.NewestFromLeader(ctx, key)
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if leader.Operation() != nats.KeyValuePut || !WrittenByServer(leader) {
+		return 0, false, nil
+	}
+	return leader.Revision(), true, kv.Delete(key, nats.LastRevision(leader.Revision()))
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
