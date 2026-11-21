@@ -373,14 +373,15 @@ func TestACheckOpenedUnderTheTesterKeepsItWhenTheSettingGoesOff(t *testing.T) {
 }
 
 // A root reopened inside its linger runs again from the reopen: admit's readmit stands it in
-// `admitted` with the reopen's status, no role's phase, and its production check untouched. Nothing
-// of the check moves the tree while it runs again: the implementer's failed claim takes the live
-// phase's path rather than ending the look (the look's own bound ends it, and that end starts no
-// look and suspends nothing, since the implementer and pod are the run's), and the bound closes
-// the check as not run without an issue_close of the implementer the run reuses.
+// `admitted` with the reopen's status, a new generation, no role's phase, and its production check
+// untouched. Nothing of the check, of the run before, moves the tree while it runs again: the
+// implementer's failed claim takes the live phase's path rather than ending the look (the look's
+// own bound ends it, and that end starts no look and suspends nothing, since the implementer and
+// pod are the run's), and the bound closes the check as not run without an issue_close of the
+// implementer the run reuses.
 func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 	rig := rootCheckRig(t)
-	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null where key = 'LEGION-208'"); err != nil {
+	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null, generation = generation + 1 where key = 'LEGION-208'"); err != nil {
 		t.Fatal(err)
 	}
 	before := len(superviseRowsOf(t, rig.pool, "LEGION-208", "suspend"))

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -141,4 +142,123 @@ func TestEachRowOfACheckActsOnTheCheckItNames(t *testing.T) {
 			t.Fatalf("check_bound rows after both bounds with both looks open = %d, want one for the issue", len(rows))
 		}
 	})
+}
+
+// openMerge opens issue's check of the merge of #number at sha, as a merge's close opens it
+// (openCheck), at the rig's clock.
+func openMerge(t *testing.T, rig checkRig, issue record.Issue, number int, sha string) {
+	t.Helper()
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		ctx, _ := intake.WithCommitHooks(context.Background())
+		return rig.engine.openCheck(ctx, tx, issue, record.PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: number, MergeSHA: sha}, false)
+	})
+}
+
+// checksOfIssue is every check of issue, newest opened first, as recorded.
+func checksOfIssue(t *testing.T, rig checkRig, issue string) []record.ProductionCheck {
+	t.Helper()
+	var checks []record.ProductionCheck
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		var err error
+		checks, err = record.NewStore().ProductionChecksOf(t.Context(), tx, issue)
+		return err
+	})
+	return checks
+}
+
+// Each merge of one run opens a check of its own, of the issue's run, and leaves the run's other
+// checks open beside it; a merge seen again — whichever of the run's checks is its — opens nothing.
+// The merge of a later run closes each check of an earlier run still open as not run, with its
+// look closed: nothing would look at it again, and an open check left so would keep a tree's
+// linger waiting for ever (closeCheck re-arms the linger's close only when the tree's last open
+// check closes).
+func TestEachMergeOfARunOpensItsOwnCheckAndALaterRunsClosesTheEarlier(t *testing.T) {
+	rig := newCheckRig(t)
+	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	seedIssue(t, rig.pool, issue)
+	openMerge(t, rig, issue, 1, "merge-1")
+	rig.clock.now = checkOpened.Add(time.Hour)
+	openMerge(t, rig, issue, 2, "merge-2")
+	rig.clock.now = checkOpened.Add(2 * time.Hour)
+	openMerge(t, rig, issue, 1, "merge-1")
+
+	checks := checksOfIssue(t, rig, issue.Key)
+	if len(checks) != 2 || checks[0].Number != 2 || checks[1].Number != 1 {
+		t.Fatalf("the checks of %s after two merges of its run and the first seen again = %+v, want #2's and #1's alone", issue.Key, checks)
+	}
+	for _, check := range checks {
+		if !check.Open() || check.Generation != 7 {
+			t.Fatalf("the check of #%d after two merges of one run = %+v, want it open, of run 7", check.Number, check)
+		}
+	}
+
+	later := issue
+	later.Generation = 8
+	if _, err := rig.pool.Exec(context.Background(), "update issues set generation = 8 where key = $1", issue.Key); err != nil {
+		t.Fatal(err)
+	}
+	rig.clock.now = checkOpened.Add(3 * time.Hour)
+	openMerge(t, rig, later, 3, "merge-3")
+	checks = checksOfIssue(t, rig, issue.Key)
+	if len(checks) != 3 || checks[0].Number != 3 || !checks[0].Open() || checks[0].Generation != 8 {
+		t.Fatalf("the checks of %s after a merge of run 8 = %+v, want #3's open first, of run 8", issue.Key, checks)
+	}
+	for _, check := range checks[1:] {
+		if check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen {
+			t.Fatalf("the check of #%d of run 7 after a merge of run 8 = %+v, want it closed not_run with its look closed", check.Number, check)
+		}
+	}
+}
+
+// A check of the run that holds the issue looks while the issue runs: its agent's wake starts its
+// next look, and its bound starts its last look, as for an issue that left the workflow. A check
+// of an earlier run waits instead, as every check of an issue back in the workflow did before: its
+// wake is queued again a look bound later, and its bound closes it as not run.
+func TestACheckOfTheRunThatHoldsTheIssueLooksWhileItRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		generation uint64
+		looks      bool
+	}{
+		{name: "a check of the run", generation: 7, looks: true},
+		{name: "a check of an earlier run", generation: 6, looks: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newCheckRig(t)
+			issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+				Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+			seedIssue(t, rig.pool, issue)
+			wake := checkOpened.Add(3 * time.Hour)
+			check := record.ProductionCheck{Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: "sjawhar/legion", Number: 1, MergeSHA: "merge-1",
+				Role: claim.RoleTester, OpenedAt: checkOpened, BoundAt: checkOpened.Add(checkBound), Looks: 1, LookWakeAt: &checkOpened,
+				LastWakeKind: wakeMerge, LastWakeDetail: "merge-1", LastWakeAt: &checkOpened, WakeAt: &wake, Generation: tc.generation, Task: "a"}
+			seedRecord(t, rig.pool, func(tx pgx.Tx) error { return record.NewStore().PutProductionCheck(t.Context(), tx, check) })
+
+			rig.clock.now = wake
+			rig.apply("wake", intake.CheckWakeDue{Issue: issue.Key, Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge"})
+			got := checkOpenedAt(t, rig, issue.Key, checkOpened)
+			starts := superviseRowsOf(t, rig.pool, issue.Key, "start")
+			if tc.looks {
+				if got.Looks != 2 || !got.LookOpen || len(starts) != 1 || starts[0].CheckLook != 2 || !starts[0].CheckOpenedAt.Equal(checkOpened) {
+					t.Fatalf("the check at its wake = %+v with starts %+v, want look 2 started for it while its run goes on", got, starts)
+				}
+			} else if got.Looks != 1 || got.LookOpen || len(starts) != 0 || got.WakeAt == nil || !got.WakeAt.Equal(wake.Add(CheckLookBound)) {
+				t.Fatalf("the check at its wake = %+v with starts %+v, want look 1 still ended and the wake a look bound later", got, starts)
+			}
+
+			if _, err := rig.pool.Exec(context.Background(), "update production_checks set looks = 1, look_open = false where issue = $1", issue.Key); err != nil {
+				t.Fatal(err)
+			}
+			rig.clock.now = check.BoundAt
+			rig.apply("bound", intake.CheckBound{Issue: issue.Key})
+			got = checkOpenedAt(t, rig, issue.Key, checkOpened)
+			if tc.looks && (!got.Open() || !got.Last || !got.LookOpen) {
+				t.Fatalf("the check at its bound = %+v, want its last look started while its run goes on", got)
+			}
+			if !tc.looks && (got.Open() || got.Outcome != record.CheckNotRun) {
+				t.Fatalf("the check at its bound = %+v, want it closed as not run", got)
+			}
+		})
+	}
 }
