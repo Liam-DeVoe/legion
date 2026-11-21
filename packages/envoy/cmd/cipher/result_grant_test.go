@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"authelia.com/provider/oauth2"
+	"authelia.com/provider/oauth2/handler/rfc9449"
+	"github.com/go-jose/go-jose/v4"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
@@ -59,6 +65,24 @@ func startResultBroker(t *testing.T, status int, answer map[string]any) *resultB
 	}))
 	t.Cleanup(b.Close)
 	return b
+}
+
+// tradeProofRefusal is why proof is not a DPoP proof that a broker's token endpoint at tokenURL
+// takes for the trade, or "" when it is one: RFC 9449's own parser reads it (its typ, its one
+// signature by the public key it carries, and its claims), and its htm, htu and iat are those of a
+// POST to tokenURL signed within the last minute. The key is made in the command's memory and
+// never leaves it, so the test cannot name it.
+func tradeProofRefusal(proof, tokenURL string) string {
+	parsed, err := rfc9449.ParseProof(proof, []jose.SignatureAlgorithm{jose.ES256})
+	switch {
+	case err != nil:
+		return oauth2.ErrorToRFC6749Error(err).HintField
+	case parsed.Method != http.MethodPost || parsed.URL != tokenURL:
+		return fmt.Sprintf("its htm %q and htu %q are not POST and %q", parsed.Method, parsed.URL, tokenURL)
+	case time.Since(parsed.IssuedAt) > time.Minute || time.Until(parsed.IssuedAt) > time.Second:
+		return fmt.Sprintf("its iat %s is not within the last minute", parsed.IssuedAt)
+	}
+	return ""
 }
 
 // placeholderGrant is the token endpoint's answer to a result entry's run (C8), with an airlock
@@ -137,9 +161,10 @@ func childVar(stdout, name string) (string, bool) {
 }
 
 // TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy: the run's token is traded at the
-// broker's token endpoint for the airlock placeholder, with a DPoP proof; the command runs with
-// the placeholder in DISPATCH_RESULTS_TOKEN, the proxy in HTTPS_PROXY with the placeholder as its
-// password, and the trust bundle, and with no machine identity of its own to trade.
+// broker's token endpoint for the airlock placeholder, with a DPoP proof the endpoint takes; the
+// command runs with the placeholder in DISPATCH_RESULTS_TOKEN, the proxy in HTTPS_PROXY with the
+// placeholder as its password, and the trust bundle, and with no machine identity of its own to
+// trade.
 func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t))
 	stdout, stderr, exit := runResultGrant(t, broker)
@@ -150,8 +175,11 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	forms, proofs := broker.forms, broker.proofs
 	broker.mu.Unlock()
 	if len(forms) != 1 || forms[0].Get("requested_token_type") != oauthwire.TokenTypeAirlockPlaceholder ||
-		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub || proofs[0] == "" {
-		t.Fatalf("the broker's token endpoint got %v (proofs %q); want one trade of the run's token for the placeholder type, with a proof", forms, proofs)
+		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub {
+		t.Fatalf("the broker's token endpoint got %v; want one trade of the run's token for the placeholder type", forms)
+	}
+	if why := tradeProofRefusal(proofs[0], broker.URL+cipherclient.TokenPath); why != "" {
+		t.Fatalf("the trade's DPoP proof %q is not one the token endpoint takes: %s", proofs[0], why)
 	}
 	if got, _ := childVar(stdout, oauthwire.AirlockResultsName); got != resultPlaceholder {
 		t.Errorf("the child's %s = %q, want the placeholder", oauthwire.AirlockResultsName, got)
