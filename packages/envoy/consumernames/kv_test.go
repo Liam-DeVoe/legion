@@ -169,6 +169,36 @@ func TestAReadNoServerAnswersIsNoMissingStore(t *testing.T) {
 	}
 }
 
+// The selection bucket is the session family's alone, so its sentinel must name that family: a
+// well-formed sentinel naming another family (Dispatch's, a daemon's) under envoy.bucket is a
+// missing sentinel, refused, never a marker read. The control is the generic decode, which takes the
+// same bytes, since another store's sentinel may name them; the session family's sentinel is read.
+func TestTheKVStoresSentinelMustNameTheSessionFamily(t *testing.T) {
+	ctx := context.Background()
+	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
+		t.Run(family, func(t *testing.T) {
+			live := newLiveStore(t, testnats.URL(t), nil)
+			if _, err := live.store.WriteSentinel(ctx, StoreState{Family: family, Cutover: CutoverDone, Boundary: 1}, 0); err != nil {
+				t.Fatal(err)
+			}
+			data, _, err := live.store.last(ctx, SentinelKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := decodeSentinel(SentinelKey, data); err != nil || state.Family != family {
+				t.Fatalf("control: the generic decode of %s = %+v, %v; want it taken", data, state, err)
+			}
+			if state, err := live.store.State(ctx); !errors.Is(err, ErrNoSentinel) || !strings.Contains(err.Error(), family) {
+				t.Fatalf("the bucket's sentinel naming the family %s = %+v, %v; want ErrNoSentinel naming it", family, state, err)
+			}
+		})
+	}
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, Boundary: 1})
+	if state, err := live.store.State(ctx); err != nil || state.Family != SessionFamily {
+		t.Fatalf("control: the session family's sentinel = %+v, %v; want it read", state, err)
+	}
+}
+
 func TestTheKVStoreSeesADeleteMarkerAsADeletedRecord(t *testing.T) {
 	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone})
 	ctx := context.Background()
