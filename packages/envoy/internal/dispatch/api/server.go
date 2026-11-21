@@ -789,7 +789,7 @@ func (b *backgroundWork) wait() {
 
 // register is Register, answering the server it mounted, whose delivery hub and event stream
 // relay a test waits out before its database closes. It is also called with an empty Deps, as
-// TestTheDeploymentsSuggestionAllowanceIsTheDocumentedBound does, so it must stay cheap and must
+// TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound does, so it must stay cheap and must
 // not dial or read the nil Store: whatever reaches the database or the network starts later, from
 // a handler, the relay's first subscriber or the hub's, or on a goroutine of its own, as the event
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
