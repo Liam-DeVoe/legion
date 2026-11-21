@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -99,15 +98,11 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			and payload->>'op' = 'start' and payload->>'role' = $2 order by id desc limit 1`, startedParent, string(claim.RoleImplementer)).Scan(&task); err != nil {
 			t.Fatalf("read the implementer's start of %s: %v", startedParent, err)
 		}
-		if !strings.HasPrefix(task, moved.ChildrenWait.Task) {
+		// With no child merged, the return gives exactly the task it held: it asks for no forward
+		// merge (dispatch://INFRA-3320 R12) and names no child as merged, the one child having
+		// moved to icebox.
+		if task != moved.ChildrenWait.Task {
 			t.Fatalf("the implementer's start carries %q, want the task it held, %q", task, moved.ChildrenWait.Task)
-		}
-		// The return asks for no forward merge (dispatch://INFRA-3320 R12, on the person's answer
-		// "Children first"), and names no child as merged: the one child moved to icebox.
-		for _, unsaid := range []string{"merge the default branch", "`children merged: full test round`", "merged during the wait"} {
-			if strings.Contains(task, unsaid) {
-				t.Fatalf("the implementer's start carries %q, want no %q in it", task, unsaid)
-			}
 		}
 	})
 

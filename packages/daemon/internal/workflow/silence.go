@@ -152,11 +152,11 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 			return err
 		}
 	} else {
-		parent, err := e.testingParent(ctx, tx, issue)
+		work, err := e.resumePhaseTask(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue, parent), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+		if err := e.started(ctx, tx, issue, fact.Role, work, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
 			return err
 		}
 	}

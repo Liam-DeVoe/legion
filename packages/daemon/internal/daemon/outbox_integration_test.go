@@ -323,9 +323,6 @@ func (d *blockingDispatch) Approval(context.Context, string) (dispatch.Approval,
 func (d *blockingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *blockingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
@@ -522,9 +519,6 @@ func (d *refusingDispatch) Approval(context.Context, string) (dispatch.Approval,
 func (d *refusingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *refusingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
@@ -589,9 +583,6 @@ func (d *boardDispatch) Approval(context.Context, string) (dispatch.Approval, er
 }
 func (d *boardDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
-}
-func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
 }
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }

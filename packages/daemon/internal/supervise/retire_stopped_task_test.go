@@ -59,9 +59,9 @@ func TestRetiringAStoppedPhasesTaskLeavesNothingOfItToSend(t *testing.T) {
 	h.wantPrompts(0)
 
 	// The return's own start, on an entry of its own, reaches the worker.
-	h.must(RequestDeliver{Claim: testToken, Task: "merge the default branch forward", ID: "outbox:9",
+	h.must(RequestDeliver{Claim: testToken, Task: "carry the implementation on after the wait", ID: "outbox:9",
 		Phase: phase.Implementing, Generation: restored.Generation, Entry: 4})
-	if sent := h.wantPrompts(1)[0]; !strings.Contains(sent.Message, "merge the default branch forward") {
+	if sent := h.wantPrompts(1)[0]; !strings.Contains(sent.Message, "carry the implementation on after the wait") {
 		t.Fatalf("prompt after the return = %+v, want the return's own task", sent)
 	}
 }
@@ -81,7 +81,7 @@ func TestRetiringAStoppedPhasesTaskHoldsToTheBusyLateAndRelaunchRules(t *testing
 	const run, stoppedEntry = 5, 3
 	stopped := RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:3",
 		Phase: phase.Implementing, Generation: run, Entry: stoppedEntry}
-	returned := RequestDeliver{Claim: testToken, Task: "merge the default branch forward", ID: "outbox:9",
+	returned := RequestDeliver{Claim: testToken, Task: "carry the implementation on after the wait", ID: "outbox:9",
 		Phase: phase.Implementing, Generation: run, Entry: stoppedEntry + 1}
 	retire := func(h *harness) {
 		h.t.Helper()

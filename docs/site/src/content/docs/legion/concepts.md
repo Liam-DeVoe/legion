@@ -24,11 +24,11 @@ section can use the words without stopping to explain them.
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
 - **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
-  issue's repository. Dispatch maps repositories to a project (Settings → Repositories →
-  Projects), which gives the project its default repository and the repositories Legion prepares
-  before an issue names one; each issue targets one repository, the one Dispatch resolves for it (its
-  own, else its nearest ancestor's, else the project's default), which Legion records, with that
-  repository's default branch as GitHub names it, when it first records the issue, and keeps.
+  issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
+  own, else its nearest ancestor's, else the project's default repository, which is set in
+  Dispatch), which Legion records, with that repository's default branch as GitHub names it, when
+  it first records the issue, and keeps. This release's one-time pass is the one exception: it
+  writes a configured rename's new name (`repository_renames`) over the old one on the records.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
@@ -43,8 +43,7 @@ One Legion deployment can work issues across several GitHub repositories, under 
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
-An issue may name any `owner/name`, whether or not Dispatch maps it to the project, and the
-account that installs a role's GitHub App decides what that role reaches.
+An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
 Each token is minted on that owner's installation with the role's own permissions: the implement
@@ -151,17 +150,17 @@ holds its next phase, and the daemon stops a phase that is under way and tells i
 what it has and stop. The issue then waits in `awaiting_children`: it holds no admission slot,
 Dispatch shows it `in_progress`, and no role of it works: the architect's `sign_off` and
 `request_backward_move` on it are refused (`WAITING_ON_CHILDREN`). Once no child under it is open,
-it goes back by itself to the phase it held, a held test, review or acceptance as `testing`, with
-a task that names the children that merged during the wait. The return asks for no merge of the
-base into its branch, which takes its base under the rules of any other pull request. Every test
-round of a parent runs on its head merged with the tip of the pull request's base branch, once that
-tip carries each needed child's merge, in the tester's own checkout and pushed nowhere, and each
-result names that base commit. A parent is accepted on its head once each check a role runs has a
-pass there that names a base commit carrying the merge of every child the check needs, and a pass
-that names an older commit, or none, sends it back to `testing`. The daemon also refuses a parent's
-acceptance, and a root's close, while an issue beneath it is still in the workflow. A child's own
-architect starts with the child's first phase, so a child it files stops the child's phase in this
-way.
+it goes back by itself to the phase it held, a held test, review or acceptance as `testing` unless
+its pull request merged during the wait, with a task that names the children that merged during
+the wait. The return asks for no merge of the base into its branch, which takes its base under the
+rules of any other pull request. Every test round of a parent runs on its head merged with the tip
+of the pull request's base branch, once that tip carries each needed child's merge, in the
+tester's own checkout and pushed nowhere, and each result names that base commit. A parent is
+accepted on its head once each check a role runs has a pass there that names a base commit
+carrying the merge of every child the check needs, and the architect sends one whose pass names an
+older commit, or none, back to `testing`. The daemon also refuses a parent's acceptance, and a
+root's close, while an issue beneath it is still in the workflow. A child's own architect starts
+with the child's first phase, so a child it files stops the child's phase in this way.
 
 ## Phase workers
 
@@ -176,7 +175,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
-| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as `testing`. | none |
+| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as `testing` unless its pull request merged during the wait. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |

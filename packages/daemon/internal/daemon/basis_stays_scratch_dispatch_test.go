@@ -392,6 +392,30 @@ func (r *personHandoverRig) reopenedOnBasis(run basisRun) {
 	r.oneBasisMessage(run.root.Key)
 }
 
+// hear has key's architect hear the person's approval of version of key's own primary document:
+// the design-approved notice that approval's opening queued for it (workflow's applyArtifact) is
+// finished as the notice executor finishes a notice whose publish the architect's session took
+// (noticeAnswered), which deletes the row. The architect of a running root hears that approval
+// when the person gives it; the rig's Envoy answers nothing, so the notice would stay queued,
+// failing at each attempt of its backoff (record.RetryBackoff), for the rest of the run. An attempt
+// that lands while a person's move to the backlog has the tree linger finishes it undelivered
+// and keeps the approval as a decision made while nobody in the tree could hear it (the outbox's
+// stoppedWithTree, parkDecision), and the re-admission's start then names that decision
+// (workflow.KeptDecisionsTask): whether it did would turn on where the backoff fell.
+func (r *personHandoverRig) hear(key string, version int) {
+	t := r.t
+	t.Helper()
+	testwait.Eventually(t, fmt.Sprintf("the architect of %s to hear the person's approval of version %d", key, version), func() bool {
+		finished, err := r.pool.Exec(t.Context(), `delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'design-approved'
+			and payload->>'ref' = $3 and (payload->>'version')::int = $4 and (lease_until is null or lease_until <= now())`,
+			string(record.OutboxKindNotice), key, "dispatch://"+key+"/spec", version)
+		if err != nil {
+			t.Fatalf("finish the design-approved notice of version %d of %s: %v", version, key, err)
+		}
+		return finished.RowsAffected() == 1
+	})
+}
+
 // openRun builds one run of k3 and opens R's step as k1 does: R runs as a root of its own; P,
 // approved by the person at its latest version, is set as R's parent; R's one check serves P2; R's
 // architect registers R's primary document on P's approved version, and the step opens on the
@@ -405,8 +429,9 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 	run.grant = r.admit(run.root.Key)
 	if opt.approvedV2 {
 		// R's own gate records the person's approval of v2 as any root's does: its architect
-		// registers v2, the person approves it and the tree starts, and two later versions close
-		// the step again, its row keeping that approval as one of an older version.
+		// registers v2, the person approves it, its architect hears that approval (hear) and the
+		// tree starts, and two later versions close the step again, its row keeping that approval
+		// as one of an older version.
 		second := r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The first revision names the inputs."))
 		if status, refusal := r.gateCall(plainCall(run.grant(), run.root, second)); status != http.StatusOK {
 			t.Fatalf("%s's registration of version %d with no basis = %d %+v, want 200", run.root.Key, second, status, refusal)
@@ -418,6 +443,7 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 		settled(t, r.d, "open the spec step of "+run.root.Key+" on the person's approval of version "+fmt.Sprint(second), func(s api.State) bool {
 			return stepOf(s, run.root.Key).Status == api.GatedStepApproved && s.Issues[run.root.Key].Phase == phase.Planning
 		})
+		r.hear(run.root.Key, second)
 		run.ownApproval = &approved
 		r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The second revision names the outputs."))
 		run.rootVersion = r.editDocument(run.root.PrimaryArtifactID, insertParagraph("The third revision names the limits."))

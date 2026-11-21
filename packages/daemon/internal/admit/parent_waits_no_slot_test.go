@@ -25,16 +25,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// pnForwardMerge is the words of the request the old return made of the first implementing round
-// after a wait on the children: merge the default branch forward, push, and complete. No task of a
-// parent asks for it now (dispatch://INFRA-3320 R12, on the person's answer "Children first").
+// pnForwardMerge is the words of the forward-merge request no task of a parent carries: merge the
+// default branch forward, push, and complete. The return asks for no forward merge
+// (dispatch://INFRA-3320 R12).
 const pnForwardMerge = "merge the default branch main into the branch, push, and complete with a new handoff record"
 
 // pnBaseMerge is the sentence the testing task of a parent carries once, and the testing task of
 // an issue with no Dispatch child carries not at all: the tester's rule for every round of a
-// parent, which INFRA-3320's architect pinned on INFRA-4728 (its plan, "Decisions": a parent is an
-// issue with a Dispatch child of any status in the daemon's copy, record.Store.DispatchChildren).
-// workflow's task and ResumePhaseTask end a testing task of a parent with it.
+// parent (dispatch://INFRA-3320 R12 and R14), where a parent is an issue with a Dispatch child of
+// any status in the daemon's copy. workflow's task and ResumePhaseTask end a testing task of a
+// parent with it.
 const pnBaseMerge = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
 // pnMergedChildren is the words with which the task a return starts names the children that
@@ -62,8 +62,8 @@ func pnChildMerged(t *testing.T, pool *pgxpool.Pool, child, parent string, numbe
 	spMirror(t, pool, child, "done", parent, 2)
 }
 
-// pnAsksNoForwardMerge fails unless task asks for no forward merge and carries no line of the old
-// return's full round.
+// pnAsksNoForwardMerge fails unless task carries neither the forward-merge request (pnForwardMerge)
+// nor the line that asks for a full test round after one (spMergeLine).
 func pnAsksNoForwardMerge(t *testing.T, what, task string) {
 	t.Helper()
 	if strings.Contains(task, pnForwardMerge) || strings.Contains(task, spMergeLine) {
@@ -373,9 +373,14 @@ func pnReturnsWhereItTakes(t *testing.T, held pnHeldStart, merged bool) {
 	named := pnMergedChildren(spParent, pnMerged(spChild, 51))
 	switch {
 	case merged:
-		if !strings.HasPrefix(work, strings.TrimSuffix(wait.Task, " "+pnBaseMerge)) {
-			t.Fatalf("the %s's task = %q, want the held task %q", role, work, wait.Task)
+		want := 0
+		if to == phase.Testing {
+			want = 1
 		}
+		if !strings.HasPrefix(work, wait.Task) || !strings.Contains(work, named) {
+			t.Fatalf("the %s's task = %q, want the held task %q followed by %q", role, work, wait.Task, named)
+		}
+		pnBaseMergeTimes(t, "the "+string(role)+"'s task", work, want)
 	case to == held.start:
 		if !strings.HasPrefix(work, wait.Task) || !strings.Contains(work, named) {
 			t.Fatalf("the %s's task = %q, want the held task %q followed by %q", role, work, wait.Task, named)
@@ -435,18 +440,17 @@ type pnTestingPath struct {
 	move    func(*testing.T, *pgxpool.Pool, *Admission)
 }
 
-// pnTestingPaths is every path that writes a testing task, 12 in all (the plan of INFRA-4728,
-// t13). Seven reach workflow's task: the transition after the implementer's completion; the
-// architect's request_backward_move from accepting to testing, which stands for every move back
-// into testing, since each reaches the same task call of the transition; the architect's retry of
-// a held testing; the operator's restart of the tester; a todo on a root held from testing; and
-// the return of a held testing, with its pull request open and with it merged during the wait,
-// whose task heldTask wrote before the wait. Five send ResumePhaseTask's to a tester in testing:
-// the catch-up of a ready claim (readyWorkerTask), the silence repair, the boot's resume, the
-// promotion of a root a hand-over of the release before carried in (StartCarriedRun,
-// StartPromotedWorker) and the admission pass's send of an entry whose row names no task
-// (entryWork's fallback). Each is driven here through the fact or the pass the daemon drives it
-// with: the engine handles the ready, the silence and the boot as facts.
+// pnTestingPaths is every path that writes a testing task, 12 in all. Seven reach workflow's task:
+// the transition after the implementer's completion; the architect's request_backward_move from
+// accepting to testing, which stands for every move back into testing, since each reaches the same
+// task call of the transition; the architect's retry of a held testing; the operator's restart of
+// the tester; a todo on a root held from testing; and the return of a held testing, with its pull
+// request open and with it merged during the wait, whose task heldTask wrote before the wait. Five
+// send ResumePhaseTask's to a tester in testing: the catch-up of a ready claim (readyWorkerTask),
+// the silence repair, the boot's resume, the promotion of a root a hand-over of the release before
+// carried in (StartCarriedRun, StartPromotedWorker) and the admission pass's send of an entry whose
+// row names no task (sendOwedEntry's resume task). Each is driven here through the fact or the pass
+// the daemon drives it with: the engine handles the ready, the silence and the boot as facts.
 func pnTestingPaths() []pnTestingPath {
 	slotted := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 		spSeedParent(t, pool, spParent, at, record.PhaseKeepsSlot(at), nil)
@@ -591,11 +595,11 @@ func pnAsksTheBaseMergeRun(t *testing.T, path pnTestingPath, kind pnParentKind) 
 // its issue's run, and comes back with nobody acting where R12 takes it: a held planning or
 // implementing to that start, a held testing, reviewing or accepting to testing, every held start
 // to itself where its pull request merged during the wait, with no forward merge asked and the
-// children that merged named (dispatch://INFRA-3320 R11, R12 on the person's answer "Children
-// first", R13, and its check dispatch://INFRA-3320/artifact/verification-md#b-k13, of which this
-// package proves the wait, the returns, the tester's rule for every round of a parent, the
-// blocked_by order, the grandparent, the hand-over, the held list and the stalled measure). Every
-// case runs through the workflow engine and the admission pass as the daemon runs them.
+// children that merged named (dispatch://INFRA-3320 R11, R12, R13, and its check
+// dispatch://INFRA-3320/artifact/verification-md#b-k13, of which this package proves the wait, the
+// returns, the tester's rule for every round of a parent, the blocked_by order, the grandparent,
+// the hand-over, the held list and the stalled measure). Every case runs through the workflow
+// engine and the admission pass as the daemon runs them.
 func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// The first case is the check's own run of the wait. Its first read is what the negative
 	// control fails at: with no child open, the implementer's completion moves the parent to
@@ -902,6 +906,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Done, Generation: 1,
 			Status: "backlog", DispatchStatus: "backlog", Rank: parked, HandedOver: true, LastDispatchSeq: 2})
+		// The parked child had opened a pull request, which did not merge.
+		seedPullRequest(t, pool, parked, 53, record.PullRequestOpen)
 		spMirror(t, pool, parked, "backlog", spParent, 2)
 		pnChildMerged(t, pool, late, spParent, 54)
 		// Before the pass that takes it back, the wait holds all four children.
@@ -922,15 +928,11 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("starts of %s = %+v, want the tester's", spParent, starts)
 		}
 		work := starts[0].task
-		for _, want := range []string{"Phase: testing.", "start of testing", wait.Reason, pnMergedChildren(spParent, pnMerged(spChild, 51), pnMerged(late, 54)),
+		for _, want := range []string{"Phase: testing.", "start of testing", wait.Reason,
+			pnMergedChildren(spParent, pnMerged(spChild, 51), pnMerged(late, 54)) + ".",
 			"Handoff: implement version 2 (dispatch handoff-read --issue LEGION-300 --phase implement --version 2)."} {
 			if !strings.Contains(work, want) {
 				t.Fatalf("the tester's task = %q, want it to say %q", work, want)
-			}
-		}
-		for _, unmerged := range []string{iceboxed, parked} {
-			if strings.Contains(work, unmerged+" (pull request") {
-				t.Fatalf("the tester's task = %q, want it to name %s as no child that merged", work, unmerged)
 			}
 		}
 		pnAsksNoForwardMerge(t, "the tester's task", work)
@@ -984,43 +986,6 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 	})
 
-	for _, held := range []struct {
-		name  string
-		from  phase.Phase
-		seed  func(*testing.T, *pgxpool.Pool)
-		src   string
-		fact  intake.Fact
-		start phase.Phase
-		cause string
-	}{
-		{name: "a held reviewing comes back at testing, naming the held start", from: phase.Testing, src: "api",
-			fact: tested("pass", "every check passed"), start: phase.Reviewing, cause: "the tester completed testing"},
-		{name: "a held accepting comes back at testing, naming the held start", from: phase.Reviewing,
-			seed: func(t *testing.T, pool *pgxpool.Pool) { pwReviewed(t, pool) }, src: "github",
-			fact: pwReview("APPROVED", "the change is right"), start: phase.Accepting, cause: "a review approved the head"},
-	} {
-		t.Run(held.name, func(t *testing.T) {
-			pool, admission, wait := pnMovedParent(t, held.from, held.seed, held.src, held.fact, held.start, held.cause)
-
-			back := pnChildDone(t, pool, admission)
-
-			if back.Phase != phase.Testing || back.ChildrenWait != nil {
-				t.Fatalf("the parent = phase %s, held start %+v; want testing in place of %s", back.Phase, back.ChildrenWait, held.start)
-			}
-			starts := pwWorkerStarts(t, pool, spParent)
-			if len(starts) != 1 || starts[0].role != claim.RoleTester {
-				t.Fatalf("starts of %s = %+v, want the tester's", spParent, starts)
-			}
-			for _, want := range []string{"Phase: testing.", "start of " + string(held.start), wait.Reason, merged} {
-				if !strings.Contains(starts[0].task, want) {
-					t.Fatalf("the tester's task = %q, want it to say %q", starts[0].task, want)
-				}
-			}
-			pnAsksNoForwardMerge(t, "the tester's task", starts[0].task)
-			pnBaseMergeTimes(t, "the tester's task", starts[0].task, 1)
-		})
-	}
-
 	t.Run("a held planning after the architect's backward move comes back at planning, and its implementing round asks for no forward merge", func(t *testing.T) {
 		const reason = "the plan missed the empty list"
 		pool, admission, wait := pnMovedParent(t, phase.Accepting, nil, "api",
@@ -1047,25 +1012,6 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("the parent after its planner's completion = phase %s, want implementing", got.Phase)
 		}
 		pnAsksNoForwardMerge(t, "the first implementing task after the wait", pnWorkerStart(t, pool, spParent, claim.RoleImplementer).Task)
-	})
-
-	t.Run("a parent whose pull request merged during the wait comes back at the start it held, with no forward merge", func(t *testing.T) {
-		pool, admission, wait := pnMovedParent(t, phase.Implementing, nil, "api", implemented, phase.Testing, "the implementer completed implementing")
-		pwApplied(t, pool, admission, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42"})
-		if got := issue(t, pool, spParent); got.Phase != phase.AwaitingChildren {
-			t.Fatalf("the parent after the merge = %s, want awaiting_children still", got.Phase)
-		}
-
-		back := pnChildDone(t, pool, admission)
-
-		if back.Phase != phase.Testing || back.ChildrenWait != nil {
-			t.Fatalf("the parent = phase %s, held start %+v; want testing as it was held", back.Phase, back.ChildrenWait)
-		}
-		starts := pwWorkerStarts(t, pool, spParent)
-		if len(starts) != 1 || starts[0].role != claim.RoleTester || !strings.HasPrefix(starts[0].task, strings.TrimSuffix(wait.Task, " "+pnBaseMerge)) {
-			t.Fatalf("starts of %s = %+v, want the tester's on the held task %q", spParent, starts, wait.Task)
-		}
-		pnAsksNoForwardMerge(t, "the tester's task", starts[0].task)
 	})
 
 	// k13's parent that comes back at implementing on a pull request that does not conflict: the

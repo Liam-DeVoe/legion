@@ -13,7 +13,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -369,11 +369,11 @@
       },
       {
         "value": "open_on_basis",
-        "since": 203
+        "since": 207
       },
       {
         "value": "pending_on_basis",
-        "since": 203
+        "since": 207
       },
       {
         "value": "unregistered",
@@ -649,6 +649,32 @@
   },
   {
     "answer": "state",
+    "keyPath": "repositories.live.*.cache.state",
+    "values": [
+      {
+        "value": "cloning",
+        "since": 202
+      },
+      {
+        "value": "failing",
+        "since": 202
+      },
+      {
+        "value": "ready",
+        "since": 202
+      },
+      {
+        "value": "refused",
+        "since": 202
+      },
+      {
+        "value": "starting",
+        "since": 202
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "repositories.caches.*.state",
     "values": [
       {
@@ -687,7 +713,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -881,7 +907,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -939,7 +965,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -1081,7 +1107,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "children_first",
@@ -1131,7 +1157,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -1487,11 +1513,11 @@
       },
       {
         "value": "open_on_basis",
-        "since": 203
+        "since": 207
       },
       {
         "value": "pending_on_basis",
-        "since": 203
+        "since": 207
       },
       {
         "value": "unregistered",
@@ -1591,7 +1617,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -1785,7 +1811,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",
@@ -1843,7 +1869,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 203
+        "since": 207
       },
       {
         "value": "awaiting_person",

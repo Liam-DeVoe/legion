@@ -28,9 +28,9 @@ const (
 	spFiller = "LEGION-390"
 )
 
-// spMergeLine is the line the first implementing round after a wait once asked the implementer to
-// end its forward-merge comment with: no task of a parent asks for a forward merge on the return,
-// so no task carries it (dispatch://INFRA-3320 R12, on the person's answer "Children first").
+// spMergeLine is the line that asks the implementer to end its forward-merge comment with the full
+// test round it owes, which no task of a parent carries: the return asks for no forward merge
+// (dispatch://INFRA-3320 R12).
 const spMergeLine = "`children merged: full test round`"
 
 // spPass runs one admission pass over the stored state in a transaction of its own, which settles
@@ -395,15 +395,14 @@ func TestASecondPassOverAMovedParentSendsNothingAgain(t *testing.T) {
 }
 
 // When no open child is left the pass takes the parent back with nobody acting
-// (dispatch://INFRA-3320 R12, on the person's answer "Children first"): a held planning or
-// implementing starts that phase with the task it held, and a held testing, reviewing or accepting
-// starts testing with a task that names the held start and its reason and, since the parent has a
-// Dispatch child, asks for the round on the head merged with its base's tip once (pnBaseMerge). No
-// task asks for a forward merge. The start raises a new phase entry, marked a move back's, clears
-// the starting role's handoff, counts no pass and no round, and reads no design gate (none is
-// registered here). The parent holds no slot, so with the cap full its start waits in the line
-// among the issues whose work came back. No child here merged during the wait (the child is done
-// in Dispatch, with no record of the daemon's and no pull request), so no task names one.
+// (dispatch://INFRA-3320 R12): a held planning or implementing starts that phase with the task it
+// held, and a held testing, reviewing or accepting starts testing with a task that names the held
+// start and its reason and, since the parent has a Dispatch child, asks for the round on the head
+// merged with its base's tip once (pnBaseMerge). No task asks for a forward merge. The start
+// raises a new phase entry, marked a move back's, clears the starting role's handoff, counts no
+// pass and no round, and reads no design gate (none is registered here). The parent holds no
+// slot, so with the cap full its start waits in the line among the issues whose work came back.
+// The seeded wait records no children (record.ChildrenWait.Children), so no task names one.
 func TestTheReturnStartsTheHeldPhaseOrTesting(t *testing.T) {
 	const reason = "the tester completed testing, while these Dispatch children of LEGION-300 were open: LEGION-301 (todo)"
 	for _, tc := range []struct {
@@ -440,9 +439,7 @@ func TestTheReturnStartsTheHeldPhaseOrTesting(t *testing.T) {
 				t.Fatalf("starts of %s = %+v, want one %s start waiting for a slot", spParent, starts, role)
 			}
 			work := starts[0].task
-			if strings.Contains(work, pnForwardMerge) || strings.Contains(work, spMergeLine) {
-				t.Fatalf("the %s's task = %q, want it to ask for no forward merge", role, work)
-			}
+			pnAsksNoForwardMerge(t, "the "+string(role)+"'s task", work)
 			if tc.to != phase.Testing && work != heldTask {
 				t.Fatalf("the %s's task = %q, want the held task %q", role, work, heldTask)
 			}
@@ -452,9 +449,7 @@ func TestTheReturnStartsTheHeldPhaseOrTesting(t *testing.T) {
 						t.Fatalf("the tester's task = %q, want it to name %q", work, want)
 					}
 				}
-				if n := strings.Count(work, pnBaseMerge); n != 1 {
-					t.Fatalf("the tester's task = %q, which asks for the base-merge run %d times; want once: %q", work, n, pnBaseMerge)
-				}
+				pnBaseMergeTimes(t, "the tester's task", work, 1)
 			}
 			row := spPhaseRow(t, pool, spParent, role)
 			if row.Entry != 3 || row.EntryTask != work || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren ||
@@ -474,8 +469,7 @@ func TestTheReturnStartsTheHeldPhaseOrTesting(t *testing.T) {
 
 // A parent whose pull request merged during the wait goes back to the very start it held, with
 // the task it held and no forward merge. A held testing goes back as testing, its tester started
-// on the held task, which as the testing task of a parent asks for the base-merge run at most once
-// (the inventory of TestParentWaitsHoldsNoSlotAndComesBack reads it once on a task heldTask wrote),
+// on the held task, which as the testing task of a parent ends with the base-merge sentence once,
 // and its architect is told nothing of the return. A held accepting goes back as accepting, where
 // no worker starts, so its architect is told once, under the wait's own notice kind, that the issue
 // waits on its sign_off; the notice that moved the issue into accepting was replaced by the wait's.
@@ -495,9 +489,9 @@ func TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld(t *testing.T) {
 			t.Fatalf("the parent = phase %s, held start %+v, status %s; want testing as it was held", got.Phase, got.ChildrenWait, got.Status)
 		}
 		starts := startsOf(t, pool, spParent)
-		if len(starts) != 1 || starts[0].role != claim.RoleTester || !strings.HasPrefix(starts[0].task, heldTask) ||
-			strings.Contains(starts[0].task, pnForwardMerge) || strings.Contains(starts[0].task, spMergeLine) || strings.Count(starts[0].task, pnBaseMerge) > 1 {
-			t.Fatalf("starts of %s = %+v, want one tester start carrying the held task and no forward merge", spParent, starts)
+		if len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].task != heldTask+" "+pnBaseMerge {
+			t.Fatalf("starts of %s = %+v, want one tester start on the held task ending with the base-merge sentence once: %q", spParent,
+				starts, heldTask+" "+pnBaseMerge)
 		}
 		if told := spNotices(t, pool, spParent); len(told) != 0 {
 			t.Fatalf("awaiting-children notices = %+v, want none: the tester's start is what the return gives", told)

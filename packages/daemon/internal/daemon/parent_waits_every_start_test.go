@@ -26,27 +26,18 @@ const droppedForwardBody = "LEGION-208: the issue moved into awaiting_children, 
 	" The daemon gives the issue its next task once its children are finished."
 
 // endedDroppingTheForward is the phase-ended message the admission pass queues when it stops the
-// tester of LEGION-208 in the middle of testing and drops droppedForward, and
-// endedDroppingTheForwardText what it publishes: the form for a worker other than the
-// implementer, which writes and pushes nothing more. internal/record's
-// TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords reads the same form word for
-// word.
-var (
-	endedDroppingTheForward = record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
-		Reason: endedByTheWait.Reason, MergeForward: &droppedForward}
-	endedDroppingTheForwardText = "LEGION-208: the daemon ended your testing phase, and the issue is in awaiting_children now: it waits on its open Dispatch children, and no task of yours follows." +
-		" A completion of testing is refused (HANDOFF_NOT_CURRENT_PHASE)." +
-		" Write and push nothing more, because the implementer may be merging in the workspace you share: put what you found on the Dispatch issue, and do no more work on testing." +
-		" The daemon gives the issue its next task once its children are finished." +
-		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
-		" Reason: " + endedByTheWait.Reason + "."
-)
+// tester of LEGION-208 in the middle of testing and drops droppedForward: the form for a worker
+// other than the implementer, which writes and pushes nothing more. internal/record's
+// TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords reads that form word for word,
+// so the text published here is the one its Message gives.
+var endedDroppingTheForward = record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
+	Reason: endedByTheWait.Reason, MergeForward: &droppedForward}
 
 // The daemon's side of a parent's move into awaiting_children that drops a merge forward before
 // it landed (dispatch://INFRA-3320 R10, and its check
 // dispatch://INFRA-3320/artifact/verification-md#b-k12, whose command runs this test beside
 // internal/admit's of the same name): the outbox executor delivers the rows that move writes.
-// The implementer's role message is a role message as main delivers every one
+// The implementer's role message is a role message as the outbox delivers every one
 // (outbox.roleMessage): to a released implementer it ends with no publish and no wake, as
 // TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake reads of any role message, and to a claim
 // not released it is published to the implementer's role topic with its body whole. The
@@ -104,6 +95,6 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	})
 
 	t.Run("the phase-ended message naming the dropped merge forward wakes the released tester and tells it to write and push nothing more", func(t *testing.T) {
-		keptAcrossTheWake(t, endedDroppingTheForward, claim.RoleTester, endedDroppingTheForwardText)
+		keptAcrossTheWake(t, endedDroppingTheForward, claim.RoleTester, endedDroppingTheForward.Message("LEGION-208"))
 	})
 }

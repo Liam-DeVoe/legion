@@ -495,21 +495,22 @@ func valueStripCases() map[string]valueStripCase {
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
 		},
-		// The three strips of gateBasisContract's values read a mixed pod recording 178 and 203,
-		// and no pod reading counts the 203 claim: podContracts leaves out a claim at
-		// shapedAnswersContract or above, since every build from there states its contract in the
-		// header. So the pod is served as its 178 process alone, on both sides, and these cases hold
-		// each strip to the body that process reads; a strip keyed to the pod's highest contract is
-		// held by the stated callers of awaiting_children_narrow_test.go and gate_basis_wire_test.go
-		// instead, and the strip's own half by the value no row declares below. Each value arrived
-		// after its field, whose arrival is no contract a pod reading can place above, so no case
-		// names a value that arrived with the field.
+		// The three strips of gateBasisContract's values read a mixed pod recording 178 and
+		// gateBasisContract, and no pod reading counts the gateBasisContract claim: podContracts
+		// leaves out a claim at shapedAnswersContract or above, since every build from there states
+		// its contract in the header. So the pod is served as its 178 process alone, on both sides,
+		// and these cases hold each strip to the body that process reads; a strip keyed to the pod's
+		// highest contract is held by the stated callers of awaiting_children_narrow_test.go and
+		// gate_basis_wire_test.go instead, and the strip's own half by the value no row declares
+		// below. Each value arrived after its field, whose arrival is no contract a pod reading can
+		// place above, so no case names a value that arrived with the field.
 		//
 		// A gated step on an ancestor's basis reads `open_on_basis` or `pending_on_basis`, which a
-		// reader from 55 up to 202 refuses the whole body for, so the pod is served neither issue's
-		// `gatedSteps`, and every other issue keeps its gated steps as the body at 203 serves them.
-		// The band of the same contract takes those lists for the same caller first (shapeIssue runs
-		// the bands before the strips), so the strip finds nothing left to take on this pod.
+		// reader from 55 up to the contract below gateBasisContract refuses the whole body for, so
+		// the pod is served neither issue's `gatedSteps`, and every other issue keeps its gated steps
+		// as the body at gateBasisContract serves them. The band of the same contract takes those
+		// lists for the same caller first (shapeIssue runs the bands before the strips), so the strip
+		// finds nothing left to take on this pod.
 		droppedStepStatus: {
 			state: populatedState, low: pauseContract, high: gateBasisContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -539,9 +540,9 @@ func valueStripCases() map[string]valueStripCase {
 			}},
 		},
 		// An issue in `awaiting_children`, and the word at `heldFrom` and at a held task's `phase`,
-		// which no reader below 203 admits: the pod is served the issue's `phase` as `admitted` and
-		// neither other key where it names the word, and every other phase word as the body at 203
-		// serves it.
+		// which no reader below gateBasisContract admits: the pod is served the issue's `phase` as
+		// `admitted` and neither other key where it names the word, and every other phase word as
+		// the body at gateBasisContract serves it.
 		droppedPhase: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: gateBasisContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -574,8 +575,9 @@ func valueStripCases() map[string]valueStripCase {
 			undeclaredIssue: Issue{Key: "LEGION-215", Phase: phase.Phase(undeclaredValue), HeldFrom: undeclaredValue,
 				Architect: &ClaimView{Session: "ses_architect_215", PendingTask: &PendingTaskView{Phase: phase.Phase(undeclaredValue), QueuedAt: answeredAt}}},
 		},
-		// A held row of `awaiting_children`, which a reader from 98 up to 202 refuses the whole
-		// body for: the pod is served it as `children_first`, and every other row as it is.
+		// A held row of `awaiting_children`, which a reader from 98 up to the contract below
+		// gateBasisContract refuses the whole body for: the pod is served it as `children_first`,
+		// and every other row as it is.
 		droppedHeldReason: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: gateBasisContract,
 			carries: func(t *testing.T, body []byte) bool {

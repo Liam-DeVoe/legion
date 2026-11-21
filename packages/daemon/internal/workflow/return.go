@@ -227,10 +227,7 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 // a parent does; parent says whether issue is a parent, as ResumePhaseTask's does.
 func returnToWorkTask(issue record.Issue, parent bool) string {
 	text := continueLine(issue) + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key)
-	if issue.Phase == phase.Testing {
-		return withBaseMergeRun(text, parent)
-	}
-	return text
+	return withBaseMergeRun(text, issue.Phase, parent)
 }
 
 // queuedRoot says whether issue holds its own gate and has still to make its first start

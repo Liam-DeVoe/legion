@@ -48,7 +48,6 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"WorkerBackgroundStalled": WorkerBackgroundStalled{Issue: issue},
 	}
 	namesNone := map[string]Fact{
-		"RepoMappingChanged":       RepoMappingChanged{},
 		"DispatchConsumerPosition": DispatchConsumerPosition{},
 		"ControllerTick":           ControllerTick{},
 		"EntrySweep":               EntrySweep{},

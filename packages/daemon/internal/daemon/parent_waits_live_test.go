@@ -49,7 +49,6 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -402,8 +401,7 @@ func (r *parentWaitsLive) endedPhaseRefused() {
 // child under the root, which goes back to the start it held, implementing, takes a slot and is
 // out of admission.blocked; its implementer, idle on its own connection, is started with the task
 // it held, which now names the child that merged during the wait with its pull request, and which
-// asks for no merge of the default branch (dispatch://INFRA-3320 R12, on the person's answer
-// "Children first").
+// asks for no merge of the default branch (dispatch://INFRA-3320 R12).
 func (r *parentWaitsLive) rootComesBack() {
 	t := r.t
 	childPullRequest := func(want record.PullRequestState) func(api.State) bool {
@@ -440,27 +438,16 @@ func (r *parentWaitsLive) rootComesBack() {
 }
 
 // publishChildPullRequest publishes GitHub's event of action on the child's pull request, from its
-// issue branch into the default branch, as Envoy relays a GitHub pull-request event (intake's
-// decodePullRequest reads it): "opened" records the pull request for the child, and "closed" with
-// merged set is its merge.
+// issue branch into the default branch (publishPullRequest): "opened" records the pull request for
+// the child, and "closed", carrying the merge commit, is its merge.
 func (r *parentWaitsLive) publishChildPullRequest(action string) {
 	r.t.Helper()
-	number := strconv.Itoa(r.childPR)
-	fields := map[string]string{
-		"action": action, "kind": "pr", "repo": liveRepo, "number": number, "head_sha": parentWaitsChildHead,
-		"base_ref": parentWaitsBase, "head_ref": "legion/" + r.child, "title": r.child,
-		"url":        "https://github.com/" + liveRepo + "/pull/" + number,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	}
+	event := livePullRequestEvent{action: action, number: r.childPR, issue: r.child, head: parentWaitsChildHead,
+		base: parentWaitsBase, title: r.child, updated: time.Now().UTC()}
 	if action == "closed" {
-		fields["merged"], fields["merge_commit_sha"] = "true", parentWaitsChildMerge
+		event.merge = parentWaitsChildMerge
 	}
-	payload, err := json.Marshal(fields)
-	if err != nil {
-		r.t.Fatalf("encode the %s payload of %s's pull request: %v", action, r.child, err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.childPR)
-	r.publish(subject, "github", fmt.Sprintf("pr-%d-%s", r.childPR, action), string(payload))
-	r.note("drove GitHub's %s envelope of %s's pull request #%d, legion/%s into %s at %s", action, r.child, r.childPR, r.child,
-		parentWaitsBase, parentWaitsChildHead)
+	r.publishPullRequest(event, fmt.Sprintf("pr-%d-%s", r.childPR, action))
+	r.note("drove GitHub's %s envelope of %s's pull request #%d, %s into %s at %s", action, r.child, r.childPR,
+		claim.IssueBranch(r.child), parentWaitsBase, parentWaitsChildHead)
 }

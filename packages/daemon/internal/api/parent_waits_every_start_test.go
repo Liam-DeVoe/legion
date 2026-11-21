@@ -35,19 +35,18 @@ func inEngineFact(t *testing.T, h *harness, engine *workflow.Engine, fn func(ctx
 }
 
 // The completion route's side of a parent's wait on its children (dispatch://INFRA-3320 R10 and
-// R12, on the person's answer "Children first", and the checks
-// dispatch://INFRA-3320/artifact/verification-md#b-k12 and #b-k13, whose commands run this test
-// beside internal/admit's and internal/daemon's of the same name). A parent's tester is in the
-// middle of testing when an admission pass finds a child open under it and stops the tester into
-// awaiting_children, holding testing; the tester's claim still serves the stopped entry, since the
-// retirement of its task leaves that (supervise's RetireStoppedTask). Once no child is open the
-// return takes the held testing back as testing, on an entry of its own raised as a move back out
-// of awaiting_children (record.PhaseRow.EntryMovedBack). The engine reads a tester's completion as
-// one of the phase the issue stands in, and the completion carries no entry, so what refuses the
-// stopped round's completion is the route's entry fence (entryFence, behindEntryClause): it is
-// behind an entry a move back raised, and is refused HANDOFF_STALE_ENTRY at the very head the
-// record holds, before any fact is applied, recording nothing. The completion of the return's own
-// task is taken.
+// R12, and the checks dispatch://INFRA-3320/artifact/verification-md#b-k12 and #b-k13, whose
+// commands run this test beside internal/admit's and internal/daemon's of the same name). A
+// parent's tester is in the middle of testing when an admission pass finds a child open under it
+// and stops the tester into awaiting_children, holding testing; the tester's claim still serves
+// the stopped entry, since the retirement of its task leaves that (supervise's RetireStoppedTask).
+// Once no child is open the return takes the held testing back as testing, on an entry of its own
+// raised as a move back out of awaiting_children (record.PhaseRow.EntryMovedBack). The engine
+// reads a tester's completion as one of the phase the issue stands in, and the completion carries
+// no entry, so what refuses the stopped round's completion is the route's entry fence (entryFence,
+// behindEntryClause): it is behind an entry a move back raised, and is refused
+// HANDOFF_STALE_ENTRY at the very head the record holds, before any fact is applied, recording
+// nothing. The completion of the return's own task is taken.
 func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	t.Run("the stopped tester's completion from before the wait is refused after the return at the same head, and the return's task's completion is taken", func(t *testing.T) {
 		const parent, child = "LEGION-208", "LEGION-301"
