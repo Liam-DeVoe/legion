@@ -708,6 +708,120 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.True(t, present("SCRATCH_HB_UNSUBSCRIBED"), "SCRATCH_HB_UNSUBSCRIBED, whose delete no client subscribes")
 }
 
+// The consumer calls the edge keeps answer two requests with no body on whatever reply subject the
+// requester names, each needing no subscriber: a no_wait pull on a consumer with nothing to deliver
+// (CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.*) is answered a "404 No Messages" status, and a
+// synchronous ack ($JS.ACK.ENVOY_NOTIFICATIONS.*.>) an empty reply. So either aimed at
+// $JS.API.STREAM.DELETE.<s> deletes stream <s>. This row pins both routes on the hub's image
+// (nats-server 2.15.1), each with its controls: the edge's own direct stream delete is refused and
+// its stream stays; and the same pull and the same ack answered on the edge's own inbox reach it
+// with the empty body the API-aimed ones carry, and leave their streams. It is expected to flip -
+// the delete refused - once the hub runs nats-server 2.15.3, which refuses a reply into $JS.API.
+func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
+	edgeSeed, edgeKey := testnats.User(t)
+	sharedSeed, sharedKey := testnats.User(t)
+	adminSeed, adminKey := testnats.User(t)
+	edge, shared := edge(t, "m", "PRIV"), natsgrant.Listener("shared")
+	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
+		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
+		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
+	), []string{"-js"}, false)
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(func(name string) (string, bool) {
+		if name == bus.NkeySeedEnvVar {
+			return sharedSeed, true
+		}
+		return "", false
+	}))
+	require.NoError(t, err, "the shared listener's user creates the stream")
+	t.Cleanup(owner.Close)
+	adminConn, _ := grantedConnection(t, uri, adminSeed)
+	admin, err := adminConn.JetStream()
+	require.NoError(t, err)
+	for _, name := range []string{"SCRATCH_PULL", "SCRATCH_ACK", "SCRATCH_CONTROL"} {
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		require.NoError(t, err)
+	}
+	present := func(name string) bool {
+		_, err := admin.StreamInfo(name)
+		require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
+		return err == nil
+	}
+	goneWithin := func(name string) bool {
+		gone := !present(name)
+		for deadline := time.Now().Add(10 * time.Second); !gone && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			gone = !present(name)
+		}
+		return gone
+	}
+
+	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
+	edgeJS, err := edgeConn.JetStream()
+	require.NoError(t, err)
+	inbox := natsgrant.EdgeInboxPrefix("m") + ".probe"
+	replies, err := edgeConn.SubscribeSync(inbox)
+	require.NoError(t, err)
+	require.NoError(t, edgeConn.Flush())
+
+	// Control: the edge's own direct stream delete is refused, and SCRATCH_CONTROL stays.
+	_, err = edgeConn.Request("$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil, 2*time.Second)
+	require.Error(t, err, "the edge's direct request of a stream delete was answered")
+	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`)
+	require.True(t, present("SCRATCH_CONTROL"), "the edge's direct delete removed SCRATCH_CONTROL")
+
+	// The pull route: a consumer on a subject that holds no message.
+	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_pull", FilterSubject: "notifications.agent.ses_edge_pull_empty", AckPolicy: natsgo.AckExplicitPolicy})
+	require.NoError(t, err, "the edge creates the pull consumer")
+	pull, err := json.Marshal(map[string]any{"batch": 1, "no_wait": true})
+	require.NoError(t, err)
+	const pullNext = "$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.ses_probe_pull"
+	// Control: the no_wait pull answered on the edge's own inbox reaches it as a 404 status with an
+	// empty body, and leaves SCRATCH_PULL.
+	require.NoError(t, edgeConn.PublishRequest(pullNext, inbox, pull))
+	require.NoError(t, edgeConn.Flush())
+	status, err := replies.NextMsg(10 * time.Second)
+	require.NoError(t, err, "the no_wait pull's status reached no subscriber of the edge's inbox within 10s")
+	require.Equal(t, "404", status.Header.Get("Status"), "the no_wait pull's status")
+	require.Empty(t, status.Data, "the no_wait pull's status body")
+	require.True(t, present("SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
+	// Probe: the same no_wait pull answered on a stream delete deletes that stream, with no subscriber.
+	require.NoError(t, edgeConn.PublishRequest(pullNext, "$JS.API.STREAM.DELETE.SCRATCH_PULL", pull))
+	require.NoError(t, edgeConn.Flush())
+	require.True(t, goneWithin("SCRATCH_PULL"), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
+
+	// The ack route: two stored messages, pulled to the edge's inbox for their ack subjects.
+	for range 2 {
+		_, err := edgeJS.Publish("notifications.agent.ses_edge_ack", []byte("x"))
+		require.NoError(t, err, "the edge stores a message on its own agent subject")
+	}
+	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_ack", FilterSubject: "notifications.agent.ses_edge_ack", AckPolicy: natsgo.AckExplicitPolicy})
+	require.NoError(t, err, "the edge creates the ack consumer")
+	batch, err := json.Marshal(map[string]any{"batch": 2, "no_wait": true})
+	require.NoError(t, err)
+	require.NoError(t, edgeConn.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.ses_probe_ack", inbox, batch))
+	require.NoError(t, edgeConn.Flush())
+	var ackSubjects []string
+	for len(ackSubjects) < 2 {
+		msg, err := replies.NextMsg(10 * time.Second)
+		require.NoError(t, err, "the edge pulled fewer than two of its own messages within 10s")
+		if msg.Reply != "" && len(msg.Data) > 0 {
+			ackSubjects = append(ackSubjects, msg.Reply)
+		}
+	}
+	// Control: a synchronous ack answered on the edge's own inbox reaches it with an empty body, and
+	// leaves SCRATCH_ACK.
+	require.NoError(t, edgeConn.PublishRequest(ackSubjects[0], inbox, []byte("+ACK")))
+	require.NoError(t, edgeConn.Flush())
+	confirm, err := replies.NextMsg(10 * time.Second)
+	require.NoError(t, err, "the synchronous ack's reply reached no subscriber of the edge's inbox within 10s")
+	require.Empty(t, confirm.Data, "the synchronous ack's reply body")
+	require.True(t, present("SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
+	// Probe: the same synchronous ack answered on a stream delete deletes that stream, with no subscriber.
+	require.NoError(t, edgeConn.PublishRequest(ackSubjects[1], "$JS.API.STREAM.DELETE.SCRATCH_ACK", []byte("+ACK")))
+	require.NoError(t, edgeConn.Flush())
+	require.True(t, goneWithin("SCRATCH_ACK"), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
+}
+
 // A publish of a Dispatch event on the edge listener's connection is refused by the server: the
 // event never reaches a subscriber, the connection is told of the violation naming the subject,
 // and the server logs it. The same publish under the listener's grant is accepted and reaches the
