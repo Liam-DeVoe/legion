@@ -426,15 +426,27 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Each head read over REST is named at INFO with the reason, so a head that falls back at every pass says why.
 
 - Each completed run and each completed suite is recorded through the mapping a webhook's own body goes through, whichever read answered it, so a pass over a run the listener already recorded changes no record and publishes no settlement.
-  A query's answer is mapped field by field into that body's shape first: GraphQL's upper-case `status` and `conclusion` lower-cased, its `permalink` as the run's `html_url`, `databaseId` as the id, the suite's `app.databaseId` as the App, the suite's `updatedAt` as its `updated_at`, and the commit's `oid` as the head sha.
+  A query's answer is mapped field by field into that body's shape first: GraphQL's upper-case `status` and `conclusion` lower-cased, its `permalink` as the run's `html_url`, `databaseId` as the id, the suite's `app.databaseId` as the App, the suite's `databaseId` as each run's `check_suite.id`, the suite's `updatedAt` as its `updated_at`, and the commit's `oid` as the head sha.
+  The suite's `workflowRun.event`, which no webhook of a run or a suite and no REST listing carries, is written as `workflow_run.event` on the suite and as `check_suite.workflow_run.event` on each of its runs.
   Only a completed run and a completed suite are recorded:
-  the CI store refuses to settle a head while any check its record holds is queued or running, and nothing takes a check out of a record, so one abandoned queued run would stop that head settling for good.
+  the CI store refuses to settle a head while any check its record holds is queued or running, and a check leaves a record only when its run turns out to be one GitHub does not count for the pull request, so one abandoned queued run would stop that head settling for good.
   A `tester` or `architect` check run counts only from the App `DISPATCH_REVIEWER_APP_ID` names, by the rule the listener's webhook handler calls;
   with that variable unset no verdict check is recorded, and the server says so once at start.
 
+- The CI store counts a head's check runs as GitHub's own rollup of the pull request counts them (`statusCheckRollup`).
+  A check run of GitHub Actions (App 15368) counts only when the event that started its suite's workflow run is one GitHub evaluates for a pull request: `push`, `pull_request`, `pull_request_review`, `pull_request_target`, `deployment` or `deployment_status` (GitHub's "Troubleshooting required status checks", section "Checks from some workflow jobs are not evaluated").
+  A check run of any other App counts.
+  A run that does not count, such as a `workflow_dispatch` run of the pull request's branch, whose jobs carry the pull request run's check names, is not in the head's checks, replaces no check of the head, and its suite and its runs take no part in the settlement.
+  The query asks each suite for `workflowRun { event }`, which costs it no point, and the listener learns the event from each `workflow_run` webhook that lists the pull request; a pass that reads a head's events corrects a record written before the store read them.
+  A GitHub Actions suite whose event the pass could not read is counted, as every suite was before: every suite of a head read over REST, whose listings carry no event, and a suite GitHub answered `workflowRun` null for.
+  The pass names those suites at WARN, `ci reconcile counted check suites whose workflow run event it could not read`, once for the head, with the repository, the pull request, the head's sha and the suites' ids; an event the listener took from the run's own webhook still decides.
+  An `errors` entry against a suite's `workflowRun` field, or a field under it, costs that suite its event alone and refuses nothing else of the head.
+  Deploy the listener first, then Dispatch.
+  A rollback of the listener below the release that reads events goes with a rollback of Dispatch: an earlier listener drops the events and the suite of each check from each record it writes, and keeps the newest check run of each name whatever started its run.
+
 - The pass reads the commit statuses of a repository's heads only where the App's token for that repository holds Commit statuses, at read or write (`githubapp.Client.RepositoryTokenWithStatuses`).
   It reads that from the `permissions` GitHub answers with the token itself (`POST /app/installations/{id}/access_tokens`), not from the installation: the client keeps a token until 5 minutes before it expires, so a token minted before a person approved Commit statuses does not hold it while the installation already does.
-  For such a repository the query asks for the head commit's combined status too (`status { contexts { context state createdAt targetUrl description } }`, `headsQueryWithStatuses`), which adds no connection and no request, and every other repository is sent the query it was sent before the pass read statuses, byte for byte.
+  For such a repository the query asks for the head commit's combined status too (`status { contexts { context state createdAt targetUrl description } }`, `headsQueryWithStatuses`), which adds no connection and no request, and every other repository is sent the query with no status field (`headsQuery`), which asks GitHub for nothing its token cannot read.
   A head read over REST lists its statuses once its check runs and check suites are recorded: `GET /repos/{owner}/{repo}/commits/{sha}/status`, at `per_page=100`, page by page and conditional on the ETags the pass kept, as the other two listings are.
   A status in `success`, `failure` or `error` is mapped into the REST shape (`context`, `state`, `created_at`, `target_url`, `description`) and recorded through `contracts.GithubStatusObservation`, and a `pending` or `expected` one is not recorded.
   The record keeps the newest status of each context (`recordStatus`, `packages/envoy/internal/cistore/cistore.go`), and a query's statuses are part of the head's fingerprint, so a pass in which only a status changed records it.

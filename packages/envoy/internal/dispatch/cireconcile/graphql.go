@@ -50,7 +50,7 @@ const (
 // beside its check suites (headsDocument), is what a repository is queried with where it does:
 // there a head read over REST asks for three, its commit statuses the third (readStatuses).
 //
-// Four things in it are load-bearing.
+// Five things in it are load-bearing.
 //
 // `filterBy: {checkType: ALL}` is required. GitHub's default for a commit's check runs is
 // LATEST, which answers only the newest run of each name and drops every earlier attempt -- on
@@ -68,6 +68,14 @@ const (
 // a repository's pull request numbers are handed out in the order the pull requests are opened,
 // so created-at ascending is number ascending. The cursor a cut-short pass leaves names a page
 // and a pull request number within it (cursor), which only a fixed order makes meaningful.
+//
+// `workflowRun { event }` on each suite is the event that started the suite's GitHub Actions
+// workflow run, which decides whether GitHub counts the suite's check runs for the pull request:
+// a workflow_dispatch run of the pull request's branch is not counted, and its check runs share
+// the pull request's own check names. No REST listing of a head's checks carries it, so a head
+// read over REST records no event, and the CI store counts that head's suites as it did before
+// it read events (record's line names them). The field is an object rather than a connection, so
+// it costs the query no point, and a suite of another App answers it null.
 //
 // `rateLimit` costs nothing and is charged nothing, and is read in the same answer rather than
 // in a query of its own: the pass's line reports the points its queries spent, and a point count
@@ -95,8 +103,8 @@ const statusSelection = "              status { contexts { context state created
 
 // headsDocument is headsQuery's one text with status written in on the head commit, after its
 // oid. An empty status is headsQuery itself: a repository whose token does not hold Commit
-// statuses is sent the query it was sent before the pass read statuses, byte for byte, which is
-// what a repository the App cannot read the statuses of costs.
+// statuses is sent the query with no status field, which asks GitHub for nothing the token cannot
+// read; that is what a repository the App cannot read the statuses of costs.
 func headsDocument(status string) string {
 	return fmt.Sprintf(`query($owner: String!, $name: String!, $after: String) {
   rateLimit { cost }
@@ -117,6 +125,7 @@ func headsDocument(status string) string {
                   status
                   conclusion
                   updatedAt
+                  workflowRun { event }
                   checkRuns(first: %d, filterBy: {checkType: ALL}) {
                     pageInfo { hasNextPage }
                     nodes {
@@ -259,7 +268,12 @@ type graphQLSuite struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	UpdatedAt  string `json:"updatedAt"`
-	CheckRuns  *struct {
+	// WorkflowRun is the suite's GitHub Actions workflow run, null for a suite of another App and
+	// for one whose run GitHub would not let the token read (refusedPulls).
+	WorkflowRun *struct {
+		Event string `json:"event"`
+	} `json:"workflowRun"`
+	CheckRuns *struct {
 		PageInfo struct {
 			HasNextPage bool `json:"hasNextPage"`
 		} `json:"pageInfo"`
@@ -473,12 +487,20 @@ func statusObject(sum *maphash.Hash, entry graphQLStatusContext) (status object,
 //   - startedAt and completedAt are the webhook's started_at and completed_at, which order two
 //     observations of one run;
 //   - the suite's app.databaseId is the webhook's app.id, the App that created the run, which the
-//     review-App rule reads.
+//     review-App rule reads;
+//   - the suite's databaseId is the webhook's check_suite.id, the suite the run is of, which with
+//     the suite's workflowRun.event decides whether GitHub counts the run for the pull request.
+//
+// The suite's workflowRun.event is the one field no webhook and no REST listing carries: it is
+// written as check_suite.workflow_run.event, which contracts.GithubCIObservation reads as the
+// run's RunEvent, so the store judges the run with its suite's event however its writes are
+// ordered. A run the listener already recorded maps here to the same run with that event beside
+// it, which the store applies as no change once it holds the event.
 //
 // The head commit's oid is the webhook's head_sha: GraphQL's CheckRun has no head sha of its
 // own, and the commit the query read the suite from is the commit the run ran at.
 func checkRunObject(sum *maphash.Hash, run graphQLRun, suite graphQLSuite, oid string) object {
-	item := mappedObject{item: make(object, 9), sum: sum}
+	item := mappedObject{item: make(object, 10), sum: sum}
 	item.number("id", run.DatabaseID)
 	item.text("name", run.Name)
 	item.text("status", strings.ToLower(run.Status))
@@ -490,6 +512,11 @@ func checkRunObject(sum *maphash.Hash, run graphQLRun, suite graphQLSuite, oid s
 	if suite.App != nil {
 		item.nest("app").number("id", suite.App.DatabaseID)
 	}
+	runSuite := item.nest("check_suite")
+	runSuite.number("id", suite.DatabaseID)
+	if suite.WorkflowRun != nil {
+		runSuite.nest("workflow_run").text("event", suite.WorkflowRun.Event)
+	}
 	return item.item
 }
 
@@ -497,9 +524,10 @@ func checkRunObject(sum *maphash.Hash, run graphQLRun, suite graphQLSuite, oid s
 // checkRunObject is for a run: the suite's databaseId is the webhook's id, its app.databaseId
 // the App that created it, its status and conclusion the lower-cased enums, its updatedAt the
 // webhook's updated_at -- the field a suite's observation is ordered by -- and the commit's oid
-// the head_sha, which GraphQL's CheckSuite does not carry.
+// the head_sha, which GraphQL's CheckSuite does not carry. Its workflowRun.event, which no webhook
+// of a suite carries, is written as workflow_run.event (checkRunObject says why).
 func checkSuiteObject(sum *maphash.Hash, suite graphQLSuite, oid string) object {
-	item := mappedObject{item: make(object, 6), sum: sum}
+	item := mappedObject{item: make(object, 7), sum: sum}
 	item.number("id", suite.DatabaseID)
 	item.text("status", strings.ToLower(suite.Status))
 	item.text("conclusion", strings.ToLower(suite.Conclusion))
@@ -507,6 +535,9 @@ func checkSuiteObject(sum *maphash.Hash, suite graphQLSuite, oid string) object 
 	item.text("updated_at", suite.UpdatedAt)
 	if suite.App != nil {
 		item.nest("app").number("id", suite.App.DatabaseID)
+	}
+	if suite.WorkflowRun != nil {
+		item.nest("workflow_run").text("event", suite.WorkflowRun.Event)
 	}
 	return item.item
 }
@@ -550,7 +581,8 @@ func (m mappedObject) number(name string, value int64) {
 	m.eight(uint64(value))
 }
 
-// nest is the one object inside an object either builder writes: the App and its id.
+// nest is an object inside an object a builder writes: the App and its id, a run's check suite,
+// and the event of a suite's workflow run.
 func (m mappedObject) nest(name string) mappedObject {
 	inner := object{}
 	m.item[name] = inner
@@ -605,6 +637,13 @@ func fingerprintOf(sum *maphash.Hash) uint64 {
 // with no other entry is answered whole by its check suites, as a head with no entry is, and is
 // not read over REST. A null status with no entry against its path is a commit no status was
 // posted to, which is no refusal at all.
+//
+// An entry against a check suite's workflowRun field, or a field under it, costs that suite its
+// event alone and is no refusal of the head: the suite answers workflowRun null, the CI store
+// counts its runs as it did before it read events, and the pass names the suite (record). Reading
+// a head's checks over REST would recover no event, since no REST listing of them carries one.
+// What GitHub answers for an installation without Actions read was not measured; a null with no
+// entry reads the same way.
 func refusedPulls(errors []graphQLError) (refused map[int]struct{}, statuses map[int][]graphQLError, whole bool) {
 	if len(errors) == 0 {
 		// Almost every answer GitHub gives carries no error at all, and a nil map answers the
@@ -616,6 +655,9 @@ func refusedPulls(errors []graphQLError) (refused map[int]struct{}, statuses map
 		index, field, ok := pullIndex(entry.Path)
 		if !ok {
 			whole = true
+			continue
+		}
+		if underWorkflowRun(field) {
 			continue
 		}
 		if underStatus(field) {
@@ -660,6 +702,20 @@ var statusField = []any{"commits", "nodes", float64(0), "commit", "status"}
 // head commit's status field or a field under it.
 func underStatus(field []any) bool {
 	return len(field) >= len(statusField) && slices.Equal(field[:len(statusField)], statusField)
+}
+
+// suitesField is the path of the head commit's check suites under a pull request node, as an
+// error path names it after the node's index; a suite's index and its field follow it.
+var suitesField = []any{"commits", "nodes", float64(0), "commit", "checkSuites", "nodes"}
+
+// underWorkflowRun reports whether field, an error path after its pull request node's index, is
+// one check suite's workflowRun field or a field under it.
+func underWorkflowRun(field []any) bool {
+	if len(field) < len(suitesField)+2 || !slices.Equal(field[:len(suitesField)], suitesField) {
+		return false
+	}
+	_, indexed := field[len(suitesField)].(float64)
+	return indexed && field[len(suitesField)+1] == "workflowRun"
 }
 
 // errorText is GitHub's errors array as one line of a log, each entry's type and message: the

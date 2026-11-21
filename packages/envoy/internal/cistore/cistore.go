@@ -1,8 +1,8 @@
 // Package cistore holds the ingest-side aggregation of GitHub CI observations.
 
-// Each check_run and check_suite webhook folds into a per-commit State record
-// in a JetStream KV bucket via compare-and-swap rather than being published
-// raw; concurrent observations of one commit share one write (see update). A
+// Each check_run and check_suite webhook, and each workflow_run webhook of a pull request, folds
+// into a per-commit State record in a JetStream KV bucket via compare-and-swap rather than being
+// published raw; concurrent observations of one commit share one write (see update). A
 // summary loop (see loop.go) emits one checks envelope when a commit is quiet
 // and its recorded CI work is complete; it runs a pass only when a cached record
 // changed or one it waits on falls due. All coordination state lives in
@@ -92,6 +92,12 @@ type Check struct {
 	Conclusion string     `json:"conclusion"` // success|failure|... ("" until completed)
 	// ObservedAt orders observations of this run (completion, else start).
 	ObservedAt string `json:"observed_at"`
+	// SuiteID is the check suite the run is of and AppID the App that created it, which decide
+	// whether GitHub counts the run for the pull request (standingOf). A check recorded before the
+	// record kept them has neither, and is counted until a run or suite event says otherwise.
+	// Neither the snapshot (Hash) nor the settlement reads them.
+	SuiteID string `json:"suite_id,omitempty"`
+	AppID   string `json:"app_id,omitempty"`
 }
 
 // UnmarshalJSON reads records written by deployed listeners: their checks
@@ -167,6 +173,12 @@ type SettlementClaim struct {
 
 // State is the aggregated set of checks, suites and commit statuses for one (owner, repo, PR
 // number, head SHA).
+//
+// Checks and Suites hold what GitHub counts for the pull request, as its own rollup of the pull
+// request does: a check run or check suite of a GitHub Actions workflow run whose event GitHub
+// does not evaluate for a pull request (a workflow_dispatch run of the pull request's branch) is in
+// neither, so it is not a check of the head, replaces no check of the head, and takes no part in
+// its settlement or its snapshot (applyCheckRun, learnRunEvent).
 type State struct {
 	Owner  string           `json:"owner"`
 	Repo   string           `json:"repo"`
@@ -174,6 +186,19 @@ type State struct {
 	SHA    string           `json:"sha"`
 	Checks map[string]Check `json:"checks"`
 	Suites map[string]Suite `json:"suites"`
+	// SuiteEvents holds, by check suite id, the event that started the suite's GitHub Actions
+	// workflow run, as a workflow run's webhook or Dispatch's CI reconcile gave it, and is left out
+	// of a record that holds none. It decides whether GitHub counts the suite's check runs
+	// (standingOf), and it is kept for a suite the record holds nothing else of, so a check run
+	// that arrives after its suite's event is judged as one that arrived before it.
+	SuiteEvents map[string]string `json:"suite_events,omitempty"`
+	// Waiting holds, by check-run id, the check runs that lost to the run that stands for their
+	// name while that run is of a suite whose event the record does not know: the newest of each
+	// name and suite (wait). When that suite's event turns out to be one GitHub does not count, the
+	// newest of them stands for the name in its place (standInstead). Nothing but the record's own
+	// writes reads it: not the snapshot (Hash), not settlementReady and not the settlement. It is
+	// left out of a record that holds none.
+	Waiting map[string]Check `json:"waiting_checks,omitempty"`
 	// Statuses holds the newest terminal commit status of each context, keyed by context
 	// (recordStatus), and is left out of a record that holds none.
 	Statuses       map[string]Status `json:"statuses,omitempty"`
@@ -195,7 +220,11 @@ type State struct {
 	// older listener ignores the field, and its own writes drop it. A listener of a release before
 	// commit statuses drops Statuses the same way, at its next write of the record, and the
 	// reconcile writes them back only once GitHub's answer for the head changes, since a pass
-	// writes nothing while the head's fingerprint holds.
+	// writes nothing while the head's fingerprint holds. A listener or Dispatch writer of a release
+	// before suite events drops SuiteEvents, Waiting and each check's SuiteID and AppID the same
+	// way, and keeps the newest check run of each name whatever started its run, as every release
+	// before did; the first pass of a Dispatch of this release reads every head again and writes the
+	// events back (cireconcile).
 	Schema int `json:"schema,omitempty"`
 }
 
@@ -778,34 +807,16 @@ func (s *Store) Record(ctx context.Context, observation contracts.CIObservation)
 }
 
 // record is the one body both forms of Record share, and reports whether the observation changed
-// the head's record.
+// the head's record. Which run stands for each name is applyCheckRun's rule; a change of the
+// head's checks re-arms the head (touch), and a change of what the record holds of runs that do
+// not stand, or of a run's suite and App alone, does not.
 func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
-		if st.Checks == nil {
-			st.Checks = map[string]Check{}
+		changed, moved := st.applyCheckRun(observation)
+		if moved {
+			touch(st)
 		}
-		key := observation.CheckName
-		if current, ok := st.Checks[key]; ok {
-			if checkRunIDIsOlder(observation.CheckRunID, uint64(current.CheckRunID)) ||
-				(observation.CheckRunID == uint64(current.CheckRunID) && !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status)) {
-				return false
-			}
-		}
-		next := Check{
-			Name:       observation.CheckName,
-			CheckRunID: checkRunID(observation.CheckRunID),
-			URL:        observation.URL,
-			Status:     observation.Status,
-			Conclusion: observation.Conclusion,
-			ObservedAt: observation.ObservedAt,
-		}
-		if current, ok := st.Checks[key]; ok && current == next {
-			return false
-		}
-		st.Checks[key] = next
-		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
-		return true
+		return changed
 	})
 }
 
@@ -820,8 +831,17 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 // observation changed the head's record. It keeps the observation's run count only for a suite
 // that is not completed (Suite.RunCount), so a completed suite is written as it was before the
 // count, and an observation that repeats the stored suite, its count included, changes nothing.
+// The event of the suite's workflow run, when the observation carries it, is recorded first
+// (learnRunEvent), and a suite GitHub does not count for the pull request is not recorded at all.
 func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+		changed, moved := st.learnRunEvent(observation.SuiteID, observation.RunEvent)
+		if moved {
+			touch(st)
+		}
+		if st.standingOf(observation.AppID, observation.SuiteID) == uncounted {
+			return changed
+		}
 		if st.Suites == nil {
 			st.Suites = map[string]Suite{}
 		}
@@ -837,13 +857,44 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 		}
 		if current, ok := st.Suites[observation.SuiteID]; ok {
 			if !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status) || current.sameAs(next) {
-				return false
+				return changed
 			}
 		}
 		st.Suites[observation.SuiteID] = next
-		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
+		touch(st)
 		return true
+	})
+}
+
+// RecordRunEvent folds the event that started a workflow run of the pull request into the
+// per-commit state, waiting for it no longer than ctx allows (update), and answers the error
+// alone, as Record does: the event of the run's check suite (observation.SuiteID,
+// observation.RunEvent), which a workflow_run webhook carries (contracts.GithubCIObservations).
+func (s *Store) RecordRunEvent(ctx context.Context, observation contracts.CIObservation) error {
+	_, err := s.recordRunEvent(ctx, observation)
+	return err
+}
+
+// recordRunEvent records one suite's event (learnRunEvent) and reports whether that changed the
+// head's record. An event that takes a suite and its check runs out of the record re-arms the head
+// (touch); one that takes nothing out does not, and leaves the quiet period as it was, except on a
+// record it is the first write of, whose last event is then the event's own arrival, so the
+// record, which holds no check yet, is named as held (logHeldLocked) only if none comes within
+// heldAfter. An observation with no suite or no event is refused before anything is read.
+func (s *Store) recordRunEvent(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+	if observation.SuiteID == "" || observation.RunEvent == "" {
+		return false, fmt.Errorf("cistore: workflow run event %q of check suite %q not recorded: the record keeps an event by its suite",
+			observation.RunEvent, observation.SuiteID)
+	}
+	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+		changed, moved := st.learnRunEvent(observation.SuiteID, observation.RunEvent)
+		switch {
+		case moved:
+			touch(st)
+		case changed && st.LastEventAt == 0:
+			st.LastEventAt = time.Now().UnixMilli()
+		}
+		return changed
 	})
 }
 
@@ -908,6 +959,13 @@ func rearm(st *State) {
 	}
 	bumpGeneration(st)
 	st.SettledEmitted = false
+}
+
+// touch is what a change of the head's checks or suites does to its record: it re-arms a settled
+// head (rearm) and restarts the quiet period.
+func touch(st *State) {
+	rearm(st)
+	st.LastEventAt = time.Now().UnixMilli()
 }
 
 // bumpGeneration advances the delivery identity after a mutation invalidates a

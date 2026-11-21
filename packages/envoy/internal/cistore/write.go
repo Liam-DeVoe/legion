@@ -17,12 +17,14 @@ import (
 // maxRecordBytes and maxSettlementBytes bound a head's record and the settlement published from
 // it, each of which goes to NATS whole. GitHub allows 50,000 check runs in one check suite, so the
 // number of check names a head collects has no bound of GitHub's own. The record is kept well under
-// the server's 1 MiB default, since it is written whole on every observation; about 1,300 checks of
-// ordinary names fit. The settlement needs its own bound, because a name costs more there: a
-// failing check is named three times to the record's two, inside a JSON string in the envelope's
-// JSON, so a `"` costs 12 bytes a character in the settlement against 4 in the record. Its bound
-// is 64 KiB under the 1 MiB default, room for what a later settlement of the same record adds (a
-// longer generation, `superseded_settlement`).
+// the server's 1 MiB default, since it is written whole on every observation; about 1,200 checks of
+// ordinary names fit (1,224 of 32-character names, each with a job's URL, its suite and its App,
+// measured on 2026-11-21; 1,413 fit before a check carried its suite and its App). The settlement
+// needs its own bound, because a name costs more there: a failing check is named three times to
+// the record's two, inside a JSON string in the envelope's JSON, so a `"` costs 12 bytes a
+// character in the settlement against 4 in the record. Its bound is 64 KiB under the 1 MiB
+// default, room for what a later settlement of the same record adds (a longer generation,
+// `superseded_settlement`).
 const (
 	maxRecordBytes     = 384 << 10
 	maxSettlementBytes = 1<<20 - 64<<10

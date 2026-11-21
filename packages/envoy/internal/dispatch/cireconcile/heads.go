@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -440,10 +441,28 @@ func recordSuite(ctx context.Context, writer Writer, observation contracts.CIObs
 // listener already holds changes none. ok is false when a write failed and a later pass might
 // make it land, which is every failure but a refusal (refused); it is what makes the pass drop
 // this head's ETags.
+//
+// A GitHub Actions suite whose workflow run's event the answer did not carry -- every suite of a
+// head read over REST, whose listings carry none, and a suite whose workflowRun a query answered
+// null -- is counted by the CI store as it was before the store read events, so a check run of a
+// run GitHub does not count for the pull request can stand for its name there. The pass names
+// those suites at WARN, `ci reconcile counted check suites whose workflow run event it could not
+// read`, once for the head, with the repository, the pull request, the head's sha and the suites'
+// ids; the event the listener took from the run's own webhook still decides.
 func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
-	wantedRuns, changedRuns, runsOK := r.recordListing(ctx, writer, head, runs, checkRuns)
-	wantedSuites, changedSuites, suitesOK := r.recordListing(ctx, writer, head, suites, checkSuites)
+	var eventless map[string]struct{}
+	wantedRuns, changedRuns, runsOK := r.recordListing(ctx, writer, head, runs, checkRuns, &eventless)
+	wantedSuites, changedSuites, suitesOK := r.recordListing(ctx, writer, head, suites, checkSuites, &eventless)
 	wantedStatuses, changedStatuses, statusesOK := r.recordStatuses(ctx, writer, head, statuses)
+	if len(eventless) > 0 {
+		ids := make([]string, 0, len(eventless))
+		for id := range eventless {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		r.Logger.Warn("ci reconcile counted check suites whose workflow run event it could not read",
+			"repository", head.repository(), "pr", head.number, "sha", head.sha, "suites", ids)
+	}
 	return wantedRuns + wantedSuites + wantedStatuses, changedRuns || changedSuites || changedStatuses, runsOK && suitesOK && statusesOK
 }
 
@@ -483,8 +502,10 @@ func (r *Reconciler) recordStatuses(ctx context.Context, writer Writer, head pul
 }
 
 // recordListing writes one of those two listings, page by page and object by object, and
-// answers for that listing what record answers for the head.
-func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object], of listing) (wanted int, changedRecord, ok bool) {
+// answers for that listing what record answers for the head. Each GitHub Actions suite it records
+// an object of with no workflow run event is added to eventless, which it makes when it adds the
+// first.
+func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object], of listing, eventless *map[string]struct{}) (wanted int, changedRecord, ok bool) {
 	ok = true
 	for _, page := range pages {
 		if !page.modified {
@@ -496,13 +517,13 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 				continue
 			}
 			// Only a completed object is recorded. cistore refuses to settle a head while any
-			// check its record holds is queued or running, and nothing ever takes a check out of
-			// a record, so one run left queued at that commit -- an attempt GitHub abandoned, a
-			// job nobody ran -- would stop ci-ok ever reaching the daemon for that head, which is
-			// the failure this pass exists to mend, and a suite that is not completed holds the
-			// head exactly as a queued run does (cistore's settlementReady). The listener records
-			// a running run because the event completing it follows; a pass reading a listing has
-			// no such promise.
+			// check its record holds is queued or running, and a check leaves a record only when
+			// its run turns out to be one GitHub does not count for the pull request, so one run
+			// left queued at that commit -- an attempt GitHub abandoned, a job nobody ran -- would
+			// stop ci-ok ever reaching the daemon for that head, which is the failure this pass
+			// exists to mend, and a suite that is not completed holds the head exactly as a queued
+			// run does (cistore's settlementReady). The listener records a running run because the
+			// event completing it follows; a pass reading a listing has no such promise.
 			if observation.Status != "completed" {
 				continue
 			}
@@ -510,6 +531,12 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 				continue
 			}
 			wanted++
+			if observation.RunEvent == "" && observation.SuiteID != "" && observation.AppID == contracts.GithubActionsAppID {
+				if *eventless == nil {
+					*eventless = map[string]struct{}{}
+				}
+				(*eventless)[observation.SuiteID] = struct{}{}
+			}
 			changed, err := of.write(ctx, writer, observation)
 			if err != nil {
 				if !refused(err) {

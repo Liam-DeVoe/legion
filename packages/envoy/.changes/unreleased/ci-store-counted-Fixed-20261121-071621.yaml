@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  The listener's CI store now counts a pull request head's check runs as GitHub's own rollup of
+  the pull request counts them. A check run of a GitHub Actions workflow run that an event GitHub
+  does not evaluate for a pull request started, such as a `workflow_dispatch` run of the pull
+  request's branch, is no longer one of the head's checks, no longer replaces the pull request
+  run's check of the same name when its id is higher, and no longer holds the head unsettled, moves
+  its snapshot or shows in its settlement. Before, a dispatched run's passing `ci-ok` replaced the
+  pull request run's failing `ci-ok`, so a settlement could say CI passed where GitHub refused the
+  merge. The store learns each run's event from the `workflow_run` webhook and from Dispatch's CI
+  reconcile, whose query now asks each check suite for `workflowRun { event }`, and the result does
+  not depend on the order the check runs and the events arrive in. A suite whose event neither
+  gives is counted as before, and the reconcile pass names it at WARN (`ci reconcile counted check
+  suites whose workflow run event it could not read`). A record written before is corrected at the
+  next pass that reads its head's events. A re-run of a counted run still replaces its check.
+time: 2026-11-21T07:16:21Z
+custom:
+    Issue: ci-store-counted
