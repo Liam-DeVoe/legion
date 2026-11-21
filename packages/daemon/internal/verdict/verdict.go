@@ -116,7 +116,7 @@ func Decide(in Inputs) Conclusion {
 			in.Reviewer.Commit == in.Head && in.Reviewer.Verdict == ReviewerChanges
 		// A person's approval is no verdict on a Legion head: only the reviewer's approve, with
 		// the tester's pass at the head or carried to it, is.
-		approved = in.Reviewer.Commit == in.Head && in.Reviewer.Verdict == ReviewerApprove && passes(in)
+		approved = in.Reviewer.Commit == in.Head && in.Reviewer.Verdict == ReviewerApprove && PassCounts(in.Tester, in.Head, in.Reviewer.TestedCommit)
 	} else {
 		if ci := ciReviewerAt(in); ci != "" {
 			refused = refused || ci == StateChangesRequested
@@ -136,13 +136,16 @@ func Decide(in Inputs) Conclusion {
 	return None
 }
 
-// passes is whether the tester's pass counts at a Legion head: recorded at the head, or recorded
-// at the commit the reviewer's verdict at the head names as its testedCommit.
-func passes(in Inputs) bool {
-	if in.Tester.Verdict != TesterPass || in.Tester.Commit == "" {
+// PassCounts is whether the tester's pass counts at head, a head a Legion issue owns: recorded at
+// head, or recorded at the commit the reviewer's verdict at head names as its testedCommit, by
+// which the reviewer states that no commit since changes code that runs. It is the one rule of the
+// carry: Decide reads it, and the workflow sends an issue back to testing where a reviewer's
+// approve fails it (spec R4). It compares two recorded commits and reads no diff.
+func PassCounts(tester Tester, head, testedCommit string) bool {
+	if tester.Verdict != TesterPass || tester.Commit == "" {
 		return false
 	}
-	return in.Tester.Commit == in.Head || in.Reviewer.TestedCommit == in.Tester.Commit
+	return tester.Commit == head || testedCommit == tester.Commit
 }
 
 // personsAt is whether a person's last deciding review at the head refuses it, and whether one

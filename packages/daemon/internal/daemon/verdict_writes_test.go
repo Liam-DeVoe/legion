@@ -214,6 +214,12 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			g.events = append(g.events, fmt.Sprintf("created status %d on %s: %s", status.ID, status.Head, status.State))
 			w.WriteHeader(http.StatusCreated)
 			answer(map[string]any{"id": status.ID, "state": status.State})
+		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "compare":
+			// The writer makes no compare call: the carry of a tester's pass is the reviewer's
+			// testedCommit, never a diff (spec R4). The fake answers one as GitHub answers two
+			// identical trees and records it, so a writer that carried a pass on that answer shows.
+			g.events = append(g.events, "compared "+parts[1])
+			answer(map[string]any{"status": "identical", "ahead_by": 0, "behind_by": 0, "files": []any{}})
 		default:
 			githubtest.Unexpected(t, w, r)
 		}

@@ -217,9 +217,11 @@ func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenam
 // waits on the answer. It is here rather than in the handlers so that a handler's early return
 // cannot silently stop the ladder, and so the facts that ask are one list the compiler checks
 // rather than nine calls and a comment (dispatch://INFRA-714 R3).
+//
+// A refused fact changed nothing (refused), so it owes no read and no write of legion-verdict.
 func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	result, err := e.apply(ctx, tx, fact)
-	if err != nil {
+	if err != nil || result.Refusal != nil {
 		return result, err
 	}
 	return result, e.askMergeState(ctx, tx, fact)
@@ -251,6 +253,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchAskRestored(ctx, tx, fact)
 	case intake.HandoffComplete:
 		return e.handoff(ctx, tx, fact)
+	case intake.ReviewVerdict:
+		return e.reviewVerdict(ctx, tx, fact)
 	case intake.PullRequestOpened:
 		return e.pullRequestOpened(ctx, tx, fact)
 	case intake.PullRequestSynchronized:
@@ -382,20 +386,22 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq {
 		return intake.Result{}, nil
 	}
-	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the eleven
+	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the twelve
 	// points that write that mark, and the rule every one of them follows is written here.
 	//
 	// The mark is written where the record changes, never from a list of fact kinds. A list would
 	// silently miss a kind a later change adds — the mark would stop being written for it, with
 	// nothing failing to say so — and three of the six movements are no fact of their own anyway:
 	// a phase change, a start and a recorded handoff are consequences several different facts
-	// reach. So each site sits at the write it is about. Nine are in this package: this one, the
+	// reach. So each site sits at the write it is about. Ten are in this package: this one, the
 	// Dispatch event of the issue; the pull request's row (Engine.putPullRequest); the phase
 	// write (Engine.transition and Engine.retryPhase); the hold a failed claim writes
 	// (Engine.claimFailed); the handoff's phase row and the completion that records it
-	// (Engine.handoff); the wait on a person a root enters (enterAwaiting); the resume of a root
-	// a person answered, which starts its architect again (ResumeAwaitedRoot, for the promotion
-	// that answers the wait and for the root told in place alike); and the start (StartOrOwe).
+	// (Engine.handoff); the reviewer's verdict past review, which writes the round's decision on
+	// its row (Engine.reviewVerdict); the wait on a person a root enters (enterAwaiting); the
+	// resume of a root a person answered, which starts its architect again (ResumeAwaitedRoot, for
+	// the promotion that answers the wait and for the root told in place alike); and the start
+	// (StartOrOwe).
 	//
 	// The other two are the admission pass's own writes of a phase and of a start, which no
 	// fact of the issue carries and which this package therefore never sees: the re-admission
@@ -1031,6 +1037,11 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, "", row, pr, "")
 		}
 	case phase.Reviewing:
+		// An approve that carries no tester's pass to the head it names ends no round: the work
+		// goes back to testing instead (testAgain, spec R4).
+		if moved, err := e.testAgain(ctx, tx, *issue, row, pr, fact.Verdict, fact.Commit, fact.TestedCommit); err != nil || moved {
+			return intake.Result{}, err
+		}
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
@@ -1922,7 +1933,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // completion of the same commit would be refused as not new. A round its reviewer completed that
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
-// reviewer's answer to its request.
+// reviewer's answer to its request. Past the review, the reviewer's verdict the issue took while
+// held is applied first (applyHeldVerdict): an approve at the head that carries no tester's pass
+// sends the issue back to testing instead of releasing it to from's worker.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
@@ -1956,6 +1969,14 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
+	}
+	// A verdict past review the issue took while held moves it now, as it would have when it came
+	// (applyHeldVerdict), and no worker of the phase it left is started.
+	if moved, err := e.applyHeldVerdict(ctx, tx, issue, pr); err != nil || moved {
+		if err != nil {
+			return "", err
+		}
+		return e.phaseNow(ctx, tx, issue)
 	}
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
@@ -2135,8 +2156,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	// A backward move is asked for by the role whose row it hands on: a worker's own move hands its
+	// own row (backward), and the carry's move back to testing the reviewer's (testAgain).
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, reason)); err != nil {
+	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, handoff.Role, reason)); err != nil {
 		return err
 	}
 	// The move names the end of the step the issue stood in, on the issue as it stood, before the
@@ -2249,18 +2272,20 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // out of admitted (Table), whose role is the architect. A phase-finished names the worker whose
 // phase ended, and admitted has none: its role is an architect, the role that reads this notice.
 //
-// A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
-// kind the architect's prompt routes on, and says in its reason what happened and who asked: the
-// phase it moved the issue to, the role that moved it and the words that role gave. The handoff
-// row a move writes is empty, so without that reason the architect reads a completion with no
-// summary and no verdict and cannot tell it from a worker that finished its phase.
+// A backward move (TriggerBackward) keeps the phase-finished kind the architect's prompt routes on,
+// and says in its reason what happened and who asked: the phase it moved the issue to, the role
+// that asked - the role whose row the move hands on, which is the worker of the phase left for its
+// own request_backward_move and the reviewer for the carry's move back to testing (testAgain) - and
+// the words given. The handoff row a move writes is empty, so without that reason the architect
+// reads a completion with no summary and no verdict and cannot tell it from a worker that finished
+// its phase.
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, handoff.Role, reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}

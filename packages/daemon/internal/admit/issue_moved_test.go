@@ -34,8 +34,8 @@ const movedIssue = "LEGION-208"
 // record changed leaves the mark at that fact's own moment, and the daemon's own bookkeeping
 // leaves it where it stands.
 //
-// This test is in internal/admit because it is the one package that can show every half. Nine
-// of the eleven write sites are in internal/workflow — the resume of an answered root among
+// This test is in internal/admit because it is the one package that can show every half. Ten
+// of the twelve write sites are in internal/workflow — the resume of an answered root among
 // them (workflow's ResumeAwaitedRoot), which only an admission pass reaches — and two are
 // admission's own, the re-admission and the promotion of a root the line was holding; the
 // boot's read of the Dispatch listing, which marks nothing of its own, is
@@ -937,6 +937,58 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		if got := movedAt(t, pool, issueKey); !got.Equal(before) {
 			t.Fatalf("after the boot resumed %s's suspended implementer the record says the issue last moved at %s, want %s still: the resume is the daemon coming back and re-asserting work the worker holds, and marking it would reset every stopped tree's quiet time at every restart",
 				issueKey, got.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano))
+		}
+	})
+
+	// The recorded reviewer's verdict past review writes the round's decision at the head a push
+	// left on the reviewer's row (workflow's Engine.reviewVerdict), which is the record changing,
+	// as the completion that wrote the decision before it is: a movement. It is a case of its own
+	// because it is reached by a fact of its own, the review-verdict route's, and a changes moves
+	// no phase, so the verdict's own write is the only thing here that could mark it.
+	t.Run("the reviewer's verdict past review is a movement of its issue", func(t *testing.T) {
+		pool := migratedPool(t)
+		const issueKey = "LEGION-781"
+		now := fixedNow
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Clock: func() time.Time { return now }}, nil)
+		admission := New(record.NewStore(), engine, 1, testProject, nil)
+		admission.now = func() time.Time { return fixedNow }
+
+		seedSlotted(t, pool, issueKey, "U")
+		stands := issue(t, pool, issueKey)
+		stands.Phase, stands.Status, stands.DispatchStatus, stands.LastDispatchSeq = phase.Accepting, "needs_review", "needs_review", 1
+		putIssue(t, pool, stands)
+		inTx(t, pool, func(tx pgx.Tx) {
+			records := record.NewStore()
+			if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issueKey, Repo: "acme/widgets",
+				Number: 9, Branch: claim.IssueBranch(issueKey), Base: "main", HeadSHA: "h2", Failing: []string{}}); err != nil {
+				t.Fatalf("seed the pull request: %v", err)
+			}
+			for _, row := range []record.PhaseRow{
+				{Issue: issueKey, Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass", HandoffCommit: "h1"},
+				{Issue: issueKey, Role: claim.RoleReviewer, Claim: "review-claim", Verdict: "approve", HandoffCommit: "h1",
+					Decision: &record.ReviewDecision{State: "approved", Head: "h1"}},
+			} {
+				if err := records.PutPhase(ctx, tx, row); err != nil {
+					t.Fatalf("seed the %s's row: %v", row.Role, err)
+				}
+			}
+		})
+		before := movedAt(t, pool, issueKey)
+		if before.IsZero() {
+			t.Fatalf("the record of %s carries no movement before the verdict: every row is stamped when it is written", issueKey)
+		}
+
+		judged := before.Add(time.Minute)
+		now = judged
+		applyMovement(t, pool, admission, engine, "api", "review-verdict-"+issueKey, intake.ReviewVerdict{Issue: issueKey,
+			Claim: "review-claim", Verdict: "changes", Commit: "h2", Summary: "the push breaks the parser"})
+		if got := issue(t, pool, issueKey).Phase; got != phase.Accepting {
+			t.Fatalf("%s stands in %s after the reviewer's changes, want accepting: the verdict must move no phase, or this case proves nothing", issueKey, got)
+		}
+		if got := movedAt(t, pool, issueKey); !got.Equal(judged) {
+			t.Fatalf("after the reviewer's verdict past review the record says %s last moved at %s, want %s, the moment of that verdict",
+				issueKey, got.Format(time.RFC3339Nano), judged.Format(time.RFC3339Nano))
 		}
 	})
 
