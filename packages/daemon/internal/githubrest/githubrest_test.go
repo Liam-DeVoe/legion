@@ -55,11 +55,12 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 // check run is sent, reads a 2xx answer, and gives any other answer back as an *Answer naming
 // PATCH, the path and the status.
 func TestPatchSendsJSONWithThePatchMethod(t *testing.T) {
+	const token = "patch-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var sent struct {
 			Conclusion string `json:"conclusion"`
 		}
-		if r.Method != http.MethodPatch || r.Header.Get("Authorization") != "Bearer token" || r.Header.Get("Content-Type") != "application/json" ||
+		if r.Method != http.MethodPatch || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Content-Type") != "application/json" ||
 			json.NewDecoder(r.Body).Decode(&sent) != nil {
 			http.Error(w, `{"message":"bad request"}`, http.StatusBadRequest)
 			return
@@ -71,7 +72,7 @@ func TestPatchSendsJSONWithThePatchMethod(t *testing.T) {
 		w.Write([]byte(`{"id":7,"conclusion":"` + sent.Conclusion + `"}`))
 	}))
 	defer server.Close()
-	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	client := Client{Token: token, API: server.URL + "/repos/acme/widgets"}
 
 	var updated struct {
 		ID         int64  `json:"id"`
