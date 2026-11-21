@@ -68,10 +68,13 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // that arrived while Oh My Pi wrote the summary, which the machine holds as it holds a
 // suspension that arrives in a turn (holdSuspension). The compaction ran and its end was the
 // claim's own, so this is neither ErrCompactProcessGone nor a store that would not write
-// (ErrCompactNotEnded); what it is is a claim the end did not give back. The hold runs there
-// and the claim is suspended, or the claim is working for a turn Oh My Pi started under the
-// compaction and the hold runs at that turn's end instead (compactEnded). Either way the task
-// the claim owes was not sent.
+// (ErrCompactNotEnded); what it is is a claim the end did not give back to its agent. The end
+// has one of three outcomes (compactEnded): the hold runs there and the claim is suspended; the
+// claim is working for a turn Oh My Pi started under the compaction, and the hold runs at that
+// turn's end instead; or the copy of the issue's workspace that a turn's end started is still
+// being taken, and the claim is given back ready or idle holding the stop, which runs at that
+// copy's end or at the wait's bound (waitForTurnCopy). In each the task the claim owes was not
+// sent.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
 // a source that resumes this same claim in the same phase — an operator's hold, and a
@@ -79,14 +82,14 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // again (SuspendSource.RetiresPhaseTask, settle). The daemon's own suspension ends the
 // claim's phase, so settle retires the task queued for that phase with it and nothing sends
 // it; the claim's next phase brings a task of its own. A hold of the daemon's that a start
-// drops before it runs is neither: the claim runs on, and the turn this answer left it
-// working for ends as any other turn does and sends the task (StartedBy, dropHeld,
-// turnEnded).
+// drops before it runs is neither: the claim runs on, and its task goes at that start
+// (releaseHeld) or at the end of the turn this answer left it working for, as any turn's end
+// sends it (StartedBy, dropHeld, turnEnded).
 //
 // It is the end's answer rather than a failure of it, as ErrSuspendHeld is the answer of a
 // suspension the machine holds: nothing of the claim is left half written, and the caller is
 // told what the claim is rather than that the compaction worked (api's compact).
-var ErrCompactSuspended = errors.New("a suspension held over the claim ended its compaction, so the claim was not given back and the task it owes was not sent")
+var ErrCompactSuspended = errors.New("a suspension held over the claim ended its compaction, so the claim did not go back to its agent and the task it owes was not sent")
 
 // compacting is the compaction a claim is in: the connection it runs over and the generation it
 // was taken at. Those two, and the claim recording a compaction at all, are what the end of a

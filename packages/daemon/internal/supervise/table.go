@@ -2672,8 +2672,16 @@ func finishReady(m *Machine, ctx context.Context) error {
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
 // claim write may have failed after the machine made the transition. A retained launch-time
 // suspension still wins: the retry completes that suspension instead of publishing ready and
-// releasing notices to a claim the operator or workflow is stopping.
+// releasing notices to a claim the operator or workflow is stopping. A held stop that waits for
+// the copy its turn's end started is left to that copy (waitForTurnCopy): run here it would stop
+// the process the copy still asks, and the claim, idle or ready holding the stop, has nothing of
+// a ready to publish meanwhile.
 func reready(m *Machine, ctx context.Context, _ Event) error {
+	if m.stopWaitsForTurnCopy() {
+		m.log.Info("supervise: the agent said ready again while its held stop waits for the copy of its turn's end; the stop runs once that wait is over",
+			"copy", m.turnCopy.seq, "by", m.held.By)
+		return nil
+	}
 	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
