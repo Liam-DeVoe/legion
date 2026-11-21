@@ -120,7 +120,10 @@ func giveTheCommentItsNode(t *testing.T, database *store.Store, comment string, 
 	if write.Comments() != 1 {
 		t.Fatalf("the write of comment %s's node names %d comment(s), want that one", comment, write.Comments())
 	}
-	if err := store.RunWrite(ctx, tx, write.Queue); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		write.Queue(b)
+		return nil
+	}); err != nil {
 		t.Fatalf("write comment %s's node: %v", comment, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

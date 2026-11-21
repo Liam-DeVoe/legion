@@ -560,7 +560,10 @@ func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing
 		if err := between.write(document); err != nil {
 			t.Fatalf("commit %s of rule %d: %v", between.name, w, err)
 		}
-		if err := store.RunWrite(ctx, pass, indexing.Queue); err != nil {
+		if err := store.RunWrite(ctx, pass, func(b *store.WriteBatch) error {
+			indexing.Queue(b)
+			return nil
+		}); err != nil {
 			t.Fatalf("run the pass's write phase: %v", err)
 		}
 		if err := graphstore.Caused(ctx, pass, indexing.Stated(), graphstore.NoEvent); err != nil {

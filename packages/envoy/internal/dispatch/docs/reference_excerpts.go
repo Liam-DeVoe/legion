@@ -292,7 +292,11 @@ func planBlockIndex(
 		}
 		ledger.blockIndexes[artifactID] = indexing.Held()
 	}
-	return slices.Concat(indexing.Moved(), cited), indexing.Queue, indexing.Stated(), nil
+	indexBlocks := func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	}
+	return slices.Concat(indexing.Moved(), cited), indexBlocks, indexing.Stated(), nil
 }
 
 // indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
