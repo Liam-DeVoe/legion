@@ -86,9 +86,9 @@
 #        its own under the tool's, removed with the worktree, so that what it writes there (a work
 #        directory a script defaults under TMPDIR, say) starts fresh for each line and is gone
 #        after. A small Go launcher (command_launcher_source, below) enters <dir> and starts the
-#        command without a shell or shell options of its own. It passes the environment through,
-#        including the caller's exported BASHOPTS and SHELLOPTS, and resolves PATH after entering
-#        <dir>, including relative entries. BUILD-FAILED means only that entering <dir> or starting
+#        command without a shell or shell options of its own. It preserves the caller's exported
+#        BASHOPTS and SHELLOPTS, sets PWD and OLDPWD as entering <dir> requires, and resolves PATH
+#        there, including relative entries. BUILD-FAILED means only that entering <dir> or starting
 #        the command failed (a missing command, missing shebang interpreter, or no permission).
 #        Every other run is the command's own: an exit of 0 is GREEN, and any other exit, 127
 #        included, is RED, the run's last lines quoted. So `bash missing.sh` started, since bash
@@ -838,21 +838,32 @@ func recordStart(path, failure string) {
 	}
 }
 
+func workingDirectory() string {
+	directory, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "command-launch: reading working directory:", err)
+		os.Exit(2)
+	}
+	return directory
+}
+
 func main() {
 	if len(os.Args) < 4 {
 		fmt.Fprintln(os.Stderr, "usage: command-launch <start record> <directory> <command> [<argument>...]")
 		os.Exit(2)
 	}
 	mark, directory, name := os.Args[1], os.Args[2], os.Args[3]
+	previousDirectory := workingDirectory()
 	if err := os.Chdir(directory); err != nil {
 		recordStart(mark, fmt.Sprintf("could not enter %s: %v", directory, err))
 		os.Exit(127)
 	}
+	currentDirectory := workingDirectory()
 	command := exec.Command(name, os.Args[4:]...)
 	if errors.Is(command.Err, exec.ErrDot) {
 		command.Err = nil
 	}
-	command.Env = os.Environ()
+	command.Env = append(os.Environ(), "PWD="+currentDirectory, "OLDPWD="+previousDirectory)
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := command.Start(); err != nil {
 		recordStart(mark, fmt.Sprintf("the exec of %s failed: %v", name, err))

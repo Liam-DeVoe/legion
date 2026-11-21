@@ -21,7 +21,8 @@
 #   script that reads the base and exits non-zero, a command that exits 0, a command and a
 #   directory the base lacks, a script the line does not copy, an interpreter that is not there, a
 #   command that exits 127 itself, a script bash finds on PATH, the line's own TMPDIR, a bash
-#   command string, exported BASHOPTS and SHELLOPTS unchanged by the launcher);
+#   command string, exported BASHOPTS and SHELLOPTS unchanged by the launcher, PWD and OLDPWD for
+#   a non-shell command);
 # - each test that must read red at the base passes in the checkout first, so the base is what
 #   fails;
 # - a list whose every line is red, a BUILD-FAILED among them, exits 0;
@@ -60,7 +61,7 @@ trap cleanup EXIT
 # A no-break space, U+00A0, as UTF-8: a field of a list may hold it, and Go rewrites it to _.
 readonly nbsp=$'\xc2\xa0'
 
-for program in git go bun awk realpath; do
+for program in git go bun awk realpath python3; do
   command -v "$program" >/dev/null || {
     echo "red-at-base.test.sh: $program is not on PATH, and the tool needs it" >&2
     exit 1
@@ -144,6 +145,15 @@ write bin/shell-options.sh 'printf "BASHOPTS=%s\nSHELLOPTS=%s\nend-of-options\n"
 write bin/pass-executable '#!/usr/bin/env bash
 echo "pass-executable ran"'
 chmod +x "${repo}/bin/pass-executable"
+write bin/check-directory.py 'import os
+import sys
+
+cwd = os.getcwd()
+print("PWD=" + os.environ.get("PWD", "<absent>"), flush=True)
+print("cwd=" + cwd, flush=True)
+assert os.environ.get("PWD") == cwd, "PWD does not identify the working directory"
+assert os.environ.get("OLDPWD") == sys.argv[1], "OLDPWD does not identify the launch directory"
+print("PWD matches the working directory; OLDPWD matches the launch directory")'
 write version.txt '1'
 scratch_git add -A
 scratch_git commit -q -m 'the base'
@@ -753,6 +763,29 @@ expect_lines 3
 expect_verdict 1 BUILD-FAILED
 expect_verdict 2 RED 'exit 127 from ./bin/exits-127: about to exit 127'
 expect_verdict 3 GREEN "${direct_options//$'\n'/ | }"
+expect_nothing_left
+
+case_name='cmd: a non-shell command sees the base directory in PWD and the launch directory in OLDPWD'
+directory_base="${scratch}/directory-base"
+scratch_git worktree add --detach --quiet "$directory_base" "$base_commit"
+for directory in . web; do
+  set +e
+  (cd "$repo" && export OLDPWD=not-the-launch-directory && cd "${directory_base}/${directory}" &&
+    python3 "${directory_base}/bin/check-directory.py" "$repo") >"${scratch}/direct" 2>&1
+  direct_status=$?
+  set -e
+  echo "-- direct non-shell directory check in $directory (exit $direct_status)"
+  cat "${scratch}/direct"
+  [[ $direct_status == 0 ]] || fail "expected the direct non-shell directory check to pass, got $direct_status"
+done
+scratch_git worktree remove --force "$directory_base"
+run_tool "$(list directory-environment \
+  "cmd . directory-environment -- python3 bin/check-directory.py $repo" \
+  "cmd web nested-directory-environment -- python3 ../bin/check-directory.py $repo")" OLDPWD=not-the-launch-directory
+expect_status 1
+expect_lines 2
+expect_verdict 1 GREEN 'PWD matches the working directory; OLDPWD matches the launch directory'
+expect_verdict 2 GREEN 'PWD matches the working directory; OLDPWD matches the launch directory'
 expect_nothing_left
 
 case_name='e2e: each verdict of an e2e line'
