@@ -1054,7 +1054,7 @@ jobs:
           STEM: ${{ steps.codex_envoy_handed.outputs.stem }}
         run: |
           if ! read_name=$(npm view "$NAME" name 2>&1); then
-            if grep -q E404 <<<"$read_name"; then
+            if grep -qE '^npm (error|ERR!) code E404$' <<<"$read_name"; then
               echo "::warning::npm has no package $NAME yet, and trusted publishing cannot create one: an owner of its scope publishes it once by hand and names this workflow its trusted publisher. Not publishing $VERSION."
               exit 0
             fi

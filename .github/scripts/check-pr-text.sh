@@ -289,17 +289,20 @@ else
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
       # A 404 is GitHub's answer that the release does not exist, not a refusal to retry, so the
-      # shell retry_fetch runs exits 0 on gh's `(HTTP 404)`: that tag costs one call, and a read
-      # that got no answer (a 5xx, a reset, a timeout) is retried as every read here is. Each
-      # attempt rewrites gh-error, so the last one's message is what UNKNOWN names.
+      # shell retry_fetch runs exits 0 on gh's own status line for a 404, `gh: … (HTTP 404)` as the
+      # whole line: that tag costs one call, and a read that got no answer (a 5xx, a reset, a
+      # timeout) is retried as every read here is. gh puts the API's message in front of its
+      # `(HTTP <code>)`, so a 504 whose message quotes `(HTTP 404)` ends its line with `(HTTP 504)`
+      # and is no 404 (dispatch://INFRA-1545, round 51). Each attempt rewrites gh-error, so the
+      # last one's message is what UNKNOWN names.
       # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2 and $status
       if ! retry_fetch "the release of $tag" 30 -- bash -c \
-        'gh api "$1" 2> "$2" || { status=$?; grep -q -F "(HTTP 404)" "$2" && exit 0; exit "$status"; }' \
+        'gh api "$1" 2> "$2" || { status=$?; grep -qE "^gh: .*[(]HTTP 404[)]\$" "$2" && exit 0; exit "$status"; }' \
         release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/release"; then
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
       fi
-      if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
+      if grep -qE '^gh: .*[(]HTTP 404[)]$' "$work/gh-error"; then continue; fi
       published=$(jq -r 'select(.draft == false) | .published_at // empty' "$work/release")
       [ -n "$published" ] || continue
       if [ -z "$first_tag" ]; then
