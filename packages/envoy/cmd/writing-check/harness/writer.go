@@ -25,7 +25,8 @@ var writerFiles embed.FS
 
 var writerPrompts = template.Must(template.New("writer").ParseFS(writerFiles, "writer/*.md"))
 
-// WriterDigest is the SHA-256 of every writer prompt, by name: what a run that plays the writer
+// WriterDigest is the SHA-256 of every writer prompt, by name, and of the refusal lines change
+// 2's writer reads before the rules (writingRulesRefusalLines): what a run that plays the writer
 // was made with.
 func WriterDigest() string {
 	h := sha256.New()
@@ -36,6 +37,8 @@ func WriterDigest() string {
 		fmt.Fprintf(h, "%s %d\n", name, len(data))
 		h.Write(data)
 	}
+	refusal := strings.Join(writingRulesRefusalLines, "\n")
+	fmt.Fprintf(h, "%d\n%s", len(refusal), refusal)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

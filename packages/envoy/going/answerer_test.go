@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -24,6 +25,13 @@ import (
 // testTokensPerMinute is a quota far past anything one test's prompts cost, so every test but the
 // quota's own exercises the pacer without ever waiting on it.
 const testTokensPerMinute = 300_000
+
+// testPace is an answerer's share of a pacer of its own whose quota is tokensPerMinute, as the
+// boot's share states the deployment's quota (cmd/dispatch answererConfig.share); now, when set,
+// is the pacer's clock.
+func testPace(tokensPerMinute int, now func() time.Time) *modelpace.Caller {
+	return modelpace.New(modelpace.Config{Now: now}).Join(modelpace.Share{TokensPerMinute: tokensPerMinute, StatesQuota: true})
+}
 
 // The two items a test's seeding search finds, and one target no citation set holds: the filter
 // admits a link by its href alone, so the href is what a reply links.
@@ -194,12 +202,13 @@ func testReads() *reads {
 }
 
 // testAnswerer builds an Answerer over the real HTTP client against model, so every test drives
-// the client's own route, sign-in and reading of the stream.
+// the client's own route, sign-in and reading of the stream, and the calls pass a pacer of
+// testTokensPerMinute unless cfg names one.
 func testAnswerer(t *testing.T, model *goingtest.Model, cfg going.AnswererConfig) *going.Answerer {
 	t.Helper()
 	cfg.Model = testClient(t, model, going.HTTPConfig{})
-	if cfg.TokensPerMinute == 0 {
-		cfg.TokensPerMinute = testTokensPerMinute
+	if cfg.Pace == nil {
+		cfg.Pace = testPace(testTokensPerMinute, nil)
 	}
 	answerer, err := going.NewAnswerer(cfg)
 	if err != nil {
@@ -232,7 +241,7 @@ func answerWords(n int) string {
 // TestNewAnswererRefusesAnswererWithoutAModel: an answerer with no chat client is a programming
 // error, refused at boot rather than at the first question.
 func TestNewAnswererRefusesAnswererWithoutAModel(t *testing.T) {
-	if _, err := going.NewAnswerer(going.AnswererConfig{TokensPerMinute: testTokensPerMinute}); err == nil {
+	if _, err := going.NewAnswerer(going.AnswererConfig{Pace: testPace(testTokensPerMinute, nil)}); err == nil {
 		t.Fatal("NewAnswerer with no model returned no error")
 	}
 }
@@ -471,8 +480,8 @@ func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
 	transport := &deadlineTransport{}
 	answerer, err := going.NewAnswerer(going.AnswererConfig{
-		Model:           testClient(t, model, going.HTTPConfig{HTTPClient: &http.Client{Transport: transport}}),
-		TokensPerMinute: testTokensPerMinute,
+		Model: testClient(t, model, going.HTTPConfig{HTTPClient: &http.Client{Transport: transport}}),
+		Pace:  testPace(testTokensPerMinute, nil),
 	})
 	if err != nil {
 		t.Fatalf("NewAnswerer: %v", err)
@@ -547,8 +556,7 @@ func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
 	frozen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	model := goingtest.NewModel(t, goingtest.Reply{Text: "An answer nobody will see."})
 	answerer := testAnswerer(t, model, going.AnswererConfig{
-		TokensPerMinute: 1,
-		Now:             func() time.Time { return frozen },
+		Pace: testPace(1, func() time.Time { return frozen }),
 	})
 	stream := &answerStream{}
 

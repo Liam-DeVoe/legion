@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -52,14 +51,9 @@ type AnswererConfig struct {
 	// Model is the chat client; required.
 	Model Client
 	// Pace is the answerer's share of the process's pacer (modelpace), which every caller of the
-	// answerer's deployment shares; each call is charged to it before it is made. Nil paces the
-	// calls on a pacer of the answerer's own, by TokensPerMinute.
+	// answerer's deployment shares; each call is charged to it before it is made. Nil paces no
+	// call.
 	Pace *modelpace.Caller
-	// TokensPerMinute is, with no Pace, the deployment's quota, which paces this answerer's
-	// calls. Zero or less is no pacing: the endpoint form names no quota.
-	TokensPerMinute int
-	// Now replaces time.Now in a pacer of the answerer's own; a test drives the pacer with it.
-	Now func() time.Time
 }
 
 // NewAnswerer checks cfg's shape and returns an Answerer. It makes no call, so a model service
@@ -68,14 +62,10 @@ func NewAnswerer(cfg AnswererConfig) (*Answerer, error) {
 	if cfg.Model == nil {
 		return nil, errors.New("going: an answerer needs a chat client")
 	}
-	pace := cfg.Pace
-	if pace == nil && cfg.TokensPerMinute > 0 {
-		pace = modelpace.New(modelpace.Config{Now: cfg.Now}).Join(modelpace.Share{TokensPerMinute: cfg.TokensPerMinute, StatesQuota: true})
-	}
-	if pace == nil {
+	if cfg.Pace == nil {
 		return &Answerer{model: cfg.Model}, nil
 	}
-	return &Answerer{model: &pacedClient{inner: cfg.Model, pace: pace}}, nil
+	return &Answerer{model: &pacedClient{inner: cfg.Model, pace: cfg.Pace}}, nil
 }
 
 // Request is one question and the two reads the answerer makes through its caller, which is what

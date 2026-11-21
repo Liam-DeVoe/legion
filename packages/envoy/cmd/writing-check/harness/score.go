@@ -474,10 +474,13 @@ type RunParams struct {
 	SessionsSHA  string `json:"sessions_counts_sha256"`
 	SessionChars int    `json:"session_chars"`
 	// Rounds and Unedited are change 3's bound on its reviews and what posts with no writer
-	// (--rounds, --unedited); Local the local Dispatch's settings the change reads.
-	Rounds   int               `json:"rounds,omitempty"`
-	Unedited string            `json:"unedited,omitempty"`
-	Local    map[string]string `json:"local,omitempty"`
+	// (--rounds, --unedited); Local the local Dispatch's settings the change reads, with the
+	// digest of the reviewer it runs. CheckBundleSHA256 is the digest of the writing check's
+	// bundle change 7a runs in process (BundleDigest), absent for a plan without 7a.
+	Rounds            int               `json:"rounds,omitempty"`
+	Unedited          string            `json:"unedited,omitempty"`
+	Local             map[string]string `json:"local,omitempty"`
+	CheckBundleSHA256 string            `json:"check_bundle_sha256,omitempty"`
 	// UncachedInputPerMinute is the pace of the run's own model calls in uncached input tokens a
 	// minute (--uncached-input-per-minute), 0 for no pacing. So every part of a run that
 	// continues in a directory was paced the same.
@@ -1012,6 +1015,15 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		if plan.local() {
 			params.Local = inst.readSettings()
+		}
+		if plan.has(changeCheck) {
+			root, err := moduleRoot()
+			if err != nil {
+				return usage(err.Error())
+			}
+			if params.CheckBundleSHA256, _, err = BundleDigest(root); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	var only []Judgement

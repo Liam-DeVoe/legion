@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 )
@@ -142,7 +143,9 @@ type labelCall struct {
 }
 
 // labelRecord is one line of labels.jsonl: one write, its sentences' labels, its label and the
-// calls that made them. A write with an Error is labelled again by --resume.
+// calls that made them. A write with an Error is labelled again by --resume. Params is the
+// digest of what every label of the run is made with (labelParams), and Input that of the write
+// as the calls read it (labelJob.input): --resume keeps a record only where both are this run's.
 type labelRecord struct {
 	EventID    int64           `json:"event_id"`
 	SourceID   string          `json:"source_id"`
@@ -152,16 +155,61 @@ type labelRecord struct {
 	Sentences  []sentenceLabel `json:"sentences"`
 	Calls      []labelCall     `json:"calls"`
 	Error      string          `json:"error,omitempty"`
+	Params     string          `json:"params_sha256"`
+	Input      string          `json:"input_sha256"`
 }
 
 func (r labelRecord) key() writeKey { return writeKey{r.EventID, r.SourceID, r.Copy} }
 
-// labelJob is one write to label.
+// labelJob is one write to label. input is the SHA-256 of what the calls read of it: its issue
+// title and each case's field, surface and text.
 type labelJob struct {
 	key    writeKey
 	family string
 	title  string
 	cases  []Case
+	input  string
+}
+
+// labelParams is the SHA-256 of what every label of a run is made with: the system prompt (the
+// preamble and the definition), the model and its effort, the most sentences a call labels, and
+// the bounds that shape a call's input and reply.
+func labelParams(system, model, effort string, chunk int) string {
+	b, _ := json.Marshal(struct {
+		System       string `json:"system"`
+		Model        string `json:"model"`
+		Effort       string `json:"effort"`
+		Chunk        int    `json:"chunk"`
+		OutputTokens int    `json:"output_tokens"`
+		ContextChars int    `json:"context_chars"`
+		Neighbours   int    `json:"neighbours"`
+	}{system, model, effort, chunk, labelOutputTokens, labelContextChars, labelNeighbours})
+	return sha256Hex(b)
+}
+
+// checkLabelled refuses the records --resume would keep when any was made under other
+// parameters than params, or from another text or title of its write than jobs hold: a resume
+// continues one labelling, and a label of an earlier definition, model or text is not one of it.
+func checkLabelled(path string, kept []labelRecord, jobs []labelJob, params string) error {
+	input := make(map[writeKey]string, len(jobs))
+	for _, j := range jobs {
+		input[j.key] = j.input
+	}
+	var otherParams, otherInput []labelRecord
+	for _, r := range kept {
+		if r.Params != params {
+			otherParams = append(otherParams, r)
+		} else if in, ok := input[r.key()]; ok && in != r.Input {
+			otherInput = append(otherInput, r)
+		}
+	}
+	if n := len(otherParams); n > 0 {
+		return fmt.Errorf("%s holds %d of %d labels made with another definition, model, effort or --chunk (params_sha256 %q, this run's %s): give a new --out", path, n, len(kept), otherParams[0].Params, params)
+	}
+	if n := len(otherInput); n > 0 {
+		return fmt.Errorf("%s holds %d labels of writes whose text or issue title in --in is not the one they were labelled from (the first, %s): give a new --out", path, n, otherInput[0].key())
+	}
+	return nil
 }
 
 // labeller makes the labeller's calls.
@@ -169,6 +217,8 @@ type labeller struct {
 	model  agentloop.Model
 	system string
 	chunk  int
+	// params is labelParams of the run, which each record carries.
+	params string
 	// callTime bounds one model call.
 	callTime time.Duration
 	// call is agentloop.Run, replaced in tests.
@@ -199,6 +249,19 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if *in == "" || *definition == "" || *out == "" || flags.NArg() > 0 || *concurrency < 1 || *chunk < 1 || *callTime <= 0 {
 		fmt.Fprintln(stderr, "writing-check label: --in, --definition, --out, --endpoint and --key-file are required, --concurrency, --chunk and --call-timeout must be above 0, and nothing else")
 		return 2
+	}
+	// The labels hold each write's sentences and the labeller's rewrites of them.
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check label: %v\n", err)
+		return 2
+	}
+	// The labels file is renamed over --out before the cases are read again on a resume, so an
+	// --out that is an input would lose that input.
+	for _, input := range [][2]string{{"--in", *in}, {"--titles", *titles}} {
+		if input[1] != "" && sameFile(input[1], *out) {
+			fmt.Fprintf(stderr, "writing-check label: --out names the %s file: give another --out\n", input[0])
+			return 2
+		}
 	}
 	model, err := probeModel(*kind, *endpoint, *modelID, "", *keyFile, embed.EntraConfig{})
 	if err != nil {
@@ -237,17 +300,22 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(err)
 	}
+	system := labelPreamble + string(rubric)
+	params := labelParams(system, *modelID, *effort, *chunk)
 	var done []labelRecord
 	if *resume {
 		if done, err = keepLabelled(*out); err != nil {
 			return fail(err)
+		}
+		if err := checkLabelled(*out, done, jobs, params); err != nil {
+			fmt.Fprintf(stderr, "writing-check label: %v\n", err)
+			return 2
 		}
 	}
 	file, err := startLabels(*out, done)
 	if err != nil {
 		return fail(err)
 	}
-	defer file.Close()
 	w := bufio.NewWriter(file)
 	labelled := map[writeKey]bool{}
 	for _, r := range done {
@@ -261,7 +329,7 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	fmt.Fprintf(stderr, "writing-check label: %d writes, %d already labelled, %d to label\n", len(jobs), len(done), len(todo))
 
-	l := &labeller{model: model, system: labelPreamble + string(rubric), chunk: *chunk, callTime: *callTime, call: agentloop.Run, sleep: sleepCtx}
+	l := &labeller{model: model, system: system, chunk: *chunk, params: params, callTime: *callTime, call: agentloop.Run, sleep: sleepCtx}
 	records := slices.Clone(done)
 	var mu sync.Mutex
 	var writeErr error
@@ -298,12 +366,25 @@ feeding:
 	}
 	close(feed)
 	wg.Wait()
+	// Each record was flushed as it came (writeRecord); the close is the file's last write.
+	if err := file.Close(); writeErr == nil {
+		writeErr = err
+	}
 	if writeErr != nil {
 		return fail(writeErr)
 	}
 	writeLabelSummary(stdout, records)
+	failed := 0
+	for _, r := range records[len(done):] {
+		if r.Error != "" {
+			failed++
+		}
+	}
 	if ctx.Err() != nil {
-		return fail(fmt.Errorf("stopped: %w; rerun with --resume", ctx.Err()))
+		return fail(fmt.Errorf("stopped: %w, %d of %d writes labelled, %d of them with failed calls; rerun with --resume", ctx.Err(), len(records)-len(done), len(todo), failed))
+	}
+	if failed > 0 {
+		return fail(fmt.Errorf("%d of %d writes have no label, as their calls failed (their errors are in %s); rerun with --resume to label them again", failed, len(todo), *out))
 	}
 	return 0
 }
@@ -419,7 +500,8 @@ func readTitles(path string) (func(issue string, eventID int64) string, error) {
 	}, nil
 }
 
-// labelJobs groups cases into writes, in the order of each write's first case.
+// labelJobs groups cases into writes, in the order of each write's first case, each with the
+// digest of what its calls read.
 func labelJobs(cases []Case, titleOf func(string, int64) string) ([]labelJob, error) {
 	var jobs []labelJob
 	at := map[writeKey]int{}
@@ -435,14 +517,18 @@ func labelJobs(cases []Case, titleOf func(string, int64) string) ([]labelJob, er
 	}
 	for i := range jobs {
 		surfaces := make([]string, len(jobs[i].cases))
+		fields := make([]labelField, len(jobs[i].cases))
 		for j, c := range jobs[i].cases {
 			surfaces[j] = c.Surface
+			fields[j] = labelField{Field: c.Field, Surface: c.Surface, Text: c.Text}
 		}
 		f, err := familyOf(surfaces)
 		if err != nil {
 			return nil, err
 		}
 		jobs[i].family = f
+		input, _ := json.Marshal(labelInput{IssueTitle: jobs[i].title, Fields: fields})
+		jobs[i].input = sha256Hex(input)
 	}
 	return jobs, nil
 }
@@ -508,7 +594,7 @@ func writeLabelOf(sentences []sentenceLabel) string {
 // label labels one write, chunk by chunk. A chunk that fails leaves the write with an Error and
 // the label "error".
 func (l *labeller) label(ctx context.Context, j labelJob) labelRecord {
-	rec := labelRecord{EventID: j.key.EventID, SourceID: j.key.SourceID, Copy: j.key.Copy, Family: j.family}
+	rec := labelRecord{EventID: j.key.EventID, SourceID: j.key.SourceID, Copy: j.key.Copy, Family: j.family, Params: l.params, Input: j.input}
 	rec.Sentences = numbered(j.cases)
 	rec.Calls = []labelCall{}
 	rawChars := 0
@@ -687,14 +773,14 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// writeLabelSummary prints the counts of write labels, verdicts and served models, the errors,
-// the call latency and the tokens.
+// writeLabelSummary prints the counts of write labels, verdicts and served models, the calls
+// that failed (whose write is labelled "error"), the call latency and the tokens.
 func writeLabelSummary(w io.Writer, records []labelRecord) {
 	writes := map[string]int{}
 	verdicts := map[string]int{}
 	models := map[string]int{}
 	var latencies []float64
-	var in, out, calls, attempts int
+	var in, out, calls, attempts, failed int
 	for _, r := range records {
 		writes[r.WriteLabel]++
 		for _, s := range r.Sentences {
@@ -709,6 +795,9 @@ func writeLabelSummary(w io.Writer, records []labelRecord) {
 			latencies = append(latencies, c.LatencyMS)
 			in += c.InputTokens
 			out += c.OutputTokens
+			if c.Error != "" {
+				failed++
+			}
 		}
 	}
 	fmt.Fprintf(w, "writes: %d\n", len(records))
@@ -719,7 +808,7 @@ func writeLabelSummary(w io.Writer, records []labelRecord) {
 	for _, k := range sortedKeys(verdicts) {
 		fmt.Fprintf(w, "  %s: %d\n", k, verdicts[k])
 	}
-	fmt.Fprintf(w, "calls: %d (attempts %d)\n", calls, attempts)
+	fmt.Fprintf(w, "calls: %d (attempts %d, failed %d)\n", calls, attempts, failed)
 	fmt.Fprintln(w, "served model ids:")
 	for _, k := range sortedKeys(models) {
 		label := k

@@ -85,10 +85,12 @@ func ruleSetList(sets []reviewer.RuleSet) string {
 	return strings.Join(names, ",")
 }
 
-// readSettings are the local Dispatch's settings a change reads, as the instance runs them: each
-// one's value, or its default where the instance sets none.
+// readSettings are what a change reads of the local Dispatch, as the instance runs it: each
+// setting's value, or its default where the instance sets none, and the digest of the reviewer's
+// prompts and code it was built from (LocalInstance.ReviewerSHA256), so a run that continues
+// reuses no review made under other reviewer texts.
 func (inst LocalInstance) readSettings() map[string]string {
-	out := map[string]string{"database": inst.Database}
+	out := map[string]string{"database": inst.Database, "reviewer_sha256": inst.ReviewerSHA256}
 	for name, fallback := range localSettingDefaults {
 		out[name] = cmp.Or(strings.TrimSpace(inst.Values[name]), fallback)
 	}

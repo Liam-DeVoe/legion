@@ -19,8 +19,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/time/rate"
-
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/candidates"
 )
@@ -38,7 +36,9 @@ const (
 	// OutcomeCandidateCap is a call that answered for the first CandidateCap candidates; the
 	// rest were not read.
 	OutcomeCandidateCap = "candidate_cap"
-	// OutcomeBudget is a call not made, because the token budget for the minute is spent.
+	// OutcomeBudget is a call not made, because the caller's pacer (modelpace) could not serve it
+	// in the time left. A caller that paces its reads answers it (the reviewer's pacedReader);
+	// Read itself never does.
 	OutcomeBudget = "reader_budget"
 	// OutcomeTimeout is a call past Config.Timeout.
 	OutcomeTimeout = "reader_timeout"
@@ -81,9 +81,6 @@ type Config struct {
 	BundleModelID string
 	// Timeout bounds one call; zero sets no bound beyond the caller's context.
 	Timeout time.Duration
-	// TokensPerMinute is the token budget of the calls, estimated before each call from the
-	// prompt's length and MaxOutputTokens; zero sets no budget.
-	TokensPerMinute int
 	// MaxOutputTokens bounds one reply; zero is DefaultMaxOutputTokens.
 	MaxOutputTokens int
 	// Temperature is the sampling temperature of every call; nil leaves the provider's
@@ -128,7 +125,6 @@ type Call struct {
 // Reader reads candidates with a model. It is safe for concurrent use.
 type Reader struct {
 	cfg      Config
-	budget   *rate.Limiter
 	calls    atomic.Int64
 	mismatch atomic.Bool
 }
@@ -145,11 +141,7 @@ func New(cfg Config) *Reader {
 	if cfg.NoEffort {
 		cfg.Model.Effort = ""
 	}
-	budget := rate.NewLimiter(rate.Inf, 0)
-	if cfg.TokensPerMinute > 0 {
-		budget = rate.NewLimiter(rate.Limit(float64(cfg.TokensPerMinute)/60), cfg.TokensPerMinute)
-	}
-	return &Reader{cfg: cfg, budget: budget}
+	return &Reader{cfg: cfg}
 }
 
 // AzureModel is the model of an Azure AI Foundry chat deployment: the Chat Completions shape at
@@ -236,9 +228,6 @@ func (r *Reader) Read(ctx context.Context, cands []candidates.Candidate) ([]Verd
 		return nil, OutcomeError
 	}
 	user := bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))
-	if !r.budget.AllowN(time.Now(), r.estimate(len(user))) {
-		return nil, OutcomeBudget
-	}
 
 	r.calls.Add(1)
 	result, err := agentloop.Run(ctx, agentloop.Request{
@@ -281,12 +270,6 @@ func (r *Reader) Read(ctx context.Context, cands []candidates.Candidate) ([]Verd
 		return nil, OutcomeMalformed
 	}
 	return verdicts, outcome
-}
-
-// estimate is the tokens one call is counted at against the budget: the prompt at four bytes a
-// token, and the most the reply may take.
-func (r *Reader) estimate(userBytes int) int {
-	return (len(Prompt)+userBytes+3)/4 + r.cfg.MaxOutputTokens
 }
 
 // verdictsOf is a verdict for each candidate sent, in their order, from the reply (which

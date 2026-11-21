@@ -11,6 +11,7 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -179,6 +180,20 @@ func runDatasetFollowups(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset followups: %v\n", err)
 		return 1
 	}
+	// The bundle's files are joined in a directory under --out, removed once the step ends, and
+	// the step's files reach --out only once every one is written (dsStaged), as build's do: a
+	// refused step leaves --out as it was, and an --out made for it is removed again.
+	_, statErr := os.Stat(*out)
+	made := errors.Is(statErr, os.ErrNotExist)
+	dir := ""
+	defer func() {
+		if dir != "" {
+			os.RemoveAll(dir)
+		}
+		if made {
+			os.Remove(*out)
+		}
+	}()
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(err)
 	}
@@ -186,12 +201,11 @@ func runDatasetFollowups(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	defer os.RemoveAll(dir)
 	in, err := openBundle(*from, dir)
 	if err != nil {
 		return fail(err)
 	}
-	res, err := writeFollowups(in, *casesPath, *out)
+	res, err := dsStaged(*out, func(staged string) (dsFollowupsResult, error) { return writeFollowups(in, *casesPath, staged) })
 	if err != nil {
 		return fail(err)
 	}

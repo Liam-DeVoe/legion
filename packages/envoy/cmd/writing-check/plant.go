@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 )
 
@@ -249,6 +250,10 @@ func runPlant(args []string, stdout, stderr io.Writer) int {
 	}
 	if *in == "" || *corpus == "" || *out == "" || !flagGiven(flags, "seed") || flags.NArg() > 0 || *perShape < 0 || *nolist < 0 || *perShape+*nolist == 0 {
 		fmt.Fprintln(stderr, "writing-check plant: --in, --corpus, --seed and --out are required, at least one fault, and nothing else")
+		return 2
+	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check plant: %v\n", err)
 		return 2
 	}
 	fail := func(err error) int {

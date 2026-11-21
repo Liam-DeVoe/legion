@@ -1705,18 +1705,23 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 			return 2
 		}
 	}
+	if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset fetch: %v\n", err)
+		return 2
+	}
+	base = strings.TrimRight(base, "/")
 	if err := os.MkdirAll(*work, 0o700); err != nil {
 		return fail(err)
 	}
 	endText := end.UTC().Format(time.RFC3339Nano)
-	if err := dsCheckWorkEnd(*work, endText, *owner); err != nil {
+	if err := dsCheckWorkEnd(*work, endText, *owner, base); err != nil {
 		return fail(err)
 	}
 	limit := xrate.NewLimiter(requestsPerSecond, 1)
 	httpClient := &http.Client{Timeout: 120 * time.Second}
 	clients := make([]*client, *concurrency)
 	for i := range clients {
-		clients[i] = &client{base: strings.TrimRight(base, "/"), tokenFile: tokenFile, http: httpClient, limit: limit}
+		clients[i] = &client{base: base, tokenFile: tokenFile, http: httpClient, limit: limit}
 	}
 	started := time.Now()
 	last, err := fetchEventPages(ctx, clients[0], *work, end, stderr)
@@ -1772,6 +1777,13 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	if err := dsRunFetchJobs(ctx, clients, jobs, bodies, versions, stderr); err != nil {
 		return fail(err)
 	}
+	// assembleSnapshot reads the two files back, so each is closed, and its close checked, first;
+	// the deferred closes are those of a fetch that failed before here.
+	for _, f := range []*os.File{bodies, versions} {
+		if err := f.Close(); err != nil {
+			return fail(err)
+		}
+	}
 	header := snapLine{Kind: "header", Format: dsFormat, End: endText, Owner: canonicalLogin(*owner), NamingIssue: dsNamingIssue,
 		FirstEvent: ix.firstEvent, LastEvent: ix.lastEvent, Events: ix.events, Labels: len(ix.labels)}
 	sum, err := assembleSnapshot(*out, *work, header, ix.labels)
@@ -1788,11 +1800,12 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	return 0
 }
 
-// dsCheckWorkEnd refuses a work directory fetched for another end time or owner, and records
-// them in a new one.
-func dsCheckWorkEnd(dir, end, owner string) error {
+// dsCheckWorkEnd refuses a work directory fetched for another end time or owner, or from another
+// Dispatch (DISPATCH_URL, without a trailing slash), and records the three in a new one: its
+// pages and the reads beside them are reused, so they must be of this fetch.
+func dsCheckWorkEnd(dir, end, owner, dispatchURL string) error {
 	path := filepath.Join(dir, "fetch.json")
-	want := map[string]string{"end": end, "owner": canonicalLogin(owner)}
+	want := map[string]string{"end": end, "owner": canonicalLogin(owner), "dispatch_url": dispatchURL}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		b, _ := json.Marshal(want)
@@ -1805,8 +1818,8 @@ func dsCheckWorkEnd(dir, end, owner string) error {
 	if err := json.Unmarshal(data, &got); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	if got["end"] != want["end"] || got["owner"] != want["owner"] {
-		return fmt.Errorf("%s was fetched for end %s and owner %s: give those, or another --work", dir, got["end"], got["owner"])
+	if got["end"] != want["end"] || got["owner"] != want["owner"] || got["dispatch_url"] != want["dispatch_url"] {
+		return fmt.Errorf("%s was fetched for end %s and owner %s from Dispatch %q: give those, or another --work", dir, got["end"], got["owner"], got["dispatch_url"])
 	}
 	return nil
 }
@@ -2145,9 +2158,10 @@ type dsVerdict struct {
 	Error          string   `json:"error,omitempty"`
 }
 
-// readVerdicts reads a verdicts file: the last line of each text that holds no error, and the
-// SHA-256 of the bytes it read. A line a crash cut short is skipped, and a missing file holds no
-// verdict, as an empty one does.
+// readVerdicts reads a verdicts file: the last line of each text, where it holds no error, and the
+// SHA-256 of the bytes it read. A text whose last line holds an error has no verdict, though an
+// earlier line held one: classify wrote that line when it classified the text again. A line a
+// crash cut short is skipped, and a missing file holds no verdict, as an empty one does.
 func readVerdicts(path string) (map[string]dsVerdict, string, error) {
 	out := map[string]dsVerdict{}
 	data, err := os.ReadFile(path)
@@ -2159,12 +2173,23 @@ func readVerdicts(path string) (map[string]dsVerdict, string, error) {
 	}
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		var v dsVerdict
-		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &v) != nil || v.Error != "" {
+		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &v) != nil {
+			continue
+		}
+		if v.Error != "" {
+			delete(out, v.Text)
 			continue
 		}
 		out[v.Text] = v
 	}
 	return out, sha256Hex(data), nil
+}
+
+// currentVerdict is whether v, a verdict an earlier run wrote, was made with the prompt, the model
+// asked for and the input of this run, whose digests the line records: only such a verdict is
+// kept, so a change of any of the three classifies the text again.
+func currentVerdict(v dsVerdict, promptSHA, model, inputSHA string) bool {
+	return v.PromptSHA256 == promptSHA && v.RequestedModel == model && v.InputSHA256 == inputSHA
 }
 
 // classifyInput is the user message of one classify call (wordrecords.Input): the agent text the
@@ -2298,22 +2323,32 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		return fail(err)
 	}
+	// A verdict is kept only where it was made with this run's prompt, input and model
+	// (currentVerdict); any other is not this run's, so the text is classified again and its new
+	// line takes its place.
+	promptSHA := sha256Hex([]byte(wordrecords.SelectPrompt))
 	var todo []*dsText
+	stale := 0
 	for _, p := range persons {
-		if _, ok := done[p.tid()]; !ok {
-			todo = append(todo, p)
+		v, ok := done[p.tid()]
+		if ok && currentVerdict(v, promptSHA, *modelID, sha256Hex([]byte(ix.classifyInput(p)))) {
+			continue
 		}
+		if ok {
+			stale++
+		}
+		todo = append(todo, p)
 	}
+	current := len(persons) - len(todo)
 	if *limit > 0 && len(todo) > *limit {
 		todo = todo[:*limit]
 	}
-	fmt.Fprintf(stderr, "writing-check dataset classify: %d texts people wrote, %d with a verdict, %d to classify\n", len(persons), len(done), len(todo))
+	fmt.Fprintf(stderr, "writing-check dataset classify: %d texts people wrote, %d with a verdict of this prompt, input and model, %d with one of another (classified again), %d to classify in this run\n", len(persons), current, stale, len(todo))
 	file, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return fail(err)
 	}
-	defer file.Close()
-	c := &dsClassifier{model: model, requested: *modelID, promptSHA: sha256Hex([]byte(wordrecords.SelectPrompt)), call: agentloop.Run, sleep: sleepCtx}
+	c := &dsClassifier{model: model, requested: *modelID, promptSHA: promptSHA, call: agentloop.Run, sleep: sleepCtx}
 	var mu sync.Mutex
 	var writeErr error
 	n, failed := 0, 0
@@ -2353,6 +2388,10 @@ feeding:
 	}
 	close(feed)
 	wg.Wait()
+	// Each line was written whole as it came (dsJSONLine); the close is the file's last write.
+	if err := file.Close(); writeErr == nil {
+		writeErr = err
+	}
 	if writeErr != nil {
 		return fail(writeErr)
 	}
@@ -2849,9 +2888,10 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 }
 
 // dsStaged runs write with a new directory under out, then moves each file write left there
-// into out, over a file of the same name, and answers what write answered. A write that fails
-// moves nothing: out is as it was, and an out that did not exist is removed again. The directory
-// is removed either way.
+// into out, over a file of the same name, and answers what write answered. A directory write
+// left there takes the place of the one of its name whole (followups' explanations/). A write
+// that fails moves nothing: out is as it was, and an out that did not exist is removed again.
+// The directory is removed either way.
 func dsStaged[T any](out string, write func(dir string) (T, error)) (T, error) {
 	var res T
 	_, err := os.Stat(out)
@@ -2875,7 +2915,14 @@ func dsStaged[T any](out string, write func(dir string) (T, error)) (T, error) {
 		return res, err
 	}
 	for _, f := range files {
-		if err := os.Rename(filepath.Join(dir, f.Name()), filepath.Join(out, f.Name())); err != nil {
+		target := filepath.Join(out, f.Name())
+		if f.IsDir() {
+			// A rename does not take the place of a directory that holds files.
+			if err := os.RemoveAll(target); err != nil {
+				return res, err
+			}
+		}
+		if err := os.Rename(filepath.Join(dir, f.Name()), target); err != nil {
 			return res, err
 		}
 	}
@@ -3858,7 +3905,10 @@ func splitBundle(bundle, sum string, size, partSize int64) ([]string, error) {
 
 // openBundle unpacks a bundle into dir and answers the build's inputs in it. from is the bundle,
 // its manifest (each part checked against its SHA-256, and the whole against the bundle's), or a
-// directory that holds one manifest or one bundle.
+// directory that holds one bundle: its manifest, read in place of the bundle where there is one,
+// or the bundle. A directory with parts, a manifest or a tarball of more than one bundle (an
+// earlier pack's beside a newer one) is refused, naming each, since it does not say which one
+// is meant.
 func openBundle(from, dir string) (dsInputs, error) {
 	var in dsInputs
 	info, err := os.Stat(from)
@@ -3868,13 +3918,31 @@ func openBundle(from, dir string) (dsInputs, error) {
 	if info.IsDir() {
 		manifests, _ := filepath.Glob(filepath.Join(from, "*.manifest.json"))
 		bundles, _ := filepath.Glob(filepath.Join(from, "*.tar.gz"))
+		parts, _ := filepath.Glob(filepath.Join(from, "*.part-*"))
+		// Each file is one of a bundle's, by the bundle's name: <bundle>.manifest.json,
+		// <bundle>.part-NNN (splitBundle) or the bundle itself.
+		names := map[string]bool{}
+		for _, m := range manifests {
+			names[strings.TrimSuffix(filepath.Base(m), ".manifest.json")] = true
+		}
+		for _, p := range parts {
+			name, _, _ := strings.Cut(filepath.Base(p), ".part-")
+			names[name] = true
+		}
+		for _, b := range bundles {
+			names[filepath.Base(b)] = true
+		}
 		switch {
+		case len(names) == 0:
+			return in, fmt.Errorf("%s holds no bundle, manifest or part: name a bundle", from)
+		case len(names) > 1:
+			return in, fmt.Errorf("%s holds %s, %d bundles: name one", from, strings.Join(sortedKeys(names), " and "), len(names))
 		case len(manifests) == 1:
 			from = manifests[0]
-		case len(manifests) == 0 && len(bundles) == 1:
+		case len(bundles) == 1:
 			from = bundles[0]
 		default:
-			return in, fmt.Errorf("%s holds %d manifests and %d bundles: name one", from, len(manifests), len(bundles))
+			return in, fmt.Errorf("%s holds parts of %s and no manifest of them: name the bundle", from, sortedKeys(names)[0])
 		}
 	}
 	bundle := from

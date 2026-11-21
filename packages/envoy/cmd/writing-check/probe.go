@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/candidates"
@@ -104,19 +105,18 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		NoEffort:      rf.noEffort,
 		Observe:       func(c reader.Call) { observed = c },
 	})
+	var file *os.File
 	var sink *bufio.Writer
 	if *out != "" {
-		f, err := os.Create(*out)
-		if err != nil {
+		if file, err = os.Create(*out); err != nil {
 			fmt.Fprintf(stderr, "writing-check probe-model: %v\n", err)
 			return 1
 		}
-		defer f.Close()
-		sink = bufio.NewWriter(f)
-		defer sink.Flush()
+		sink = bufio.NewWriter(file)
 	}
 	records := make([]probeCall, 0, *calls)
 	var end time.Time
+	var writeErr error
 	for i := range *calls {
 		if ctx.Err() != nil {
 			break
@@ -136,9 +136,22 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		records = append(records, rec)
 		if sink != nil {
-			line, _ := json.Marshal(rec)
-			sink.Write(line)
-			sink.WriteByte('\n')
+			// A record --out cannot take ends the probe: its file would not hold the calls made.
+			line, err := json.Marshal(rec)
+			if err == nil {
+				_, err = sink.Write(append(line, '\n'))
+			}
+			if writeErr = err; writeErr != nil {
+				break
+			}
+		}
+	}
+	if file != nil {
+		if err := sink.Flush(); writeErr == nil {
+			writeErr = err
+		}
+		if err := file.Close(); writeErr == nil {
+			writeErr = err
 		}
 	}
 	if len(records) == 0 {
@@ -146,14 +159,37 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	writeProbeSummary(stdout, records, rf.deadline, end)
+	if writeErr != nil {
+		fmt.Fprintf(stderr, "writing-check probe-model: writing %s: %v\n", *out, writeErr)
+		return 1
+	}
+	// A call that failed, or one not made, measured nothing, so the run is not complete.
+	failed := 0
+	for _, rec := range records {
+		if rec.Outcome != outcomeRead && rec.Outcome != reader.OutcomeCandidateCap {
+			failed++
+		}
+	}
+	if len(records) < *calls {
+		fmt.Fprintf(stderr, "writing-check probe-model: stopped (%v) after %d of %d calls, %d of them failed; run it again\n", ctx.Err(), len(records), *calls, failed)
+		return 1
+	}
+	if failed > 0 {
+		fmt.Fprintf(stderr, "writing-check probe-model: %d of %d calls failed (their outcomes and errors are in the summary and the records)\n", failed, len(records))
+		return 1
+	}
 	return 0
 }
 
 // probeModel is the model probe-model calls: the endpoint of the kind given, signed in with
-// Entra when the Azure flags are set or with the key file otherwise.
+// Entra when the Azure flags are set or with the key file otherwise. An endpoint the key or the
+// token may not be sent to is refused (harness.CredentialURL).
 func probeModel(kind, endpoint, deployment, apiVersion, keyFile string, entra embed.EntraConfig) (agentloop.Model, error) {
 	if endpoint == "" || deployment == "" {
 		return agentloop.Model{}, errors.New("--endpoint and --deployment are required")
+	}
+	if err := harness.CredentialURL("--endpoint", endpoint); err != nil {
+		return agentloop.Model{}, err
 	}
 	azure := entra.TenantID != "" || entra.ClientID != "" || entra.TokenFile != ""
 	var tokens func(context.Context) (string, error)

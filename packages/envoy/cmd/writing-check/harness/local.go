@@ -3,6 +3,9 @@ package harness
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,6 +43,47 @@ type LocalInstance struct {
 	// Seeded is the mark of the start that last reset and seeded the database (databaseSeeded),
 	// which a start with --keep keeps: `harness load` continues a load only in records of one mark.
 	Seeded string `json:"seeded"`
+	// ReviewerSHA256 is the digest of the reviewer's prompts and code the instance was built from
+	// (reviewerDigest), which a change's run records with the settings it reads.
+	ReviewerSHA256 string `json:"reviewer_sha256"`
+}
+
+// reviewerDir is the reviewer's package under the repository root: its prompts, and the code
+// that fills them, runs its rules and reads its replies.
+const reviewerDir = "packages/envoy/internal/dispatch/reviewer"
+
+// reviewerDigest is the SHA-256 of the reviewer's files under root, as the instance `harness
+// local` starts there is built from them: each Go file but the tests, then each prompt, by its
+// path in order. A run of a change that calls the local Dispatch's reviewer reuses its results
+// only under the same digest (readSettings, checkParams).
+func reviewerDigest(root string) (string, error) {
+	dir := filepath.Join(root, filepath.FromSlash(reviewerDir))
+	var paths []string
+	for _, pattern := range []string{"*.go", "prompts/*.md"} {
+		matches, err := filepath.Glob(filepath.Join(dir, pattern))
+		if err != nil {
+			return "", err
+		}
+		for _, m := range matches {
+			if !strings.HasSuffix(m, "_test.go") {
+				paths = append(paths, m)
+			}
+		}
+	}
+	if len(paths) == 0 {
+		return "", fmt.Errorf("%s holds no reviewer file: give the --repo the instance is built from", dir)
+	}
+	h := sha256.New()
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		fmt.Fprintf(h, "%s %d\n", filepath.ToSlash(rel), len(data))
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // localAgentToken is the agent bearer e2e/run-server.sh pins.
@@ -173,11 +217,6 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
-	// local.json names the instance that holds --out; a second instance there would take it.
-	localJSON := filepath.Join(*out, "local.json")
-	if _, err := os.Stat(localJSON); err == nil {
-		return usage(fmt.Sprintf("%s exists: another `harness local` holds this --out; stop it, give another --out, or remove the file if no instance runs", localJSON))
-	}
 	env := map[string]string{}
 	for _, kv := range settings {
 		name, value, _ := strings.Cut(kv, "=")
@@ -224,6 +263,26 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(err)
 	}
+	// local.json names the instance that holds --out. This start makes it here, empty, with an
+	// exclusive create, so a second start on --out is refused at once, however near the two are;
+	// the instance is written into it once it is up, and the start removes it when it ends only
+	// while it is still the file this start made.
+	localJSON := filepath.Join(*out, "local.json")
+	held, err := os.OpenFile(localJSON, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return usage(fmt.Sprintf("%s exists: another `harness local` holds this --out; stop it, give another --out, or remove the file if no instance runs", localJSON))
+	}
+	if err != nil {
+		return fail(err)
+	}
+	defer func() {
+		mine, statErr := held.Stat()
+		now, err := os.Stat(localJSON)
+		if statErr == nil && err == nil && os.SameFile(mine, now) {
+			os.Remove(localJSON)
+		}
+		held.Close()
+	}()
 	name := *database
 	if name == "" {
 		name = fmt.Sprintf("dispatch_harness_%d", time.Now().Unix())
@@ -289,17 +348,21 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				return stopped(err)
 			}
 			inst.Seeded = seeded
-			if err := writeJSON(localJSON, inst); err != nil {
+			if inst.ReviewerSHA256, err = reviewerDigest(root); err != nil {
+				return stopped(err)
+			}
+			// The instance goes into the file this start holds, not a new one renamed over it.
+			data, err := json.MarshalIndent(inst, "", "  ")
+			if err == nil {
+				_, err = held.Write(append(data, '\n'))
+			}
+			if err != nil {
 				return stopped(err)
 			}
 			fmt.Fprintf(stdout, "local Dispatch at %s on database %s; %s holds it. Stop it with Ctrl-C or SIGTERM.\n", inst.BaseURL, name, localJSON)
 		}
 	}
 	err = cmd.Wait()
-	// Only this process wrote local.json, and only once its instance was up.
-	if up {
-		os.Remove(localJSON)
-	}
 	if ctx.Err() != nil {
 		return 0
 	}

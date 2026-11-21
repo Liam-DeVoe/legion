@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 )
 
@@ -408,7 +409,7 @@ func TestDigestHashesTheBundleFilesInOrder(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("digest exited %d: %s", code, stderr)
 	}
-	digest, files, err := bundleDigest("../..")
+	digest, files, err := harness.BundleDigest("../..")
 	if err != nil {
 		t.Fatal(err)
 	}

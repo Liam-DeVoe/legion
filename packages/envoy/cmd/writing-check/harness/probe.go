@@ -223,6 +223,12 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return 2
 		}
 	}
+	for _, u := range [][2]string{{"--gateway", mf.gateway}, {"--foundry-endpoint", mf.foundry}} {
+		if err := CredentialURL(u[0], u[1]); err != nil {
+			fmt.Fprintf(stderr, "writing-check harness probe: %v\n", err)
+			return 2
+		}
+	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check harness probe: %v\n", err)

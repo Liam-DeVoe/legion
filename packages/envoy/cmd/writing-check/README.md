@@ -4,9 +4,16 @@
 of INFRA-3189. It is a development tool. No image and no release ships it.
 
 Every file it writes holds Dispatch text or model replies. Write them under `$TMPDIR`, never into
-a repository. The commands that read Dispatch's own texts (`fetch`, `readers` and the steps of
-`dataset`) and the harness refuse an output path inside a repository: a directory at or above it
-that holds `.git` or `.jj`.
+a repository. The commands that write Dispatch's own texts or sentences of them (`fetch`,
+`readers`, `group`, `plant`, `label`, `recall`, `score` and the steps of `dataset`) and the
+harness refuse an output path inside a repository, before they read any input: a directory at or
+above it that holds `.git` or `.jj`.
+
+Each command sends a key, a token or a bearer only over https, or over http to a host inside the
+machine or the cluster: localhost, a loopback address, or a Kubernetes Service's name (ending
+`.svc` or `.cluster.local`). It refuses any other `http://` address with exit 2: the model
+`--endpoint` of `probe-model`, `label`, `score`, `regress`, `reading` and `dataset classify`,
+`DISPATCH_URL`, and the harness's `--gateway` and `--foundry-endpoint`.
 
 ```sh
 go run ./cmd/writing-check probe-model --kind <kind> --endpoint <url> --deployment <id> [flags]
@@ -80,6 +87,11 @@ The summary prints p50, p95 and the maximum latency (nearest rank), the share of
 (or, with a `--deadline`, went over it), the count of parse failures (`reader_malformed`), the count
 of each outcome and of each served model id, and the window the calls ran in.
 
+The command checks each write of `--out`, its flush and its close. It exits 1, after the summary,
+when `--out` could not take a record, when it stopped (an interrupt) with fewer calls than
+`--calls`, or when any call failed: an outcome other than `read` and `candidate_cap`, a
+`reader_timeout` among them. Such a run measured less than it was asked to.
+
 ## fetch
 
 `fetch` pages the event log (`GET /api/v1/events/log`, 500 events a page, oldest first) from the
@@ -128,6 +140,11 @@ a whole one. `--resume` continues `<out>.partial`, or, when there is none, `--ou
 it moves there first. It drops a line cut short, and the lines of the last event the file holds,
 because that event's cases may be incomplete. Then it reads again from that event. Each event's
 cases are written in one write.
+
+Beside each cases file, `<file>.params.json` records the Dispatch it was read from
+(`DISPATCH_URL`, without a trailing slash) and `--after`, and moves with the file. `--resume`
+refuses, with exit 2, a file read from another Dispatch or after another event, and a file that
+has no such record: those cases are not this fetch's.
 
 `DISPATCH_URL` names the Dispatch server. `DISPATCH_TOKEN_FILE` names the file that holds the
 bearer token. The command reads the token file on every request and never prints the token.
@@ -309,7 +326,9 @@ keeps:
 
 `--state` names a file for that state. When the file exists and was replayed from the same
 `--log-after`, `readers` reads it and pages the log only after the last event it holds, so a
-second run over the same window reads no log. The state is saved after a replay that stopped too,
+second run over the same window reads no log. The state records the Dispatch it was replayed from
+(`dispatch_url`), and a replay that would continue a state of another Dispatch than `DISPATCH_URL`
+is refused (exit 2). The state is saved after a replay that stopped too,
 through the last event it applied: an event whose payload does not decode is not applied, so the
 next run reads it again. A case outside the replayed window is refused.
 
@@ -479,8 +498,8 @@ Output, in `--out`:
 | `--in` | A cases file, or the `planted.jsonl` of `plant`. |
 | `--titles` | A cases file to read issue titles from (default `--in`). For planted copies, give the corpus. |
 | `--definition` | The definition file. The command sends it to the model as the rubric. Keep it out of the repository. |
-| `--out` | The labels file. The command refuses a file that exists, unless `--resume` is given. |
-| `--resume` | Keep the writes the labels file holds with no error, and label the others. The kept lines go to a file beside the labels file, renamed over it once they are written whole, so a resume that stops before then leaves the file as it was. |
+| `--out` | The labels file. The command refuses a file that exists, unless `--resume` is given, and an `--out` that names the `--in` or the `--titles` file (exit 2). |
+| `--resume` | Keep the writes the labels file holds with no error, and label the others. The kept lines go to a file beside the labels file, renamed over it once they are written whole, so a resume that stops before then leaves the file as it was. A resume is refused (exit 2) when a kept line was made with another definition, model, effort or `--chunk` (its `params_sha256`), or from another text or issue title of its write than `--in` holds (its `input_sha256`). |
 | `--concurrency` | The calls in flight at once (default 4). |
 | `--kind` | The endpoint's protocol (default `anthropic-messages`). |
 | `--endpoint` | The model gateway's base URL. |
@@ -516,9 +535,14 @@ and each call (`chunk`, `sentences`, `raw_text`, `attempts`, `start`, the last a
 unusable reply the reply itself in `reply` and `reply_text`). The write label is `failure` when
 any sentence is vacuous, `unresolved` when none is and any is unresolved, `pass` otherwise, and
 `error` when a call failed (the line then holds `error`, and `--resume` labels the write again).
+`params_sha256` is the SHA-256 of the system prompt (the instruction and the definition), the
+model, the effort, `--chunk` and the call's bounds; `input_sha256` that of the write as its calls
+read it (its issue title and each field's surface and text).
 
-At the end the command prints the count of write labels and of verdicts, the served model ids,
-the call latency and the tokens.
+At the end the command prints the count of write labels and of verdicts, the calls and how many
+failed, the served model ids, the call latency and the tokens. It checks the file's close, and
+exits 1 when a write's calls failed (its line is labelled `error`) or the run stopped:
+`--resume` labels those writes again.
 
 ## validate-labeller
 
@@ -624,7 +648,7 @@ prompt and schema.
 | --- | --- |
 | `--labels`, `--planted` | The labels file and plant's manifest (`--planted` is required for `--stratum planted`). |
 | `--stratum` | `real` or `planted`. |
-| `--out` | The directory for `outputs.jsonl`, `figures.json` and `figures.md`. |
+| `--out` | The directory for `outputs.jsonl`, `figures.json` and `figures.md`. A directory inside a repository is refused (exit 2): `outputs.jsonl` holds sentences of the labelled texts. |
 | `--labeller-bound` | The labeller's validated disagreement bound at 97.5%, for the composed bound. |
 | `--heldout-seed`, `--heldout-share` | The split `recall` used, for the held-out no-list recall. |
 | `--bootstrap-seed`, `--bootstrap` | The seed (default 1) and resamples (default 1000) of the cluster bootstrap. |
@@ -637,7 +661,7 @@ prompt and schema.
 Each line of `outputs.jsonl` is one write: `write` (`<event id>/<source id>[/<copy>]`), `stratum`,
 `sentences`, `candidates` (`id`, the labels' `sentence_id`, `field`, `text`, `reason`), the reader's
 `outcome` (`read`, `candidate_cap`, `reader_timeout`, `reader_error`, `reader_malformed`,
-`reader_budget`, `model_mismatch`, or `not_called` with no candidate), its `verdicts` (`id`,
+`model_mismatch`, or `not_called` with no candidate), its `verdicts` (`id`,
 `vacuous`, `rewrite`; one for each candidate sent: the model's reply, `{vacuous: [{id, rewrite}]}`,
 names only the vacuous ones, and each candidate it does not name is `vacuous: false`), the
 scanner `verdict`, `model_called`, `latency_ms`, the served `model`, `tokens_estimated` and
@@ -649,8 +673,8 @@ The scanner's verdict on a write:
 - `failure`: the reader called a candidate vacuous;
 - `no_failure`: no candidate, or the reader read every candidate and called none vacuous;
 - `insufficient_evidence`: candidates past the cap went unread and none read was vacuous;
-- `error`: every reader fault (a timeout, a provider error, a malformed reply, a spent budget, a
-  model mismatch). An `error` counts as a missed failure.
+- `error`: every reader fault (a timeout, a provider error, a malformed reply, a model
+  mismatch). An `error` counts as a missed failure.
 
 The figures, for the scanner and, on the same writes, for the baseline (`baseline.Matches` on
 each sentence; a write is refused when any sentence matches):
@@ -673,8 +697,8 @@ each sentence; a write is refused when any sentence matches):
   and the refused writes with no usable label (left out of precision).
 - Over the writes a model call was made for: latency p50 and p95 (nearest rank), tokens p95, and
   the ceilings, twice each p95. The reader's `Observe` gives no token counts, so a call's tokens
-  are estimated at four bytes a token, as the reader's budget counts: the system prompt, the
-  candidates as sent, and the verdicts as returned.
+  are estimated as `modelpace.Charge` counts a call, by characters at four a token: the system
+  prompt, the candidates as sent, and the verdicts as returned.
 - The served model ids.
 
 `figures.json` holds the run (`run_id`, `time`, `final_test`, `set_digest`, `seed`,
@@ -684,9 +708,11 @@ resamples, and `decimals`, 4), and the figures. `figures.md` is the same as tabl
 
 With `--final-test` (which needs `--set-digest`, `--seed`, `--exposure-log` and a `--model-id`),
 the command refuses a set whose digest the exposure log already holds a final-test run for. It
-appends one line to the log (`run_id`, `kind: final_test`, `time`, `set_digest`,
-`bundle_digest`, `seed`, `model_id`, `stratum`) before it reads any write, so a run that stops
-part way still spends the set.
+makes `--out` first, so an `--out` that cannot be made spends no set, then appends one line to
+the log (`run_id`, `kind: final_test`, `time`, `set_digest`, `bundle_digest`, `seed`,
+`model_id`, `stratum`) before it reads any write, so a run that stops part way still spends the
+set. It computes the figures before it writes any file, so a run whose figures are refused
+leaves `--out` as it was.
 
 ## reproduce
 
@@ -709,10 +735,12 @@ written for the test and compares each named sentence's verdict with the expecte
 | `--out` | A JSON file for the report. |
 | reader flags | As `score`. |
 
-A sentence is called vacuous when it is a candidate and the reader called it vacuous. A reader
-fault disagrees on every expected sentence of its case. The command prints, for each class
-(`vacuous`, `not_vacuous`), the expected sentences, the disagreements and their share, lists each
-disagreement, and exits 1 when either share is above the bound.
+A sentence is called vacuous when it is a candidate and the reader called it vacuous. A case the
+reader did not read whole (a failed call, or the candidate cap) is no disagreement: the report
+lists it under `faults` with its outcome, the classes count only the cases read, and the run
+exits 1, whatever the bound. The command prints, for each class (`vacuous`, `not_vacuous`), the
+expected sentences, the disagreements and their share, lists each disagreement and each fault,
+and exits 1 when either share is above the bound.
 
 ## reading
 
@@ -757,7 +785,7 @@ against `scanner.schema.json` beside it) against the method's rules for a gate.
 | Flag | Meaning |
 | --- | --- |
 | `--description` | The description file. A field the schema does not name fails it. |
-| `--exposure-log` | The exposure log `score --final-test` appends to. A log that does not exist holds no run. |
+| `--exposure-log` | The exposure log `score --final-test` appends to. Once the description names the final-test set (its manifest, or `final_test.set_sha256`), the file must exist: an empty one where no final test has run. The command prints the log it read and its run count. |
 | `--manifests` | The directory the manifests' `file`s are in (default: the description's directory). |
 
 A field whose figures wait for the freeze or the final test carries `pending: true` and a
@@ -770,6 +798,8 @@ A field whose figures wait for the freeze or the final test carries `pending: tr
 - a manifest whose file's SHA-256 is not its `sha256`, a case with no group, a group in two sets,
   and a case whose evidence comes after its cutoff (`evidence_event_id` above `cutoff_event_id`,
   each the case's `event_id` where absent);
+- an `--exposure-log` that does not exist where the description names the final-test set: a
+  mistyped path would read as a log in which no run read the set;
 - before the claim (`final_test` pending), any final-test run of the final-test set in the
   exposure log; after it, no such run, more than one, one naming another bundle digest than
   `bundle_digest`, or another run id than `final_test.run_id`;
@@ -871,7 +901,8 @@ field gives the reason.
 
 A stopped `fetch` continues when you run it again with the same flags. The work directory keeps
 each page of the log as a file, and the bodies and versions as JSONL. `fetch` refuses a work
-directory made for another end time or owner. `fetch` makes at most 20 requests a second across
+directory made for another end time or owner, or read from another Dispatch (`fetch.json`
+records `DISPATCH_URL`). `fetch` makes at most 20 requests a second across
 all its reads, and retries a request as `fetch` does above. It prints the snapshot's SHA-256.
 
 ### classify
@@ -905,7 +936,11 @@ the prompt's SHA-256 (`prompt_sha256`), the user message's SHA-256, the tokens a
 attempts. A call that fails with a 429, a 5xx, a network error or the time bound is tried again up
 to 6 times, after 2 s, then twice as long each time. A reply that is not one verdict of the schema
 is asked again at once, up to 3 times. A text that still has no verdict gets a line with an
-`error`. The next run classifies each text that has no line without an error. The summary prints
+`error`. The next run classifies each text again that has no verdict of its own inputs: no line,
+a last line with an `error`, or a verdict made with another prompt, model asked for or user
+message (its `prompt_sha256`, `requested_model` and `input_sha256`). The new line takes the old
+one's place, since the last line of a text wins, and a last line with an `error` leaves the text
+with no verdict. The summary prints
 the verdicts of the owner and of the other people, the served models, the prompt's SHA-256 and
 the tokens of every call that the file records.
 
@@ -937,7 +972,7 @@ reads them. An agent's text is a text that `writingcheck.Checks` checks.
 | --- | --- |
 | `--snapshot`, `--verdicts`, `--seed` | The three inputs. |
 | `--confirmed`, `--confirmed-seed` | Optional, together: the result of a fresh reader's read of a sample of question cases (`{"reader", "confirmed", "total", "items": [{"case_id", "about_words"}]}`), and the seed of its draw. |
-| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. |
+| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. A directory that holds the files (tarball, manifest or parts) of more than one bundle, such as an earlier pack's beside a newer one, is refused, naming each. |
 | `--to-development` | Optional: the split groups whose cases go to the development part whatever the split says, one key a line. A blank line and a line that opens with `#` are skipped. See below the split. |
 | `--out` | The directory for the output files. |
 
@@ -1184,7 +1219,7 @@ time of the event that wrote it), `kind`, `actor_kind`, `actor`, `text` and `sha
 | --- | --- |
 | `--from` | The bundle that `build` read: the tarball, its manifest, or a directory that holds one of them. |
 | `--cases` | The cases that `build` wrote from that bundle: the build directory, or its `cases.jsonl.gz`. |
-| `--out` | The directory for the output files. |
+| `--out` | The directory for the output files. They reach it only once every one is written, as `build`'s do, so a refused run leaves `--out` as it was, and an `--out` it made is removed again. |
 
 `followups` writes what the owner did after the text that each case reads. It is the ground truth
 of INFRA-3231's dataset check: did he understand the agent's text? It loads the snapshot and the
@@ -1323,7 +1358,8 @@ holds the version's issue tree in its held-out part, development rounds would re
 held-out tree.
 
 Two runs with the same `--doc` and `--ask` values write the same bytes while Dispatch holds the
-same events.
+same events. The four files reach `--out` only once every one is written, as `build`'s do, so a
+refused run leaves `--out` as it was.
 A later rename of a document changes its name in the record, and a later move of the issue under
 another parent changes the record's parent and root.
 
@@ -1491,8 +1527,8 @@ Each subcommand refuses an `--out` inside a repository: a directory at or above 
 
 | Flag | Meaning |
 | --- | --- |
-| `--gateway`, `--gateway-key-file` | The model gateway's base URL (default `$ANTHROPIC_BASE_URL`) and the file of its key, read on each call and never printed. Every Claude model is called there. |
-| `--foundry-endpoint`, `--foundry-api-version` | The Foundry account's models inference endpoint and its `api-version`, for a Foundry model. |
+| `--gateway`, `--gateway-key-file` | The model gateway's base URL (default `$ANTHROPIC_BASE_URL`) and the file of its key, read on each call and never printed. Every Claude model is called there. An http gateway outside the cluster is refused (see the top of this file). |
+| `--foundry-endpoint`, `--foundry-api-version` | The Foundry account's models inference endpoint and its `api-version`, for a Foundry model. An http endpoint outside the cluster is refused. |
 | `--azure-tenant`, `--azure-client-id`, `--federated-token-file`, `--scope` | The keyless Entra sign-in of the Foundry account, as `probe-model` takes it. The token file defaults to the pod's ServiceAccount token. |
 | `--concurrency` | The model calls in flight at once, across every model (default 6). |
 
@@ -1582,8 +1618,8 @@ makes itself: change 7a's detector reader, and Rewrite and Define where the harn
 component (see "The changes"). A lockstep run (see "Lockstep") is one process: one pacer holds
 the calls of all its models together to N.
 
-- Before each attempt, the pacer charges the attempt's estimate: the bytes of its system prompt,
-  schema and user message, at four bytes a token.
+- Before each attempt, the pacer charges the attempt's estimate as `modelpace.Charge` counts a
+  call: the characters of its system prompt, schema and user message, at four a token.
 - An attempt waits while the charges of the last minute leave no room for its charge. The
   attempts go through in the order they came.
 - After the reply, the charge becomes the reply's input tokens plus its cache write tokens. A
@@ -1920,8 +1956,9 @@ paces `score`'s (see "Pacing"). `--added-grader` sets the added grader, as `scor
 check's calls. Under its title, after the line that says the grader is a candidate where it is
 one, the report names the grader's inputs as the run resolved them (`--grader-inputs`), the added
 grader, `old` included, and `Prompts SHA-256`, the digest `scores.md` names so and
-`grader-test.json` records as `prompts_sha256`: every file of `prompts/`, with `candidates.yaml`
-and `prices.yaml`. Two reports that differ in one of these three do not read alike.
+`grader-test.json` records as `prompts_sha256`: every file of `prompts/`, with `candidates.yaml`,
+`prices.yaml` and the table of phrases the phrases grader's prompt embeds (from
+`skills/plain-words`). Two reports that differ in one of these three do not read alike.
 
 ### compare and repeatability
 
@@ -2036,9 +2073,14 @@ without the flag. The grader never gets the words from this flag; it gets them f
 records the file's SHA-256 as `reader_vocabulary_sha256`, and that of
 `prompts/reader-own-words.md` as `reader_own_words_prompt_sha256`. The two flags may name the
 same file. `prompts_sha256` covers every file of `prompts/`, `reader-own-words.md` among them,
-with `candidates.yaml` and `prices.yaml`, so a directory whose `run.json` records another digest
-does not continue; `--grades-from` still takes the answers and grades of such a run whose inputs
-are the same.
+with `candidates.yaml`, `prices.yaml` and the phrases table the phrases grader embeds, so a
+directory whose `run.json` records another digest does not continue; `--grades-from` still takes
+the answers and grades of such a run whose inputs are the same. `writer_sha256` covers the writer's
+prompts and the refusal lines change 2's writer reads before the rules. A run of a plan with 7a
+records the digest of the writing check's bundle it runs in process (`check_bundle_sha256`, as
+`writing-check digest` prints it), and a run that calls the local Dispatch records, among its
+settings, the digest of the reviewer that instance was built from (`reviewer_sha256`): a
+directory of another bundle or reviewer does not continue either.
 
 ### Grades of another run
 
@@ -2192,8 +2234,9 @@ the phrases judgement and places each finding in the labelled sentence that hold
 and addresses as the labels write them, `CODE` and `URL`). It reports the precision (found
 sentences labelled vacuous), the recall (vacuous sentences found) and the findings no sentence
 holds, each share with its interval over the writes' groups. A run continues the writes it holds
-no result for. `run.json` in `--out` records the grader, the prompts' digest (`Prompts SHA-256`)
-and the labels directory, and a run of another of them is refused there, so no result of another
+no result for. `run.json` in `--out` records the grader, the prompts' digest (`Prompts SHA-256`),
+the labels directory and the SHA-256 of its `cases.jsonl` and `labels.jsonl` (`labels_sha256`), and
+a run of another of them, labels changed in place among them, is refused there, so no result of another
 grading is read as this one's. A result line that is not written stops the grading and fails the
 run. The agreement files are written only once every write has a result; a run with a write left
 ungraded writes none and exits 1.
@@ -2210,12 +2253,14 @@ dispatch:local` on it. `--setting NAME=VALUE` and `--pass-through NAME,...` give
 `DISPATCH_*` settings: `e2e/run-server.sh` passes the names in `DISPATCH_E2E_PASS_THROUGH` to the
 server, and with any of them it starts the server with no stand-in model, so a real model group
 is not refused beside it. `--database <name> --keep` starts again on a database whose cases are
-loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). Once the instance is up,
-`local.json` in `--out` holds its URL, its fake Envoy, its database, the settings and `seeded`: a
+loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). `local` makes `local.json`
+in `--out` with an exclusive create before it starts the instance, so a second `local` on that
+`--out` is refused at once, even before the first instance is up. Once the instance is up, the
+file holds its URL, its fake Envoy, its database, the settings, `seeded` and `reviewer_sha256`
+(the digest of the reviewer's prompts and Go files under `--repo`): a
 start that reset and seeded the database writes a new mark on it (`COMMENT ON DATABASE`), and a
-`--keep` start reads that mark back. The file goes when the instance stops. `local` refuses an
-`--out` whose `local.json` exists, which another instance holds, and removes the file only when it
-wrote it.
+`--keep` start reads that mark back. The file goes when the start ends, only while it is still the
+file that start made: `local` never removes a `local.json` another start wrote.
 
 `--test-models` sets the server up for `score`: every candidate a test model at the gateway or
 the Foundry account the model flags name (with the Foundry sign-in), each by its name, so a

@@ -50,12 +50,23 @@ type regressClass struct {
 	Pass     bool    `json:"pass"`
 }
 
-// regressReport is what regress finds.
+// regressFault is a case the reader did not read whole: its call failed (a timeout, a provider
+// error, a malformed reply, a model mismatch), or it read candidates only to the cap. It holds the
+// reader's outcome and the expected sentences of the case.
+type regressFault struct {
+	Case      string `json:"case"`
+	Outcome   string `json:"outcome"`
+	Sentences int    `json:"sentences"`
+}
+
+// regressReport is what regress finds. A fault is no disagreement: the classes count the
+// sentences of the cases the reader read, and a run with any fault does not pass.
 type regressReport struct {
 	Cases   int            `json:"cases"`
 	Bound   float64        `json:"repeat_bound"`
 	Classes []regressClass `json:"classes"`
 	Misses  []regressMiss  `json:"misses"`
+	Faults  []regressFault `json:"faults"`
 	Pass    bool           `json:"pass"`
 }
 
@@ -83,24 +94,27 @@ func runRegress(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "writing-check regress: %v\n", err)
 		return 2
 	}
-	misses := make([][]regressMiss, len(cases))
-	counts := make([][2]int, len(cases))
+	results := make([]regressResult, len(cases))
 	eachWrite(ctx, len(cases), rf.concurrency, func() *observedReader { return rf.newReader(model) },
-		func(o *observedReader, i int) { misses[i], counts[i] = regressOne(ctx, o, cases[i]) })
+		func(o *observedReader, i int) { results[i] = regressOne(ctx, o, cases[i]) })
 	if ctx.Err() != nil {
 		fmt.Fprintln(stderr, "writing-check regress: interrupted")
 		return 1
 	}
-	report := regressReport{Cases: len(cases), Bound: *bound, Pass: true}
+	report := regressReport{Cases: len(cases), Bound: *bound, Pass: true, Faults: []regressFault{}}
 	var n, disagree [2]int
-	for i := range cases {
-		for c := range 2 {
-			n[c] += counts[i][c]
+	for i, r := range results {
+		if r.fault != "" {
+			report.Faults = append(report.Faults, regressFault{Case: cases[i].ID, Outcome: r.fault, Sentences: r.counts[0] + r.counts[1]})
+			continue
 		}
-		for _, m := range misses[i] {
+		for c := range 2 {
+			n[c] += r.counts[c]
+		}
+		for _, m := range r.misses {
 			disagree[classIndex(m.Expected)]++
 		}
-		report.Misses = append(report.Misses, misses[i]...)
+		report.Misses = append(report.Misses, r.misses...)
 	}
 	for c, name := range []string{verdictVacuous, verdictNotVacuous} {
 		cl := regressClass{Class: name, N: n[c], Disagree: disagree[c], Share: share(disagree[c], n[c])}
@@ -108,6 +122,7 @@ func runRegress(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		report.Pass = report.Pass && cl.Pass
 		report.Classes = append(report.Classes, cl)
 	}
+	report.Pass = report.Pass && len(report.Faults) == 0
 	if *out != "" {
 		if err := writeJSON(*out, report); err != nil {
 			fmt.Fprintf(stderr, "writing-check regress: %v\n", err)
@@ -115,6 +130,10 @@ func runRegress(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 	}
 	fmt.Fprint(stdout, renderRegress(report))
+	if len(report.Faults) > 0 {
+		fmt.Fprintf(stderr, "writing-check regress: %d of %d cases were not read whole (a failed call, or the candidate cap), so the run is not complete; run it again\n", len(report.Faults), len(cases))
+		return 1
+	}
 	if !report.Pass {
 		return 1
 	}
@@ -155,19 +174,30 @@ func readRegressCases(path string) ([]regressCase, error) {
 	return cases, err
 }
 
+// regressResult is what the detector did with one case: the sentences whose verdict differs from
+// the expected one, the expected sentences of each class, and the reader's outcome where it did
+// not read the case whole ("" where it did).
+type regressResult struct {
+	misses []regressMiss
+	counts [2]int
+	fault  string
+}
+
 // regressOne runs the detector on one case, as the server does (the code stage, then one reader
-// call), and answers the sentences whose verdict differs from the expected one, and the expected
-// sentences of each class. A sentence is called vacuous when it is a candidate the reader called
-// vacuous. A reader fault disagrees on every expected sentence of the case, since it gives none
-// a verdict.
-func regressOne(ctx context.Context, o *observedReader, c regressCase) ([]regressMiss, [2]int) {
+// call). A sentence is called vacuous when it is a candidate the reader called vacuous. A case the
+// reader did not read whole (regressFault) has no miss, only the fault.
+func regressOne(ctx context.Context, o *observedReader, c regressCase) regressResult {
+	var r regressResult
+	for _, e := range c.Expect {
+		r.counts[classIndex(e.Vacuous)]++
+	}
 	cands := candidates.Find(prose.ProseSentences(regressField, c.Body), candidates.Options{})
 	called := map[string]bool{}
-	got := ""
 	if len(cands) > 0 {
 		verdicts, outcome := o.Read(ctx, cands)
 		if outcome != reader.OutcomeRead {
-			got = outcome
+			r.fault = outcome
+			return r
 		}
 		byID := map[string]string{}
 		for _, cand := range cands {
@@ -179,22 +209,16 @@ func regressOne(ctx context.Context, o *observedReader, c regressCase) ([]regres
 			}
 		}
 	}
-	var misses []regressMiss
-	var counts [2]int
 	for _, e := range c.Expect {
-		counts[classIndex(e.Vacuous)]++
-		switch {
-		case got != "":
-			misses = append(misses, regressMiss{Case: c.ID, Sentence: e.Sentence, Expected: e.Vacuous, Got: got})
-		case called[e.Sentence] != e.Vacuous:
+		if called[e.Sentence] != e.Vacuous {
 			v := verdictNotVacuous
 			if called[e.Sentence] {
 				v = verdictVacuous
 			}
-			misses = append(misses, regressMiss{Case: c.ID, Sentence: e.Sentence, Expected: e.Vacuous, Got: v})
+			r.misses = append(r.misses, regressMiss{Case: c.ID, Sentence: e.Sentence, Expected: e.Vacuous, Got: v})
 		}
 	}
-	return misses, counts
+	return r
 }
 
 // renderRegress is the report as text.
@@ -206,6 +230,12 @@ func renderRegress(r regressReport) string {
 	}
 	for _, m := range r.Misses {
 		fmt.Fprintf(&b, "- %s: %q expected vacuous=%t, got %s\n", m.Case, m.Sentence, m.Expected, m.Got)
+	}
+	if len(r.Faults) > 0 {
+		fmt.Fprintf(&b, "\nNot read whole (a failed call, or the candidate cap): %d cases\n", len(r.Faults))
+		for _, f := range r.Faults {
+			fmt.Fprintf(&b, "- %s: %s, %d expected sentences unread\n", f.Case, f.Outcome, f.Sentences)
+		}
 	}
 	if r.Pass {
 		b.WriteString("\nResult: PASS\n")

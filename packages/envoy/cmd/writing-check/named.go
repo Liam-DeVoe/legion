@@ -149,6 +149,10 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
 		return 2
 	}
+	if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
+		return 2
+	}
 	started := time.Now()
 	dispatch := newClient(base, tokenFile)
 	result, err := buildNamed(ctx, dispatch, docs, asks, *owner, *out, stderr)
@@ -361,23 +365,24 @@ func buildNamed(ctx context.Context, dispatch *client, docs []dsNamedDoc, asks [
 	slices.SortFunc(lines, func(a, b dsDocumentLine) int {
 		return cmp.Or(strings.Compare(a.ArtifactID, b.ArtifactID), cmp.Compare(a.Version, b.Version))
 	})
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return res, err
-	}
-	var err error
-	if res.casesSHA, err = dsWriteGzipJSONL(filepath.Join(out, "cases.jsonl.gz"), res.cases); err != nil {
-		return res, err
-	}
-	if res.documentSHA, err = dsWriteGzipJSONL(filepath.Join(out, "documents.jsonl.gz"), lines); err != nil {
-		return res, err
-	}
-	if res.sessionsSHA, counts.SessionsListed, counts.SessionsUnlisted, err = writeSessionList(filepath.Join(out, "sessions.tsv"), res.cases); err != nil {
-		return res, err
-	}
-	slices.Sort(counts.Named)
-	counts.Cases = len(res.cases)
-	counts.SHA256 = map[string]string{"cases.jsonl.gz": res.casesSHA, "documents.jsonl.gz": res.documentSHA, "sessions.tsv": res.sessionsSHA}
-	return res, writeJSON(filepath.Join(out, "counts.json"), counts)
+	// The four files reach out only once every one of them is written (dsStaged), as build's do,
+	// so a refused case, such as a write time sessions.tsv cannot read, leaves out as it was.
+	return dsStaged(out, func(dir string) (dsNamedResult, error) {
+		var err error
+		if res.casesSHA, err = dsWriteGzipJSONL(filepath.Join(dir, "cases.jsonl.gz"), res.cases); err != nil {
+			return res, err
+		}
+		if res.documentSHA, err = dsWriteGzipJSONL(filepath.Join(dir, "documents.jsonl.gz"), lines); err != nil {
+			return res, err
+		}
+		if res.sessionsSHA, counts.SessionsListed, counts.SessionsUnlisted, err = writeSessionList(filepath.Join(dir, "sessions.tsv"), res.cases); err != nil {
+			return res, err
+		}
+		slices.Sort(counts.Named)
+		counts.Cases = len(res.cases)
+		counts.SHA256 = map[string]string{"cases.jsonl.gz": res.casesSHA, "documents.jsonl.gz": res.documentSHA, "sessions.tsv": res.sessionsSHA}
+		return res, writeJSON(filepath.Join(dir, "counts.json"), counts)
+	})
 }
 
 // dsLogEvent is one event of an issue's log, with its id in the whole log.

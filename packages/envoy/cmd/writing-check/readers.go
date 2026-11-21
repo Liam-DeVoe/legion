@@ -89,7 +89,17 @@ func runReaders(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			fmt.Fprintln(stderr, "writing-check readers: DISPATCH_URL and DISPATCH_TOKEN_FILE must be set to replay the log")
 			return 2
 		}
+		if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
+			fmt.Fprintf(stderr, "writing-check readers: %v\n", err)
+			return 2
+		}
 		c := newClient(base, tokenFile)
+		// A state that holds events of one Dispatch is continued from that Dispatch alone.
+		if state.Through > state.LogAfter && state.DispatchURL != c.base {
+			fmt.Fprintf(stderr, "writing-check readers: %s was replayed from Dispatch %q, not DISPATCH_URL %s: name another --state\n", *statePath, state.DispatchURL, c.base)
+			return 2
+		}
+		state.DispatchURL = c.base
 		err := replayLog(ctx, c, state, *logThrough, stderr)
 		if *statePath != "" {
 			if saveErr := saveReplayState(*statePath, state); saveErr != nil && err == nil {
@@ -200,16 +210,19 @@ type artifactRecord struct {
 
 // replayState is what replaying the log learns: every record a reader rule reads, with the
 // history of each field that changes. Authors are person logins, "" for any other writer.
+// DispatchURL is the Dispatch whose log it replayed (DISPATCH_URL, without a trailing slash), so a
+// state is continued from that Dispatch alone.
 type replayState struct {
-	LogAfter  int64                      `json:"log_after"`
-	Through   int64                      `json:"through"`
-	Events    int                        `json:"events"`
-	Issues    map[string]*issueRecord    `json:"issues"`
-	Projects  map[string]*projectRecord  `json:"projects"`
-	Asks      map[string]*askRecord      `json:"asks"`
-	Comments  map[string]*commentRecord  `json:"comments"`
-	Messages  map[string]*messageRecord  `json:"messages"`
-	Artifacts map[string]*artifactRecord `json:"artifacts"`
+	DispatchURL string                     `json:"dispatch_url"`
+	LogAfter    int64                      `json:"log_after"`
+	Through     int64                      `json:"through"`
+	Events      int                        `json:"events"`
+	Issues      map[string]*issueRecord    `json:"issues"`
+	Projects    map[string]*projectRecord  `json:"projects"`
+	Asks        map[string]*askRecord      `json:"asks"`
+	Comments    map[string]*commentRecord  `json:"comments"`
+	Messages    map[string]*messageRecord  `json:"messages"`
+	Artifacts   map[string]*artifactRecord `json:"artifacts"`
 	// Conversations is, by session id, the person who opened the newest issue-less thread to
 	// it, from each such thread a person opened.
 	Conversations map[string]history `json:"conversations"`

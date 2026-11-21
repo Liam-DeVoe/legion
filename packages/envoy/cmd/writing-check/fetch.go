@@ -51,25 +51,37 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
 		return 2
 	}
+	if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
+		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
+		return 2
+	}
 	c := newClient(base, tokenFile)
 	x := newExtractor(newLiveSource(c))
 	// The cases go to <out>.partial, which becomes --out once the fetch has read through
 	// --through: a fetch that stops leaves --out as it was, and --resume continues the partial
-	// file (or, when there is none, --out itself, which it moves there first).
+	// file (or, when there is none, --out itself, which it moves there first). Beside each cases
+	// file, <file>.params.json names the Dispatch and the --after its cases were read from, and
+	// moves with it, so --resume continues only cases of the same Dispatch from the same event.
 	partial := *out + ".partial"
+	params := fetchParams{DispatchURL: c.base, After: *after}
 	start := *after
 	var file *os.File
 	var err error
 	if *resume {
-		if _, statErr := os.Stat(partial); errors.Is(statErr, os.ErrNotExist) {
-			if err = os.Rename(*out, partial); errors.Is(err, os.ErrNotExist) {
-				err = nil
-			}
+		var from string
+		if from, err = resumeFrom(*out, partial, params); err != nil {
+			fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
+			return 2
+		}
+		if from == *out {
+			err = moveCases(*out, partial)
+		} else if from == "" {
+			err = writeJSON(fetchParamsPath(partial), params)
 		}
 		if err == nil {
 			file, start, err = resumeCases(partial, *after, x)
 		}
-	} else {
+	} else if err = writeJSON(fetchParamsPath(partial), params); err == nil {
 		file, err = os.Create(partial)
 	}
 	if err != nil {
@@ -87,11 +99,57 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check fetch: %s holds the cases through event %d; rerun with --resume to continue after it\n", partial, stats.last)
 		return 1
 	}
-	if err := os.Rename(partial, *out); err != nil {
+	if err := moveCases(partial, *out); err != nil {
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// fetchParams is a cases file's <file>.params.json: the Dispatch its fetch read (DISPATCH_URL,
+// without a trailing slash) and the event it read after. --resume continues a cases file only
+// under the same two.
+type fetchParams struct {
+	DispatchURL string `json:"dispatch_url"`
+	After       int64  `json:"after"`
+}
+
+// fetchParamsPath is where the cases file at path has its fetchParams.
+func fetchParamsPath(path string) string { return path + ".params.json" }
+
+// moveCases renames the cases file from to to, and its fetchParams with it.
+func moveCases(from, to string) error {
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	return os.Rename(fetchParamsPath(from), fetchParamsPath(to))
+}
+
+// resumeFrom is the cases file --resume continues: partial when it exists, else out when it
+// exists, else "" for a fetch that starts afresh. It refuses a file whose fetchParams are not want,
+// or which has none (a file of a fetch that recorded neither).
+func resumeFrom(out, partial string, want fetchParams) (string, error) {
+	for _, path := range []string{partial, out} {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		data, err := os.ReadFile(fetchParamsPath(path))
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s holds cases, and %s, which names the Dispatch and the --after they were read from, does not exist: fetch them again without --resume", path, fetchParamsPath(path))
+		}
+		if err != nil {
+			return "", err
+		}
+		var got fetchParams
+		if err := json.Unmarshal(data, &got); err != nil {
+			return "", fmt.Errorf("%s: %w", fetchParamsPath(path), err)
+		}
+		if got != want {
+			return "", fmt.Errorf("%s was read from %s after event %d; this run reads %s after event %d: give those, or another --out", path, got.DispatchURL, got.After, want.DispatchURL, want.After)
+		}
+		return path, nil
+	}
+	return "", nil
 }
 
 // fetchStats counts what one fetch read and wrote.

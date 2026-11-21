@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 )
@@ -110,7 +111,7 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "writing-check reading: %v\n", err)
 		return 1
 	}
-	digest, _, err := bundleDigest(*root)
+	digest, _, err := harness.BundleDigest(*root)
 	if err != nil {
 		return fail(err)
 	}

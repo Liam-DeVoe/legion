@@ -62,8 +62,10 @@ func render(name string, data promptData) (string, error) {
 	return strings.TrimSpace(b.String()) + "\n", nil
 }
 
-// PromptsDigest is the SHA-256 of every prompt file, by name, with the candidate list and the
-// price table: what a run's figures were made with.
+// PromptsDigest is the SHA-256 of every prompt file, by name, with the candidate list, the price
+// table and the table of phrases the phrases grader's system prompt embeds (stoppedPhrases, from
+// skills/plain-words): what a run's figures were made with, so a change of any of them changes
+// the digest that checkParams compares before a run reuses results.
 func PromptsDigest() string {
 	h := sha256.New()
 	names, _ := fs.Glob(promptFiles, "prompts/*.md")
@@ -73,7 +75,7 @@ func PromptsDigest() string {
 		fmt.Fprintf(h, "%s %d\n", name, len(data))
 		h.Write(data)
 	}
-	for _, f := range [][]byte{candidatesFile, pricesFile} {
+	for _, f := range [][]byte{candidatesFile, pricesFile, []byte(stoppedPhrases())} {
 		fmt.Fprintf(h, "%d\n", len(f))
 		h.Write(f)
 	}

@@ -3,12 +3,39 @@ package harness
 import (
 	"flag"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
+
+// CredentialURL refuses raw, a URL that a key, a token or a bearer is sent to, unless it is https,
+// or http to a host inside the machine or the cluster: localhost, a loopback address, or a
+// Kubernetes Service's name (ending .svc or .cluster.local). Over http to any other host the
+// credential would cross the network in clear text; cmd/dispatch refuses a model group's endpoint
+// by the same rule (clusterLocalHost). name is the flag or the setting raw came from. An empty raw
+// is no URL and sends nothing, so it passes; the caller that needs one says so.
+func CredentialURL(name, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%s %q is not an absolute http or https URL with a host", name, raw)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() || host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".cluster.local") {
+		return nil
+	}
+	return fmt.Errorf("%s %q is http to a host outside the cluster, which would carry the credential in clear text: use https, or http to localhost, a loopback address or a cluster Service (*.svc, *.cluster.local)", name, raw)
+}
 
 // Where the pod's model access lives where a flag names none.
 const (
@@ -73,11 +100,15 @@ func (m *modelFlags) foundryConfig() llm.FoundryConfig {
 	}
 }
 
-// claudeClient is the client of a Claude model of the config.
+// claudeClient is the client of a Claude model of the config, at a gateway the key may be sent to
+// (CredentialURL).
 func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runner) (*claude.Client, error) {
 	price, ok := cfg.Prices.Prices[model.ID]
 	if !ok {
 		return nil, fmt.Errorf("prices.yaml has no price for %q", model.ID)
+	}
+	if err := CredentialURL("--gateway", m.gateway); err != nil {
+		return nil, err
 	}
 	return claude.New(m.gateway, m.keyFile, model.ID, model.Effort, price.agentloop(), runner)
 }
@@ -87,9 +118,12 @@ func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runn
 var foundryTokens = llm.FoundryConfig.Tokens
 
 // foundryClient is the client of a Foundry deployment of the config, at its effort and the price
-// of its id.
+// of its id, at an endpoint the Entra token may be sent to (CredentialURL).
 func (m *modelFlags) foundryClient(cfg Config, model ModelEntry, runner *llm.Runner) (*llm.Foundry, error) {
 	account := m.foundryConfig()
+	if err := CredentialURL("--foundry-endpoint", account.Endpoint); err != nil {
+		return nil, err
+	}
 	tokens, err := foundryTokens(account)
 	if err != nil {
 		return nil, err

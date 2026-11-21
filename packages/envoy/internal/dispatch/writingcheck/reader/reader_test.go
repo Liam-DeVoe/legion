@@ -371,22 +371,6 @@ func TestTheCandidateCap(t *testing.T) {
 	}
 }
 
-// A call past the minute's token budget is not made.
-func TestABudgetSpentMakesNoCall(t *testing.T) {
-	t.Parallel()
-	s := newStub(t, func(sent sentInput) (int, string, string, time.Duration) {
-		return http.StatusOK, bundleModel, verdictsFor(sent, false), 0
-	})
-	r := newReader(s, Config{TokensPerMinute: 100})
-	verdicts, outcome := r.Read(context.Background(), cands(t, twoVacuous))
-	if outcome != OutcomeBudget || verdicts != nil {
-		t.Errorf("verdicts %+v, outcome %q, want none and %q", verdicts, outcome, OutcomeBudget)
-	}
-	if n := len(s.requests()); n != 0 || r.Calls() != 0 {
-		t.Errorf("%d requests, %d calls counted, want none", n, r.Calls())
-	}
-}
-
 func TestNoCandidatesMakeNoCall(t *testing.T) {
 	t.Parallel()
 	s := newStub(t, func(sent sentInput) (int, string, string, time.Duration) {

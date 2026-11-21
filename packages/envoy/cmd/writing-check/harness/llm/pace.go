@@ -4,18 +4,14 @@ import (
 	"context"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 )
 
-// The measures of the pacer.
-const (
-	// paceWindow is the span the pacer's limit holds over: any one minute.
-	paceWindow = time.Minute
-	// bytesPerToken is how the harness estimates a prompt's tokens from its bytes, as
-	// writing-check's reader budget counts them.
-	bytesPerToken = 4
-)
+// paceWindow is the span the pacer's limit holds over: any one minute.
+const paceWindow = time.Minute
 
 // Pacer holds the uncached input of the model calls that pass it to a limit of tokens in any one
 // minute, across every Runner that shares it. A call's uncached input is the prompt tokens the
@@ -56,14 +52,12 @@ func NewPacer(perMinute int) *Pacer {
 	}
 }
 
-// tokensOf is n bytes of prompt in tokens, at four bytes a token.
-func tokensOf(n int) int { return (n + bytesPerToken - 1) / bytesPerToken }
-
-// estimateOf is the estimate of req's prompt in tokens: its system prompt, its schema and its
-// user message, at four bytes a token. The harness sets no cache mark, so the pacer charges
-// every prompt whole.
+// estimateOf is the estimate of req's prompt in tokens, as modelpace.Charge counts a call before
+// it is made: its system prompt, its schema and its user message, at modelpace.CharsPerToken
+// characters a token, with no reply bound, since the pacer holds uncached input alone. The
+// harness sets no cache mark, so the pacer charges every prompt whole.
 func estimateOf(req Request) int {
-	return tokensOf(len(req.System) + len(req.Schema) + len(req.User))
+	return modelpace.Charge(utf8.RuneCountInString(req.System)+utf8.RuneCount(req.Schema)+utf8.RuneCountInString(req.User), 0)
 }
 
 // paced is one attempt's charge, which settle corrects after the reply. A paced of no pacer

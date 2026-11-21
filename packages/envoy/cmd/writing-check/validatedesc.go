@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,7 +28,7 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("writing-check validate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	descPath := flags.String("description", "", "the description file, scanner.yaml (required)")
-	logPath := flags.String("exposure-log", "", "the exposure log score --final-test appends to (required; a log that does not exist holds no run)")
+	logPath := flags.String("exposure-log", "", "the exposure log score --final-test appends to (required; once the description names the final-test set, the file must exist: an empty one where no final test has run)")
 	manifestsDir := flags.String("manifests", "", "the directory the manifests' files are in (default: the description file's directory)")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -55,7 +56,16 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check validate: %v\n", err)
 		return 1
 	}
-	failures := validateDescription(d, *descPath, dir, logged, gitLineTime)
+	// readExposures reads a log that does not exist as one with no run; validateDescription
+	// refuses that where a run of the final-test set would show in the log.
+	_, statErr := os.Stat(*logPath)
+	logMissing := errors.Is(statErr, os.ErrNotExist)
+	if logMissing {
+		fmt.Fprintf(stdout, "exposure log: %s does not exist (read as no run)\n", *logPath)
+	} else {
+		fmt.Fprintf(stdout, "exposure log: %s, %d runs\n", *logPath, len(logged))
+	}
+	failures := validateDescription(d, *descPath, dir, logged, logMissing, gitLineTime)
 	pending := d.PendingFields()
 	if len(failures) > 0 {
 		fmt.Fprintf(stdout, "validate: FAIL (%d)\n", len(failures))
@@ -90,12 +100,14 @@ type lineTime func(path, prefix string) (time.Time, bool)
 //     comes after its cutoff (evidence_event_id above cutoff_event_id, each the case's event_id
 //     where absent);
 //   - before the claim, any final-test run of the final-test set in the exposure log; after it,
-//     no such run, more than one, one naming another bundle digest or another run id;
+//     no such run, more than one, one naming another bundle digest or another run id; and, where
+//     the description names the final-test set, an exposure log that does not exist (logMissing),
+//     which would read as a log with no run of it;
 //   - an acceptance bar committed after the final-test run;
 //   - for a gate, a class below its required draws, an exact upper bound on either error above
 //     its e (e = 1 − floor), the composed bound (the labeller's bound plus the scanner's, each at
 //     1 − α/2) above e, and a final test with no baseline figures.
-func validateDescription(d *eval.Description, descPath, manifestsDir string, logged []exposure, committed lineTime) []string {
+func validateDescription(d *eval.Description, descPath, manifestsDir string, logged []exposure, logMissing bool, committed lineTime) []string {
 	failures := d.Check()
 	fail := func(format string, args ...any) { failures = append(failures, fmt.Sprintf(format, args...)) }
 	use := ""
@@ -152,6 +164,9 @@ func validateDescription(d *eval.Description, descPath, manifestsDir string, log
 			fail("final_test: set_sha256 %s is not the final-test manifest's digest %s", ft.SetSHA256, finalSet)
 		}
 		finalSet = ft.SetSHA256
+	}
+	if logMissing && finalSet != "" {
+		fail("exposure log: the --exposure-log file does not exist, and the description names the final-test set %s: a log that is not there shows no run of the set; give the log score --final-test appends to, or an empty file where no final test has run", finalSet)
 	}
 	var runs []exposure
 	for _, e := range logged {

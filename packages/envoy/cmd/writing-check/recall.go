@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/candidates"
 )
 
@@ -64,6 +65,10 @@ func runRecall(args []string, stdout, stderr io.Writer) int {
 	}
 	if *labelsPath == "" || *out == "" || flags.NArg() > 0 {
 		fmt.Fprintln(stderr, "writing-check recall: --labels and --out are required, and nothing else")
+		return 2
+	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check recall: %v\n", err)
 		return 2
 	}
 	var split *heldout

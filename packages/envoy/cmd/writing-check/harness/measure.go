@@ -194,12 +194,28 @@ func placeQuote(quote string, sentences []LabelledSentence) string {
 }
 
 // phrasesRun is the run.json phrases-labels writes in its --out: the grader, the prompts'
-// digest (PromptsDigest, which holds candidates.yaml) and the labels directory its results were
-// graded with, so a rerun reuses them only for the same three.
+// digest (PromptsDigest, which holds candidates.yaml), the labels directory and the digest of the
+// files read in it (labelsDigest), so a rerun reuses its results only for the same grader,
+// prompts, directory and cases and labels.
 type phrasesRun struct {
 	Grader        string `json:"grader"`
 	PromptsSHA256 string `json:"prompts_sha256"`
 	Labels        string `json:"labels"`
+	LabelsSHA256  string `json:"labels_sha256"`
+}
+
+// labelsDigest is the SHA-256 of the lines "<sha256>  <name>\n" of the two files of a labeller
+// round's directory that phrases-labels reads, cases.jsonl and labels.jsonl.
+func labelsDigest(dir string) (string, error) {
+	var b strings.Builder
+	for _, name := range []string{"cases.jsonl", "labels.jsonl"} {
+		sum, err := fileSHA256(filepath.Join(dir, name))
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(sum + "  " + name + "\n")
+	}
+	return sha256Hex([]byte(b.String())), nil
 }
 
 // LabelResult is one labelled write the phrases judgement graded: the grade, the sentences its
@@ -337,9 +353,13 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err != nil {
 		return fail(1, err)
 	}
+	labelsSHA, err := labelsDigest(*labelsDir)
+	if err != nil {
+		return fail(1, err)
+	}
 	// The results of --out are reused write by write, so a run of another grader, other prompts
-	// or other labels is refused there.
-	if err := checkParams(*out, phrasesRun{Grader: cfg.Models.Roles.Grader.ID, PromptsSHA256: PromptsDigest(), Labels: labels}); err != nil {
+	// or other labels, by their place or by their bytes, is refused there.
+	if err := checkParams(*out, phrasesRun{Grader: cfg.Models.Roles.Grader.ID, PromptsSHA256: PromptsDigest(), Labels: labels, LabelsSHA256: labelsSHA}); err != nil {
 		return fail(1, err)
 	}
 	path := filepath.Join(*out, "results.jsonl")

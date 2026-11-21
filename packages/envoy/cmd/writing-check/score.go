@@ -16,7 +16,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/baseline"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/candidates"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/reader"
@@ -41,10 +44,10 @@ const outcomeNotCalled = "not_called"
 // caseOutput is one line of outputs.jsonl: what the detector did with one write. Candidates are
 // the code stage's, each with the labels' id of its sentence; Outcome is the reader's (read,
 // candidate_cap, reader_timeout, ...) or not_called; Verdicts are the reader's; Verdict is the
-// scanner's verdict on the write. ModelCalled is whether a model call was made (a spent budget or
-// a reader turned off by a model mismatch makes none); LatencyMS is the time Read took, Model the
-// model id the provider said served the call, and Tokens the call's tokens estimated at four
-// bytes a token (the prompt, the input and the reply).
+// scanner's verdict on the write. ModelCalled is whether a model call was made (a reader turned
+// off by a model mismatch makes none); LatencyMS is the time Read took, Model the model id the
+// provider said served the call, and Tokens the call's tokens estimated as modelpace.Charge
+// counts characters (the prompt, the input and the reply).
 type caseOutput struct {
 	Write       string           `json:"write"`
 	EventID     int64            `json:"event_id"`
@@ -129,10 +132,10 @@ func scoreWrite(ctx context.Context, o *observedReader, w refWrite) caseOutput {
 	return out
 }
 
-// estimateTokens is one reader call's tokens at four bytes a token, as the reader's own budget
-// counts a prompt: the system prompt, the candidates as the reader sends them, and the reply as
-// the model gives it, naming the vacuous candidates alone. Observe gives no token counts, so
-// the ceiling reads this estimate.
+// estimateTokens is one reader call's tokens as modelpace.Charge counts a call's characters, at
+// modelpace.CharsPerToken a token: the system prompt, the candidates as the reader sends them,
+// and the reply as the model gives it, naming the vacuous candidates alone, whose length is known,
+// so no reply bound is added. Observe gives no token counts, so the ceiling reads this estimate.
 func estimateTokens(cands []candidates.Candidate, verdicts []reader.Verdict) int {
 	type input struct {
 		ID     string   `json:"id"`
@@ -149,7 +152,7 @@ func estimateTokens(cands []candidates.Candidate, verdicts []reader.Verdict) int
 	user, _ := json.Marshal(struct {
 		Candidates []input `json:"candidates"`
 	}{sent})
-	tokens := (len(reader.Prompt) + len(user) + 3) / 4
+	chars := utf8.RuneCountInString(reader.Prompt) + utf8.RuneCount(user)
 	if len(verdicts) > 0 {
 		named := reader.Reply{Vacuous: []reader.Named{}}
 		for _, v := range verdicts {
@@ -158,9 +161,9 @@ func estimateTokens(cands []candidates.Candidate, verdicts []reader.Verdict) int
 			}
 		}
 		reply, _ := json.Marshal(named)
-		tokens += (len(reply) + 3) / 4
+		chars += utf8.RuneCount(reply)
 	}
-	return tokens
+	return modelpace.Charge(chars, 0)
 }
 
 // figureParams are the choices the figures rest on, stored in figures.json so reproduce computes
@@ -326,6 +329,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case *bootstrapN < 0:
 		return usage("--bootstrap must not be negative")
 	}
+	// outputs.jsonl holds the candidates and the rewrites, sentences of the labelled texts.
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		return usage(err.Error())
+	}
 	params := figureParams{Stratum: *stratum, BootstrapSeed: *bootstrapSeed, Bootstrap: *bootstrapN, Decimals: figureDecimals}
 	if flagGiven(flags, "heldout-seed") {
 		params.Heldout = &heldout{Seed: *heldoutSeed, Share: *heldoutShare}
@@ -351,7 +358,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	run := scoreRun{RunID: newRunID(), Time: time.Now().UTC().Format(time.RFC3339), FinalTest: *finalTest,
 		ModelID: rf.modelID, Deployment: rf.deployment, Deadline: rf.deadline.String()}
-	if digest, _, err := bundleDigest(*root); err == nil {
+	if digest, _, err := harness.BundleDigest(*root); err == nil {
 		run.BundleDigest = digest
 	} else if *finalTest {
 		return fail(fmt.Errorf("%w: %v", errNoDigest, err))
@@ -366,15 +373,17 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 	}
+	// --out is made before the final test is claimed, so an --out that cannot be made spends no
+	// set; the claim is the last step before the first write is read.
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return fail(err)
+	}
 	if *finalTest {
 		run.SetDigest, run.Seed, run.ExposureLog = *setDigest, seed, *exposureLog
 		if err := claimFinalTest(*exposureLog, exposure{RunID: run.RunID, Kind: exposureFinalTest, Time: run.Time,
 			SetDigest: *setDigest, BundleDigest: run.BundleDigest, Seed: *seed, ModelID: rf.modelID, Stratum: *stratum}); err != nil {
 			return fail(err)
 		}
-	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		return fail(err)
 	}
 
 	outputs := make([]caseOutput, len(writes))
@@ -387,11 +396,13 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if ctx.Err() != nil || slices.Contains(done, false) {
 		return fail(errors.New("interrupted before every write was scored"))
 	}
-	if run.OutputsSHA256, err = writeJSONL(filepath.Join(*out, "outputs.jsonl"), outputs); err != nil {
-		return fail(err)
-	}
+	// The figures are computed before any file is written, so a refusal of theirs leaves --out
+	// as it was.
 	figs, err := computeFigures(writes, outputsByWrite(outputs), params)
 	if err != nil {
+		return fail(err)
+	}
+	if run.OutputsSHA256, err = writeJSONL(filepath.Join(*out, "outputs.jsonl"), outputs); err != nil {
 		return fail(err)
 	}
 	file := figuresFile{Run: run, Params: params, Figures: figs}

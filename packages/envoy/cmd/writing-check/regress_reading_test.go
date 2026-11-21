@@ -39,7 +39,7 @@ func TestRegressBoundsEachClassDisagreement(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout, "Result: FAIL") {
 		t.Errorf("regress at a bound of 30%%: exit %d\n%s", code, stdout)
 	}
-	// A reader fault disagrees on every expected sentence of its case.
+	// A reader fault leaves its case unread: it is listed apart, and the run fails.
 	failing := newStubModel(t, containsAny("names the"), containsAny("shows the"))
 	code, stdout, _ = runCmd(t, append([]string{"regress", "--cases", path, "--repeat-bound", "0.34"}, failing.args(t, dir)...)...)
 	if code != 1 || !strings.Contains(stdout, "reader_error") {

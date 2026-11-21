@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // nearCopyJaccard is the Jaccard similarity of word 5-gram sets at or above which two cases are
@@ -32,6 +34,10 @@ func runGroup(args []string, stdout, stderr io.Writer) int {
 	}
 	if *in == "" || *out == "" || flags.NArg() > 0 {
 		fmt.Fprintln(stderr, "writing-check group: --in and --out are required, and nothing else")
+		return 2
+	}
+	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check group: %v\n", err)
 		return 2
 	}
 	cases, err := readCases(*in)
