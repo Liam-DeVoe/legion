@@ -48,10 +48,13 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. 203 is the constant
-// for the same reason: a renumber of the entry that added the approval route and the work hold's
-// `held` moves approvalRouteContract, and this list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, approvalRouteContract}
+// one of the two alone would describe a shape at a contract no entry declares. 202 is
+// repositoriesLiveContract rather than its number for the same reason: it is
+// dispatch://INFRA-4401's contract, and a renumber of that change moves the constant and this
+// list with it. The last is approvalRouteContract for the same reason too: it is this daemon's own
+// contract, and a renumber of the entry that added the approval route and the work hold's `held`
+// moves approvalRouteContract, and this list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, approvalRouteContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -198,9 +201,9 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 203: whether a person's approval of a spec stands for a root architect's claim
+	// version.go's 210: whether a person's approval of a spec stands for a root architect's claim
 	// (`api.ClaimApprovalResponse`), which pi-legion reads before a model call of that
-	// architect's own conversation. The route arrives with the answer, so no contract below 203
+	// architect's own conversation. The route arrives with the answer, so no contract below 210
 	// records either.
 	{ID: AnswerClaimApproval, Routes: []string{"POST /legion/v1/claims/approval"}, Since: approvalRouteContract},
 }
@@ -260,8 +263,8 @@ type EnumeratedValue struct {
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, and `why.state`, which gained
-// `held` at 203, so every other list is recorded whole at its own field's arrival.
-// (`suspendedBy` gained `released` at 48 and `hold` at 203 and is no row here: the operator
+// `held` at 210, so every other list is recorded whole at its own field's arrival.
+// (`suspendedBy` gained `released` at 48 and `hold` at 210 and is no row here: the operator
 // claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
@@ -361,9 +364,13 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "capabilities.*.status", Values: capabilityStatuses},
 	{Answer: AnswerState, KeyPath: "capabilities.*.source", Values: capabilitySources},
 	// `state` of a repository cache under the Kubernetes runtime (api.CacheView.State). The
-	// mapping carries one per mapped repository and one per cache of a repository the mapping
-	// no longer names, which are two key paths of the one field.
+	// block carries one per live repository and one per cache of a repository no live record
+	// names, which are two key paths of the one field. The first is `repositories.live.*.cache`
+	// from repositoriesLiveContract on, which arrived with that block (liveCacheStates), and
+	// `repositories.mapped.*.cache` below it, in the block contract 152's shape writes from the
+	// same entries (shaping.go's withoutRepositoriesLive).
 	{Answer: AnswerState, KeyPath: "repositories.mapped.*.cache.state", Values: cacheStates},
+	{Answer: AnswerState, KeyPath: "repositories.live.*.cache.state", Values: liveCacheStates},
 	{Answer: AnswerState, KeyPath: "repositories.caches.*.state", Values: cacheStates},
 	// `heldFrom` of an issue, the phase a hold took it out of (api.Issue.HeldFrom). It arrived
 	// with the decided record and is served down below that contract with the rest of it
@@ -500,7 +507,7 @@ var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
 
 // whyStates is every fact that holds an issue that is not working now. The field arrived at
 // whyAndLineFieldsContract with four words, and its list grew once: `held`, an issue whose work
-// the work hold holds (`gates.hold: work`), arrived at workHoldContract (version.go's 203,
+// the work hold holds (`gates.hold: work`), arrived at workHoldContract (version.go's 210,
 // WhyHeld). So it is written out value by value, sorted by value, as lineKinds is.
 var whyStates = []EnumeratedValue{
 	{Value: string(WhyBlocked), Since: whyAndLineFieldsContract},
@@ -629,3 +636,8 @@ var capabilitySources = valuesFrom(ServingFloor, capabilities.SourceConfiguratio
 // field is older than the floor (version.go's 32) and the list has not moved since. It stays a
 // literal: the words are spelled only by unexported constants of the sandbox runtime package.
 var cacheStates = valuesFrom(ServingFloor, "starting", "cloning", "ready", "failing", "refused")
+
+// liveCacheStates is the same five states at the contract `repositories.live` arrived at, which
+// each live entry's cache takes: no `live` is served below that contract at all (shaping.go's
+// withoutRepositoriesLive), so the values arrived with the key.
+var liveCacheStates = valuesFrom(repositoriesLiveContract, "starting", "cloning", "ready", "failing", "refused")
