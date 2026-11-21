@@ -28,4 +28,4 @@ body: |-
   answers again and reads no session text.
   The `answered` grader reads the text the fresh reader read, and fails an answer when the person
   said they could not follow the text and the text still leans on words of the work it does not
-  explain (the check `7_not_plain`; the reply's fields now end at `9_answers`).
+  explain (the check `7_not_plain`; the reply's fields end at `9_answers`).

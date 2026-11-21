@@ -308,6 +308,14 @@ export function quoteWaiting(name: string | undefined): boolean {
   return name !== undefined && waiting.has(name);
 }
 
+/** Lets go of every selection no composer took: the unit-test preload, after each test. A quote
+ *  waits by the name of its composer's send, which tests share (a thread's send is named by the
+ *  thread's id), so a quote one test handed to a box that never mounted would land in the next
+ *  test's box of that name as it mounts. */
+export function resetQuotes(): void {
+  waiting.clear();
+}
+
 /** Calls `wake` whenever a selection is handed to the composer named `name`: the composer itself,
  *  and a control that opens it (`AskThreadDisclosure`'s Write a reply). */
 export function onQuote(name: string, wake: () => void): () => void {

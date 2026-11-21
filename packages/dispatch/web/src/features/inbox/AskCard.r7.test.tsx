@@ -1,15 +1,22 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: a paste of a file, which user-event's paste does not carry
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
-import type { AnswerAskInput, Ask, TextRewrite } from "../../api/types";
+import type {
+  AnswerAskInput,
+  Ask,
+  Comment,
+  CreateCommentInput,
+  TextRewrite,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { AskCard } from "./AskCard";
-import { installAskCardApiMocks, renderCard, thread } from "./ask-card-fixture";
+import { answeredAsk, installAskCardApiMocks, renderCard, thread } from "./ask-card-fixture";
 
 // The ask card as INFRA-3231's R7 has it: one split button whose menu holds the card's other
 // actions in three groups with their keys, the rewrite's one badge, whose turn it is only where
@@ -17,6 +24,12 @@ import { installAskCardApiMocks, renderCard, thread } from "./ask-card-fixture";
 // Asked-of label.
 
 installAskCardApiMocks();
+// The card draws a question's text and its options through the Markdown engine, a module loaded
+// on first use (`markdown-engine.ts`), and an option's name is empty until it has loaded. Rows
+// here wait for something else (a badge, a test id) and then read an option by its name, which
+// passes only where an earlier row of the file loaded the engine: alone, or first in the random
+// order, the read can come before the load. So the engine is loaded before the rows begin.
+beforeAll(warmMarkdownRenderer);
 
 function openAsk(overrides: Partial<Ask> = {}): Ask {
   return {
@@ -394,22 +407,90 @@ test("the card's send key sends nothing while a picture pasted into the answer u
       },
     });
     await card().findByText("Uploading file…");
-    // The box sends nothing itself while the picture uploads, and leaves the press to the card's
-    // key, which must send nothing either.
+    // The box sends nothing itself while the picture uploads, and keeps the press from the card's
+    // key (`submitOnModifiedEnter`). Pressed on the picked option, where the card's key alone takes
+    // it, the key sends nothing either while the picture uploads.
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    act(() => card().getByRole("radio", { name: /^Ship/ }).focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
 
     land();
     const withPicture = "This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
     await waitFor(() => expect(answer.value).toBe(withPicture));
-    // The same key sends it once the picture is in, pressed on the picked option, where the card's
-    // key alone takes it. The row waits for that answer to arrive and then reads every answer
-    // sent, rather than reading none a count of turns after the first press, which a send may
-    // outlast: an answer the first press sent, without the picture's link, arrives first, or
-    // keeps the form busy so that this press sends nothing.
+    // The same key sends it once the picture is in, pressed on the picked option again. The row
+    // waits for that answer to arrive and then reads every answer sent, rather than reading none a
+    // count of turns after the presses above, which a send may outlast: an answer one of them
+    // sent, without the picture's link, arrives first, or keeps the form busy so that this press
+    // sends nothing.
     act(() => card().getByRole("radio", { name: /^Ship/ }).focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     await waitFor(() => expect(sent).not.toHaveLength(0));
     expect(sent.map((input) => input.text)).toEqual([withPicture]);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// While the reader changes an answered ask's recorded answer, the card draws the ask's thread and
+// its reply box inside itself. A picture pasted into the reply box holds that box's send until
+// the picture lands, and the press that box refuses is the reply's: the card's own send key must
+// not take it and save the changed answer in its place.
+test("Ctrl+Enter or Cmd+Enter in the reply box sends neither the reply nor the changed answer while a picture pasted into the reply uploads", async () => {
+  const user = userEvent.setup();
+  const saved: AnswerAskInput[] = [];
+  const replied: CreateCommentInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const ask = answeredAsk();
+  const { view } = renderCard(
+    <KeymapProvider>
+      <AskCard
+        answerAsk={(_id, input) => {
+          saved.push(input);
+          // Never answered: the row reads what was sent, not what the card does after.
+          return Promise.withResolvers<Ask>().promise;
+        }}
+        ask={ask}
+        createReply={(_issue, input) => {
+          replied.push(input);
+          return Promise.withResolvers<Comment>().promise;
+        }}
+        initialThread={thread(ask)}
+      />
+    </KeymapProvider>
+  );
+  try {
+    await user.click(await card().findByRole("button", { name: "Change answer" }));
+    // A changed answer the card would save: the other option picked.
+    await user.click(await card().findByRole("radio", { name: "Hold" }));
+    expect(card().getByRole("button", { name: "Save answer" })).toBeEnabled();
+    const reply = card().getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    await user.click(reply);
+    await user.paste("See the picture");
+    fireEvent.paste(reply, {
+      clipboardData: {
+        files: [new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" })],
+      },
+    });
+    await card().findByText("Uploading file…");
+    // The reply box holds the focus, and sends nothing while its picture uploads.
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    land();
+    const withPicture = "See the picture ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
+    await waitFor(() => expect(reply.value).toBe(withPicture));
+    // The same key sends the reply once the picture is in. The row waits for that reply to
+    // arrive and then reads every write sent, rather than reading none a count of turns after the
+    // presses above, which a send may outlast.
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(replied).not.toHaveLength(0));
+    expect(replied.map((input) => input.body)).toEqual([withPicture]);
+    expect(saved).toEqual([]);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

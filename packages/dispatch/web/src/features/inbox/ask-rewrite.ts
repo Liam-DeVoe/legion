@@ -43,6 +43,13 @@ export function toggleOriginal(id: string): void {
   for (const listener of originalListeners) listener();
 }
 
+/** Shows every rewritten text's rewrite again: the unit-test preload, after each test. The store
+ *  outlives the test that pressed a badge, and tests draw their texts under the same ids, so a
+ *  text one test left showing its original would open on its original in the next. */
+export function resetOriginalsShown(): void {
+  originalsShown.clear();
+}
+
 /** Whether the text `id` shows its original wording now. */
 export function useOriginalShown(id: string): boolean {
   return useSyncExternalStore(

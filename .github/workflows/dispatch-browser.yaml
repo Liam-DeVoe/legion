@@ -446,9 +446,8 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
-        # The e2e helpers the specs import read some of contracts' values from its built dist/,
-        # through Playwright's own Node resolution (the shard job's step of the same name).
-        run: bun run build
+        # why: .github/ci-notes/dispatch-browser.md#why-the-ask-card-job-builds-contracts
+        run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Build the Dispatch server for the ask-card lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-ask-card-jobs-server-build-carries-the-lane-in-its-name

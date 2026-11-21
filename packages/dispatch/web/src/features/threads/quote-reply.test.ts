@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
+import { hashKey } from "@tanstack/react-query";
 
-import { ownWords, quoteBlocks, withQuote } from "./quote-reply";
+import {
+  ownWords,
+  quoteBlocks,
+  quoteInto,
+  quoteWaiting,
+  takeQuote,
+  withQuote,
+} from "./quote-reply";
 
 test("a one-block selection is one quote line, a blank line after it, and the cursor under that", () => {
   const quoted = withQuote("", ["go with B per the train"]);
@@ -63,4 +71,19 @@ test("the reader's own words are the lines that are not a quote's", () => {
   expect(ownWords("   > quoted\n    > typed").trim()).toBe("> typed");
   // A `>` inside a line the reader typed is theirs.
   expect(ownWords("5 > 3, so yes").trim()).toBe("5 > 3, so yes");
+});
+
+// A quote waits for its box by the name of the box's send, which rows share: a thread's send is
+// named by the thread's id. The row hands a quote to a box that never mounts, so the quote is
+// left waiting, as a row that ends before its box takes the quote leaves it. A store the preload
+// does not empty after each row keeps it, and the row run again (`--rerun-each`), or a later row
+// whose box of that name mounts, finds a quote nobody handed it.
+test("a box takes only the quote handed to it, from a store the row starts empty", () => {
+  const send = ["thread-send", "thread-unmounted"];
+  const name = hashKey(send);
+  expect(quoteWaiting(name), "a quote waited before any was handed").toBe(false);
+  quoteInto(send, ["the ledger moves first"]);
+  expect(quoteWaiting(name), "the handed quote is not waiting").toBe(true);
+  // A box of another name takes nothing of it.
+  expect(takeQuote(hashKey(["thread-send", "thread-other"]))).toBeUndefined();
 });

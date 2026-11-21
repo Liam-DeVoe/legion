@@ -167,7 +167,9 @@ export function useAskCardKeys(
     },
     {
       // The answer box sends on this itself (`submitOnModifiedEnter`); it is listed here so the
-      // help says it, and it sends from anywhere else in the card too.
+      // help says it, and it sends from anywhere else in the card too, but not from a box that
+      // sends on this itself, such as the reply box of the card's thread: that box keeps the
+      // press even while it sends nothing, so a reply waiting on its picture sends no answer.
       id: "send",
       inEditable: true,
       keys: "$mod+Enter",

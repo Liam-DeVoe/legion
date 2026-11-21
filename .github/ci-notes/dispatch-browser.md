@@ -973,6 +973,14 @@ the harness's Postgres added the embedder job's two steps at that job's figures:
 stack's container, which those runs did not measure. 4 + 5 + 2 min plus 170 s and 120 s =
 15 min 50 s -> 16 min.
 
+## Why the ask-card job builds contracts
+
+The e2e helpers the specs import read some of contracts' values from its built dist/,
+through Playwright's own Node resolution (the shard job's step of the same name), which
+takes the entries Dispatch imports alone. `bun run e2e`, in the
+"Browser-test the ask card against the stand-in model" step, makes the same build again
+(packages/dispatch's build:contracts).
+
 ## Why the ask-card job's server build carries the lane in its name
 
 run-server.sh builds it too, inside the harness's boot wait, once for the stack's

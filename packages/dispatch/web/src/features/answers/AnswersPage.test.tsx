@@ -443,9 +443,13 @@ test("q and d act on the selected words of the card a Change answer opens, the f
     const box = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
     const card = view.container.querySelector<HTMLElement>('[data-answer-card="ask-1"]');
     if (card === null) throw new Error("Change answer opened no card");
+    // The question's words are drawn by the Markdown engine, a module loaded on first use, into an
+    // element that is mounted before they are: the row waits for the words, since a selection of
+    // the element alone selects nothing to quote or define.
     await waitFor(() => {
-      if (card.querySelector("[data-ask-question] .dispatch-markdown") === null) {
-        throw new Error("the question has not rendered");
+      const question = card.querySelector("[data-ask-question] .dispatch-markdown");
+      if (question?.textContent !== "Which release path?") {
+        throw new Error("the question's words have not rendered");
       }
     });
     const outside = view.getByRole("link", { name: "← Inbox" });

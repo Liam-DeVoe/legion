@@ -1162,9 +1162,14 @@ test("an open ask offers Define over its question alone; a reply in its thread q
   );
   try {
     const card = view.container;
+    // The question's and the reply's words are drawn by the Markdown engine, a module loaded on
+    // first use, into elements that are mounted before they are: the row waits for the words,
+    // since a selection of an element alone selects nothing to quote or define.
     await waitFor(() => {
-      if (card.querySelector("[data-ask-thread] [data-reply] .dispatch-markdown") === null) {
-        throw new Error("the reply has not rendered");
+      const question = card.querySelector("[data-ask-question] .dispatch-markdown");
+      const replyWords = card.querySelector("[data-ask-thread] [data-reply] .dispatch-markdown");
+      if (question?.textContent !== ask.question || replyWords?.textContent !== "Ship it now.") {
+        throw new Error("the question's and the reply's words have not rendered");
       }
     });
     // The question's words: Quote reply and Define.
