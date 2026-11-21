@@ -10,6 +10,11 @@ package api
 // answers on every route. Under such a refusal nothing ran, so its changed is [] whichever layer
 // refused, and one layer of this route alone adds it, rather than a branch for this route in each
 // of those layers.
+//
+// That layer holds every final answer of the route, the passing ones too, until the handler
+// returns, and writes it then in one call (changedRefusalWriter.finish). Holding delays no byte
+// the route would have sent sooner: the route streams nothing, since every answer is one
+// WriteJSON, and the keyed layer holds every answer until it is kept anyway.
 
 import (
 	"bytes"
@@ -23,77 +28,87 @@ import (
 // to 599) whose body is one JSON object with no changed member goes out with "changed":[] added
 // as its last member; every other member keeps the bytes it was written with, and every header
 // the layers inside set is kept but Content-Length, which is set for the new body. Any other
-// answer goes out byte for byte as written: a 1xx, a 2xx and a 3xx, which stream through as they
-// are written, a refusal that already carries changed (the handler's and the keyed layer's), and
-// one whose body is not one JSON object. Only an error answer is held, from its status until the
-// handler returns. register mounts it on this route alone (routeHandler), outside every layer of
-// the route's chain and inside compression, so it reads the JSON each layer wrote.
+// answer goes out byte for byte as written, under the status and the headers the layers inside
+// set: a 2xx and a 3xx, a refusal that already carries changed (the handler's and the keyed
+// layer's), and one whose body is not one JSON object. A 1xx passes through as it is written.
+// Every final answer is held, from its status or its first Write until the handler returns, and
+// written then in one call: the route streams nothing, since every answer is one WriteJSON and
+// the keyed layer holds every answer until it is kept anyway. register mounts it on this route
+// alone (routeHandler), outside every layer of the route's chain and inside compression, so it
+// reads the JSON each layer wrote.
 func addChangedToRefusals(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		answer := &changedRefusalWriter{ResponseWriter: w}
 		handler(answer, r)
 		// Only a handler that returned has an answer to end, as compressAnswers has it: one that
-		// panics leaves its connection to be dropped rather than a held refusal to be sent.
+		// panics leaves its connection to be dropped rather than a held answer to be sent.
 		answer.finish()
 	}
 }
 
-// changedRefusalWriter is the route's writer under addChangedToRefusals: it holds an error
-// answer's status and body until the handler returns, and passes every other answer straight
-// through. It implements neither Flush nor Hijack: the route streams nothing and upgrades
-// nothing.
+// changedRefusalWriter is the route's writer under addChangedToRefusals: it holds the answer's
+// final status and its body until the handler returns, when finish writes them, so no body goes
+// to the writer inside before then. A 1xx passes straight through. It implements neither Flush
+// nor Hijack: the route streams nothing and upgrades nothing.
 type changedRefusalWriter struct {
 	http.ResponseWriter
-	// status is the held error answer's status, and 0 while nothing is held.
+	// status is the held answer's final status, and 0 while nothing is held: a status of 200 or
+	// more is held, and a Write before any holds 200, which net/http answers a first Write with.
 	status int
-	// passed is true once an answer that is not held has begun: a status that is no error, or a
-	// Write before any status, which net/http answers 200.
-	passed bool
-	// body is the held error answer's body.
+	// body is the held answer's body.
 	body bytes.Buffer
 }
 
+// WriteHeader holds the answer's first final status and drops every status after it, as net/http
+// drops one after the answer's own.
 func (w *changedRefusalWriter) WriteHeader(status int) {
 	switch {
 	case w.status != 0:
-		// A status after the held one is dropped, as net/http drops one after the answer's own.
 		return
-	case !w.passed && status >= http.StatusBadRequest && status < 600:
+	case status < http.StatusOK:
+		// An informational status (100 Continue, 103 Early Hints) passes straight through: it is
+		// not the answer, which follows it.
+		w.ResponseWriter.WriteHeader(status)
+	default:
 		w.status = status
-		return
-	case status >= http.StatusOK:
-		// A status that is no error begins an answer this writer does not hold. An informational
-		// one (100 Continue, 103 Early Hints) passes through as well, but it is not the answer,
-		// and the answer after it may still be an error to hold.
-		w.passed = true
 	}
-	w.ResponseWriter.WriteHeader(status)
 }
 
-// Write holds the body of a held error answer and passes every other body on; a first Write
-// without WriteHeader is a 200, as net/http's is.
+// Write holds body as the answer's; a first Write without WriteHeader holds a 200, as net/http
+// answers it with 200.
 func (w *changedRefusalWriter) Write(body []byte) (int, error) {
-	if w.status != 0 {
-		return w.body.Write(body)
+	if w.status == 0 {
+		w.status = http.StatusOK
 	}
-	w.passed = true
-	return w.ResponseWriter.Write(body)
+	return w.body.Write(body)
 }
 
 // Unwrap gives http.ResponseController the writer this one holds answers for, so the drain sets
 // its read deadline on the connection through this wrapper (readFor, drainingWriter.Unwrap).
 func (w *changedRefusalWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// finish writes the held error answer, if there is one: with changed added to its body when
-// withEmptyChanged adds it, and as it was written otherwise.
+// finish writes the held answer, if there is one, under its status and the headers the layers
+// inside set: an error answer's body with changed added when withEmptyChanged adds it, and every
+// other body as it was written. With nothing held it writes nothing, so net/http answers as it
+// does a handler that wrote nothing.
 func (w *changedRefusalWriter) finish() {
 	if w.status == 0 {
 		return
 	}
+	header := w.ResponseWriter.Header()
 	body := w.body.Bytes()
-	if refusal, added := withEmptyChanged(body); added {
-		body = refusal
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if w.status >= http.StatusBadRequest && w.status < 600 {
+		if refusal, added := withEmptyChanged(body); added {
+			body = refusal
+			header.Set("Content-Length", strconv.Itoa(len(body)))
+		}
+	}
+	// CodeQL's go/reflected-xss takes a body written to a ResponseWriter as HTML unless a
+	// Content-Type is set on that writer in the function that writes the body. This sets again,
+	// where the body goes out, the type the route's layers set (WriteJSON's application/json); a
+	// header they did not set stays unset, so net/http sniffs the body as it would without this.
+	if contentType := header.Get("Content-Type"); contentType != "" {
+		header.Set("Content-Type", contentType)
 	}
 	w.ResponseWriter.WriteHeader(w.status)
 	if len(body) > 0 {

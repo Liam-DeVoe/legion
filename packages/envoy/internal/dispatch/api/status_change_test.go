@@ -692,9 +692,11 @@ func (rig ruleRig) keyedStatusChange(t *testing.T, write ruleWrite, key string) 
 // TestADryRunWritesNothing: a dry run of each option answers each issue the call would change,
 // with the status and the parent the call would leave, the issue's last_seq now and no issue, and
 // writes nothing: no row, no event, no comment, and under a request key no recovery point. Its
-// entries name the issues, statuses and parents of the real call's. With the rule off, a dry run
-// of a call the rule would refuse answers 409 PARENT_STATUS_CONFLICT as with it on, and the
-// real call is taken.
+// entries name the issues, statuses and parents of the real call's. Its 200 goes out through the
+// route's layers as the handler wrote it (addChangedToRefusals holds it and writes it unchanged):
+// Content-Type application/json, and the bytes WriteJSON writes for the answer, with no changed
+// added or moved. With the rule off, a dry run of a call the rule would refuse answers 409
+// PARENT_STATUS_CONFLICT as with it on, and the real call is taken.
 func TestADryRunWritesNothing(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	for index, test := range statusChangeCases {
@@ -707,7 +709,15 @@ func TestADryRunWritesNothing(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("%s: status=%d body=%s, want 200", dry, response.Code, response.Body.String())
 			}
+			if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+				t.Errorf("%s answered Content-Type %q, want application/json", dry, contentType)
+			}
 			answer := decodeBody[statusChangeAnswer](t, response)
+			direct := httptest.NewRecorder()
+			WriteJSON(direct, http.StatusOK, answer)
+			if !bytes.Equal(response.Body.Bytes(), direct.Body.Bytes()) {
+				t.Errorf("%s answered %s, want the handler's answer as WriteJSON writes it, %s", dry, response.Body.String(), direct.Body.String())
+			}
 			for _, entry := range answer.Changed {
 				if entry.Issue != nil {
 					t.Errorf("the dry run's entry of %s holds an issue, want none", entry.Key)
