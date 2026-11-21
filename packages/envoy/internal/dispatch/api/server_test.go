@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -107,7 +108,7 @@ type testServerOptions struct {
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
-	brokerTokens func(*store.Store) *brokertoken.Verifier
+	brokerTokens func(*store.Store) *ciphertoken.Verifier
 	// agentSecretsURL and agentSecretsTokenFile are Deps' broker relay for the credential pages
 	// (DISPATCH_AGENT_SECRETS_URL and the file holding Dispatch's own account token at that
 	// broker); empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
@@ -249,6 +250,20 @@ func newTestHandlerWithDefaultProject(t *testing.T) (http.Handler, *store.Store)
 	return handler, database
 }
 
+// testEnvoyAccountTokenFile is a file holding a stand-in for Dispatch's projected token at the
+// listener, for a server whose Envoy client is configured (envoyURL set), and "" otherwise.
+func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
+	t.Helper()
+	if envoyURL == "" {
+		return ""
+	}
+	path := filepath.Join(t.TempDir(), "envoy-account-token")
+	if err := os.WriteFile(path, []byte("dispatch-test-account-token\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch's test account token: %v", err)
+	}
+	return path
+}
+
 // newTestServer builds the mux an API test drives and hands back the store behind it and the
 // dependencies it runs on, so a test that also calls a handler or a delivery step directly
 // (directServer) shares this server's broker and document service instead of standing up a
@@ -283,7 +298,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.persistence != nil {
 		documentPersistence = options.persistence(database)
 	}
-	var brokerTokens *brokertoken.Verifier
+	var brokerTokens *ciphertoken.Verifier
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
@@ -306,21 +321,25 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		agentPublisher = NewAgentPublishRecorder()
 	}
 	deps, err := NewDeps(DepsInput{
-		Store:                  database,
-		Identity:               people,
-		AgentTokens:            sharedAgentTokens(t, "agent-token"),
-		DefaultProject:         options.defaultProject,
-		NewIssueLabel:          options.newIssueLabel,
-		NewIssueSession:        options.newIssueSession,
-		ServerURL:              testServerURL,
-		Docs:                   documentService,
-		Events:                 broker,
-		App:                    options.app,
-		GitHubAPIBase:          options.githubAPIBase,
-		TestHooksEnabled:       options.testHooks,
-		StreamHeartbeat:        options.streamHeartbeat,
-		EnvoyURL:               options.envoyURL,
-		EnvoyTimeout:           options.envoyTimeout,
+		Store:            database,
+		Identity:         people,
+		AgentTokens:      sharedAgentTokens(t, "agent-token"),
+		DefaultProject:   options.defaultProject,
+		NewIssueLabel:    options.newIssueLabel,
+		NewIssueSession:  options.newIssueSession,
+		ServerURL:        testServerURL,
+		Docs:             documentService,
+		Events:           broker,
+		App:              options.app,
+		GitHubAPIBase:    options.githubAPIBase,
+		TestHooksEnabled: options.testHooks,
+		StreamHeartbeat:  options.streamHeartbeat,
+		EnvoyURL:         options.envoyURL,
+		EnvoyTimeout:     options.envoyTimeout,
+		// Dispatch presents an identity of its own to the listener, as a deployment does: without
+		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
+		// check no bearer.
+		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		ListenerRosterUncached: options.rosterUncached,
@@ -503,7 +522,7 @@ func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *h
 	}
 }
 
-func dispatchRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
+func dispatchRequest(t testing.TB, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
 	t.Helper()
 	if strings.HasSuffix(target, "/answer") {
 		data, err := json.Marshal(body)
@@ -659,7 +678,7 @@ func assertRefusal(t *testing.T, request string, status int, body []byte, code, 
 	}
 }
 
-func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
+func decodeBody[T any](t testing.TB, response *httptest.ResponseRecorder) T {
 	t.Helper()
 	var value T
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
@@ -1283,7 +1302,7 @@ func TestArtifactVersions(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"artifact"`
 	}](t, notes)
-	replacement := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("# Revised"), "alice")
+	replacement := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md", "precondition": uploadBaseField(t, handler, uploaded.Artifact.ID)}, "notes.md", "text/markdown", []byte("# Revised"), "alice")
 	if replacement.Code != http.StatusCreated {
 		t.Fatalf("replace document: status=%d body=%s", replacement.Code, replacement.Body.String())
 	}
@@ -1835,7 +1854,8 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 		t.Fatalf("upload Report.md: status=%d body=%s", dashed.Code, dashed.Body.String())
 	}
 	versioned := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
-		"name": "report.md",
+		"name":         "report.md",
+		"precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "report.md")),
 	}, "report.md", "text/markdown", []byte("# Revision"), "alice")
 	if versioned.Code != http.StatusCreated {
 		t.Fatalf("upload report.md version 2: status=%d body=%s", versioned.Code, versioned.Body.String())

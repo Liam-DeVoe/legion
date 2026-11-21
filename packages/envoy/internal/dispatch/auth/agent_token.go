@@ -199,10 +199,17 @@ func clipCallerField(field string) string {
 }
 
 // googleLoadBalancerRanges are the addresses Google's external Application Load Balancer reaches
-// its backends from (and its health checks come from): a connection from one of them came through
-// that balancer, which writes X-Forwarded-For as [<what the client sent>,]<client address>,<its own
-// address>, as the secrets broker's edge reads it.
-var googleLoadBalancerRanges = []netip.Prefix{netip.MustParsePrefix("35.191.0.0/16"), netip.MustParsePrefix("130.211.0.0/22")}
+// its backends from: 35.191.0.0/16 and 130.211.0.0/22 in IPv4 (from which its health checks come
+// too), and its IPv6 proxy range 2600:2d00:1:1::/64. A connection from one of them came through that
+// balancer, which writes X-Forwarded-For as [<what the client sent>,]<client address>,<its own
+// address>, as the secrets broker's edge reads it. Google's IPv6 health-check range,
+// 2600:2d00:1:b029::/64, is left out: a health check sends no X-Forwarded-For, so with or without
+// it such a connection keys on its own address.
+var googleLoadBalancerRanges = []netip.Prefix{
+	netip.MustParsePrefix("35.191.0.0/16"),
+	netip.MustParsePrefix("130.211.0.0/22"),
+	netip.MustParsePrefix("2600:2d00:1:1::/64"),
+}
 
 // ForwardedAddress is the caller's address as Dispatch keys it: the access log's address, the
 // previous-token log's, and the per-address rate-limit bucket the secrets broker's token check

@@ -5,7 +5,7 @@
 // with the code the person typed; it relays a person's dismissal of an expired request; and it
 // relays a person's revoke of a grant or a machine login. Every handler does the same five things:
 // require a human caller, require the broker to be configured, resolve or read its input, call
-// the matching agentsecrets.Client method, and forward the broker's exact status and body — the
+// the matching cipher.Client method, and forward the broker's exact status and body — the
 // broker decides. The pending list alone answers null rather than 404 FEATURE_OFF without a broker.
 // The one thing Dispatch supplies is who acts: a machine login's approve and deny, a dismissal, a
 // revoke and the machine-login list send the login actingPerson resolved, in Dispatch's canonical
@@ -32,9 +32,9 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -107,7 +107,7 @@ const machineLoginKind = "launcher_credential"
 // login, a service's, which anyone signed in may deny, a shared secret's request, a secret request
 // of the member's own — is 403 RESTRICTED_MEMBER, naming none of its facts; a lookup the broker
 // refused is relayed as the broker answered it. It answers false once it has written the answer.
-func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, login string, lookup json.RawMessage, recordID string) (json.RawMessage, bool) {
+func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *cipher.Client, login string, lookup json.RawMessage, recordID string) (json.RawMessage, bool) {
 	answer, err := client.MachineLookup(r.Context(), lookup)
 	if err != nil {
 		relayBrokerResponse(w, nil, err)
@@ -152,7 +152,7 @@ func noteActingAgent(r *http.Request, actor model.Actor) {
 // requireAgentSecrets answers 404 FEATURE_OFF when this Dispatch has no broker configured
 // (DISPATCH_AGENT_SECRETS_URL unset); every credential-request route but the pending list needs it
 // after actingPerson.
-func (s *server) requireAgentSecrets(w http.ResponseWriter) (*agentsecrets.Client, bool) {
+func (s *server) requireAgentSecrets(w http.ResponseWriter) (*cipher.Client, bool) {
 	if s.deps.AgentSecrets == nil {
 		writeError(w, "FEATURE_OFF", http.StatusNotFound, "agent-secrets is not configured on this Dispatch")
 		return nil, false
@@ -161,7 +161,7 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*agentsecrets.Clien
 }
 
 // relayBrokerResponse writes the broker's answer verbatim: its raw JSON body on success, its
-// exact status and body for a *agentsecrets.Error (the browser must see the broker's own status
+// exact status and body for a *cipher.Error (the browser must see the broker's own status
 // and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
 // AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
 // token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
@@ -169,14 +169,14 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*agentsecrets.Clien
 // the log line naming the file is the operator's only pointer to it.
 func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
 	if err != nil {
-		var brokerErr *agentsecrets.Error
+		var brokerErr *cipher.Error
 		if errors.As(err, &brokerErr) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(brokerErr.Status)
 			_, _ = w.Write(brokerErr.Body)
 			return
 		}
-		var tokenErr *agentsecrets.AccountTokenError
+		var tokenErr *cipher.AccountTokenError
 		if errors.As(err, &tokenErr) {
 			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
 			writeError(w, "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE", http.StatusInternalServerError, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
@@ -228,25 +228,25 @@ type credentialDecisionInput struct {
 // caller's canonical login, and the one field read from the browser's body is a machine login's
 // typed code. Any other field the browser sends, an approver among them, is ignored, never
 // forwarded. An empty body is a decision with no code.
-func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model.Actor) (agentsecrets.Decision, bool) {
+func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model.Actor) (cipher.Decision, bool) {
 	body, ok := s.readRelayBody(w, r)
 	if !ok {
-		return agentsecrets.Decision{}, false
+		return cipher.Decision{}, false
 	}
 	var input credentialDecisionInput
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &input); err != nil {
 			writeError(w, "INVALID_DECISION", http.StatusBadRequest, "request body must be a JSON object")
-			return agentsecrets.Decision{}, false
+			return cipher.Decision{}, false
 		}
 	}
-	return agentsecrets.Decision{Approver: model.CanonicalLogin(actor.ID), Code: input.Code}, true
+	return cipher.Decision{Approver: model.CanonicalLogin(actor.ID), Code: input.Code}, true
 }
 
 // --- GET /api/v1/credential-requests ---
 
 // listCredentialPending answers the viewer's list, the requests still pending and then the expired
-// ones nobody has dismissed (agentsecrets.Client.Pending asks the broker for both), or null when
+// ones nobody has dismissed (cipher.Client.Pending asks the broker for both), or null when
 // this Dispatch has no broker. Every page reads this list (the Needs-you badge counts it), and a
 // deployment without a broker is an ordinary one, so "no broker" is an answer here rather than the
 // 404 FEATURE_OFF the other credential routes give: a 404 made every page of such a deployment log
@@ -340,7 +340,7 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // waits for it and the pass lists the login it mints. While a revocation is owed it relays nothing:
 // 409 MACHINE_LOGIN_REVOCATION_OWED, for the person to approve again once the pass has revoked their
 // earlier logins, a few seconds after a removal commits. A read that fails is 503.
-func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, person string, decision agentsecrets.Decision) {
+func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Request, client *cipher.Client, person string, decision cipher.Decision) {
 	ctx := r.Context()
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -453,7 +453,7 @@ type credentialAccount struct {
 // pending machine login of their own, the record the path names (ownMachineLogin). It runs before
 // approverStanding, so the caller's standing is still read last, right before the broker is asked
 // to decide. It answers false once it has written the refusal.
-func (s *server) restrictedDecisionAllowed(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, actor model.Actor, code *string) bool {
+func (s *server) restrictedDecisionAllowed(w http.ResponseWriter, r *http.Request, client *cipher.Client, actor model.Actor, code *string) bool {
 	restricted, ok := s.restrictedCaller(w, r)
 	if !ok || !restricted {
 		return ok
@@ -569,8 +569,9 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 }
 
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
-// login is the grant's approver or its enrollment's operator. The browser's body carries nothing
-// Dispatch reads.
+// login is the grant's approver or the person its enrollment acts for (an unmapped person's pod
+// acts for no one), or, for a grant the model judge approved in anyone's stead, anyone who may see
+// it. The browser's body carries nothing Dispatch reads.
 func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -588,10 +589,12 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---
 
 // listMachineLogins answers the machine logins the caller may revoke that can still reach a
-// secret: every service's login, whoever approved it, and the caller's own machines', an expired
-// one whose sessions still run among them. Dispatch names the caller, so no one lists another
-// person's machines. A restricted member, at their browser alone (restrictedOwnLoginRoutes), is
-// answered their own machine logins and no service's (ownMachineLogins).
+// secret: every service's login, whoever approved it, the caller's own machines', and the logins
+// of the caller's own pods (pods whose Kubernetes account the broker's BROKER_POD_OPERATORS maps
+// to the caller, each row's person naming them), an expired one whose sessions still run among
+// them. Dispatch names the caller, so no one lists another person's machines or pods. A restricted
+// member, at their browser alone (restrictedOwnLoginRoutes), is answered their own machine logins
+// and no service's (ownMachineLogins).
 func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -621,11 +624,12 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 
 // revokeMachineLogin ends a machine login, expired or not, and with it every session that login
 // enrolled (a service's login: every pod it started): the broker allows it for a service's login
-// from anyone signed in, and for a person's machine login only when the caller is the person who
-// approved it. The browser's body carries nothing Dispatch reads. A restricted member, at their
-// browser alone (restrictedOwnLoginRoutes), revokes only a machine login of their own
-// (ownMachineLogins); any other id, a service's login's among them, is 403 RESTRICTED_MEMBER and no
-// revoke reaches the broker.
+// from anyone signed in, for a person's machine login only when the caller is the person who
+// approved it, and for a person's pod login only when the caller is the person the broker's
+// BROKER_POD_OPERATORS maps the pod's account to. The browser's body carries nothing Dispatch
+// reads. A restricted member, at their browser alone (restrictedOwnLoginRoutes), revokes only a
+// machine login of their own (ownMachineLogins); any other id, a service's login's among them, is
+// 403 RESTRICTED_MEMBER and no revoke reaches the broker.
 func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -661,7 +665,7 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 // login whose approver is person and which names no service. The broker's list for a person holds
 // every service's login beside the person's own machines', which a restricted member neither lists
 // nor revokes, and the revocation a removal owes ends only these (revokeMachineLoginsOf).
-func ownMachineLogins(ctx context.Context, client *agentsecrets.Client, person string) ([]wire.LauncherCredentialResp, error) {
+func ownMachineLogins(ctx context.Context, client *cipher.Client, person string) ([]wire.LauncherCredentialResp, error) {
 	listed, err := client.MachineLogins(ctx, person)
 	if err != nil {
 		return nil, err
@@ -726,7 +730,7 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 type credentialCapabilities struct {
 	// Whether the page where a person types a machine's code is worth serving: whether, that
 	// is, this broker still serves RFC 8628's device grant, read from its RFC 8414 metadata
-	// (agentsecrets.Client.ServesDeviceGrant). False for a Dispatch with no broker at all,
+	// (cipher.Client.ServesDeviceGrant). False for a Dispatch with no broker at all,
 	// where no code is ever printed for anyone to type.
 	MachineCodePage bool `json:"machine_code_page"`
 }

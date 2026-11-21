@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -194,7 +194,7 @@ func TestClearBrokerRevocationSettlesOnlyWhatTheOperatorSaw(t *testing.T) {
 		t.Fatalf("after a clear of the generation the operator saw, the list of %s answered exit %d, want %s:1 and %s:2 both still owed:\n%s",
 			reassignedEmail, code, secondHolder, firstHolder, out)
 	}
-	machine := brokertokentest.NewCaller(t)
+	machine := ciphertokentest.NewCaller(t)
 	const machineToken = "token-of-a-machine-recording-no-account"
 	broker.holds(&fakeCredential{id: "login-unnamed", person: reassignedEmail, tokens: []string{machineToken}, createdAt: time.Now().Add(-time.Hour)}, machine)
 	requireBrokerTokenRecordsNoAccount(t, "GET /api/v1/whoami with a broker token recording no account made before the recording, the revocations owed",

@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -67,8 +67,8 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		}
 		return plaintext, id
 	}
-	broker := func(createdAt time.Time) brokertoken.Caller {
-		return brokertoken.Caller{Person: person, CredentialCreatedAt: createdAt}
+	broker := func(createdAt time.Time) ciphertoken.Caller {
+		return ciphertoken.Caller{Person: person, CredentialCreatedAt: createdAt}
 	}
 	before := recordedAt.Add(-time.Hour)
 	beforeToken, beforeID := personalToken("made before the recording", before)
@@ -83,7 +83,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 			wantAPIError(t, err, http.StatusUnauthorized, "TOKEN_REVOKED", when)
 		}
 	}
-	brokerActs := func(when string, caller brokertoken.Caller, want bool) {
+	brokerActs := func(when string, caller ciphertoken.Caller, want bool) {
 		t.Helper()
 		_, err := served.brokerPersonAdmitted(ctx, caller)
 		switch {
