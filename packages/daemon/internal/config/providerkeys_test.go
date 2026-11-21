@@ -126,11 +126,14 @@ func TestMaterializeProviderKeysWritesEachValueAsADaemonHeldFile(t *testing.T) {
 	if got := readStub(t, stubDir, "stdin"); got != stdin.Name() {
 		t.Errorf("secrets ran with stdin %q, want the daemon's own %q", got, stdin.Name())
 	}
-	if !strings.Contains(logged.String(), "requesting HUMAN_KEY from secretsd (human tier; a YubiKey tap may be needed)") {
-		t.Errorf("no human-tier announcement for HUMAN_KEY in:\n%s", logged)
+	if !strings.Contains(logged.String(), "requesting the secretsd key provider_keys.HUMAN_ENV names (human tier; a YubiKey tap may be needed)") {
+		t.Errorf("no human-tier announcement for HUMAN_ENV in:\n%s", logged)
 	}
-	if strings.Contains(logged.String(), "requesting AGENT_KEY") {
+	if strings.Contains(logged.String(), "provider_keys.AGENT_ENV") {
 		t.Errorf("an agent-tier key was announced as needing a tap:\n%s", logged)
+	}
+	if strings.Contains(logged.String(), "HUMAN_KEY") {
+		t.Errorf("a secretsd key's name reached the log:\n%s", logged)
 	}
 	if strings.Contains(logged.String(), "-value") {
 		t.Errorf("a value reached the log:\n%s", logged)
@@ -168,25 +171,31 @@ func TestMaterializeProviderKeysKeepsExactlyTheConfiguredKeys(t *testing.T) {
 	}
 }
 
-// Every way a key cannot be resolved is a refusal naming the entry — the variable and its secretsd
-// key, never its value — and a boot that refuses writes nothing: the files are written only once
-// every key has resolved.
+// Every way a key cannot be resolved is a refusal naming the entry by its variable alone, never its
+// secretsd key's name or its value, and a boot that refuses writes nothing: the files are written
+// only once every key has resolved. The name is withheld because a provider's key made only of
+// letters, digits and underscores passes the name rule, so the name can be the key itself, pasted
+// where its name goes; the last row pastes such a made-up key, which the stub, like secretsd, does
+// not know and quotes in its refusal.
 func TestMaterializeProviderKeysRefuses(t *testing.T) {
+	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
 	for _, tc := range []struct {
-		name string
-		key  string
-		path bool
-		want string
+		name, env, key string
+		path           bool
+		want           string
 	}{
-		{"the status fails", "MISSING_KEY", true, "provider_keys.ENV_MISSING_KEY: secrets get MISSING_KEY --no-request failed (exit 3): AGENT NOTICE: secret 'MISSING_KEY' not found"},
-		{"the status is not a status", "GARBLED_KEY", true, `provider_keys.ENV_GARBLED_KEY: secrets get GARBLED_KEY --no-request printed an unparsable status (expected {"key","tier"})`},
-		{"the status is another key's", "OTHER_KEY", true, `provider_keys.ENV_OTHER_KEY: secrets get OTHER_KEY --no-request printed an unparsable status (expected {"key","tier"})`},
-		{"the tier is neither", "ODD_TIER_KEY", true, `provider_keys.ENV_ODD_TIER_KEY: secrets get ODD_TIER_KEY --no-request reported tier "admin", which is neither agent nor human`},
-		{"the value is empty", "EMPTY_KEY", true, "provider_keys.ENV_EMPTY_KEY: secrets get EMPTY_KEY --value printed no value"},
-		{"the value fails", "FAILING_VALUE_KEY", true, "provider_keys.ENV_FAILING_VALUE_KEY: secrets get FAILING_VALUE_KEY --value failed (exit 4): AGENT NOTICE: TIMEOUT"},
+		{"the status fails", "ENV_MISSING_KEY", "MISSING_KEY", true, "provider_keys.ENV_MISSING_KEY: secrets get [the key name] --no-request failed (exit 3): AGENT NOTICE: secret '[the key name]' not found"},
+		{"the status is not a status", "ENV_GARBLED_KEY", "GARBLED_KEY", true, `provider_keys.ENV_GARBLED_KEY: secrets get [the key name] --no-request printed an unparsable status (expected {"key","tier"})`},
+		{"the status is another key's", "ENV_OTHER_KEY", "OTHER_KEY", true, `provider_keys.ENV_OTHER_KEY: secrets get [the key name] --no-request printed an unparsable status (expected {"key","tier"})`},
+		{"the tier is neither", "ENV_ODD_TIER_KEY", "ODD_TIER_KEY", true, `provider_keys.ENV_ODD_TIER_KEY: secrets get [the key name] --no-request reported tier "admin", which is neither agent nor human`},
+		{"the value is empty", "ENV_EMPTY_KEY", "EMPTY_KEY", true, "provider_keys.ENV_EMPTY_KEY: secrets get [the key name] --value printed no value"},
+		{"the value fails", "ENV_FAILING_VALUE_KEY", "FAILING_VALUE_KEY", true, "provider_keys.ENV_FAILING_VALUE_KEY: secrets get [the key name] --value failed (exit 4): AGENT NOTICE: TIMEOUT"},
 		// A run a signal ended has no status: read as one, it was `failed (exit -1)`.
-		{"the value's run is killed", "KILLED_VALUE_KEY", true, "provider_keys.ENV_KILLED_VALUE_KEY: secrets get KILLED_VALUE_KEY --value failed (signal: killed): AGENT NOTICE: waiting for a grant"},
-		{"no secrets command", "AGENT_KEY", false, "provider_keys.AGENT_ENV: the secrets command is not on PATH, so AGENT_KEY cannot be read"},
+		{"the value's run is killed", "ENV_KILLED_VALUE_KEY", "KILLED_VALUE_KEY", true, "provider_keys.ENV_KILLED_VALUE_KEY: secrets get [the key name] --value failed (signal: killed): AGENT NOTICE: waiting for a grant"},
+		{"no secrets command", "ENV_AGENT_KEY", "AGENT_KEY", false, "provider_keys.AGENT_ENV: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
+		// The pasted key's variable is a name of its own, so that only its secretsd key's name holds
+		// the key.
+		{"a provider's key pasted where its name goes", "GEMINI_API_KEY", pasted, true, "provider_keys.GEMINI_API_KEY: secrets get [the key name] --no-request failed (exit 99): stub: unexpected get [the key name] --no-request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			environ, _ := secretsStub(t)
@@ -197,10 +206,13 @@ func TestMaterializeProviderKeysRefuses(t *testing.T) {
 			log := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
 			_, err := MaterializeProviderKeys([]ProviderKey{
 				{Env: "AGENT_ENV", Secret: "AGENT_KEY"},
-				{Env: "ENV_" + tc.key, Secret: tc.key},
+				{Env: tc.env, Secret: tc.key},
 			}, stateDir, environ, log)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), pasted) {
+				t.Errorf("the refusal quotes the key pasted where its name goes: %v", err)
 			}
 			if strings.Contains(err.Error(), "-value\n") || strings.Contains(err.Error(), "agent-value") {
 				t.Errorf("the refusal carries a value: %v", err)
