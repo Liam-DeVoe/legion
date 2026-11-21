@@ -18,9 +18,10 @@ import (
 // one per step it gates (design_gates, migration 20261110214252_issue_design_gates): `decisions`
 // the decisions document the gate recorded, `criteria` the Verification document, `spec` the
 // primary document. A project's row says which steps a deployment gates at all
-// (PUT /api/v1/projects/{key}/gated-steps); this says which document each of those steps named
-// on one issue, so Dispatch's `superseded_approval` advice prints a design-gate clause for a
-// document a gate really records and stays quiet about every other document.
+// (PUT /api/v1/projects/{key}/gated-steps, PATCH /api/v2/projects/{key} with gated_steps); this
+// says which document each of those steps named on one issue, so Dispatch's
+// `superseded_approval` advice prints a design-gate clause for a document a gate really records
+// and stays quiet about every other document.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the

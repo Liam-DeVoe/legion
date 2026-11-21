@@ -141,7 +141,8 @@ func (r *AgentPublishRecorder) Published() []contracts.Envelope {
 	return slices.Clone(r.envelopes)
 }
 
-// queuedMessages is the body GET /api/v1/messages/_test/queued answers.
+// queuedMessages is the body GET /api/v1/messages/_test/queued and GET
+// /api/v2/_test/messages/queued answer.
 type queuedMessages struct {
 	Queued []queuedMessage `json:"queued"`
 }

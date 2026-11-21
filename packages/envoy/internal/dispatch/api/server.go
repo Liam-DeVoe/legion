@@ -99,9 +99,9 @@ type Deps struct {
 	DefaultProject string
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
-	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
-	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
-	// NewIssueSession empty is an issue made with no conversation started on it.
+	// (GET /api/v1/settings/new-issue and GET /api/v2/settings/new-issue; cmd/dispatch:
+	// DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that
+	// carries no label; NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
@@ -189,10 +189,10 @@ type Deps struct {
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
-	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
-	// than reading the stored answer every process shares (the route_roster row), so a test that
-	// changes the listener's sessions sees the change at its next read. A deployment leaves it
-	// false.
+	// session list (route_status on an issue read, GET /api/v1/agents and GET /api/v2/agents) asks
+	// the listener rather than reading the stored answer every process shares (the route_roster
+	// row), so a test that changes the listener's sessions sees the change at its next read. A
+	// deployment leaves it false.
 	ListenerRosterUncached bool
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
@@ -212,7 +212,8 @@ type Deps struct {
 	// shares it (textversions); nil times none.
 	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
-	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
+	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving, and GET
+	// /api/v2/dashboard-builds marks the build whose entry it is as serving.
 	DashboardEntry string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
 	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
@@ -592,8 +593,8 @@ type server struct {
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
-	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
-	// TestHooksEnabled, which mounts no hook.
+	// for (POST /api/v1/writes/_test/slow and POST /api/v2/_test/writes/slow), by "METHOD path"; it
+	// holds nothing on a server without TestHooksEnabled, which mounts no hook.
 	slowWrites sync.Map
 	// slowWriteRuns is the slowWriteRecord of each route the slow-write test hook has delayed a
 	// run of, by the same "METHOD path" slowWrites uses. A disarm takes the route out of
@@ -601,9 +602,10 @@ type server struct {
 	// hook did before and since.
 	slowWriteRuns sync.Map
 	// newIssueOverride is what the new-issue test hook last set
-	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
-	// place of the two settings Deps carries; nil until a hook call sets one, which is every
-	// server without TestHooksEnabled, since that mounts no hook.
+	// (POST /api/v1/settings/new-issue/_test and POST /api/v2/_test/settings/new-issue), which GET
+	// /api/v1/settings/new-issue and GET /api/v2/settings/new-issue answer in place of the two
+	// settings Deps carries; nil until a hook call sets one, which is every server without
+	// TestHooksEnabled, since that mounts no hook.
 	newIssueOverride atomic.Pointer[newIssueSettings]
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks

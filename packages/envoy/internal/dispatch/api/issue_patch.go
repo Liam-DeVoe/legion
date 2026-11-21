@@ -31,7 +31,8 @@ import (
 // column backwards either.
 const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
-// updateIssueInput is the body of PATCH /api/v1/issues/{key}.
+// updateIssueInput is the body of PATCH /api/v1/issues/{key}, and the members of PATCH
+// /api/v2/issues/{key}'s body beside its design gates (patchIssueV2Input).
 type updateIssueInput struct {
 	Title         *string               `json:"title"`
 	Status        *string               `json:"status"`

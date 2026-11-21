@@ -1063,8 +1063,10 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Blocks is absent unless the request
-// asked for it with ?blocks=true.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer, and the text the /api/v2 artifact
+// reads take for include=text (documentText), whose fields each document row carries
+// (artifactRowsV2). Blocks is absent unless the request asked for it: ?blocks=true at /api/v1,
+// include=text,blocks at /api/v2.
 type artifactText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
@@ -1187,7 +1189,8 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, blocks)
 }
 
-// documentBlocks is a document's blocks as GET /api/v1/artifacts/{id}/blocks reports them, each
+// documentBlocks is a document's blocks as GET /api/v1/artifacts/{id}/blocks reports them and as
+// the /api/v2 artifact reads carry them for include=blocks without text (artifactRowsV2), each
 // described (describeBlocks), for a read that wants the blocks without the markdown. A document
 // with no stored state answers nil.
 func (s *server) documentBlocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
@@ -1424,7 +1427,7 @@ func (s *server) commitArtifactVersionEvent(
 }
 
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
-// project artifact patterns.
+// project artifact patterns, and of POST /api/v2/artifacts/{id}/versions (createNamedVersionV2).
 type createVersionInput struct {
 	Summary string       `json:"summary" required:"true"`
 	Actor   *model.Actor `json:"actor"`
@@ -1507,7 +1510,7 @@ func (s *server) nameVersion(w http.ResponseWriter, r *http.Request, input creat
 }
 
 // editArtifactInput is the body of POST /api/v1/artifacts/{id}/edits and its issue and project
-// artifact patterns.
+// artifact patterns, and of POST /api/v2/artifacts/{id}/edits (editArtifactV2).
 type editArtifactInput struct {
 	Ops          []model.EditOp          `json:"ops"`
 	Summary      string                  `json:"summary"`
@@ -1516,7 +1519,7 @@ type editArtifactInput struct {
 }
 
 // editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
-// artifact patterns answer.
+// artifact patterns answer, and POST /api/v2/artifacts/{id}/edits answers (editArtifactV2).
 type editArtifactResponse struct {
 	Applied int  `json:"applied"`
 	Changed bool `json:"changed"`
@@ -2554,13 +2557,13 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 
 // beginArtifactWrite opens the transaction a write to one artifact runs in: it reads the
 // artifact the request names, takes its owner's lock and reads the row again under that lock. It
-// is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
+// is the preamble the title correction and the removal share (renameArtifactTo, removeArtifact),
 // and each of them holds only its own refusals after it.
 //
-// Both writes are mounted on /api/v1/artifacts/{id} alone (routes_table.go), so the id the
-// request names is what each read takes, and each takes the row alone (loadArtifactRowByID): the
-// versions and the approval an artifact read carries cost a second round trip, and neither
-// handler reads them.
+// Both writes are mounted on an artifact's id alone, /api/v1/artifacts/{id} (routes_table.go) and
+// /api/v2/artifacts/{id} (v2_documents.go), so the id the request names is what each read takes,
+// and each takes the row alone (loadArtifactRowByID): the versions and the approval an artifact
+// read carries cost a second round trip, and neither handler reads them.
 //
 // The owner's own refusals come first, as every write to an owner takes them: a closed issue is
 // refused once the document's row says which owner it hangs from, and before anything else of

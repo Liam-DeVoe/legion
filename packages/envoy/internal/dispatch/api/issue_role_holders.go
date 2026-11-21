@@ -82,10 +82,11 @@ type issueRoleHolders struct {
 	Holders []issueRoleHolderRecord `json:"holders"`
 }
 
-// issueRoleHoldersInput is the body PUT /api/v1/issues/{key}/role-holders takes. Holders is the
-// issue's whole set. It is required, and a pointer, so a body that names no list is refused rather
-// than read as the empty one: a malformed publication cannot clear the roles of an issue, while an
-// explicit [] is the publication of an issue where no session holds a role.
+// issueRoleHoldersInput is the body PUT /api/v1/issues/{key}/role-holders and PUT
+// /api/v2/issues/{key}/role-holder-set (putIssueRoleHoldersV2) take. Holders is the issue's whole
+// set. It is required, and a pointer, so a body that names no list is refused rather than read as
+// the empty one: a malformed publication cannot clear the roles of an issue, while an explicit []
+// is the publication of an issue where no session holds a role.
 type issueRoleHoldersInput struct {
 	Holders *[]issueRoleHolder `json:"holders" required:"true"`
 	Actor   *model.Actor       `json:"actor"`

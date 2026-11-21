@@ -1,6 +1,6 @@
-// priority_queries.go is the read behind GET /api/v1/priorities: every live priority with the
-// work that advances it, and the two faults. It is the query half of priorities.go, as
-// issue_queries.go is of the issue routes. It writes neither `priority_nodes` nor
+// priority_queries.go is the read behind GET /api/v1/priorities and GET /api/v2/priorities: every
+// live priority with the work that advances it, and the two faults. It is the query half of
+// priorities.go, as issue_queries.go is of the issue routes. It writes neither `priority_nodes` nor
 // `priority_tuples`, which prioritystore alone writes; it reads them through prioritystore.List
 // and through the SQL below, which splices prioritystore.AdvancesTupleRead, the one reading of
 // the `advances` relation, and joins it to the issues it counts. The parked rows carry their
@@ -12,9 +12,10 @@
 // counts rest on it; the counts, the newest event under each priority and the two fault lists are
 // four statements over that seed, sent as one batch, which is one round trip (readPriorities).
 //
-// `?summary=true` answers the two fault counts alone, so it runs the two fault statements in the
-// shape that counts and lists nothing (priorityUnplacedQuery, priorityParkedQuery) and neither of
-// the two reads that fill a priority's row.
+// A summary, /api/v1's `?summary=true` and /api/v2's limit=0 with no include=fault_issues
+// (listPrioritiesV2), answers the two fault counts alone, so it runs the two fault statements in
+// the shape that counts and lists nothing (priorityUnplacedQuery, priorityParkedQuery) and neither
+// of the two reads that fill a priority's row.
 package api
 
 import (

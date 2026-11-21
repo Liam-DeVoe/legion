@@ -54,7 +54,8 @@ func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, mappings)
 }
 
-// putRepoProjectInput is the body of PUT /api/v1/settings/repo-projects/{owner}/{repo}.
+// putRepoProjectInput is the body of PUT /api/v1/settings/repo-projects/{owner}/{repo} and of PUT
+// /api/v2/repositories/{owner}/{repo}.
 type putRepoProjectInput struct {
 	Project   string       `json:"project" required:"true"`
 	Default   *bool        `json:"default"`

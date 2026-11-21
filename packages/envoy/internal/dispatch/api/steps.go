@@ -107,7 +107,8 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 
 // putIssueStepFrom is the write both versions make of one run of one step, input its body: the
 // writer held to the issue's daemon's session, then the write (writeIssueStep), answering the
-// record. unmade and unchanged are writeIssueStep's: /api/v1 passes 400 STEP_INPUT and nil.
+// record. unmade and unchanged are writeIssueStep's: /api/v1 passes 400 STEP_INPUT and nil, and
+// /api/v2 404 STEP_NOT_FOUND and its no-op rule (putIssueStepV2).
 func (s *server) putIssueStepFrom(w http.ResponseWriter, r *http.Request, input stepRecordInput, unmade apicode.Code, unchanged func(workflowstore.StepRead) bool) {
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
 	if !ok {

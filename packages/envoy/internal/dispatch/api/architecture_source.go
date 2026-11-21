@@ -99,7 +99,8 @@ func querySources(ctx context.Context, q queryer, tail string, args ...any) ([]m
 }
 
 // putArchitectureSourceInput is the body of PUT
-// /api/v1/projects/{key}/architecture-sources/{owner}/{repo}.
+// /api/v1/projects/{key}/architecture-sources/{owner}/{repo} and of PUT
+// /api/v2/projects/{key}/architecture-sources/{owner}/{repo} (putArchitectureSourceV2).
 type putArchitectureSourceInput struct {
 	Branch string       `json:"branch" required:"true"`
 	Actor  *model.Actor `json:"actor"`

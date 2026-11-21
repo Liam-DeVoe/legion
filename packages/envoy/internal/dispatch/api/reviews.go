@@ -334,8 +334,9 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, reads)
 }
 
-// createArtifactReviewInput is the body of both review routes, POST /api/v1/artifacts/{id}/reviews
-// and POST /api/v1/artifacts/{id}/versions/{number}/reviews.
+// createArtifactReviewInput is the body of both /api/v1 review routes, POST
+// /api/v1/artifacts/{id}/reviews and POST /api/v1/artifacts/{id}/versions/{number}/reviews, and,
+// beside the version it names, of POST /api/v2/artifacts/{id}/reviews (artifactReviewV2Input).
 type createArtifactReviewInput struct {
 	State  string  `json:"state" required:"true"`
 	Reason *string `json:"reason"`
@@ -568,7 +569,8 @@ func (s *server) queueApprovalReviews(
 	return named, appended, nil
 }
 
-// approvalRequestInput is the body of POST /api/v1/artifacts/{id}/approval-requests.
+// approvalRequestInput is the body of POST /api/v1/artifacts/{id}/approval-requests and of POST
+// /api/v2/artifacts/{id}/approval-requests.
 type approvalRequestInput struct {
 	Actor   *model.Actor `json:"actor"`
 	Summary *string      `json:"summary"`
@@ -577,7 +579,9 @@ type approvalRequestInput struct {
 	IncludeVerification bool `json:"include_verification"`
 }
 
-// approvalRequestResponse is the body POST /api/v1/artifacts/{id}/approval-requests answers.
+// approvalRequestResponse is the body POST /api/v1/artifacts/{id}/approval-requests answers, and
+// what requestApproval hands POST /api/v2/artifacts/{id}/approval-requests to copy into its own
+// shape (approvalRequestV2).
 type approvalRequestResponse struct {
 	Ask        *shapedAsk           `json:"ask"`
 	ArtifactID string               `json:"artifact_id"`
@@ -1147,7 +1151,8 @@ func (s *server) verificationDocumentFor(ctx context.Context, q queryer, issueKe
 	}, nil
 }
 
-// createPlanReviewInput is the body of POST /api/v1/artifacts/{id}/plan-reviews.
+// createPlanReviewInput is the body of POST /api/v1/artifacts/{id}/plan-reviews and of POST
+// /api/v2/artifacts/{id}/plan-reviews.
 type createPlanReviewInput struct {
 	Actor   *model.Actor `json:"actor"`
 	Version int          `json:"version" required:"true"`

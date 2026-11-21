@@ -1079,7 +1079,8 @@ func loadCommentDelivery(ctx context.Context, q queryer, commentID, target strin
 	`, commentID, target, attemptNumber))
 }
 
-// createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries.
+// createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries and of POST
+// /api/v2/comments/{id}/deliveries (createCommentDeliveryV2).
 type createCommentDeliveryInput struct {
 	Actor    *model.Actor `json:"actor"`
 	Target   *string      `json:"target"`
@@ -1192,7 +1193,8 @@ func (s *server) retryCommentMention(w http.ResponseWriter, r *http.Request, act
 	WriteJSON(w, http.StatusCreated, attempt)
 }
 
-// commentReplyInput is the body of POST /api/v1/comments/{id}/reply.
+// commentReplyInput is the body of POST /api/v1/comments/{id}/reply and of POST
+// /api/v2/comments/{id}/replies (replyCommentV2).
 type commentReplyInput struct {
 	Actor   *model.Actor `json:"actor"`
 	Target  *string      `json:"target"`

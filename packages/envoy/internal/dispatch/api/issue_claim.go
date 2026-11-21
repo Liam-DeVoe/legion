@@ -25,10 +25,10 @@ import (
 //
 // The claim and the issue's status are separate, because humans may use the status to keep track
 // of work. So claiming an issue never moves its status, and the only thing that creates a claim is
-// POST /api/v1/issues/{key}/claim (the `dispatch claim` command). Messages, comments, asks,
-// labels, links, priority, route and component writes, and every read, leave the claim alone;
-// closing an issue is the one status move that touches it, clearing it because the work is
-// over.
+// POST /api/v1/issues/{key}/claim (the `dispatch claim` command) or PUT
+// /api/v2/issues/{key}/claim. Messages, comments, asks, labels, links, priority, route and
+// component writes, and every read, leave the claim alone; closing an issue is the one status move
+// that touches it, clearing it because the work is over.
 //
 // The claimant is the request's own actor, the same identity every other write carries: a
 // human's login from their signed cookie (a body that names a session is ignored for a cookie
@@ -142,8 +142,9 @@ func (c *claimConflict) Error() string {
 	)
 }
 
-// issueClaimedError is the 409 body POST and DELETE /api/v1/issues/{key}/claim answer a request
-// the issue's claim refused: ISSUE_CLAIMED, and the CLAIM_CONTENDED a bounded cycle ends on.
+// issueClaimedError is the 409 body POST and DELETE /api/v1/issues/{key}/claim, and PUT and DELETE
+// /api/v2/issues/{key}/claim, answer a request the issue's claim refused: ISSUE_CLAIMED, and the
+// CLAIM_CONTENDED a bounded cycle ends on.
 type issueClaimedError struct {
 	Claim *model.IssueClaim `json:"claim"`
 	Code  string            `json:"code"`
@@ -221,8 +222,9 @@ func (s *server) fetchHolderLiveness(ctx context.Context, holder model.IssueClai
 // credential (server.callerHoldsScope, model.ScopePerson), never from the kind of the actor the
 // write records: that actor is the session a bearer acts for, so reading it would refuse a
 // person's own token what the same person's browser is allowed. forcible is whether the route
-// has that force at all, so a refusal offers only what its caller can use —
-// POST /api/v1/issues/{key}/claim has one, DELETE has none.
+// has that force at all, so a refusal offers only what its caller can use — the claim, POST
+// /api/v1/issues/{key}/claim and PUT /api/v2/issues/{key}/claim, has one, the release (DELETE in
+// either version) none.
 type personRule struct {
 	override bool
 	forcible bool
@@ -707,7 +709,8 @@ func (s *server) claimCycle(
 	WriteJSON(w, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus})
 }
 
-// claimIssueInput is the body of POST /api/v1/issues/{key}/claim.
+// claimIssueInput is the body of POST /api/v1/issues/{key}/claim and of PUT
+// /api/v2/issues/{key}/claim (claimIssueV2).
 type claimIssueInput struct {
 	Actor *model.Actor `json:"actor"`
 	Force bool         `json:"force"`

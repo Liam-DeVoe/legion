@@ -10,7 +10,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// rebuildArtifactInput is the body of POST /api/v1/artifacts/{id}/rebuild.
+// rebuildArtifactInput is the body of POST /api/v1/artifacts/{id}/rebuild and of POST
+// /api/v2/artifacts/{id}/rebuilds (rebuildArtifactV2).
 type rebuildArtifactInput struct {
 	Markdown *string `json:"markdown"`
 }

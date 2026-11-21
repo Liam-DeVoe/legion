@@ -171,7 +171,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, body)
 }
 
-// createPriorityInput is the body of POST /api/v1/priorities.
+// createPriorityInput is the body of POST /api/v1/priorities and of POST /api/v2/priorities.
 type createPriorityInput struct {
 	// ID is the priority's own id, the spelling every address of it carries. A body that names
 	// none takes the title written as a slug (priorityIDFromTitle), as nothing in the store
@@ -286,9 +286,9 @@ func (s *server) createPriorityFrom(w http.ResponseWriter, r *http.Request, inpu
 	WriteJSON(w, http.StatusCreated, answer)
 }
 
-// patchPriorityInput is the body of PATCH /api/v1/priorities/{id}. Each field is a pointer, so a
-// write names the attributes it changes and leaves every other as it is: one write states one
-// fact, which is what the tuple log then holds.
+// patchPriorityInput is the body of PATCH /api/v1/priorities/{id} and of PATCH
+// /api/v2/priorities/{id}. Each field is a pointer, so a write names the attributes it changes and
+// leaves every other as it is: one write states one fact, which is what the tuple log then holds.
 type patchPriorityInput struct {
 	Title       *string `json:"title"`
 	Description *string `json:"description"`

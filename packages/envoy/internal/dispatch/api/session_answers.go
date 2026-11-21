@@ -17,10 +17,13 @@ const (
 	// /api/v2/agents/{session_id}/answers with no from (listSessionAnswersV2). It is the 72 hours
 	// every agent host carries on each model request.
 	sessionAnswersWindow = 72 * time.Hour
-	// sessionAnswersOldest bounds how far back a since may reach, so one read never walks more
-	// than a week of the events index.
+	// sessionAnswersOldest bounds how far back a read's start may reach, /api/v1's since and
+	// /api/v2's from alike (sessionAnswersStart), so one read never walks more than a week of the
+	// events index.
 	sessionAnswersOldest = 7 * 24 * time.Hour
-	// sessionAnswersMaxChars is the largest max_chars the route takes.
+	// sessionAnswersMaxChars is the largest max_chars an answers read takes: /api/v1's, checked
+	// against it here, and /api/v2's, whose query tag writes the same bound
+	// (sessionAnswersV2Query.MaxChars).
 	sessionAnswersMaxChars = 100_000
 )
 

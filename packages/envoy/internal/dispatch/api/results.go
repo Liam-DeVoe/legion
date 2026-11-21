@@ -97,7 +97,8 @@ type resolvedCheck struct {
 	checkResolution
 }
 
-// checkResultInput is the body POST /api/v1/issues/{key}/results takes.
+// checkResultInput is the body POST /api/v1/issues/{key}/results and POST
+// /api/v2/issues/{key}/results take.
 type checkResultInput struct {
 	Actor           *model.Actor `json:"actor"`
 	Check           string       `json:"check" required:"true"`
@@ -114,7 +115,8 @@ type checkResultInput struct {
 	Screenshots     []string     `json:"screenshots"`
 }
 
-// checkResultRecorded is the body POST /api/v1/issues/{key}/results answers.
+// checkResultRecorded is the body POST /api/v1/issues/{key}/results and POST
+// /api/v2/issues/{key}/results answer.
 type checkResultRecorded struct {
 	Line   string            `json:"line"`
 	Result model.CheckResult `json:"result"`
@@ -518,7 +520,8 @@ func (s *server) recordResultUnderOwnerLocks(
 	}, indexed, nil
 }
 
-// issueCheckResults is the body GET /api/v1/issues/{key}/results answers.
+// issueCheckResults is the body GET /api/v1/issues/{key}/results answers, and the read GET
+// /api/v2/issues/{key}/checks copies into its page (readIssueChecks, listIssueChecksV2).
 type issueCheckResults struct {
 	Checks                 []model.CheckBlock `json:"checks"`
 	Issue                  string             `json:"issue"`
@@ -912,12 +915,12 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
 // index stores it: the block's slice of the document's markdown, between the byte range the
 // document read itself gives for the block (docs.Service.TextWithBlocks), as refs.PlanBlocks
-// cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
-// so the coverage and the results reads take the same text through the same rule, and one block
-// answers one tree in all three reads, the whole stored text of a typed block in a quote included.
-// The ranges come with the markdown from that one read, which serves both from the read cache
-// without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
-// the block's own content (blockContent).
+// cuts it. GET /api/v1/reference-targets and GET /api/v2/reference-targets have only that stored
+// text to read a block's tree from, so the coverage and the results reads take the same text
+// through the same rule, and one block answers one tree in all three reads, the whole stored text
+// of a typed block in a quote included. The ranges come with the markdown from that one read,
+// which serves both from the read cache without a render where it can (typedBlockMarkdown); a
+// block the read gives no range for answers the block's own content (blockContent).
 func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
 	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
 	if err != nil {
@@ -988,8 +991,9 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
 // and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
 // for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
-// the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
-// the slice has stopped growing, since what is registered is a pointer into the row.
+// the block's tree from (the rule GET /api/v1/reference-targets and GET /api/v2/reference-targets
+// read the same block by), once the slice has stopped growing, since what is registered is a
+// pointer into the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string

@@ -8,19 +8,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Handing an ask on: PUT /api/v1/asks/{id}/asked-of.
+// Handing an ask on: PUT /api/v1/asks/{id}/asked-of, and PATCH /api/v2/asks/{id} with asked_of
+// (editAskV2).
 //
 // An ask waits on one person, and until somebody hands it on that person is the assignee of its
 // issue, or, while the issue holds nobody and on a project document, the default assignee of
 // its project (askedOfPersonExpression, the three steps every read of an ask's person shares).
-// This route writes the first step of that expression, asks.asked_of: the person a question is
+// Each route writes the first step of that expression, asks.asked_of: the person a question is
 // for, when that is not whoever the two steps below it name. The ask keeps everything else -
 // its question, its thread, its followers - and stays open; only whose Inbox it sits in moves.
 //
-// It is a person's act, so it needs the person scope (routeScopes) and nobody else may make it:
-// a credential the deployment configured holds no person to hand a question from, and handing a
-// question to somebody is how one person asks another. The row records who handed it on and
-// when (asked_of_by, asked_of_at) whatever else the write leaves, so the ask card can say it.
+// It is a person's act, so it needs the person scope (routeScopes, and askAskedOfAuthority at
+// /api/v2) and nobody else may make it: a credential the deployment configured holds no person
+// to hand a question from, and handing a question to somebody is how one person asks another.
+// The row records who handed it on and when (asked_of_by, asked_of_at) whatever else the write
+// leaves, so the ask card can say it.
 
 // askAskedOfInput is the body of PUT /api/v1/asks/{id}/asked-of: the person the ask waits on
 // from now on. It is a plain required string, as the bodies in asks.go are, since the field is

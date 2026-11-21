@@ -149,14 +149,14 @@ func (s *server) referenceTargets(ctx context.Context, raw []string, trees *disp
 }
 
 // wholeReferences writes, in place, the whole id into each of references whose item id or block
-// id is written short, by the rules that GET /api/v1/references reads one ?to= by
-// (wholeReference). The owner that the prefix is resolved within is read from the reference
-// (refs.PrefixScope), and only an id that text.IsIDPrefix accepts is resolved. The one item that
-// carries the prefix gives the reference its whole id, and a prefix that nothing carries leaves
-// the reference as written. A prefix that two items or more carry leaves the reference as
-// written too, and ambiguous is true at that reference's index, so that the caller answers that
-// reference alone as ambiguous and every other reference as it stands. ambiguous is nil when no
-// reference is ambiguous.
+// id is written short, by the rules that GET /api/v1/references and GET /api/v2/references read
+// one ?to= by (wholeReference). The owner that the prefix is resolved within is read from the
+// reference (refs.PrefixScope), and only an id that text.IsIDPrefix accepts is resolved. The one
+// item that carries the prefix gives the reference its whole id, and a prefix that nothing
+// carries leaves the reference as written. A prefix that two items or more carry leaves the
+// reference as written too, and ambiguous is true at that reference's index, so that the caller
+// answers that reference alone as ambiguous and every other reference as it stands. ambiguous is
+// nil when no reference is ambiguous.
 //
 // Every short id of the set is resolved in one batch (refs.ResolvePrefixes), which reads each
 // distinct id once, in one statement per kind of item and two for the blocks of a document, so
@@ -250,8 +250,9 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // text as the index holds it and whether the block is a document's (the target kind "block")
 // rather than a comment's, a message's or an ask's. A typed block's text opens with its directive
 // line and closes with its fence, which are no part of what the block says: its tree is of its
-// own content, the tree GET /api/v1/issues/{key}/coverage and /results answer for the same block
-// (typedBlocksIn). Every other block's text is its content already.
+// own content, the tree GET /api/v1/issues/{key}/coverage and /results, and GET
+// /api/v2/issues/{key}/coverage and /checks, answer for the same block (typedBlocksIn). Every
+// other block's text is its content already.
 //
 // The content is cut from the text itself and is never rendered again. A parse gives each typed
 // block that has no id a new random one (pmdoc.EnsureBlockIDs), and a rendering writes that id

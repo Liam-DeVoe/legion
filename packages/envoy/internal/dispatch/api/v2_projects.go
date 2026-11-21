@@ -1160,8 +1160,8 @@ func (s *server) listPrioritiesV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if query.Limit > 0 {
 		answer.page = pageOf(body.Priorities, query.pageQuery)
-		// Each description on the page carries its display tree, as GET /api/v1/priorities
-		// answers every one (readPriorityTrees).
+		// Each description on the page carries its display tree for a caller that sent
+		// `Dispatch-Trees: 1`, as GET /api/v1/priorities answers every one (readPriorityTrees).
 		s.readPriorityTrees(r, answer.Items)
 	}
 	if !summary {

@@ -64,7 +64,8 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, state)
 }
 
-// userIssueStateInput is the body of PUT /api/v1/me/issues/{key}/state.
+// userIssueStateInput is the body of PUT /api/v1/me/issues/{key}/state, and what an issue mark's
+// write under /api/v2 builds from its own arm (issueMarkV2Input, planMarkWrite) to write.
 type userIssueStateInput struct {
 	Pinned      *bool     `json:"pinned"`
 	LastReadSeq *int      `json:"last_read_seq"`
@@ -259,8 +260,9 @@ type userAgentState struct {
 	PinnedAt      *string `json:"pinned_at,omitempty"`
 }
 
-// userAgentStates is the body GET /api/v1/me/agents/state answers: the caller's state for each
-// agent conversation it holds one for, by session id.
+// userAgentStates is the body GET /api/v1/me/agents/state answers, and what /api/v2's reads of
+// agent marks (GET /api/v2/me/marks and GET /api/v2/me/marks/{kind}/{id}) are read from (marksOf):
+// the caller's state for each agent conversation it holds one for, by session id.
 type userAgentStates map[string]userAgentState
 
 // agentStateCutoffSkew is how far ahead of the server clock a Clear or a read mark may land. The
@@ -349,7 +351,8 @@ func parseAgentStateCutoff(name string, value *string) (*time.Time, error) {
 	return &parsed, nil
 }
 
-// userAgentStateInput is the body of PUT /api/v1/me/agents/{session_id}/state.
+// userAgentStateInput is the body of PUT /api/v1/me/agents/{session_id}/state, and the agent arm
+// of a mark's write under /api/v2 (agentMarkV2Input).
 type userAgentStateInput struct {
 	ClearedBefore *string  `json:"cleared_before"`
 	ReadThrough   *string  `json:"read_through"`

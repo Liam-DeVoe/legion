@@ -130,7 +130,9 @@ func (s *server) createAsk(w http.ResponseWriter, r *http.Request) {
 	s.createAskFor(w, r, issueOwner(r.PathValue("key")))
 }
 
-// createAskInput is the body of POST /api/v1/issues/{key}/asks and POST /api/v1/artifacts/{id}/asks.
+// createAskInput is the body of POST /api/v1/issues/{key}/asks and POST
+// /api/v1/artifacts/{id}/asks, and of POST /api/v2/issues/{key}/asks (createIssueAskV2) and POST
+// /api/v2/artifacts/{id}/asks (createArtifactAskV2).
 type createAskInput struct {
 	Question string             `json:"question" required:"true"`
 	Kind     string             `json:"kind"`
@@ -415,7 +417,8 @@ func (s *server) openAsk(
 	return ask, advice, suggestions, true
 }
 
-// editAskInput is the body of PATCH /api/v1/asks/{id}.
+// editAskInput is the body of PATCH /api/v1/asks/{id}, and the reword half of PATCH
+// /api/v2/asks/{id}'s body (editAskV2Input).
 type editAskInput struct {
 	Question *string            `json:"question"`
 	Options  *[]model.AskOption `json:"options"`

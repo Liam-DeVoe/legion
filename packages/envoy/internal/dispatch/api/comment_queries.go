@@ -188,7 +188,8 @@ func commentHasOwner(comment model.Comment, owner owner) bool {
 	return owner.ArtifactID != nil && comment.ArtifactID != nil && *comment.ArtifactID == *owner.ArtifactID
 }
 
-// commentRead is the body GET /api/v1/comments/{id} answers.
+// commentRead is the body GET /api/v1/comments/{id} answers, and the read GET
+// /api/v2/comments/{id} builds its own answer from (readCommentThread, getCommentV2).
 type commentRead struct {
 	Comment shapedComment   `json:"comment"`
 	Replies []shapedComment `json:"replies"`

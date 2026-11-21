@@ -39,15 +39,15 @@ func parseIssuePriority(raw json.RawMessage) (priority *int, provided bool, err 
 	return &value, true, nil
 }
 
-// issueDuplicateError is the 409 POSSIBLE_DUPLICATE body POST /api/v1/issues answers an
-// unforced create whose title overlaps an existing issue's.
+// issueDuplicateError is the 409 POSSIBLE_DUPLICATE body POST /api/v1/issues and POST
+// /api/v2/issues answer an unforced create whose title overlaps an existing issue's.
 type issueDuplicateError struct {
 	Candidates []model.DuplicateCandidate `json:"candidates"`
 	Code       string                     `json:"code"`
 	Error      string                     `json:"error"`
 }
 
-// createIssueInput is the body of POST /api/v1/issues.
+// createIssueInput is the body of POST /api/v1/issues and of POST /api/v2/issues (createIssueV2).
 type createIssueInput struct {
 	// Project and Title are not required of a caller: a create that names an external
 	// owner/repo#n takes the project from that repository's mapping (s.repoProject, or

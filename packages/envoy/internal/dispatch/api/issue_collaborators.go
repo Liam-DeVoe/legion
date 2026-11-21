@@ -67,7 +67,9 @@ const (
 	legionRegistryUnavailable = "unavailable"
 )
 
-// issueCollaborators is GET /api/v1/issues/{key}/collaborators.
+// issueCollaborators is GET /api/v1/issues/{key}/collaborators, and the read GET
+// /api/v2/issues/{key}/collaborators pages into its own answer (issueCollaboratorsOf,
+// listIssueCollaboratorsV2).
 type issueCollaborators struct {
 	IssueKey string               `json:"issue_key"`
 	People   []collaboratorPerson `json:"people"`

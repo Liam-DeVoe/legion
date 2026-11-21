@@ -15,16 +15,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// POST /api/v1/me/inbox/read is the Inbox's Mark all read: one request marks every thread the
-// list route would show the caller as unread, loaded on the page or not, narrowed as the list is
-// narrowed and no further than one read mark. A thread whose newest reply landed after
-// read_through stays unread, so a write the person has not seen is never swallowed by the button.
+// POST /api/v1/me/inbox/read is the Inbox's Mark all read, and so is PATCH /api/v2/me/marks with
+// set {read_through} (patchMarksByFilter): one request marks every thread the list route would
+// show the caller as unread, loaded on the page or not, narrowed as the list is narrowed and no
+// further than one read mark. A thread whose newest reply landed after read_through stays unread,
+// so a write the person has not seen is never swallowed by the button.
 //
-// The set it marks is exactly what GET /api/v1/me/replies?state=unread answers under the same
-// narrowing, so it is read through that route's own filters - myRepliesUnread for the Reply rows
-// (api/replies.go) and the Agent read beside it (api/replies_agent.go) - rather than predicates of
-// its own: two spellings of "unread" would let the button mark a row the list never showed, or
-// leave one it did.
+// The set it marks is exactly what GET /api/v1/me/replies?state=unread and GET /api/v2/me/threads
+// (state=unread, its default) answer under the same narrowing, both through readMyReplies, so it
+// is read through that list's own filters - myRepliesUnread for the Reply rows (api/replies.go)
+// and the Agent read beside it (api/replies_agent.go) - rather than predicates of its own: two
+// spellings of "unread" would let the button mark a row the list never showed, or leave one it
+// did.
 
 // inboxReplyMatchQuery builds the Reply read both write routes over these rows make: the caller's
 // rows in one state (source, one of the list route's own myRepliesUnread, myRepliesInbox and

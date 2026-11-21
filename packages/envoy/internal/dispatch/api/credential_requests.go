@@ -366,7 +366,7 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 	relayBrokerResponse(w, r, body, err)
 }
 
-// --- GET /api/v1/credentials/capabilities ---
+// --- GET /api/v1/credentials/capabilities, GET /api/v2/settings/credential-broker ---
 
 // credentialCapabilities is what the credential pages may offer against the broker this Dispatch
 // is configured with. It relays facts Dispatch reads from the broker rather than settings of its

@@ -160,7 +160,8 @@ func (s *server) writeProjectDefaultAssignee(ctx context.Context, tx pgx.Tx, act
 	// takes this lock first, so two of these at once name the pair each really moved, and no row
 	// lock is taken for it - the lock assigns no transaction id, and the update below is the
 	// first statement that writes. An unknown project is 404 NOT_FOUND on /api/v1 (pgx.ErrNoRows,
-	// writeHandlerError).
+	// writeHandlerError); PATCH /api/v2/projects/{key} reads the project before it calls this
+	// (patchProjectV2) and refuses an unknown one there.
 	var previous string
 	if err := store.LockOwnerAndRead(ctx, tx, store.ProjectOwner(key), `
 		select default_assignee from projects where key = $1

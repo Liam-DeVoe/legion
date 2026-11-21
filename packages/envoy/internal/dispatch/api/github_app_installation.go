@@ -9,7 +9,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// appInstallationResponse is GET /api/v1/github/app-installation/{owner}/{repo}'s answer.
+// appInstallationResponse is GET /api/v1/github/app-installation/{owner}/{repo}'s answer and GET
+// /api/v2/repositories/{owner}/{repo}/app-installation's.
 type appInstallationResponse struct {
 	Installed bool `json:"installed"`
 }

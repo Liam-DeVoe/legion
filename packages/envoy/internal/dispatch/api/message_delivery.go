@@ -19,7 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
+// createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries and of POST
+// /api/v2/messages/{id}/deliveries.
 type createDeliveryInput struct {
 	Delivery string       `json:"delivery" required:"true"`
 	Actor    *model.Actor `json:"actor"`
@@ -888,7 +889,8 @@ func (s *server) renewMessageDeliveryClaim(
 	return renewed, true, nil
 }
 
-// messageReplyInput is the body of POST /api/v1/messages/{id}/reply.
+// messageReplyInput is the body of POST /api/v1/messages/{id}/reply and of POST
+// /api/v2/messages/{id}/replies.
 type messageReplyInput struct {
 	Actor   *model.Actor `json:"actor"`
 	Attempt int          `json:"attempt" required:"true"`

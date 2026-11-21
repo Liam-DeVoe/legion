@@ -29,8 +29,8 @@ const defaultDeliveryWindow = 7 * 24 * time.Hour
 // maxDeliveryWindow bounds how wide [from, to) may be: CONTRACT.md measures 28 days of this
 // population at roughly 3,500 pull requests, so three times that backfill window is generous
 // headroom for a real dashboard query while still refusing the unbounded "from the epoch" request
-// an authenticated-but-careless caller (any agent session; GET /api/v1/delivery/timeline is
-// authAny) could otherwise send against the shared pool.
+// an authenticated-but-careless caller (any agent session; GET /api/v1/delivery/timeline and GET
+// /api/v2/delivery/timeline are authAny) could otherwise send against the shared pool.
 const maxDeliveryWindow = 3 * 28 * 24 * time.Hour
 
 // The timeline's facets, by the query parameter that selects each and the facet_counts key that
@@ -159,15 +159,16 @@ func deliveryNotConfigured(version apiVersion) string {
 	return "delivery is not configured; set delivery_settings through PUT " + versionPrefix(version) + "/settings/delivery"
 }
 
-// getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
-// and waiting-to-deploy PRs within [from, to) and the given facets and search, computed from
+// getDeliveryTimeline answers GET /api/v1/delivery/timeline and GET /api/v2/delivery/timeline, one
+// row served in both versions (v2Infra979Rows): merges, deploys, pipeline failures and
+// waiting-to-deploy PRs within [from, to) and the given facets and search, computed from
 // stored facts at request time (deployed_status, root_failing_job, the Parent agent and session
 // labels, the issue facts and every count are never stored -- "the server computes every
 // measure from stored facts on request"), and the measures of that same window and selection, so a
-// page showing both reads the population once. GET /api/v1/delivery/measures is the measures
-// alone, for another window. The answer is readDeliveryPopulation's read and
-// deliveryTimelineCompute's compute, the two halves the live hub calls too, so a live page's
-// snapshot is this body.
+// page showing both reads the population once. GET /api/v1/delivery/measures and GET
+// /api/v2/delivery/measures are the measures alone, for another window. The answer is
+// readDeliveryPopulation's read and deliveryTimelineCompute's compute, the two halves the live hub
+// calls too, so a live page's snapshot is this body.
 func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -190,9 +191,9 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, deliveryTimelineCompute(settings, population, from, to, time.Now().UTC()))
 }
 
-// deliveryTimelineCompute is GET /api/v1/delivery/timeline's body (deliveryTimelineWithMeasures)
-// for [from, to) from a population read for that window or narrowed to it. It reads nothing; now
-// is only the measures' computed_at.
+// deliveryTimelineCompute is the body of GET /api/v1/delivery/timeline and GET
+// /api/v2/delivery/timeline (deliveryTimelineWithMeasures) for [from, to) from a population read
+// for that window or narrowed to it. It reads nothing; now is only the measures' computed_at.
 func deliveryTimelineCompute(settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) deliveryTimelineWithMeasures {
 	derived := pop.derive(settings)
 
@@ -709,9 +710,9 @@ func nextUTCMidnight(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 }
 
-// getDeliveryRun answers GET /api/v1/delivery/runs/{id}: one run of the deploy repository with
-// every job it ran, in ListRunJobs' order (by when each started, a job that never started last,
-// then by name), for the drill-down's job lists.
+// getDeliveryRun answers GET /api/v1/delivery/runs/{id} and GET /api/v2/deploy-runs/{id}: one run
+// of the deploy repository with every job it ran, in ListRunJobs' order (by when each started, a
+// job that never started last, then by name), for the drill-down's job lists.
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

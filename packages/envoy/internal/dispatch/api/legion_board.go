@@ -103,9 +103,10 @@ func legionNotConfigured(version apiVersion) string {
 	return "this project has no Legion daemon; set one through PUT " + versionPrefix(version) + "/projects/{key}/legion/daemon"
 }
 
-// legionBoardResponse is GET /api/v1/projects/{key}/legion/board: the project the board shows, its header, its
-// columns, the settings its daemon reports, and when it was computed.
-// Mirrors packages/contracts/src/dispatch-api.ts's LegionBoardResponse exactly.
+// legionBoardResponse is GET /api/v1/projects/{key}/legion/board and GET
+// /api/v2/projects/{key}/legion/board, one row served in both versions (v2Infra979Rows): the
+// project the board shows, its header, its columns, the settings its daemon reports, and when it
+// was computed. Mirrors packages/contracts/src/dispatch-api.ts's LegionBoardResponse exactly.
 type legionBoardResponse struct {
 	Project string              `json:"project"`
 	Header  legionBoardHeader   `json:"header"`
@@ -174,11 +175,12 @@ type legionBoardWait struct {
 	AnsweredAt *time.Time `json:"answered_at"`
 }
 
-// getLegionBoard answers GET /api/v1/projects/{key}/legion/board, the project its path names
-// (R2, R26: everything of one project under a path). A project that names no daemon is 404
-// LEGION_NOT_CONFIGURED; a project whose daemon has never answered is answered the board with
-// empty columns and the read's failure in its header; a project that does not exist is 404
-// PROJECT_NOT_FOUND, and a malformed key 400 INVALID_PROJECT (legionProject).
+// getLegionBoard answers GET /api/v1/projects/{key}/legion/board and GET
+// /api/v2/projects/{key}/legion/board, the project its path names (R2, R26: everything of one
+// project under a path). A project that names no daemon is 404 LEGION_NOT_CONFIGURED; a project
+// whose daemon has never answered is answered the board with empty columns and the read's failure
+// in its header; a project that does not exist is 404 PROJECT_NOT_FOUND, and a malformed key 400
+// INVALID_PROJECT (legionProject).
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -548,9 +550,9 @@ func (c *legionBoardCards) nearestCard(key string) string {
 	return ""
 }
 
-// legionBoardCompute is GET /api/v1/projects/{key}/legion/board's body for a population read for it. It reads
-// nothing: the live hub answers the same body from the population it already holds, and now is
-// only computed_at.
+// legionBoardCompute is the body of GET /api/v1/projects/{key}/legion/board and GET
+// /api/v2/projects/{key}/legion/board for a population read for it. It reads nothing: the live
+// hub answers the same body from the population it already holds, and now is only computed_at.
 //
 // A card's column is the first of these that holds: the daemon's waiting line, in its own order,
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots

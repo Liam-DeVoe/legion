@@ -1,5 +1,6 @@
 // issue_advances.go is the `advances` relation seen from the issue it is stated on: the field
-// POST /api/v1/issues and PATCH /api/v1/issues/{key} write, the refusals those two answer, and
+// POST /api/v1/issues and PATCH /api/v1/issues/{key} write, and POST /api/v2/issues and PATCH
+// /api/v2/issues/{key} with them (createIssueFrom, patchIssueAs), the refusals those answer, and
 // the revision rule a whole-set write passes. The rows belong to
 // internal/dispatch/prioritystore, the one place in the tree that writes `priority_tuples`;
 // nothing here writes a row itself.

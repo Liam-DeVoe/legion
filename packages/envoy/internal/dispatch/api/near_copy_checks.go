@@ -23,7 +23,8 @@ import (
 // Forced): a refused create wrote nothing anywhere, and no create kept the scores the gate read,
 // so how often the live gate refuses a create that is no copy, or lets a copy in, could not be
 // counted on the creates it actually scored. A near_copy_checks row is one answer, read back
-// through GET /api/v1/near-copy-checks and GET /api/v1/near-copy-checks/{id}.
+// through GET /api/v1/near-copy-checks and GET /api/v1/near-copy-checks/{id}, and through GET
+// /api/v2/projects/{key}/near-copy-checks and GET /api/v2/near-copy-checks/{id}.
 
 // The outcomes near_copy_checks.outcome holds, one for each state runNearCopyGate settles.
 const (
@@ -53,10 +54,11 @@ const (
 // with it.
 const nearCopyRecordTimeout = time.Second
 
-// nearCopyChecksPageMax is the most rows one page of GET /api/v1/near-copy-checks holds, and how
-// many it holds when ?limit= is absent. A page row carries no spec (GET
-// /api/v1/near-copy-checks/{id} reads one), so its size is bounded by the title's cap and five
-// candidates, never by what a create sent.
+// nearCopyChecksPageMax is the most rows one page of GET /api/v1/near-copy-checks and of GET
+// /api/v2/projects/{key}/near-copy-checks holds, and how many it holds when ?limit= is absent. A
+// page row carries no spec (GET /api/v1/near-copy-checks/{id} and GET /api/v2/near-copy-checks/{id}
+// read one), so its size is bounded by the title's cap and five candidates, never by what a create
+// sent.
 const nearCopyChecksPageMax = 1000
 
 // nearCopyCheck is the gate's answer for one create as its near_copy_checks row records it,
@@ -212,8 +214,8 @@ func (s *server) recordNearCopyCheck(ctx context.Context, row nearCopyCheckRow, 
 }
 
 // nearCopyCheckColumns are a row's columns as scanNearCopyCheck reads them, but for its spec,
-// which each query selects last: the row's own for GET /api/v1/near-copy-checks/{id}, and null for
-// a page, which carries no spec.
+// which each query selects last: the row's own for GET /api/v1/near-copy-checks/{id} and GET
+// /api/v2/near-copy-checks/{id} (readNearCopyCheck), and null for a page, which carries no spec.
 const nearCopyCheckColumns = `id::text, created_at, project_key, actor_kind, actor_id, outcome, reason,
        force, title, spec_sha256, parent_key, issue_key, candidates, refuse_score, nudge_score,
        build_commit`

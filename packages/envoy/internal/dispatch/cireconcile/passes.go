@@ -19,9 +19,10 @@ import (
 // pod's reached back 45 minutes, nine passes, which is not enough to answer why a head read six
 // hours ago still has no check. So each pass writes a row when it starts and fills the rest in
 // when it ends, and GET /api/v1/ci-reconcile/passes reads the last day of them back out
-// (RecentPasses). A row costs one insert and one update per five minutes and is kept for
-// PassRetention, which is twice the window the route serves, so a pass that is still being read
-// about is never pruned out from under the reader.
+// (RecentPasses), and GET /api/v2/ci-reconcile-passes those within the window it names, the last
+// day where it names none (Passes). A row costs one insert and one update per five minutes and is
+// kept for PassRetention, which is twice the day either route reads where no window is named, so a
+// pass that is still being read about is never pruned out from under the reader.
 const (
 	// PassWindow is how far back the route reads: the passes of the last day.
 	PassWindow = 24 * time.Hour
@@ -184,7 +185,8 @@ func passOutcome(c *counts, at *stop, cancelled bool) PassState {
 	}
 }
 
-// PassRecord is one row of ci_reconcile_passes as GET /api/v1/ci-reconcile/passes answers it.
+// PassRecord is one row of ci_reconcile_passes as GET /api/v1/ci-reconcile/passes and GET
+// /api/v2/ci-reconcile-passes answer it.
 type PassRecord struct {
 	// ID is the row's own identity, which orders two passes that started in the same instant.
 	ID int64 `json:"id"`

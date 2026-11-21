@@ -223,9 +223,10 @@ func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text
 	return ref, true
 }
 
-// referenceQuestions is the question map GET /api/v1/references/questions answers: the document
-// one reference source's text belongs to, and the ask each question block of that document
-// declares, which is what a `#id` written in that text names.
+// referenceQuestions is the question map GET /api/v1/references/questions answers and the source
+// filter of GET /api/v2/asks reads (readQuestionMap): the document one reference source's text
+// belongs to, and the ask each question block of that document declares, which is what a `#id`
+// written in that text names.
 type referenceQuestions struct {
 	Document  string              `json:"document"`
 	Questions []referenceQuestion `json:"questions"`

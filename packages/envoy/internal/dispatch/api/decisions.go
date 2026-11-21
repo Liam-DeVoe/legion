@@ -35,9 +35,9 @@ import (
 // A new decision therefore marks nothing, and neither does the block index's first pass over a
 // document, which gives every block and every pair one version.
 //
-// The links are read through refs.BlockLinks, the read GET /api/v1/block-links already serves, and
-// each block's own changed version through refs.BlockChanges: this view writes no query for a link
-// the block graph already answers.
+// The links are read through refs.BlockLinks, the read GET /api/v1/block-links and GET
+// /api/v2/block-links already serve, and each block's own changed version through
+// refs.BlockChanges: this view writes no query for a link the block graph already answers.
 
 const (
 	// decisionsDocumentName is the document an issue's decisions live in; the slug its

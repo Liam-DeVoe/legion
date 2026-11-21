@@ -30,7 +30,8 @@ import (
 // ordinary issue-less message aimed at its own session, carrying the broadcast's id, so each
 // recipient's thread, retry and reply work exactly as they do for a message sent from one
 // agent card. Nothing reads a broadcast to deliver it; the broadcast row only records what
-// the recipients share, and GET /api/v1/broadcasts/{id} reads their messages back.
+// the recipients share, and GET /api/v1/broadcasts/{id} and GET /api/v2/broadcasts/{id} read
+// their messages back (getBroadcast).
 //
 // A selected session that does not advertise the chosen mode is never switched to another
 // one: it is excluded before anything is written, and named in the create response. The mode
@@ -305,9 +306,10 @@ type broadcastRecovery struct {
 }
 
 // replayBroadcast answers a repeat of a keyed broadcast whose broadcast committed: the broadcast as
-// GET /api/v1/broadcasts/{id} reads it, every recipient's attempts as they stand, with the send's
-// own exclusions, under the send's own 201 - answered at once, as the send was, while
-// sendOwedBroadcastRecipients puts every recipient it still owes on its way behind the answer.
+// GET /api/v1/broadcasts/{id} and GET /api/v2/broadcasts/{id} read it, every recipient's attempts
+// as they stand, with the send's own exclusions, under the send's own 201 - answered at once, as
+// the send was, while sendOwedBroadcastRecipients puts every recipient it still owes on its way
+// behind the answer.
 func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point broadcastRecovery, _ []byte) {
 	ctx := r.Context()
 	read, err := s.readBroadcast(ctx, point.BroadcastID, wantsDisplayTrees(r))
@@ -699,7 +701,7 @@ func (s *server) broadcastSummaries(ctx context.Context, trees bool, limit, offs
 	return summaries, nil
 }
 
-// GET /api/v1/broadcasts/{id}
+// GET /api/v1/broadcasts/{id} and GET /api/v2/broadcasts/{id}
 //
 // A broadcast's route resolves no id prefix, but the prefix layer canonicalizes its {id} all the
 // same (canonicalizeUUIDPath), so this handler parses the one spelling of it: Postgres refuses
@@ -727,7 +729,7 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 // readBroadcast reads one broadcast with every recipient's state, as GET /api/v1/broadcasts/{id}
-// answers it; an unknown id is pgx.ErrNoRows.
+// and GET /api/v2/broadcasts/{id} answer it (getBroadcast); an unknown id is pgx.ErrNoRows.
 func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broadcastRead, error) {
 	var read broadcastRead
 	var author []byte

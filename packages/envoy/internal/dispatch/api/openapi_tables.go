@@ -30,14 +30,15 @@ import (
 // the document does not reflect fails the emit, so the table cannot rot.
 var schemaNames = map[reflect.Type]string{
 	// GET /api/v1/issues/{key}/summary's answer, against model.IssueSummary, the row GET
-	// /api/v1/issues lists. The list row holds the name, since the dashboard reads its issues
-	// through it; this is the reference card, which its TypeScript consumers already import as
-	// IssueReferenceSummary (packages/contracts/src/dispatch-api.ts).
+	// /api/v1/issues and GET /api/v2/issues list. The list row holds the name, since the dashboard
+	// reads its issues through it; this is the reference card, which its TypeScript consumers
+	// already import as IssueReferenceSummary (packages/contracts/src/dispatch-api.ts).
 	reflect.TypeOf(issueSummary{}): "IssueReferenceSummary",
-	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which three routes
-	// answer (GET /api/v1/me/answers, /me/replies and /agents/{session_id}/answers) and whose
-	// shape is what the TypeScript OpenAskOwner says. This one carries the issue's assignee
-	// besides, so the two are not one schema.
+	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which three /api/v1
+	// routes answer (GET /api/v1/me/answers, /me/replies and /agents/{session_id}/answers), as
+	// GET /api/v2/me/answers and GET /api/v2/agents/{session_id}/answers do, and whose shape is
+	// what the TypeScript OpenAskOwner says. This one carries the issue's assignee besides, so the
+	// two are not one schema.
 	reflect.TypeOf(openAskOwner{}): "OpenAskItemOwner",
 
 	// This package's own shapes, whose Go names say what the handler called them and whose

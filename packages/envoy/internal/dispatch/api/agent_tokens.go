@@ -67,7 +67,8 @@ func (s *server) agentTokensOf(ctx context.Context, owner string) ([]model.Agent
 	return tokens, nil
 }
 
-// createAgentTokenInput is the body of POST /api/v1/me/agent-tokens.
+// createAgentTokenInput is the body of POST /api/v1/me/agent-tokens and of POST
+// /api/v2/me/agent-tokens (createAgentTokenV2).
 type createAgentTokenInput struct {
 	Name string `json:"name" required:"true"`
 	// Scopes is the set the new token holds. A body that names none at all leaves it to the
@@ -135,7 +136,8 @@ func (s *server) createAgentTokenFrom(w http.ResponseWriter, r *http.Request, ac
 	WriteJSON(w, http.StatusCreated, createAgentTokenResponse{AgentToken: token, Token: plaintext})
 }
 
-// updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id}.
+// updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id} and of PATCH
+// /api/v2/me/agent-tokens/{id} (updateAgentTokenV2).
 type updateAgentTokenScopesInput struct {
 	Scopes *[]string `json:"scopes" required:"true"`
 }

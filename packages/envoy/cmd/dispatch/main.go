@@ -456,7 +456,8 @@ func main() {
 	// answers another build's from there (dashboard.Store below). A process that cannot publish
 	// exits before it is ready, and a rolling update keeps the processes it would have replaced.
 	// The build is what the process registers below as the build it serves, and its entry chunk
-	// what GET /api/v1/dashboard/builds answers as this process's.
+	// what GET /api/v1/dashboard/builds answers as this process's and GET /api/v2/dashboard-builds
+	// marks as serving.
 	dashboardBuild, err := publishDashboard(store.WithTransactionTracking(ctx), database.Pool, webDistDir, dashboardPublishTimeout)
 	if err != nil {
 		slog.Error("dispatch: publish dashboard assets", "error", err)

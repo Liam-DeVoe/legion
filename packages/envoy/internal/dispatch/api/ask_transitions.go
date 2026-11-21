@@ -179,7 +179,8 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 	return &value, nil
 }
 
-// answerAskInput is the body of POST /api/v1/asks/{id}/answer.
+// answerAskInput is the body of POST /api/v1/asks/{id}/answer, and the fields of PUT
+// /api/v2/asks/{id}/state's answered arm (answerAskStateInput).
 type answerAskInput struct {
 	Selected []string `json:"selected"`
 	Text     *string  `json:"text"`
@@ -440,8 +441,10 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 	}, actor)
 }
 
-// declineAskInput is the body of POST /api/v1/asks/{id}/decline. Both fields are optional: a
-// person who writes no note declines all the same, and a browser names no acting session.
+// declineAskInput is the body of POST /api/v1/asks/{id}/decline, and what PUT
+// /api/v2/asks/{id}/state's declined arm hands recordDecline, its reason as the note
+// (putAskStateV2). Both fields are optional: a person who writes no note declines all the same,
+// and a browser names no acting session.
 type declineAskInput struct {
 	Note  *string      `json:"note"`
 	Actor *model.Actor `json:"actor"`

@@ -10,7 +10,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
-// slowWriteInput is the body of POST /api/v1/writes/_test/slow.
+// slowWriteInput is the body of POST /api/v1/writes/_test/slow and of POST
+// /api/v2/_test/writes/slow.
 type slowWriteInput struct {
 	Method  string `json:"method" required:"true"`
 	Path    string `json:"path" required:"true"`
@@ -32,12 +33,13 @@ type slowWriteRecord struct {
 	waited atomic.Int64 // what they waited there altogether, in nanoseconds
 }
 
-// armSlowWrite is POST /api/v1/writes/_test/slow, {method, path, delay_ms}: from now on every keyed
-// run of that method and exact request path, once its key is claimed, waits delay_ms on its
-// handler's context before the handler runs (slowedByTestHook), so a browser test can drive a
-// write Dispatch takes longer to finish than the page waits for an answer, without holding the
-// request in the browser. It replaces what an earlier call armed for that method and path;
-// delay_ms 0 disarms it. Test-only: mounted only under Deps.TestHooksEnabled.
+// armSlowWrite is POST /api/v1/writes/_test/slow and POST /api/v2/_test/writes/slow, {method,
+// path, delay_ms}: from now on every keyed run of that method and exact request path, once its key
+// is claimed, waits delay_ms on its handler's context before the handler runs (slowedByTestHook),
+// so a browser test can drive a write Dispatch takes longer to finish than the page waits for an
+// answer, without holding the request in the browser. It replaces what an earlier call armed for
+// that method and path; delay_ms 0 disarms it. Test-only: mounted only under
+// Deps.TestHooksEnabled.
 func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

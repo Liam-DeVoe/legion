@@ -347,7 +347,7 @@ func searchKeywordRank(searchColumn string) string {
 // leg (relatedOtherProjectsSQL) all select it.
 const askBlockNodeSQL = `case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end`
 
-// searchFusedSQL is the one score every match of GET /api/v1/search is ranked by, which
+// searchFusedSQL is the one score every match of both versions' search routes is ranked by, which
 // searchQuery and searchQueryMeaning each pass their body as its "fused" CTE: one scored list
 // across every kind, rather than five lists of their own merged by the position a row holds in
 // its kind. Each leg contributes its own score - the keyword leg's length-normalised ts_rank_cd

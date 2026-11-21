@@ -14,11 +14,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// deliveryPipelineResponse is GET /api/v1/delivery/pipeline: the Pipeline page's seven UTC days
-// ending on `at`, the PR-checks workflow's run timing with its slowest and recently failing jobs,
-// the deploy workflow's staging end-to-end, staging deploy and production deploy jobs (the first
-// two null when the settings name none), the merge-to-production and open-to-merge lead times per
-// merge day, the targets the two lead-time cards are judged against, and the timeline's freshness.
+// deliveryPipelineResponse is GET /api/v1/delivery/pipeline and GET /api/v2/delivery/pipeline,
+// one row served in both versions (v2Infra979Rows): the Pipeline page's seven UTC days ending on
+// `at`, the PR-checks workflow's run timing with its slowest and recently failing jobs, the deploy
+// workflow's staging end-to-end, staging deploy and production deploy jobs (the first two null
+// when the settings name none), the merge-to-production and open-to-merge lead times per merge
+// day, the targets the two lead-time cards are judged against, and the timeline's freshness.
 // Mirrors packages/contracts/src/dispatch-api.ts's DeliveryPipelineResponse exactly. It lives here
 // beside deliveryMeasuresResponse, since the measures package imports delivery.
 type deliveryPipelineResponse struct {
@@ -48,13 +49,14 @@ type deliveryPipelinePRChecks struct {
 	FailingJobs []measures.FailingJob `json:"failing_jobs"`
 }
 
-// getDeliveryPipeline answers GET /api/v1/delivery/pipeline, computed from stored facts on
-// request. Its clock is `at` (RFC3339, default now): the seven shown days end on at's UTC day, and
-// the failing-jobs table looks back 24 hours from at, so a test or a screenshot pins "today" to a
-// fixture's day. Runs are read by start over the whole of the shown days, today included past at.
-// The PR checks are the pull_request runs; the deploy jobs are read from the push runs on main
-// (decision 6); the lead times are every population pull request merged in the shown days,
-// before any facet, since the Pipeline page follows neither the timeline's window nor its facets.
+// getDeliveryPipeline answers GET /api/v1/delivery/pipeline and GET /api/v2/delivery/pipeline,
+// computed from stored facts on request. Its clock is `at` (RFC3339, default now): the seven shown
+// days end on at's UTC day, and the failing-jobs table looks back 24 hours from at, so a test or a
+// screenshot pins "today" to a fixture's day. Runs are read by start over the whole of the shown
+// days, today included past at. The PR checks are the pull_request runs; the deploy jobs are read
+// from the push runs on main (decision 6); the lead times are every population pull request merged
+// in the shown days, before any facet, since the Pipeline page follows neither the timeline's
+// window nor its facets.
 func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -125,8 +127,9 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 	return pop, nil
 }
 
-// deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body as of at, from a population read
-// for at or narrowed to it. It reads nothing; now is only computed_at.
+// deliveryPipelineCompute is the body of GET /api/v1/delivery/pipeline and GET
+// /api/v2/delivery/pipeline as of at, from a population read for at or narrowed to it. It reads
+// nothing; now is only computed_at.
 func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePopulation, at, now time.Time) deliveryPipelineResponse {
 	days := measures.ShownDays(at)
 	rollup := ""

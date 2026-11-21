@@ -319,9 +319,9 @@ type Priority struct {
 	MadeBy          Actor       `json:"made_by"`
 }
 
-// PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
-// answers it: one tuple of the log the priority is the projection of
-// (internal/dispatch/prioritystore). Field is what was stated — `title`, `description`, `owner`,
+// PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history and
+// GET /api/v2/priorities/{id}/acts answer it: one tuple of the log the priority is the projection
+// of (internal/dispatch/prioritystore). Field is what was stated — `title`, `description`, `owner`,
 // `rank`, `state` and `visibility` are the attributes, `advances` the one relation — and the act
 // carries Value or Issue by which of the two it is: an attribute write carries the value it
 // wrote in Value and no Issue, and an `advances` act carries the issue at the other end in Issue
@@ -339,11 +339,12 @@ type PriorityAct struct {
 	At       time.Time `json:"at"`
 }
 
-// Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order,
-// each with the work under it, and the two fault lists. It is an object rather than a bare array
-// because the counts of the work under each priority and the two fault lists — work in flight
-// under no priority, and priority work parked in `backlog` or `icebox` — are answered by this
-// same route, under keys of their own, and a bare array would have no room for them.
+// Priorities is the body GET /api/v1/priorities answers, and what GET /api/v2/priorities pages
+// (api.listPrioritiesV2): every live priority, in rank order, each with the work under it, and the
+// two fault lists. It is an object rather than a bare array because the counts of the work under
+// each priority and the two fault lists — work in flight under no priority, and priority work
+// parked in `backlog` or `icebox` — are answered by the same read, under keys of their own, and a
+// bare array would have no room for them.
 //
 // Empty carries the sentence the page draws when the store holds no live priority at all: the
 // answer is then 200 with an empty list rather than an error, since a deployment that has
@@ -794,13 +795,13 @@ type SearchResult struct {
 	Ask *SearchAsk `json:"ask,omitempty"`
 }
 
-// SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
-// operator forms the query was read as using (contracts.SearchOperatorPhrase,
-// SearchOperatorOr, SearchOperatorExclude), empty for a query that wrote none, and Broadened is
-// whether the answer came from the fallback search over the query's rarest words, which runs for
-// a query the words as typed match nothing at all for (api.runSearch, api.searchRarestWords). A
-// caller showing a person what was done with their words reads it rather than parsing them
-// again. Mirrors contracts' SearchQueryReading.
+// SearchQueryReading is how GET /api/v1/search and GET /api/v2/search-results read the words they
+// were given: Operators names the operator forms the query was read as using
+// (contracts.SearchOperatorPhrase, SearchOperatorOr, SearchOperatorExclude), empty for a query that
+// wrote none, and Broadened is whether the answer came from the fallback search over the query's
+// rarest words, which runs for a query the words as typed match nothing at all for (api.runSearch,
+// api.searchRarestWords). A caller showing a person what was done with their words reads it rather
+// than parsing them again. Mirrors contracts' SearchQueryReading.
 type SearchQueryReading struct {
 	Operators []string `json:"operators"`
 	Broadened bool     `json:"broadened"`
@@ -841,10 +842,10 @@ type SearchResponse struct {
 }
 
 // SearchCoverage is how much of what meaning search covers has a current vector from the
-// configured embedder (INFRA-393, GET /api/v1/search/coverage). Identity is the embedder's
-// identity (embed.Embedder.Identity), Place ("bedrock", "azure", or "dev" for the local
-// harness's own embedder, which no deployment runs) and Model are read from it; all three are
-// null when no embedder is configured, and then nothing is current.
+// configured embedder (INFRA-393, GET /api/v1/search/coverage and GET /api/v2/search-coverage).
+// Identity is the embedder's identity (embed.Embedder.Identity), Place ("bedrock", "azure", or
+// "dev" for the local harness's own embedder, which no deployment runs) and Model are read from
+// it; all three are null when no embedder is configured, and then nothing is current.
 //
 // Kinds and Total cover what the index holds; NotIndexed names what it does not, so a reader
 // can tell a kind that is covered and complete from one nothing indexes at all.
@@ -895,11 +896,11 @@ type SearchCoverageCounts struct {
 	OldestLackingSeconds *int64 `json:"oldest_lacking_seconds"`
 }
 
-// DispatchLimits is what GET /api/v1/limits answers: the bounds the server holds a write to, each
-// read from the constant that enforces it. BlockUnits and AskUnits are UTF-16 code units, as is
-// EventBodyUnits, the longest body an event carries whole; ItemBlocks is the most blocks one body
-// may hold and AskOptions the most options one ask may have; RequestBytes, DocumentBytes and
-// HandoffBytes are UTF-8 bytes.
+// DispatchLimits is what GET /api/v1/limits and GET /api/v2/limit-set answer: the bounds the server
+// holds a write to, each read from the constant that enforces it. BlockUnits and AskUnits are
+// UTF-16 code units, as is EventBodyUnits, the longest body an event carries whole; ItemBlocks is
+// the most blocks one body may hold and AskOptions the most options one ask may have;
+// RequestBytes, DocumentBytes and HandoffBytes are UTF-8 bytes.
 type DispatchLimits struct {
 	BlockUnits     int   `json:"block_units"`
 	ItemBlocks     int   `json:"item_blocks"`
@@ -973,10 +974,11 @@ type Suggestions struct {
 	NearCopyCheck   string               `json:"near_copy_check,omitempty"`
 }
 
-// RelatedChecksReport is GET /api/v1/related-checks: how the related-item checks recorded in
-// related_checks within one window went, so a deploy's checks can be counted against
-// its targets. Project, SourceKind, From and To echo the filters, each null when not given (every
-// project, every source kind, no lower or upper bound); From is inclusive and To exclusive.
+// RelatedChecksReport is GET /api/v1/related-checks, and the report GET /api/v2/related-check-stats
+// answers as api.relatedCheckStatsV2: how the related-item checks recorded in related_checks within
+// one window went, so a deploy's checks can be counted against its targets. Project, SourceKind,
+// From and To echo the filters, each null when not given (every project, every source kind, no
+// lower or upper bound); From is inclusive and To exclusive.
 //
 // BySourceKind, ByOutcome, BySearch and ByReason count the checks by each column; BySearch counts
 // a check not made under "not_made", and ByReason leaves out the checks that had no reason (those
@@ -1094,7 +1096,8 @@ type IssueChild struct {
 	Claim         *IssueClaim    `json:"claim,omitempty"`
 }
 
-// ArchitectureTree is GET /api/v1/projects/{key}/architecture: the project's
+// ArchitectureTree is GET /api/v1/projects/{key}/architecture and GET
+// /api/v2/projects/{key}/architecture (api.getArchitectureTree): the project's
 // component model — every source's components together — with the work
 // attached to it. Counting rule: a component
 // counts every distinct issue whose effective set names it or any component it
@@ -1712,8 +1715,9 @@ type BlockAttributeValue struct {
 }
 
 // BlockTable is a table block's rows in child order, the header row first, as GET
-// /api/v1/artifacts/{id}/blocks lists them under the table: each row and cell placed as GET
-// /api/v1/artifacts/{id}/blocks/{block_id} places it, from the same live tree.
+// /api/v1/artifacts/{id}/blocks, and /api/v2's document reads under include=blocks, list them
+// under the table: each row and cell placed as GET /api/v1/artifacts/{id}/blocks/{block_id} and
+// GET /api/v2/artifacts/{id}/blocks/{block_id} place it, from the same live tree.
 type BlockTable struct {
 	Rows []BlockTableRow `json:"rows"`
 }
@@ -1747,8 +1751,9 @@ type BlockReferences struct {
 }
 
 // BlockPath is where a block stands in its document: GET /api/v1/artifacts/{id}/blocks/{block_id}'s
-// answer, and the anchor_block a comment's or ask's single read carries for its anchor's block.
-// Derived from the live document at read time; nothing stores it.
+// and GET /api/v2/artifacts/{id}/blocks/{block_id}'s answer, and the anchor_block a comment's or
+// ask's single read carries for its anchor's block. Derived from the live document at read time;
+// nothing stores it.
 type BlockPath struct {
 	ID    string           `json:"id"`
 	Type  string           `json:"type"`
@@ -1780,8 +1785,9 @@ type TablePosition struct {
 }
 
 // AnchorPosition is where a comment's or an ask's anchor's block stands in the live document. Set
-// by the single-record reads alone (GET /api/v1/comments/{id}, GET /api/v1/asks/{id}), never by
-// lists or events.
+// by the single-record reads (GET /api/v1/comments/{id}, GET /api/v1/asks/{id}, GET
+// /api/v2/comments/{id}, GET /api/v2/asks/{id}) and by the ask an /api/v2 write of one answers
+// (api.completeWrittenAskV2), never by lists or events.
 type AnchorPosition struct {
 	// AnchorBlock is nil when there is no anchor, the anchor names no block, the block has left
 	// the document, or the document could not be read, which AnchorBlockError then names.
@@ -2982,7 +2988,8 @@ type ReplyBlock struct {
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET
-// /api/v1/messages/{id}/blocks: the comment or message as a graph node, the comment's revision (a
+// /api/v1/messages/{id}/blocks, and what GET /api/v2/comments/{id} and GET /api/v2/messages/{id}
+// carry with include=blocks: the comment or message as a graph node, the comment's revision (a
 // message, which is never edited, has none), whether its blocks are indexed from the body it
 // stores, and its current blocks in body order. While the item is owed an index, or its index was
 // made from another body than the stored one, Indexed is false and Blocks is empty: a read writes
@@ -3101,7 +3108,8 @@ type ChangedReference struct {
 // contracts.DispatchItemBlocks on how many blocks it holds), so one body can be far longer than
 // any single NATS payload: an event carries the first contracts.DispatchEventBodyMax UTF-16
 // units of it and says so, and every reader gets the rest from the server by reading the item
-// itself (GET /api/v1/comments/{id}, GET /api/v1/messages/{id}).
+// itself (GET /api/v1/comments/{id} or GET /api/v2/comments/{id}, GET /api/v1/messages/{id} or GET
+// /api/v2/messages/{id}).
 //
 // A body of at most that many units rides whole and answers false. A longer one is cut at the
 // last blank line inside the bound, else at the last line break inside it, else at the last
@@ -3142,7 +3150,8 @@ func EventBody(body string) (string, bool) {
 type CommentEventPayload struct {
 	Comment
 	// BodyTruncated is that Body is the first part of the comment's body and not all of it
-	// (EventBody). A reader that needs the rest reads GET /api/v1/comments/{id}.
+	// (EventBody). A reader that needs the rest reads GET /api/v1/comments/{id} or GET
+	// /api/v2/comments/{id}.
 	BodyTruncated bool   `json:"body_truncated,omitempty"`
 	ArtifactName  string `json:"artifact_name"`
 	// ProjectKey and ArtifactSlug identify the document owning an artifact comment,
@@ -3273,8 +3282,9 @@ type MessageDelivery struct {
 	// written before Dispatch recorded it, which is never read as a person's.
 	RequestedBy *Actor `json:"requested_by"`
 	// AcceptedAt and AcceptedAs record that the attempt's session took the message
-	// (POST /api/v1/messages/{id}/deliveries/{attempt}/accept), and as what: "user_turn", the
-	// session's own user turn. At most one attempt of a message is ever accepted.
+	// (POST /api/v1/messages/{id}/deliveries/{attempt}/accept, or PUT
+	// /api/v2/messages/{id}/deliveries/{attempt}/state with state accepted), and as what:
+	// "user_turn", the session's own user turn. At most one attempt of a message is ever accepted.
 	AcceptedAt *time.Time `json:"accepted_at"`
 	AcceptedAs *string    `json:"accepted_as"`
 }
@@ -3304,7 +3314,8 @@ func ConnectedOnlyColumn(connectedOnly bool) *string {
 type MessageEventPayload struct {
 	Message
 	// BodyTruncated is that Body is the first part of the message's body and not all of it
-	// (EventBody). A reader that needs the rest reads GET /api/v1/messages/{id}.
+	// (EventBody). A reader that needs the rest reads GET /api/v1/messages/{id} or GET
+	// /api/v2/messages/{id}.
 	BodyTruncated bool   `json:"body_truncated,omitempty"`
 	ReplyBody     string `json:"reply_body,omitempty"`
 	// ThreadTarget is the target of the reply's thread root: the conversation the reply
@@ -3335,13 +3346,13 @@ type UserAgentStateEventPayload struct {
 	SessionID string `json:"session_id"`
 }
 
-// PriorityEventPayload is `priority.updated`: one write of one priority committed, through
-// POST /api/v1/priorities or PATCH or DELETE /api/v1/priorities/{id} (api/priorities.go). It
-// names the priority and which of the three writes it was, and carries nothing else: a reader
-// refetches its priorities reads on every write, and on a delete also the work under that
-// priority, the work under none and every issue read or listing whose rows advance it
-// (packages/dispatch/web/src/api/event-refresh.ts). It names no owner, since a priority belongs
-// to no project, so the outbox publishes it nowhere and it never notifies (events.Quiet).
+// PriorityEventPayload is `priority.updated`: one write of one priority committed, through POST
+// /api/v1/priorities or PATCH or DELETE /api/v1/priorities/{id}, or the same three writes under
+// /api/v2 (api/priorities.go). It names the priority and which of the three writes it was, and
+// carries nothing else: a reader refetches its priorities reads on every write, and on a delete
+// also the work under that priority, the work under none and every issue read or listing whose rows
+// advance it (packages/dispatch/web/src/api/event-refresh.ts). It names no owner, since a priority
+// belongs to no project, so the outbox publishes it nowhere and it never notifies (events.Quiet).
 type PriorityEventPayload struct {
 	ID string `json:"id"`
 	// Change is PriorityCreated, PriorityChanged or PriorityDeleted.
@@ -3358,10 +3369,10 @@ const (
 
 // UserThreadStateEventPayload is `user_thread_state.updated`: one viewer's read of the Inbox's
 // threads moved. It names the viewer so their other open tabs and devices drop the row, and the
-// thread when one thread was marked (PUT /api/v1/me/threads/{id}/read); a mark-all
-// (POST /api/v1/me/inbox/read) names no thread, since one event stands for every thread it marked
-// in that project. It is owned by the thread's project, like `user_state.updated`, and never
-// notifies.
+// thread when one thread was marked (PUT /api/v1/me/threads/{id}/read, or a thread mark's write
+// under /api/v2); a mark-all (POST /api/v1/me/inbox/read, or PATCH /api/v2/me/marks by filter)
+// names no thread, since one event stands for every thread it marked in that project. It is owned
+// by the thread's project, like `user_state.updated`, and never notifies.
 type UserThreadStateEventPayload struct {
 	Login    string `json:"login"`
 	ThreadID string `json:"thread_id,omitempty"`
@@ -3399,9 +3410,11 @@ type MessageAcceptedEventPayload struct {
 }
 
 // HandoffSummary is one phase handoff without its body: what GET /api/v1/issues/{key}/handoffs
-// lists, newest first, and what POST /api/v1/issues/{key}/handoffs/{phase} answers. Phase is a
-// lowercase slug (Legion writes plan, implement, test and review), Version counts from 1 within
-// the issue and phase, and Author is the session that wrote it.
+// lists, newest first, and what POST /api/v1/issues/{key}/handoffs/{phase} answers; GET
+// /api/v2/issues/{key}/handoffs lists it as each row's handoff (api.handoffV2), and POST
+// /api/v2/issues/{key}/handoffs answers it. Phase is a lowercase slug (Legion writes plan,
+// implement, test and review), Version counts from 1 within the issue and phase, and Author is the
+// session that wrote it.
 type HandoffSummary struct {
 	ID        string    `json:"id"`
 	IssueKey  string    `json:"issue_key"`
@@ -3468,9 +3481,10 @@ type StepTask struct {
 	Steps []StepRecord `json:"steps"`
 }
 
-// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
-// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
-// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+// IssueSteps is GET /api/v1/issues/{key}/steps, and what GET /api/v2/issues/{key}/steps lists its
+// tasks from (api.issueStepTasks): every run of every step of the issue, task by task in the order
+// of each task's first run. An issue Legion never ran answers no task; a key no issue carries
+// answers 404 NOT_FOUND on /api/v1, and no IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
@@ -3508,11 +3522,12 @@ type PlanRating struct {
 }
 
 // FinishedIssue is one issue of a project that is done and closed, as GET
-// /api/v1/projects/{key}/plans lists it: its plan (that of its newest run, null for an issue whose
-// work started before Legion wrote plans or that Legion never ran), the rating of each of its
-// retros in the order they ran, the earliest start and the latest end of its step records and the
-// whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), and its count of step records of kind step that failed.
+// /api/v1/projects/{key}/plans and GET /api/v2/projects/{key}/plans list it: its plan (that of its
+// newest run, null for an issue whose work started before Legion wrote plans or that Legion never
+// ran), the rating of each of its retros in the order they ran, the earliest start and the latest
+// end of its step records and the whole seconds between them (each null where no record holds one,
+// and the seconds null too where that end is before that start), and its count of step records of
+// kind step that failed.
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`

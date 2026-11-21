@@ -16,9 +16,10 @@ import (
 // folds it away until snoozed_until. The routes need the person scope (routeScopes) because
 // the Inbox does; a session has no inbox to snooze a row out of.
 //
-// No job ever wakes a snoozed row. GET /api/v1/inbox carries snoozed_until on the row and
-// the reader decides from it, so the moment a snooze passes the row is an ordinary row again
-// on the next read.
+// No job ever wakes a snoozed row. GET /api/v1/inbox carries snoozed_until on the row, and
+// /api/v2 carries it on the caller's ask mark (GET /api/v2/asks with include=mark, GET
+// /api/v2/me/marks); the reader decides from it, so the moment a snooze passes the row is an
+// ordinary row again on the next read.
 //
 // The row is keyed on the canonical login, not on the actor id: rows written before every
 // identity lowercased the person it names can carry another casing of the same email, so keying

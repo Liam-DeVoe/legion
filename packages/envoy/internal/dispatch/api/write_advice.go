@@ -559,10 +559,10 @@ type decisionBlockCheck struct {
 //
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
-// PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// kept to the gates that hold a READY back: the issue is in the workflow there, and the project's own
-// list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
-// this write closed no gate anyone here knows of.
+// PUT /api/v1/issues/{key}/design-gates and PATCH /api/v2/issues/{key}'s design_gates), and the
+// list is that record read for this document, kept to the gates that hold a READY back: the issue
+// is in the workflow there, and the project's own list of gated steps names the row's step
+// (supersededApprovalGates). Where nothing is left, this write closed no gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version that approval pinned, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -649,8 +649,9 @@ func (s *server) supersededApprovalAdvice(
 }
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
-// document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
-// that hold a READY back and no others. Two things decide that, and the row alone says neither.
+// document (design_gates, written by PUT /api/v1/issues/{key}/design-gates and by PATCH
+// /api/v2/issues/{key}'s design_gates), keeping the rows that hold a READY back and no others. Two
+// things decide that, and the row alone says neither.
 //
 // The issue must be in the workflow, which is every status but the four that take it out
 // (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
@@ -661,11 +662,12 @@ func (s *server) supersededApprovalAdvice(
 //
 // The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
 // written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
-// these rows). A daemon records a gate row for a step it does not gate - with `gates.design: off`
-// the registration records the spec step, approves it, and no later event ever moves it - and
-// that gate refuses nothing. A project whose daemon has published no list gates nothing it holds,
-// and prints no clause, which is the direction this whole change takes: a reader told nothing
-// asks the architect, where a reader told a gate that is not there stops working.
+// these rows, or by PATCH /api/v2/projects/{key}'s gated_steps). A daemon records a gate row for a
+// step it does not gate - with `gates.design: off` the registration records the spec step,
+// approves it, and no later event ever moves it - and that gate refuses nothing. A project whose
+// daemon has published no list gates nothing it holds, and prints no clause, which is the
+// direction this whole change takes: a reader told nothing asks the architect, where a reader
+// told a gate that is not there stops working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in.

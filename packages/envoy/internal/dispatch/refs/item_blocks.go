@@ -103,10 +103,10 @@ func ParseItemBlockNode(nodeID string) (kind ItemKind, itemID, blockID string, o
 	return kind, itemID, blockID, true
 }
 
-// CarriedEdit is the block ids an edit of a comment carries (PATCH /api/v1/comments/{id}'s
-// `blocks` and `base_revision`): the comment's revision the editor read its blocks at, and each
-// carried block's id with its From in UTF-16 code units into the body the edit writes, in body
-// order.
+// CarriedEdit is the block ids an edit of a comment carries (PATCH /api/v1/comments/{id}'s and
+// PATCH /api/v2/comments/{id}'s `blocks` and `base_revision`): the comment's revision the editor
+// read its blocks at, and each carried block's id with its From in UTF-16 code units into the body
+// the edit writes, in body order.
 type CarriedEdit struct {
 	BaseRevision int
 	Blocks       []itemblocks.Carried

@@ -77,9 +77,10 @@ func actorPerson(actor model.Actor) (string, bool) {
 // or a JSON null, in order: the person the creating credential acts for (actorPerson - the human
 // who created it, else the owner of the token that did), the parent's assignee, and the project's
 // default assignee (projectDefault, the column a human sets through PUT
-// /api/v1/projects/{key}/default-assignee). A create that names a person never reaches here:
-// parseIssueAssignee checks that login instead. So no create leaves an issue nobody holds, under
-// a parent that holds nobody included; only PATCH /api/v1/issues/{key} with a null assignee does.
+// /api/v1/projects/{key}/default-assignee or PATCH /api/v2/projects/{key} with default_assignee).
+// A create that names a person never reaches here: parseIssueAssignee checks that login instead.
+// So no create leaves an issue nobody holds, under a parent that holds nobody included; only PATCH
+// /api/v1/issues/{key} or PATCH /api/v2/issues/{key} with a null assignee does.
 //
 // The last step is the stored column as it stands, which every project names
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql): a shared token

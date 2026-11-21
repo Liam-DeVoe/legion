@@ -11,7 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// renameArtifactInput is the body of PATCH /api/v1/artifacts/{id}.
+// renameArtifactInput is the body of PATCH /api/v1/artifacts/{id} and of PATCH
+// /api/v2/artifacts/{id} (renameArtifactV2).
 type renameArtifactInput struct {
 	Name string `json:"name" required:"true"`
 }

@@ -51,12 +51,15 @@ const (
 	//   - The rows whose path names a session — the `agents/{session_id}` writes and
 	//     `PUT /api/v1/me/agents/{session_id}/state` — are held to it by withinSessionScope,
 	//     which refuses a credential that proved another session (project_scope.go). Only a
-	//     broker-issued token proves one; `POST /api/v1/agents/{session_id}/messages`, the
-	//     stream publish and the `me` state row need the `person` scope besides, since a person
-	//     writing to a session is writing to someone else's conversation by design, and that
-	//     scope is what lets their own credential past the session check (withinSessionScope).
+	//     broker-issued token proves one; `POST /api/v1/agents/{session_id}/messages` and
+	//     `POST /api/v2/agents/{session_id}/messages`, the stream publish and the `me` state row
+	//     need the `person` scope besides, since a person writing to a session is writing to
+	//     someone else's conversation by design, and that scope is what lets their own
+	//     credential past the session check (withinSessionScope).
 	//   - `POST /api/v1/messages/{id}/deliveries/{attempt}/accept` and
-	//     `POST /api/v1/messages/{id}/reply` take the session from the caller's own credential
+	//     `POST /api/v1/messages/{id}/reply`, and their /api/v2 routes
+	//     `PUT /api/v2/messages/{id}/deliveries/{attempt}/state` and
+	//     `POST /api/v2/messages/{id}/replies`, take the session from the caller's own credential
 	//     or `actor` and refuse an attempt that is not that session's, `403 ACCEPT_FORBIDDEN`
 	//     and `403 REPLY_FORBIDDEN`.
 	//   - The `me` token rows name no session at all: they are the calling person's, read and

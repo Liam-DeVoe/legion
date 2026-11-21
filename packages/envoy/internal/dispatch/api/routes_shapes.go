@@ -135,10 +135,10 @@ type projectPlansQuery struct {
 	Until string `query:"until"`
 }
 
-// deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures
-// share: the window, the search and the repeatable facets. The `session` facet is read by the
-// same code (deliveryFacets) and named here by no field, since `session` is the whole API's
-// parameter.
+// deliveryWindowQuery is the query GET /delivery/timeline and GET /delivery/measures share, at
+// /api/v1 and /api/v2 alike (v2Infra979Rows): the window, the search and the repeatable facets.
+// The `session` facet is read by the same code (deliveryFacets) and named here by no field, since
+// `session` is the whole API's parameter.
 type deliveryWindowQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To.
 	From string `query:"from"`
@@ -174,7 +174,8 @@ type issueResultsQuery struct {
 	At string `query:"at"`
 }
 
-// deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
+// deliveryPipelineQuery is GET /api/v1/delivery/pipeline's and GET /api/v2/delivery/pipeline's
+// query.
 type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
 	// A malformed value is 400 INVALID_QUERY.
@@ -508,14 +509,16 @@ type credentialApproverQuery struct {
 	Approver string `query:"approver"`
 }
 
-// publishFrameQuery is POST /api/v1/agents/{session_id}/stream/_test/publish's query.
+// publishFrameQuery is POST /api/v1/agents/{session_id}/stream/_test/publish's query, and POST
+// /api/v2/_test/agents/{session_id}/stream/publish's.
 type publishFrameQuery struct {
 	// As says what the posted bytes are: `replay` a transcript frame, `drop` an ended view,
 	// `responder` the {"responding"} body; absent, one ordinary frame.
 	As string `query:"as"`
 }
 
-// liveWritePauseQuery is GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}'s query.
+// liveWritePauseQuery is the query of GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}
+// and of GET /api/v2/_test/artifacts/{id}/live-write-pauses/{point}.
 type liveWritePauseQuery struct {
 	// Wait is how long to wait for a write to park, a positive Go duration such as "10s".
 	Wait string `query:"wait"`

@@ -17,8 +17,9 @@ import (
 // vector of the markdown the seed stored, and a rendering differs from the text it was parsed
 // from wherever the renderer normalises one: an ordered list is renumbered, and Postgres keeps a
 // list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact copy of that spec
-// would hold different lexemes from the row it copies. POST /api/v1/markdown/round-trip answers
-// it, so `dispatch artifact` refuses inline text the store would change and names `--path`.
+// would hold different lexemes from the row it copies. POST /api/v1/markdown/round-trip and POST
+// /api/v2/markdown-round-trips answer it, so `dispatch artifact` refuses inline text the store
+// would change and names `--path`.
 //
 // An empty answer is what a create seeds for a spec of whitespace alone. Markdown the parse or
 // the render refuses is handed back as it came. The write that follows refuses it with the error
@@ -71,8 +72,8 @@ const markdownRoundTripLimit = 6*maxDocumentMarkdownBytes + 1<<10
 var errMarkdownRoundTripTooLarge = errorf(apicode.CapExceededTooLarge,
 	"request body exceeds %d bytes", markdownRoundTripLimit)
 
-// markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: the text a caller is
-// about to store as a Markdown document.
+// markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip and of POST
+// /api/v2/markdown-round-trips: the text a caller is about to store as a Markdown document.
 type markdownRoundTripInput struct {
 	Markdown string `json:"markdown" required:"true"`
 }

@@ -19,7 +19,8 @@ import (
 // Access is the delivery settings' rule, any signed-in person or agent (putDeliverySettings), and,
 // as there, no event is appended: a group has no project, issue or artifact to own one.
 
-// createDeliverySessionGroupInput is the body of POST /api/v1/delivery/session-groups.
+// createDeliverySessionGroupInput is the body of POST /api/v1/delivery/session-groups and of POST
+// /api/v2/session-groups (createSessionGroupV2).
 type createDeliverySessionGroupInput struct {
 	Name     string       `json:"name" required:"true"`
 	Sessions []string     `json:"sessions" required:"true"`
@@ -74,7 +75,8 @@ func (s *server) createDeliverySessionGroupFrom(w http.ResponseWriter, r *http.R
 	WriteJSON(w, http.StatusCreated, group)
 }
 
-// updateDeliverySessionGroupInput is the body of PATCH /api/v1/delivery/session-groups/{id}.
+// updateDeliverySessionGroupInput is the body of PATCH /api/v1/delivery/session-groups/{id} and of
+// PATCH /api/v2/session-groups/{id} (updateSessionGroupV2).
 type updateDeliverySessionGroupInput struct {
 	Name   *string      `json:"name"`
 	Add    []string     `json:"add"`

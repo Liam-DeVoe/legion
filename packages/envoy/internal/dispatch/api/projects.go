@@ -63,9 +63,10 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, projects)
 }
 
-// createProjectInput is the body of POST /api/v1/projects. DefaultAssignee is optional in the
-// body and never optional in the row: a call that names none takes the person creating the
-// project, and only a caller acting for nobody has to name one (createProject below).
+// createProjectInput is the body of POST /api/v1/projects and of POST /api/v2/projects.
+// DefaultAssignee is optional in the body and never optional in the row: a call that names none
+// takes the person creating the project, and only a caller acting for nobody has to name one
+// (createProject below).
 type createProjectInput struct {
 	Key             string       `json:"key" required:"true"`
 	Name            string       `json:"name" required:"true"`
@@ -73,12 +74,13 @@ type createProjectInput struct {
 	Actor           *model.Actor `json:"actor"`
 }
 
-// createdProject is the answer of POST /api/v1/projects: the project as created, and the
-// default assignee the create stored, so the caller knows whom the project's unowned work lands
-// on without a second read. The project list leaves the default out: GET
-// /api/v1/settings/project-default-assignees, which needs the person scope, is the one read of
+// createdProject is the answer of POST /api/v1/projects and of POST /api/v2/projects: the project
+// as created, and the default assignee the create stored, so the caller knows whom the project's
+// unowned work lands on without a second read. /api/v1's project list leaves the default out: GET
+// /api/v1/settings/project-default-assignees, which needs the person scope, is its one read of
 // every project's default, so a credential that route refuses reads no default off the list
-// either. The project.created event carries the project alone.
+// either; GET /api/v2/projects adds it only under include=default_assignee, which needs the same
+// scope. The project.created event carries the project alone.
 type createdProject struct {
 	model.Project
 	DefaultAssignee string `json:"default_assignee"`

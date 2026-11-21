@@ -89,7 +89,8 @@ func (s *server) postIssueMessage(w http.ResponseWriter, r *http.Request, actor 
 	WriteJSON(w, http.StatusCreated, withAdvice(newShapedMessage(message, wantsDisplayTrees(r)), advice))
 }
 
-// createAgentMessageInput is the body of POST /api/v1/agents/{session_id}/messages.
+// createAgentMessageInput is the body of POST /api/v1/agents/{session_id}/messages and of POST
+// /api/v2/agents/{session_id}/messages.
 type createAgentMessageInput struct {
 	Body           string  `json:"body" required:"true"`
 	Delivery       string  `json:"delivery" required:"true"`

@@ -8,13 +8,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 )
 
-// searchCoverage answers GET /api/v1/search/coverage: how much of what meaning search ranks has a
-// current vector from the embedder search embeds its queries with, and how many items each kind
-// search covers nothing of holds (embedqueue.Coverage, INFRA-393), counted in one statement so
-// every number reads one snapshot. The identity is Deps.Embedder's, the client cmd/dispatch
-// builds and never wraps for search, so it is the identity search filters candidates by; with no
-// embedder configured it is empty, the report's identity, place and model are null and nothing
-// counts as current.
+// searchCoverage answers GET /api/v1/search/coverage and GET /api/v2/search-coverage: how much of
+// what meaning search ranks has a current vector from the embedder search embeds its queries with,
+// and how many items each kind search covers nothing of holds (embedqueue.Coverage, INFRA-393),
+// counted in one statement so every number reads one snapshot. The identity is Deps.Embedder's,
+// the client cmd/dispatch builds and never wraps for search, so it is the identity search filters
+// candidates by; with no embedder configured it is empty, the report's identity, place and model
+// are null and nothing counts as current.
 //
 // The statement runs under a statement_timeout of its own (embedqueue.CoverageStatementTimeout,
 // 10 s), which ends it while the caller still waits - the coverage probe waits 30 s - and holds

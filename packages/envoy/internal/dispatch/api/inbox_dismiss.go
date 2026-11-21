@@ -16,11 +16,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back. A
-// thread stays in the Inbox, read or not, until they dismiss it, as an email stays until it is
-// archived: reading it and pressing Mark all read leave it there, and this route alone takes it
-// out. A new write by somebody else brings a dismissed thread back, unread; the person's own reply
-// does not, so a reply they send from the Dismissed view leaves the thread there.
+// POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back, and so
+// do PATCH /api/v2/me/marks and PATCH /api/v2/me/marks/{kind}/{id} through this file's work
+// (dismissInboxThreads, dismissInboxThreadsIn). A thread stays in the Inbox, read or not, until
+// they dismiss it, as an email stays until it is archived: reading it and pressing Mark all read
+// leave it there, and a dismissal alone takes it out. A new write by somebody else brings a
+// dismissed thread back, unread; the person's own reply does not, so a reply they send from the
+// Dismissed view leaves the thread there.
 //
 // It is a file of its own rather than a third act in api/inbox_read.go: that file's subject is the
 // read mark and the lock order written on markInboxReadThreads, which this route takes without

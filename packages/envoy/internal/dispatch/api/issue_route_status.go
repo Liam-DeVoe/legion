@@ -23,17 +23,17 @@ import (
 // issue read carries route_status beside the route, judged against the listener's live-session
 // list (GET /v1/sessions, each row carrying the roles its session holds), never one lookup per
 // issue. Every process judges against one stored copy of that list, the route_roster row
-// (migration 0159), and GET /api/v1/agents (listAgents) lists the sessions of that same copy: a
-// read uses it while it is fresh by the database's clock, so a route_status or an agents list can
-// be up to routeRosterTTL (5 s) old, and inside that age every process reads a route the same way,
-// and a filtered listing paged across processes is cut from one answer. A process that finds the
-// row stale or missing asks the listener once however many of its reads are waiting, issue reads
-// and agents lists alike (rosterCache's single-flight fetch), and stores the answer for every
-// process. Like fetchHolderLiveness, the listener call runs with no transaction open and no pooled
-// connection held (envoy_resolve.go carries the reason). A read that waits for the fetch waits on
-// the listener too, so the rule binds every caller of readRouteRoster: listIssues and getIssue
-// call it only once their pooled reads have finished, listAgents before its two aggregates run,
-// and a new caller must do the same.
+// (migration 0159), and GET /api/v1/agents and GET /api/v2/agents (agentRows) list the sessions
+// of that same copy: a read uses it while it is fresh by the database's clock, so a route_status
+// or an agents list can be up to routeRosterTTL (5 s) old, and inside that age every process reads
+// a route the same way, and a filtered listing paged across processes is cut from one answer. A
+// process that finds the row stale or missing asks the listener once however many of its reads
+// are waiting, issue reads and agents lists alike (rosterCache's single-flight fetch), and stores
+// the answer for every process. Like fetchHolderLiveness, the listener call runs with no
+// transaction open and no pooled connection held (envoy_resolve.go carries the reason). A read
+// that waits for the fetch waits on the listener too, so the rule binds every caller of
+// readRouteRoster: listIssues and getIssue call it only once their pooled reads have finished,
+// listAgents before its two aggregates run, and a new caller must do the same.
 //
 // no_holder is one read and says only "nobody right now": a session that restarts or moves
 // between agent boxes keeps its id but is absent from the listener for minutes. The read does not

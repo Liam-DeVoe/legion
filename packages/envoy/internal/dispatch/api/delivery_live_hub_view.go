@@ -84,7 +84,8 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 }
 
 // parseLegionLiveView reads a legion view: it names the project whose board it shows and nothing
-// else, since the board has no window and the project is all GET /api/v1/projects/{key}/legion/board reads.
+// else, since the board has no window and the project is all GET
+// /api/v1/projects/{key}/legion/board and GET /api/v2/projects/{key}/legion/board read.
 func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion view names a project, not a window, an at or a query")

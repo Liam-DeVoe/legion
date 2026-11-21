@@ -20,17 +20,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// GET /api/v1/me/replies is the Inbox's thread read, of two kinds of row. A Reply row is a thread
-// the person wrote in - an ask's thread, a comment thread by its root, an issue message thread by
-// its root - that somebody else has written in; user_threads (migration 0095) keeps one row per
-// person per thread, maintained by the triggers 0095-0097 install, so the Reply reads touch only
-// the person's own rows, each state through its own partial index: user_threads_unread (0095)
-// under state=unread, user_threads_inbox (20261105093502) under state=inbox and
-// user_threads_dismissed (20261105093503) under state=dismissed. An Agent row is one of the
-// person's one-off messages to an agent session - a BTW, a broadcast's copy, or a Send or Aside
-// the session did not take as a turn of its live conversation - holding a reply from that
-// session; its dismissal is a row of user_agent_thread_dismissed (20261105093505), since an Agent
-// row has no user_threads row to carry one.
+// GET /api/v1/me/replies and GET /api/v2/me/threads are the Inbox's thread read (readMyReplies),
+// of two kinds of row. A Reply row is a thread the person wrote in - an ask's thread, a comment
+// thread by its root, an issue message thread by its root - that somebody else has written in;
+// user_threads (migration 0095) keeps one row per person per thread, maintained by the triggers
+// 0095-0097 install, so the Reply reads touch only the person's own rows, each state through its
+// own partial index: user_threads_unread (0095) under state=unread, user_threads_inbox
+// (20261105093502) under state=inbox and user_threads_dismissed (20261105093503) under
+// state=dismissed. An Agent row is one of the person's one-off messages to an agent session - a
+// BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live
+// conversation - holding a reply from that session; its dismissal is a row of
+// user_agent_thread_dismissed (20261105093505), since an Agent row has no user_threads row to
+// carry one.
 //
 // A thread stays in the Inbox, read or not, until the person dismisses it (api/inbox_dismiss.go):
 // state=inbox answers what is in it, state=dismissed what has been taken out of it, and
@@ -376,9 +377,10 @@ func parseMyRepliesOwner(r *http.Request) (issue string, artifact *string, err e
 	return parseThreadOwner(query.Get("issue"), query.Get("artifact"))
 }
 
-// The kinds of row GET /api/v1/me/replies answers, as ?kind= names them, and the states it reads
-// them in. kind defaults to reply alone, so a caller that names none reads what it read before the
-// Inbox took the Agent rows; state defaults to unread, the state the Inbox's count reads.
+// The kinds of row GET /api/v1/me/replies and GET /api/v2/me/threads answer, as ?kind= names
+// them, and the states each reads them in. kind defaults to reply alone, so a caller that names
+// none reads what it read before the Inbox took the Agent rows; state defaults to unread, the
+// state the Inbox's count reads.
 const (
 	myReplyKindReply = "reply"
 	myReplyKindAgent = "agent"

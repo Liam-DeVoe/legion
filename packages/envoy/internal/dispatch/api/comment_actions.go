@@ -160,7 +160,8 @@ func (s *server) reopenCommentAs(w http.ResponseWriter, r *http.Request, actor m
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
-// editCommentInput is the body of PATCH /api/v1/comments/{id}.
+// editCommentInput is the body of PATCH /api/v1/comments/{id} and of PATCH /api/v2/comments/{id}
+// (editCommentV2).
 //
 // blocks and base_revision are the ids the dashboard editor carried through the edit: each
 // block's id and where its span starts in body, in UTF-16 code units, against the comment's
