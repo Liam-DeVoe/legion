@@ -1515,6 +1515,44 @@ func TestDatasetBuildFromADirectoryOfTwoBundlesRefuses(t *testing.T) {
 	}
 }
 
+// The same holds when the two bundles share a name: a directory with an earlier pack's
+// dataset.tar.gz.manifest.json and its parts, and a whole dataset.tar.gz put beside them (a
+// download of the new bundle into the directory of the old parts), holds two bundles, so build
+// --from it refuses rather than read the parts' inputs.
+func TestDatasetBuildFromADirectoryOfASplitPackAndAWholeBundleOfOneNameRefuses(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	bundles := filepath.Join(dir, "bundle")
+	whole := filepath.Join(dir, "whole")
+	for _, d := range []string{bundles, whole} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(bundles, "dataset.tar.gz"), 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the earlier pack wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 1}, filepath.Join(whole, "dataset.tar.gz"), dsPartSize); err != nil || len(parts) != 0 {
+		t.Fatalf("the newer pack wrote %v (%v), want the bundle alone", parts, err)
+	}
+	data, err := os.ReadFile(filepath.Join(whole, "dataset.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundles, "dataset.tar.gz"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "build", "--from", bundles, "--out", out}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "name one") {
+		t.Errorf("build --from a directory of a split pack and a whole bundle of one name: exit %d: %s; want the refusal", code, stderr.String())
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused build made %s (%v)", out, err)
+	}
+}
+
 // Every dataset step refuses an --out inside a repository, as the harness does, and makes no
 // directory there: each writes Dispatch or session text. fetch and named need --owner: they
 // hold no default owner.
