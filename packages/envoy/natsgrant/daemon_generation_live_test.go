@@ -4,13 +4,13 @@ package natsgrant_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -33,7 +33,7 @@ func TestTheDaemonsGenerationConnectionReachesThatGenerationAloneOnTheHub(t *tes
 	keys.XKeySeed, keys.XKeyPublic = "", ""
 	adminSeed, adminPublic := testnats.User(t)
 	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	serveGenerationCallout(t, url, keys, user, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})
+	serveCallout(t, url, keys, generationGrants(user, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity}))
 
 	admin, err := testnats.ConnectSeed(t, url, adminSeed)
 	require.NoError(t, err)
@@ -91,49 +91,16 @@ func TestTheDaemonsGenerationConnectionReachesThatGenerationAloneOnTheHub(t *tes
 	refusedCreate(elsewhere, foreign)
 }
 
-// serveGenerationCallout answers the server's authorization requests for user with
-// WithinProjects(Daemon(), scope) held to the connection's own name, as the auth service hands a
-// daemon's connection name into its scope (Scope.Connection); any other user is refused.
-func serveGenerationCallout(t *testing.T, url string, keys testnats.CalloutKeys, user string, scope natsgrant.Scope) {
-	t.Helper()
-	issuer, err := nkeys.FromSeed([]byte(keys.IssuerSeed))
-	require.NoError(t, err)
-	conn, err := testnats.ConnectSeed(t, url, keys.ServiceSeed)
-	require.NoError(t, err)
-	t.Cleanup(conn.Close)
-	_, err = conn.Subscribe("$SYS.REQ.USER.AUTH", func(msg *natsgo.Msg) {
-		request, err := jwt.DecodeAuthorizationRequestClaims(string(msg.Data))
-		if err != nil {
-			return
-		}
-		response := jwt.NewAuthorizationResponseClaims(request.UserNkey)
-		response.Audience = request.Server.ID
+// generationGrants admits user with WithinProjects(Daemon(), scope) held to the connection's own
+// name, as the auth service hands a daemon's connection name into its scope (Scope.Connection),
+// and refuses any other user.
+func generationGrants(user string, scope natsgrant.Scope) grantResolver {
+	return func(request *jwt.AuthorizationRequestClaims) (natsgrant.Permissions, error) {
 		if request.ConnectOptions.Username != user {
-			response.Error = "no grant for " + request.ConnectOptions.Username
-		} else {
-			held := scope
-			held.Connection = request.ConnectOptions.Name
-			grant, err := natsgrant.WithinProjects(natsgrant.Daemon(), held)
-			if err != nil {
-				response.Error = err.Error()
-			} else {
-				claims := jwt.NewUserClaims(request.UserNkey)
-				claims.Audience = "$G"
-				claims.Name = user
-				claims.Expires = time.Now().Add(time.Hour).Unix()
-				claims.Pub.Allow.Add(grant.Publish...)
-				claims.Sub.Allow.Add(grant.Subscribe...)
-				if response.Jwt, err = claims.Encode(issuer); err != nil {
-					response.Error = err.Error()
-				}
-			}
+			return natsgrant.Permissions{}, errors.New("no grant for " + request.ConnectOptions.Username)
 		}
-		encoded, err := response.Encode(issuer)
-		if err != nil {
-			return
-		}
-		_ = msg.Respond([]byte(encoded))
-	})
-	require.NoError(t, err)
-	require.NoError(t, conn.Flush())
+		held := scope
+		held.Connection = request.ConnectOptions.Name
+		return natsgrant.WithinProjects(natsgrant.Daemon(), held)
+	}
 }

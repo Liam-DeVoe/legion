@@ -5,6 +5,7 @@ package natsgrant_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -66,7 +67,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
 	adminSeed, adminPublic := testnats.User(t)
 	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	answers := serveCallout(t, url, keys, grants)
+	answers := serveCallout(t, url, keys, staticGrants(grants))
 
 	admin, err := testnats.ConnectSeed(t, url, adminSeed)
 	require.NoError(t, err)
@@ -382,10 +383,25 @@ func (a *calloutAnswers) size(user string) int {
 	return a.sizes[user]
 }
 
+// grantResolver is the grant the stand-in auth service answers one authorization request with, or
+// the reason it refuses the request, which becomes the response's error.
+type grantResolver func(request *jwt.AuthorizationRequestClaims) (natsgrant.Permissions, error)
+
+// staticGrants admits a client whose user name grants names with that grant, and refuses any other.
+func staticGrants(grants map[string]natsgrant.Permissions) grantResolver {
+	return func(request *jwt.AuthorizationRequestClaims) (natsgrant.Permissions, error) {
+		grant, ok := grants[request.ConnectOptions.Username]
+		if !ok {
+			return natsgrant.Permissions{}, errors.New("no grant for " + request.ConnectOptions.Username)
+		}
+		return grant, nil
+	}
+}
+
 // serveCallout answers the server's authorization requests as the auth service does: a client
-// whose user name grants names is admitted in the global account with that grant as its user
-// JWT's allow lists, signed by the issuer; any other is refused.
-func serveCallout(t *testing.T, url string, keys testnats.CalloutKeys, grants map[string]natsgrant.Permissions) *calloutAnswers {
+// resolve grants is admitted in the global account with that grant as its user JWT's allow lists,
+// signed by the issuer; any other is refused with resolve's reason.
+func serveCallout(t *testing.T, url string, keys testnats.CalloutKeys, resolve grantResolver) *calloutAnswers {
 	t.Helper()
 	issuer, err := nkeys.FromSeed([]byte(keys.IssuerSeed))
 	require.NoError(t, err)
@@ -401,7 +417,7 @@ func serveCallout(t *testing.T, url string, keys testnats.CalloutKeys, grants ma
 		response := jwt.NewAuthorizationResponseClaims(request.UserNkey)
 		response.Audience = request.Server.ID
 		name := request.ConnectOptions.Username
-		if grant, ok := grants[name]; ok {
+		if grant, err := resolve(request); err == nil {
 			user := jwt.NewUserClaims(request.UserNkey)
 			user.Audience = "$G"
 			user.Name = name
@@ -412,7 +428,7 @@ func serveCallout(t *testing.T, url string, keys testnats.CalloutKeys, grants ma
 				response.Error = err.Error()
 			}
 		} else {
-			response.Error = "no grant for " + name
+			response.Error = err.Error()
 		}
 		encoded, err := response.Encode(issuer)
 		if err != nil {
