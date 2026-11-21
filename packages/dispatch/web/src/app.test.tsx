@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
-import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
+import { type FakeLiveSockets, installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { wholeText } from "./__tests__/whole-text";
@@ -1001,9 +1001,14 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   }
 });
 
-/** The shell at `/`, signed in as alice, its event feed subscribed on the page's live socket;
- *  returns the teardown. */
-async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
+/** The shell at `/`, signed in as alice, once its event feed has opened the page's live socket,
+ *  the one socket of `sockets`; returns the teardown. The shell is drawn a render after the
+ *  sign-in check answers, once the draft stores have loaded (`shellFor` in `AuthGate`), and its
+ *  event feed opens the socket in an effect of its own, so "Signed in as alice" can show before
+ *  any socket exists: whether it has by then depends on what else the test file's order left
+ *  pending, and a caller that drives the socket at once would find none ("no live socket was
+ *  opened"). So this waits for the socket itself, and a caller drives it from the first line. */
+async function renderSignedIn(sockets: FakeLiveSockets, whoAmI: () => Promise<AuthenticatedUser>) {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({
@@ -1031,25 +1036,32 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await screen.findByText(wholeText("Signed in as alice"));
-  return () => {
+  const teardown = () => {
     view.unmount();
     liveSocketFor(queryClient).close();
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   };
+  try {
+    await screen.findByText(wholeText("Signed in as alice"));
+    await waitFor(() => expect(sockets.sockets).toHaveLength(1));
+  } catch (error) {
+    // The caller's own restore runs only once this answers, so a wait that fails puts the real
+    // WebSocket back here, and no later test of the file opens a fake one.
+    teardown();
+    sockets.restore();
+    throw error;
+  }
+  return teardown;
 }
 
 test("the connection pill follows the live socket: none while it connects, Reconnecting… once lost, and a Reload once two minutes pass", async () => {
   const sockets = installFakeLiveSockets();
-  const teardown = await renderSignedIn(async () => ({
+  const teardown = await renderSignedIn(sockets, async () => ({
     event_head: "0",
     kind: "user",
     login: "alice",
   }));
-  // The shell is drawn a render after the sign-in check answers, once the draft stores have loaded
-  // (`shellFor` in `AuthGate`), and its event feed opens the socket in an effect of its own.
-  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   // Every timer the socket sets from here on runs on the test's clock.
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.5);
@@ -1099,11 +1111,10 @@ test("the connection pill follows the live socket: none while it connects, Recon
 test("a live socket refused once the person is signed out takes the page to sign-in", async () => {
   const sockets = installFakeLiveSockets();
   let signedIn = true;
-  const teardown = await renderSignedIn(async () => {
+  const teardown = await renderSignedIn(sockets, async () => {
     if (!signedIn) throw new ApiError(401, { error: "unauthorized" });
     return { event_head: "0", kind: "user", login: "alice" };
   });
-  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   try {
     act(() => sockets.latest().open());
     signedIn = false;
@@ -1122,7 +1133,7 @@ test("a live socket refused once the person is signed out takes the page to sign
 async function signInPageAfter(signedOut: ApiError): Promise<string> {
   const sockets = installFakeLiveSockets();
   let signedIn = true;
-  const teardown = await renderSignedIn(async () => {
+  const teardown = await renderSignedIn(sockets, async () => {
     if (!signedIn) throw signedOut;
     return { event_head: "0", kind: "user", login: "alice" };
   });
