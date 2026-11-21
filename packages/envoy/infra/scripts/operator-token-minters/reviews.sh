@@ -58,10 +58,13 @@ sa_record() {
 declare -A FOUND_SAS=()
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
-# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS.
-# Returns 1 when the witness was refused.
+# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS,
+# and the certificate signing chain's (CSR_RIGHTS), which is one finding for a principal allowed
+# both the approval and a signer, naming create too when it is allowed. Returns 1 when the witness
+# was refused.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false who
+  local principal label verdict error reason witness_refused=false who chain
+  local -A csr_create=() csr_approval=() csr_signers=()
   FOUND_SAS=()
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
@@ -70,6 +73,15 @@ judge_reviews() {
     fi
     case "$verdict" in
       allowed)
+        case "$label" in
+          "$CSR_CREATE") csr_create[$principal]=1; continue ;;
+          "$CSR_APPROVAL") csr_approval[$principal]="$reason"; continue ;;
+          "$CSR_SIGNER_PREFIX"*)
+            label="${label#"$CSR_SIGNER_PREFIX"}"
+            csr_signers[$principal]="${csr_signers[$principal]:+${csr_signers[$principal]} and }${label% cluster-wide}"
+            continue
+            ;;
+        esac
         if [[ "$principal" == seed:* ]]; then
           who="${principal#seed:system:serviceaccount:}"
           [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
@@ -83,6 +95,19 @@ judge_reviews() {
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
+  while IFS= read -r principal; do
+    [ -n "${csr_signers[$principal]:-}" ] || continue
+    chain="${csr_create[$principal]:+create certificatesigningrequests, }update certificatesigningrequests/approval and approve signers ${csr_signers[$principal]} cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
+    if [[ "$principal" == seed:* ]]; then
+      who="${principal#seed:system:serviceaccount:}"
+      [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$chain"
+      continue
+    fi
+    finding "$principal" "$chain$2" "$chain" "$3" "$chain" "${csr_approval[$principal]}"
+    if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$chain"
+    fi
+  done < <(printf '%s\n' ${csr_approval[@]+"${!csr_approval[@]}"} | sed '/^$/d' | sort)
   if [ "$witness_refused" = true ]; then
     unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
     return 1
@@ -155,6 +180,31 @@ custom_rights() {
   CUSTOM_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -L "$LIB" --rawfile names "$WORK/api-resources" --arg style "$2" -f "$LIB/custom-rights.jq")"
   [ -z "$CUSTOM_ERROR" ]
 }
+# admission_rights KUBECONFIG: sets ADMISSION_RIGHTS, the JSON array, as rights_json writes rights,
+# of create, update and patch, cluster-wide, of each resource of admissionregistration.k8s.io the
+# API server's discovery lists, and of ADMISSION_ALWAYS whatever it lists (rights.sh says why).
+# Returns 1 with ADMISSION_ERROR when the discovery could not be read, or lists either of
+# ADMISSION_ALWAYS short.
+admission_rights() {
+  local missing="" resource
+  ADMISSION_ERROR=""
+  if ! kubectl --kubeconfig "$1" api-resources --api-group=admissionregistration.k8s.io -o name >"$WORK/admission-resources" 2>"$WORK/admission-resources.err"; then
+    ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io could not be read, so a webhook or admission policy it serves beside the two webhook configurations is not reviewed: $(first_line "$WORK/admission-resources.err")"
+  else
+    for resource in "${ADMISSION_ALWAYS[@]}"; do
+      grep -qxF -- "$resource.admissionregistration.k8s.io" "$WORK/admission-resources" || missing="${missing:+$missing, }$resource.admissionregistration.k8s.io"
+    done
+    [ -z "$missing" ] ||
+      ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io lists no $missing, which every API server serves, so its list is not whole"
+  fi
+  ADMISSION_RIGHTS="$({ cat "$WORK/admission-resources"; printf '%s.admissionregistration.k8s.io\n' "${ADMISSION_ALWAYS[@]}"; } | jq -R -s -c '
+    [split("\n")[] | select(endswith(".admissionregistration.k8s.io")) | rtrimstr(".admissionregistration.k8s.io")] | unique
+    | [.[] as $res | ("create", "update", "patch")
+       | {verb: ., group: "admissionregistration.k8s.io", resource: $res, sub: "", ns: "", name: "",
+          label: "\(.) \($res).admissionregistration.k8s.io cluster-wide"}
+       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
+  [ -z "$ADMISSION_ERROR" ]
+}
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject
 # does not allow, with system:authenticated (system:anonymous with system:unauthenticated), each
@@ -163,7 +213,9 @@ custom_rights() {
 # subject, a Group subject that is not Kubernetes' own (groups_verdict judges those) and
 # system:masters (masters_bindings) are left out. Sets BOUND to how many it added, and BINDINGS_OK to
 # whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
-# server refused the list or answered no JSON.
+# server refused the list or answered no JSON, or when the list lacks the bootstrap cluster-admin
+# ClusterRoleBinding, its witness: every cluster has it, so a list without it is not whole (its
+# subjects are still added).
 bound_subjects() {
   local kind ns name label
   local -A held=()
@@ -211,6 +263,12 @@ bound_subjects() {
     fi
     BOUND=$((BOUND + 1))
   done 7<"$WORK/bindings.rec"
+  if ! jq -e 'any(.items[]?; .kind == "ClusterRoleBinding" and .metadata.name == "cluster-admin" and .roleRef.kind == "ClusterRole"
+      and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")' \
+    "$WORK/bindings.json" >/dev/null; then
+    BOUND_ERROR="the bindings' list holds no bootstrap cluster-admin ClusterRoleBinding, which every cluster has, so it is not the cluster's whole list"
+    return 1
+  fi
 }
 # namespace_groups: Kubernetes' own groups, each reviewed alone and added to $WORK/principals.rec
 # when the file does not hold it: system:authenticated, system:serviceaccounts, and
@@ -255,12 +313,16 @@ masters_bindings() {
 # `on:<security group>`: Google Groups for RBAC is on, so each gives its Google group's members its
 # rights, which this check neither lists nor judges: UNKNOWN for the cluster, whether one is bound
 # now or not. MODE `own`: a cluster that is no GKE cluster takes its users and groups from its own
-# authenticator: UNKNOWN when one is bound. MODE `unknown:<why>`: UNKNOWN when one is bound.
+# authenticator: UNKNOWN when a Group is bound, and when a User whose name looks like an email is,
+# since that authenticator, not Google, says who holds the name. MODE `unknown:<why>`: UNKNOWN when
+# a Group is bound.
 groups_verdict() {
-  local step="$1" mode="$2" groups=""
+  local step="$1" mode="$2" groups="" users=""
   if [ "$BINDINGS_OK" = true ]; then
     groups="$(jq -r '[.items[]?.subjects[]? | select(.kind == "Group" and ((.name | startswith("system:")) | not)) | .name] | unique | join(", ")' \
       "$WORK/bindings.json")"
+    users="$(jq -r '[.items[]?.subjects[]? | select(.kind == "User" and (.name | test("^[^@/:\\s]+@[^@/:\\s]+\\.[^@/:\\s]+$"))
+      and ((.name | endswith(".gserviceaccount.com")) | not)) | .name] | unique | join(", ")' "$WORK/bindings.json")"
   fi
   case "$mode" in
     off) ;;
@@ -270,6 +332,8 @@ groups_verdict() {
     own)
       [ -z "$groups" ] ||
         unknown "$step" "it takes its users and groups from its own authenticator, not Google, so the Group subjects bound here ($groups) name members this check cannot list"
+      [ -z "$users" ] ||
+        unknown "$step" "it takes its users from its own authenticator, not Google, so the User subjects bound here that look like emails ($users) are not known to be people"
       ;;
     unknown:*)
       [ -z "$groups" ] ||
@@ -277,15 +341,45 @@ groups_verdict() {
       ;;
   esac
 }
-# named_rights: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster whose
-# bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate groups
-# and users by name, and escalate, bind, update and patch by name on each role bound to a reviewed
-# principal. When the bindings could not be read, it holds impersonate groups system:masters alone.
+# settings_verdict STEP SETTINGS: a GKE cluster's settings that authorize or authenticate outside
+# RBAC and Google (CLUSTER_SETTINGS), each UNKNOWN: legacy ABAC authorizes requests by its own
+# policies beside RBAC, and the identity service for GKE takes users and groups from an outside
+# provider, so no review sees either. `unread:<why>` is UNKNOWN for both.
+settings_verdict() {
+  case "$2" in
+    unread:*)
+      unknown "$1" "whether legacy ABAC or the identity service for GKE is on is unknown (${2#unread:}), so who the cluster authorizes outside RBAC cannot be read"
+      return
+      ;;
+  esac
+  case ",$2," in *,abac,*)
+    unknown "$1" "legacy ABAC is on, so the cluster authorizes requests by its ABAC policies beside RBAC, which no review here sees" ;;
+  esac
+  case ",$2," in *,identity,*)
+    unknown "$1" "the identity service for GKE is on, so the cluster takes users and groups from an outside identity provider, whose members this check cannot list" ;;
+  esac
+}
+# named_rights [PROJECT]: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster
+# whose bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate
+# groups and users by name, the users being the bindings' User subjects and each user or Google
+# service account the GKE IAM step listed as a holder, and, for a cluster in PROJECT, a project other
+# than --project, each one its member project's IAM step listed (GKE's IAM authorizer judges an
+# impersonated user by its own IAM there); bind and escalate on every binding's role, and patch and
+# update on every binding, by name; and update and patch by name on each role bound to a reviewed
+# principal. When the bindings could not be read, it holds impersonate groups system:masters and
+# the IAM holders alone.
 named_rights() {
-  local reviewed bindings='{"items": []}'
+  local reviewed bindings='{"items": []}' iam_users='[]' file files=()
   reviewed="$(cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
   [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
-  NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" -f "$LIB/named-rights.jq" <<<"$bindings")"
+  for file in "$WORK/gke-analysis.rec" ${1:+"$WORK/gke-analysis-$1.rec"}; do
+    [ ! -s "$file" ] || files+=("$file")
+  done
+  if [ "${#files[@]}" -gt 0 ]; then
+    iam_users="$(awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
+      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  fi
+  NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" --argjson iam_users "$iam_users" -f "$LIB/named-rights.jq" <<<"$bindings")"
 }
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
 # where both hold one, RIGHTS's label stays.

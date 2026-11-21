@@ -34,9 +34,11 @@
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
 #                     that gives a right below to a subject that is not a person, a system
 #                     namespace's, a system component or the operator's own Google service account
-#                     is a finding. A rule limited by resourceNames on impersonate or escalate is a
-#                     finding naming the names (impersonating the group system:masters by name is
-#                     cluster-admin). A binding to a role the render does not hold (other than the
+#                     is a finding. A rule limited by resourceNames on impersonate, escalate or bind,
+#                     or on a patch or update of a binding, is a finding naming the names
+#                     (impersonating the group system:masters by name is cluster-admin, and RBAC
+#                     lets one who may bind a role by name write a binding to it). A binding to a
+#                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
 #   code: IAM         Each --iam-preview file (`pulumi preview --json --show-sames` of a program that
@@ -55,43 +57,12 @@
 #                     UNKNOWN: a cluster there is neither read nor counted. With --pool-project
 #                     naming another project, that project's own clusters are listed too, and read
 #                     as other clusters of the pool; a refused or incomplete list is UNKNOWN.
-#   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
-#                     the principals being every ServiceAccount outside the system namespaces
-#                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
-#                     groups the API server gives it (system:serviceaccounts,
-#                     system:serviceaccounts:<namespace>, system:authenticated), Kubernetes' own
-#                     groups each alone (below), the Google service account each is bound to (its
-#                     iam.gke.io/gcp-service-account annotation) with system:authenticated, the
-#                     cluster's binding subjects (below), and anyone unauthenticated
-#                     (system:anonymous with system:unauthenticated), always. The
-#                     rights are the list below for each guarded pair, and create on each custom
-#                     resource the API server's discovery (`kubectl api-resources --namespaced
-#                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
-#                     controller may make a pod from it, as an agent sandbox does; a discovery that
-#                     cannot be read whole is UNKNOWN. RBAC allows a request against a rule with
-#                     resourceNames only when the request names one, so the rights also name each
-#                     name: impersonate groups for system:masters and every Group subject the
-#                     bindings name, impersonate users for every User subject, and escalate, bind,
-#                     update and patch on each role bound to a reviewed principal
-#                     (named-rights.jq); every other cluster of the pool is asked them too. A
-#                     review without the groups would miss every grant made to a group. Its witness
-#                     is a review for the group the built-in
-#                     cluster-admin binding names, system:masters, which must be allowed: an API
-#                     server whose answers cannot say yes proves nothing by saying no. Each
-#                     --agent-namespace pattern that matches no namespace holding a ServiceAccount
-#                     is UNKNOWN, so a mistyped one cannot drop its agents in silence. Then who can
-#                     become a ServiceAccount with a finding is a finding naming the chain, followed
-#                     in turn up to 5 steps: in its namespace, by any namespaced right of the list
-#                     below (a pod or a workload controller runs as it; exec, attach, an ephemeral
-#                     container or a pod patch enters one; a rolebinding, bind or escalate grants
-#                     those; a token Secret is read) or create on a custom resource there, and by
-#                     its name, create serviceaccounts/token or impersonate. A system namespace's
-#                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
-#                     a right asked, who can become it is followed the same way.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
 #                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
-#                     there, by which a holder grants itself any of them.
+#                     there, by which a holder grants itself any of them. It runs before the RBAC
+#                     steps, which ask who may impersonate each user and Google service account it
+#                     lists, by name: GKE's IAM authorizer judges an impersonated user by its own IAM.
 #   live: minters     Policy Analyzer's holders, on --gsa or above it, of
 #                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
 #                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. They must
@@ -109,6 +80,47 @@
 #                     (serviceAccount:a -> impersonates serviceAccount:b (<role>) -> <b's role>).
 #                     The design's own links are no finding: a Workload Identity member acting as
 #                     the account it is bound to, and the broker minting --gsa's token.
+#   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
+#                     the principals being every ServiceAccount outside the system namespaces
+#                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
+#                     groups the API server gives it (system:serviceaccounts,
+#                     system:serviceaccounts:<namespace>, system:authenticated), Kubernetes' own
+#                     groups each alone (below), the Google service account each is bound to (its
+#                     iam.gke.io/gcp-service-account annotation) with system:authenticated, the
+#                     cluster's binding subjects (below), and anyone unauthenticated
+#                     (system:anonymous with system:unauthenticated), always. The
+#                     rights are the list below for each guarded pair; create on each custom
+#                     resource the API server's discovery (`kubectl api-resources --namespaced
+#                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
+#                     controller may make a pod from it, as an agent sandbox does; and create,
+#                     update and patch, cluster-wide, of each admissionregistration.k8s.io resource
+#                     its discovery lists (`kubectl api-resources --api-group=...`): a mutating
+#                     webhook or admission policy can add a container to the operator's next pod,
+#                     and a validating one can block or reshape what it applies. A discovery that
+#                     cannot be read whole, or whose admission list lacks a webhook configuration,
+#                     which every API server serves, is UNKNOWN. RBAC allows a request against a
+#                     rule with resourceNames only when the request names one, so the rights also
+#                     name each name: impersonate groups for system:masters and every Group subject
+#                     the bindings name, impersonate users for every User subject and each user and
+#                     Google service account the GKE IAM step lists, bind and escalate
+#                     on every binding's role and patch and update on every binding (RBAC lets one
+#                     who may bind a role by name write a binding to it), and update and patch on
+#                     each role bound to a reviewed principal (named-rights.jq); every other cluster
+#                     of the pool is asked them too. A
+#                     review without the groups would miss every grant made to a group. Its witness
+#                     is a review for the group the built-in
+#                     cluster-admin binding names, system:masters, which must be allowed: an API
+#                     server whose answers cannot say yes proves nothing by saying no. Each
+#                     --agent-namespace pattern that matches no namespace holding a ServiceAccount
+#                     is UNKNOWN, so a mistyped one cannot drop its agents in silence. Then who can
+#                     become a ServiceAccount with a finding is a finding naming the chain, followed
+#                     in turn up to 5 steps: in its namespace, by any namespaced right of the list
+#                     below (a pod or a workload controller runs as it; exec, attach, an ephemeral
+#                     container or a pod patch enters one; a rolebinding, bind or escalate grants
+#                     those; a token Secret is read) or create on a custom resource there, and by
+#                     its name, create serviceaccounts/token or impersonate. A system namespace's
+#                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
+#                     a right asked, who can become it is followed the same way.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
@@ -120,10 +132,11 @@
 #                     no principal the step reviews may create a namespace cluster-wide, or a
 #                     ServiceAccount or a pod in a guarded pair's namespace, nor hold an escalation
 #                     right by which it grants itself one: impersonate users, groups and
-#                     serviceaccounts, escalate and bind clusterroles, and create and patch
-#                     clusterrolebindings, cluster-wide; bind and escalate roles and create and
-#                     patch rolebindings in a guarded pair's namespace. Each finding's right names
-#                     the pairs it guards. On
+#                     serviceaccounts, escalate and bind clusterroles, and create, patch and update
+#                     clusterrolebindings, cluster-wide; bind and escalate roles and create, patch
+#                     and update rolebindings in a guarded pair's namespace; nor write a webhook or
+#                     admission policy (the RBAC step's admission rights, from each cluster's own
+#                     discovery). Each finding's right names the pairs it guards. On
 #                     every cluster but the operator's, a guarded pair's namespace must not exist
 #                     either, and the principals are that cluster's ServiceAccounts outside its
 #                     system namespaces (kube-system, gke-*, gmp-*), with their groups, and its
@@ -133,8 +146,12 @@
 #                     page) with the running identity's access token, not through `gcloud container
 #                     fleet memberships list`, which drops the answer's `unreachable` locations: a
 #                     listing that could not reach a location reads complete there. A refused
-#                     listing, and one with an unreachable location, is UNKNOWN; a fleet the API
-#                     answers with no membership says so. A member that is a GKE cluster is read
+#                     listing, one with an unreachable location, and one that lists no membership
+#                     (which cannot be told from one that saw nothing) are UNKNOWN. Each fleet scope
+#                     (`gcloud container fleet scopes list`) is UNKNOWN too: its namespaces and RBAC
+#                     role bindings reach every member cluster bound to it, the operator's namespace
+#                     and member included, and this check does not analyse them; a refused listing
+#                     is UNKNOWN. A member that is a GKE cluster is read
 #                     through `gcloud container clusters get-credentials` in its own project, any
 #                     other through `gcloud container fleet memberships get-credentials` (the
 #                     Connect gateway); the operator's cluster, and a cluster the project step read,
@@ -143,13 +160,24 @@
 #                     each guard right's container.* permission (container.namespaces.create,
 #                     serviceAccounts.create and pods.create; clusters.impersonate, clusterRoles.bind
 #                     and escalate, clusterRoleBindings.create and update, roles.bind and escalate,
-#                     roleBindings.create and update, nodes.proxy) and of the IAM writers
+#                     roleBindings.create and update, nodes.proxy, mutatingWebhookConfigurations and
+#                     validatingWebhookConfigurations create and update) and of the IAM writers
 #                     (setIamPolicy, iam.roles.update) are judged as the GKE IAM step judges its own
-#                     (--project's are in that step).
-#   live: fleet       Policy Analyzer's holders of gkehub.memberships.create and update on the pool
-#     registration    project, each judged as in the GKE IAM step: a cluster registered to the
-#                     pool's fleet shares the pool's Workload Identity, so its ServiceAccount
-#                     envoy-operator/envoy-operator is the operator's member there.
+#                     (--project's are in that step). Each such project, and the pool project, is
+#                     read before its clusters, which also ask who may impersonate, by name, each
+#                     user and Google service account it lists.
+#   live: minters of  For each Google service account an RBAC finding names (on a cluster, a fleet
+#     an RBAC         member or in the renders), Policy Analyzer's holders on it of the minters
+#     finding's       step's permissions, judged as that step judges --gsa's: who can mint its token,
+#     account         sign as it or act as it holds what the finding gives it, so once the finding is
+#                     accepted, an agent that can become the account is still reported.
+#   live: fleet       Policy Analyzer's holders on the pool project of gkehub.memberships.create and
+#     registration    update, of gkehub.namespaces, rbacrolebindings and membershipbindings create
+#                     and update, of the scopes' create, update and setIamPolicy, and of the
+#                     features' create and update, each judged as in the GKE IAM step: a cluster
+#                     registered to the pool's fleet shares the pool's Workload Identity, so its
+#                     ServiceAccount envoy-operator/envoy-operator is the operator's member there,
+#                     and a scope's namespace and RBAC role binding reach every member bound to it.
 #   live: IAM on      For each folder and organization above --project, the pool project and each
 #     ancestors       fleet member's project (`gcloud projects get-ancestors`), Policy Analyzer's
 #                     holders of its setIamPolicy, and of the organization's iam.roles.update: each
@@ -180,7 +208,8 @@
 # A ServiceAccount a binding names is reviewed whether it exists or not: whoever can make it and a
 # pod in its namespace takes the binding's rights. On every cluster a ServiceAccount list that holds
 # none outside the system namespaces is UNKNOWN, since every cluster has default/default. A refused
-# list of bindings is UNKNOWN, naming the permission.
+# list of bindings is UNKNOWN, naming the permission, and so is a list without the bootstrap
+# cluster-admin ClusterRoleBinding, its witness: every cluster has it.
 #
 # Group and User subjects. Kubernetes' own groups take their members from Kubernetes, whatever
 # Google Groups for RBAC says: system:authenticated, system:serviceaccounts and
@@ -195,11 +224,20 @@
 # `gcloud container clusters describe`) the API server gives no request such a group, so it is no
 # finding; with it on, the cluster is UNKNOWN, a Group subject bound or not, since a Google group's
 # members are neither listed nor judged here; on a fleet member that is no GKE cluster, read through
-# the Connect gateway, its groups come from its own authenticator, and a Group subject bound there is
-# UNKNOWN; where whether it is on cannot be read, a Group subject bound there is UNKNOWN. The code
+# the Connect gateway, its users and groups come from its own authenticator, so a Group subject bound
+# there is UNKNOWN, and so is a User whose name looks like an email, which that authenticator, not
+# Google, gives to whom it likes; where whether it is on cannot be read, a Group subject bound there
+# is UNKNOWN. The code
 # step reads no cluster's setting and judges another Group as off; the live step of the cluster says
 # UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
 # allowed.
+#
+# Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
+# the identity service for GKE takes users and groups from an outside identity provider, so no
+# review sees who either lets in: on each GKE cluster of the pool, read from the cluster list
+# (legacyAbac, identityServiceConfig) or `gcloud container clusters describe`, either one on is
+# UNKNOWN on that cluster's step, and so is a describe that was refused. container.clusters.update,
+# by which a holder turns legacy ABAC on, is asked through IAM beside the rights' permissions.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; Google's own service agents
@@ -212,13 +250,26 @@
 #
 # The rights, in each guarded pair's namespace unless cluster-wide: create serviceaccounts/token of
 # the pair's ServiceAccount; impersonate that ServiceAccount, and users and groups cluster-wide;
-# escalate and bind roles and clusterroles, create and patch rolebindings and clusterrolebindings;
+# escalate and bind roles and clusterroles, create, patch and update rolebindings and
+# clusterrolebindings;
 # create, and get (which authorizes an exec, attach or port forward over WebSocket on API servers
 # before 1.35), pods/exec, pods/attach and pods/portforward; create, patch and update pods, and patch
 # and update pods/ephemeralcontainers; create, patch and update replicationcontrollers, deployments,
 # replicasets, statefulsets, daemonsets, jobs and cronjobs, each of which runs a pod as the
 # ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
-# node; get, list and watch secrets.
+# node; get, list, watch and create secrets (a Secret of type kubernetes.io/service-account-token
+# naming a ServiceAccount is filled with its token), and on the operator's cluster get, by name, of
+# each token Secret a guarded pair's ServiceAccount lists; and, cluster-wide on every cluster of the
+# pool, create, update
+# and patch of each admissionregistration.k8s.io resource its discovery lists, and the certificate
+# signing chain: a certificate signed for kubernetes.io/kube-apiserver-client authenticates as any
+# user and groups its request names but system:masters, and GKE cannot turn the certificates API
+# off, so a principal allowed update certificatesigningrequests/approval and approve on signers
+# (kubernetes.io/kube-apiserver-client or kubernetes.io/*, by name) is one finding, naming create
+# certificatesigningrequests too when it is allowed; create alone signs nothing. The code step does
+# not read the chain. roles/container.admin names no permission for the admission policies (read
+# with `gcloud iam roles describe` on 2026-11-21), so IAM is asked the webhook configurations'
+# alone, and container.certificateSigningRequests.approve for the chain.
 #
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,
@@ -440,12 +491,12 @@ fi
 . "$LIB/step-clusters.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
 . "$LIB/reviews.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-rbac.sh
-. "$LIB/step-rbac.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh
 . "$LIB/step-gke-iam.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-rbac.sh
+. "$LIB/step-rbac.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-workload-identity.sh
 . "$LIB/step-workload-identity.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-live-iam.sh

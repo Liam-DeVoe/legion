@@ -11,7 +11,10 @@
 # namespace, so a ClusterRoleBinding that grants it is found too; escalate on clusterroles, the
 # bindings of clusterroles, impersonating users and groups and a node's proxy are cluster-scoped,
 # which only a ClusterRoleBinding grants. A node's proxy reaches the kubelet's API, whose exec and
-# attach enter any pod on the node, the guarded ones included.
+# attach enter any pod on the node, the guarded ones included. A binding is written by create,
+# patch or update, and RBAC lets one who may bind its role, by name, update it, so each is asked. A
+# Secret of type kubernetes.io/service-account-token naming a ServiceAccount is filled with its
+# token, so create secrets is asked beside get, list and watch.
 RIGHTS_TABLE='
 create - serviceaccounts token named
 impersonate - serviceaccounts - named
@@ -23,8 +26,10 @@ escalate rbac.authorization.k8s.io clusterroles - cluster
 bind rbac.authorization.k8s.io clusterroles - ns
 create rbac.authorization.k8s.io rolebindings - ns
 patch rbac.authorization.k8s.io rolebindings - ns
+update rbac.authorization.k8s.io rolebindings - ns
 create rbac.authorization.k8s.io clusterrolebindings - cluster
 patch rbac.authorization.k8s.io clusterrolebindings - cluster
+update rbac.authorization.k8s.io clusterrolebindings - cluster
 create - pods exec ns
 create - pods attach ns
 create - pods portforward ns
@@ -62,10 +67,36 @@ update batch cronjobs - ns
 get - secrets - ns
 list - secrets - ns
 watch - secrets - ns
+create - secrets - ns
 '
+# The admission rights: create, update and patch of each resource of admissionregistration.k8s.io
+# a cluster's discovery lists, cluster-wide, on every cluster of the pool (admission_rights): a
+# mutating webhook or admission policy can add a container to the operator's next pod, and with it
+# the operator's identity, and a validating one can block or reshape what the operator applies.
+# Taking the resources from discovery asks the admission policies where the server serves them, and
+# never a name it does not; every API server serves the two webhook configurations, so a discovery
+# that lists either one short is not whole.
+ADMISSION_ALWAYS=(mutatingwebhookconfigurations validatingwebhookconfigurations)
+# The certificate signing chain, asked cluster-wide on every cluster of the pool: a certificate
+# signed for kubernetes.io/kube-apiserver-client authenticates as any user and groups its request
+# names but system:masters, and GKE cannot turn the certificates API off. Whoever may update a
+# request's approval and approve that signer (by its name, or kubernetes.io/*, the two names the API
+# server asks) can become anyone, so judge_reviews reports that pair as one finding, naming create
+# too when the principal may make its own request; create alone signs nothing.
+CSR_CREATE="create certificatesigningrequests.certificates.k8s.io cluster-wide"
+CSR_APPROVAL="update certificatesigningrequests/approval.certificates.k8s.io cluster-wide"
+CSR_SIGNER_PREFIX="approve signers.certificates.k8s.io "
+CSR_RIGHTS="$(jq -n -c --arg create "$CSR_CREATE" --arg approval "$CSR_APPROVAL" --arg signer "$CSR_SIGNER_PREFIX" '
+  [{verb: "create", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "", ns: "", name: "", label: $create},
+   {verb: "update", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "approval", ns: "", name: "", label: $approval},
+   ("kubernetes.io/kube-apiserver-client", "kubernetes.io/*"
+    | {verb: "approve", group: "certificates.k8s.io", resource: "signers", sub: "", ns: "", name: ., label: "\($signer)\(.) cluster-wide"})]
+  | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))})')"
 # The container.* permission of each right: what GKE's IAM authorizer checks for the same call,
 # with container.namespaces.create and container.serviceAccounts.create for the Workload Identity
-# step's other clusters. watch secrets is container.secrets.list's, as list is.
+# step's other clusters. watch secrets is container.secrets.list's, as list is, and patch is
+# update's. roles/container.admin names no permission for the admission policies or their
+# bindings (read with `gcloud iam roles describe` on 2026-11-21), so only RBAC is asked those.
 CONTAINER_PERMISSIONS=(
   container.serviceAccounts.createToken container.clusters.impersonate
   container.roles.escalate container.roles.bind container.clusterRoles.escalate container.clusterRoles.bind
@@ -77,6 +108,9 @@ CONTAINER_PERMISSIONS=(
   container.statefulSets.update container.daemonSets.create container.daemonSets.update container.jobs.create
   container.jobs.update container.cronJobs.create container.cronJobs.update container.secrets.get
   container.secrets.list container.namespaces.create container.serviceAccounts.create
+  container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
+  container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
+  container.certificateSigningRequests.approve container.clusters.update container.secrets.create
 )
 GSA_PERMISSIONS=(
   iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken iam.serviceAccounts.signJwt
@@ -89,17 +123,28 @@ IAM_WRITE_PERMISSIONS=(resourcemanager.projects.setIamPolicy resourcemanager.fol
   resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy secretmanager.secrets.setIamPolicy
   iam.roles.update)
 # What a fleet member's own project's IAM is asked: GKE authorizes IAM beside RBAC on that member, so
-# the container.* permission of each guard right (a guarded namespace, ServiceAccount or pod, and the
-# escalation rights by which a holder grants itself one) and the IAM writers there.
+# the container.* permission of each guard right (a guarded namespace, ServiceAccount or pod, the
+# escalation rights by which a holder grants itself one, and the admission webhooks) and the IAM
+# writers there.
 MEMBER_PERMISSIONS=(container.namespaces.create container.serviceAccounts.create container.pods.create
   container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind
   container.roles.escalate container.roleBindings.create container.roleBindings.update container.nodes.proxy
+  container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
+  container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
+  container.certificateSigningRequests.approve container.clusters.update
   "${IAM_WRITE_PERMISSIONS[@]}")
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
 # Workload Identity, so its ServiceAccount envoy-operator/envoy-operator is the operator's member.
-FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update)
+# Beside it, who can make a namespace or RBAC on the fleet's members: a fleet namespace and an RBAC
+# role binding of a scope reach every member cluster bound to the scope, so the scopes' and their
+# bindings' writes, and the features', are asked too (names read from roles/gkehub.admin's
+# includedPermissions on 2026-11-21).
+FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update gkehub.namespaces.create gkehub.namespaces.update
+  gkehub.rbacrolebindings.create gkehub.rbacrolebindings.update gkehub.membershipbindings.create
+  gkehub.membershipbindings.update gkehub.scopes.create gkehub.scopes.update gkehub.scopes.setIamPolicy
+  gkehub.features.create gkehub.features.update)
 # granting_role sets GRANTING_ROLE to the predefined role whose includedPermissions must hold a
 # checked permission.
 granting_role() {
@@ -163,9 +208,10 @@ done <<<"$RIGHTS_TABLE" | jq -R -s -c '[split("\n")[] | select(length > 0) | spl
 # any ServiceAccount of it, and the ServiceAccount is the pair the pool binds, so either lets its
 # maker act as the pair's Google service account. Beside them, the escalation rights by which a
 # holder grants itself any of those: impersonate users, groups and serviceaccounts, escalate and
-# bind clusterroles, and create and patch clusterrolebindings, cluster-wide, and create and get
-# nodes/proxy; bind and escalate roles and create and patch rolebindings in each guarded namespace
-# (guard-rights.jq).
-GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq")"
+# bind clusterroles, and create, patch and update clusterrolebindings, cluster-wide, and create and
+# get nodes/proxy; bind and escalate roles and create, patch and update rolebindings in each guarded
+# namespace (guard-rights.jq); and the certificate signing chain's rights (CSR_RIGHTS). The
+# admission rights are each cluster's own (admission_rights).
+GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq" | jq -c --argjson csr "$CSR_RIGHTS" '. + $csr')"
 GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
 GUARDED_TEXT="${GUARDED_TEXT%, }"

@@ -54,7 +54,7 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "consumer-names")
 	manifest, err := kvrecords.Write(t.Context(), operator.Conn, sessionConsumers, dir, r.signer.key)
 	require.NoError(t, err, "the released operator's records copy of %s; the server sent:\n%s", kvBucket(sessionConsumers), operator.errs)
-	_, records, err := kvrecords.Read(dir, r.signer.HoldKeys)
+	_, records, err := kvrecords.Read(dir, sessionConsumers, r.signer.HoldKeys, manifest.ManifestSHA256)
 	require.NoError(t, err)
 	want := storedMessages(t, adminNC, kvBucket(sessionConsumers))
 	require.Equal(t, len(want), manifest.Records)
