@@ -11,8 +11,9 @@
 # who sign in at the dev sign-in route, every one a full member; one public project PUB and one
 # PRIV, public too, made by carol, each with an issue whose spec is a document with blocks, a
 # comment, an ask, a message, an issue document and a project document; a personal token of each
-# person, which names no project, since the merge base has no list to name one in; and the shared
-# agent token. Then, as each of the seven callers in turn, it makes `POST /api/v1/projects`, makes,
+# person, which names no project, since the merge base has no list to name one in; the shared
+# agent token; and Delivery configured, with pull requests and runs (seed_delivery). Then, as each
+# of the seven callers in turn, it makes `POST /api/v1/projects`, makes,
 # renames and deletes a Delivery session group, and reads the fixed list below from both builds,
 # search's meaning leg among them, and compares the status, the headers and the bytes of each pair
 # of answers; and it compares the frames the live socket's event feed sends each caller at both
@@ -524,11 +525,98 @@ seed_lists() {
   remember "$build" "session group" "$(jq -r .id "$work/body")"
 }
 
+# seed_delivery BUILD configures Delivery on BUILD and writes the rows its intake and reconcile
+# would have written, in delivery-seed.ts's shape, straight into the build's database, since this
+# run gives neither build an App key (the settings route answers 409 DELIVERY_SETTINGS_ACCESS
+# without one) and starts no GitHub. The one delivery_settings row, as scripts/e2e's verification
+# driver writes it, makes the pipeline, the measures and the timeline answer their arrays rather
+# than 404 DELIVERY_NOT_CONFIGURED; the rows fill them: three pull requests of the population, one
+# attributed to each project's first issue and one, a rework, to no issue; two deploy runs on main
+# that ship the first two, and a failed one after the third; and a failed and a passing PR-checks
+# run; each run with its jobs. Every instant is a whole number of hours before the run's start, so
+# both builds hold the same rows, compared as written (the mask reads only the instants the run
+# wrote after its start).
+seed_delivery() {
+  local build=$1 url_var=${1}_database_url hours
+  local -a at=()
+  for hours in 2 3 4 5 6 7 8 9 10 19 20 21 22 27 28 29 30 192 200; do
+    at[hours]=$(date -u -d "@$((run_epoch - hours * 3600))" +%Y-%m-%dT%H:%M:%SZ)
+  done
+  psql "${!url_var}" -X -q -v ON_ERROR_STOP=1 >/dev/null <<SQL || fail "$build: could not write the Delivery rows"
+insert into delivery_settings (
+  singleton, deploy_repo, deploy_workflow_path, production_job_names, pr_checks_workflow_path,
+  population_authors, excluded_repos, updated_by
+) values (
+  true, 'acme/pub-repo', '.github/workflows/deploy.yml', array['release'], '.github/workflows/ci.yml',
+  array['octocat'], array[]::text[], '{"kind":"system","id":"blob-seed"}'
+);
+-- The fourth pull request was merged eight days before the run, before the timeline's default
+-- seven-day window, and had not shipped by its start, so the timeline lists it as waiting. The
+-- first names the session that wrote it, which the timeline lists as its session.
+insert into delivery_pull_requests (
+  repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+) values
+  ('acme/pub-repo', 1, 'feat: PUB''s shipped change', 'https://github.com/acme/pub-repo/pull/1', 'octocat',
+   '${at[30]}', '${at[29]}', 12, 3, false, 'PUB-1', array['ses-pub-session'], false),
+  ('acme/pub-repo', 2, 'feat: PRIV''s shipped change', 'https://github.com/acme/pub-repo/pull/2', 'octocat',
+   '${at[22]}', '${at[21]}', 7, 2, false, 'PRIV-1', array[]::text[], false),
+  ('acme/pub-repo', 3, 'fix: a waiting rework', 'https://github.com/acme/pub-repo/pull/3', 'octocat',
+   '${at[10]}', '${at[9]}', 4, 1, true, null, array[]::text[], false),
+  ('acme/pub-repo', 4, 'feat: PUB''s change merged before the window', 'https://github.com/acme/pub-repo/pull/4', 'octocat',
+   '${at[200]}', '${at[192]}', 5, 0, false, 'PUB-1', array[]::text[], false);
+-- The slowest-jobs table ranks a PR-checks job only with measures.SlowestMinResults (50) timed
+-- results in the shown days: fifty passing runs of 'build / unit', 40 to 89 hours before the run.
+insert into delivery_runs (
+  repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event
+)
+select 'acme/pub-repo', 800 + i, 'pr_checks', 3, 'blob' || (800 + i),
+  to_timestamp(${run_epoch}) - make_interval(hours => 40 + i),
+  to_timestamp(${run_epoch}) - make_interval(hours => 40 + i),
+  to_timestamp(${run_epoch}) - make_interval(hours => 40 + i),
+  to_timestamp(${run_epoch}) - make_interval(hours => 40 + i) + make_interval(mins => 10 + i),
+  'success', 'https://github.com/acme/pub-repo/actions/runs/' || (800 + i), null, 'pull_request'
+from generate_series(0, 49) as i;
+insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
+select 'acme/pub-repo', 800 + i, 'build / unit',
+  to_timestamp(${run_epoch}) - make_interval(hours => 40 + i),
+  to_timestamp(${run_epoch}) - make_interval(hours => 40 + i) + make_interval(mins => 10 + i),
+  'success'
+from generate_series(0, 49) as i;
+insert into delivery_runs (
+  repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event
+) values
+  ('acme/pub-repo', 500, 'deploy', null, 'blob500', '${at[29]}', '${at[28]}', '${at[28]}', '${at[27]}', 'success',
+   'https://github.com/acme/pub-repo/actions/runs/500', 'main', 'push'),
+  ('acme/pub-repo', 501, 'deploy', null, 'blob501', '${at[21]}', '${at[20]}', '${at[20]}', '${at[19]}', 'success',
+   'https://github.com/acme/pub-repo/actions/runs/501', 'main', 'push'),
+  ('acme/pub-repo', 502, 'deploy', null, 'blob502', '${at[9]}', '${at[8]}', '${at[8]}', '${at[7]}', 'failure',
+   'https://github.com/acme/pub-repo/actions/runs/502', 'main', 'push'),
+  ('acme/pub-repo', 700, 'pr_checks', 3, 'blob700', '${at[10]}', '${at[6]}', '${at[6]}', '${at[5]}', 'failure',
+   'https://github.com/acme/pub-repo/actions/runs/700', null, 'pull_request'),
+  ('acme/pub-repo', 701, 'pr_checks', 3, 'blob701', '${at[10]}', '${at[4]}', '${at[4]}', '${at[3]}', 'success',
+   'https://github.com/acme/pub-repo/actions/runs/701', null, 'pull_request');
+insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion) values
+  ('acme/pub-repo', 500, 'build', '${at[28]}', '${at[28]}', 'success'),
+  ('acme/pub-repo', 500, 'release', '${at[28]}', '${at[27]}', 'success'),
+  ('acme/pub-repo', 501, 'build', '${at[20]}', '${at[20]}', 'success'),
+  ('acme/pub-repo', 501, 'release', '${at[20]}', '${at[19]}', 'success'),
+  ('acme/pub-repo', 502, 'build', '${at[8]}', '${at[8]}', 'success'),
+  ('acme/pub-repo', 502, 'integration tests', '${at[8]}', '${at[7]}', 'failure'),
+  ('acme/pub-repo', 502, 'release', null, null, 'skipped'),
+  ('acme/pub-repo', 700, 'build / unit', '${at[6]}', '${at[5]}', 'failure'),
+  ('acme/pub-repo', 700, 'lint', '${at[6]}', '${at[6]}', 'success'),
+  ('acme/pub-repo', 701, 'build / unit', '${at[4]}', '${at[3]}', 'success'),
+  ('acme/pub-repo', 701, 'lint', '${at[4]}', '${at[4]}', 'success');
+SQL
+}
+
 begin seed
 seed base
 seed head
 seed_lists base
 seed_lists head
+seed_delivery base
+seed_delivery head
 if [ "$control" = private-pub ]; then
   psql "$head_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PUB'" >/dev/null ||
     fail "the control could not make PUB private in this build's database"
@@ -548,11 +636,13 @@ pass
 # at the other, every caller alike. Each search but the one keywords_only names runs both legs,
 # keyword and meaning.
 #
-# The routes this change rewrote are on it too. Delivery's pipeline is read at the run's start
-# (`at`), so its seven days are one set at both builds even when a read falls past midnight; its
-# measures and timeline read their default window, whose ends the mask reads as <time>, and the
-# timeline lists the seed's session group. A session's targeted messages and what reached it are
-# read for both sessions the projects name, PUB's holding the seed's messages and replies. The
+# The routes this change rewrote are on it too. Delivery is configured and holds rows at both builds
+# (seed_delivery), so its three reads answer their arrays, not 404 DELIVERY_NOT_CONFIGURED. Its
+# pipeline is read at the run's start (`at`), so its seven days are one set at both builds even
+# when a read falls past midnight; its measures and timeline read their default window, whose ends
+# the mask reads as <time>, and the timeline lists the seed's pull requests and session group. A
+# session's targeted messages and what reached it are read for both sessions the projects name,
+# PUB's holding the seed's messages and replies. The
 # GitHub App's installation lookup and the proxy are read for the repository PUB is mapped to, as
 # a deployment with no App key answers them (see "Not compared" above).
 pipeline_at=$(date -u -d "@$run_epoch" +%Y-%m-%dT%H:%M:%SZ)
@@ -746,6 +836,7 @@ declare -A unfillable_lists=(
   ["/api/v1/priorities	.work_under_no_priority.issues\[\].advances"]="the first fault's rows advance no live priority, so their advances is the empty list a zero advancesScan answers (priority_queries.go, priorityFaultRow.targets)"
   ["*	*components.ids"]="a component id must name a component of its project's architecture model, which is read from GitHub, and this run starts no GitHub"
   ["*	*components.unknown"]="a component the model does not hold is refused at the write (400 COMPONENTS_INPUT), so an issue names none"
+  ["/api/v1/delivery/timeline	.prs\[\].components"]="a pull request's components are those its issue names, each a component of its project's architecture model, which is read from GitHub, and this run starts no GitHub"
 )
 # unfillable KEY-VAR ROUTE WHERE sets KEY-VAR to the unfillable_lists key whose patterns match
 # ROUTE and WHERE, and fails when none does.
