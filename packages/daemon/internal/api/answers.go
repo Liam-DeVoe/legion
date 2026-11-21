@@ -50,7 +50,7 @@ const ServingFloor = 46
 // (OwnerPlanContract): a renumber of that change moves the constant and this list with it, and
 // moving one of the two alone would describe a shape at a contract no entry declares.
 // shapedAnswersContract is a constant for the same reason and stays where its entry put it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, OwnerPlanContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, OwnerPlanContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -166,7 +166,7 @@ var Answers = []Answer{
 	// `note` and which 46 is the floor for here.
 	{ID: AnswerHandoffComplete, Routes: []string{"POST /legion/v1/handoff/complete"}, Since: ServingFloor},
 	// Older than the floor: the empty object the nine fact routes answer. `tasks/stop` is
-	// version.go's 201, and the answer it shares is older than it, as the no-content answer is
+	// version.go's 202, and the answer it shares is older than it, as the no-content answer is
 	// older than two of its routes.
 	{ID: AnswerEmptyObject, Routes: []string{
 		"POST /legion/v1/issues/status",
@@ -200,8 +200,8 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 201: the plan register_plan took (`api.PlanRegisterResponse`). The route
-	// arrives with the answer, so no contract below 201 records either.
+	// version.go's 202: the plan register_plan took (`api.PlanRegisterResponse`). The route
+	// arrives with the answer, so no contract below 202 records either.
 	{ID: AnswerPlanRegister, Routes: []string{"POST /legion/v1/plans/register"}, Since: OwnerPlanContract},
 }
 
@@ -527,7 +527,7 @@ var lineKinds = []EnumeratedValue{
 // heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
 // eleven words, and its list grew once: `children_before_retro`, a parent whose plan has no
 // acceptance step held before its retro for the issues beneath it, and `task_stopped`, a task its
-// owner stopped, arrived at OwnerPlanContract (version.go's 201). So it is written out value by
+// owner stopped, arrived at OwnerPlanContract (version.go's 202). So it is written out value by
 // value, sorted by value, as waitAnswers is. It names each constant rather than reading
 // record.HeldReasons, because a word added to the ladder later arrives at its own contract.
 var heldReasons = []EnumeratedValue{

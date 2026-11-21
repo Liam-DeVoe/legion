@@ -1387,7 +1387,7 @@ package api
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
 // which refuses a value it does not name rather than stripping it like an unknown key, so a word
 // added to the ladder later bumps this number again, and is served down by the value strip that
-// reads the table's arrivals (shaping.go's withoutUnadmittedHeldWords), as 201 did with
+// reads the table's arrivals (shaping.go's withoutUnadmittedHeldWords), as 202 did with
 // `children_before_retro` and `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (shaping.go's stateFor, withoutHeld), as a caller below 94 is served every
@@ -1526,8 +1526,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them. From 201 a parent held there for the issues beneath it
-// reads `children_before_retro` and a task that was stopped there `task_stopped` (201 below).
+// reader of 98 or above refuses them. From 202 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (202 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
@@ -2841,7 +2841,95 @@ package api
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
 //
-// 201: the owner of an issue gives Legion a plan with one task, and the plan picks which of
+// 199: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// `--session-writer-audience <audience>`, a fifth session flag after
+// `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
+// `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
+// when `runtime.kubernetes.session_database.writer_audience` is set. Its value is a workload
+// identity provider's full resource name. The launcher then reads a projected ServiceAccount token
+// of that audience at `<roles-dir>/session-writer/token`, which no role's namespace shows. Its
+// session proxy exchanges that token at Google's security token service and impersonates the
+// account with the federated token, never with the pod's own credentials (`connectorOptions`,
+// `internal/sessionproxy`). The proxy admits to the session socket only the launcher's own process
+// and the generation's Oh My Pi process, and closes and logs every other connection
+// (`internal/launcher`'s sessionPeer). The launcher's start command gains `agentExecutable`
+// (`shimwire.LauncherStart.AgentExecutable`), the agent's executable, by which the launcher knows
+// the Oh My Pi process. The daemon fills it for every Oh My Pi launch (sandbox's launcherCommand)
+// and leaves it out when it is empty, as for a Claude Code launch. Under the same member the
+// controller's pod runs the launcher's roles-dir form for its one role in place of the
+// single-role form (`--roles-dir` and `--role controller`, sandbox's
+// controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
+// launcher token from the controller's agent. A launcher built before 199 exits 2 on the unknown
+// flag in every pod the daemon creates with it, so the image probe, which holds the image's
+// pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
+// older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
+// renders neither the flag nor the controller's roles-dir form. An older launcher ignores
+// `agentExecutable`. A pod created under the member keeps `--session-writer-audience` in its
+// launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
+// launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
+// newSessionPeer). An older daemon also reads no fifth flag, and where it knows a plugin pair
+// every relaunch of an Oh My Pi claim recorded at 199 installs that pair and so keeps the pod
+// whatever its image: each Oh My Pi start is refused and charged as a launch failure (a Claude
+// Code start is admitted), the controller's claim fails and its retries install into the same pod
+// until its Sandbox is deleted, and each issue claim on Oh My Pi fails and needs a retry once its
+// pod is replaced. So the member is turned off on this release first: restore the account's grant
+// to the pod's own principal, remove writer_audience and restart the daemon, which reads the fifth
+// flag as a moved session store and replaces each pod that carries it (an issue pod by its update
+// round, the controller's pod at its next launch). The writer pool, its provider and the
+// account's grant to the pool's principal stay until then, since a pod that carries the flag
+// exchanges the writer token until it is replaced. Only once no launcher command carries the flag
+// is the daemon rolled back below 199 (docs/kubernetes.md, "Selecting the store"). A deployment
+// that sets no writer audience renders no fifth flag, and its launcher reads no
+// `agentExecutable`, so its pods carry the command they carried before. (The
+// number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
+// #3519's INFRA-2009) that no open pull request of cybermonklabs/legion declared, with the `take`
+// of .github/scripts/check-daemon-api-contract.sh, while this branch's base, 4eec2cc2, still
+// carried 152. The forward merge of 2026-11-19 brought in cf5905d3 and with it main's 160. A
+// reading of every open pull request at that merge, which ended at 2026-11-19T12:17:28Z, found 170
+// declared by #2230, #4030 and #4173 as well, and 161 (#4180, #4193 and #4259), 162 (#3712), 163
+// (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#4273), 168 (#3659, #3993, #4175 and #4488)
+// and 169 (#3831, #4065, #4485 and #4493) declared, so this entry moved to 171, the lowest number
+// above main's 160 that no other open pull request declares. The forward merge of 2026-11-19
+// that brought in a20e0b05 brought main's 168 (#4488's entry above). A reading of every open pull
+// request at that merge, which ended at 2026-11-19T16:56:58Z, found 169 (#3831 and #4065), 170
+// (#2230, #4030, #4173, #4180 and #4193), 171 (#4115 and #4485), 172 (#3659), 173 (#4493) and
+// 174 (#4273) declared, so this entry moved to 175, the lowest number above main's 168 that no
+// other open pull request declares. The forward merge of 2026-11-19 that brought in d7c7c531 left
+// main at 168. A reading of every open pull request at that merge, which ended at
+// 2026-11-19T23:08:22Z, found 169 (#4273), 171 (#2230, #4049 and #4065), 172 (#3659), 173
+// (#4493), 174 (#3993), 175 (#3712 and #4432 as well), 176 (#4030, #4173, #4180, #4182, #4193,
+// #4259, #4261, #4269 and #4290), 177 (#4017), 178 (#3831 and #4115), 179 (#4392 and #4540) and
+// 180 (#4175) declared, and none 170, so this entry moved to 170, the lowest number above main's
+// 168 that no other open pull request declares. The forward merge of 2026-11-20 that brought in
+// 9e0f0b8e left main at 168, and a reading of every open pull request at that merge, which ended at
+// 2026-11-20T00:44:52Z, found 170 declared by no other, so this entry kept 170. The forward merge
+// of 2026-11-20 that brought in c7e1cbd5 brought main's 178 (#4115's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-20T01:02:32Z, found 179 (#4392 and
+// #4540), 180 (#4049 and #4175) and 181 (#4553) declared, so this entry moved to 182, the lowest
+// number above main's 178 that no other open pull request declared. The forward merge of
+// 2026-11-20 that brought in 28b2ea9e left main at 178. A reading of every open pull request at
+// that merge, which ended at 2026-11-20T04:54:42Z, found 179 (#4540), 180 (#4049), 181 (#3831 and
+// #4273), 182 (#4173, #4180, #4193, #4392 and #4493 as well), 183 (#2230, #3712, #4030 and
+// #4432), 184 (#3659, #4065, #4553 and #4573) and 185 (#4175 and #4543) declared, so this entry
+// moved to 186, the lowest number above main's 178 that no other open pull request declares. The
+// forward merge of 2026-11-20 that brought in 1c7c8253 brought main's 188 (#4543's entry above). A
+// reading of every open pull request at that merge, which ended at 2026-11-20T10:16:19Z, found 189
+// (#3831, #4592 and #4596) and 190 (#4493 and #4578) declared, so this entry moved to 191, the
+// lowest number above main's 188 that no other open pull request declares. The forward merge of
+// 2026-11-20 that brought in a4cd4949 brought main's 189 (#4581's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-20T16:05:12Z, found 190 (#4578), 191
+// (#2230, #4049 and #4573), 192 (#3993, #4173, #4175, #4182, #4193, #4273, #4392 and #4580), 193
+// (#3659, #3712, #4065, #4432 and #4553), 194 (#3831 and #4030) and 195 (#4493 and #4590)
+// declared, so this entry moved to 196, the lowest number above main's 189 that no other open pull
+// request declares. The forward merge of 2026-11-20 that brought in 8a954068 brought main's 193
+// (#3659's entry above). A reading of every open pull request at that merge, which ended at
+// 2026-11-20T20:51:40Z, found 194 (#3831 and #4030), 195 (#4590), 196 (#3993, #4173, #4193, #4273,
+// #4392, #4432, #4493, #4580, #4592 and #4596), 197 (#4065, #4553 and #4578) and 198 (#4175)
+// declared, so this entry moved to 199, the lowest number above main's 193 that no other open pull
+// request declares. Read the base's own number and every open pull request again at every forward
+// merge rather than from this line.)
+//
+// 202: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
 // version of a document of the issue from Dispatch, with its blocks, and answers 200 with the
@@ -2876,7 +2964,7 @@ package api
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
 // the two new reasons; only this release writes plan rows and those reasons, so no issue a release
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
-// `returnTo` to a daemon below 201 would have the completion refused, and a daemon below 201 has
+// `returnTo` to a daemon below 202 would have the completion refused, and a daemon below 202 has
 // neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
 // Every architect request of one issue — register_plan, stop_task, sign_off,
 // request_backward_move, retry_or_escalate, close_root and register_gate — names on its fact the
@@ -2891,23 +2979,23 @@ package api
 // `409 SIGNOFF_STALE_GENERATION`, `409 BACKWARD_STALE_GENERATION`, `409 RETRY_STALE_GENERATION`,
 // `409 CLOSE_STALE_GENERATION` or `409 GATE_STALE_GENERATION` for a run that is over, and
 // `409 SIGNOFF_STALE_ENTRY` or `409 BACKWARD_STALE_ENTRY` for a run of accepting that is over.
-// The answers and the requests of the two new routes are recorded at 201 and at no contract below
+// The answers and the requests of the two new routes are recorded at 202 and at no contract below
 // it. register_plan's answer arrives whole with its route (answers.go's AnswerPlanRegister), and
 // stop_task answers the empty object every fact route answers (AnswerEmptyObject), an answer
 // older than its route. A refused plan's `409 PLAN_REFUSED` carries `reasons` beside its code and
-// its sentence (`api.PlanRefusal`), a key of the refusal answer: a caller below 201 is served
+// its sentence (`api.PlanRefusal`), a key of the refusal answer: a caller below 202 is served
 // that refusal as its Failure alone, as a PauseFailure is below 178 (shaping.go's refusal row,
 // placed by the caller's pod where it states no contract: placedByPod), although no plugin below
-// 201 calls the route. The completion's request gains `returnTo`, and the request records of 201
+// 202 calls the route. The completion's request gains `returnTo`, and the request records of 202
 // hold it and the two new routes' requests; no recorded request field leaves.
 // One value set of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gets
 // wider: an issue's `holdReason` takes `task-stopped` (its owner stopped its task) and `children`
 // (a parent whose plan has no acceptance step waits, before its retro, for the issues beneath it)
-// beside `escalated`. Every reader below 201 reads the field with `z.literal("escalated")`, which
-// admits that one value as an enumeration of one would, and the reader of 201 reads it with a
+// beside `escalated`. Every reader below 202 reads the field with `z.literal("escalated")`, which
+// admits that one value as an enumeration of one would, and the reader of 202 reads it with a
 // `z.enum` of the three, so the field is a row of answers.go's EnumeratedFields: `escalated` is
-// recorded at the floor, and the two new words at 201. A caller whose contract (the one it states,
-// else its pod's lowest) is below 201 is served an issue held for either new reason with no
+// recorded at the floor, and the two new words at 202. A caller whose contract (the one it states,
+// else its pod's lowest) is below 202 is served an issue held for either new reason with no
 // `holdReason`, as a hold of no reason is served (shaping.go's valueStrips,
 // `withoutUnadmittedHoldReason`).
 // A second value set gets wider with it: `admission.held`'s `reason` takes
@@ -2915,21 +3003,20 @@ package api
 // with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
 // that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
-// plugin reads the word as a `z.enum`, so a caller whose contract is below 201 is served each row
+// plugin reads the word as a `z.enum`, so a caller whose contract is below 202 is served each row
 // of either word as `unclassified` with no `heldBy`, the row it read for that issue before
-// (valueStrips, `withoutUnadmittedHeldWords`; answers.go's heldReasons records the two at 201).
+// (valueStrips, `withoutUnadmittedHeldWords`; answers.go's heldReasons records the two at 202).
 // `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
 // key below `projects`, which no reader types, so no record holds it and nothing is served down
 // (answers.go's typedSettings). The three notice kinds this entry adds (`task-stopped`,
 // `plan-not-taken` and `retro-held`) ride inside a notice row's payload, as 189's does, and are no
 // key or value of an answer a plugin parses.
-// (This entry takes 201, the lowest number above main's 193 that no open pull request declared
-// when the merge of 2026-11-20 brought main in at 8a9540682d: a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head for each of the 297 open pull requests, made between
-// 2026-11-20T21:51:54Z and 21:52:06Z, read all 297 and found 193 declared by twelve, 194 by
-// #4030, 195 by #4590, 196 by eleven, 197 by #4553 and #4578, 198 by #4175 and #4589, 199 by
-// #3831, #4495 and #4661, 200 by #4065, and nothing at 201. From this entry the last number of
-// answers.go's SupportedContracts is `api.OwnerPlanContract`, and `shapedAnswersContract` stays
-// 193. Read the base's own number and every open pull request again at the next merge rather than
-// from this line.)
-const DaemonAPIVersion = 201
+// (This entry takes 202, the lowest number above main's 199 that no other open pull request
+// declared when the merge of 2026-11-20 brought main in at b9ed0679 (#4495's entry above): a
+// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 302 open pull requests,
+// made between 2026-11-20T23:04:02Z and 23:04:23Z, read all 302 and found 199 declared by #3831,
+// #4392 and #4661, 200 by #4065 and #4493, 201 by #4553, and nothing at 202. From this entry the
+// last number of answers.go's SupportedContracts is `api.OwnerPlanContract`, and
+// `shapedAnswersContract` stays 193. Read the base's own number and every open pull request again
+// at the next merge rather than from this line.)
+const DaemonAPIVersion = 202

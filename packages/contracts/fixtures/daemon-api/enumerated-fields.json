@@ -1057,7 +1057,7 @@
       },
       {
         "value": "children_before_retro",
-        "since": 201
+        "since": 202
       },
       {
         "value": "children_first",
@@ -1081,7 +1081,7 @@
       },
       {
         "value": "task_stopped",
-        "since": 201
+        "since": 202
       },
       {
         "value": "tree_closed",
@@ -1103,7 +1103,7 @@
     "values": [
       {
         "value": "children",
-        "since": 201
+        "since": 202
       },
       {
         "value": "escalated",
@@ -1111,7 +1111,7 @@
       },
       {
         "value": "task-stopped",
-        "since": 201
+        "since": 202
       }
     ]
   },
@@ -1947,7 +1947,7 @@
     "values": [
       {
         "value": "children",
-        "since": 201
+        "since": 202
       },
       {
         "value": "escalated",
@@ -1955,7 +1955,7 @@
       },
       {
         "value": "task-stopped",
-        "since": 201
+        "since": 202
       }
     ]
   },
