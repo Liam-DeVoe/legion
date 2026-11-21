@@ -452,7 +452,9 @@ func (c *Client) AppendStop(ctx context.Context, holdID, command, reason string)
 // command in this hold: LeftUnchanged only when this run changed nothing and no earlier run of it
 // recorded a change or ended with no entry (a run cut after its intent); otherwise left names what
 // those runs left. The caller knows its earlier runs (the journal holds their entries) and folds
-// what they left in; the journal records left as given. An empty left is refused.
+// what they left in, and the journal records left as given, but for the one case the journal
+// itself shows: LeftUnchanged after a run of the command that ended with no entry (two intents of
+// it in a row) is refused, naming the rule. An empty left is refused.
 func (c *Client) AppendStopLeft(ctx context.Context, holdID, command, reason, left string) error {
 	if left == "" {
 		return fmt.Errorf("holdrecord: %s's stop names nothing it left: give LeftUnchanged or what it changed", command)
@@ -464,6 +466,10 @@ func (c *Client) appendStop(ctx context.Context, holdID, command string, outputs
 	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
 		if !Stoppable(d.Workflow, command) {
 			return fmt.Errorf("holdrecord: %s is not Stoppable in %s, so its refusal writes no stop entry", command, d.Workflow)
+		}
+		if outputs[stopLeftKey] == LeftUnchanged && cutRun(d.Ops, command) {
+			return fmt.Errorf("holdrecord: %s's stop cannot record %q: an earlier run of %s in this hold ended with no entry, so what it left is unknown; the stop names what the runs left (LeftUnchanged's rule)",
+				command, LeftUnchanged, command)
 		}
 		d.Ops = append(d.Ops, Operation{Command: command, State: stateStop, Outputs: outputs})
 		return nil

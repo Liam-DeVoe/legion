@@ -305,8 +305,10 @@ func (t table) Decide(d Done, req modelRequest) error {
 // unchanged reports whether the record shows nothing changed: no entry but hold release's own,
 // which a crashed release leaves, and, with SetCommand, hold set's, whose restart and barrier
 // change no stored data. With WayOut a command's stop that recorded LeftUnchanged, and the intent
-// it ends, change nothing either; a stop that recorded anything else, or nothing, a done entry
-// and an intent no stop ends all count as changes. It reads each stop's record as written: by
+// it ends, change nothing either; a stop that recorded anything else, or nothing, a done entry,
+// an intent no stop ends, and an intent followed by another of the same command before its stop or
+// done (a run cut after its intent, whose change no entry records) all count as changes. It reads
+// each stop's record as written, but for the cut run, which the journal itself shows: by
 // LeftUnchanged's rule a stop records what every run of its command left, so a crashed run's
 // change is in its rerun's stop, which the model checks (releasedOverAChange).
 func (t table) unchanged(ops []Operation) bool {
@@ -317,6 +319,9 @@ func (t table) unchanged(ops []Operation) bool {
 		}
 		if !t.Rules.WayOut || o.State == stateDone || (o.State == stateStop && o.Outputs[stopLeftKey] != LeftUnchanged) {
 			return false
+		}
+		if o.State == stateIntent && latest[o.Command].State == stateIntent {
+			return false // the run before this intent ended with no entry
 		}
 		latest[o.Command] = o
 	}

@@ -286,6 +286,23 @@ func pending(d Done) []string {
 	return out
 }
 
+// cutRun reports whether a run of command in ops ended with no entry: an intent of command followed
+// by another intent of it with no stop or done of it between, a run cut after its intent, whose
+// change no entry records.
+func cutRun(ops []Operation, command string) bool {
+	open := false
+	for _, o := range ops {
+		if o.Command != command {
+			continue
+		}
+		if o.State == stateIntent && open {
+			return true
+		}
+		open = o.State == stateIntent
+	}
+	return false
+}
+
 // anyStopped reports whether some command's latest entry is a `stop`: a command that stopped and
 // has not run again since.
 func anyStopped(ops []Operation) bool {

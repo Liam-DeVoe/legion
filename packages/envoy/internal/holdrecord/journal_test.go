@@ -1020,6 +1020,48 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// A run cut after its intent leaves what it changed unknown: its rerun's stop cannot record
+	// unchanged, which AppendStopLeft refuses naming the rule, and hold release is refused over the
+	// stop that names what the runs left; hold abort ends the hold.
+	t.Run("a rerun after a cut run cannot stop as unchanged, so hold release stays refused", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		for i, x := range []struct {
+			w       holdrecord.Workflow
+			command string
+		}{{holdrecord.WorkflowCutover, "replay"}, {holdrecord.WorkflowBucketsCreate, "buckets create"}, {holdrecord.WorkflowStreamsUpdate, "streams update"}} {
+			holdID := "h-cut-" + strconv.Itoa(i)
+			hold(t, c, holdID, x.w, nil)
+			if _, err := c.Admit(ctx, holdID, cmd(x.command), nil); err != nil {
+				t.Fatal(err)
+			}
+			// The first run is cut after its intent: no entry follows it. Its rerun is admitted.
+			if _, err := c.Admit(ctx, holdID, cmd(x.command), nil); err != nil {
+				t.Fatalf("%s: the rerun after the cut run: %v", x.command, err)
+			}
+			err := c.AppendStopLeft(ctx, holdID, x.command, "its check refuses", holdrecord.LeftUnchanged)
+			if err == nil || !strings.Contains(err.Error(), "ended with no entry") {
+				t.Fatalf("%s: the rerun's unchanged stop after a cut run answered %v, want a refusal naming the run that ended with no entry", x.command, err)
+			}
+			const left = "unknown: an earlier run ended with no entry"
+			if err := c.AppendStopLeft(ctx, holdID, x.command, "its check refuses", left); err != nil {
+				t.Fatalf("%s: the rerun's stop naming what the runs left: %v", x.command, err)
+			}
+			_, err = c.Admit(ctx, holdID, cmd(holdrecord.CommandRelease), nil)
+			refused(t, x.command+": release after the cut run's rerun stopped", err, holdrecord.ErrOutOfOrder, "not complete")
+			if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandAbort), nil); err != nil {
+				t.Fatalf("%s: abort after the rerun's stop: %v", x.command, err)
+			}
+			current := row(t, c)
+			if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, holdID, "aborted"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.AppendDone(ctx, holdID, holdrecord.CommandAbort, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
 	// Not only the buckets commands: every command whose own check can refuse after its intent
 	// stops, recording what it left, and hold abort then ends the hold.
 	t.Run("a streams update that fails for good stops, and hold abort ends the hold", func(t *testing.T) {

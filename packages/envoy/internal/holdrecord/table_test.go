@@ -109,3 +109,30 @@ func TestNoCommandIsAdmittedAfterTheHoldEnded(t *testing.T) {
 	}
 	t.Logf("%d commands asked after a done release or abort", ended)
 }
+
+// A run cut after its intent shows in the journal as two intents of one command in a row, with no
+// stop or done between: the first run ended with no entry, so what it left is unknown, and the
+// rerun's stop cannot speak for it. Decide counts such a command as changed, so hold release is
+// refused over a stop recording unchanged, and hold abort still ends the hold. Fails if unchanged
+// reads intents as nothing: release is admitted.
+func TestACutRunCountsAsAChange(t *testing.T) {
+	op := func(c, s string) Operation { return Operation{Command: c, State: s} }
+	for _, x := range []struct {
+		w Workflow
+		c string
+	}{{WorkflowCutover, "replay"}, {WorkflowBucketsCreate, "buckets create"}, {WorkflowStreamsUpdate, "streams update"}} {
+		stop := Operation{Command: x.c, State: stateStop, Outputs: map[string]string{stopLeftKey: LeftUnchanged}}
+		cut := Done{Workflow: x.w, Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone),
+			op(x.c, stateIntent), op(x.c, stateIntent), stop}}
+		if err := Decide(cut, Request{Command: CommandRelease}); !errors.Is(err, ErrOutOfOrder) {
+			t.Errorf("%s: release after a cut %q run and its rerun's unchanged stop answered %v, want ErrOutOfOrder", x.w, x.c, err)
+		}
+		if err := Decide(cut, Request{Command: CommandAbort}); err != nil {
+			t.Errorf("%s: abort after the rerun's stop answered %v, want admitted", x.w, err)
+		}
+		whole := Done{Workflow: x.w, Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone), op(x.c, stateIntent), stop}}
+		if err := Decide(whole, Request{Command: CommandRelease}); err != nil {
+			t.Errorf("%s: release after one %q run's unchanged stop answered %v, want admitted", x.w, x.c, err)
+		}
+	}
+}
