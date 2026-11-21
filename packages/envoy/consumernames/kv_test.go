@@ -199,22 +199,25 @@ func TestTheKVStoreWritesOnlyOverTheRevisionItRead(t *testing.T) {
 	}
 }
 
+// The sentinel round-trips through the bucket: what the operator writes (the cutover, replay_from
+// and its orphans, the stream's identity) reads back, and EndReplay, which rewrites it, clears only
+// replay_from and the orphans.
 func TestReplayModeEndsOnlyWhenNoListedOrphanIsHeld(t *testing.T) {
-	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, ReplayFrom: 4, Orphans: []string{"s-a", "session~b"}})
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, ReplayFrom: 4, Orphans: []string{"s-a", "session~b"}, StreamID: "stream-1"})
 	ctx := context.Background()
 	held := map[string]bool{"session~b": true, "session~selected": true}
 	if over, err := live.store.EndReplay(ctx, func(name string) bool { return held[name] }); err != nil || over {
 		t.Fatalf("EndReplay with an orphan held = %t, %v; want replay mode kept", over, err)
 	}
-	if state, _ := live.store.State(ctx); state.ReplayFrom != 4 {
-		t.Fatalf("replay_from %d, want 4 kept", state.ReplayFrom)
+	if state, _ := live.store.State(ctx); state.ReplayFrom != 4 || state.StreamID != "stream-1" {
+		t.Fatalf("sentinel %+v, want replay_from 4 and stream_id stream-1 kept", state)
 	}
 	delete(held, "session~b")
 	if over, err := live.store.EndReplay(ctx, func(name string) bool { return held[name] }); err != nil || !over {
 		t.Fatalf("EndReplay with no orphan held = %t, %v; want replay mode over", over, err)
 	}
-	if state, _ := live.store.State(ctx); state.ReplayFrom != 0 || len(state.Orphans) != 0 || state.Cutover != CutoverDone {
-		t.Fatalf("sentinel %+v, want replay_from and the orphans cleared, the cutover kept", state)
+	if state, _ := live.store.State(ctx); state.ReplayFrom != 0 || len(state.Orphans) != 0 || state.Cutover != CutoverDone || state.StreamID != "stream-1" {
+		t.Fatalf("sentinel %+v, want replay_from and the orphans cleared, the cutover and stream_id kept", state)
 	}
 }
 
