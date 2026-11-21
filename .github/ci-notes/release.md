@@ -89,9 +89,10 @@ skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skill
 package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
 bundles inline nats.js with patches/nats@2.29.3.patch applied). Everything after
 packages/claude-envoy/ is content the plugin ships rather than documentation, so a docs:
-commit there still releases: each is a --patch-path. Nothing has been published under this
-name, so --first-npm seeds the line at npm's 0.0.0 and the first release bumps from the whole
-history.
+commit there still releases: each is a --patch-path. Before the first claude-envoy-v* tag,
+nothing but npm's 0.0.0 placeholder had been published under this name, so --first-npm seeded
+the line at 0.0.0 and the first release bumped from the whole history. Since that tag, the
+newest claude-envoy-v* tag is the previous release and --first-npm is not read.
 
 ## The Go legion's version arguments and the command that prints its envoy packages
 

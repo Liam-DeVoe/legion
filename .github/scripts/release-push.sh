@@ -19,10 +19,14 @@
 #            from the commits since it that touch the <paths> after --, with
 #            every --patch-path passed through. Without such a tag the release
 #            line has not started, which is an error, unless --first-npm names
-#            the npm package whose published version (0.0.0 when npm has none)
-#            stands in for the tag, over the whole history. release-bump.sh's
-#            `empty` (no commit in the paths) and `none` (no version-bumping
-#            commit: a ::notice and a job-summary line) both give skip=true.
+#            the npm package whose published version (0.0.0 when npm answers
+#            E404, having no such package) stands in for the tag, over the
+#            whole history; npm-published-version.sh, beside this script,
+#            reads it through retry_fetch, and a failure other than E404 that
+#            outlasts the retries is an ::error:: naming the package, exit 1.
+#            release-bump.sh's `empty` (no commit in the paths) and `none` (no
+#            version-bumping commit: a ::notice and a job-summary line) both
+#            give skip=true.
 #            --expect <X.Y.Z> is for a publish job checking what its build job
 #            handed it. When the tags now give another version, or nothing to
 #            release, another run took the tag first: a ::notice says so, and
@@ -913,7 +917,29 @@ case "$command" in
         prev_version=${prev_tag#"$prefix"}
         range="$prev_tag..HEAD"
       elif [ -n "$first_npm" ]; then
-        prev_version=$(npm view "$first_npm" version 2>/dev/null || echo 0.0.0)
+        # npm's published version stands in for the tag. Until round 49 of
+        # dispatch://INFRA-1545 any failure of this read became 0.0.0, so a
+        # registry that failed for a moment could stamp a first release 0.0.1
+        # over a package npm carries at a later version. The read goes through
+        # retry_fetch now: npm-published-version.sh, beside this script,
+        # answers npm's E404 (no such package, a first release) with 0.0.0 and
+        # exit 0, so an E404 is read once and never retried, and every other
+        # failure is retried and, once the attempts are spent, fails this
+        # command with nothing on stdout.
+        # The bound: `npm view @sjawhar/claude-envoy version` took 1.6 to 3.6 s
+        # over nine runs in an issue pod (npm 11.19.1, 2026-11-21), so 30 s is
+        # over eight times the slowest, and the call's ladder is
+        # 5 x 30 + 150 = 300 s. check-download-retry.sh reads no fetch here,
+        # `npm view` being none of its verbs, and its exception (d) says which
+        # keys hold those 300 s.
+        # Sourced in this branch rather than at the top of this file, as
+        # leak_guard sources it: a copy of this script that never reads npm
+        # needs no copy of the helper beside it.
+        # shellcheck source=.github/scripts/ci-retry.sh
+        . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-retry.sh"
+        prev_version=$(retry_fetch "npm's published version of $first_npm" 30 -- \
+          "$(dirname "${BASH_SOURCE[0]}")/npm-published-version.sh" "$first_npm") ||
+          fail_error "npm did not give the published version of $first_npm, so no release version is computed from it; npm's own error is above"
         range=HEAD
       else
         echo "::error::release-push.sh version: no $prefix* tag; a release line starts from a tag (push ${prefix}0.0.0 on the commit before its first release)" >&2

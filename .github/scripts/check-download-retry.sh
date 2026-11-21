@@ -716,8 +716,13 @@
 # <bound> --` and a Dockerfile's `retry <bound> <what>`. The last three are also what says a
 # fetch is retried and bounded. A wrapper and a verb are read by their name whatever directory
 # names them, `/usr/bin/env` as `env` (program_name; dispatch://INFRA-1545, round 42). A command
-# that answers about itself (`--version`, `--help`) reads nothing from the network and is no
-# fetch, whatever its verb.
+# that answers about itself (`--version`, `--help`, `--usage`) is read as no fetch, whatever its
+# verb. That reading is true of a binary installed whole, which answers out of itself and reads
+# nothing from the network. It is false for a corepack shim: `pnpm`, `yarn` and `yarnpkg
+# --version` and `pnpx --help` download the package manager on their first run, and this check
+# reads each of them as no fetch all the same. A STATED LIMIT: the tree's four such calls are the
+# worker image's toolchain step, packages/daemon/docker/worker.Dockerfile:1549-1550, each retried
+# by its author with that Dockerfile's `retry` at 120 s, and no rule holds a new one to the floor.
 #
 # Two verbs are deliberately outside the subject, because R1's subject is a tool, a toolchain or a
 # dependency: `git clone` and `git fetch`, which move this repository's own refs rather than
@@ -1210,6 +1215,15 @@
 #      LIMIT: this check reads no `docker run` and no `docker create` as a fetch, so an own-image
 #      pull made that way is read by no rule and is named only in this text; a `docker pull` is
 #      a fetch, and one of this package is left unretried only where EXEMPTIONS names it.
+#      A SECOND STATED LIMIT, set here beside that one though it is no pull of this package:
+#      `elan toolchain install`, `elan default` and a `lake` that downloads the toolchain its
+#      lean-toolchain file names are fetches this check does not read, since neither elan nor
+#      lake is one of THE VERBS. The tree's two such fetches are each a `retry_fetch "the Lean
+#      toolchain $toolchain" 120 -- elan toolchain install "$toolchain"` in a step of its own,
+#      keyed by hand at 5 x 120 + 150 = 750 s -> 13 min, before a `lake build` that then
+#      downloads nothing: ci-job-airlock-lean.yaml's `airlock-lean` job (:82) and
+#      ci-caches.yaml's `elan` job (:738). No rule holds a new one to the floor or charges it to
+#      a key.
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
 #      step's `run:` is read for its fetches, and no third-party action's source is in this tree.
 #      A composite action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun
@@ -1236,12 +1250,18 @@
 #
 #      The scripts are the second half, and they are read from the tree rather than listed: the
 #      roots are the scripts a credentialed job's steps call, and the closure adds the scripts
-#      those call in turn, which is the reading rule 8 already makes of a step. One script is in
-#      that set today, .github/scripts/release-push.sh, with .github/scripts/release-bump.sh,
-#      which it calls and which fetches nothing. release-push.sh's own fetches are the gh calls
-#      of its `restart`, `release` and `release-section` commands — `gh run list`, `gh workflow
-#      run`, `gh release view`, `gh release create`, `gh release upload` and `gh release edit` —
-#      and nothing in the tree but those publish jobs runs one of them.
+#      those call in turn, which is the reading rule 8 already makes of a step. The closure takes
+#      every occurrence of a script's path but a recognised non-call, and follows a call it can
+#      see rather than the branch a job takes. Measured at round 49 of dispatch://INFRA-1545,
+#      the one root is .github/scripts/release-push.sh, and the closure adds the four scripts it
+#      names: release-bump.sh, which its `version` runs; ci-retry.sh, which its leak guard and
+#      its `version` source; npm-published-version.sh, which its `version` runs through
+#      `retry_fetch`; and check-private-names.sh, which a refusal of its leak guard names in its
+#      text. None of the four writes a fetch this check reads, so the closure exempts no site of
+#      theirs. release-push.sh's unretried fetches are the gh calls of its `restart`, `release`
+#      and `release-section` commands — `gh run list`, `gh workflow run`, `gh release view`, `gh
+#      release create`, `gh release upload` and `gh release edit` — and nothing in the tree but
+#      those publish jobs runs one of them.
 #
 #      Retrying them means sourcing .github/scripts/ci-retry.sh into the publish job, and that is
 #      what check-release-credentials.sh refuses: its rule 1(a) lets a credentialed job run no
@@ -1253,9 +1273,29 @@
 #      `job 'publish' holds a credential, but step '…' runs '.github/scripts/ci-retry.sh';
 #      dependency code runs only in a job that holds none` and exit 1. Writing the `.` inside
 #      release-push.sh instead would hide the same code from that check rather than keep it out
-#      of the job, so these sites are left unretried.
+#      of the job, so these sites are left unretried. The leak guard is the one place where the
+#      tree does what that sentence declines: its `.` of ci-retry.sh is written inside
+#      release-push.sh, and it runs in the publish jobs' `release`, `release-section` and
+#      `push-tag`, where check-release-credentials.sh does not read it.
 #
-# TWO SCOPINGS OF THE SUBJECT, which are not exceptions to it: neither site is a download of a
+#      release-push.sh's retried fetches are the leak guard's fetch of its engine and, since
+#      round 49, the npm read of `version`: `npm view <package> version` inside
+#      npm-published-version.sh, retried through `retry_fetch` at 30 s, which turns npm's E404
+#      alone into 0.0.0 and fails the command on any other failure that outlasts the attempts.
+#      `version` reaches it only when it is given --first-npm and finds no tag, and only build
+#      jobs pass --first-npm: release.yaml's PI_ENVOY_VERSION_ARGS, PI_LEGION_VERSION_ARGS and
+#      CLAUDE_ENVOY_VERSION_ARGS, which the version steps of pi_envoy_build, pi_legion_build and
+#      claude_envoy_build and legion_build's 'Resolve plugin versions for the smoke test and
+#      worker image' (through release-plugin-versions.sh) pass. No publish job passes it, so no
+#      credentialed job sources the helper for this read. `npm view` is none of THE VERBS, so
+#      this check reads no site there and rule 8 charges its 5 x 30 + 150 = 300 s to no key: a
+#      STATED LIMIT. The keys that run it hold it all the same, because rule 8 charges each run
+#      of release-push.sh the 2700 s of the leak guard's six engine fetches, 6 x (5 x 60 + 150),
+#      which `version` never reaches: each version step's 46 minutes holds one npm ladder, and
+#      the plugin-pair step's 181, two runs of `version` and two of `pair-version` priced at
+#      10800 s, holds two.
+#
+# THREE SCOPINGS OF THE SUBJECT, which are not exceptions to it: no such site is a download of a
 # tool, a toolchain or a dependency, so R1 never reached them.
 #
 #   * A fetch of 127.0.0.1, localhost or ::1 is a readiness poll of a process the step itself
@@ -1267,6 +1307,14 @@
 #     copy, and five attempts there would sleep 150 s for every row the package lacks, which are
 #     exactly the rows the copy after it then writes. The copy itself, and the digest read that
 #     confirms it, do retry.
+#   * `docker buildx imagetools create` and `docker buildx imagetools inspect` in
+#     release-envoy-listener.yaml's `image_index` job (:456, :464) are a release's write to its
+#     registry and its read of what it wrote: they join the platform images the docker legs pushed
+#     into the `envoy:<sha>` index and print that index, and bring no tool and no dependency into
+#     the job. `docker buildx` is none of THE VERBS, so no rule reads them. Exception (d) does
+#     not reach the job either: its `packages: write` is no scope of check-release-credentials.sh's
+#     WRITE_SCOPES (`contents`, `id-token`, `attestations`, `actions`), so the job is no
+#     credentialed one by that check's definition, and this scoping is what leaves it unretried.
 #
 # One more scoping, which the tree states where it uses it: e2e.yaml's package step and
 # ci.yaml's `Install tmux` step. An `apt-get install` with no `-d` that follows an
@@ -1636,7 +1684,9 @@ APT_SIMULATE = {"-s", "--simulate", "--just-print", "--dry-run", "--no-act", "--
 APT_DOWNLOAD_ONLY = {"-d", "--download-only"}
 # What an `apt-get update` option has to say for rule 5 to be satisfied, the value of an `-o`.
 APT_ERROR_MODE = re.compile(r"apt::update::error-mode\s*=\s*any", re.IGNORECASE)
-# A command that answers about itself reads nothing from the network, whatever its verb.
+# A command that answers about itself is read as no fetch, whatever its verb: true of a binary
+# installed whole, false of a corepack shim, which the header's paragraph on the wrappers names as
+# a stated limit (worker.Dockerfile:1549-1550).
 INFORMATIONAL = {"--version", "--help", "--usage"}
 # The mise subcommands that fetch and say so: both exit 1 when the fetch fails.
 MISE_SUBCOMMANDS = {"install", "use"}

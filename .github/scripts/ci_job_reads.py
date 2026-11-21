@@ -2384,7 +2384,9 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
-        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:953 runs it for `version`, and the version cases read its refusals"),
+        (f"{SCRIPTS}/npm-published-version.sh", "release-push.sh:941 runs it for `version --first-npm`, and the version cases drive it against a stub npm"),
+        (CI_RETRY, "release-push.sh:939 sources it for `version --first-npm`, and the version cases read its retries"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
         ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),

@@ -621,6 +621,8 @@ release_push_test: &release_push_test
   - '.github/scripts/release-push.test.sh'
   - '.github/scripts/release-push.sh'
   - '.github/scripts/release-bump.sh'
+  - '.github/scripts/npm-published-version.sh'
+  - '.github/scripts/ci-retry.sh'
   - '.github/workflows/release.yaml'
   - 'packages/pi-legion/.changie.yaml'
 release_bump_test: &release_bump_test

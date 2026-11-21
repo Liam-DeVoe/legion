@@ -395,7 +395,7 @@ GATE_BOUND=60
 # harness run cut the case's `arrows` call at GATE_BOUND's 60 s ('Results: 1875 passed, 1 failed').
 # 600 s, 6000 polls of `sleep 0.1`, is over nine times the pod's idle call and over thirty-five
 # times CI's, so a correct run in a loaded pod is not cut, and a gate that hangs over the tree still
-# fails under this case's name well inside the test job's key: ci-job-test.yaml keys that job at 94
+# fails under this case's name well inside the test job's key: ci-job-test.yaml keys that job at 96
 # minutes, job 136315654414 took 23 of them, and a hang cut here adds about ten.
 GATE_TREE_BOUND=600
 
