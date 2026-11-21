@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -74,10 +75,17 @@ func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool)
 // stateChangedEvent is a check.state_changed event of issue at seq, as Dispatch's event log serves
 // it and its durable stream carries it: the check form of
 // packages/contracts/fixtures/dispatch-events/check-state-changed.json with each field of set
-// written over it, appended by the fixture's actor, with the Dispatch event id 5000+seq.
+// written over it, appended by the fixture's actor, with the Dispatch event id 5000+seq. The
+// fixture is found from this file's own compiled path, not from the working directory: `go test`
+// runs the package's tests in its own directory, but a live proof's driver, this package's test
+// binary, runs from wherever its script started it (scripts/e2e/lib/live-daemon-proof.sh).
 func stateChangedEvent(t *testing.T, issue string, seq int64, set map[string]any) json.RawMessage {
 	t.Helper()
-	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
+	_, source, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("locate this test's source, from which the shared fixture of check.state_changed is found")
+	}
+	encoded, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
 	if err != nil {
 		t.Fatalf("read the shared fixture of check.state_changed: %v", err)
 	}
