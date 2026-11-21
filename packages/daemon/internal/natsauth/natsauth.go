@@ -259,8 +259,10 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 // names, and every disconnect, with its cause; at info, every reconnect, with the server, named by
 // its position in the servers the connection was configured with (natsurl.ServerPosition), never by
 // its URL: nats.go presents a URL's user name as the connection's token, ConnectedUrlRedacted masks
-// only a password, and the rest of a URL is a person's to write. Every cause prints as its class
-// (natsurl.ConnectionClass): a dial's error names the server by its host and port. nats.go's
+// only a password, and the rest of a URL is a person's to write. Every error and cause prints as
+// its class (natsurl.ConnectionClass): a dial's error names the server by its host and port, and an
+// error nats.go formats from what the server sent quotes those bytes; nats.go's own fixed words and
+// a server's refusal, a permission's subject among them, print as they are. nats.go's
 // default handler writes a refusal to stderr unlabelled and nothing for the rest. It owns the
 // connection's AsyncErrorCB, DisconnectedErrCB, ReconnectedCB and ClosedCB: an option after it
 // that sets one replaces its handler. It also sets NoCallbacksAfterClientClose, so the daemon's
@@ -275,14 +277,14 @@ func LogEvents(log *slog.Logger) nats.Option {
 				if sub != nil {
 					subject = sub.Subject
 				}
-				log.Warn("NATS reported an asynchronous error", "subject", subject, "error", err)
+				log.Warn("NATS reported an asynchronous error", "subject", subject, "error", natsurl.ConnectionClass(err))
 				return
 			}
 			operation, subject := "", ""
 			if m := permissionRefusal.FindStringSubmatch(err.Error()); m != nil {
 				operation, subject = strings.ToLower(m[1]), m[2]
 			}
-			log.Error("NATS refused the daemon a permission: its NATS user lacks that grant", "operation", operation, "subject", subject, "error", err)
+			log.Error("NATS refused the daemon a permission: its NATS user lacks that grant", "operation", operation, "subject", subject, "error", natsurl.ConnectionClass(err))
 		}
 		// A nil cause is a terminal close, which ClosedCB logs with its cause.
 		o.DisconnectedErrCB = func(_ *nats.Conn, err error) {

@@ -367,10 +367,13 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 			// does; a replaced connection binds the same durable again without that check.
 			level = slog.LevelWarn
 		}
+		// The error by its class (natsurl.ConnectionClass), as every bus line names one: nats.go's
+		// own fixed words and a server's refusal print as they are, and an error nats.go formatted
+		// from what the server sent, or any other, by a fixed class.
 		if sub != nil {
-			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", err.Error()))
+			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", natsurl.ConnectionClass(err)))
 		} else {
-			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", err.Error()))
+			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", natsurl.ConnectionClass(err)))
 		}
 		if asyncErrCB != nil {
 			asyncErrCB(nc, err)
