@@ -2115,6 +2115,34 @@ test("Left on a row says the list has no level above it", async () => {
   expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
 });
 
+// A row of the foot is drawn a level down, under the foot's control, so Left on one goes up to
+// that control, as Left goes to a row's parent in the outline, and says nothing, whatever foot
+// row stands above it. A row of the parts still has no level above it.
+test("Left on a row of the foot goes up to the foot's control", async () => {
+  const view = renderBody(wholeIssue());
+  const left = (on: HTMLElement) =>
+    act(async () => {
+      on.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" })
+      );
+    });
+  const control = footControlOf(view) as HTMLElement;
+  await act(async () => control.click());
+  expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+  const foot = rowOf(view, D("replaced"));
+  expect(foot).toHaveAttribute("aria-level", "2");
+  await act(async () => foot.focus());
+  await left(foot);
+  expect(control).toHaveFocus();
+  expect(view.container.querySelector("[data-row-report]")).toBeNull();
+
+  const first = rowOf(view, D("first"));
+  await act(async () => first.focus());
+  await left(first);
+  expect(first).toHaveFocus();
+  expect(words(first.querySelector("[data-row-report]"))).toBe(ANSWER_LINES.no_level_above);
+});
+
 // Nothing inside a row takes the tab order but a block of the focused row's words whose content
 // runs past its box: a wide code block keeps a tab stop of its own there, named, so a reader on
 // the keyboard can scroll it sideways, and the same block on a row the reader is not on keeps

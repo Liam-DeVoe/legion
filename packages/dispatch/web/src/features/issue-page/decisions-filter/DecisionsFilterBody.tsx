@@ -1,5 +1,6 @@
 import {
   type FocusEvent,
+  type KeyboardEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -102,10 +103,11 @@ const NOTHING = (): void => {};
  * an issue the view draws nothing for, with no row and no foot, there is nowhere to pass it, and
  * the tree keeps it. A key with nowhere to go says so at the row it was pressed on, or at the
  * list's tab stop where it was pressed on no row, as the outline's keys do (the tester's F16):
- * Left on a row says the list has no level above it. Until the reads that say which questions
- * and decisions there are hold their answers, `q` and `w` with nowhere to go say nothing: no
- * question or decision to go to may mean only that they have not arrived
- * (`decisions-entries.ts`).
+ * Left on a row of the parts says the list has no level above it; on a row of the foot, which
+ * stands a level down, under the foot's control, it goes up to that control, as Left goes to a
+ * row's parent in the outline. Until the reads that say which questions and decisions there are
+ * hold their answers, `q` and `w` with nowhere to go say nothing: no question or decision to go
+ * to may mean only that they have not arrived (`decisions-entries.ts`).
  *
  * A read that says which entries there are and stands refused - the decisions, the asks - draws
  * the page's one line for a failed read over the list (`slots/failed-read-line.tsx`), with a
@@ -174,7 +176,7 @@ export function DecisionsFilterBody({
 }): ReactNode {
   const navigate = useNavigate();
   const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { addressed: reveal !== undefined, issue, reader, root, view }
+    { issue, reader, root, view }
   );
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
@@ -241,7 +243,9 @@ export function DecisionsFilterBody({
   );
   // The rows as the outline's keys read them: the nth is the nth row drawn. Each sits at the
   // list's one level, under the root the keys are given, which is the view (`keyOrder`), so Left
-  // on a row finds no row above it and says so, as on a top-level row of the outline.
+  // on a row of the parts finds no row above it and says so, as on a top-level row of the
+  // outline. Left on a row of the foot is the body's own, taken before the keys read it
+  // (`footRowLeft`).
   const rows = useMemo<DrawnRow[]>(() => {
     const trail = [view.id];
     return drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail }));
@@ -402,10 +406,9 @@ export function DecisionsFilterBody({
   // write-up of an answered question, which it draws only as the row of a question it answers,
   // where the address lands as above. Under words that match none of those questions the list
   // draws neither the write-up nor any question it answers, so the address would land nowhere
-  // here; the outline draws the write-up under the question it answers. A decision may be a
-  // write-up until the seam can tell (`writeUps`), so nothing is said of one before then. It is
-  // said before the browser paints, so where the reads were held as the view was drawn, as on
-  // Back to its address, no list is painted in the outline's place.
+  // here; the outline draws the write-up under the question it answers. It is said before the
+  // browser paints, so where the reads were held as the view was drawn, as on Back to its
+  // address, no list is painted in the outline's place.
   useLayoutEffect(() => {
     if (onRevealDrawn === undefined) return;
     if (reveal === undefined) {
@@ -417,13 +420,8 @@ export function DecisionsFilterBody({
       onRevealDrawn(drawn.some((entry) => restated.has(entry.node.id)));
       return;
     }
-    if (
-      writeUps === undefined &&
-      nodesInOrder(root).some((node) => node.id === reveal && node.type === "decision")
-    )
-      return;
     onRevealDrawn(true);
-  }, [drawn, onRevealDrawn, reveal, root, writeUps]);
+  }, [drawn, onRevealDrawn, reveal, writeUps]);
 
   // Whether the focus on the foot's control is the one this body put there on its own, which
   // the reader has not yet pressed, typed on or left. The tree takes the focus only from a
@@ -514,6 +512,26 @@ export function DecisionsFilterBody({
   // Pressing the control, typing on it or leaving it makes the focus the reader's own.
   const footTaken = (): void => {
     footPlaced.current = false;
+  };
+  // A row of the foot stands a level down, under the foot's control, so Left on one goes up to
+  // that control, as Left goes to a row's parent in the outline. The outline's keys read every
+  // row at the list's one level (`rows`), where Left says there is no level above, so the key is
+  // taken here, before they read it: the key table passes over a press already taken
+  // (`keymap.ts`). It is taken on the keys' own terms: with no modifier, and not on a block that
+  // scrolls its own content, which the browser scrolls by the key (`useTreeKeymap.ts`).
+  const footRowLeft = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (
+      event.key !== "ArrowLeft" ||
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      (event.target instanceof Element && event.target.closest("[data-kept-scroller]") !== null)
+    )
+      return;
+    event.preventDefault();
+    footControl.current?.focus();
   };
   // The foot leaves the page where its last decision moves up to another part, as when a read
   // ties it to a statement, and the browser moves the focus its control held to the page's
@@ -860,6 +878,7 @@ export function DecisionsFilterBody({
               aria-labelledby={foot}
               className="flex min-w-0 flex-col"
               id={footRows}
+              onKeyDown={footRowLeft}
               role="group"
             >
               {parts.agents.map((entry) => rowFor(entry, "agents"))}

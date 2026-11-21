@@ -39,7 +39,8 @@ export interface MarkThreadReadOptions {
   /** The thread's writes, as the surface holds them, for the unread set below; none while the
    *  thread is still loading, and none at all from a surface that wants no set. */
   readonly writes?: readonly { readonly id: string; readonly created_at: string }[];
-  readonly freshness?: WhoAmIReadOptions & Partial<ReturnType<typeof myRepliesOwnerQuery>>;
+  /** How long the sign-in read and unread set stay fresh, and whether a focus reads them again. */
+  readonly freshness?: WhoAmIReadOptions;
 }
 
 /** What a thread's read mark answers: where the watch goes, and what the thread still holds

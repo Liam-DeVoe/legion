@@ -42,8 +42,7 @@ const BOB: Actor = { id: "bob", kind: "user" };
  *  `comments` and the decisions document's `blocks` as the cache holds them, until the case
  *  unmounts it. A read given as null is left out of the cache, as before it answers. By default
  *  no answer ever goes stale; `staleTime` gives the client the app's own default instead, and
- *  `answeredAt` the moment the cache's answers were given, now where it is left out. The seam is
- *  told an address names a node, so it works out the write-ups too. */
+ *  `answeredAt` the moment the cache's answers were given, now where it is left out. */
 async function mountEntries(
   children: readonly TreeNode[],
   decisions: IssueDecisions | null,
@@ -71,10 +70,9 @@ async function mountEntries(
   const wrapper = ({ children: inside }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{inside}</QueryClientProvider>
   );
-  const hook = renderHook(
-    () => useDecisionsEntries({ addressed: true, issue, reader: READER, root, view }),
-    { wrapper }
-  );
+  const hook = renderHook(() => useDecisionsEntries({ issue, reader: READER, root, view }), {
+    wrapper,
+  });
   // A read the mount started has had its turn before the parts are read.
   await act(() => Promise.resolve());
   return { client, hook };

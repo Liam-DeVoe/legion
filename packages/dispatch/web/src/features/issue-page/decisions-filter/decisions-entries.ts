@@ -20,6 +20,7 @@ import {
   type DecisionsParts,
   decisionsParts,
   isReading,
+  placements,
 } from "./decisions-parts";
 
 /**
@@ -112,24 +113,19 @@ interface DecisionsEntries {
   /** Each person's write-up of an answered question of this issue (`isReading`), by its node's
    *  id, with the node ids of the answered questions it restates. The list draws no row for a
    *  write-up, so an address naming one lands on the row of a question it answers. Undefined
-   *  while no address names a node (`addressed`), since only an address reads it, and while the
-   *  asks read holds no answer and is not refused: until it answers, an answer it brings may
-   *  make any person's decision a write-up. */
+   *  while the asks read holds no answer and is not refused: until it answers, an answer it
+   *  brings may make any person's decision a write-up. */
   readonly writeUps: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
 
-/** The Decisions view's parts and how the reads they come from stand, from whether an address
- *  names a node, the issue, the reader's login, the whole tree and the tree as the Decisions view
- *  leaves it (`presetView`). */
+/** The Decisions view's parts and how the reads they come from stand, from the issue, the
+ *  reader's login, the whole tree and the tree as the Decisions view leaves it (`presetView`). */
 export function useDecisionsEntries({
-  addressed,
   issue,
   reader,
   root,
   view,
 }: {
-  /** Whether the page's address names a node: only an address reads the write-ups (`writeUps`). */
-  addressed: boolean;
   issue: IssueDetails;
   /** Who is reading, which tells their own decisions from other people's. */
   reader: string | undefined;
@@ -239,17 +235,13 @@ export function useDecisionsEntries({
   // The write-ups, read as the model reads them (`decisionsParts`): an answered question is an
   // ask the tree holds with an answer on it, named by the ask's own id, which is how a decision
   // names the question it restates, and a decision's row is the one its node's address names.
-  // Only an address reads them, so none are worked out while no address names a node.
+  // A node drawn under two parents is one node, read at its first placement in the reading
+  // order, as the model reads it (`placements`).
   const writeUps = useMemo(() => {
-    if (!addressed || (asks === undefined && !asksRefused)) return undefined;
-    // A node drawn under two parents is one node: its first placement in the reading order is
-    // the one the model reads (`placements`).
-    const seen = new Set<string>();
+    if (asks === undefined && !asksRefused) return undefined;
     const questions = new Map<string, string>();
     const decided: TreeNode[] = [];
-    for (const node of nodesInOrder(root)) {
-      if (seen.has(node.id)) continue;
-      seen.add(node.id);
+    for (const { node } of placements(root).values()) {
       const id = askIdOf(node);
       if (id !== undefined && node.answer !== undefined) questions.set(id, node.id);
       if (node.type === "decision") decided.push(node);
@@ -264,7 +256,7 @@ export function useDecisionsEntries({
       found.set(node.id, new Set(restated));
     }
     return found;
-  }, [addressed, asks, asksRefused, decisions, root]);
+  }, [asks, asksRefused, decisions, root]);
   return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 

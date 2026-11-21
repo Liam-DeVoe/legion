@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { whoAmIQuery } from "../api/queries";
-/** Options a surface gives the sign-in read over its own, such as how long its answer is fresh. */
-export type WhoAmIReadOptions = Partial<ReturnType<typeof whoAmIQuery>>;
+import type { EVENT_FRESH } from "../features/refs/reference-target";
+/** The freshness of a read that events keep fresh (`EVENT_FRESH`'s two options). */
+export type WhoAmIReadOptions = Partial<typeof EVENT_FRESH>;
 
 /** Whether the signed-in principal is a person (`/auth/whoami`'s `kind: "user"`), whose sign-in
  *  holds the `person` scope that the routes behind these surfaces require: false while the
