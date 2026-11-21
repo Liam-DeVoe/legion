@@ -106,7 +106,7 @@ func TestHoldTheRestartWaitsForEachStreamsGroup(t *testing.T) {
 	newLedResponder(t, url, interests, "")
 	once, cancelOnce := context.WithTimeout(ctx, time.Second)
 	defer cancelOnce()
-	_, _, err = streamInfo(once, nc, interests)
+	_, _, err = streamInfoOnce(once, nc, interests)
 	require.ErrorIs(t, err, context.DeadlineExceeded, "control: the one read of a group that answers nothing")
 	t.Logf("control, the one read: %v", err)
 

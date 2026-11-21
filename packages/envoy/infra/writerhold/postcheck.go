@@ -86,7 +86,7 @@ func Postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, change
 		if !stated {
 			change = Change{Kind: ChangeKept}
 		}
-		info, found, err := streamInfo(ctx, nc, name)
+		info, found, err := StreamInfo(ctx, nc, name)
 		if err != nil {
 			return nil, unknownf(StepPostcheck, err, "STREAM.INFO of %s", name)
 		}

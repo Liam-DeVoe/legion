@@ -3,6 +3,7 @@ package writerhold
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -82,7 +83,7 @@ func ReadProtectedStreams(ctx context.Context, nc *nats.Conn, expectedAbsent []s
 	}
 	readings := make([]StreamReading, 0, len(names))
 	for _, name := range names {
-		info, found, err := streamInfo(ctx, nc, name)
+		info, found, err := StreamInfo(ctx, nc, name)
 		if err != nil {
 			return nil, unknownf(StepPreflight, err, "STREAM.INFO of %s", name)
 		}
@@ -151,11 +152,42 @@ func sourceNames(sources []*jetstream.StreamSource) string {
 	return strings.Join(names, ", ")
 }
 
-// streamInfo is the STREAM.INFO of stream name, sent as a raw JetStream API request so the answer's
-// err_code is read as the server sent it. found is false for `stream not found` (err_code 10059)
-// alone; any other error answer, an answer that does not decode, or one for another stream, is the
-// error.
-func streamInfo(ctx context.Context, nc *nats.Conn, name string) (*jetstream.StreamInfo, bool, error) {
+// streamInfoWithin bounds how long StreamInfo sends a STREAM.INFO again while nothing answers it: a
+// clustered stream's info is answered by its group's leader, so a request sent while the group
+// elects one, after a server's restart or a restore, draws no answer within jsRequest or "no
+// responders".
+const streamInfoWithin = 60 * time.Second
+
+// StreamInfo is the STREAM.INFO of stream name, sent as a raw JetStream API request so the answer's
+// err_code is read as the server sent it, and sent again, each within jsRequest, while no answer
+// comes, within streamInfoWithin. found is false for `stream not found` (err_code 10059) alone;
+// any other error answer, an answer that does not decode, one for another stream, or no answer
+// within streamInfoWithin, is the error. The hold's preflight and postcheck read each protected
+// stream through it, and `envoy-infra buckets` each bucket it may create.
+func StreamInfo(ctx context.Context, nc *nats.Conn, name string) (*jetstream.StreamInfo, bool, error) {
+	within, cancel := context.WithTimeout(ctx, streamInfoWithin)
+	defer cancel()
+	for {
+		info, found, err := streamInfoOnce(within, nc, name)
+		if err == nil || !unanswered(err) || within.Err() != nil {
+			return info, found, err
+		}
+		select {
+		case <-within.Done():
+			return nil, false, err
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// unanswered reports whether err is a JetStream request no server answered: its bound ran out, or
+// no responder took it.
+func unanswered(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders)
+}
+
+// streamInfoOnce is one STREAM.INFO of name, within jsRequest (StreamInfo).
+func streamInfoOnce(ctx context.Context, nc *nats.Conn, name string) (*jetstream.StreamInfo, bool, error) {
 	var answer struct {
 		Error *jetstream.APIError `json:"error,omitempty"`
 		jetstream.StreamInfo

@@ -298,7 +298,7 @@ func streamLeader(ctx context.Context, nc *nats.Conn, stream string) (string, er
 	within, cancel := context.WithTimeout(ctx, barrierWithin)
 	defer cancel()
 	for {
-		info, found, err := streamInfo(within, nc, stream)
+		info, found, err := streamInfoOnce(within, nc, stream)
 		switch {
 		case err == nil && !found:
 			return "", unknownf(StepBarrier, nil, "stream %s is not found", stream)

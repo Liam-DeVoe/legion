@@ -407,24 +407,23 @@ func streams(buckets []string) []string {
 }
 
 // missingBuckets reads each of buckets' streams on the operator's connection under the grant of
-// the row's phase now, and returns those the server reports missing. A read the server answers
-// with anything but "not found", or does not answer, is UNKNOWN, naming the bucket.
+// the row's phase now (writerhold.StreamInfo, sent again while no stream leader answers), and
+// returns those the server reports missing. A read the server answers with anything but "not
+// found", or does not answer within StreamInfo's bound, is UNKNOWN, naming the bucket.
 func missingBuckets(ctx context.Context, op *writerhold.Operator, buckets []string) ([]string, error) {
 	nc, err := op.Connect(ctx)
 	if err != nil {
 		return nil, &writerhold.Unknown{Step: writerhold.StepPreflight, What: "connect to the hub as the operator", Err: err}
 	}
 	defer nc.Close()
-	js, err := nc.JetStream(nats.Context(ctx))
-	if err != nil {
-		return nil, err
-	}
 	var missing []string
 	for _, bucket := range buckets {
-		if _, err := js.StreamInfo("KV_" + bucket); errors.Is(err, nats.ErrStreamNotFound) {
-			missing = append(missing, bucket)
-		} else if err != nil {
+		_, found, err := writerhold.StreamInfo(ctx, nc, "KV_"+bucket)
+		if err != nil {
 			return nil, &writerhold.Unknown{Step: writerhold.StepPreflight, What: "read KV_" + bucket, Err: err}
+		}
+		if !found {
+			missing = append(missing, bucket)
 		}
 	}
 	return missing, nil
@@ -448,12 +447,14 @@ func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets
 		return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
 	}
 	for _, bucket := range buckets {
-		if _, err := js.StreamInfo("KV_" + bucket); err == nil {
+		_, found, err := writerhold.StreamInfo(ctx, nc, "KV_"+bucket)
+		if err != nil {
+			return failed(&writerhold.Unknown{Step: writerhold.StepPostcheck, What: "read KV_" + bucket, Err: err})
+		}
+		if found {
 			fmt.Fprintf(stdout, "%s exists; left as it is\n", bucket)
 			outputs["bucket."+bucket] = "exists"
 			continue
-		} else if !errors.Is(err, nats.ErrStreamNotFound) {
-			return failed(&writerhold.Unknown{Step: writerhold.StepPostcheck, What: "read KV_" + bucket, Err: err})
 		}
 		if _, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas); err != nil {
 			left = append(left, "KV_"+bucket+" possibly created")

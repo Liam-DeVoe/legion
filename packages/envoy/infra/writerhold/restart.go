@@ -179,7 +179,7 @@ func awaitStreamLed(ctx context.Context, nc *nats.Conn, after, name string, read
 	behind := "no read of it answered"
 	for {
 		attempt, cancel := context.WithTimeout(ctx, read)
-		info, found, err := streamInfo(attempt, nc, name)
+		info, found, err := streamInfoOnce(attempt, nc, name)
 		cancel()
 		switch {
 		case err != nil:
