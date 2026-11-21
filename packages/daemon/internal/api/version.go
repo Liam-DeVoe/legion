@@ -2979,6 +2979,46 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
+// Contract 205 is served with no code of its own (193's entry): no key path or value of any
+// answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
+// its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
+// at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193, 199 and 202 hold the route's body (`request-shapes.json`). The route
+// leaves the request types the gate walks, reads no body and answers that body with the refusal,
+// and requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every
+// later contract holds no body for it.
+// (This entry took 191 at first, the lowest number above main's 188 that no other open pull
+// request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
+// 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge
+// of 2026-11-21 that brought in 43b9c9c3 brought main's 199 (INFRA-4605's entry above). A reading
+// of every open pull request at that merge, which ended at 2026-11-21T02:21:13Z, found 200
+// (#4049), 201 (#4611), 202 (#3712, #4273, #4392, #4432, #4493, #4580 and #4590), 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#4030) declared, so this entry moved to 205, the lowest
+// number above main's 199 that no other open pull request declares. The forward merge of
+// 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+//
 // 210: the approval route. `POST /legion/v1/claims/approval` (`{claimToken, sessionId, secret}`,
 // api.ClaimApprovalRequest) answers whether a person's approval of a spec stands for the claim's
 // own issue: `{approval: null}`, or `{approval: {document, version, message}}`
@@ -3024,7 +3064,10 @@ package api
 // 07:04:55Z, found 209 declared by #4049, #4540, #4553 and #4580, 208 by #2230 and #4611, 207 by
 // ten (#3831, #3993, #4030, #4065, #4273, #4392, #4432, #4590, #4592 and #4596), 205 by #3712,
 // #4539 and #4573, 203 by #4175 and by this pull request (#4661), and nothing above 209. It took
-// 199 and then 203 before: main's 199 took the first, and #4175 declares the second. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line.)
+// 199 and then 203 before: main's 199 took the first, and #4175 declares the second. The forward
+// merge of 2026-11-21 that brought in 0497e861 brought main's 205 (INFRA-3178's entry above), and
+// a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for all 415 open pull requests of
+// cybermonklabs/legion, made between 19:58:37Z and 20:08:22Z that day, found 210 declared by this
+// pull request alone, so this entry kept 210. Read the base's own number and every open pull
+// request again at the next merge rather than from this line.)
 const DaemonAPIVersion = 210
