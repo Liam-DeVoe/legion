@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // lensesResponse reads GET /api/v1/lenses?on= on as login.
@@ -95,13 +96,18 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 }
 
 // TestTheLensReadAnswersEveryLensInInvocationOrder is c-lens-page
-// (dispatch://INFRA-1950/verification#c-lens-page): two people, alice's trade-off analysis on the
+// of the verification document: two people, alice's trade-off analysis on the
 // spec and bob's pre-mortem on it triggered by hers, and then alice's trade-off analysis written
 // proposed and back to live through POST /api/v1/issues/{key}/nodes/{id}/state, so the lens
 // invoked first is the lens whose row was written last. One read of the spec holds both, in the
 // order of their part_of tuples, each with its part_of to the spec, its one has_kind with the
 // kind's words, its author through authored_by, and the chain from both ends: placement and
 // trigger kept apart.
+//
+// No lens of that read answers on null (spec requirement r-proposed). A lens on what a version or
+// a retirement takes out of an issue is TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent's
+// (gone_subtree_test.go), and a lens on a block of a comment or a part of an ask that a revision
+// removes TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision's.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
@@ -189,6 +195,26 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	}
 	if !slices.Equal(chain.Lenses[1].TriggeredBy, []string{tradeOff.Address}) || !slices.Equal(chain.Lenses[0].Triggered, []string{premortem.Address}) {
 		t.Errorf("the chain answers the pre-mortem triggered by %v and the trade-off triggering %v", chain.Lenses[1].TriggeredBy, chain.Lenses[0].Triggered)
+	}
+	requireEveryLensOn(t, "the read of the spec", read)
+}
+
+// requireEveryLensOn fails, naming each lens, where read answers a lens with on null: the node
+// itself where it is a lens, each lens on it and each lens of its chains. No read answers a lens
+// with on null (spec requirement r-proposed).
+func requireEveryLensOn(t *testing.T, what string, read nodeLenses) {
+	t.Helper()
+	lenses := slices.Clone(read.Lenses)
+	if read.Lens != nil {
+		lenses = append(lenses, *read.Lens)
+	}
+	for _, chain := range read.Chains {
+		lenses = append(lenses, chain.Lenses...)
+	}
+	for _, lens := range lenses {
+		if lens.On == nil {
+			t.Errorf("%s answers the lens %s with on null: no read answers a lens with on or parent null", what, lens.Address)
+		}
 	}
 }
 
@@ -358,36 +384,123 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 	}
 }
 
-// TestALensCycleIsReadOnceEach: lens B is triggered by A, and then A by B. The read returns, and
-// the chain lists each of the two once: the visited set at work, apart from the depth bound.
-func TestALensCycleIsReadOnceEach(t *testing.T) {
+// TestALensOnAFindingGoesGoneWithTheFinding: a lens invoked on a finding hangs under that finding
+// through its part_of, so a person's gone on the finding's lens, which takes the finding to gone,
+// takes the lens on the finding to gone with it in the same write (writeNodeState, spec requirement
+// r-proposed): no read answers it live with an on that names nothing. Its row reads gone; GET
+// /api/v1/lenses and GET /api/v1/references by its address answer what they answer for a lens
+// nobody wrote, 404 NOT_FOUND; and gone is final, so the state route's overtaken on it is 409
+// NODE_GONE naming it.
+func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 	rig := newReasoningRig(t)
+	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
+	finding := parent.Findings[0].Address
+	onFinding := rig.invoke(finding, "botec", "alice", nil)
+	if read := rig.lenses(onFinding.Address, "alice"); read.Lens == nil || read.Lens.On == nil || *read.Lens.On != finding {
+		t.Fatalf("the lens on the finding reads %+v before the finding's lens is gone, want it on %s", read.Lens, finding)
+	}
+
+	rig.writeState(parent.Address, graphstore.StateGone, "alice")
+	if state := storedNodeOf(t, rig.database, onFinding.Address).State; state != graphstore.StateGone {
+		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
+	}
+	asAlice := func(method, path string, body any) *httptest.ResponseRecorder {
+		return dispatchRequest(t, rig.handler, method, path, body, "alice")
+	}
+	requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
+		return fmt.Sprintf("%s's %s once the finding's lens is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
+	}, lensReader{"alice", asAlice, onFinding})
+	requireGoneRefused(t, "overtaken on the lens on the gone finding",
+		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
+}
+
+// TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it
+// (R8, spec requirement r-lens-trigger), in the order the lens read answers, the seq
+// of each lens's first part_of. A, then B triggered by A, then C, on the spec. Through the pointer
+// route, a triggered_by from A to B, a retarget of B's trigger from A to C and a trigger of B by
+// itself are each 400 INVALID_POINTER naming both lenses by address, the one lens twice, and store
+// nothing. A then moves to the requirement and back to the spec through the store, so its newest
+// part_of is later than B's and C's: the read still answers A first and the same three writes are
+// refused the same way, so a move changes neither the order nor the rule. C triggered by B is
+// taken, and the spec answers the one chain A, B and C, starting at A.
+func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
+	rig := newReasoningRig(t)
+	ctx := context.Background()
 	a := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	b := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", map[string]any{"triggered_by": a.Address})
-	closed := rig.post(nodePath("lens/"+a.ID, "pointers"), map[string]any{
-		"kind": graphstore.TupleTriggeredBy, "action": pointerAppend, "to": b.Address,
-	}, "alice")
-	if closed.Code != http.StatusOK {
-		t.Fatalf("point A at B: status=%d body=%s", closed.Code, closed.Body.String())
+	c := rig.invoke(rig.spec, "botec", "alice", nil)
+	const rule = " breaks its type rule: triggered_by points from a lens at a lens invoked before it"
+	later := func(near, far string) string {
+		return "the triggered_by tuple from the lens " + near + " at the lens " + far + ", which was not invoked before it," + rule
 	}
-	for _, on := range []string{rig.spec, a.Address} {
-		read := rig.lenses(on, "alice")
-		if len(read.Chains) != 1 {
-			t.Fatalf("the read on %s answers %d chains, want one", on, len(read.Chains))
-		}
-		chain := read.Chains[0]
-		if got := readAddresses(chain.Lenses); !slices.Equal(got, []string{a.Address, b.Address}) || chain.StoppedAt != nil {
-			t.Fatalf("the read on %s answers the chain %v stopped at %v, want A and B once each, whole", on, got, chain.StoppedAt)
-		}
-		for _, lens := range chain.Lenses {
-			other := a.Address
-			if lens.Address == a.Address {
-				other = b.Address
+	pointer := func(lens lensInvoked, body map[string]any) *httptest.ResponseRecorder {
+		body["kind"] = graphstore.TupleTriggeredBy
+		return rig.post(nodePath("lens/"+lens.ID, "pointers"), body, "alice")
+	}
+	_, triggers := rig.counts(graphstore.KindLens, graphstore.TupleTriggeredBy)
+	refusals := func(when string) {
+		t.Helper()
+		for _, refused := range []struct {
+			name     string
+			response *httptest.ResponseRecorder
+			says     string
+		}{
+			{"a trigger of B by A", pointer(a, map[string]any{"action": pointerAppend, "to": b.Address}), later(a.Address, b.Address)},
+			{"a retarget of B's trigger from A to C", pointer(b, map[string]any{"action": pointerRetarget, "from": a.Address, "to": c.Address}),
+				later(b.Address, c.Address)},
+			{"a trigger of B by itself", pointer(b, map[string]any{"action": pointerAppend, "to": b.Address}),
+				"the triggered_by tuple from the lens " + b.Address + " at that same lens " + b.Address + rule},
+		} {
+			name := refused.name + " " + when
+			if answer := requireRefused(t, name, refused.response, http.StatusBadRequest, "INVALID_POINTER", refused.says); answer.Error != refused.says {
+				t.Errorf("%s is refused %q, want %q", name, answer.Error, refused.says)
 			}
-			if !slices.Equal(lens.TriggeredBy, []string{other}) || !slices.Equal(lens.Triggered, []string{other}) {
-				t.Errorf("the read on %s answers %s triggered by %v and triggering %v, want %s both ways", on, lens.Address, lens.TriggeredBy, lens.Triggered, other)
-			}
 		}
+		if _, after := rig.counts(graphstore.KindLens, graphstore.TupleTriggeredBy); after != triggers {
+			t.Errorf("the store holds %d triggered_by tuples %s, and held %d before", after, when, triggers)
+		}
+		if got := rig.current(graphstore.KindLens, a.ID, graphstore.TupleTriggeredBy); len(got) != 0 {
+			t.Errorf("A holds triggered_by %v %s, want none", got, when)
+		}
+		if got := rig.current(graphstore.KindLens, b.ID, graphstore.TupleTriggeredBy); !slices.Equal(got, []string{"lens/" + a.ID}) {
+			t.Errorf("B holds triggered_by %v %s, want A alone", got, when)
+		}
+	}
+	refusals("before A moves")
+
+	place := rig.current(graphstore.KindLens, a.ID, graphstore.TuplePartOf)
+	if len(place) != 1 || !strings.HasPrefix(place[0], graphstore.KindArtifact+"/") {
+		t.Fatalf("A stands on %v, want the spec", place)
+	}
+	spec := strings.TrimPrefix(place[0], graphstore.KindArtifact+"/")
+	movePartOf(t, rig.database, rig.issue, graphstore.KindLens, a.ID, refs.BlockNodeKind, rig.requirementNode, false)
+	movePartOf(t, rig.database, rig.issue, graphstore.KindLens, a.ID, graphstore.KindArtifact, spec, false)
+	var first, newest, placedC int64
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select (select min(seq) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $4),
+		       (select max(seq) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $4),
+		       (select max(seq) from graph_tuples where from_kind = $1 and from_id = $3 and kind = $4)
+	`, graphstore.KindLens, a.ID, c.ID, graphstore.TuplePartOf).Scan(&first, &newest, &placedC); err != nil {
+		t.Fatalf("read the seq of A's part_of tuples and of C's: %v", err)
+	}
+	if first >= placedC || newest <= placedC {
+		t.Fatalf("A's first part_of is at %d, its newest at %d, and C's at %d: want A invoked first and placed last", first, newest, placedC)
+	}
+	read := rig.lenses(rig.spec, "alice")
+	if got, want := readAddresses(read.Lenses), []string{a.Address, b.Address, c.Address}; !slices.Equal(got, want) {
+		t.Fatalf("after A's move the spec answers the lenses %v, want %v in the order invoked", got, want)
+	}
+	refusals("after A moved to the requirement and back")
+
+	if taken := pointer(c, map[string]any{"action": pointerAppend, "to": b.Address}); taken.Code != http.StatusOK {
+		t.Fatalf("a trigger of C by B: status=%d body=%s", taken.Code, taken.Body.String())
+	}
+	read = rig.lenses(rig.spec, "alice")
+	if len(read.Chains) != 1 {
+		t.Fatalf("the spec answers %d chains, want one", len(read.Chains))
+	}
+	if got, want := readAddresses(read.Chains[0].Lenses), []string{a.Address, b.Address, c.Address}; !slices.Equal(got, want) || read.Chains[0].StoppedAt != nil {
+		t.Fatalf("the spec answers the chain %v stopped at %v, want %v whole", got, read.Chains[0].StoppedAt, want)
 	}
 }
 
@@ -453,26 +566,33 @@ func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
 }
 
 // TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll: a hundred and twenty lenses on the
-// paragraph, invoked in order, each but the last then triggered by the one invoked after it through
-// the pointer route, so the chain's triggers run back against the order invoked and its one root,
-// the lens triggered by no other on the paragraph, is the last. Its walk lists the last fifty and
-// stops at the seventieth. The first lens begins no chain of its own although its walk, fifty
-// lenses long, meets no lens the root's walk visited before it stops: a walk from a lens that is no
-// root that stops at the bound stands past a cut. So the read answers one chain, fifty lenses in
-// all, and names where it stopped.
+// paragraph, invoked in order, each but the last then triggered by the one invoked after it. The
+// store refuses such a tuple (graphstore's pointerRules), so the test writes them into
+// graph_tuples by SQL, to test on its own the walk's rule that a root alone begins a chain. The
+// chain's triggers run back against the order invoked, and its one root, the lens triggered by no
+// other on the paragraph, is the last. Its walk lists the last fifty and stops at the seventieth.
+// No lens but a root begins a walk, so the first lens, whose walk would list fifty lenses and meet
+// none the root's walk visited, begins no chain: the read answers one chain, fifty lenses in all,
+// and names where it stopped. TestALensChainOfSixtyIsCutAtFifty holds the same bound where the
+// root is the first lens invoked; here the lenses past the cut come first in the order the read
+// walks the lenses on the node, so only the rule that a root alone begins a chain keeps them out.
 func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
 	rig := newReasoningRig(t)
 	invoked := make([]lensInvoked, 0, 120)
 	for range cap(invoked) {
 		invoked = append(invoked, rig.invoke(rig.paragraph, "botec", "alice", nil))
 	}
+	from, to := make([]string, 0, len(invoked)-1), make([]string, 0, len(invoked)-1)
 	for index, lens := range invoked[:len(invoked)-1] {
-		pointed := rig.post(nodePath("lens/"+lens.ID, "pointers"), map[string]any{
-			"kind": graphstore.TupleTriggeredBy, "action": pointerAppend, "to": invoked[index+1].Address,
-		}, "alice")
-		if pointed.Code != http.StatusOK {
-			t.Fatalf("point lens %d at lens %d: status=%d body=%s", index+1, index+2, pointed.Code, pointed.Body.String())
-		}
+		from, to = append(from, lens.ID), append(to, invoked[index+1].ID)
+	}
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+		select $1, pair.from_id, $2, $1, pair.to_id, now(), '{"kind":"user","id":"alice"}', $5, true
+		from unnest($3::text[], $4::text[]) with ordinality as pair(from_id, to_id, position)
+		order by pair.position
+	`, graphstore.KindLens, graphstore.TupleTriggeredBy, from, to, graphstore.NoEvent); err != nil {
+		t.Fatalf("point each lens but the last at the one invoked after it: %v", err)
 	}
 	read := rig.lenses(rig.paragraph, "alice")
 	addresses := invokedAddresses(invoked)

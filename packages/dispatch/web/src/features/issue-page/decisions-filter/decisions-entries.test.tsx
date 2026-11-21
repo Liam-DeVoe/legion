@@ -146,8 +146,18 @@ async function seamOf(quote: string) {
     decisionNode("minor"),
   ];
   const made = [
-    decision("review", { links: [shaped(specRef("s1"))], text: reviewWords }),
-    decision("asked", { links: [shaped(specRef("s1"))], text: askedWords }),
+    decision("review", {
+      text: reviewWords,
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+    decision("asked", {
+      text: askedWords,
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
     decision("minor"),
   ];
   // The reader's Change on the second decision, made after both last changed, anchored on the
@@ -398,7 +408,14 @@ test("an empty decisions member gives the questions alone and no error", async (
 // folded foot, as they stand once the view answers, never all in the foot with no state.
 test("a decision stands in its part with its state from the tree read until the view answers, and where it fails", async () => {
   const children = [statement("s1"), decisionNode("review"), decisionNode("minor")];
-  const made = [decision("review", { links: [shaped(specRef("s1"))] }), decision("minor")];
+  const made = [
+    decision("review", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+    decision("minor"),
+  ];
   const tree = treeAnswer(made);
   const failing = heldClient([], [], tree);
   await failing.prefetchQuery({
@@ -439,7 +456,13 @@ test("the seam mounted over reads older than the app's stale time sends no reque
     defaultOptions: { queries: { refetchOnWindowFocus: true, retry: false, staleTime: 30_000 } },
   });
   const minuteAgo = Date.now() - 60_000;
-  const made = [decision("review", { links: [shaped(specRef("s1"))] })];
+  const made = [
+    decision("review", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+  ];
   client.setQueryData(issueTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
   client.setQueryData(["asks", KEY], [], { updatedAt: minuteAgo });
   client.setQueryData(["comments", KEY], [], { updatedAt: minuteAgo });

@@ -33,7 +33,7 @@ func ProvesAuthor(actor model.Actor) bool {
 
 // SameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
 // when the author writer's record proved (provedAuthor) and the author reader's credential proves
-// are one author, and false where either proves none.
+// are one author, and false where either proves none. api's maySettle reads it.
 func SameAuthor(writer, reader model.Actor) bool {
 	written, proved := provedAuthor(writer)
 	read, reads := provedAuthor(reader)
@@ -158,8 +158,8 @@ func ActingCredential(actor model.Actor) any {
 // answer differently. A login is compared in the form user_threads_login gives it on both sides,
 // the stored one and the bound one, so the two are canonical by one function. It is the
 // comparison of every kind refs' registry holds but an interaction: every kind
-// dispatch://INFRA-1149 registers, and a lens, a finding of one, a risk and a constraint
-// (dispatch://INFRA-1950's R19), so a person's cookie, her personal token and a session the
+// cybermonklabs/legion#3178 registers, and a lens, a finding of one, a risk and a constraint
+// (the spec's R19), so a person's cookie, her personal token and a session the
 // broker verified as hers read what any of them wrote.
 //
 // The whole test is wrapped in coalesce so it is false rather than unknown for an acting

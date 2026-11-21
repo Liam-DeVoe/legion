@@ -6,8 +6,9 @@
 # It drops and creates the database DATABASE_URL names (seed_reset_database: a database on this
 # machine whose name begins infra_1150_), boots the base release on it through lib-baseline.sh
 # (BASELINE_BINARY, default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA), with the dev
-# sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
-# DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh
+# sign-in, the pinned agent bearer e2e-token and the hold settings (DISPATCH_TEST_HOOKS=1,
+# DISPATCH_TEST_HOLD_DECISIONS_STEP=1 and DISPATCH_TEST_HOLD_BOOT_BACKFILL=1, through
+# BASELINE_EXTRA_ENV), and has seed-decisions.sh
 # write the corpus through that server's own API. Through the same server it closes issue D, so
 # one issue the restore owes is closed.
 #
@@ -25,7 +26,8 @@
 # shape's colliding old spec address; and the block_refs rows the decisions document holds for the
 # second shape's ask blocks. It then stops that server and boots this head, HEAD_BINARY (default
 # $TMPDIR/bin/envoy-dispatch, built stamped as the Verification preamble builds it), over the same
-# database with the hold setting, so the commands below and not the boot make the first move.
+# database with the hold settings, so the commands below and not the boot make the first move:
+# neither the decisions step nor the boot's run of the backfill states a row before them.
 #
 # It runs `envoy-dispatch backfill-graph-store` (the step's first phase, which the census and the
 # restore read an answer from) and the store census (`envoy-dispatch census --store`), which must
@@ -61,7 +63,7 @@
 # an agent's session, with no act of a person, drops from its spec. It stops the base and boots
 # this head held again, runs the step's first phase, and, as the person, puts a paragraph in place
 # of the answered ask's block of the PERSON spec, a write that leaves one removed_by tuple to the
-# person. It restarts this head without the hold setting, so the step runs on its own tick, and
+# person. It restarts this head without the hold settings, so the step runs on its own tick, and
 # waits three tick intervals (docs.BlockIndexReconcileInterval, read from its source) after the
 # first tick's report line. Out of the store and the report lines of every tick it reads the PERSON
 # spec holding no block of that ask, its newest version the person's, and no restore of it in any
@@ -244,6 +246,15 @@ latest_markdown() {
   jq -j '.markdown' "$work/body" >"$work/latest.md"
 }
 
+# document_token SECTION DOCUMENT: the token DOCUMENT carries now, the one `dispatch doc-read`
+# prints, in $doc_token. An upload replacing DOCUMENT names it, as every replacement does.
+document_token() {
+  send agent GET "/api/v1/artifacts/$2/text"
+  want_status 200 "$1" "read the text of $2"
+  field "$1" "the token of $2" '.token'
+  doc_token="$value"
+}
+
 # ask_block ID FILE: the markdown of the ask block ID in FILE, its fence and attributes included,
 # on stdout; nothing where FILE holds no such block.
 ask_block() {
@@ -339,10 +350,11 @@ shaped_of() {
 # The base release writes the corpus.
 # ---------------------------------------------------------------------------------------------
 seed_reset_database "$database_url"
-# The pinned agent bearer the e2e harness gives its own server, and the hold setting: the base
-# reads neither hook, and this head holds its step.
+# The pinned agent bearer the e2e harness gives its own server, and the hold settings: the base
+# reads neither hook, nor DISPATCH_TEST_HOLD_BOOT_BACKFILL, which its build lacks, and this head
+# holds its step and its boot's run of the backfill.
 DISPATCH_TOKEN=e2e-token
-BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
+BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1\nDISPATCH_TEST_HOLD_BOOT_BACKFILL=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
 printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
@@ -767,8 +779,10 @@ without_block() {
   ' "$2"
 }
 without_block q-kept "$work/spec-before-refusals.md" >"$work/replacement.md"
+document_token refusal "$spec_a"
 send agent POST "/api/v1/issues/$issue_a/artifacts" \
-  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --argjson a "$(seed_actor)" '{name: $n, content: $c, actor: $a}')"
+  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --arg t "$doc_token" --argjson a "$(seed_actor)" \
+    '{name: $n, content: $c, precondition: {document: $t}, actor: $a}')"
 refused "an agent's whole-document replacement without q-kept"
 send agent POST "/api/v1/artifacts/$spec_a/edits" \
   "$(jq -cn --argjson a "$(seed_actor)" '{ops: [{op: "retype", block: "q-kept", type: "callout", attributes: {kind: "note", title: ""}}], actor: $a}')"
@@ -794,8 +808,9 @@ send person POST "/api/v1/artifacts/$spec_a/edits" '{"ops":[{"op":"delete","bloc
 taken "the person's delete of q-kept" q-kept ""
 latest_markdown person "$spec_a"
 without_block q-left-format "$work/latest.md" >"$work/replacement.md"
+document_token person "$spec_a"
 send person POST "/api/v1/issues/$issue_a/artifacts" \
-  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" '{name: $n, content: $c}')"
+  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --arg t "$doc_token" '{name: $n, content: $c, precondition: {document: $t}}')"
 taken "the person's whole-document replacement without the answered q-left-format" q-left-format ""
 send person POST "/api/v1/artifacts/$spec_a/edits" \
   '{"ops":[{"op":"retype","block":"q-doc-plain","type":"callout","attributes":{"kind":"note","title":""}}]}'
@@ -1015,7 +1030,7 @@ pass removal "the person's version $person_version of $spec_p puts a paragraph i
 baseline_stop_pid "$head_pid"
 head_pid=""
 
-# This head without the hold setting, alone, so its step's first tick runs the restore and the
+# This head without the hold settings, alone, so its step's first tick runs the restore and the
 # conversion: the window of 15 s is processes.LiveWindow.
 waited=0
 while true; do

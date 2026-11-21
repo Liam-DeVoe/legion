@@ -16,9 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// premortemCapturePath is the capture of dispatch://INFRA-1098/artifact/graph-premortem-md, taken
-// as it is from the branch legion/INFRA-1098, from the repository root.
-const premortemCapturePath = "packages/dispatch/e2e/fixtures/infra-1098-premortem.json"
+// premortemCapturePath is the capture of the graph pre-mortem of cybermonklabs/legion#3142, copied
+// unchanged from that pull request's branch, from the repository root.
+const premortemCapturePath = "packages/dispatch/e2e/fixtures/acme-1098-premortem.json"
 
 // premortemCapture is what the capture records: the document's markdown, and the verdict and each
 // risk's heading and section as its own capture read them.
@@ -131,8 +131,9 @@ type premortemRig struct {
 	slug, refKey, address, documentID string
 	// otherIssueCheck is a check of the second issue, a dispatch:// address, and each node id the
 	// id a prevented_by tuple names its check by: the node its address resolves to, its issue's
-	// room's node, every issue being born converted (nodeOf).
-	otherIssueCheck                                 string
+	// room's node, every issue being born converted (nodeOf); otherIssueDocumentID is the id of the
+	// artifacts row of the second issue's Verification document, which holds that check.
+	otherIssueCheck, otherIssueDocumentID           string
 	checkNode, secondCheckNode, otherIssueCheckNode string
 }
 
@@ -154,7 +155,13 @@ func (r premortemRig) nodeOf(address string) string {
 
 func newPremortemRig(t *testing.T) premortemRig {
 	t.Helper()
-	rig := premortemRig{reasoningRig: newReasoningRig(t), capture: readPremortemCapture(t)}
+	return premortemRigOn(t, newReasoningRig(t))
+}
+
+// premortemRigOn is newPremortemRig over the reasoning rig reasoning, which the caller built.
+func premortemRigOn(t *testing.T, reasoning reasoningRig) premortemRig {
+	t.Helper()
+	rig := premortemRig{reasoningRig: reasoning, capture: readPremortemCapture(t)}
 	project := strings.Split(rig.issue, "-")[0]
 	other := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": project, "title": "The issue whose check a risk names",
@@ -170,6 +177,7 @@ func newPremortemRig(t *testing.T) premortemRig {
 		checkServing("k9", refs.BlockRef("dispatch://"+rig.otherIssue+"/spec", "r9")))
 	rig.otherIssueCheck = refs.BlockRef("dispatch://"+rig.otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
 	rig.checkNode, rig.secondCheckNode, rig.otherIssueCheckNode = rig.nodeOf(rig.check), rig.nodeOf(rig.secondCheck), rig.nodeOf(rig.otherIssueCheck)
+	rig.otherIssueDocumentID = otherVerification.Artifact.ID
 	premortem := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
 	rig.slug, rig.refKey, rig.documentID = premortem.Artifact.Slug, premortem.Artifact.RefKey, premortem.Artifact.ID
 	rig.address = "dispatch://" + rig.issue + "/artifact/" + rig.slug
@@ -521,7 +529,7 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 }
 
 // TestAConversionMapNamingACheckOfAnotherProjectWritesNothing maps risk 5 to a check of another
-// project than the issue's (dispatch://INFRA-1950/spec#b-r-premortem-nodes): the conversion is
+// project than the issue's (spec requirement r-premortem-nodes): the conversion is
 // refused, in a dry run as in a real one, through the function and through its route, with 400
 // INVALID_POINTER naming the entry, risk 5 and the check by its address, and the store holds no
 // node or tuple of it - no lens, no risk, no prevented_by, no moved_to - and the document stays

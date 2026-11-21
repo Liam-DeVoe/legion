@@ -112,9 +112,11 @@ func movedTarget(toID string) string {
 // a comment, a message or a document of the issue - is read through VisibleEnd, with a
 // document's id turned into the ref_key the store keys it by through artifacts' primary key: the
 // registry's own rewrite compares the uuid as text, which no index serves, and this arm runs once
-// for every link of the issue. Its target is the document the walk reaches, and the block of it
-// the row's target resolves to where the row names one, or the ask a move of that block ends at,
-// so a document hidden from them is neither listed nor walked on from.
+// for every link of the issue. A refs row's source is of no standing kind (refsSources), so that
+// predicate binds no staleness test, which the planner would charge to every link of the issue.
+// Its target is the document the walk reaches, and the block of it the row's target resolves to
+// where the row names one, or the ask a move of that block ends at, so a document hidden from them
+// is neither listed nor walked on from.
 //
 // A row's lens_id is the lens a cited document's address moved to (documentMovedTo), and its
 // ref_key that document's still: the lens is the member, in the document's place, and the walk
@@ -123,7 +125,7 @@ func movedTarget(toID string) string {
 // stand for two members, the lens and itself, and the members are told apart by both columns.
 // Beside each member ride the columns of its document's address (ArtifactRef).
 var closureQuery = sync.OnceValue(func() string {
-	visibleSource := VisibleEnd(`r.from_kind`,
+	visibleSource := VisibleEnd(refsSources, `r.from_kind`,
 		`case when r.from_kind = 'artifact' then (select s.ref_key from artifacts s where s.id = r.from_id::uuid) else r.from_id end`,
 		true, `$2`)
 	visibleTarget := VisibleKind("artifact", documentOfTarget, `$2`) +

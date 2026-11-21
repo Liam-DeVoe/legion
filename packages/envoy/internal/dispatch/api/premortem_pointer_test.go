@@ -11,9 +11,9 @@ import (
 
 // TestAConvertedRisksCheckOfAnotherIssueIsRetargetedAndRetractedThroughThePointerRoute converts the
 // captured pre-mortem with risk 8 prevented by a check of a second issue, as a root's map names the
-// checks of its children (premortemMap; dispatch://INFRA-1950/spec#b-r-premortem-nodes), and then
+// checks of its children (premortemMap; spec requirement r-premortem-nodes), and then
 // corrects that tuple through the tuple route, which R9 names as the one way a prevented_by moves
-// (dispatch://INFRA-1950/spec#b-r-constraint-risk). A retarget from the second issue's check to a
+// (spec requirement r-constraint-risk). A retarget from the second issue's check to a
 // check of the risk's own issue answers 200 and leaves risk 8 prevented by that check alone; a
 // retract of the second issue's check answers 200 and leaves risk 8 prevented by nothing. A
 // prevented_by the conversion writes and no route can move is a pointer nobody can correct.

@@ -24,15 +24,16 @@ import (
 const premortemConvertUsage = `usage: envoy-dispatch premortem-convert --issue <KEY> --artifact <slug> --prevented-by <file> [--dry-run]
 
 Converts the pre-mortem document <slug> of issue <KEY>, in the database DATABASE_URL names, into
-nodes, in one transaction, as the server's own credential: one lens of kind pre-mortem under the
-issue, whose verdict is the document's verdict followed by its two closing sections, "What a
-world-class implementation looks like" and "The smallest first slice that proves the model", word
-for word; under it one risk for risk 0 and each numbered risk of the document's newest version,
-each with its heading, its early warning and its prevention and a prevented_by tuple to each check
-the map names for it; then the document is retired, leaving its issue's document list, and its
-address moves to the lens, so GET /api/v1/references?to=<its address> answers the lens. It prints
-the report as JSON: the document, the lens, and each risk with its checks and its reason. A
-document converted already is reported as such, naming its lens, and nothing is written.
+nodes, in one transaction, as the server's own credential. It first retires the document, which
+leaves its issue's document list, and moves its address to the lens it then writes, so
+GET /api/v1/references?to=<its address> answers the lens. Then it writes one lens of kind
+pre-mortem under the issue, whose verdict is the document's verdict followed by its two closing
+sections, "What a world-class implementation looks like" and "The smallest first slice that
+proves the model", word for word; under it one risk for risk 0 and each numbered risk of the
+document's newest version, each with its heading, its early warning and its prevention; and a
+prevented_by tuple to each check the map names for a risk. It prints the report as JSON: the
+document, the lens, and each risk with its checks and its reason. A document converted already
+is reported as such, naming its lens, and nothing is written.
 
   --issue         the issue the document belongs to
   --artifact      the document's slug
@@ -57,9 +58,10 @@ A blank line, and a line whose first character is #, are skipped. For example:
 
 The command refuses, writing nothing and naming the line: a line of any other shape, a number the
 document does not hold, a number twice, a risk the document holds with no line, an address that
-names no check block that is not gone, and a check of another project than the issue's, which the
-store's rule on prevented_by refuses, naming the line's risk and the check, with --dry-run as
-without it.
+names no check block that is not gone, and a check of another project than the issue's, of a
+retired document, or of the document <slug> itself, which the conversion retires and whose checks
+nobody runs then; the store's rule on prevented_by refuses those three, naming the line's risk and
+the check, with --dry-run as without it, and the document stays unretired.
 
 Exit 0 when it converted, ran dry, or found the document converted already, printing the report; 1
 when it refused (the map file, or a document that is none, no pre-mortem, or retired by anything
@@ -68,7 +70,7 @@ take, no DATABASE_URL, a database it could not reach, a write that failed).
 `
 
 // premortemConvert is `envoy-dispatch premortem-convert`, the command that runs the pre-mortem
-// conversion (api.ConvertPremortem, dispatch://INFRA-1950/spec#b-r-premortem-nodes), which the
+// conversion (api.ConvertPremortem, spec requirement r-premortem-nodes), which the
 // route POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert runs too. It reads its map
 // from the file --prevented-by names (parsePreventedBy), runs the conversion in one transaction of
 // its own against DATABASE_URL as api.PremortemConverter, the server's own credential, and prints

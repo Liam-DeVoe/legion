@@ -154,8 +154,8 @@ func TestAnAnswerTakesItsTimeFromTheDatabase(t *testing.T) {
 
 // The carry answers an open approval request in the transaction that writes the version
 // (docs.answerApprovalAsk): the request's answer `at` is that transaction's time, its
-// ask.answered event's created_at. A person's answer writes no version,
-// so the carry here is the restore's, of the version undoing the agent's edit.
+// ask.answered event's created_at. The carry here is the restore's, of the version undoing the
+// agent's edit.
 func TestACarriedApprovalAnswerTakesItsTimeFromTheDatabase(t *testing.T) {
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry on the database clock", "Context\n")

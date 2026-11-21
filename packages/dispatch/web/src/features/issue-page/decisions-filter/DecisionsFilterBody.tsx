@@ -522,6 +522,8 @@ export function DecisionsFilterBody({
 
   useTreeKeymap({
     container: body,
+    // The view edits no row (`onEdit`), so no row's editor holds Escape.
+    editing: false,
     holdsEscape,
     onCycle: () => {
       // Folding the foot takes its rows away, and a focus on one of them would drop to the

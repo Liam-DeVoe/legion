@@ -48,6 +48,7 @@ import {
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { decisionBehind } from "../tree-keys";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   type TreeAnswer,
@@ -174,14 +175,7 @@ function resultsOf(checks: readonly CheckBlock[]): IssueCheckResults {
 
 /** The tree read's answer with no node in it: each case draws the tree it is given, and the body
  *  reads from this read only whether the documents' blocks are in. */
-const NO_NODES: TreeAnswer = {
-  converted: false,
-  cursor: null,
-  nodes: [],
-  tree: null,
-  tuples: [],
-  view_of: null,
-};
+const NO_NODES: TreeAnswer = treeAnswer([]);
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -451,9 +445,11 @@ test("a person's decision stands once beside its statements, in their own words"
     issueTree([ask, statement("r1"), statement("r2"), decisionNode("d1")]),
     [
       decision("d1", {
-        asks: ["ask-1"],
-        kind: "person",
-        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+        decision: {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+        },
       }),
     ]
   );
@@ -488,9 +484,11 @@ test("each statement carries one line naming the decision that shaped it, with a
     issueTree([ask, statement("r1"), statement("r2"), decisionNode("d1")]),
     [
       decision("d1", {
-        asks: ["ask-1"],
-        kind: "person",
-        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+        decision: {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+        },
       }),
     ]
   );
@@ -534,17 +532,14 @@ test("a person's decision stands beside each statement its shaped tie names", ()
       ...["r1", "r2", "r3"].map((block, position) =>
         answerNode(block, "requirement", {
           document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
-          mark: "query",
+          role: "query",
         })
       ),
-      answerNode("ask-1", "ask", { mark: "context" }),
+      answerNode("ask-1", "ask", { role: "context" }),
     ],
     {
       asks: [askRead("ask-1", words)],
-      tuples: [
-        { from: "ask-1", kind: "shaped", to: "r1" },
-        { from: "ask-1", kind: "shaped", to: "r3" },
-      ],
+      tuples: [treeTuple("shaped", "ask-1", "r1"), treeTuple("shaped", "ask-1", "r3")],
     }
   );
   try {
@@ -596,17 +591,14 @@ test("while the asks read is out, no statement a person's decision shaped reads 
       ...["r1", "r2", "r3"].map((block, position) =>
         answerNode(block, "requirement", {
           document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
-          mark: "query",
+          role: "query",
         })
       ),
-      answerNode("ask-1", "ask", { mark: "context" }),
+      answerNode("ask-1", "ask", { role: "context" }),
     ],
     {
       asksRead: "out",
-      tuples: [
-        { from: "ask-1", kind: "shaped", to: "r1" },
-        { from: "ask-1", kind: "shaped", to: "r3" },
-      ],
+      tuples: [treeTuple("shaped", "ask-1", "r1"), treeTuple("shaped", "ask-1", "r3")],
     }
   );
   try {
@@ -643,12 +635,12 @@ test("where the asks read failed, the column says the open questions could not b
       ...["r1", "r2"].map((block, position) =>
         answerNode(block, "requirement", {
           document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
-          mark: "query",
+          role: "query",
         })
       ),
-      answerNode("ask-1", "ask", { mark: "context" }),
+      answerNode("ask-1", "ask", { role: "context" }),
     ],
-    { asksRead: "failed", tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }] }
+    { asksRead: "failed", tuples: [treeTuple("shaped", "ask-1", "r1")] }
   );
   try {
     await waitFor(
@@ -732,16 +724,16 @@ test("every state of the Spec view read and the asks read draws what the column 
           ...["r1", "r2"].map((block, position) =>
             answerNode(block, "requirement", {
               document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
-              mark: "query",
+              role: "query",
             })
           ),
-          answerNode("ask-1", "ask", { mark: "context" }),
+          answerNode("ask-1", "ask", { role: "context" }),
         ],
         {
           asks: [askRead("ask-1", words)],
           asksRead: asks,
           specView,
-          tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }],
+          tuples: [treeTuple("shaped", "ask-1", "r1")],
         }
       );
       try {
@@ -787,11 +779,13 @@ test("an agent's decision draws its own words, how sure it was and how it stands
   const made = decisionNode("d1", { state: "waiting_review", text, unsure: true, waiting: true });
   const { read, view } = drawBody(issueTree([statement("r1"), made]), [
     decision("d1", {
-      kind: "agent",
-      links: [shaped(statementRef("r1"))],
       text,
-      unsure: true,
-      waiting_review: true,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+        unsure: true,
+        waiting_review: true,
+      },
     }),
   ]);
   try {
@@ -856,13 +850,25 @@ test("a decision with no author draws none, and says Author unknown with the foc
       decisionNode("d3", { author: planner }),
     ]),
     [
-      decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] }),
-      decision("d2", {
-        changed_at: null,
-        kind: "agent",
-        links: [shaped(statementRef("r2"))],
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
       }),
-      decision("d3", { kind: "agent", links: [shaped(statementRef("r3"))] }),
+      decision("d2", {
+        decision: {
+          changed_at: null,
+          kind: "agent",
+          links: [shaped(statementRef("r2"))],
+        },
+      }),
+      decision("d3", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r3"))],
+        },
+      }),
     ]
   );
   const cellOf = (block: string) =>
@@ -933,10 +939,12 @@ test("an agent's decision draws its words with each reference named, in its cell
     ]),
     [
       decision("d1", {
-        kind: "agent",
-        links: [shaped(cited)],
         text: words,
         text_tree: tree,
+        decision: {
+          kind: "agent",
+          links: [shaped(cited)],
+        },
       }),
     ],
     { names: new Map([[cited, `:::requirement{#r4}\n${name}\n:::`]]) }
@@ -1003,9 +1011,11 @@ test("the focus on a decision draws the person's whole answer, character for cha
     ]),
     [
       decision("d1", {
-        asks: ["ask-1"],
-        kind: "person",
-        links: [shaped(statementRef("r1"))],
+        decision: {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [shaped(statementRef("r1"))],
+        },
       }),
     ]
   );
@@ -1246,7 +1256,12 @@ test("an issue with no statements says so in the page's own line", () => {
 // decision beside it, which is what the focus moves between (R5's `w`).
 test("the body draws one tree, named as the outline is, of the statements and their decisions", () => {
   const { read, view } = drawBody(issueTree([statement("r1"), decisionNode("d1")]), [
-    decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] }),
+    decision("d1", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
   ]);
   try {
     const tree = view.container.querySelector('[role="tree"]');
@@ -1305,54 +1320,40 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
 test("w on a statement goes to the cell beside it, whichever decision the tree's order names first", async () => {
   const made = [
     decision("d2", {
-      asks: ["ask-1"],
-      kind: "person",
-      links: [shaped(statementRef("r3")), shaped(statementRef("r4"))],
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r3")), shaped(statementRef("r4"))],
+      },
     }),
-    decision("d5", { kind: "agent", links: [shaped(statementRef("r4"))] }),
+    decision("d5", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r4"))],
+      },
+    }),
   ];
-  // The tree read's answer: the spec's two statements, and the question the person's decision
-  // answers, each under the issue.
-  const answered = (
-    id: string,
-    supertag: string,
-    extra: Partial<TreeAnswerNode> = {}
-  ): TreeAnswerNode => ({
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...extra,
-  });
+  // The tree read's answer: the agent's decision, the spec's two statements, and the question the
+  // person's decision answers, each under the issue.
   const tree = buildIssueTree({
     asks: [askRead("ask-1", "Keep both statements.")],
     coverage: coverageRead(["r3", "r4"]),
     issue: issueDetails(),
-    tree: {
-      converted: false,
-      cursor: null,
-      nodes: [
-        answered("d5", "decision", {
+    tree: treeAnswer(
+      [
+        treeNode("d5", "decision", KEY, {
+          decision: { links: made[1]?.decision?.links ?? [] },
           document: { artifact_id: "artifact-dec", position: 0, slug: "decisions-md" },
-          links: made[1]?.links ?? [],
         }),
         ...["r3", "r4"].map((id, position) =>
-          answered(id, "requirement", {
+          treeNode(id, "requirement", KEY, {
             document: { artifact_id: "artifact-spec", position, slug: "spec" },
           })
         ),
-        answered("ask-1", "ask"),
+        treeNode("ask-1", "ask", KEY),
       ],
-      tree: null,
-      tuples: [{ from: "d5", kind: "shaped", to: statementRef("r4") }],
-      view_of: null,
-    },
+      [treeTuple("shaped", "d5", statementRef("r4"))]
+    ),
   });
   expect(decisionBehind(tree, "spec#b-r4")?.id).toBe("decisions-md#b-d5");
   const user = userEvent.setup();
@@ -1380,14 +1381,23 @@ test("w on a statement goes to the cell beside it, whichever decision the tree's
 test("from a decision's cell, j and ArrowDown move to the statement after its run, k and ArrowUp to the one before", async () => {
   const made = [
     decision("d1", {
-      kind: "agent",
-      links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      },
     }),
     decision("d2", {
-      kind: "agent",
-      links: [shaped(statementRef("r3")), shaped(statementRef("r4"))],
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r3")), shaped(statementRef("r4"))],
+      },
     }),
-    decision("d3", { kind: "agent", links: [shaped(statementRef("r5"))] }),
+    decision("d3", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r5"))],
+      },
+    }),
   ];
   const user = userEvent.setup();
   const { read, view } = drawBody(
@@ -1431,8 +1441,10 @@ test("a cell or a link inside a statement takes the focus, its look and Details 
     ]),
     [
       decision("d1", {
-        kind: "agent",
-        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+        },
       }),
     ]
   );
@@ -1796,9 +1808,11 @@ test("a press on a decision's cell or away from it changes what the body draws o
     ]),
     [
       decision("d1", {
-        asks: ["ask-1"],
-        kind: "person",
-        links: [shaped(statementRef("r1"))],
+        decision: {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [shaped(statementRef("r1"))],
+        },
       }),
     ]
   );
@@ -1852,7 +1866,14 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
   const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2"), decisionNode("d1")]),
-    [decision("d1", { kind: "agent", links: [shaped(statementRef("r2"))] })]
+    [
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r2"))],
+        },
+      }),
+    ]
   );
   // `scrollBy`'s first overload takes a number; the body calls the one that takes options.
   const scrolledBy = (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]);
@@ -1945,7 +1966,14 @@ test("a refused read of a document the view draws nothing from leaves every stat
 // draws the decision that shaped it.
 test("a refused Spec view read says so in its own line, and its Retry asks that read alone again", async () => {
   const user = userEvent.setup();
-  const made = [decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] })];
+  const made = [
+    decision("d1", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+  ];
   const { read, view } = drawBody(issueTree([statement("r1"), decisionNode("d1")]), made, {
     specView: "failed",
   });
@@ -1974,7 +2002,13 @@ test("a refused Spec view read says so in its own line, and its Retry asks that 
 // of it - and a refused one says so in its own line.
 test("a person's decision is drawn as nothing while the asks read is out, and a refused asks read says so", async () => {
   const made = [
-    decision("d1", { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] }),
+    decision("d1", {
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
   ];
   // The tree holds no question the asks read has not brought.
   const tree = issueTree([statement("r1"), decisionNode("d1")]);
@@ -2006,11 +2040,18 @@ test("w on a statement whose person's decision waits on the asks read reports no
   const user = userEvent.setup();
   const made = [
     decision("d1", {
-      asks: ["ask-1"],
-      kind: "person",
-      links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      },
     }),
-    decision("d2", { kind: "agent", links: [shaped(statementRef("r2"))] }),
+    decision("d2", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r2"))],
+      },
+    }),
   ];
   const tree = issueTree([
     statement("r1"),
@@ -2180,7 +2221,15 @@ test("an option label that cites a statement is drawn by the statement's name, n
       statement("r2"),
       made,
     ]),
-    [decision("d1", { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] })]
+    [
+      decision("d1", {
+        decision: {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+    ]
   );
   try {
     expect(textsOf(view, "[data-spec-quote]")).toEqual([`“${named}”`]);
@@ -2226,8 +2275,18 @@ test("a second decision is named on a statement's line by its words cut to a chi
   const { read, view } = drawBody(
     issueTree([statement("r1"), decisionNode("d1"), decisionNode("d2", { text: long })]),
     [
-      decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] }),
-      decision("d2", { kind: "agent", links: [shaped(statementRef("r1"))] }),
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+      decision("d2", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
     ]
   );
   try {
@@ -2251,8 +2310,20 @@ test("a decision with no words is named by its kind's word, never by an empty qu
       decisionNode("d2", { text: "" }),
     ]),
     [
-      decision("d1", { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] }),
-      decision("d2", { kind: "agent", links: [shaped(statementRef("r2"))], text: "" }),
+      decision("d1", {
+        decision: {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+      decision("d2", {
+        text: "",
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r2"))],
+        },
+      }),
     ]
   );
   try {

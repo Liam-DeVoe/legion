@@ -12,7 +12,7 @@ import (
 )
 
 // loadInteractionNodes resolves interaction nodes: each one run of the command bar
-// (dispatch://INFRA-1950/spec#b-r-interaction), addressed `dispatch://interaction/<uuid>` by the
+// (spec requirement r-interaction), addressed `dispatch://interaction/<uuid>` by the
 // run's own uuid and written by the going POST (api's recordGoingRequest). A run stands under no
 // issue and on no node, so it answers no IssueKey and no Parent, and a route of
 // `/issues/{key}/nodes/{id}/…` finds none under any issue; its Project is the project it was asked

@@ -491,7 +491,7 @@ func holdTheTupleAppend(t *testing.T, ctx context.Context, holder pgx.Tx) {
 // storeWriters are the two ways a write reaches the store, each run on a connection of its own:
 // Write inside a transaction, as the comment path, the block index and the backfill run it, and
 // WriteArms spliced into one statement that is its own transaction, as outbox.recordBatch runs
-// it and as Authored and Reached run it inside theirs.
+// it and as QueueAuthored and QueueSessionRecorded queue it in statements of their own.
 var storeWriters = []struct {
 	name  string
 	write func(ctx context.Context, conn *pgxpool.Conn, nodes []Node, tuples []Tuple) error
@@ -659,7 +659,7 @@ func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f
 		done := make(chan error, 1)
 		go func() {
 			defer conn.Release()
-			done <- writeOnConnection(WithRun(ctx, run), conn, []Node{marked})
+			done <- writeOnConnection(store.WithRun(ctx, run), conn, []Node{marked})
 		}()
 		requireQueued(t, holder, conn, done, name)
 		writes = append(writes, done)

@@ -268,8 +268,13 @@ const TAB_STOPS = [
 ].join(", ");
 
 /** The class of the action bar the editor draws for its selection (`@legion/proof-editor`'s
- *  `dispatch-action-bar.ts`): one element, put beside the editable, inside the editor's box, and
- *  hidden with an inline `display: none` while the selection holds no text. */
+ *  `dispatch-action-bar.ts`): one element, hidden with an inline `display: none` while the
+ *  selection holds no text, and put in the element that holds the editable as the editor makes
+ *  it - on this page, inside the editor's box (`EditorBox`). ProseMirror puts the editable in the
+ *  element the page gives the editor (`ProofDocument.tsx`'s root) before it makes any plugin's
+ *  view, and Milkdown moves it into a box of its own inside that element, and back, as it makes
+ *  its plugins' views and drops them again, so the editable stands in that element whenever the
+ *  bar is made. */
 const ACTION_BAR = ".dispatch-action-bar";
 
 /** The mark of the button a document draws for each block with comments or asks on it, which
@@ -571,7 +576,10 @@ function headingBreaks(node: ProseMirrorNode): number {
  * end for one below - as the editor's own at once (`selectInEditor`). The backstop for a move
  * `confineKey` does not name: a press on another block of the editor, a drag across blocks, a
  * platform's own key for a move. A selection whose ends both stand in the block is left alone,
- * so the report of the move this makes, which calls this again, changes nothing.
+ * so the report of the move this makes, which calls this again, changes nothing. The selection a
+ * browser puts at the editable's start as a script gives the editable the focus back is no such
+ * move: the row puts the editor's own selection on the page as the focus comes in, before that
+ * reset (`useNodeEditing.ts`), so this finds the caret where the reader left it.
  */
 export function selectionIntoBlock(host: HTMLElement, blockId: string | undefined): void {
   const drawn = drawnBlock(host, blockId);

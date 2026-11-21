@@ -47,7 +47,7 @@ func conversationItem(t *testing.T, tx pgx.Tx, table, issueKey, author, body str
 		if err != nil {
 			t.Fatalf("read the part index of ask %s: %v", id, err)
 		}
-		indexing, err := PlanAskParts(stored, NewReader(ctx, tx, "ask", id, itemBlockServer), ask, at)
+		indexing, err := PlanAskParts(stored, NewReader(ctx, tx, ask.Author, "ask", id, itemBlockServer), ask, at)
 		if err != nil {
 			t.Fatalf("index the parts of ask %s: %v", id, err)
 		}

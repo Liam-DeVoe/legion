@@ -253,8 +253,9 @@ describe("design-gate-verdict.jq", () => {
     ).toEqual(["version 5: Where does the smoke file go?"]);
   });
 
-  // A version this release writes records no state on a block, so the block's ask says whether
-  // the block was still open at the request: its answer and its resolution came after it, or never.
+  // A version this release writes records no state on the block of an open ask, so the block's ask
+  // says whether the block was still open at the request: its answer and its resolution came after
+  // it, or never.
   // The human replied in the request's thread before Dispatch indexed the block, so the answer-time
   // rule passes the request and only the version rule can catch it.
   test("a version that records no block state holds a block open while its ask held no answer and no resolution at the request", () => {

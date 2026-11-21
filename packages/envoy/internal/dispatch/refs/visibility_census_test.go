@@ -91,10 +91,17 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			// The column every loader selects to answer a node's stored state and visibility
-			// (storedNode) reads `visibility` once and tests nothing, and the registry opens it
-			// with a marker of its own; every other `visibility` a statement reads is a test.
-			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, StoredNodeMarker)
+			// The column every loader selects to answer a node's stored visibility, beside its
+			// stored state (StoredRowOf), reads `visibility` once and tests nothing, and the
+			// registry opens it with a marker of its own; every other `visibility` a statement
+			// reads is a test. A marker is subtracted only where it opens that column, named
+			// stored_visibility, so a marker set beside a test excuses nothing.
+			columns := len(storedVisibilityColumn.FindAllStringIndex(statement, -1))
+			if markers := strings.Count(statement, StoredNodeMarker); markers != columns {
+				t.Errorf("statement %d of the %s read opens %d marker of a stored state and visibility and %d of them opens a stored_visibility column: the marker opens that column alone\n%s",
+					index+1, read.call, markers, columns, statement)
+			}
+			statementTests := strings.Count(statement, ".visibility") - columns
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -162,6 +169,9 @@ const (
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
 	nodeDetail = "it reads a detail of one node its caller has already read through a read that binds that node's predicate " +
 		"(Node, RemovedItemBlockNode, or the caller's own registry predicate), and answers nothing of any other node"
+	treeWalk = "the walk of an issue's tree (docs.WalkIssueTree) is what the record a person approves is built from, and what " +
+		"every gate compares a review's digest with, so it reads the store as the server holds it, one answer for every reader; " +
+		"a render of the tree for a reader binds that reader's predicate elsewhere"
 )
 
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
@@ -173,8 +183,6 @@ var readsWithoutAViewer = map[string]string{
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
-	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
-		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
@@ -185,6 +193,7 @@ var readsWithoutAViewer = map[string]string{
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
 	"ExcerptsMoved":        serverWork + " - a write's read phase works out which of its document's excerpts the update it queues moves",
+	"HeadCut":              treeWalk + " - the cut of the store every read of the walk is made at",
 	"HeldTargets":          serverWork + " - a write's read phase reads the edges of the source its reconciliation replaces",
 	"IsConversationNode": noNode + " - R2's test of the one node its caller names, which decides what kind of node it is and " +
 		"not what a reader sees: the nodes of a conversation reach a reader through nodeRegistry's loaders, which bind the " +
@@ -199,14 +208,14 @@ var readsWithoutAViewer = map[string]string{
 	"NamedBlock": "it answers a node id and nothing of any node: the pinned read of a block names the node an address " +
 		"names, which it then reads through Node and holds to the block's predicate at that node, so a block who may not " +
 		"see answers what an address nobody holds answers",
-	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
-	"NewReaderInScope": serverWork + " - the index-time resolver of a source whose row is only queued acts for no person, as NewReader's does",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
 		"to keep a cycle out of where it places that node (placeAuthored), and the chain reaches no reader",
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
+	"PinnedParent": nodeDetail + " - the lens read names the lenses on a document, a block of one, a block of a comment or a part of an ask " +
+		"it read through Node by the address a lens names that node at, its own pinned to a version of its document or a revision of its item",
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
 	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
 	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
@@ -214,6 +223,7 @@ var readsWithoutAViewer = map[string]string{
 	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
+	"ReadBlockRefKinds":  serverWork + " - a version write's block index plan and the erase's blockers read bind the tuple kinds the block index writes into block_refs, which name no node",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
 	"RecordExcerpts":     serverWork,
@@ -225,6 +235,13 @@ var readsWithoutAViewer = map[string]string{
 		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
 	"ScopeSources": serverWork,
 	"SourceText":   serverWork,
+	"TreeChildren": treeWalk + " - the children of each node the walk reaches",
+	"TreeFactsOf":  treeWalk + " - what each node the walk reaches states at its cut",
+	"TreeMovedTo":  treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
+	"TreeMembers": treeWalk + " - the blocks a document holds at a version's time, which the render of that version " +
+		"(docs.RenderAt) takes: a version renders as one set of bytes for every reader, as its stored markdown does",
+	"TreeNodeRows":    treeWalk + " - the row of each node the walk reaches",
+	"TreePlacedAbove": treeWalk + " - the nodes of the issue that stand under a node of an issue above it",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -297,6 +314,11 @@ func markedKinds(statement string) []string {
 	return kinds
 }
 
+// storedVisibilityColumn is the one read of `visibility` StoredNodeMarker opens: the column a
+// loader selects to answer a node's stored visibility, named stored_visibility beside the column
+// stored_state (StoredRowOf).
+var storedVisibilityColumn = regexp.MustCompile(regexp.QuoteMeta(StoredNodeMarker) + `\w+\.visibility as stored_visibility\b`)
+
 // graphRead is one call of a read of the graph: the exported function that made it, the call
 // as a failure names it, and every statement the call issued, in order.
 type graphRead struct {
@@ -365,8 +387,13 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
-	// Nodes is Node over a batch, and ExcerptedNodes is Nodes with each node's excerpt: one
-	// target of every kind, so each kind's loader issues its statement in the one call.
+	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
+	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's loader
+	// issues its statement in the one call. BlockTexts reads each kind of block among them in a
+	// statement of its own and passes every other kind over. A finding's statement binds the
+	// predicate of its kind over the row it reads; a document's block and an item's bind none,
+	// since a caller reads those only once TargetNames has answered them to the reader. So that
+	// read is held to the registry as a whole.
 	everyKind := make([]Target, len(nodeKinds))
 	for index, kind := range nodeKinds {
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
@@ -377,6 +404,14 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
 		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		return err
+	})
+	record("TargetNames", "TargetNames of every kind at once", func() error {
+		_, err := TargetNames(ctx, recorder, who, everyKind)
+		return err
+	})
+	record("BlockTexts", "BlockTexts of every kind at once", func() error {
+		_, err := BlockTexts(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
@@ -397,6 +432,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		if err == nil && len(links) != 1 {
 			err = fmt.Errorf("the linked document lists %d block links, want its one: with no link to list the read never reaches the loader that binds its predicate", len(links))
 		}
+		return err
+	})
+	record("ReadableFarEnds", "ReadableFarEnds of a block address", func() error {
+		_, err := ReadableFarEnds(ctx, recorder, who, []string{"CORE-1/spec#b1"})
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
@@ -453,6 +492,18 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	record("TargetNames", "TargetNames of an issue and a document", func() error {
 		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}})
 		return err
+	})
+	// The index-time resolver resolves the short ids a text writes for that text's writer
+	// (Reader.Items, through ResolvePrefix), so each constructor's reader is asked one: the
+	// statement that resolves it is the read of the graph the census holds it to.
+	const shortComment = "See dispatch://CORE-1/comment/00000000."
+	record("NewReader", "NewReader's resolution of a short comment id", func() error {
+		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example").Mentions(shortComment)
+		return nil
+	})
+	record("NewReaderInScope", "NewReaderInScope's resolution of a short comment id", func() error {
+		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example", nil).Mentions(shortComment)
+		return nil
 	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
 	// is read are read here.

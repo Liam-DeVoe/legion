@@ -13,7 +13,7 @@ import (
 )
 
 // TestALensReadOnAKindNoLensStandsOnAnswersWhatANodeNobodyHoldsAnswers holds the lens read to
-// P9 (dispatch://INFRA-1950/artifact/plan-md): a lens stands only on a node of the kinds under an
+// P9 of the plan: a lens stands only on a node of the kinds under an
 // issue, so `on` naming a node of any other kind answers the 404 an address nobody holds answers,
 // whatever the store holds. The store holds alice's person node, a session, a role and its page,
 // each project-visible, which the read once answered 200 with no lens and so told any caller, the

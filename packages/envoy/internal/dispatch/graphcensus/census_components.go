@@ -265,7 +265,10 @@ var componentDependsFits = `octet_length(d.project_key || '/' || d.from_id) <= `
 // tuple it is the projection of, dated at its component's snapshot's imported_at and at the
 // sentinel, as graph_edges' old arm dates the edge, and names the component's node on the row in
 // the transaction that states the tuple. It walks the rows in their primary key's order, one batch
-// a transaction (writeComponentDependsBatch).
+// a transaction (writeComponentDependsBatch). A row whose component's row the component pass leaves
+// out (componentFits) is one no batch can mark, since a batch marks a dependency only under a
+// component whose row names its node, so it neither reads nor counts that row, which graph_edges'
+// old arm answers.
 func backfillComponentDepends(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "component_depends"}
 	var afterProject, afterFrom, afterTo string
@@ -275,7 +278,7 @@ func backfillComponentDepends(ctx context.Context, database *store.Store) (KindB
 			from component_depends d
 			join components c on c.project_key = d.project_key and c.id = d.from_id
 			join architecture_snapshots s on s.id = c.snapshot_id
-			where d.node_kind is null and `+componentDependsFits+` and (d.project_key, d.from_id, d.to_id) > ($1, $2, $3)
+			where d.node_kind is null and `+componentDependsFits+` and `+componentFits+` and (d.project_key, d.from_id, d.to_id) > ($1, $2, $3)
 			order by d.project_key, d.from_id, d.to_id
 			limit $4
 		`, afterProject, afterFrom, afterTo, backfillBatch)
@@ -302,7 +305,8 @@ func backfillComponentDepends(ctx context.Context, database *store.Store) (KindB
 		}
 	}
 	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from component_depends d where d.node_kind is null and `+componentDependsFits,
+		select count(*) from component_depends d join components c on c.project_key = d.project_key and c.id = d.from_id
+		where d.node_kind is null and `+componentDependsFits+` and `+componentFits,
 	).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the component dependencies still naming no node: %w", err)
 	}

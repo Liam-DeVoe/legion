@@ -96,9 +96,11 @@ test("a first sentence ends at its first sentence end, and holds the whole text 
 test("one decision stands once beside the run of statements it shaped", () => {
   const groups = bodyOf(issueTree([statement("r1"), statement("r2"), decisionNode("d1")]), [
     decision("d1", {
-      kind: "agent",
-      links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
       text: "One read answers every node.",
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      },
     }),
   ]);
   expect(groups).toHaveLength(1);
@@ -123,10 +125,17 @@ test("a statement another decision shaped opens a run of its own", () => {
     ]),
     [
       decision("d1", {
-        kind: "agent",
-        links: [shaped(statementRef("r1")), shaped(statementRef("r3"))],
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r3"))],
+        },
       }),
-      decision("d2", { kind: "agent", links: [shaped(statementRef("r2"))] }),
+      decision("d2", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r2"))],
+        },
+      }),
     ]
   );
   expect(
@@ -150,9 +159,11 @@ test("a person's decision quotes their answer's first sentence, with the questio
   });
   const groups = bodyOf(issueTree([ask, statement("r1")]), [
     decision("d1", {
-      asks: ["ask-1"],
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   const made = groups[0]?.runs[0]?.decision;
@@ -173,9 +184,11 @@ test("an answer with no words of its own is quoted by the option the person chos
   const ask = answeredAsk("ask-1", { selected: ["1024 px"], text: "" });
   const groups = bodyOf(issueTree([ask, statement("r1")]), [
     decision("d1", {
-      asks: ["ask-1"],
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("1024 px");
@@ -190,9 +203,11 @@ test("another person's answer is not drawn as the reader's own words", () => {
   });
   const groups = bodyOf(issueTree([ask, statement("r1")]), [
     decision("d1", {
-      asks: ["ask-1"],
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.said).toBe("person");
@@ -221,12 +236,14 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
   });
   const groups = bodyOf(issueTree([statement("r1"), made]), [
     decision("d1", {
-      kind: "agent",
-      links: [shaped(statementRef("r1"))],
       text,
       text_tree: tree,
-      unsure: true,
-      waiting_review: true,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+        unsure: true,
+        waiting_review: true,
+      },
     }),
   ]);
   const decided = groups[0]?.runs[0]?.decision;
@@ -263,7 +280,13 @@ test("an agent's decision is quoted by its first block's line, never its heading
     type: "doc",
   };
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text, tree })]), [
-    decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))], text }),
+    decision("d1", {
+      text,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
   ]);
   const quote = groups[0]?.runs[0]?.decision?.quote;
   expect(quote, "the because line runs the decision's heading into its words").not.toContain(
@@ -282,7 +305,15 @@ test("a reference named in an agent's quote ends no sentence at its name's label
   const text = `Keep every address, as ${cited} says. Then more follows.`;
   const groups = bodyOf(
     issueTree([statement("r1"), statement("r2"), decisionNode("d1", { text })]),
-    [decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))], text })],
+    [
+      decision("d1", {
+        text,
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+    ],
     READER,
     [],
     (reference) => (reference === cited ? "R2. Every address…" : undefined)
@@ -306,8 +337,19 @@ test("a statement informed by two decisions names the second by its words within
       decisionNode("d2", { text: words }),
     ]),
     [
-      decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] }),
-      decision("d2", { kind: "agent", links: [shaped(statementRef("r1"))], text: words }),
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+      decision("d2", {
+        text: words,
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
     ],
     READER,
     [],
@@ -327,9 +369,11 @@ test("a statement informed by two decisions names the second by its words within
 test("a replaced decision shapes nothing", () => {
   const groups = bodyOf(issueTree([statement("r1")]), [
     decision("d1", {
-      kind: "agent",
-      links: [shaped(statementRef("r1"))],
-      replaced: true,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+        replaced: true,
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision).toBeUndefined();
@@ -354,11 +398,18 @@ test("a person's decision that waits on the asks read still heads its run, and n
     decisions: decisionNodes(
       specViewAnswer([
         decision("d1", {
-          asks: ["ask-1"],
-          kind: "person",
-          links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+          decision: {
+            asks: ["ask-1"],
+            kind: "person",
+            links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+          },
         }),
-        decision("d2", { kind: "agent", links: [shaped(statementRef("r2"))] }),
+        decision("d2", {
+          decision: {
+            kind: "agent",
+            links: [shaped(statementRef("r2"))],
+          },
+        }),
       ]),
       { issue: { key: KEY } }
     ),
@@ -417,8 +468,18 @@ test("a statement no decision shaped stands in a run with no decision", () => {
 // named on the statement's own line.
 test("every other decision that shaped a statement is named after the first", () => {
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1"), decisionNode("d2")]), [
-    decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] }),
-    decision("d2", { kind: "agent", links: [shaped(statementRef("r1"))] }),
+    decision("d1", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+    decision("d2", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.id).toBe("decisions-md#b-d1");
   expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.id)).toEqual([
@@ -435,7 +496,14 @@ test("a statement under an answered question keeps that answer when a tie names 
       answeredAsk("ask-1", { text: "Put the memo in the pane." }, [statement("r1")]),
       decisionNode("d1"),
     ]),
-    [decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] })]
+    [
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+    ]
   );
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ id: "ask-1", type: "ask" });
   expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.id)).toEqual([
@@ -487,9 +555,11 @@ test("a person's answer that cites a block carries its whole text for the focus,
 test("a person's decision whose question the tree does not hold is drawn as the agent's record", () => {
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1")]), [
     decision("d1", {
-      asks: ["an-ask-of-another-issue"],
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+      decision: {
+        asks: ["an-ask-of-another-issue"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
@@ -722,17 +792,27 @@ test("an agent's decision with no node is quoted by the first block of its own w
     type: "doc",
   };
   const groups = bodyOf(issueTree([statement("r1"), statement("r2"), statement("r3")]), [
-    decision("d7", { kind: "agent", links: [shaped(statementRef("r1"))], text }),
+    decision("d7", {
+      text,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
     decision("d8", {
-      kind: "agent",
-      links: [shaped(statementRef("r2"))],
       text,
       text_tree: tree,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r2"))],
+      },
     }),
     decision("d9", {
-      kind: "agent",
-      links: [shaped(statementRef("r3"))],
       text: "![The tree](tree.png)\n\n---\n\nKeep the model pure. The page reads it.",
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r3"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs.map((run) => [run.decision?.node, run.decision?.quote])).toEqual([

@@ -74,7 +74,7 @@ func StoreTypesIn(ctx context.Context, tx pgx.Tx) ([]StoreType, error) {
 }
 
 // queueAttributeTies queues on batch the read of, for each supertag, the attribute nodes its
-// current `attribute_of` tuples come from, in one read over graph_tuples_inbound for every
+// current `attribute_of` tuples come from, in one read over graph_tuples_as_of_in for every
 // supertag at once, and sets ties to it once the batch's results are read.
 func queueAttributeTies(batch *pgx.Batch, ties *map[string][]string) {
 	batch.Queue(`

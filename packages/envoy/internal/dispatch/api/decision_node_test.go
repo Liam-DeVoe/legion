@@ -54,11 +54,13 @@ func readDecisionDocument(t *testing.T, database *store.Store, issueKey, slug st
 }
 
 // uploadAs uploads content as the issue's document name, as login, and fails unless the upload
-// is taken.
+// is taken. An upload over a document the issue already holds under name names the token of the
+// version it replaces, and a first upload names none (uploadBaseNamed).
 func uploadAs(t *testing.T, handler http.Handler, issueKey, name, content, login string) {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
-		"name": name, "content": content,
+	path := "/api/v1/issues/" + issueKey + "/artifacts"
+	response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
+		"name": name, "content": content, "precondition": uploadBaseNamed(t, handler, path, name),
 	}, login)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload %s as %s: status=%d body=%s", name, login, response.Code, response.Body.String())
@@ -310,9 +312,11 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
 	expectRefusal(t, "uncertainty on the answered ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "asks.md", "content": ":::ask{#a1 urgency=\"med\" multiple=\"false\" uncertainty=\"low\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n",
+		"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "asks.md"),
 	}, "alice"), http.StatusBadRequest, "INVALID_MARKDOWN", `attribute "uncertainty"`)
 	refusal := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "asks.md", "content": ":::ask{#a1 urgency=\"med\" multiple=\"false\" uncertainty=\"low\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n",
+		"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "asks.md"),
 	}, "alice")
 	for _, never := range []string{"alice", "answer", "content", "paragraph"} {
 		if strings.Contains(refusal.Body.String(), never) {
@@ -352,6 +356,15 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	}
 	requireCaused(t, "d1's from_ask", fromAsk[0], "alice", uploaded)
 	requireCaused(t, "d1's decided_by", requireDecidedBy(t, database, "the upload", d1, "alice"), "alice", uploaded)
+	// The Decisions read answers the question d1 settles on d1's own entry, from its from_ask tuple,
+	// and an ask's own entry settles none.
+	entries := readEntries(t, handler, issue.Key)
+	if entry := requireEntry(t, entries, "d1", refs.BlockNodeKind+":"+d1); !slices.Equal(entry.FromAsk, []string{askID}) {
+		t.Errorf("d1's entry answers the from_ask %v, want the ask %s its from_ask tuple reaches", entry.FromAsk, askID)
+	}
+	if entry := requireEntry(t, entries, "the ask d1 settles", graphstore.KindAsk+":"+askID); entry.FromAsk == nil || len(entry.FromAsk) != 0 {
+		t.Errorf("the ask's own entry answers the from_ask %v, want [] (not null)", entry.FromAsk)
+	}
 	requireValue(t, database, d1, refs.ValueUncertainty, "low")
 	requireValue(t, database, d1, refs.ValueUncertaintyReason, "A client that needs streaming would change it.")
 	requireValueCaused(t, database, d1, refs.ValueUncertainty, "alice", uploaded)

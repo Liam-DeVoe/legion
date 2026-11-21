@@ -27,9 +27,10 @@ const zedDocumentID = "00000000-0000-4000-8000-0000000000d3"
 // writer deletes rows of (objectKind.owners). The batch first takes the owner lock of each of its
 // documents (lockObjectOwners), each once and in ascending owner key (events.LockOwnerRows), and
 // reads under them which rows still stand and the nodes the store holds of them. It then writes
-// its nodes in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused,
-// which takes the run's node rows in ascending (kind, id), and graphstore.Caused, which appends
-// the run's tuples under that cause. It writes no projection row and appends no event.
+// its nodes in runs of consecutive nodes of one cause, each run through graphstore.PlanUncaused
+// and graphstore.QueueNodes, which takes the run's node rows in ascending (kind, id), and
+// graphstore.Caused, which appends the run's tuples under that cause. It writes no projection row
+// and appends no event.
 //
 // Three documents are seeded as a build before the node writers left them, rows with no node: an
 // issue document of ACME-1 with its own artifact.created event, an issue document of CORE-1 with
@@ -221,9 +222,11 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 			Statement: "select 1 from graph_nodes held",
 		}, `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, refs.BlockNodeKind, address)
 	}
+	// The fill moves the node rows and appends their project tuples in one statement
+	// (graphstore.FillScopes), so that statement is the one that takes the tuple step.
 	tuple := holdWrite(t, database, &lockstep.Hold{
 		Name: addresses[0] + "'s project tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with filled as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: refs.BlockNodeKind, FromID: addresses[0], Kind: graphstore.AttributeProject,
 		ToKind: graphstore.KindValue, ToID: "CORE",
@@ -299,7 +302,7 @@ func requireTheCommentScopeBatchLockOrder(t *testing.T) {
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, graphstore.KindComment, comment)
 	tuple := holdWrite(t, database, &lockstep.Hold{
 		Name: "the comment's project tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with filled as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindComment, FromID: comment, Kind: graphstore.AttributeProject,
 		ToKind: graphstore.KindValue, ToID: "SCOP",

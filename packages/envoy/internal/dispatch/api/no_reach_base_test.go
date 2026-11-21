@@ -27,8 +27,8 @@ import (
 // nothing committed beside this test can stand in for what the table answers. A route of the
 // fork point that this table no longer serves fails here, and so does a schema, a field or a
 // query parameter it no longer declares, a field that is no longer required, and any of them
-// whose shape moved. A route, a schema or a field added since the fork point is no regression and
-// is not read.
+// whose shape moved. A route, a schema or a field added since the fork point is no regression
+// and is not read.
 //
 // Two moves are no regression. One is a field that now names the values it takes, as an `enum`
 // over the type it had, where the fork point named none, in a schema this build answers and never
@@ -44,7 +44,8 @@ import (
 // it refuses bodies the fork point took.
 //
 // It runs under the build tag `basebuild` because it reads the repository's history: a checkout
-// that does not hold the named commit (a shallow clone, an archive) has nothing to read.
+// that does not hold the named commit (a shallow clone, an archive) has nothing to read, which is
+// the reason cmd/dispatch's older-build test reads its base the same way.
 func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	commit := testbaseline.Commit(t)

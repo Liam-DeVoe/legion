@@ -2,9 +2,7 @@ package graphstore
 
 import (
 	"context"
-	"fmt"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -12,52 +10,71 @@ import (
 )
 
 // A write made for a run of the command bar names each node it created or changed as changed by
-// that run (dispatch://INFRA-1950/spec#b-r-interaction): one TupleChangedByRun out of the node to
-// the run's interaction, appended by QueueWrite and QueueCaused (and so by Write and Caused) in the
-// write's own transaction and under the write's own cause, after the write's own tuples. A request
-// names its run in a header, which api reads once, holds to the caller's whole credential and to
-// the run's window, and hands every writer below it through WithRun, so no writer takes the run
-// as an argument: each takes the context it writes for. A write on a context
-// holding no run - a background pass, the block-index reconciliation tick, the backfill, a seed -
-// appends none, so no write a request did not make is attributed to a run. Which nodes a write
-// changed is its writer's to say (Node.Changed, Tuple.Changes), never the store's to infer: a block
-// holds no text, so an edit of its words moves nothing a node write compares.
+// that run (spec requirement r-interaction): one TupleChangedByRun out of the node to the run's
+// interaction, appended by the append QueueWrite and QueueCaused queue, in the write's own
+// transaction and under the write's own cause, beside the write's own tuples. A request names its
+// run in a header, which api reads once, holds to the caller's whole credential and to the run's
+// window, and hands every writer below it through store.WithRun on its context; the write phase
+// built for that context carries the run (store.NewWriteBatch), and every writer here reads it off
+// the batch it queues on, so no writer takes the run as an argument. A write phase built for a
+// context holding no run - a background pass, the block-index reconciliation tick, the backfill, a
+// seed - appends none, so no write a request did not make is attributed to a run. Which nodes a
+// write changed is its writer's to say (Node.Changed, Tuple.Changes), never the store's to infer:
+// a block holds no text, so an edit of its words moves nothing a node write compares.
 
-// runKey is the context key WithRun carries a run under.
-type runKey struct{}
-
-// WithRun is ctx carrying run, the uuid of a run of the command bar - its interaction node's id,
-// in the lowercase form Postgres writes a uuid as text - for which every write of this store on
-// that context is made. It is the one way a run reaches this store. Its caller has proved the run
-// live and the caller's own (api's withinGoingRun); nothing here asks either again.
-func WithRun(ctx context.Context, run string) context.Context {
-	return context.WithValue(ctx, runKey{}, run)
-}
-
-// runOf is the run ctx carries (WithRun), and the empty string where it carries none.
-func runOf(ctx context.Context) string {
-	run, _ := ctx.Value(runKey{}).(string)
-	return run
-}
-
-// MadeForRun is whether ctx carries a run (WithRun). A writer asks it only where it writes a node
-// for no other reason than to name what a run changed - the issue PATCH, whose own write reaches
-// no node of the store (api's patchIssue), and the edit of an ask's or a comment's words, whose
-// own write reaches no node of the store either (api's editAsk and editComment) - so that a write
-// made for no run sends nothing more than it did.
-func MadeForRun(ctx context.Context) bool { return runOf(ctx) != "" }
-
-// changedByRunMarks is the TupleChangedByRun each node a write marks changed owes the run ctx
-// carries, one for each node: out of each node handed with Node.Changed, caused as that node's
-// write is and dated and signed as it is, or as its ChangedAt and ChangedBy say where it carries
-// them, and out of the node each fact marked Tuple.Changes goes out of, as that fact is. It
-// answers nil, and allocates nothing, on a context that carries no run.
+// PlanChangedForRun is the write of a writer whose own write reaches no node of the store, and
+// that writes a node for no other reason than to name it changed by the run ctx carries (spec
+// requirement r-interaction): the issue PATCH (api's patchIssue), and the edit of an ask's or a
+// comment's words (api's editAsk and editComment). On a context that carries no run it calls
+// nothing and plans nothing, and answers the zero Uncaused, for which QueueNodes and QueueCaused
+// queue nothing, so a write made for no run sends no statement more than it did.
 //
-// A write holds each node once (Write), so the nodes need no comparison among themselves; a
+// On a context that carries a run it plans the write of the node that node answers, as
+// PlanUncaused plans one: the node as the object's create and the backfill write it - in its
+// project, or between its parties, made by its creator at its created_at - restating the object,
+// so a node already there keeps the state, the visibility, the made_at and the made_by the store
+// holds and moves nothing else, and an object a process of the release before created gets the
+// node the backfill would give it, which the backfill, writing only a node the store lacks, then
+// leaves as it is. node is called only then, in the writer's read phase, so a read it makes to
+// build the node - the scope of an ask or a comment (ScopeOf) - is sent for a run alone. The
+// changed_by_run the node owes is the change's own, dated at at and signed by by, where the node
+// is dated and signed as its object was made, and the Uncaused holds it for QueueCaused, which
+// appends it with what the node states under the writer's own event, as a create's facts are,
+// unless the node already stands changed by that run. The writer queues the node write
+// (QueueNodes) last of the node rows its transaction takes, after its own rows and their
+// documents, and QueueCaused after its event, on a write phase made for the same run.
+func PlanChangedForRun(ctx context.Context, at time.Time, by model.Actor, node func() (Node, error)) (Uncaused, error) {
+	if store.RunOf(ctx) == "" {
+		return Uncaused{}, nil
+	}
+	changed, err := node()
+	if err != nil {
+		return Uncaused{}, err
+	}
+	write := PlanUncaused([]Node{changed}, nil)
+	write.changes = []runChange{{kind: changed.Kind, id: changed.ID, at: at, by: by}}
+	return write, nil
+}
+
+// runChange is a node PlanChangedForRun names changed by the run, dated and signed as the change
+// was made rather than as the node was.
+type runChange struct {
+	kind, id string
+	at       time.Time
+	by       model.Actor
+}
+
+// changedByRunMarks is the TupleChangedByRun each node a write marks changed owes run, one for
+// each node: out of each node handed with Node.Changed, caused as that node's write is and dated
+// and signed as it is, out of each node of changes, dated and signed as the change says
+// (PlanChangedForRun), and out of the node each fact marked Tuple.Changes goes out of, as that
+// fact is. It answers nil, and allocates nothing, for no run. The append states each of them only
+// where the node does not stand changed by run already (queueAppend).
+//
+// A write holds each node once (QueueWrite), so the nodes need no comparison among themselves; a
 // marked fact is compared with what is already marked, since a retarget states two facts out of
 // one node and the node may be written beside them.
-func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tuple {
-	run := runOf(ctx)
+func changedByRunMarks(run string, nodes []Node, changes []runChange, tuples []Tuple) []Tuple {
 	if run == "" {
 		return nil
 	}
@@ -69,14 +86,12 @@ func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tupl
 		})
 	}
 	for _, node := range nodes {
-		if !node.Changed {
-			continue
+		if node.Changed {
+			mark(node.Kind, node.ID, node.MadeAt, node.MadeBy, node.SourceEvent)
 		}
-		at, who := node.MadeAt, node.MadeBy
-		if !node.ChangedAt.IsZero() {
-			at, who = node.ChangedAt, node.ChangedBy
-		}
-		mark(node.Kind, node.ID, at, who, node.SourceEvent)
+	}
+	for _, change := range changes {
+		mark(change.kind, change.id, change.at, change.by, NoEvent)
 	}
 	for _, tuple := range tuples {
 		if !tuple.Changes || slices.ContainsFunc(marks, func(marked Tuple) bool {
@@ -87,49 +102,4 @@ func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tupl
 		mark(tuple.FromKind, tuple.FromID, tuple.At, tuple.Who, tuple.SourceEvent)
 	}
 	return marks
-}
-
-// heldChangedByRun is, of the nodes the text arrays at kinds and ids name by kind and id, each
-// that already holds an asserted changed_by_run tuple to the interaction of the run the parameter
-// at run names: the newest tuple of each such relation, read as every relation as it stands now
-// is read (CurrentTupleRead), through graph_tuples_inbound, which keys the run's interaction, the
-// kind and then the node.
-func heldChangedByRun(run, kinds, ids string) string {
-	return `
-	select from_kind, from_id from (
-		` + CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = '`+KindInteraction+`' and t.to_id = `+run+`::text and t.kind = '`+TupleChangedByRun+`'
-			and (t.from_kind, t.from_id) in (select kind, id from unnest(`+kinds+`::text[], `+ids+`::text[]) as marked (kind, id))`) + `
-	) newest
-	where asserted`
-}
-
-// queueChangedByRun queues the append of marks less each the store already holds: a node that
-// holds an asserted changed_by_run to the run stands changed by it, so a second write of it for
-// the same run states nothing, and the tuple is appended once for each node and run. The one
-// statement reads what the store holds and appends the rest, in the order marks names them, in
-// the write's own transaction; it queues none for no marks, so a write on a context with no run
-// sends nothing more. The read takes no lock: what orders two writes of one node for one run is
-// the row each takes before it - the node's own row, which QueueWrite's node write and QueueNodes
-// before QueueCaused hold until the transaction ends, or the owner row a pointer's writer takes
-// first - so the second's statement reads, in a snapshot of its own, the tuple the first
-// committed.
-func queueChangedByRun(b *store.WriteBatch, marks []Tuple) error {
-	if len(marks) == 0 {
-		return nil
-	}
-	params, err := tupleParams(marks)
-	if err != nil {
-		return err
-	}
-	run := "$" + strconv.Itoa(len(params)+1)
-	b.Queue(fmt.Sprintf("append the changed_by_run tuples of run %s", marks[0].ToID), `
-		insert into graph_tuples (`+tupleWriteColumns+`)
-		select `+tupleSelect+`
-		from unnest(`+tupleArrays(1)+`) with ordinality as tuple(`+tupleWriteColumns+`, position)
-		where (tuple.from_kind, tuple.from_id) not in (`+heldChangedByRun(run, "$1", "$2")+`)
-		order by position
-		on conflict do nothing
-	`, append(params, marks[0].ToID)...)
-	return nil
 }

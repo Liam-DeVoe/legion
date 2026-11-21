@@ -81,7 +81,8 @@ func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the
 // row's first write left them, Project, which never moves once a write has stated it
-// (ErrProjectMoved), and the state and the visibility a write that Restates the node keeps.
+// (ErrProjectMoved), and the state, the visibility and the attributes a write that Restates the
+// node keeps.
 //
 // Project is the key of the project the node belongs to, and Parties the parties a node no
 // project owns is between (PartyPerson, PartySession). Both are base attributes, stated by the
@@ -96,53 +97,61 @@ type Node struct {
 	MadeAt                                time.Time
 	MadeBy                                model.Actor
 	SourceEvent                           int64
-	// Restates says the write restates a node whose state and visibility its writer does not
-	// own: the writer writes the node again for what it does own - a block's text, a comment's
-	// anchor, a document's address - and says of the state only whether the node is there
-	// (StateLive) or not (StateGone). Over a node the store holds, such a write keeps the stored
-	// visibility, and keeps a stored state of live, proposed, settled or overtaken, since a
-	// write that marked the node so is not this writer's to undo: it writes its state only over
-	// a node stored gone, which comes back live, and writes gone whenever it says gone. A node
-	// the store does not hold is made as the writer states it. Every writer that writes a node
-	// again for facts of its own restates it: the block index (refs.IndexBlocks), CommentFacts,
-	// IssueNode, ArtifactNode, AskNode and MessageNode, the backfill
+	// Restates says the write restates a node whose state, visibility and attributes its writer
+	// does not own: the writer writes the node again for what it does own - a block's text, a
+	// comment's anchor, a document's address - and says of the state only whether the node is
+	// there (StateLive) or not (StateGone). Over a node the store holds, such a write keeps the
+	// stored visibility and attributes, and keeps a stored state of live, proposed, settled or
+	// overtaken, since a write that marked the node so is not this writer's to undo: it writes its
+	// state only over a node stored gone, which comes back live, and writes gone whenever it says
+	// gone. A node the store does not hold is made as the writer states it. Every writer that
+	// writes a node again for facts of its own restates it: the block index (refs.IndexBlocks),
+	// CommentFacts, IssueNode, ArtifactNode, AskNode and MessageNode, the backfill
 	// (internal/dispatch/graphcensus), and the seed (cmd/dispatch-seed), which writes its
 	// author's node and its followers' session nodes again in later batches. A write that means
-	// to move a node's state or visibility leaves it false. WriteArms reads none of it: its
-	// upsert moves nothing on a node already there.
+	// to move a node's state, visibility or attributes leaves it false. WriteArms reads none of
+	// it: its upsert moves nothing on a node already there.
 	Restates bool
 	// KeepsCause says the write keeps the cause the store holds of a node already there, its
 	// row's source_event, whatever else of the row it moves. It is for a write that moves only a
 	// base attribute of a node another write caused: a request's write of a node's state (api's
-	// writeNodeState), at NoEvent, through Write. That write is no cause of the node's other
-	// facts, and a row it put at the sentinel would take the event of the next write QueueCaused
-	// moves onto it - the next index pass of a block's document, for a version that changed
-	// nothing of the block. The base attributes it states still carry its own SourceEvent, so one
-	// at NoEvent states each at the sentinel, which no repeat key drops: proposed, live and
-	// proposed again are three tuples; they are stated by a statement of their own before the
-	// move, since such a row carries no mark (queueKeptCauses). A node the store does not hold is
-	// made at the write's own SourceEvent, since it has no cause to keep.
+	// writeNodeState), at NoEvent. That write is no cause of the node's other facts, and a row it
+	// put at the sentinel would take the event of the next held write QueueCaused moves onto it
+	// - the next index pass of a block's document, for a version that changed nothing of the
+	// block. The base attributes it states still carry its own SourceEvent, so one at NoEvent
+	// states each at the sentinel, which no repeat key drops: proposed, live and proposed again
+	// are three tuples; its node write states them itself, in its move, since the row carries no
+	// mark in place of the cause it keeps (nodeMark). A node the store does not hold is made at
+	// the write's own SourceEvent, since it has no cause to keep.
 	KeepsCause bool
 	// Changed marks a node this write created or changed, which a write made for a run names as
-	// changed by it (WithRun): QueueWrite and QueueCaused, and so Write and Caused, on a context
-	// holding a run, append one TupleChangedByRun from it to that run's interaction. Its writer
-	// sets it, because the store cannot infer it: a block's words are no column of its node, so
-	// an edit of them moves nothing a node write compares. A node a write only names - an
-	// author's person or session node, a block row a pass gives the node it lacked - is never
-	// marked. No read answers it.
+	// changed by it (store.WithRun): QueueWrite and QueueCaused, on a write phase made for a run,
+	// append one TupleChangedByRun from it to that run's interaction, dated and signed as the
+	// node is. Its writer sets it, because the store cannot infer it: a block's words are no
+	// column of its node, so an edit of them moves nothing a node write compares. A node a write
+	// only names - an author's person or session node, a block row a pass gives the node it
+	// lacked - is never marked. A writer that changes a node it writes as another write made it,
+	// so that the tuple is dated and signed otherwise than the node, names it through
+	// PlanChangedForRun instead. No read answers it.
 	Changed bool
-	// ChangedAt and ChangedBy date and sign the changed_by_run a node marked Changed owes, for a
-	// writer that changes a node it writes as another write made it: the issue PATCH (api's
-	// patchIssue) writes the issue's node as the create and the backfill write it, made at the
-	// issue's created_at by its creator, while its tuple says that the PATCH changed the issue,
-	// then and by its writer, and the edit of an ask's or a comment's words (api's editAsk and
-	// editComment) writes that node the same way, dated at the edit's edited_at. A writer sets
-	// both or neither: the zero ChangedAt leaves the tuple dated and signed as the node is, MadeAt
-	// and MadeBy, which is every other writer, since the zero actor names a writer of its own (the
-	// deployment's shared token) and so cannot say that ChangedBy is unset. No column holds
-	// either, and no read answers them.
-	ChangedAt time.Time
-	ChangedBy model.Actor
+}
+
+// AsStateWrite sets each of nodes, in place, to be written again at state by who at at, as a
+// request's write of a node's state writes it (api's writeNodeState): the node as the store holds
+// it but for its state, which the write moves (Restates false), keeping the cause the store holds
+// of it (KeepsCause), marked changed, and at the sentinel, so its write states one state tuple at
+// the sentinel signed by who. Every writer that moves a node's state, or takes a node's subtree
+// gone beside a write of its own, sets the nodes it read so: the state route and the settle
+// (writeNodeState, with what NodesBeneath reads beneath a node it takes gone), and the statement
+// that takes every stale lens gone with all that stands under it (graphcensus's
+// StateStaleLensesGone), which the block-index tick runs after its orphan sweep and a document's
+// removal (api's removeArtifact) runs too.
+func AsStateWrite(nodes []Node, state string, at time.Time, who model.Actor) {
+	for index := range nodes {
+		each := &nodes[index]
+		each.State, each.Restates, each.KeepsCause, each.Changed = state, false, true, true
+		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
+	}
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is

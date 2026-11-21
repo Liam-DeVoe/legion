@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives what an author is, from both sides, against a running server (dispatch://INFRA-1950's
-# c-agent-bearer-has-no-author, dispatch://INFRA-1950/spec#b-r-author). On the deployment's shared
+# Drives what an author is, from both sides, against a running server (check
+# c-agent-bearer-has-no-author, spec requirement r-author). On the deployment's shared
 # agent bearer, which every holder presents alike, it writes a lens on a spec and reads it back at
 # `project`, its author the session its body names (attribution, which proves nobody); asks for
 # `author` on a lens write and is refused 403 AUTHOR_NAMES_NOBODY, the words of

@@ -69,7 +69,7 @@ function payloadStrings(event: DispatchEvent, key: string): readonly string[] | 
 }
 
 /** Whether `login` is the signed-in viewer's, compared as the server compares logins. */
-function isViewer(login: string | undefined, viewer: string | undefined): boolean {
+export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
   return (
     login !== undefined &&
     viewer !== undefined &&
@@ -1557,10 +1557,10 @@ function addressUnder(address: string, owner: string, next: string): boolean {
   );
 }
 
-/** The slug of the project document `event` is on, where its payload carries it: a renamed or
- *  removed document's own, an edited comment's document's (`artifact_slug`), and an edited
- *  ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through the
- *  ask's own route the one that holds its typed block (`block_artifact`), or for an approval
+/** The slug of the project document `event` is on, where its payload carries it: a created,
+ *  renamed or removed document's own, an edited comment's document's (`artifact_slug`), and an
+ *  edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through
+ *  the ask's own route the one that holds its typed block (`block_artifact`), or for an approval
  *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
  *  of the event log attaches to every ask event carrying `approval`), each the document the ask
  *  is on. Four events carry none, and name the document by its id alone, which no address is
@@ -1570,6 +1570,7 @@ function addressUnder(address: string, owner: string, next: string): boolean {
  *  settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
+    case "artifact.created":
     case "artifact.removed":
     case "artifact.renamed":
       return event.payload.artifact.slug;

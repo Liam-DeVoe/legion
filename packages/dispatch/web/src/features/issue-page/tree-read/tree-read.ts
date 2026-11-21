@@ -9,16 +9,16 @@ import {
 } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import {
-  api,
-  type IssueTreeAnswer,
-  type IssueTreeNode,
-  type IssueTreeTuple,
-} from "../../../api/client";
+import { api } from "../../../api/client";
 import { liveFeedUp, onLiveFeedBack } from "../../../api/live-socket";
 import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
-import type { IssueDetails } from "../../../api/types";
+import type {
+  IssueDetails,
+  IssueTreeNode,
+  IssueTreeRead,
+  IssueTreeTuple,
+} from "../../../api/types";
 import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { writesOf } from "../../writes/write-store";
 import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
@@ -26,10 +26,9 @@ import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`), which the model serves: the one file
  * of the issue page that names the route. Every other file reads the answer through the names
- * below, so the day the answer's shape moves onto the generated contract only these aliases
- * change.
+ * below, which are the generated contract's (`IssueTreeRead`, `IssueTreeNode`, `IssueTreeTuple`).
  */
-export type TreeAnswer = IssueTreeAnswer;
+export type TreeAnswer = IssueTreeRead;
 export type TreeAnswerNode = IssueTreeNode;
 export type TreeTuple = IssueTreeTuple;
 
@@ -223,7 +222,9 @@ export const viewQuery = (key: string, view: TreeView) =>
  *  they are. The state is the tree read's own. */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
+  readonly errorUpdateCount: number;
   readonly isError: boolean;
+  readonly isFetching: boolean;
   readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
 }
@@ -279,6 +280,7 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     data: answer,
     errorUpdateCount,
     isError,
+    isFetching,
     isPending,
     isSuccess,
     refetch,
@@ -288,8 +290,18 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     [answer, issue]
   );
   const blocksOf = useMemo(
-    () => byRole((role): TreeBlocksRead => ({ data: blocks(role), isError, isSuccess, refetch })),
-    [blocks, isError, isSuccess, refetch]
+    () =>
+      byRole(
+        (role): TreeBlocksRead => ({
+          data: blocks(role),
+          errorUpdateCount,
+          isError,
+          isFetching,
+          isSuccess,
+          refetch,
+        })
+      ),
+    [blocks, errorUpdateCount, isError, isFetching, isSuccess, refetch]
   );
   return useMemo(
     () => ({

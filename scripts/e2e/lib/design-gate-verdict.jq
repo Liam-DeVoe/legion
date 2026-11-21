@@ -13,8 +13,9 @@
 # to the human, held one of the spec's blocks while the block was still open at the hand-back. A
 # block the version holds counts as open when its ask held no answer and no resolution at the
 # hand-back's time: the ask row's answer.at and resolution.at are each absent or later. A person's
-# answer is held on the ask alone, so a version this release writes records no state on a block;
-# a version the release before wrote records it, and a block it records state="open" counts as
+# answer is held on the ask alone, so a version this release writes records a block's state only
+# once its ask is answered or resolved, and none while it is open; a version the release before
+# wrote records it always, and a block it records state="open" counts as
 # open whatever its ask's times. The ask's own created_at is never read, since Dispatch indexes a
 # block as an ask when it settles the document, after the edit that wrote it. Only a block whose
 # id is one of the spec's block asks counts, so an :::ask quoted in code (a fence, or a list item

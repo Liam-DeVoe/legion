@@ -7,7 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
 import { issueTreeKey } from "../../../api/queries";
-import type { Actor, DecisionKeep } from "../../../api/types";
+import type { Actor, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
   pageInkText,
@@ -45,6 +45,7 @@ import {
 } from "../tree-read/tree-read";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
+  AGENT,
   answeredAsk,
   ask,
   changeComment,
@@ -56,9 +57,11 @@ import {
   KEY,
   node,
   openAsk,
+  personDecision,
   READER,
   READER_ACTOR,
   SPEC_DOCUMENT,
+  SPEC_SLUG,
   shaped,
   specRef,
   statement,
@@ -97,8 +100,9 @@ const KEPT: DecisionKeep = {
 };
 
 /** One issue that holds an entry of every part: an open question, two decisions a statement
- *  rests on that wait, one the reader kept, an answered ask with the agent's write-up of it
- *  under it, a declined ask, and two decisions no statement rests on. */
+ *  rests on that wait, one the reader kept, an answered ask, which is the reader's decision,
+ *  with the agent's reading of it under it, a declined ask, and two decisions no statement
+ *  rests on. */
 function wholeIssue(): {
   asks: DecisionsAsk[];
   children: TreeNode[];
@@ -124,7 +128,15 @@ function wholeIssue(): {
         "a-answered",
         { at: "2026-11-14T09:00:00Z", selected: ["Changes needed"], text: STORED },
         {
-          children: [decisionNode("reading", { text: "The reader wants the rail kept." })],
+          children: [
+            node({
+              author: AGENT,
+              id: `${SPEC_SLUG}#b-reading`,
+              reference: specRef("reading"),
+              text: "The reader wants the rail kept.",
+              type: "reading",
+            }),
+          ],
           options: [{ label: "Works" }, { label: "Changes needed" }],
           text: "Does the built page work for you?",
         }
@@ -137,28 +149,54 @@ function wholeIssue(): {
       decisionNode("replaced"),
     ],
     made: [
-      decision("reading", { asks: ["a-answered"], kind: "person", waiting_review: false }),
+      personDecision("a-answered"),
       decision("first", {
-        changed_at: "2026-11-10T12:00:00Z",
-        links: [shaped(specRef("s1"))],
+        decision: {
+          changed_at: "2026-11-10T12:00:00Z",
+          links: [shaped(specRef("s1"))],
+        },
       }),
       decision("second", {
-        changed_at: "2026-11-11T12:00:00Z",
-        links: [shaped(specRef("s1")), shaped(specRef("s2")), shaped(specRef("s3"))],
-        unsure: true,
+        decision: {
+          changed_at: "2026-11-11T12:00:00Z",
+          links: [shaped(specRef("s1")), shaped(specRef("s2")), shaped(specRef("s3"))],
+          unsure: true,
+        },
       }),
-      decision("kept", { kept: KEPT, links: [shaped(specRef("s2"))], waiting_review: false }),
+      decision("kept", {
+        decision: {
+          kept: KEPT,
+          links: [shaped(specRef("s2"))],
+          waiting_review: false,
+        },
+      }),
       decision("minor"),
       decision("replaced", {
-        links: [shaped(specRef("s1"))],
-        replaced: true,
-        waiting_review: false,
+        decision: {
+          links: [shaped(specRef("s1"))],
+          replaced: true,
+          waiting_review: false,
+        },
       }),
     ],
   };
 }
 
 const D = (block: string) => decisionNode(block).id;
+
+/** `made` as a later read answers it, the decision of block `block` changed by `members`: the
+ *  model's decision the read answers on that node (`decision`). */
+function changedIn(
+  made: readonly TreeAnswerNode[],
+  block: string,
+  members: Partial<Decision>
+): TreeAnswerNode[] {
+  return made.map((one) =>
+    one.block_id === block && one.decision !== undefined
+      ? { ...one, decision: { ...one.decision, ...members } }
+      : one
+  );
+}
 
 /** The page's own `issue` scope, which every one of the outline's keys is registered in. */
 function IssueScope(): ReactNode {
@@ -725,7 +763,13 @@ test("the view says its decisions could not be read where both of their reads fa
 test("the view says nothing of an issue's decisions while the tree read is out, though its view read answered", async () => {
   const view = await renderReads(
     { asks: "answered", tree: "pending", view: "answered" },
-    [decision("first", { links: [shaped(specRef("s1"))] })],
+    [
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+    ],
     [statement("s1"), decisionNode("first")]
   );
   try {
@@ -750,7 +794,13 @@ test("the view says its decisions could not be read where the tree read failed, 
   const user = userEvent.setup();
   const view = await renderReads(
     { asks: "answered", tree: "failed", view: "answered" },
-    [decision("first", { links: [shaped(specRef("s1"))] })],
+    [
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+    ],
     [statement("s1"), decisionNode("first")]
   );
   try {
@@ -790,7 +840,13 @@ test("Retry on the decisions' failed line reads them again and draws what they h
   // The server fails every read of the tree until Retry is pressed, and then holds one decision
   // a statement rests on, which waits for the reader's review.
   let down = true;
-  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  const made = [
+    decision("first", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+  ];
   treeReads ??= spyOn(api, "getIssueTree");
   treeReads.mockImplementation(async () => {
     if (down) throw new ApiError(503, { code: "UNAVAILABLE", error: "down" });
@@ -884,7 +940,13 @@ test("the view says its open questions could not be read where the asks read fai
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  const made = [
+    decision("first", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+  ];
   treeReads ??= spyOn(api, "getIssueTree");
   treeReads.mockImplementation(async () => treeAnswer(made));
   client.setQueryData(issueTreeKey(KEY), treeAnswer(made));
@@ -1058,7 +1120,13 @@ test("every state of the tree read, the decisions view read and the asks read dr
     {
       children: [statement("s1"), decisionNode("first")],
       holds: true,
-      made: [decision("first", { links: [shaped(specRef("s1"))] })],
+      made: [
+        decision("first", {
+          decision: {
+            links: [shaped(specRef("s1"))],
+          },
+        }),
+      ],
     },
     { children: [statement("s1")], holds: false, made: [] },
   ];
@@ -1168,7 +1236,13 @@ function retryOn(drawn: RenderResult, read: "asks" | "decisions"): HTMLElement |
 // focus stays in the list once the line goes: at no point is it left on the page's body.
 test("a failed read's line takes the focus the empty tree holds, and the focus stays in the list once it goes", async () => {
   const user = userEvent.setup();
-  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  const made = [
+    decision("first", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+  ];
 
   // The decisions' reads, the tree read and the decisions view, fail until the reader presses
   // Retry with Enter; then they answer, and the tree the page builds from that read holds the
@@ -1455,9 +1529,7 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
   const written = { ...KEPT, block_id: "second", kept_at: "2026-11-16T09:00:00Z" };
   const kept = spyOn(api, "keepDecision").mockImplementation(async () => {
     view.serve({
-      made: whole.made.map((made) =>
-        made.id === "second" ? { ...made, kept: written, waiting_review: false } : made
-      ),
+      made: changedIn(whole.made, "second", { kept: written, waiting_review: false }),
     });
     return written as never;
   });
@@ -1508,15 +1580,10 @@ test("a decision that leaves the review list by no act of the reader keeps the f
 
   // The reader is on the decision, and the decisions view, read again, says bob kept it.
   const keptByBob = treeAnswer(
-    whole.made.map((made) =>
-      made.id === "second"
-        ? {
-            ...made,
-            kept: { ...KEPT, block_id: "second", kept_by: "bob" },
-            waiting_review: false,
-          }
-        : made
-    )
+    changedIn(whole.made, "second", {
+      kept: { ...KEPT, block_id: "second", kept_by: "bob" },
+      waiting_review: false,
+    })
   );
   const kept = renderBody(whole);
   await act(async () => rowOf(kept, D("second")).focus());
@@ -1536,11 +1603,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   await act(async () =>
     replaced.client.setQueryData(
       viewKey(KEY, "decisions"),
-      treeAnswer(
-        whole.made.map((made) =>
-          made.id === "second" ? { ...made, replaced: true, waiting_review: false } : made
-        )
-      )
+      treeAnswer(changedIn(whole.made, "second", { replaced: true, waiting_review: false }))
     )
   );
   await waitFor(() => expect(rowsOfPart(replaced, "review")).toEqual([D("first")]));
@@ -1621,11 +1684,7 @@ test("an entry that moves to another part by no act of the reader keeps the focu
   await act(async () =>
     tied.client.setQueryData(
       viewKey(KEY, "decisions"),
-      treeAnswer(
-        whole.made.map((made) =>
-          made.id === "minor" ? { ...made, links: [shaped(specRef("s3"))] } : made
-        )
-      )
+      treeAnswer(changedIn(whole.made, "minor", { links: [shaped(specRef("s3"))] }))
     )
   );
   await waitFor(() => expect(rowsOfPart(tied, "review")).toContain(D("minor")));
@@ -1682,8 +1741,18 @@ test("a focused entry that another person deletes gives the focus to its neighbo
   const own = {
     children: [statement("s1"), openAsk("q-open"), decisionNode("first"), decisionNode("kept")],
     made: [
-      decision("first", { links: [shaped(specRef("s1"))] }),
-      decision("kept", { kept: KEPT, links: [shaped(specRef("s1"))], waiting_review: false }),
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+      decision("kept", {
+        decision: {
+          kept: KEPT,
+          links: [shaped(specRef("s1"))],
+          waiting_review: false,
+        },
+      }),
     ],
   };
   const only = renderBody(own);
@@ -1698,7 +1767,13 @@ test("a focused entry that another person deletes gives the focus to its neighbo
   // it in the list.
   const lone = {
     children: [statement("s1"), decisionNode("first")],
-    made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    made: [
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+    ],
   };
   const alone = renderBody(lone);
   await act(async () => rowOf(alone, D("first")).focus());
@@ -1835,7 +1910,13 @@ test("a decision reaches each statement it shaped, and every entry links to its 
       statement("s1"),
       openAsk("q2", true, { children: [decisionNode("wordless")], text: "" }),
     ],
-    made: [decision("wordless", { links: [shaped(specRef("s1"))] })],
+    made: [
+      decision("wordless", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+    ],
   });
   const parent = rowOf(wordless, D("wordless")).querySelector("[data-node-parent-line]");
   expect(parent?.getAttribute("data-parent-id")).toBe("q2");
@@ -1857,7 +1938,13 @@ test("a focused row says Author unknown for a decision with no author, and gives
       openAsk("q-planner", true, { author: planner }),
       decisionNode("first"),
     ],
-    made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    made: [
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+    ],
   });
 
   const decided = rowOf(view, D("first"));
@@ -1886,7 +1973,13 @@ test("each statement on the informs line is named within 32 characters", () => {
       statement("s2"),
       decisionNode("first"),
     ],
-    made: [decision("first", { links: [shaped(specRef("s1")), shaped(specRef("s2"))] })],
+    made: [
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+        },
+      }),
+    ],
   });
 
   const informs = rowOf(view, D("first")).querySelector("[data-decision-informs]");
@@ -1915,7 +2008,13 @@ test("each statement on the informs line is named within 32 characters", () => {
       statement("s1", { text: "Rows stand alone.\n\nEach row draws one node of the tree." }),
       decisionNode("first"),
     ],
-    made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    made: [
+      decision("first", {
+        decision: {
+          links: [shaped(specRef("s1"))],
+        },
+      }),
+    ],
   });
   expect(words(rowOf(short, D("first")).querySelector("[data-decision-statement] a"))).toBe(
     "Rows stand alone."
@@ -2156,7 +2255,13 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await act(async () =>
     early.client.setQueryData(
       viewKey(KEY, "decisions"),
-      treeAnswer([decision("first", { links: [shaped(specRef("s1"))] })])
+      treeAnswer([
+        decision("first", {
+          decision: {
+            links: [shaped(specRef("s1"))],
+          },
+        }),
+      ])
     )
   );
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));

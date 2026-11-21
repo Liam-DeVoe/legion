@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // versionProjections are the census's kinds of the documents of an issue, a project or a
@@ -328,15 +330,12 @@ func PlanMissingVersionNodes(ctx context.Context, q graphstore.Queryer, artifact
 }
 
 // Queue queues on b the write of the version nodes the drain planned and their facts
-// (graphstore.QueueWrite), for the run ctx carries; a drain that found none queues nothing.
-func (m MissingVersionNodes) Queue(ctx context.Context, b *store.WriteBatch) error {
+// (graphstore.QueueWrite), for the run b carries; a drain that found none queues nothing.
+func (m MissingVersionNodes) Queue(b *store.WriteBatch) {
 	if len(m.nodes) == 0 {
-		return nil
+		return
 	}
-	if err := graphstore.QueueWrite(ctx, b, m.nodes, m.tuples); err != nil {
-		return fmt.Errorf("write the missing version nodes: %w", err)
-	}
-	return nil
+	graphstore.QueueWrite(b, m.nodes, m.tuples)
 }
 
 // owedVersionNodes reads, through q, the artifact_versions rows v the join rows names, bound to
@@ -388,6 +387,11 @@ func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, li
 		if err := read.Scan(append([]any{&number, &createdAt, &authorJSON, &mime, &size, &digest}, owner.Targets()...)...); err != nil {
 			return nil, nil, 0, err
 		}
+		// The owner is read as it stands at this run, which can be after the document became a
+		// query node, and its definition version is the one the query node holds now, which says
+		// nothing of the definition the version was written under: a version this pass writes the
+		// node of names none (R14).
+		owner.DefinitionVersion = 0
 		who := backfillActor
 		if len(authorJSON) > 0 {
 			if err := json.Unmarshal(authorJSON, &who); err != nil {
@@ -407,4 +411,124 @@ func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, li
 		return nil, nil, 0, err
 	}
 	return nodes, tuples, rowsRead, nil
+}
+
+// VersionRenderCensus is what the census reads of the versions version_renders holds: how many
+// rows it read, each version rendered from the tree as of the time its row records, and how many
+// are differences, the first reportedDifferences of them each at the version's address with its
+// cause. A version whose stored markdown is not its render is one: the stored markdown of such a
+// version is the rendering cache, and the render is what the version is, so the two agree byte for
+// byte. A row whose version the store no longer holds is one too: every delete of a version row
+// deletes its version_renders row beside it (docs.ForgetVersionRenders), and a row left behind
+// would render a version that is gone, or one written later at its number. A version that holds no
+// row answers its stored bytes, which no render describes, and is none of this census.
+type VersionRenderCensus struct {
+	Versions, Differences int64
+	Reported              []Difference
+}
+
+// VersionMarkdownAt renders the document artifactID from the tree as of at, through q. docs'
+// renderer is the one, which this package cannot import (docs imports it), so the census command
+// hands it over.
+type VersionMarkdownAt func(ctx context.Context, q graphstore.Queryer, artifactID string, at time.Time) (string, error)
+
+// versionRenderBatch is how many versions CompareVersionRenders reads a statement, each batch after
+// the last version of the one before, so no read holds more stored markdown than that at once.
+const versionRenderBatch = 50
+
+// versionRendersStatement is the rows of version_renders after the version $2 of the document $1,
+// by document and number, at most $3: each one's document, number, its time, the address of its
+// version node, whether the store holds that version, and the version's stored markdown.
+var versionRendersStatement = `
+	select r.artifact_id::text, r.number, r.at, a.ref_key || '@v' || r.number, v.artifact_id is not null, v.markdown
+	from version_renders r
+	join artifacts a on a.id = r.artifact_id
+	left join artifact_versions v on v.artifact_id = r.artifact_id and v.number = r.number
+	where (r.artifact_id, r.number) > ($1::uuid, $2)
+	order by r.artifact_id, r.number
+	limit $3`
+
+// versionRenderRow is one row versionRendersStatement answers.
+type versionRenderRow struct {
+	artifactID, address string
+	number              int
+	at                  time.Time
+	held                bool
+	markdown            *string
+}
+
+// CompareVersionRenders holds each row version_renders holds to its version: to a version the
+// store holds, whose stored markdown it compares with render, the tree as of the time the row
+// records, through q; a row whose version the store does not hold is a difference unrendered. It
+// reads them in batches of versionRenderBatch.
+func CompareVersionRenders(ctx context.Context, q graphstore.Queryer, render VersionMarkdownAt) (VersionRenderCensus, error) {
+	var census VersionRenderCensus
+	after := versionRenderRow{artifactID: "00000000-0000-0000-0000-000000000000"}
+	for {
+		rows, err := q.Query(ctx, versionRendersStatement, after.artifactID, after.number, versionRenderBatch)
+		if err != nil {
+			return VersionRenderCensus{}, fmt.Errorf("read the versions version_renders holds: %w", err)
+		}
+		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (versionRenderRow, error) {
+			var version versionRenderRow
+			err := row.Scan(&version.artifactID, &version.number, &version.at, &version.address, &version.held, &version.markdown)
+			return version, err
+		})
+		if err != nil {
+			return VersionRenderCensus{}, fmt.Errorf("read the versions version_renders holds: %w", err)
+		}
+		for _, version := range batch {
+			census.Versions++
+			cause := "the row names a version the store does not hold"
+			if version.held {
+				rendered, err := render(ctx, q, version.artifactID, version.at)
+				if err != nil {
+					return VersionRenderCensus{}, fmt.Errorf("render %s as of %s: %w", version.address, version.at, err)
+				}
+				cause = renderDifference(version.markdown, rendered)
+			}
+			if cause == "" {
+				continue
+			}
+			census.Differences++
+			if len(census.Reported) < reportedDifferences {
+				census.Reported = append(census.Reported, Difference{Cause: cause, At: "version " + version.address})
+			}
+		}
+		if len(batch) < versionRenderBatch {
+			return census, nil
+		}
+		after = batch[len(batch)-1]
+	}
+}
+
+// renderDifference says how stored, a version's markdown, differs from rendered, its render, and
+// is empty where the two are one byte string.
+func renderDifference(stored *string, rendered string) string {
+	if stored == nil {
+		return "the version stores no markdown, and its render holds " + strconv.Itoa(len(rendered)) + " bytes"
+	}
+	if *stored == rendered {
+		return ""
+	}
+	at := 0
+	for at < len(*stored) && at < len(rendered) && (*stored)[at] == rendered[at] {
+		at++
+	}
+	return fmt.Sprintf("the stored markdown (%d bytes) and the render of the tree at the row's time (%d bytes) differ from byte %d",
+		len(*stored), len(rendered), at)
+}
+
+// writeVersionRenders prints the census of the rendered versions, each difference on a line of
+// its own.
+func writeVersionRenders(w io.Writer, census VersionRenderCensus) {
+	fmt.Fprintf(w, "census: versions rendered_from_tree=%s differences=%s (each version version_renders holds, its stored markdown against a render of the tree as of its row's time; a version with no row answers its stored bytes and is none of these)\n",
+		pgmigrate.Thousands(census.Versions), pgmigrate.Thousands(census.Differences))
+	for _, difference := range census.Reported {
+		fmt.Fprintf(w, "census: versions difference at %s: %s\n", difference.At, difference.Cause)
+	}
+	if census.Differences > int64(len(census.Reported)) {
+		fmt.Fprintf(w, "census: versions and %s more difference(s) not printed\n",
+			pgmigrate.Thousands(census.Differences-int64(len(census.Reported))))
+	}
 }
