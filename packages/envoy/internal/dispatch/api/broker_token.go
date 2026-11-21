@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -343,14 +344,18 @@ type tiedSessions struct {
 }
 
 // tieBrokerSession records that session acts for person, whom a broker-issued token proved
-// (access.TieSession), unless this process recorded the pair already. A server with no database
-// records nothing: it relays no agent view either.
-func (s *server) tieBrokerSession(ctx context.Context, session, person string) error {
+// (access.TieSession), and records each private project the token's list covers as one the
+// session reached (access.RecordListedReach): the session reads under that list from this request
+// on, and the listener's record of the list is only sampled, so a token traded to a wider list
+// and back between two samples would otherwise leave nothing saying what the session could read.
+// A pair, and a list, this process recorded already is not written again. A server with no
+// database records nothing: it relays no agent view either.
+func (s *server) tieBrokerSession(ctx context.Context, session, person string, projects []string) error {
 	login := model.CanonicalLogin(person)
 	if session == "" || login == "" || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil
 	}
-	pair := session + "\x00" + login
+	pair := session + "\x00" + login + "\x00" + strings.Join(projects, ",")
 	ties := &s.sessionTies
 	ties.mu.Lock()
 	_, held := ties.held[pair]
@@ -359,6 +364,9 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string) e
 		return nil
 	}
 	if err := access.TieSession(ctx, s.deps.Store.Pool, session, login); err != nil {
+		return err
+	}
+	if err := access.RecordListedReach(ctx, s.deps.Store.Pool, session, projects); err != nil {
 		return err
 	}
 	ties.mu.Lock()
@@ -497,11 +505,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		actor.Owner = &caller.Person
 		// The token proved this session acts for its person, on a read as on a write, so the tie
 		// the live agent view reads (session_owners, access.SessionContentClause) is recorded
-		// here, before the request reads anything: a session that only reads is tied too.
-		if err := s.tieBrokerSession(r.Context(), caller.Session, caller.Person); err != nil {
-			slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err)
-			return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
-				"this session's person could not be recorded; try again in a minute")
+		// here, before the request reads anything: a session that only reads is tied too, and
+		// each private project its list covers is recorded as one it reached.
+		if err := s.tieBrokerSession(r.Context(), caller.Session, caller.Person, caller.Projects); err != nil {
+			if refusal := s.tieFailureRefusal(r.Context(), err); refusal != nil {
+				return model.Actor{}, false, refusal
+			}
 		}
 	}
 	if caller.Service != "" {
@@ -536,4 +545,24 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
 	return actor, false, nil
+}
+
+// tieFailureRefusal is what a broker-issued token's request is answered when its session's tie to
+// its person (tieBrokerSession) could not be written, err the failed write. While any project is
+// private the tie decides what the live agent view relays and which conversations a restricted
+// member reads (access.SessionContentClause), so the request is refused 503 DATABASE_UNAVAILABLE
+// and the caller comes back, as before. While no project is private every reader that may watch a
+// session watches it without a tie (R9), so the failure is logged and the request served: the
+// pair is not held as written (tieBrokerSession keeps only a pair it wrote), so the session's next
+// request writes it again. A read of whether any project is private that fails too refuses, since
+// nothing then says the tie decides nothing.
+func (s *server) tieFailureRefusal(ctx context.Context, err error) *apiError {
+	private, readErr := access.AnyProjectPrivate(ctx, s.deps.Store.Pool)
+	if readErr != nil || private {
+		slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err, "private_read_error", readErr)
+		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
+			"this session's person could not be recorded; try again in a minute")
+	}
+	slog.Warn("dispatch: a broker-issued token's session could not be tied to its person; no project is private, so the request is served and its session's next request writes the tie again", "error", err)
+	return nil
 }

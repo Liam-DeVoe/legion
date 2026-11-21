@@ -229,7 +229,10 @@ func OwnerNotAllowed(login string) error {
 }
 
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.
-// Whether the deployment lets a project be private at all is the caller's to decide first.
+// Whether the deployment lets a project be private at all is the caller's to decide first. A
+// switch from public to private records the project as one each session that may have read it
+// while it was public reached, at the transaction's commit, through the projects table's trigger
+// (projectMadePrivateFunctionBody), so a switch made by an SQL statement alone records them too.
 func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visibility string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	if visibility != model.ProjectPublic && visibility != model.ProjectPrivate {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w, not %q", ErrVisibilityInput, visibility)
@@ -546,6 +549,76 @@ func groupFullMembersSQL(nameExpr string) string {
 	return `array(select member.person from access_group_members member
 		join people full_member on full_member.email = member.person and full_member.member_kind = 'full'
 		where member.group_name = ` + nameExpr + `)`
+}
+
+// RecordListedReach records, in a statement of its own, each private project of projects, the list
+// of a broker-issued token that proved session, as one the session reached
+// (session_reached_projects): the session reads under that list from the request that presented
+// it on, so what its transcript holds stays bounded by it, as route_roster's trigger keeps a
+// private project a listener record lists, and nothing removes it. A public project, and a key no
+// project holds, record nothing; a pair a row holds already is not written again.
+func RecordListedReach(ctx context.Context, q Querier, session string, projects []string) error {
+	if session == "" || len(projects) == 0 {
+		return nil
+	}
+	var written int
+	if err := q.QueryRow(ctx, `
+		with written as (
+			insert into session_reached_projects (session_id, project_key)
+			select distinct $1::text, listed.key from projects listed
+			where listed.key = any($2::text[]) and listed.visibility = 'private'
+				and not exists (
+					select 1 from session_reached_projects recorded
+					where recorded.session_id = $1::text and recorded.project_key = listed.key)
+			returning 1
+		)
+		select count(*) from written
+	`, session, projects).Scan(&written); err != nil {
+		return fmt.Errorf("record the private projects a session's token lists: %w", err)
+	}
+	return nil
+}
+
+// projectMadePrivateFunctionBody is the body of record_project_made_private(), the function of
+// the projects table's trigger projects_made_private_reached (migration
+// 20261121173500_project_private_reached), which runs at the commit of a transaction that switched
+// a project from public to private, by SetVisibility or by an SQL statement alone. A switch takes
+// the project from every full member its list does not name, and the transcripts of their sessions
+// keep what those sessions read of it while it was public, so the function records the project in
+// session_reached_projects, which the content rule reads as a project the session acted in
+// (SessionContentClause):
+//
+//   - for every session tied to a person (session_owners) who saw the project before the switch,
+//     by its row as the update found it (old), and does not see it after (new): the statements of
+//     store.RecordReachedProjects, rendered for the trigger (store.MadePrivateReachedSQL), a
+//     person no people row holds reading as a full member; a restricted member its list never
+//     named never saw it, and keeps their sessions;
+//   - for every session whose stored listener list names the project
+//     (route_roster_session_projects), whoever proved it, so a list narrowed later keeps what the
+//     session could read under it, as route_roster's trigger keeps a private project's.
+//
+// It first takes the store.SessionOwnerLock of each person it records for, exclusive, in login
+// order, by the statement store.RecordReachedProjects takes them with, and runs at commit, after
+// every other lock the switch takes. It names every table by its schema and sets no search_path,
+// as session_content_visible does. The migration holds this text:
+// TestTheMadePrivateTriggerIsTheBodyGoRenders fails while the function a migrated database holds
+// differs from it.
+func projectMadePrivateFunctionBody() string {
+	return `
+begin
+	` + store.MadePrivateReachedSQL() + `
+	insert into public.session_reached_projects (session_id, project_key)
+	select distinct held.session, new.key
+	from public.route_roster_session_projects listener
+	cross join lateral jsonb_each(listener.projects) as held (session, projects)
+	where listener.id = true and held.session <> ''
+		and jsonb_typeof(held.projects) = 'array' and held.projects ? new.key
+		and not exists (
+			select 1 from public.session_reached_projects recorded
+			where recorded.session_id = held.session and recorded.project_key = new.key);
+	return null;
+end
+`
 }
 
 // TieSession records, in a statement of its own, that session acts for the person login, the
