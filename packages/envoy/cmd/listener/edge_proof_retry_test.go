@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -123,11 +124,16 @@ func faultOnce(fault func(http.ResponseWriter)) http.Handler {
 	})
 }
 
-// newEdgeLBRig is the rig as an edge listener of edgeLBProject, or with edge false, as a listener
-// of no edge that takes broker tokens beside no bearer.
+// newEdgeLBRig is the rig as an edge listener of edgeLBProject, whose bucket handles read with
+// stream message gets as an edge's do (bus.WithStreamMessageReads, edgeGrant.connectOptions), or
+// with edge false, as a listener of no edge that takes broker tokens beside no bearer.
 func newEdgeLBRig(t *testing.T, edge bool) *edgeLBRig {
 	t.Helper()
-	client := setupPublishTestClient(t)
+	var options []bus.ConnectOption
+	if edge {
+		options = append(options, bus.WithStreamMessageReads())
+	}
+	client := setupPublishTestClient(t, options...)
 	caller := ciphertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)
 	accountFile := filepath.Join(t.TempDir(), "account-token")
@@ -144,6 +150,7 @@ func newEdgeLBRig(t *testing.T, edge bool) *edgeLBRig {
 	routes.Handle("DELETE /v1/sessions/{session}", faultOnce(busFault))
 	routes.Handle("POST /v1/messages/send", faultOnce(busFault))
 	routes.Handle("GET /v1/registry/{session}", noContent)
+	routes.Handle("GET /v1/interests/{session}", faultOnce(func(w http.ResponseWriter) { w.WriteHeader(http.StatusInternalServerError) }))
 	gate := newStartingGate("v1", logging.NewWithWriter("test-machine", io.Discard))
 	gate.open(routes)
 	logger := logging.NewWithWriter("test-machine", io.Discard)
@@ -171,8 +178,11 @@ func (r *edgeLBRig) send(p edgeLBPresentation, peer string) *httptest.ResponseRe
 // another query on the same method and path, which needs the token and the proof in plaintext:
 // TLS covers the client's hop to the balancer alone, and the hop from Google's proxy to the pod is
 // HTTP inside Google's network, so that is the accepted risk. A request served first keeps its
-// proof spent too. The record is the bucket every replica shares, so the retry reaches the other
-// replica's proxy.
+// proof spent too, and so does one a route answered any other failing status than 503, a 500
+// among them: only a 503 says the listener cannot tell whether it acted. The record is the bucket
+// every replica shares, so the retry reaches the other replica's proxy. Controls: release on any
+// status at or past 500, and the 500's retry is served; give no proof back, and the 503s' retries
+// are refused.
 func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
 	rig := newEdgeLBRig(t, true)
 	for _, tc := range []struct {
@@ -184,6 +194,7 @@ func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
 		{name: "a DELETE the bus did not answer", method: http.MethodDelete, path: "/v1/sessions/ses_collaborator", first: http.StatusServiceUnavailable, retried: http.StatusNoContent},
 		{name: "a send the bus did not answer", method: http.MethodPost, path: "/v1/messages/send", body: `{"target_session":"ses_other","message":"hello"}`, first: http.StatusServiceUnavailable, retried: http.StatusUnauthorized},
 		{name: "a served read", method: http.MethodGet, path: "/v1/registry/ses_collaborator", first: http.StatusNoContent, retried: http.StatusUnauthorized},
+		{name: "a route's 500", method: http.MethodGet, path: "/v1/interests/ses_collaborator", first: http.StatusInternalServerError, retried: http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := presentEdgeLB(t, rig.caller, tc.method, tc.path, edgeLBToken, tc.body)
@@ -215,22 +226,139 @@ func TestEdgeAloneGivesAProofBackOnA503(t *testing.T) {
 	}
 }
 
-// After a release leaves a delete marker on a proof's key, nats.go creates the key again with a
-// write against that marker's revision, and of two presentations doing so at once the one that
-// loses gets the server's wrong-last-sequence error rather than nats.ErrKeyExists: 10071 on a
-// bucket of one copy, 10164 on a replicated one. Either reads as a proof another presentation
-// holds, a replay, and not as a store that did not answer, whose 503 would be no refusal. The
-// race itself is not driven here: the bus of these rows holds one copy, and nothing orders the two
-// writes of one create against another's.
+// After a release leaves a delete marker on a proof's key, the edge's create (its bucket handles
+// read with stream message gets, bus.WithStreamMessageReads) writes the key again against that
+// marker's revision, and of two presentations doing so at once the one that loses gets the
+// server's wrong-last-sequence error from that second write: 10071 on a bucket of one copy, 10164
+// on a replicated one. Either reads as a proof another presentation holds, a replay, and not as a
+// store that did not answer, whose 503 would be no refusal: wrongLastSequence reads both codes,
+// and the store answers a create refused with either as spent. The race itself is not driven
+// here: nothing orders the two writes of one create against another's, so the store's bucket
+// answers the second write's refusal itself. Control: the store reading only nats.ErrKeyExists as
+// spent; the lost create reads as a store that did not answer, and the row fails naming it.
 func TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent(t *testing.T) {
 	for _, code := range []nats.ErrorCode{nats.JSErrCodeStreamWrongLastSequence, nats.JSErrCodeStreamWrongLastSequenceConstant} {
 		if err := fmt.Errorf("record the proof: %w", &nats.APIError{Code: http.StatusBadRequest, ErrorCode: code}); !wrongLastSequence(err) {
 			t.Errorf("a create refused with error code %d reads as no replay", code)
+		}
+		store := spentProofs{kv: bus.NewKeyValue(lostCreate{code: code}, nil, nil)}
+		if spent, err := store.CheckAndSetDPoPProofUsed(t.Context(), "jti-lost-create", "", "", http.MethodGet, listenerBrokerOrigin+"/v1/sessions", time.Time{}); err != nil || !spent {
+			t.Errorf("a create that lost over a released proof's marker (error code %d) = spent %v, error %v; want spent, no error", code, spent, err)
 		}
 	}
 	for _, err := range []error{errors.New("nats: timeout"), &nats.APIError{Code: http.StatusServiceUnavailable, ErrorCode: nats.JSErrCodeInsufficientResourcesErr}} {
 		if wrongLastSequence(err) {
 			t.Errorf("%v reads as a replay, want a store that did not answer", err)
 		}
+	}
+}
+
+// lostCreate is a spent-proof bucket whose every create is refused with code, as the second write
+// of the edge's create is when another presentation wrote over the same delete marker first.
+type lostCreate struct {
+	nats.KeyValue
+	code nats.ErrorCode
+}
+
+func (lostCreate) Bucket() string { return bus.DPoPProofBucket }
+
+func (k lostCreate) Create(string, []byte) (uint64, error) {
+	return 0, &nats.APIError{Code: http.StatusBadRequest, ErrorCode: k.code, Description: "wrong last sequence"}
+}
+
+// A release deletes the record its own request's presentation wrote, and no other: the delete is
+// made against that record's revision. A record of the same proof written over the key after it -
+// once that first record left the bucket, as one whose age ran out does - stays, so the proof stays
+// spent. Control: the release's delete made against no revision; it deletes the later record, and
+// the proof reads unspent.
+func TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote(t *testing.T) {
+	client := setupPublishTestClient(t, bus.WithStreamMessageReads())
+	js, err := client.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	kv, err := ensureSpentProofBucket(t.Context(), client.Conn, js, 1)
+	if err != nil {
+		t.Fatalf("open the spent-proof bucket: %v", err)
+	}
+	store := spentProofs{kv: kv}
+	const jti, htu = "jti-release-own-record", listenerBrokerOrigin + "/v1/sessions"
+	present := func(ctx context.Context) bool {
+		t.Helper()
+		spent, err := store.CheckAndSetDPoPProofUsed(ctx, jti, "", "", http.MethodGet, htu, time.Time{})
+		if err != nil {
+			t.Fatalf("record the proof: %v", err)
+		}
+		return spent
+	}
+	spend := &proofSpend{}
+	if present(withProofSpend(t.Context(), spend)) {
+		t.Fatal("the first presentation read as a replay")
+	}
+	if err := kv.Delete(spend.key); err != nil {
+		t.Fatalf("let the first record leave the bucket: %v", err)
+	}
+	if present(t.Context()) {
+		t.Fatal("the presentation after the first record left read as a replay")
+	}
+	// The first request's route answers 503 now. Its release is made against its own record's
+	// revision, which the key is no longer at, so the bucket refuses it.
+	_ = spend.release(t.Context())
+	if !present(t.Context()) {
+		t.Fatal("the proof reads unspent after the first request's release: the release deleted a record its request did not write")
+	}
+}
+
+// Of two requests in flight at once on one edge, a 503 gives back its own request's proof alone:
+// A's route waits, B is served, then A's route answers 503. B's proof, presented again, is a
+// replay (401), and A's is served (the balancer's retry). Control: one proofSpend shared by every
+// request; A's 503 gives back B's proof, which is served again, and A's retry is refused.
+func TestEdgeGivesBackOnlyItsOwnRequestsProof(t *testing.T) {
+	client := setupPublishTestClient(t, bus.WithStreamMessageReads())
+	caller := ciphertokentest.NewCaller(t)
+	broker := edgeLBBroker(t, caller)
+	accountFile := filepath.Join(t.TempDir(), "account-token")
+	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokens := newBrokerTokens(listenerBrokerConfig{BrokerURL: broker.Server.URL, AccountTokenFile: accountFile, Origin: listenerBrokerOrigin})
+	if err := tokens.open(t.Context(), client.Conn, 1); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	first := true
+	routes := http.NewServeMux()
+	routes.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		if first {
+			first = false
+			close(entered)
+			<-release
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	routes.Handle("GET /v1/registry/{session}", noContent)
+	gate := newStartingGate("v1", logging.NewWithWriter("test-machine", io.Discard))
+	gate.open(routes)
+	rig := &edgeLBRig{handler: v1API(edgeLBAuth(tokens, logging.NewWithWriter("test-machine", io.Discard)), gate), caller: caller}
+
+	a := presentEdgeLB(t, caller, http.MethodGet, "/v1/sessions", edgeLBToken, "")
+	b := presentEdgeLB(t, caller, http.MethodGet, "/v1/registry/ses_collaborator", edgeLBToken, "")
+	aDone := make(chan int)
+	go func() { aDone <- rig.send(a, "35.191.7.7:40001").Code }()
+	<-entered
+	if got := rig.send(b, "35.191.7.7:40002").Code; got != http.StatusNoContent {
+		t.Fatalf("B: %d, want 204", got)
+	}
+	close(release)
+	if got := <-aDone; got != http.StatusServiceUnavailable {
+		t.Fatalf("A: %d, want 503", got)
+	}
+	if got := rig.send(b, "130.211.1.2:40003").Code; got != http.StatusUnauthorized {
+		t.Errorf("B's served proof presented again: %d, want 401", got)
+	}
+	if got := rig.send(a, "130.211.1.2:40004").Code; got != http.StatusNoContent {
+		t.Errorf("the balancer's retry of A: %d, want 204", got)
 	}
 }
