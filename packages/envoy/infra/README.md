@@ -3416,6 +3416,72 @@ update`, or are removed: beside a callout those users are rendered without their
 (see [NATS authorization](#nats-authorization)), so a start that would make a stream is refused.
 `gcp:ClusteredNatsHub` and `gcp:Dispatch` render the setting with `streamsOperatorMade`.
 
+## `envoy-infra consumer-names`
+
+`envoy-infra consumer-names` (package `consumernames`) is the operator's side of the fresh
+JetStream consumer names: each creator names a consumer `<base>~<nuid>` and selects it through a
+record, a session's and a listener durable's in the KV bucket `envoy_session_consumers`, Dispatch's
+in its database's `intake_consumers` table, and each Legion daemon's in its own database's. The
+commands move every family from the fixed names to the fresh ones (the cutover), recover a lost
+bucket, roll every family back to the fixed names, and enrol a daemon store made after the cutover.
+Every command runs as the deployment's one operator identity, whose NATS grant is the writer hold's
+phase's, and reads the hold row first: `status` runs while the row is `released`, `prepare` while
+it is `prepare`, and every other command only while it is `held` under its `--hold`, inside a hold
+of a workflow that names it (`envoy-infra hold`).
+
+```text
+envoy-infra consumer-names status         [--hold ID]
+envoy-infra consumer-names prepare        --hold ID
+envoy-infra consumer-names create-bucket  --hold ID [--replicas N]
+envoy-infra consumer-names create-bucket  --hold ID --after-loss [--replay-from SEQ] [--backup DIR] [--replicas N]
+envoy-infra consumer-names replay         --hold ID --key K --from SEQ [--final]
+envoy-infra consumer-names convert        --hold ID
+envoy-infra consumer-names cleanup        --hold ID
+envoy-infra consumer-names restore        --hold ID (--prepare | --finish | --key K --from SEQ)
+envoy-infra consumer-names replace        --hold ID --listener MACHINE-ID
+envoy-infra consumer-names enroll         --hold ID --daemon PROJECT-KEY
+```
+
+- `status` lists each family's records (the current name, an open operation, the start, the last
+  floor, the retired names), each store's marker, the broker's cutover rows, and a `BLOCKER` line
+  for each thing that stops a cutover, ending with `blockers: N`.
+- `prepare` records the cutover boundary (the notification stream's first retained sequence) and
+  each fixed name's floor in the hold's cohort record, and raises each fixed name's inactive
+  threshold to 7 days for the window.
+- In a `cutover` hold: `create-bucket` makes the selection bucket and its sentinel with the
+  boundary; `convert` saves the whole fixed set, then replaces each fixed name by a fresh one at its
+  safe start (the lowest of its ack floor, Dispatch's hold token and any saved start), lists again
+  until no fixed name is left, and marks each family's broker cutover row and store marker `done`;
+  `streams census` then ends the hold. `cleanup` deletes the retired names the records hold; it
+  never deletes a name a record still selects.
+- In a `selection-recovery` hold: `create-bucket --after-loss` records the recovery's inputs
+  first, loads a held snapshot or a released walk of the bucket's records (`--backup`), adopts only
+  a recovery of its own, lists the orphans and runs its postcheck; `replay` gives one logical name
+  its start.
+- In a `rollback` hold: `restore --prepare` saves each record's safe start and removes the fresh
+  names, `restore --key` gives a name with no start its start, and `restore --finish` restarts and
+  proves every declared server, recreates each fixed name at its start and marks every family
+  `rolled_back`.
+- `replace` gives one listener's durable a fresh name at its floor (in fresh mode; the fixed
+  mode's procedure is in `deploy/README.md`). `enroll`, in an `enroll` hold, marks a daemon store
+  made after the cutover converted, with the stream's boundary and identity, only when no consumer,
+  checkpoint or record of its own already exists.
+
+Every command takes the hold's flags as `envoy-infra hold` takes them: `--broker-url`,
+`--token-file`, `--verify-keys` and `--nats`, and every command but `status` `--signing-key-secret`;
+every held command reads the hub's Kubernetes objects (`--kube-namespace`, `--statefulset`,
+`--configmap`), and `restore --finish` also needs `--probe-token-file`. A family's store is
+`--dispatch-database-file F` for Dispatch and `--daemon-database PROJECT-KEY=F` for each daemon,
+each file holding the database URL with the operator's credential. Before it changes anything,
+every held command reads the hub's servers, the protected streams, the writer census and the
+report again, and refuses while any client but itself and the auth service is connected. It writes
+its intent, then its done or stop entry, in the hold's journal; a stop records what every run of
+it in the hold left, so `hold release` ends only a hold that changed nothing and `hold abort` is
+the way out otherwise. `streams census` reads the session consumers and the fresh names these
+records hold, and brings each daemon store's stream identity to the stream's, through this
+package's readers. Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a
+reading that is not whole, which is never a pass.
+
 ## The listener's sender limit
 
 Each component that runs a listener takes two optional inputs, `senderMessagesPerMinute` and
