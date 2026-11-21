@@ -33,8 +33,12 @@ body: |-
   answer of `POST /v1/grants/{id}/values` carries the grant's target in `locations`, as the
   request signed it and sorted, and leaves the key out for a grant with no target. A
   `value: token` profile whose account resolves to more than one installation is refused before
-  any token is minted. A Google or Azure profile of another name mints under its source's
-  binding. A request may narrow a profile to one account or to repositories of it with RFC 9396
+  any token is minted. A Google, Azure or Anthropic federation profile of another name mints under
+  its source's binding. A profile's `requesters` may name a Google group, which a full load reads
+  as it reads a tag's; against its source's list a group entry is matched by that same group
+  alone, never by a person in it. A profile of a group's secret is the group's, and a profile of
+  an `anthropic-federation` secret is held to that type's tag rules. A request may narrow a
+  profile to one account or to repositories of it with RFC 9396
   `locations` in its signed request, matched to the profile's repositories without regard to
   case, which the approval page prints with the profile's scope (Google scopes included); a
   grant is reused only for the same profile, target and profile entry (a live grant of an edited

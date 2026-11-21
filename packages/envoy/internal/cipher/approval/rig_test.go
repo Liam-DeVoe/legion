@@ -73,13 +73,15 @@ type rig struct {
 
 // rigSetup is what a test changes of the broker newRig wires: secrets served beside the four
 // every rig serves, the client of Dispatch's project access the request machine and the
-// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), and a profiles
-// file ("" for none), whose proxy blocks the request machine holds in force. A rig holding a
-// client serves a secret tagged with a project, as cmd/cipherd's does (Loader.ProjectChecks).
+// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), a profiles
+// file ("" for none), whose proxy blocks the request machine holds in force, and the group reader
+// every decision site asks (nil for none). A rig holding a client serves a secret tagged with a
+// project, as cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
 	secrets  []secrets.LocalSecret
 	projects projectaccess.Access
 	profiles string
+	groups   record.Directory
 }
 
 // newRig wires the broker as cmd/cipherd does, its approval page signed in at a provider of the
@@ -102,6 +104,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	if setup.profiles != "" {
 		loader.Profiles = policytest.Profiles(t, setup.profiles)
 	}
+	loader.Groups = setup.groups
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -127,6 +130,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
+		Groups: setup.groups,
 	}
 	if setup.profiles != "" {
 		reqMachine.Airlock = loader.Profiles.ProxyRules()
@@ -134,6 +138,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	// After the airlock rules, as cmd/cipherd orders them: the verifier holds the judge's rules
 	// (requests.NewChainVerifier) from the rules it is given.
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain.Groups = setup.groups
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,

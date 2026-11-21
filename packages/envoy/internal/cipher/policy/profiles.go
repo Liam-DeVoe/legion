@@ -47,8 +47,8 @@ type Profile struct {
 	Source string `json:"source"`
 	// Tier is agent or human, or "" for the source's.
 	Tier string `json:"tier,omitempty"`
-	// Requesters is the people and services that may ask for it, sorted and each once, or nil for
-	// the source's.
+	// Requesters is the people, groups and services that may ask for it, sorted and each once, or
+	// nil for the source's.
 	Requesters []string `json:"requesters,omitempty"`
 	// MaxGrant is the longest grant of it, or 0 for the source's.
 	MaxGrant time.Duration `json:"maxGrant,omitempty"`
@@ -114,12 +114,12 @@ const maxGuidanceRunes = 2000
 // file strictly (decodeProfiles: a field the broker does not know, and anything after the file's
 // one object, are refused), and then holds each profile, in the file's order, to the file's shape:
 // a name a caller can ask for, held once; a source of that form; a tier of agent or human;
-// requesters of a person's or a service's shape, and never an empty list, which would serve the
-// profile to nobody; a maxGrant of at least a second; a github block of GitHub logins, repositories
-// of those accounts, at most githubname.MaxNarrowedRepositories of them and, where it names any,
-// one of each account at least, and permissions at levels GitHub gives, metadata at read among
-// them; a google block of scope names; never both; and a proxy block whose hosts are in the one
-// grammar a rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean
+// requesters of a person's, a group's or a service's shape, and never an empty list, which would
+// serve the profile to nobody; a maxGrant of at least a second; a github block of GitHub logins,
+// repositories of those accounts, at most githubname.MaxNarrowedRepositories of them and, where it
+// names any, one of each account at least, and permissions at levels GitHub gives, metadata at read
+// among them; a google block of scope names; never both; and a proxy block whose hosts are in the
+// one grammar a rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean
 // model's answer, accepts, and whose guidance the judge reads whole. Each refusal names the
 // profile by its index and name and the field it refuses.
 //
@@ -304,8 +304,8 @@ func (e profileEntry) check(i int, seen map[string]int) error {
 }
 
 // checkRequesters holds the requesters list to a requesters tag's shape (ParseRequesterShapes),
-// one entry per person or service, and refuses an empty list, which would serve the profile to
-// nobody where leaving it out takes the source's.
+// one entry per person, group or service, and refuses an empty list, which would serve the profile
+// to nobody where leaving it out takes the source's.
 func (e profileEntry) checkRequesters(refuse func(field, why string) error) error {
 	if e.Requesters == nil {
 		return nil
@@ -319,7 +319,7 @@ func (e profileEntry) checkRequesters(refuse func(field, why string) error) erro
 			return refuse(field, fmt.Sprintf("is refused: %v", err))
 		}
 		if fields := strings.Fields(entry); len(fields) != 1 || fields[0] != entry {
-			return refuse(field, fmt.Sprintf("%q is not one entry: write each person and service as an entry of its own", entry))
+			return refuse(field, fmt.Sprintf("%q is not one entry: write each person, group and service as an entry of its own", entry))
 		}
 	}
 	return nil

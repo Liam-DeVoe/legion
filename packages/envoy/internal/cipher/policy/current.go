@@ -229,6 +229,14 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 	c.base = set
 	reads = c.list()
 	c.publish(c.withhold(), first)
+	// A full load, and only a full load, names its groups to the reader: a group it names for
+	// the first time is read at once, and a reread's new group (RefreshOne) waits for the next
+	// load, admitting nobody until then. The groups are those of the stored secrets with the
+	// profiles applied, before any value refusal: a profile's requesters may name a group its
+	// source's do not, and a secret whose value is refused now still names its groups.
+	if c.loader.Groups != nil {
+		c.loader.Groups.Want(c.loader.Profiles.apply(c.base, c.loader.Prefix).GroupNames())
+	}
 	return reads, first, nil
 }
 
@@ -735,6 +743,9 @@ func (c *Current) publish(next *Set, first bool) {
 	if live == nil {
 		c.profilesApplied(next)
 	}
+	// Every set made live carries the loader's group reader, the reread's as much as the load's,
+	// so no decision reads another; publish names no group to it (reload does, for a full load).
+	next.groups = c.loader.Groups
 	c.set.Store(next)
 }
 
