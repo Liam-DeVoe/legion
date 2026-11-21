@@ -286,6 +286,11 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 // one a record keeps (verdictEntry). It creates its own check run or updates the one its record
 // holds, and writes its conclusion over each run and status of the one App its record does not
 // hold (spec R19, writeDecided).
+//
+// Once a Legion head's success stands, the issue's merge state is read once more, a ladder's wait
+// later (mergeStateWait): GitHub can answer the read the write held (verdictWriter.await) with
+// `blocked` while it has not yet counted the new run, an answer that ends the climb, and no other
+// fact asks again, since Envoy leaves the one App's runs out of the CI record.
 func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
 	entry, ok := w.verdictEntry(repository)
 	if !ok {
@@ -311,7 +316,18 @@ func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Re
 			decided.conclusion = verdict.Failure
 		}
 	}
-	return w.writeDecided(ctx, target, decided, false)
+	if err := w.writeDecided(ctx, target, decided, false); err != nil {
+		return err
+	}
+	if decided.conclusion == verdict.Success && decided.issue != "" {
+		issue := decided.issue
+		time.AfterFunc(w.mergeStateWait(), func() {
+			if ctx.Err() == nil {
+				w.queueMergeState(issue)
+			}
+		})
+	}
+	return nil
 }
 
 // wroteSuccess is whether the newest check run or the newest commit status the store records the
@@ -329,12 +345,13 @@ func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget
 	return newest[store.VerdictWriteCheckRun] == store.VerdictConclusionSuccess || newest[store.VerdictWriteStatus] == store.VerdictConclusionSuccess, err
 }
 
-// verdictDecision is what writeVerdict decided of a head: legion-verdict's conclusion, and the kind
-// of head (headLegion, headOutside); or otherIssue, another project's issue whose branch the head
-// is, on which this daemon writes nothing.
+// verdictDecision is what writeVerdict decided of a head: legion-verdict's conclusion, the kind of
+// head (headLegion, headOutside) and, on a Legion head, the issue that owns it; or otherIssue,
+// another project's issue whose branch the head is, on which this daemon writes nothing.
 type verdictDecision struct {
 	conclusion verdict.Conclusion
 	kind       string
+	issue      string
 	otherIssue string
 }
 
@@ -368,7 +385,7 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 				return err
 			}
 			in, err := w.legionInputs(ctx, tx, *issue, *pr, head)
-			decided = verdictDecision{conclusion: verdict.Decide(in), kind: headLegion}
+			decided = verdictDecision{conclusion: verdict.Decide(in), kind: headLegion, issue: issue.Key}
 			return err
 		}
 		_, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)

@@ -79,7 +79,8 @@ type fakeWrite struct {
 // and `clean` once it has, which is what a ruleset that requires the check answers; and any other
 // pull request named in pulls. Each write and each read of pull request 86 is recorded in order.
 // failCreates is how many of the next creates of a check run GitHub answers 502, as it does when
-// it fails a request.
+// it fails a request; staleReads is how many reads of pull request 86, made once its head has a
+// success run, still answer `blocked`, as GitHub does while it has not yet counted a new run.
 type verdictGitHub struct {
 	mu          sync.Mutex
 	nextID      int64
@@ -90,6 +91,7 @@ type verdictGitHub struct {
 	events      []string
 	pulls       map[int]string
 	failCreates int
+	staleReads  int
 }
 
 func newVerdictGitHub() *verdictGitHub {
@@ -126,6 +128,10 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				return run.Head == g.head86 && run.Name == verdict.CheckName && run.App == verdictAppSlug && run.Conclusion == "success"
 			}) {
 				state = "clean"
+				if g.staleReads > 0 {
+					g.staleReads--
+					state = "blocked"
+				}
 			}
 			g.events = append(g.events, "read pull request 86: "+state)
 			answer(map[string]any{"number": 86, "state": "open", "base": map[string]any{"ref": "main"},
@@ -347,6 +353,22 @@ func TestLegionVerdictApproveWritesSuccessBeforeTheMergeStateRead(t *testing.T) 
 	if len(lines) != 1 || lines[0]["head"] != "code" || lines[0]["conclusion"] != "success" || lines[0]["kind"] != "check_run" ||
 		lines[0]["id"] != float64(run.ID) || lines[0]["foreign_id"] != float64(0) || lines[0]["repository"] != "acme/widgets" {
 		t.Fatalf("legion_verdict_write lines = %v, want one naming the run, its head, its kind and its conclusion", lines)
+	}
+}
+
+// GitHub can answer the first read after the success run is written with `blocked`, as it does
+// while it has not yet counted a new run. That answer ends the climb, and no other fact asks
+// again: Envoy leaves the one App's runs out of the CI record, so the write brings no checks fact.
+// One more read of the issue after a write that produced success still settles the approve.
+func TestLegionVerdictAStaleBlockedAfterTheWriteStillSettlesTheApprove(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.github.mu.Lock()
+	rig.github.staleReads = 1
+	rig.github.mu.Unlock()
+	rig.approvedAndWritten(t)
+	_, events := rig.github.recorded()
+	if first := slices.Index(events, "read pull request 86: blocked"); first < 0 || !slices.Contains(events[first:], "read pull request 86: clean") {
+		t.Fatalf("GitHub saw %v, want a stale blocked after the write and then a clean read", events)
 	}
 }
 
