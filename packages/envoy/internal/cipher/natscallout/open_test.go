@@ -86,7 +86,7 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 			"Session": session, "Daemon": natsgrant.Daemon(), "Measure": natsgrant.Measure(),
 			"Listener": natsgrant.Listener("example-hub"), "Dispatch": natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}),
 			"Dispatch intake": natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection("dispatch-intake/delivery-events/new/old")),
-			"Host": natsgrant.Host("example-host-a"), "ListenerHost": natsgrant.ListenerHost("example-hub"),
+			"Host":            natsgrant.Host("example-host-a"), "ListenerHost": natsgrant.ListenerHost("example-hub"),
 		} {
 			direction, open := natsgrant.OpenDirection(grant)
 			require.False(t, open, "%s opens its %s direction", name, direction)

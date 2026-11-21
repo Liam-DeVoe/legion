@@ -88,9 +88,9 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 				t.Fatalf("drop the table: %v", err)
 			}
 		}, consumernames.ModeFixed, false},
-		"fixed before the cutover":         {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, consumernames.ModeFixed, false},
-		"fixed after a rollback":           {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverRolledBack) }, consumernames.ModeFixed, false},
-		"fresh over a converted store":     {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverDone) }, consumernames.ModeFresh, false},
+		"fixed before the cutover":        {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, consumernames.ModeFixed, false},
+		"fixed after a rollback":          {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverRolledBack) }, consumernames.ModeFixed, false},
+		"fresh over a converted store":    {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverDone) }, consumernames.ModeFresh, false},
 		"fresh over an unconverted store": {func(*testing.T, *store.Pool) {}, consumernames.ModeFresh, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -167,11 +167,11 @@ func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
 		answers []any
 		refused bool
 	}{
-		"a read Postgres refused, then no marker":        {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}, pgx.ErrNoRows}, false},
-		"no table":                                       {[]any{&pgconn.PgError{Code: "42P01", Message: "relation does not exist"}}, false},
-		"no sentinel":                                    {[]any{pgx.ErrNoRows}, false},
-		"unreachable, then done":                         {[]any{unreachable, unreachable, `{"cutover":"done"}`}, true},
-		"not answering, then no marker":                  {[]any{errHangs, errHangs, pgx.ErrNoRows}, false},
+		"a read Postgres refused, then no marker": {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}, pgx.ErrNoRows}, false},
+		"no table":                      {[]any{&pgconn.PgError{Code: "42P01", Message: "relation does not exist"}}, false},
+		"no sentinel":                   {[]any{pgx.ErrNoRows}, false},
+		"unreachable, then done":        {[]any{unreachable, unreachable, `{"cutover":"done"}`}, true},
+		"not answering, then no marker": {[]any{errHangs, errHangs, pgx.ErrNoRows}, false},
 		"a row it cannot read, then one before cutover": {[]any{`{"cutover":`, `{}`}, false},
 	} {
 		t.Run(name, func(t *testing.T) {

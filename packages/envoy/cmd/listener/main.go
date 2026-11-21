@@ -2083,4 +2083,3 @@ func drainListenerClients(logger *logging.Logger, client *bus.Client, started ti
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}
 }
-
