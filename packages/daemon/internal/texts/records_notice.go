@@ -328,8 +328,7 @@ const (
 	// because no todo issue labelled for Legion or under a parent names it now.
 	StallLetGoNoTodo = "let-go-no-todo"
 	// StallLetGoAnswered is a repository the daemon no longer waits for GitHub to answer for,
-	// because Dispatch's repository mapping, or a read GitHub answered for it at another issue's
-	// preparation, answers for it now.
+	// because a read GitHub answered for it at another issue's preparation answers for it now.
 	StallLetGoAnswered = "let-go-answered"
 )
 
@@ -366,18 +365,13 @@ type UnrecordedChild struct {
 // LetGoChild is one child a release_children left to the recovery of a repository the daemon let
 // go, which no recovery will record now: the child, its parent and whether the parent is recorded
 // now, the status Dispatch's listing gives the child (empty where the listing no longer holds
-// it), and the repository its wait was filed under. Where the parent is recorded and Dispatch's
-// mapping leaves that repository out, it gives that refusal, and whether the refusal is for now,
-// a read GitHub did not answer, which the mapping's own recovery reads again (for_now), or for
-// good, a role App not installed. Refusal is empty where nothing refuses the repository.
+// it), and the repository its wait was filed under.
 type LetGoChild struct {
 	Child          string `json:"child"`
 	Parent         string `json:"parent"`
 	ParentRecorded bool   `json:"parent_recorded"`
 	Status         string `json:"status"`
 	Repo           string `json:"repo"`
-	Refusal        string `json:"refusal"`
-	ForNow         bool   `json:"for_now"`
 }
 
 // ChildNotRecordedRecord is the notice that a child was not recorded under the tree (workflow's

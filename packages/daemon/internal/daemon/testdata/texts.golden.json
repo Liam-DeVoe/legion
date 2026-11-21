@@ -3241,9 +3241,7 @@
             "parent": "ALPHA-1120",
             "parent_recorded": true,
             "status": "todo",
-            "repo": "alpha-works/alpha-tower",
-            "refusal": "gbxr xmjhpo umcldr dfmgwk gkbpfnyn oigdztq mac gqrmvxk mwndbxl pjxszdg gtexfn af",
-            "for_now": false
+            "repo": "alpha-works/alpha-tower"
           }
         ]
       }
@@ -3270,9 +3268,7 @@
             "parent": "BRAVO-2120",
             "parent_recorded": true,
             "status": "todo",
-            "repo": "bravo-labs/bravo-yard",
-            "refusal": "zpgqfgx oazkxel ykuii dfbleslg htayk zjjhwagbm lzjqql ppflmbn zdl ditsd amiab pj",
-            "for_now": true
+            "repo": "bravo-labs/bravo-yard"
           }
         ]
       }
@@ -3299,18 +3295,14 @@
             "parent": "ALPHA-1120",
             "parent_recorded": true,
             "status": "backlog",
-            "repo": "alpha-works/alpha-tower",
-            "refusal": "",
-            "for_now": false
+            "repo": "alpha-works/alpha-tower"
           },
           {
             "child": "ALPHA-1129",
             "parent": "ALPHA-1130",
             "parent_recorded": false,
             "status": "todo",
-            "repo": "alpha-works/alpha-tower",
-            "refusal": "",
-            "for_now": false
+            "repo": "alpha-works/alpha-tower"
           }
         ]
       }
@@ -3337,18 +3329,14 @@
             "parent": "BRAVO-2120",
             "parent_recorded": true,
             "status": "icebox",
-            "repo": "bravo-labs/bravo-yard",
-            "refusal": "",
-            "for_now": false
+            "repo": "bravo-labs/bravo-yard"
           },
           {
             "child": "BRAVO-2129",
             "parent": "BRAVO-2130",
             "parent_recorded": false,
             "status": "todo",
-            "repo": "bravo-labs/bravo-yard",
-            "refusal": "",
-            "for_now": false
+            "repo": "bravo-labs/bravo-yard"
           }
         ]
       }

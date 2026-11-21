@@ -255,12 +255,10 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		b.notice(r, "let-go-no-todo", arch, letGoNotice(r.key(99), texts.StallLetGoNoTodo, []string{r.repo}, noTodo),
 			goldenWant("issue", r.key(99), "stall", texts.StallLetGoNoTodo, "repos", r.repo, "let_go[0].child", r.key(128),
 				"let_go[0].status", status, "let_go[0].repo", r.repo, "let_go[1].child", r.key(129), "let_go[1].parent", r.key(130)))
-		letGoRefusal := r.words("let-go/refusal", 80)
-		answered := []texts.LetGoChild{{Child: r.key(131), Parent: parent, ParentRecorded: true, Status: "todo", Repo: r.repo,
-			Refusal: letGoRefusal, ForNow: r.n == 2}}
+		answered := []texts.LetGoChild{{Child: r.key(131), Parent: parent, ParentRecorded: true, Status: "todo", Repo: r.repo}}
 		b.notice(r, "let-go-answered", arch, letGoNotice(r.key(99), texts.StallLetGoAnswered, []string{r.repo}, answered),
 			goldenWant("issue", r.key(99), "stall", texts.StallLetGoAnswered, "repos", r.repo, "let_go[0].child", r.key(131),
-				"let_go[0].status", "todo", "let_go[0].refusal", letGoRefusal))
+				"let_go[0].status", "todo", "let_go[0].repo", r.repo))
 		refusal := r.words("refused/repo", 120)
 		resolved := "elsewhere-" + r.words("resolved", 6) + "/repo"
 		b.notice(r, "refused", arch, workflow.ChildNotRecordedNotice(parent, r.key(127), resolved, refusal),
