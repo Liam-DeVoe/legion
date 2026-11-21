@@ -29,7 +29,7 @@
  *  of the trade and the socket, which are the ones the listener checks.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { legacyAgentSubject } from "@legion/contracts";
 import {
   type RelaySocketStandIn,
@@ -74,7 +74,7 @@ export interface EdgeStandIn {
 /** A user code as the broker prints them: eight of its consonants, a hyphen in the middle. */
 function userCode(): string {
   const letters = "BCDFGHJKLMNPQRSTVWXZ";
-  const picked = [...randomBytes(8)].map((byte) => letters[byte % letters.length]).join("");
+  const picked = Array.from({ length: 8 }, () => letters[randomInt(letters.length)]).join("");
   return `${picked.slice(0, 4)}-${picked.slice(4)}`;
 }
 
