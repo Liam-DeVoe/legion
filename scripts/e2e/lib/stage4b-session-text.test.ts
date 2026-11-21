@@ -234,14 +234,17 @@ describe("session_byte_len", () => {
 
 // The run's session database is written by every pod's Oh My Pi, and any login that may create in
 // it can plant a function, or a schema named for the reader, that a name the read leaves
-// unqualified resolves to, and a row-security policy the tables' owner attaches runs in each
-// reader's session. So every statement the harness sends goes in one read-only transaction that
-// opens by pinning search_path and turning row_security off, as packages/daemon's ompsessions
-// reads, and names each table public.<table>: session_text's and session_byte_len's reads and
-// session_copy's listing and table check alike, each through session_psql.
+// unqualified resolves to, a view at a table's own name, whose fixed query no search_path
+// reaches, and a row-security policy the tables' owner attaches runs in each reader's session. So
+// every statement the harness sends goes in one read-only transaction that opens by pinning
+// search_path, turning row_security off and refusing views and foreign tables, as
+// packages/daemon's ompsessions reads, and names each table public.<table>: session_text's and
+// session_byte_len's reads and session_copy's listing and table check alike, each through
+// session_psql.
 describe("every read of the session database", () => {
   const pin =
-    "BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n";
+    "BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n" +
+    "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table';\n";
   for (const [name, body] of [
     ["session_text", `session_text '${key}' >/dev/null`],
     ["session_byte_len", `session_byte_len '${key}' >/dev/null`],

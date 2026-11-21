@@ -498,20 +498,23 @@ const READ_ONLY = "read only";
 
 /**
  * Runs `read` in one transaction begun read-only, which opens by pinning search_path to
- * pg_catalog and pg_temp and turning row_security off, as packages/daemon's internal/ompsessions
- * reads: the store is written by every session's Oh My Pi, a login that may create in it could
- * plant a function, or a schema named for the reader, that an unqualified name resolves to, and a
- * row-security policy the tables' owner attaches runs in each reader's session. So every read
- * names each table public.<table>, and a policy fails the read rather than runs in it. Then,
- * inside that transaction and before anything is read in it, it confirms from the server that the
- * begin took: a deployment can point this script at a server or a route that dropped it, and
- * reading on a write-capable connection is what the shared store's pool cannot take. Every read of
- * the store goes through here, so a read added later cannot be the one that skips either.
+ * pg_catalog and pg_temp, turning row_security off and refusing views and foreign tables, as
+ * packages/daemon's internal/ompsessions reads: the store is written by every session's Oh My Pi,
+ * a login that may create in it could plant a function, or a schema named for the reader, that an
+ * unqualified name resolves to, or a view at a table's own name, whose query no search_path
+ * reaches, and a row-security policy the tables' owner attaches runs in each reader's session. So
+ * every read names each table public.<table>, and a policy or a view fails the read rather than
+ * runs in it. Then, inside that transaction and before anything is read in it, it confirms from
+ * the server that the begin took: a deployment can point this script at a server or a route that
+ * dropped it, and reading on a write-capable connection is what the shared store's pool cannot
+ * take. Every read of the store goes through here, so a read added later cannot be the one that
+ * skips either.
  */
 async function readOnly<T>(sql: SQL, read: (tx: TransactionSQL) => Promise<T>): Promise<T> {
   return await sql.begin(READ_ONLY, async (tx) => {
     await tx`set local search_path = pg_catalog, pg_temp`;
     await tx`set local row_security = off`;
+    await tx`set local restrict_nonsystem_relation_kind = 'view, foreign-table'`;
     const rows: { transaction_read_only: string }[] = await tx`show transaction_read_only`;
     if (rows[0]?.transaction_read_only !== "on") throw new NotReadOnlyError();
     return await read(tx);
@@ -549,11 +552,22 @@ function liveStore(dsn: string): LiveStore {
   };
 }
 
-/** The driver's own error code, when it gave one in the shape above; never a message's text. */
+/** A SQLSTATE, five digits or capital letters, as a Postgres error's `errno` carries it. */
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+
+/**
+ * The driver's own error code, and the SQLSTATE of a server error, when it gave them in the shapes
+ * above; never a message's text. The SQLSTATE says what kind of fault the server refused the read
+ * for: a view the read is restricted from (55000) is not a function that raised (P0001).
+ */
 function errorCode(error: unknown): string {
   if (typeof error !== "object" || error === null || !("code" in error)) return "";
   const code = error.code;
-  return typeof code === "string" && SAFE_CODE.test(code) ? ` (${code})` : "";
+  if (typeof code !== "string" || !SAFE_CODE.test(code)) return "";
+  const state = "errno" in error ? error.errno : undefined;
+  return typeof state === "string" && SQLSTATE.test(state)
+    ? ` (${code}, SQLSTATE ${state})`
+    : ` (${code})`;
 }
 
 async function main(argv: readonly string[]): Promise<number> {

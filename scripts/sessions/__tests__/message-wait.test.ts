@@ -306,3 +306,49 @@ test("the run reports the fixture's waits, line by line", () => {
   expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
   expect(printed).toEqual(EXPECTED);
 });
+
+// A login that may create in the store can make a view at each table's own name in public before
+// any Oh My Pi makes the tables, and a view's query, fixed when it was made, runs in every read
+// that names the table, whatever the search_path, as whoever reads. Each view here computes its
+// path through a function that raises (SQLSTATE P0001). The script's reads refuse views and
+// foreign tables (`restrict_nonsystem_relation_kind`), so the run fails with Postgres's refusal of
+// the view (SQLSTATE 55000), never the plant's raise. The script prints no message text, so the
+// SQLSTATE it names is how the test tells the two apart.
+test("a view at a table's name fails the run, and its code never runs", async () => {
+  const database = `legion_message_wait_view_${randomUUID().replaceAll("-", "")}`;
+  const url = new URL(SERVER);
+  url.pathname = `/${database}`;
+  const planted = new SQL(url.toString());
+  const dsnFile = join(scratch, "view-store.url");
+  await admin.unsafe(`create database ${database} strategy file_copy`);
+  try {
+    await planted.unsafe(
+      "create function public.plant_ran(what text) returns boolean language plpgsql " +
+        "as $$ begin raise exception 'PLANT RAN: %', what; end $$"
+    );
+    await planted.unsafe(
+      "create view public.omp_session_files as select case when public.plant_ran('the view at " +
+        "public.omp_session_files') then ''::text end as path, ''::text as content, 0::bigint as mtime_ms"
+    );
+    await planted.unsafe(
+      "create view public.omp_session_files_parts as select case when public.plant_ran('the view at " +
+        "public.omp_session_files_parts') then ''::text end as path, 0::bigint as start_offset, ''::text as content"
+    );
+    await writeFile(dsnFile, `${url.toString()}\n`);
+    const child = Bun.spawn(["bun", SCRIPT, "--since", "24h", "--dsn-file", dsnFile], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [, failures, exited] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exited).not.toBe(0);
+    expect(failures).not.toContain("SQLSTATE P0001");
+    expect(failures).toContain("SQLSTATE 55000");
+  } finally {
+    await planted.close();
+    await admin.unsafe(`drop database if exists ${database} with (force)`);
+  }
+}, 60_000);

@@ -45,10 +45,12 @@ session_db_start() {
 # VALUE the psql variable NAME, which the SQL quotes as a literal (:'NAME'), so no value is ever
 # spliced into it; the SQL comes on stdin because psql interpolates no variable into a -c command.
 # The SQL runs in one read-only transaction that opens by pinning search_path to pg_catalog and
-# pg_temp and turning row_security off, as packages/daemon's internal/ompsessions reads: every pod's
-# Oh My Pi writes this database, a login that may create in it could plant a function, or a schema
-# named for the reader, that an unqualified name resolves to, and a row-security policy runs in
-# each reader's session. So the SQL names each table public.<table>, and a policy fails the read.
+# pg_temp, turning row_security off and refusing views and foreign tables, as packages/daemon's
+# internal/ompsessions reads: every pod's Oh My Pi writes this database, a login that may create
+# in it could plant a function, or a schema named for the reader, that an unqualified name
+# resolves to, or a view at a table's own name, whose query no search_path reaches, and a
+# row-security policy runs in each reader's session. So the SQL names each table public.<table>,
+# and a policy or a view fails the read.
 # Every caller here reads; one that writes would need a transaction of its own. The output is
 # unaligned and tuples-only (-A -t): each value exactly as the server sent it, with no padding,
 # wrapping, quoting, escaping, header or row count, so a transcript's quotes, backslashes and
@@ -57,7 +59,8 @@ session_db_start() {
 # a value of many lines, and COPY's text and CSV formats escape or quote one, so each would corrupt
 # the JSONL. ON_ERROR_STOP makes an SQL error psql's exit status.
 session_psql() {
-  { printf 'BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n'; cat; printf '\nCOMMIT;\n'; } |
+  { printf 'BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n'
+    printf "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table';\n"; cat; printf '\nCOMMIT;\n'; } |
     docker exec -i -e PGCLIENTENCODING=UTF8 "$session_db_container" \
       psql -X -q -A -t -v ON_ERROR_STOP=1 -U legion -d sessions -v "$1=$2"
 }
