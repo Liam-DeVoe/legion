@@ -1,0 +1,466 @@
+package replay
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log/slog"
+	"maps"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// The private-looking names of the window the neutralize tests write: a project and another
+// project, a person's email and login, a repository, a machine, a home directory, a session's
+// title, a label, a component, a priority, free text, a wiki link, a uuid of a document and of a
+// session, a document's digest, and a word no rule knows to be a name (privateWord, which the
+// tests deny). The tailnet host is built at run time, so no file of the repository holds a host
+// name of that form.
+const (
+	privateEmail    = "ops.lead@hushcorp.example"
+	privateLogin    = "opslead-hush"
+	privateRepo     = "hushcorp/vault-service"
+	privateArtifact = "1b4e28ba-2fa1-41d2-883f-0016d3cca427"
+	privateSession  = "6fa459ea-ee8a-4ca4-894e-db77e160355e"
+	privateAsk      = "c0ffee00-1234-4abc-8def-0123456789ab"
+	privateWord     = "megahush"
+)
+
+var (
+	privateHost   = "vault-runner." + "tail" + "5eed" + ".ts.net"
+	privateDigest = strings.Repeat("ab", 32)
+	// privateNames is every private name the window holds, each of which no file of the neutral
+	// window may hold in any case.
+	privateNames = []string{"nimbus", "orion", "hush", "vault", "tail5eed", "ts.net", privateArtifact, privateSession, privateAsk,
+		privateWord, "outage", "wiki", privateDigest}
+)
+
+// privateLine is one line of the window's log, as the daemon's JSON handler writes it.
+func privateLine(t *testing.T, at time.Time, level slog.Level, msg string, args ...any) json.RawMessage {
+	t.Helper()
+	var written bytes.Buffer
+	entry := slog.NewRecord(at, level, msg, 0)
+	entry.Add(args...)
+	if err := slog.NewJSONHandler(&written, &slog.HandlerOptions{Level: slog.LevelDebug}).Handle(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	return bytes.TrimSuffix(written.Bytes(), []byte("\n"))
+}
+
+// privateEvent is one Dispatch event as the issue event log serves it.
+func privateEvent(t *testing.T, id, seq int64, key, project, kind string, at time.Time, actor, payload map[string]any) json.RawMessage {
+	t.Helper()
+	event, err := json.Marshal(map[string]any{"id": id, "issue_key": key, "artifact_id": nil, "project": project, "seq": seq, "type": kind,
+		"actor": actor, "notify": false, "created_at": at, "payload": payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
+// privateWindow writes, into a directory of the test's own, a window of the project NIMBUS whose
+// every input holds private-looking names: NIMBUS-412, a child of NIMBUS-400, waits on ORION-77
+// of another project; its implementer's claim failed with the daemon's words naming a tailnet
+// host and privateWord; a person requested changes on the root's document, which the daemon's
+// gate line names by the same uuid; the root's architect asked a question from its workspace; and
+// the window's merges are of the private repository and of this one.
+func privateWindow(t *testing.T) string {
+	t.Helper()
+	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
+	token := "legion-nimbus-nimbus-412-implementer"
+	log := []json.RawMessage{
+		privateLine(t, at(1), slog.LevelInfo, "legion daemon started", "project", "NIMBUS", "admissionCap", 4, "boot", 7),
+		privateLine(t, at(2), slog.LevelInfo, "workflow: design gate opened", "issue", "NIMBUS-400", "artifact", privateArtifact,
+			"event", "approved", "version", 2),
+		privateLine(t, at(3), slog.LevelInfo, "workflow: phase changed", "issue", "NIMBUS-412", "tree", "NIMBUS-400", "from", "implementing",
+			"to", "testing", "trigger", "implementation_ready", "status", "testing"),
+		privateLine(t, at(4), slog.LevelInfo, "admission waits for what this issue waits on", "issue", "NIMBUS-412", "blockers", []string{"ORION-77"}),
+		privateLine(t, at(5), slog.LevelInfo, "supervise: a turn started", "claim", token, "generation", 3, "delivery", "outbox:9"),
+		privateLine(t, at(6), slog.LevelError, "supervise: claim failed", "claim", token, "cause", "launch_refused",
+			"why", "launch "+token+": dial tcp: lookup "+privateHost+": no such host ("+privateWord+" network)"),
+		privateLine(t, at(7), slog.LevelInfo, "supervise: suspended", "claim", "legion-nimbus-controller", "by", "released",
+			"reason", "the issue's pod has been idle for the release period"),
+	}
+	person := map[string]any{"kind": "user", "id": privateEmail}
+	daemon := func(project string) map[string]any {
+		return map[string]any{"kind": "session", "id": "legion-daemon:" + project}
+	}
+	laptop := map[string]any{"kind": "session", "id": privateSession, "origin": map[string]any{"host": "omp", "machine": "hushcorp-laptop-7",
+		"cwd": "/home/hushuser/src/vault-service", "session_title": "fixing the vault outage"}}
+	architect := map[string]any{"kind": "session", "id": privateSession, "origin": map[string]any{"host": "omp", "machine": "legion-nimbus-daemon",
+		"cwd": "/legion/workspaces/hushcorp/vault-service/nimbus-412", "session_title": "Legion architect · NIMBUS-412"}}
+	issue := func(key string, number int, project, status, parent string, blockedBy, labels []string, extra map[string]any) map[string]any {
+		payload := map[string]any{"key": key, "number": number, "project": project, "status": status, "parent": nil, "blocked_by": blockedBy,
+			"labels": labels, "rank": "m" + strconv.Itoa(number), "title": "Rotate the vault keys for hushcorp", "changed": []string{"status"}}
+		if parent != "" {
+			payload["parent"] = parent
+		}
+		maps.Copy(payload, extra)
+		return payload
+	}
+	w := Window{
+		Project: "NIMBUS", From: at(0), To: at(30), Before: Duration(time.Hour), Caps: []CapAt{{At: at(1), Cap: 4}},
+		Parts:        []Part{{From: at(0), To: at(30), Release: "legion-v19.41.3", Commit: record.MainRule.Commit, Rule: record.MainRule.Name}},
+		TickInterval: Duration(time.Hour), GateSteps: []record.DesignStep{record.DesignStepSpec}, Linger: Duration(72 * time.Hour), ReviewRoundCap: 3,
+		StalledTreeNotice: Duration(6 * time.Hour), WorkerSilence: Duration(30 * time.Minute), WorkerBackground: Duration(4 * time.Hour),
+		Collector: record.MainRule.Commit, Log: log,
+		Events: map[string][]json.RawMessage{
+			"NIMBUS-400": {
+				privateEvent(t, 11, 1, "NIMBUS-400", "NIMBUS", "issue.created", at(0), daemon("NIMBUS"),
+					issue("NIMBUS-400", 400, "NIMBUS", "todo", "", []string{}, []string{"legion"},
+						map[string]any{"repo": privateRepo, "resolved_repo": privateRepo})),
+				privateEvent(t, 12, 2, "NIMBUS-400", "NIMBUS", "child.added", at(1), person, map[string]any{"child_key": "NIMBUS-412"}),
+			},
+			"NIMBUS-412": {
+				privateEvent(t, 13, 4, "NIMBUS-412", "NIMBUS", "issue.updated", at(2), laptop,
+					issue("NIMBUS-412", 412, "NIMBUS", "in_progress", "NIMBUS-400", []string{"ORION-77"}, []string{"legion", "vault-secret"},
+						map[string]any{
+							"assignee": privateEmail, "repo": privateRepo, "resolved_repo": privateRepo, "ancestors": []string{"NIMBUS-400"},
+							"thread_logins": []string{privateLogin},
+							"external_links": []map[string]any{{"url": "https://github.com/" + privateRepo + "/pull/88", "kind": "url"},
+								{"url": "https://wiki.hushcorp.example/vault", "kind": "url"}},
+							"components": map[string]any{"ids": []string{"vault-core"}, "mode": "inherit", "reason": "kept for hushcorp",
+								"unknown": []string{}, "inherited_from": nil},
+							"advances": []map[string]any{{"id": "hush-launch", "inherited": true}},
+						})),
+				privateEvent(t, 14, 5, "NIMBUS-412", "NIMBUS", "artifact.changes_requested", at(3), person, map[string]any{
+					"artifact_id": privateArtifact, "name": "spec.md", "version": 2, "reason": "The hushcorp numbers are wrong",
+					"content_sha256": privateDigest, "actor": map[string]any{"id": privateEmail, "kind": "user"}}),
+				privateEvent(t, 15, 6, "NIMBUS-412", "NIMBUS", "ask.opened", at(4), architect, map[string]any{
+					"id": privateAsk, "kind": "question", "state": "open", "issue_key": "NIMBUS-412", "author": architect,
+					"question": "Should hushcorp keys rotate weekly?", "references_changed": []map[string]any{{"id": "ORION-77", "kind": "issue"}},
+					"options": []map[string]any{{"id": "b2", "label": "Yes, for hushcorp"}}}),
+			},
+			"ORION-77": {
+				privateEvent(t, 16, 9, "ORION-77", "ORION", "issue.closed", at(5), daemon("ORION"),
+					issue("ORION-77", 77, "ORION", "done", "", []string{}, []string{}, nil)),
+			},
+		},
+		Merges: map[string][]Merge{
+			privateRepo:    {{SHA: strings.Repeat("1", 40), At: at(8), Branch: "main"}},
+			keptRepository: {{SHA: strings.Repeat("2", 40), At: at(9), Branch: "main"}},
+		},
+	}
+	kinds := make(map[string]bool)
+	for _, line := range log {
+		parsed, err := ParseLogLine(line)
+		if err != nil || parsed == nil {
+			t.Fatalf("the private window's line %s does not read: %v", line, err)
+		}
+		kinds[parsed.Head().Msg] = true
+	}
+	w.Lines = slices.Sorted(maps.Keys(kinds))
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := w.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// shapeOf is v's shape: every member's name in order, every list's length and every value's JSON
+// type, each value itself left out.
+func shapeOf(t *testing.T, raw []byte) any {
+	t.Helper()
+	value, err := decodeOrdered(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shape func(v any) any
+	shape = func(v any) any {
+		switch value := v.(type) {
+		case jsonObject:
+			out := make([]any, 0, 2*len(value))
+			for _, member := range value {
+				out = append(out, member.key, shape(member.value))
+			}
+			return map[string]any{"object": out}
+		case []any:
+			out := make([]any, len(value))
+			for i, element := range value {
+				out[i] = shape(element)
+			}
+			return out
+		case string:
+			return "string"
+		case json.Number:
+			return "number"
+		case bool:
+			return "bool"
+		}
+		return "null"
+	}
+	return shape(value)
+}
+
+// pick is the value at path in raw, each step a member's name or a list's index.
+func pick(t *testing.T, raw json.RawMessage, path ...any) any {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range path {
+		switch step := step.(type) {
+		case string:
+			object, ok := value.(map[string]any)
+			if !ok {
+				t.Fatalf("%s has no member %q on the path %v", raw, step, path)
+			}
+			value = object[step]
+		case int:
+			list, ok := value.([]any)
+			if !ok || step >= len(list) {
+				t.Fatalf("%s has no element %d on the path %v", raw, step, path)
+			}
+			value = list[step]
+		}
+	}
+	return value
+}
+
+// neutralizePrivate neutralizes the private window into a directory of the test's own, denying
+// privateWord, with the map written beside the output rather than in it.
+func neutralizePrivate(t *testing.T) (in, out string, names NeutralMap) {
+	t.Helper()
+	in = privateWindow(t)
+	scratch := t.TempDir()
+	out = filepath.Join(scratch, "neutral")
+	names, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: filepath.Join(scratch, "map.json"), Deny: []string{privateWord}})
+	if err != nil {
+		t.Fatalf("Neutralize: %v", err)
+	}
+	return in, out, names
+}
+
+// A neutralized window holds none of the private names of the window it was made from, in any
+// case and in any file, window.json included; and it keeps the record's shapes: every line and
+// every event has the members, the JSON types and the list lengths it had, the trace's readers
+// read every line as the kind it was and every event without a refusal, and the merges keep their
+// commits and times under their renamed repositories. The map is written outside the window,
+// readable by its owner alone, and holds the names it returned.
+func TestNeutralizeLeavesNoPrivateNameAndKeepsTheShapes(t *testing.T) {
+	in, out, names := neutralizePrivate(t)
+	err := filepath.WalkDir(out, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, name := range privateNames {
+			if bytes.Contains(bytes.ToLower(data), bytes.ToLower([]byte(name))) {
+				t.Errorf("%s still holds %q", path, name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, err := ReadWindow(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	neutral, err := ReadWindow(out)
+	if err != nil {
+		t.Fatalf("ReadWindow of the neutral window: %v", err)
+	}
+	if len(neutral.Log) != len(recorded.Log) {
+		t.Fatalf("the neutral log holds %d lines, the record's %d", len(neutral.Log), len(recorded.Log))
+	}
+	for i, line := range recorded.Log {
+		if !reflect.DeepEqual(shapeOf(t, neutral.Log[i]), shapeOf(t, line)) {
+			t.Errorf("log line %d is\n  %s\nwhose shape differs from the record's\n  %s", i+1, neutral.Log[i], line)
+		}
+		was, _ := ParseLogLine(line)
+		is, err := ParseLogLine(neutral.Log[i])
+		if err != nil || reflect.TypeOf(is) != reflect.TypeOf(was) {
+			t.Errorf("log line %d reads as %T (%v), the record's as %T", i+1, is, err, was)
+		}
+	}
+	for key, events := range recorded.Events {
+		renamed, ok := names.Keys[key]
+		if !ok || len(neutral.Events[renamed]) != len(events) {
+			t.Errorf("the record's %d events of %s are %d events of %q in the neutral window", len(events), key, len(neutral.Events[renamed]), renamed)
+			continue
+		}
+		for i, event := range events {
+			if !reflect.DeepEqual(shapeOf(t, neutral.Events[renamed][i]), shapeOf(t, event)) {
+				t.Errorf("event %d of %s is\n  %s\nwhose shape differs from the record's\n  %s", i+1, renamed, neutral.Events[renamed][i], event)
+			}
+			if _, err := ParseDispatchEvent(neutral.Events[renamed][i]); err != nil {
+				t.Errorf("event %d of %s does not read: %v", i+1, renamed, err)
+			}
+		}
+	}
+	if len(neutral.Events) != len(recorded.Events) {
+		t.Errorf("the neutral window holds the events of %v, the record of %v", slices.Sorted(maps.Keys(neutral.Events)), slices.Sorted(maps.Keys(recorded.Events)))
+	}
+	wantMerges := map[string][]Merge{"acme/repo-1": recorded.Merges[privateRepo], keptRepository: recorded.Merges[keptRepository]}
+	if len(neutral.Merges) != 2 || !sameReading(neutral.Merges["acme/repo-1"], wantMerges["acme/repo-1"]) ||
+		!sameReading(neutral.Merges[keptRepository], wantMerges[keptRepository]) {
+		t.Errorf("the neutral merges are %+v, want %+v", neutral.Merges, wantMerges)
+	}
+	if neutral.Project != "ACME" || !slices.Equal(neutral.Lines, recorded.Lines) || !sameReading(neutral.Parts, recorded.Parts) {
+		t.Errorf("the neutral window.json names project %q, lines %q and parts %+v; want ACME and the record's lines and parts",
+			neutral.Project, neutral.Lines, neutral.Parts)
+	}
+
+	scratch := filepath.Dir(out)
+	info, err := os.Stat(filepath.Join(scratch, "map.json"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the map is %v, %v; want a file its owner alone reads", info, err)
+	}
+	data, err := os.ReadFile(filepath.Join(scratch, "map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written NeutralMap
+	if err := json.Unmarshal(data, &written); err != nil || !reflect.DeepEqual(written, names) {
+		t.Errorf("the map file reads %+v (%v), want the map Neutralize returned, %+v", written, err, names)
+	}
+}
+
+// One name of the record is one neutral name in every file it stands in: the root and its child
+// are ACME-1 and ACME-2 in the order of their numbers, and the other project's issue OTHERA-1, in
+// the log's lines, the claim tokens and the daemon's words that spell them, the events' files,
+// keys, numbers, parents, blockers, children and references, a session's workspace and title;
+// the document's uuid is one in the gate's line and the change request; the person is one in the
+// assignee and the request's actor; the repository is one in the issue, the link to its pull
+// request and the merges; and each daemon's Dispatch session names its project's neutral key.
+func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
+	_, out, names := neutralizePrivate(t)
+	root, child, other := names.Keys["NIMBUS-400"], names.Keys["NIMBUS-412"], names.Keys["ORION-77"]
+	if root != "ACME-1" || child != "ACME-2" || other != "OTHERA-1" {
+		t.Fatalf("NIMBUS-400, NIMBUS-412 and ORION-77 are %q, %q and %q; want ACME-1, ACME-2 and OTHERA-1", root, child, other)
+	}
+	w, err := ReadWindow(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]LogLine, len(w.Log))
+	for i, line := range w.Log {
+		if lines[i], err = ParseLogLine(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := "legion-acme-acme-2-implementer"
+	want := []LogLine{
+		DaemonStarted{LineHead: lines[0].Head(), Project: "ACME", AdmissionCap: 4},
+		GateOpened{LineHead: lines[1].Head(), Issue: root, Artifact: names.IDs[privateArtifact], Event: "approved", Version: 2},
+		PhaseChanged{LineHead: lines[2].Head(), Issue: child, Tree: root, From: "implementing", To: "testing", Trigger: "implementation_ready", Status: "testing"},
+		WaitsOnIssues{LineHead: lines[3].Head(), Issue: child, Blockers: []string{other}},
+		TurnStarted{LineHead: lines[4].Head(), Claim: ClaimRef{Token: "legion-acme-acme-2-implementer", Issue: child, Role: "implementer"}, Generation: 3, Delivery: "outbox:9"},
+		ClaimFailed{LineHead: lines[5].Head(), Claim: ClaimRef{Token: "legion-acme-acme-2-implementer", Issue: child, Role: "implementer"}, Cause: "launch_refused",
+			Why: "launch " + token + ": dial tcp: lookup host-1.example.invalid: no such host (withheld network)"},
+		Suspended{LineHead: lines[6].Head(), Claim: ClaimRef{Token: "legion-acme-controller", Role: "controller"}, By: "released",
+			Reason: "the issue's pod has been idle for the release period"},
+	}
+	for i := range want {
+		if !sameReading(lines[i], want[i]) {
+			t.Errorf("neutral log line %d reads as\n  %s\nwant\n  %s", i+1, describeReading(lines[i]), describeReading(want[i]))
+		}
+	}
+	if names.IDs[privateArtifact] == "" || names.IDs[privateArtifact] == privateArtifact {
+		t.Errorf("the document's uuid became %q", names.IDs[privateArtifact])
+	}
+
+	if keys := slices.Sorted(maps.Keys(w.Events)); !slices.Equal(keys, []string{root, child, other}) {
+		t.Fatalf("the neutral window holds the events of %v, want of %v", keys, []string{root, child, other})
+	}
+	update, request, ask := w.Events[child][0], w.Events[child][1], w.Events[child][2]
+	email := pick(t, update, "payload", "assignee")
+	for _, check := range []struct {
+		what      string
+		got, want any
+	}{
+		{"the child's key", pick(t, update, "payload", "key"), child},
+		{"the child's number", pick(t, update, "payload", "number"), 2.0},
+		{"the child's parent", pick(t, update, "payload", "parent"), root},
+		{"the child's ancestor", pick(t, update, "payload", "ancestors", 0), root},
+		{"the child's blocker", pick(t, update, "payload", "blocked_by", 0), other},
+		{"the child's labels", pick(t, update, "payload", "labels"), []any{"legion", "label-1"}},
+		{"the child's repository", pick(t, update, "payload", "repo"), "acme/repo-1"},
+		{"the link to its pull request", pick(t, update, "payload", "external_links", 0, "url"), "https://github.com/acme/repo-1/pull/88"},
+		{"the wiki link", pick(t, update, "payload", "external_links", 1, "url"), "https://example.invalid/link-1"},
+		{"the laptop's working directory", pick(t, update, "actor", "origin", "cwd"), "/work/1"},
+		{"the laptop session's title", pick(t, update, "actor", "origin", "session_title"), "session 1"},
+		{"the change request's actor", pick(t, request, "actor", "id"), email},
+		{"the change request's document", pick(t, request, "payload", "artifact_id"), names.IDs[privateArtifact]},
+		{"the ask's issue", pick(t, ask, "payload", "issue_key"), child},
+		{"the ask's reference", pick(t, ask, "payload", "references_changed", 0, "id"), other},
+		{"the architect's workspace", pick(t, ask, "actor", "origin", "cwd"), "/legion/workspaces/acme/repo-1/acme-2"},
+		{"the architect's title", pick(t, ask, "actor", "origin", "session_title"), "Legion architect · ACME-2"},
+		{"the architect's machine", pick(t, ask, "actor", "origin", "machine"), "legion-acme-daemon"},
+		{"the root's child", pick(t, w.Events[root][1], "payload", "child_key"), child},
+		{"the root's daemon session", pick(t, w.Events[root][0], "actor", "id"), "legion-daemon:ACME"},
+		{"the other project's daemon session", pick(t, w.Events[other][0], "actor", "id"), "legion-daemon:OTHERA"},
+		{"the other project's key", pick(t, w.Events[other][0], "project"), "OTHERA"},
+	} {
+		if !reflect.DeepEqual(check.got, check.want) {
+			t.Errorf("%s is %v, want %v", check.what, check.got, check.want)
+		}
+	}
+	if address, _ := email.(string); !strings.HasSuffix(address, "@example.invalid") {
+		t.Errorf("the person's email became %v", email)
+	}
+}
+
+// The map of a neutralization holds every private name, so it is never written where the neutral
+// window is: a map inside the output is refused, and so is a map already there, which a second
+// run would otherwise write over; neither refusal writes the output or the map.
+func TestNeutralizeRefusesAMapInsideTheOutputOrAlreadyThere(t *testing.T) {
+	in := privateWindow(t)
+	scratch := t.TempDir()
+	out := filepath.Join(scratch, "neutral")
+	_, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: filepath.Join(out, "map.json")})
+	if err == nil || !strings.Contains(err.Error(), "inside the output") {
+		t.Errorf("Neutralize with the map inside the output = %v, want a refusal saying so", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused neutralization made its output: %v", err)
+	}
+
+	mapFile := filepath.Join(scratch, "map.json")
+	if err := os.WriteFile(mapFile, []byte("an earlier map"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: mapFile})
+	if err == nil || !strings.Contains(err.Error(), "there already") {
+		t.Errorf("Neutralize with a map already there = %v, want a refusal saying so", err)
+	}
+	if data, _ := os.ReadFile(mapFile); string(data) != "an earlier map" {
+		t.Errorf("the earlier map reads %q after the refused neutralization", data)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused neutralization made its output: %v", err)
+	}
+}
+
+// A deny word that stands where the neutralizer keeps the record's words — here in a msg of the
+// daemon's, which the trace reads lines by — fails the neutralization rather than passing it
+// through, and the output and the map are not left behind.
+func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
+	in := privateWindow(t)
+	scratch := t.TempDir()
+	out, mapFile := filepath.Join(scratch, "neutral"), filepath.Join(scratch, "map.json")
+	_, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: mapFile, Deny: []string{"Turn"}})
+	if err == nil || !strings.Contains(err.Error(), "still holds") {
+		t.Errorf("Neutralize denying a word of a msg = %v, want a refusal naming the word left", err)
+	}
+	for _, path := range []string{out, mapFile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("the refused neutralization left %s: %v", path, err)
+		}
+	}
+}

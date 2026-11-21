@@ -40,6 +40,11 @@ legion probe-image	hidden	--claude-code-pin string	--claude-root string	--daemon
 legion project
 legion project pause	--config string	--json bool	--operator-token-file string	--port int	--reason string
 legion project resume	--config string	--json bool	--operator-token-file string	--port int
+legion replay
+legion replay collect	--before duration	--collector string	--concurrency int	--dispatch-token-file string	--from string	--gate-steps string	--linger duration	--log stringArray	--out string	--part stringArray	--project string	--review-round-cap int	--stalled-tree-notice duration	--tick-interval duration	--to string	--worker-background duration	--worker-silence duration
+legion replay collect-merges	--branch string	--from string	--github-api string	--github-token-env string	--out string	--repo string	--to string
+legion replay neutralize	--deny stringArray	--in string	--map string	--out string	--project string
+legion replay rules	--json bool
 legion restart
 legion sessions
 legion sessions import	--claims string	--dsn-file string	--tree string	--tree-volume string

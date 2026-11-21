@@ -76,7 +76,10 @@ type Window struct {
 	StalledTreeNotice Duration `json:"stalledTreeNotice"`
 	WorkerSilence     Duration `json:"workerSilence"`
 	WorkerBackground  Duration `json:"workerBackground"`
-	// Experiments is the project's declared experiments (config.Project.ExperimentsDeclared).
+	// Experiments is the experiments a replay draws assignments for (admit's UseExperiments). A
+	// draw records an arm for a unit and decides nothing about a slot (admit's drawExperiments,
+	// experiment.DrawAndRecord), so a replay's measures are the same with or without them, and
+	// collect writes none.
 	Experiments []config.Experiment `json:"experiments"`
 	// Lines is every msg of a log line the collector kept, so a reader of the log can tell a kind
 	// the daemon did not write in the window from a kind the window does not hold.
