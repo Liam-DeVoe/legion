@@ -924,8 +924,8 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
 		}
 		// A session's documents follow the session content rule, which reads the stored listener
-		// answer only while it is fresh, so the document service refreshes it before each batch's
-		// ask, as the live agent view does (refreshRosterForContent).
+		// answer only while it is fresh, so the document service refreshes it before each read of
+		// a socket's rule, as the live agent view does (refreshRosterForContent).
 		if refresh, ok := deps.Docs.(interface {
 			SetRosterRefresh(func(context.Context))
 		}); ok {

@@ -49,8 +49,10 @@ const (
 // project's owner, visibility or access list, a group - notifies inside its own transaction, so
 // every Dispatch process hears it once the write commits and none hears a write that did not. It
 // carries no payload: a listener reads what it needs afresh. The document service closes on it each
-// socket whose person no longer reads its room (docs: Service.recheckAccess). A change made without
-// it, by SQL alone, is found on the document sockets' heartbeat instead (docs:
+// socket whose person no longer reads its room (docs: Service.recheckAccess), and moves the access
+// epoch on which its sockets ask their rule again (docs: accessEpoch), as it does on
+// events.SessionAccessChannel, which the writes of a session's ties and projects notify. A change
+// made without it, by SQL alone, is found on the document sockets' heartbeat instead (docs:
 // Service.RunAccessRecheck).
 const ChangedChannel = "dispatch_access_changed"
 
@@ -622,7 +624,8 @@ func recordReachedProjects(ctx context.Context, tx pgx.Tx, keys, people []string
 // (session_reached_projects): the session reads under that list from the request that presented
 // it on, so what its transcript holds stays bounded by it, as route_roster's trigger keeps a
 // private project a listener record lists, and nothing removes it. A public project, and a key no
-// project holds, record nothing; a pair a row holds already is not written again.
+// project holds, record nothing; a pair a row holds already is not written again. A statement that
+// writes a pair announces it on events.SessionAccessChannel.
 func RecordListedReach(ctx context.Context, q Querier, session string, projects []string) error {
 	if session == "" || len(projects) == 0 {
 		return nil
@@ -638,8 +641,8 @@ func RecordListedReach(ctx context.Context, q Querier, session string, projects 
 					where recorded.session_id = $1::text and recorded.project_key = listed.key)
 			returning 1
 		)
-		select count(*) from written
-	`, session, projects).Scan(&written); err != nil {
+		select count(*), (select `+events.AnnounceSessionAccess+` from written limit 1) from written
+	`, session, projects).Scan(&written, nil); err != nil {
 		return fmt.Errorf("record the private projects a session's token lists: %w", err)
 	}
 	return nil
@@ -699,10 +702,11 @@ end
 // TieSession records, in a statement of its own, that session acts for the person login, the
 // canonical login (model.CanonicalLogin) of a broker-issued token that proved the session
 // (session_owners): the tie the live agent view reads (SessionContentClause). A pair a row holds
-// already is not written again. It takes login's sessionOwnerLock shared for the statement, so it
+// already is not written again; a statement that writes one announces it on
+// events.SessionAccessChannel. It takes login's sessionOwnerLock shared for the statement, so it
 // is ordered with an access change that takes a project from that person (recordReachedProjects).
 func TieSession(ctx context.Context, q Querier, session, login string) error {
-	var written bool
+	var written int
 	if err := q.QueryRow(ctx, `
 		with locked as (
 			select pg_advisory_xact_lock_shared(hashtext($3), hashtext($2::text))
@@ -713,8 +717,8 @@ func TieSession(ctx context.Context, q Querier, session, login string) error {
 				select 1 from session_owners recorded where recorded.session_id = $1 and recorded.login = $2)
 			returning 1
 		)
-		select exists (select 1 from written)
-	`, session, login, sessionOwnerLock).Scan(&written); err != nil {
+		select count(*), (select `+events.AnnounceSessionAccess+` from written limit 1) from written
+	`, session, login, sessionOwnerLock).Scan(&written, nil); err != nil {
 		return fmt.Errorf("tie a session to its person: %w", err)
 	}
 	return nil
