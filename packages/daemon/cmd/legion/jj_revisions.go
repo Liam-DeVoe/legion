@@ -198,9 +198,9 @@ func (s *jjStep) words(given []jjGiven, dry bool) []string {
 }
 
 // revisionTerms is each revision argument as given, a pass of its dry run, gives it, in terms of
-// a revset: the revset of each of its words (jjPush.revisionWords) in parentheses, or each id of
-// one that given gives as the ids of its commits, so that a read of them goes to as many revsets
-// as keep each under jjWordBound bytes (jjWords).
+// a revset: each id of one that given gives as the ids of its commits, and else its one word
+// (revisionGiven's 1, 2 and 4), less what stands in front of the argument, in parentheses, so that
+// a read of them goes to as many revsets as keep each under jjWordBound bytes (jjWords).
 func (s *jjStep) revisionTerms(given []jjGiven) []string {
 	var terms []string
 	for i, g := range given {
@@ -208,11 +208,7 @@ func (s *jjStep) revisionTerms(given []jjGiven) []string {
 			terms = append(terms, g.ids...)
 			continue
 		}
-		for _, revset := range s.push.revisionWords(i, g.words) {
-			if revset != "" {
-				terms = append(terms, "("+revset+")")
-			}
-		}
+		terms = append(terms, "("+g.words[0][s.push.revisions[i].offset:]+")")
 	}
 	return terms
 }

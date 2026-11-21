@@ -1515,8 +1515,8 @@ var rolePushFullID = regexp.MustCompile(`[0-9a-f]{40}`)
 // `jj git push -r ::<C>`, a tracked bookmark on C (-r sends a bookmark that points at the commit,
 // and jj refuses to make a remote bookmark for one that tracks nothing), on a history of five
 // commits under C that origin holds (rolePushFixture.history), with the step's bound of a word of
-// ids lowered to rolePushOneWordBound bytes, under the 132 bytes of the argument's primary form
-// and over the 341 of the ids of the eight commits it names: the real push's argument carries no
+// ids lowered to rolePushOneWordBound bytes, over the 132 bytes of the argument's primary form
+// and under the 341 of the ids of the eight commits it names: the real push's argument carries no
 // id of a commit the step left alone. jj reads the argument among the commits the step can
 // rewrite, C alone, so a recording jj ahead of the real one sees the real push's argument, a word
 // under the bound, hold the ids of C's change and of no other commit, the history's, the seed's

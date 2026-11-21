@@ -44,6 +44,23 @@ func (f *rolePushFixture) offsets(first, second string) (string, rolePushChange,
 	return x.change, d1, d2
 }
 
+// rolePushOffsetSends is what a push of the two commits of a divergent change must leave
+// (rolePushFixture.offsets), sent being the bookmark on D1, offset 1 before the step, and held
+// the one on D2, offset 0: origin holds sent on the rewritten D1, with the implementer's author,
+// and held on D2 as it was; and alone, what jj alone leaves, D1 as it was too.
+func rolePushOffsetSends(sent, held string, d1, d2 rolePushChange) (want, alone rolePushWant) {
+	impl, rev := rolePushImplementer, rolePushReviewer
+	heldD2 := rolePushRef{ref: "refs/heads/" + held, commits: []rolePushCommit{{change: d2.change, author: rev, commit: d2.commit}}}
+	want = rolePushSends(sent, d1, "implementer", impl)
+	want.refs = append(want.refs, heldD2)
+	want.same = map[string]rolePushIdentity{d2.commit: rev}
+	alone = rolePushWant{
+		refs: []rolePushRef{heldD2, {ref: "refs/heads/" + sent, commits: []rolePushCommit{{change: d1.change, author: rev, commit: d1.commit}}}},
+		same: map[string]rolePushIdentity{d1.commit: rev, d2.commit: rev},
+	}
+	return want, alone
+}
+
 // mine makes the state of the rows of an author revset that the step's rewrite makes name more
 // commits: M on main, which the implementer made with its own trailer, under the bookmark other;
 // P on main, which the reviewer made with the implementer's trailer, under mid; A on P, made so
@@ -63,8 +80,8 @@ func (f *rolePushFixture) mine() (m, p, a rolePushChange) {
 	f.bookmark("other", m.commit)
 	f.bookmark("mid", p.commit)
 	f.bookmark("top", a.commit)
-	if got := f.jj(impl, "--ignore-working-copy", "log", "--no-graph", "-r", "mine()", "-T", `commit_id ++ "\n"`); got != m.commit+"\n" {
-		f.t.Fatalf("the implementer's mine() names %q before the push, want M, %s, alone", got, m.commit)
+	if got := f.read("mine()"); got.commit != m.commit {
+		f.t.Fatalf("the implementer's mine() names %s before the push, want M, %s, alone", got.commit, m.commit)
 	}
 	return m, p, a
 }
@@ -297,14 +314,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 		// id of the commit they named before the step, as the step left it.
 		{name: "--named f and g of offsets 0 and 1 of a divergent change, the step rewriting offset 1's commit", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			heldD2 := rolePushRef{ref: "refs/heads/f", commits: []rolePushCommit{{change: change, author: rev, commit: d2.commit}}}
-			want := rolePushSends("g", d1, "implementer", impl)
-			want.refs = append(want.refs, heldD2)
-			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			alone := rolePushWant{
-				refs: []rolePushRef{heldD2, {ref: "refs/heads/g", commits: []rolePushCommit{{change: change, author: rev, commit: d1.commit}}}},
-				same: map[string]rolePushIdentity{d1.commit: rev, d2.commit: rev},
-			}
+			want, alone := rolePushOffsetSends("g", "f", d1, d2)
 			return []string{"git", "push", "--named", "f=" + change + "/0", "--named", "g=" + change + "/1"}, want, alone
 		}},
 		// -r sends each bookmark that points at a commit it names: b, on D2, offset 0 before the
@@ -315,14 +325,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 			change, d1, d2 := f.offsets(rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
 			f.bookmark("a", d1.commit)
 			f.bookmark("b", d2.commit)
-			heldD2 := rolePushRef{ref: "refs/heads/b", commits: []rolePushCommit{{change: change, author: rev, commit: d2.commit}}}
-			want := rolePushSends("a", d1, "implementer", impl)
-			want.refs = append(want.refs, heldD2)
-			want.same = map[string]rolePushIdentity{d2.commit: rev}
-			alone := rolePushWant{
-				refs: []rolePushRef{heldD2, {ref: "refs/heads/a", commits: []rolePushCommit{{change: change, author: rev, commit: d1.commit}}}},
-				same: map[string]rolePushIdentity{d1.commit: rev, d2.commit: rev},
-			}
+			want, alone := rolePushOffsetSends("a", "b", d1, d2)
 			return []string{"git", "push", "-b", "a", "-r", change + "/0"}, want, alone
 		}},
 		// -r sends each bookmark that points at a commit it names: other, on M, and not mid, on P,
@@ -625,13 +628,10 @@ func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 // three commits and the words of their ids, and no change is divergent.
 func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
+	impl := rolePushImplementer
 	work := func(f *rolePushFixture, bound int) []rolePushChange {
 		f.bound = bound
-		cs := make([]rolePushChange, 3)
-		for i := range cs {
-			cs[i] = f.commitOn(rev, impl, "main", rolePushMessage("work "+strconv.Itoa(i+1), "implementer"))
-		}
+		cs, _, _ := f.reviewed(3)
 		return cs
 	}
 	// split is the push of argument by option, which sends cs in count words under f's bound, and
@@ -667,13 +667,7 @@ func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 		}
 		return []string{"git", "push", option, argument}, want
 	}
-	ids := func(cs []rolePushChange) string {
-		var ids []string
-		for _, c := range cs {
-			ids = append(ids, c.commit)
-		}
-		return strings.Join(ids, " | ")
-	}
+	ids := func(cs []rolePushChange) string { return strings.Join(rolePushCommitIDs(cs), " | ") }
 	rolePushRunArgs(t, rolePushRecords, []rolePushArgsRow{
 		{name: "-c <C1> | <C2> | <C3>", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			cs := work(f, rolePushLowBound)
@@ -700,6 +694,37 @@ func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 // not be under limit bytes.
 func rolePushPastTheLimit(argument string, n, limit int) string {
 	return "revision `" + argument + "` would go to the push as the ids of its " + strconv.Itoa(n) + " commits, and the push's arguments and environment would not be under " + strconv.Itoa(limit) + " bytes"
+}
+
+// reviewed makes n commits on main, each of which the reviewer made with the implementer's
+// trailer, and answers them and what a push of each under a bookmark of -c's own must leave:
+// want, where the step rewrites each, with the implementer's author (rolePushSends), and alone,
+// where nothing rewrites them, as jj alone leaves them, each as it was, with the reviewer's
+// author.
+func (f *rolePushFixture) reviewed(n int) (cs []rolePushChange, want, alone rolePushWant) {
+	f.t.Helper()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	cs = make([]rolePushChange, n)
+	alone.same = map[string]rolePushIdentity{}
+	for i := range cs {
+		c := f.commitOn(rev, impl, "main", rolePushMessage("work "+strconv.Itoa(i+1), "implementer"))
+		cs[i] = c
+		sent := rolePushSends("push-"+c.change[:12], c, "implementer", impl)
+		want.refs = append(want.refs, sent.refs...)
+		want.rewrites = append(want.rewrites, sent.rewrites...)
+		alone.refs = append(alone.refs, rolePushRef{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}})
+		alone.same[c.commit] = rev
+	}
+	return cs, want, alone
+}
+
+// rolePushCommitIDs is the commit id of each of cs, in order.
+func rolePushCommitIDs(cs []rolePushChange) []string {
+	ids := make([]string, len(cs))
+	for i, c := range cs {
+		ids[i] = c.commit
+	}
+	return ids
 }
 
 // The pushes of a revision argument of commits on main that the step would rewrite, with the
@@ -732,19 +757,12 @@ func rolePushPastTheLimit(argument string, n, limit int) string {
 func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	// asWritten makes n commits on main that the reviewer made with the implementer's trailer,
-	// under the limit f sets, and answers the push `-c "<C1> | … | <Cn>"`, what that push must
-	// leave, and what jj alone leaves.
+	// asWritten makes n commits on main that the reviewer made with the implementer's trailer
+	// (rolePushFixture.reviewed), under the limit f sets, and answers the push `-c "<C1> | … |
+	// <Cn>"`, what that push must leave, and what jj alone leaves.
 	asWritten := func(f *rolePushFixture, n int) ([]string, rolePushWant, rolePushWant) {
-		ids := make([]string, n)
-		alone := rolePushWant{same: map[string]rolePushIdentity{}}
-		for i := range ids {
-			c := f.commitOn(rev, impl, "main", rolePushMessage("work "+strconv.Itoa(i+1), "implementer"))
-			ids[i] = c.commit
-			alone.same[c.commit] = rev
-			alone.refs = append(alone.refs, rolePushRef{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}})
-		}
-		args := []string{"git", "push", "-c", strings.Join(ids, " | ")}
+		cs, _, alone := f.reviewed(n)
+		args := []string{"git", "push", "-c", strings.Join(rolePushCommitIDs(cs), " | ")}
 		want := alone
 		want.cannotSet, want.cannotSetNames = 1, rolePushPastTheLimit(args[3], n, f.argMax)
 		want.noMetaedit = true
@@ -766,8 +784,8 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 			d := f.commitOn(rev, impl, e.commit, rolePushMessage("D", "implementer"))
 			m := f.commitOn(impl, impl, "main", rolePushMessage("M", "implementer"))
 			f.jj(rev, "new", "main")
-			if got := f.jj(impl, "--ignore-working-copy", "log", "--no-graph", "-r", "mine()", "-T", `commit_id ++ "\n"`); got != m.commit+"\n" {
-				f.t.Fatalf("the implementer's mine() names %q before the push, want M, %s, alone", got, m.commit)
+			if got := f.read("mine()"); got.commit != m.commit {
+				f.t.Fatalf("the implementer's mine() names %s before the push, want M, %s, alone", got.commit, m.commit)
 			}
 			args := []string{"git", "push", "-c", d.commit, "-c", "mine()"}
 			want := rolePushWant{
@@ -826,26 +844,16 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 // commit with the reviewer's author.
 func TestAPushUnderTheLimitWithEachArgumentAtItsIDsSetsEveryAuthor(t *testing.T) {
 	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
-	// arguments makes n commits on main that the reviewer made with the implementer's trailer,
-	// and answers the push of each of words, a function of their ids, under -c, what that push
-	// must leave, the ids of the commits each of words names in one word under bound bytes, and
-	// what jj alone leaves.
+	impl := rolePushImplementer
+	// arguments makes n commits on main that the reviewer made with the implementer's trailer
+	// (rolePushFixture.reviewed), and answers the push of each of words, a function of their ids,
+	// under -c, what that push must leave, the ids of the commits each of words names in one word
+	// under bound bytes, and what jj alone leaves.
 	arguments := func(f *rolePushFixture, n, bound int, words func(ids []string) []string) ([]string, rolePushWant, rolePushWant) {
-		var ids []string
-		want := rolePushWant{oneWord: true}
-		alone := rolePushWant{same: map[string]rolePushIdentity{}}
-		for i := range n {
-			c := f.commitOn(rev, impl, "main", rolePushMessage("work "+strconv.Itoa(i+1), "implementer"))
-			ids = append(ids, c.commit)
-			sent := rolePushSends("push-"+c.change[:12], c, "implementer", impl)
-			want.refs = append(want.refs, sent.refs...)
-			want.rewrites = append(want.rewrites, sent.rewrites...)
-			alone.refs = append(alone.refs, rolePushRef{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}})
-			alone.same[c.commit] = rev
-		}
+		cs, want, alone := f.reviewed(n)
+		want.oneWord = true
 		args := []string{"git", "push"}
-		for _, word := range words(ids) {
+		for _, word := range words(rolePushCommitIDs(cs)) {
 			args = append(args, "-c", word)
 			want.ids = append(want.ids, rolePushIDs{argument: word, commits: strings.Count(word, " | ") + 1, words: 1, bound: bound})
 		}
