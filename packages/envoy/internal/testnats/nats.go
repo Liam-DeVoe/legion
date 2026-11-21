@@ -874,24 +874,32 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Fatalf("NATS at %s did not answer within %s: %v", uri, connectTimeout, err)
 }
 
-// ConnectSeed connects to uri as the nkey user whose seed is seed, or with no credential when seed
-// is "", with a one-second dial timeout and no reconnect, then opts, and returns the connection or
-// the server's answer: a test that expects a refusal reads it from the error.
+// ConnectSeed connects to uri as the nkey user whose seed is seed (SeedOption), or with no
+// credential when seed is "", with a one-second dial timeout and no reconnect, then opts, and
+// returns the connection or the server's answer: a test that expects a refusal reads it from the
+// error.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
 	options := []natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}
 	if seed != "" {
-		user, err := nkeys.FromSeed([]byte(seed))
-		if err != nil {
-			t.Fatalf("read the seed: %v", err)
-		}
-		public, err := user.PublicKey()
-		if err != nil {
-			t.Fatalf("read the seed's public key: %v", err)
-		}
-		options = append(options, natsgo.Nkey(public, user.Sign))
+		options = append(options, SeedOption(t, seed))
 	}
 	return natsgo.Connect(uri, append(options, opts...)...)
+}
+
+// SeedOption has a connection present the nkey user whose seed is seed, as a server started with
+// StartNkeyAuthorized requires of every client.
+func SeedOption(t testing.TB, seed string) natsgo.Option {
+	t.Helper()
+	user, err := nkeys.FromSeed([]byte(seed))
+	if err != nil {
+		t.Fatalf("read the seed: %v", err)
+	}
+	public, err := user.PublicKey()
+	if err != nil {
+		t.Fatalf("read the seed's public key: %v", err)
+	}
+	return natsgo.Nkey(public, user.Sign)
 }
 
 const (
@@ -901,17 +909,20 @@ const (
 )
 
 // Connect waits for a test NATS server to accept a real connection and JetStream to answer an
-// operation before returning it. The relay accepts a connection before the server behind it has
-// finished its protocol handshake, and NATS can complete that handshake while JetStream is still
-// starting; a KV test needs both readiness boundaries.
-func Connect(t testing.TB, uri string) *natsgo.Conn {
+// operation before returning it; opts are the connection's after its dial timeout and no
+// reconnect, a credential (SeedOption) among them for a server that admits no client without one.
+// The relay accepts a connection before the server behind it has finished its protocol handshake,
+// and NATS can complete that handshake while JetStream is still starting; a KV test needs both
+// readiness boundaries.
+func Connect(t testing.TB, uri string, opts ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
 
 	deadline := time.Now().Add(connectTimeout)
 	var conn *natsgo.Conn
 	var err error
+	options := append([]natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}, opts...)
 	for time.Now().Before(deadline) {
-		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
+		conn, err = natsgo.Connect(uri, options...)
 		if err == nil {
 			break
 		}

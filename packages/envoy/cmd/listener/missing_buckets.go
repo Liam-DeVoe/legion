@@ -213,6 +213,7 @@ func openExisting[T any](wait func() error, open func() (T, error)) (T, error) {
 	}
 }
 
+// bucketReads is one read of each bucket's stream: the buckets the server holds (present), those
 // it says it does not (missing), and those whose read failed, with the error (unread), of which the
 // read says nothing. refused names those of unread whose JetStream context returned
 // bus.ErrPublishDenied: the user's grant does not carry the bucket.

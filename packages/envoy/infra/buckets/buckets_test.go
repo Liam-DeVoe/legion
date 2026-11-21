@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -769,6 +770,28 @@ func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// `envoy-infra buckets --help` lists every flag the command takes. The usage is written by hand,
+// so each flag of the flag set, read from the flag package's own listing (an action's --help), is
+// looked for in it as a line of its own. At 69ddf68a60 the usage had lost --ssh, which the command
+// still took and infra/README.md documents.
+func TestTheUsageListsEveryFlag(t *testing.T) {
+	_, _, listing := runCommand(t, &world{}, nil, "check", "--help")
+	defined := regexp.MustCompile(`(?m)^  -([a-z-]+)`).FindAllStringSubmatch(listing, -1)
+	if len(defined) == 0 {
+		t.Fatalf("`check --help` listed no flag, so nothing was compared:\n%s", listing)
+	}
+	code, _, help := runCommand(t, &world{}, nil, "--help")
+	if code != 0 {
+		t.Fatalf("--help = %d, want 0:\n%s", code, help)
+	}
+	for _, flag := range defined {
+		if !regexp.MustCompile(`(?m)^  --` + flag[1] + `\b`).MatchString(help) {
+			t.Errorf("--help lists no --%s, which the command takes:\n%s", flag[1], help)
+		}
+	}
+	t.Logf("compared the %d flags the command takes with --help", len(defined))
 }
 
 // BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A

@@ -266,6 +266,10 @@ func TestLiveSeedReachesNATS(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	seed, public := testnats.User(t)
 	natsURL := testnats.StartNkeyAuthorized(t, public)
+	// No listener creates a bucket it copies, so the server holds them before the seeded listener
+	// starts, which waits for them and answers 503 meanwhile. The server admits only the seed's
+	// user, so the provisioning connection presents the seed too.
+	bustest.ProvisionURL(t, natsURL, 1, testnats.SeedOption(t, seed))
 	ports := []int{holdListenerPort(t), holdListenerPort(t)}
 	seeded, unseeded := containerName(t), containerName(t)
 

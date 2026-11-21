@@ -348,6 +348,9 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 func TestClusteredNatsHubListenerRefusesAnInClusterCallWithoutAToken(t *testing.T) {
 	binary := buildLiveListener(t)
 	_, natsURL := testnats.Start(t)
+	// No listener creates a bucket it copies, so the server holds them before the listener starts,
+	// as startLiveListener's does; without them the start waits and /healthz answers 503.
+	bustest.ProvisionURL(t, natsURL, 1)
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "clustered-hub-listener")
 

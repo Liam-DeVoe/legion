@@ -160,6 +160,7 @@ The writers are every envoy-listener of the deployment, and every envoy-dispatch
 bucket is among the buckets. The proof is required before anything changes:
   --kube-context CTX   a Kubernetes context to check, repeatable ("" is kubectl's current one)
   --host TARGET        a machine to query through ssh, repeatable
+  --ssh PROGRAM        the program run as ssh (default ssh), such as a wrapper over SSM
   --this-machine       the machine the command runs on, queried here with no ssh; in a container
                        it sees the machine's processes only with the machine's PID namespace
                        (docker --pid host, compose pid: host)
