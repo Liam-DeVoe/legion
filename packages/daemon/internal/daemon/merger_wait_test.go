@@ -10,13 +10,11 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -44,19 +42,6 @@ func (r *waitDeliveryRig) wantTimeOfAnEndedWaitSendsNothing(wait record.ClaimWai
 		r.t.Fatalf("the outbox ran %+v at the time of the ended wait %s, want its wait_due row alone", ran, wait.ID)
 	}
 	r.wantPrompts(sent, "the time of a wait the gate's closing ended sends nothing")
-}
-
-// wantClosedGateOnly asserts sent opens with the closed gate's note, in front of a task saying
-// says, and that nothing in it says the gate stands open or opened: the session reads one state of
-// the gate, the one at the send.
-func wantClosedGateOnly(t *testing.T, sent fake.Prompt, says, why string) {
-	t.Helper()
-	wantClosedNote(t, sent, says, why)
-	for _, open := range []string{"The design gate of LEGION-208 stands open", "The design gate of LEGION-208 opened"} {
-		if strings.Contains(sent.Message, open) {
-			t.Fatalf("the merger's session received %q while the gate is closed, which says %q: %s", sent.Message, open, why)
-		}
-	}
 }
 
 // The design gate's closing ends a merger's wait (R3's seventh end) with the cause that the design
@@ -203,7 +188,7 @@ func TestAMergersWaitsOwnTaskSentAfterTheGateClosedNamesTheClosedGate(t *testing
 				r.boot()
 			}
 			first := r.wantPrompts(sent+1, "the session receives the wait's own task while the gate is closed")[sent]
-			wantClosedGateOnly(t, first, "The time of your wait "+waited.ID+" came.",
+			wantGateMessage(t, first, heldMergerClosedNote, "The time of your wait "+waited.ID+" came.",
 				"the wait's own task is sent after the gate closed, and its note is built at the send")
 			wantWaitTask(t, first, waited)
 			if lines := r.lines(gateNoteSentLine, "issue="+r.issue.Key, "delivery="+first.DeliveryID, "state=closed", "step=spec",

@@ -12,7 +12,7 @@ import (
 
 // waitDueVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const waitDueVersion = 20261119055600
+const waitDueVersion = 20261121160100
 
 // A wait_due row brings a phase worker's wait to its time (record.WaitDue), queued by the
 // declaration's own transaction. The outbox refuses a kind its constraint does not name, so the
@@ -26,7 +26,7 @@ const waitDueVersion = 20261119055600
 // second read, the plan record, the step record, the role-holders publication and the merge-queue
 // kinds its lists added among them, each on an issue and with a payload of its own — come through
 // the migration whole: the same id, kind, issue, payload, attempts, due time and error.
-func TestTheOutboxTakesTheWaitDueKindWith20261119055600(t *testing.T) {
+func TestTheOutboxTakesTheWaitDueKindWith20261121160100(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, waitDueVersion-1)

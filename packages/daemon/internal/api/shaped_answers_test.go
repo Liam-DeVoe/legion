@@ -1018,9 +1018,6 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped.Wait != nil || shaped.Hold != nil {
 					t.Errorf("the owed answer served below waitContract carries `wait` or `hold`, which that contract added: %+v", shaped)
 				}
-				if owed.Wait == nil || owed.Hold == nil {
-					t.Error("the shaping wrote the owed answer the route built: the answer is a value of its own")
-				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {

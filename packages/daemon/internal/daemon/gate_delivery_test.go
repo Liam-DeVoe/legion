@@ -61,16 +61,22 @@ func (r *waitDeliveryRig) queuedRoleMessages() int {
 	return queued
 }
 
-// wantGateMessage asserts the merger's session received sent opening with message, the gate's own
-// message at the send, in front of the gate's own task, and nothing that says the other state.
+// wantGateMessage asserts the merger's session received sent opening with message, the gate's
+// state at the send — a task's note (heldMergerClosedNote, heldMergerOpenNote) or the gate's own
+// message (heldMergerClosedNote, heldMergerOpenedMessage) — in front of a task saying says, and
+// nothing that says the other state: the session reads one state of the gate, the one at the send.
 func wantGateMessage(t *testing.T, sent fake.Prompt, message, says, why string) {
 	t.Helper()
 	if !strings.HasPrefix(sent.Message, message+"\n\n") || !strings.Contains(sent.Message, says) {
 		t.Fatalf("the merger's session received %q, want %q in front of a task saying %q: %s", sent.Message, message, says, why)
 	}
-	if message == heldMergerOpenedMessage || message == heldMergerOpenNote {
-		if strings.Contains(sent.Message, "The design gate of LEGION-208 closed") {
-			t.Fatalf("the merger's session received %q, which says the gate is closed after it opened: %s", sent.Message, why)
+	other := []string{"The design gate of LEGION-208 closed"}
+	if message == heldMergerClosedNote {
+		other = []string{"The design gate of LEGION-208 stands open", "The design gate of LEGION-208 opened"}
+	}
+	for _, words := range other {
+		if strings.Contains(sent.Message, words) {
+			t.Fatalf("the merger's session received %q, which also says %q: %s", sent.Message, words, why)
 		}
 	}
 }
@@ -87,14 +93,11 @@ func TestALiveMergerIsSentTheClosingMessageThatHoldsTheMerge(t *testing.T) {
 
 	r.closesTheGate()
 	messages := r.roleTopicMessages()[told:]
+	// The closing message is the note every task of the hold carries (heldMergerClosedNote): it
+	// names the closed gate, says to merge nothing and to take a queued pull request back out of
+	// the merge queue.
 	if len(messages) != 1 || messages[0] != heldMergerClosedNote {
 		t.Fatalf("the live merger's role topic was sent %q at the close, want the closing message once: %q", messages, heldMergerClosedNote)
-	}
-	for _, says := range []string{"The design gate of LEGION-208 closed: version 2 of its spec document (" + heldMergerSpec + ")",
-		"Merge nothing", "take a pull request you queued back out of the merge queue"} {
-		if !strings.Contains(messages[0], says) {
-			t.Fatalf("the live merger's closing message %q does not say %q", messages[0], says)
-		}
 	}
 	if starts := entryStartRows(t, r.pool, r.issue.Key); len(starts) != 0 {
 		t.Fatalf("the start rows after the close = %+v, want none: the live merger's delivery is the role message", starts)

@@ -1161,41 +1161,52 @@ func roundsSummary(issues map[string]api.Issue) string {
 	return fmt.Sprintf("open update rounds: %d — %s", len(rounds), strings.Join(named, "; "))
 }
 
-// claimCall is one claim's open tool call: the issue and role whose claim it is, and the record
-// of the call (api.StepView).
-type claimCall struct {
+// claimWith is one claim of the state and what a summary names of it: the issue and role whose
+// claim it is, and the thing (claimsWith).
+type claimWith[T any] struct {
 	issue string
 	role  string
-	step  api.StepView
+	with  T
 }
 
-// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
-func openCalls(issues map[string]api.Issue) []claimCall {
-	var calls []claimCall
-	open := func(issue, role string, view api.ClaimView) {
-		if openCallWord(view.Step) == "" {
-			return
+// claimsWith is every claim of the state for which pick answers something, with what it answered,
+// by issue and then role: each issue's architect and each of its workers. A controller's claim is
+// on no issue — internal/projection puts it on none — so it is in none of these, and is read with
+// `legion claims list` instead.
+func claimsWith[T any](issues map[string]api.Issue, pick func(api.ClaimView) (T, bool)) []claimWith[T] {
+	var found []claimWith[T]
+	add := func(issue, role string, view api.ClaimView) {
+		if with, ok := pick(view); ok {
+			found = append(found, claimWith[T]{issue: issue, role: role, with: with})
 		}
-		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
 	}
 	for key, issue := range issues {
 		if issue.Architect != nil {
-			open(key, string(legionclaim.RoleArchitect), *issue.Architect)
+			add(key, string(legionclaim.RoleArchitect), *issue.Architect)
 		}
-		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			open(key, string(role), issue.Workers[role].Claim)
+		for role, worker := range issue.Workers {
+			add(key, string(role), worker.Claim)
 		}
 	}
-	slices.SortFunc(calls, func(a, b claimCall) int {
+	slices.SortFunc(found, func(a, b claimWith[T]) int {
 		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
 	})
-	return calls
+	return found
+}
+
+// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
+// start of and no end of, with the record of the call (api.StepView), by issue and then role. A
+// call open is what claims.go's openCallWord prints a word for and nothing else is, so that is
+// the test here too: openCallsSummary names each of these rows with that word. That is the shape
+// a stalled turn leaves behind: the daemon reads the same record to decide a turn has stopped
+// moving, and this is where an operator reads it.
+func openCalls(issues map[string]api.Issue) []claimWith[api.StepView] {
+	return claimsWith(issues, func(view api.ClaimView) (api.StepView, bool) {
+		if openCallWord(view.Step) == "" {
+			return api.StepView{}, false
+		}
+		return *view.Step, true
+	})
 }
 
 // openCallsSummary is the one line an operator reads for the agents in a tool call right now: how
@@ -1213,42 +1224,22 @@ func openCallsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(calls))
 	for i, call := range calls {
-		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.step)))
+		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.with)))
 	}
 	return fmt.Sprintf("agents in a tool call: %d — %s", len(calls), strings.Join(named, "; "))
 }
 
-// claimWait is one claim's standing wait: the issue and role whose claim it is, and the wait
-// (api.WaitView).
-type claimWait struct {
-	issue string
-	role  string
-	wait  api.WaitView
-}
-
-// standingWaits is every claim of the state whose worker's declared wait stands, by issue and
-// then role. The daemon serves a claim view's `wait` only while that wait stands
-// (api.ClaimView.Wait), so every one the state carries is one, and none whose row the daemon has
-// not ended yet but which no longer stands — a fresh session, a phase that moved.
-func standingWaits(issues map[string]api.Issue) []claimWait {
-	var waits []claimWait
-	add := func(issue, role string, view api.ClaimView) {
-		if view.Wait != nil {
-			waits = append(waits, claimWait{issue: issue, role: role, wait: *view.Wait})
+// standingWaits is every claim of the state whose worker's declared wait stands, with the wait
+// (api.WaitView), by issue and then role. The daemon serves a claim view's `wait` only while that
+// wait stands (api.ClaimView.Wait), so every one the state carries is one, and none whose row the
+// daemon has not ended yet but which no longer stands — a fresh session, a phase that moved.
+func standingWaits(issues map[string]api.Issue) []claimWith[api.WaitView] {
+	return claimsWith(issues, func(view api.ClaimView) (api.WaitView, bool) {
+		if view.Wait == nil {
+			return api.WaitView{}, false
 		}
-	}
-	for key, issue := range issues {
-		if issue.Architect != nil {
-			add(key, string(legionclaim.RoleArchitect), *issue.Architect)
-		}
-		for role, worker := range issue.Workers {
-			add(key, string(role), worker.Claim)
-		}
-	}
-	slices.SortFunc(waits, func(a, b claimWait) int {
-		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+		return *view.Wait, true
 	})
-	return waits
 }
 
 // waitsSummary is the one line an operator reads for the phase workers whose declared wait stands
@@ -1263,42 +1254,23 @@ func waitsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(waits))
 	for i, w := range waits {
-		named[i] = fmt.Sprintf("%s %s wait %s until %s, declared %s: %s", w.issue, w.role, w.wait.ID,
-			w.wait.WakeAt.UTC().Format(time.RFC3339), w.wait.DeclaredAt.UTC().Format(time.RFC3339), strconv.Quote(w.wait.WaitingOn))
+		named[i] = fmt.Sprintf("%s %s wait %s until %s, declared %s: %s", w.issue, w.role, w.with.ID,
+			w.with.WakeAt.UTC().Format(time.RFC3339), w.with.DeclaredAt.UTC().Format(time.RFC3339), strconv.Quote(w.with.WaitingOn))
 	}
 	return fmt.Sprintf("waits: %d — %s", len(waits), strings.Join(named, "; "))
 }
 
-// claimHold is one claim the closed design gate holds: the issue and role whose claim it is, and
-// the gate row that holds it (api.HoldView).
-type claimHold struct {
-	issue string
-	role  string
-	hold  api.HoldView
-}
-
-// standingHolds is every claim of the state the closed design gate holds, by issue and then
-// role. The daemon serves a claim view's `hold` only while the hold stands (api.ClaimView.Hold),
-// so every one the state carries is one, and only a merger's.
-func standingHolds(issues map[string]api.Issue) []claimHold {
-	var holds []claimHold
-	add := func(issue, role string, view api.ClaimView) {
-		if view.Hold != nil {
-			holds = append(holds, claimHold{issue: issue, role: role, hold: *view.Hold})
+// standingHolds is every claim of the state the closed design gate holds, with the gate row that
+// holds it (api.HoldView), by issue and then role. The daemon serves a claim view's `hold` only
+// while the hold stands (api.ClaimView.Hold), so every one the state carries is one, and only a
+// merger's.
+func standingHolds(issues map[string]api.Issue) []claimWith[api.HoldView] {
+	return claimsWith(issues, func(view api.ClaimView) (api.HoldView, bool) {
+		if view.Hold == nil {
+			return api.HoldView{}, false
 		}
-	}
-	for key, issue := range issues {
-		if issue.Architect != nil {
-			add(key, string(legionclaim.RoleArchitect), *issue.Architect)
-		}
-		for role, worker := range issue.Workers {
-			add(key, string(role), worker.Claim)
-		}
-	}
-	slices.SortFunc(holds, func(a, b claimHold) int {
-		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+		return *view.Hold, true
 	})
-	return holds
 }
 
 // holdsSummary is the one line an operator reads for the mergers the closed design gate holds
@@ -1313,7 +1285,7 @@ func holdsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(holds))
 	for i, h := range holds {
-		named[i] = fmt.Sprintf("%s %s held by %s v%d (%s)", h.issue, h.role, h.hold.Step, h.hold.Version, h.hold.ArtifactID)
+		named[i] = fmt.Sprintf("%s %s held by %s v%d (%s)", h.issue, h.role, h.with.Step, h.with.Version, h.with.ArtifactID)
 	}
 	return fmt.Sprintf("holds: %d — %s", len(holds), strings.Join(named, "; "))
 }

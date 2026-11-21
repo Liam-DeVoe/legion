@@ -617,11 +617,11 @@ var designSteps = valuesFrom(gatedStepsContract,
 var gatedStepStatuses = valuesFrom(gatedStepsContract,
 	GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested)
 
-// holdSteps is the same three steps at the contract `hold` arrived at, which a merger's hold
-// names its step from: no claim view and no owed answer carries a hold below that contract at all
-// (shaping.go's withoutWaitAndHold and withoutOwedWaitAndHold).
-var holdSteps = valuesFrom(waitContract,
-	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
+// holdSteps is every step of a deployment's design gate (record.DesignSteps) at the contract
+// `hold` arrived at, which a merger's hold names its step from: no claim view and no owed answer
+// carries a hold below that contract at all (shaping.go's withoutWaitAndHold and
+// withoutOwedWaitAndHold).
+var holdSteps = valuesFrom(waitContract, record.DesignSteps...)
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.

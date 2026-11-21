@@ -945,17 +945,25 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
-	// WaitHolds names the wait that holds d back from c's phase worker now, "" when none does
-	// (dispatch://INFRA-2040 R3): the wait the worker declared stands, and d is a task the claim
-	// had already taken when it declared — one a death in its turn took back (Delivery.Interrupted,
+	// WaitHolds names the wait c's phase worker declared when it stands now, "" when none does,
+	// and says whether it holds d back (dispatch://INFRA-2040 R3): d is a task the claim had
+	// already taken when it declared — one a death in its turn took back (Delivery.Interrupted,
 	// interrupted), or one of a phase entry no higher than the entry it had taken — or the
-	// daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch), which hands
-	// no work and ends no wait. Any other task is new work: the answer ends the wait, in a write
-	// of its own, and answers "", so the send goes on. It is asked of every delivery sendPending
-	// is about to send a phase worker, once the phase check has kept it, and never of an
-	// architect's or the controller's, which declare no wait. It is asked holding the machine's
-	// lock, so it takes no lock of the daemon's. nil holds no delivery.
-	WaitHolds func(ctx context.Context, c Claim, d Delivery) (string, error)
+	// daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch), which
+	// hands no work and ends no wait. Any other task is new work, which the wait does not hold:
+	// the answer only decides and writes nothing, and the send ends the wait just before d leaves
+	// (EndWait). It is asked of every delivery sendPending is about to send a phase worker, once
+	// the phase check has kept it, and never of an architect's or the controller's, which declare
+	// no wait. It is asked holding the machine's lock, so it takes no lock of the daemon's. nil
+	// holds no delivery.
+	WaitHolds func(ctx context.Context, c Claim, d Delivery) (wait string, holds bool, err error)
+	// EndWait ends wait, the standing wait of c's phase worker that WaitHolds named and that does
+	// not hold d, as d's send ends it (dispatch://INFRA-2040 R3's third end, D4 of its plan): in a
+	// write of its own, just before d leaves, once every other hold of the send has let d
+	// through, so the end names a send that happens. A wait some fact ended or replaced meanwhile
+	// keeps that end. It is asked holding the machine's lock, so it takes no lock of the daemon's.
+	// The daemon supplies it with WaitHolds.
+	EndWait func(ctx context.Context, c Claim, d Delivery, wait string) error
 	// GateNote is the design gate's state that d, a delivery of c's merger, carries at its send
 	// (dispatch://INFRA-2040 R7): the note the workflow builds from the gate of the merger's tree
 	// as it stands at that moment (workflow.MergerGateNote), which the prompt opens with
@@ -4111,7 +4119,9 @@ func (m *Machine) forgetSend() {
 // deadline there would fail a launch that was only queued behind its predecessor. So do the reads
 // of the record — PhaseHolds, WaitHolds, GateNote, RootHears, RootTask, TreeClosable — which
 // decide what the next write will say rather than hold the row, and whose failure costs the
-// decision and nothing after it. The deadline is what keeps a database that has stopped answering
+// decision and nothing after it. So does EndWait, which writes the end of a wait in the record and
+// not the claim's row, and whose failure costs the send it was asked for and nothing after it.
+// The deadline is what keeps a database that has stopped answering
 // from holding the machine's lock for the length of the outage; a write it cuts short is owed and
 // made again at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {

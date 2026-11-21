@@ -134,7 +134,7 @@ func (h *waitHarness) wantNoNews(t *testing.T, c liveClaim, id, key string, reco
 	if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].ID != id || !rows[0].EndedAt.IsZero() {
 		t.Fatalf("claim_waits holds %+v after the report of the update ask, want wait %s with no end", rows, id)
 	}
-	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+	if !waitStands(t, h.harness, c) {
 		t.Fatalf("the wait does not stand after the report of the update ask under %s", key)
 	}
 	if newsApplied(t, h.harness, id) {
@@ -171,7 +171,7 @@ func TestWaitNewsEndsTheWaitItNamesAndASecondReportEndsNothing(t *testing.T) {
 		rows[0].EndedAt.IsZero() {
 		t.Fatalf("claim_waits holds %+v, want wait %s ended with cause %q by %s", rows, wait.ID, workflow.WaitEndNews, endedBy)
 	}
-	if waitStands(t, h.harness, c, claim.RoleImplementer) {
+	if waitStands(t, h.harness, c) {
 		t.Fatal("the wait still stands after the news ended it")
 	}
 	wantLogged(t, logLine(t, h.logs, "wait: ended"), "claim="+string(c.token), "issue=LEGION-208", "role=implementer",
@@ -203,7 +203,7 @@ func TestWaitNewsFromAnotherClaimNeitherEndsTheWaitNorBlocksItsOwnersReport(t *t
 	if answer := newsAnswer(t, h.news(other, wait.ID)); answer != (WaitNewsResponse{}) {
 		t.Fatalf("the tester's report of the implementer's wait = %+v, want not ended", answer)
 	}
-	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+	if !waitStands(t, h.harness, c) {
 		t.Fatal("the implementer's wait does not stand after another claim reported its id")
 	}
 	if answer := newsAnswer(t, h.news(c, wait.ID)); answer != (WaitNewsResponse{Ended: true}) {
@@ -236,7 +236,7 @@ func TestWaitNewsNamingAReplacedWaitChangesNothing(t *testing.T) {
 	if after[0].EndCause != record.WaitReplaced || after[1].ID != second.ID || !after[1].EndedAt.IsZero() {
 		t.Fatalf("claim_waits holds %+v, want the first wait replaced and the second standing", after)
 	}
-	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+	if !waitStands(t, h.harness, c) {
 		t.Fatal("the newer wait does not stand after a report naming the one it replaced")
 	}
 	if strings.Contains(h.logs.String(), "cause="+strconv.Quote(workflow.WaitEndNews)) {
@@ -323,7 +323,7 @@ func TestWaitNewsDuringAnUpdateRoundEndsTheWaitForEveryKeyButTheClaimsOwnAsk(t *
 			if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].EndCause != workflow.WaitEndNews || rows[0].EndedBy != endedBy {
 				t.Fatalf("claim_waits holds %+v, want wait %s ended with cause %q by %s", rows, wait.ID, workflow.WaitEndNews, endedBy)
 			}
-			if waitStands(t, h.harness, c, claim.RoleImplementer) {
+			if waitStands(t, h.harness, c) {
 				t.Fatal("the wait still stands after news during the update round")
 			}
 			if strings.Contains(h.logs.String(), "wait: the update ask is no news") {
@@ -363,7 +363,7 @@ func TestWaitStandsThroughTheUpdateRoundsRelaunchOfTheSameSession(t *testing.T) 
 		rows[0].Session != c.session {
 		t.Fatalf("claim_waits holds %+v after the round, want wait %s as it was declared, with no end", rows, wait.ID)
 	}
-	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+	if !waitStands(t, h.harness, c) {
 		t.Fatal("the wait does not stand after the update round's relaunch of the session that declared it")
 	}
 	h.wantNoNews(t, relaunched, wait.ID, key, h.delivered(relaunched, wait.ID, key), 1)

@@ -1,4 +1,4 @@
--- 20261119055700_pending_delivery_gate_message.up.sql — the mark that a merger's pending task is
+-- 20261121160200_pending_delivery_gate_message.up.sql — the mark that a merger's pending task is
 -- the design gate's own message (dispatch://INFRA-2040 R8, D16 of its plan).
 --
 -- At each move of a tree's design gate the daemon writes a start of each merger in merging whose
@@ -22,7 +22,7 @@
 --   begin;
 --   update outbox set payload = payload - 'gateMessage' where kind = 'supervise' and payload ? 'gateMessage';
 --   alter table pending_task_deliveries drop column if exists gate_message;
---   delete from schema_version where version = 20261119055700;
+--   delete from schema_version where version = 20261121160200;
 --   commit;
 --   SQL
 --

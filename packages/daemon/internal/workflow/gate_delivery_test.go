@@ -328,10 +328,8 @@ func wantGateStart(t *testing.T, pool *pgxpool.Pool, issue string, woke bool) me
 // and the further fields given.
 func wantDeliveryLogged(t *testing.T, rig wakeRig, issue string, open bool, choice gateChoice, fields ...string) {
 	t.Helper()
-	fragments := append([]string{gateDeliveryLine, "issue=" + issue, "move=" + moveName(open), `choice="` + choice.String() + `"`}, fields...)
-	if choice == gateNothing {
-		fragments[3] = "choice=nothing"
-	}
+	fragments := append([]string{gateDeliveryLine, loggedField("issue", issue), loggedField("move", moveName(open)),
+		loggedField("choice", choice.String())}, fields...)
 	var found int
 	for line := range strings.SplitSeq(rig.logged.String(), "\n") {
 		holds := line != ""

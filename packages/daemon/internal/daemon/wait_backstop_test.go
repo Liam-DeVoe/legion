@@ -20,12 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // testReleaseBackstop is the backstop_minutes the releases below arm a backstop for.
@@ -189,79 +184,24 @@ func TestAPodWhoseOnlyPhaseWorkerWaitsIsReleasedAfterTheIdlePeriod(t *testing.T)
 	}
 }
 
-// newHeldMergerIdleRig is the idle rig (newIdleRig) with its issue in merging and its one live
+// newHeldMergerIdleRig is the idle rig (newIdleRigOf) with its issue in merging and its one live
 // claim the merger's, idle with the merge's task pending, under a deployment that gates the spec,
 // whose row holds version 2 with version 1 approved unless open, which approves version 2: the
 // closed gate holds the merger. The runner reads that gate (gatedSteps), as the daemon's outbox
 // does, and arms a backstop at every release.
 func newHeldMergerIdleRig(t *testing.T, open bool) *idleRig {
 	t.Helper()
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Merging, Generation: 1,
-		Status: workflow.PhaseStatus(phase.Merging), Rank: "U", LastDispatchSeq: 1}
-	putOutboxIssue(t, pool, records, issue)
 	approved := 1
 	if open {
 		approved = 2
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutGate(ctx, tx, record.DesignGate{Issue: issue.Key, Step: record.DesignStepSpec,
-			ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-	}); err != nil {
-		t.Fatalf("register the spec's gate: %v", err)
-	}
-	st := outboxTreeStore(t, pool, issue.Key)
-
-	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true,
-		bundle: runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", Tips: []string{"abc"},
-			At: time.Now().UTC(), PodUID: releasedPodUID}}
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
-	sup.store = st
-
-	token := mustClaimToken(t, issue.Key, claim.RoleMerger)
-	locator, err := rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: claim.RoleMerger})
-	if err != nil {
-		t.Fatalf("mint a locator: %v", err)
-	}
-	rt.sandboxName = sandbox.SandboxName(token)
-	pending := supervise.Delivery{ID: "outbox:7", Task: "merge it", Phase: phase.Merging,
-		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
-	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-		Role: claim.RoleMerger, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
-		State: supervise.StateIdle, Locator: &locator, Session: "ses-merger",
-		SessionFile: "/tmp/merger.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
-	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
-		t.Fatalf("seed the idle merger: %v", err)
-	}
-	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
-		t.Fatalf("restore the idle merger: %v", err)
-	}
-	machine, ok := sup.Machine(token)
-	if !ok {
-		t.Fatalf("no machine for %s", token)
-	}
-	if _, err := pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes',
-		activity_at = now() - interval '25 minutes', activity_background = false,
-		activity_kinds = '', activity_next_reminder_at = null where issue = $1`, issue.Key); err != nil {
-		t.Fatalf("backdate the pod: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `insert into listener_reports (project, ready_at) values ($1, $2)
-		on conflict (project) do update set ready_at = excluded.ready_at`, "legion", time.Now().UTC()); err != nil {
-		t.Fatalf("seed the listener's report: %v", err)
-	}
-	runner := &outbox{
-		pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st,
-		notices: &outboxPublisher{}, log: quietLogger(), gatedSteps: config.DesignGateRootIssues.Steps(),
-		backstop: testReleaseBackstop, now: func() time.Time { return time.Now().Add(time.Minute) },
-	}
-	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
-		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
-	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
-		issue: issue, token: token, machine: machine}
+	rig := newIdleRigOf(t, phase.Merging, claim.RoleMerger, "merge it",
+		func(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
+			return records.PutGate(ctx, tx, record.DesignGate{Issue: issue.Key, Step: record.DesignStepSpec,
+				ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
+		})
+	rig.runner.gatedSteps, rig.runner.backstop = config.DesignGateRootIssues.Steps(), testReleaseBackstop
+	return rig
 }
 
 // waitsUnended records a wait of the rig's merger as a declaration records one, on the run and in

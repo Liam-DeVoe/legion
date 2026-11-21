@@ -76,22 +76,8 @@ func (s *server) wait(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, "wakeAt must be an RFC 3339 time: "+err.Error())
 		return
 	}
-	_, held, ok := s.authenticated(req.ClaimToken, req.Secret)
+	held, ok := s.waitClaim(w, r, "wait", req.ClaimToken, req.SessionID, req.Secret)
 	if !ok {
-		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
-		return
-	}
-	if s.refuseIfStaleClaim(w, r, held) {
-		return
-	}
-	if req.SessionID != held.Session {
-		s.log.Info("api: refused a claim request", "request", "wait", "claim", req.ClaimToken,
-			"reason", "the claim resumes another session", "session", req.SessionID, "recorded", held.Session)
-		s.writeAnswer(w, r, AnswerRefusal, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
-		return
-	}
-	if s.pool == nil || len(s.handlers) == 0 {
-		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
 		return
 	}
 	fact := intake.WaitDeclared{
@@ -138,8 +124,8 @@ type WaitNewsResponse struct {
 // waitNews is a phase worker's plugin reporting that news reached its session after it declared
 // the wait the report names — an Envoy delivery, a message to its role, or a person's message —
 // so the daemon ends that wait (dispatch://INFRA-2040 R3's second end). The route authenticates
-// the claim and holds the call to the session the claim records exactly as the wait route does,
-// since the wait is the declaring session's own.
+// the claim and holds the call to the session the claim records exactly as the wait route does
+// (waitClaim), since the wait is the declaring session's own.
 //
 // The claim is read once, with the secret (authenticated). A report whose delivery key is a key
 // of the claim's own update ask (record.IsUpdateAskKey, bare or behind the listener's role-forward
@@ -153,12 +139,11 @@ type WaitNewsResponse struct {
 // News is applied as intake.WaitNews under `wait-news:<claimToken>:<waitId>`, through the
 // package's one apply (apply, intake.ApplyFact), and the route answers whether that fact ended
 // the wait (workflow's waitNews). The event id names the claim beside the wait, since a wait's id
-// is in the record
-// every role reads (read_record): a report of another claim's wait id changes no wait (EndWait
-// matches the claim too) and marks no event the wait's own claim reports under. A report naming
-// a wait a newer declaration replaced, or one already ended, answers `ended: false` and changes
-// nothing; so does a second report of the same wait, which ApplyFact answers as a duplicate
-// before any handler runs, since the first report is the one that ended it.
+// is in the record every role reads (read_record): a report of another claim's wait id changes no
+// wait (EndWait matches the claim too) and marks no event the wait's own claim reports under. A
+// report naming a wait a newer declaration replaced, or one already ended, answers `ended: false`
+// and changes nothing; so does a second report of the same wait, which ApplyFact answers as a
+// duplicate before any handler runs, since the first report is the one that ended it.
 func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	var req WaitNewsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
@@ -167,22 +152,8 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	) {
 		return
 	}
-	_, held, ok := s.authenticated(req.ClaimToken, req.Secret)
+	held, ok := s.waitClaim(w, r, "wait-news", req.ClaimToken, req.SessionID, req.Secret)
 	if !ok {
-		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
-		return
-	}
-	if s.refuseIfStaleClaim(w, r, held) {
-		return
-	}
-	if req.SessionID != held.Session {
-		s.log.Info("api: refused a claim request", "request", "wait-news", "claim", req.ClaimToken,
-			"reason", "the claim resumes another session", "session", req.SessionID, "recorded", held.Session)
-		s.writeAnswer(w, r, AnswerRefusal, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
-		return
-	}
-	if s.pool == nil || len(s.handlers) == 0 {
-		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
 		return
 	}
 	if record.IsUpdateAskKey(req.ClaimToken, req.DeliveryKey) {
@@ -204,6 +175,34 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeAnswer(w, r, AnswerWaitNews, http.StatusOK, WaitNewsResponse{Ended: result.WaitEnded})
+}
+
+// waitClaim is the opening the two wait routes share (wait, waitNews), once the body's fields are
+// read: it authenticates the claim with its secret (authenticated), refuses a stale plugin's claim
+// with the stale-contract 409 (refuseIfStaleClaim), holds the call to the session the claim
+// records (claim.SameAgentRefusal, logged with request, the route's own word), and refuses with
+// FACTS_UNAVAILABLE on a daemon that runs no workflow, which records no wait. It answers the claim
+// as that one read found it, and false once it has written a refusal.
+func (s *server) waitClaim(w http.ResponseWriter, r *http.Request, request string, token claim.Token, session, secret string) (supervise.Claim, bool) {
+	_, held, ok := s.authenticated(token, secret)
+	if !ok {
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
+		return supervise.Claim{}, false
+	}
+	if s.refuseIfStaleClaim(w, r, held) {
+		return supervise.Claim{}, false
+	}
+	if !held.HoldsSession(session) {
+		s.log.Info("api: refused a claim request", "request", request, "claim", token,
+			"reason", "the claim resumes another session", "session", session, "recorded", held.Session)
+		s.writeAnswer(w, r, AnswerRefusal, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
+		return supervise.Claim{}, false
+	}
+	if s.pool == nil || len(s.handlers) == 0 {
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
+		return supervise.Claim{}, false
+	}
+	return held, true
 }
 
 // takenEntry is the phase entry of the task c's worker had taken (dispatch://INFRA-2040 D4): the

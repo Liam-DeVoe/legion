@@ -2,38 +2,69 @@ package supervise
 
 // A phase worker that declares a wait is sent no task it had already taken while the wait stands
 // (dispatch://INFRA-2040 R3, D4 of its plan). The daemon answers whether a wait holds a send
-// (Deps.WaitHolds, internal/daemon's waitHolds); these tests stand a fake in for that answer and
-// pin what the machine does with it: a held task stays pending and unconfirmed, the line that says
-// so is written once per delivery, and the task goes at the first send after the wait ends.
+// (Deps.WaitHolds, internal/daemon's waitHolds) and ends a wait at the send of new work
+// (Deps.EndWait, internal/daemon's endWait); these tests stand a fake in for those answers and pin
+// what the machine does with them: a held task stays pending and unconfirmed, the line that says
+// so is written once per delivery, the task goes at the first send after the wait ends, and new
+// work ends the wait only as it leaves.
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// heldWait is the id the fake answer names for the wait that holds a task.
+// heldWait is the id the fake answer names for the wait that stands.
 const heldWait = "wait-of-the-test"
 
-// waitAnswer is a fake Deps.WaitHolds. While standing is set it names heldWait for a task a death
-// took back (Delivery.Interrupted), the one task these tests hold, and nothing for any other; asked
-// counts the questions. The machine asks it from its own goroutine, so it is locked.
+// waitAnswer is a fake of the daemon's two answers on a wait (Deps.WaitHolds, Deps.EndWait).
+// While standing is set it names heldWait for every task, and holds a task a death took back
+// (Delivery.Interrupted), the one task these tests hold; asked counts the questions. Each end
+// asked is kept (waitEnd) with the prompts sent by then (sent, set by the test), and ends the
+// wait. The machine asks it from its own goroutine, so it is locked.
 type waitAnswer struct {
 	mu       sync.Mutex
 	standing bool
 	asked    int
+	ends     []waitEnd
+	sent     func() int
 }
 
-func (a *waitAnswer) holds(_ context.Context, _ Claim, d Delivery) (string, error) {
+// waitEnd is one end the machine asked of the fake: the delivery whose send ended the wait, the
+// wait it named, and how many prompts the claim had been sent when it asked.
+type waitEnd struct {
+	delivery, wait string
+	sent           int
+}
+
+// wire sets the answer as the machine's Deps.WaitHolds and Deps.EndWait.
+func (a *waitAnswer) wire(d *Deps) { d.WaitHolds, d.EndWait = a.holds, a.end }
+
+func (a *waitAnswer) holds(_ context.Context, _ Claim, d Delivery) (string, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.asked++
-	if a.standing && d.Interrupted {
-		return heldWait, nil
+	if !a.standing {
+		return "", false, nil
 	}
-	return "", nil
+	return heldWait, d.Interrupted, nil
+}
+
+func (a *waitAnswer) end(_ context.Context, _ Claim, d Delivery, wait string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sent := 0
+	if a.sent != nil {
+		sent = a.sent()
+	}
+	a.ends = append(a.ends, waitEnd{delivery: d.ID, wait: wait, sent: sent})
+	a.standing = false
+	return nil
 }
 
 func (a *waitAnswer) stand(standing bool) {
@@ -48,18 +79,10 @@ func (a *waitAnswer) questions() int {
 	return a.asked
 }
 
-// waitingHarness is a machine over c whose wait answer is answer, with c brought up to ready.
-func waitingHarness(t *testing.T, c Claim, answer *waitAnswer) *harness {
-	t.Helper()
-	h := newBareHarness(t)
-	h.token = c.Token
-	h.deps.WaitHolds = answer.holds
-	if err := h.store.PutClaim(h.ctx, c); err != nil {
-		t.Fatal(err)
-	}
-	h.start(c)
-	h.reach(StateReady)
-	return h
+func (a *waitAnswer) endsAsked() []waitEnd {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]waitEnd(nil), a.ends...)
 }
 
 // heldInADeclaringTurn is the task of entry 3 taken in a turn the worker declares its wait in, then
@@ -88,6 +111,71 @@ func heldLines(h *harness, delivery string) []string {
 		"wait="+heldWait, "issue=LEGION-209", "role=implementer")
 }
 
+// New work ends the wait it meets only as it leaves (R3's third end, D4): the end is asked just
+// before the task's send, once every other hold of the send has let it through, so no end names
+// a send that did not happen. A task of entry 4 reaches a claim whose wait stands, and a hold the
+// wait does not decide keeps it back first; while that hold stands the task is not sent and no end
+// is asked. Once the hold is over the task is sent, and the wait is ended once, naming that
+// delivery, before its prompt.
+//
+//   - The working copy a tester's phase task adopts is in another role's turn (adopts,
+//     issueInTurn), and the turn's end sends the task.
+//   - The design gate's read for a merger's task fails (gateNote), and the next sweep, which reads
+//     it, sends the task.
+func TestNewWorkEndsAWaitOnlyAsItsTaskIsSent(t *testing.T) {
+	bot := runtime.GitIdentity{Name: "legion-tester[bot]", Email: "7+legion-tester[bot]@users.noreply.github.com"}
+	errUnread := errors.New("the record did not answer")
+	for _, tc := range []struct {
+		name    string
+		claim   Claim
+		phase   phase.Phase
+		holding func(holds *bool) func(*Deps)
+		release func(h *harness)
+	}{
+		{name: "the working copy another role's turn holds", claim: testerClaim(), phase: phase.Testing,
+			holding: func(holds *bool) func(*Deps) {
+				return func(d *Deps) {
+					d.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) { return bot, nil }
+					d.IssueInTurn = func(string, claim.Token) (claim.Token, bool) { return testToken, *holds }
+				}
+			},
+			release: func(h *harness) { h.must(IssueTurnEnded{Claim: h.token}) }},
+		{name: "the design gate's read that fails", claim: mergerClaim(), phase: phase.Merging,
+			holding: func(holds *bool) func(*Deps) {
+				return func(d *Deps) {
+					d.GateNote = func(context.Context, Claim, Delivery) (GateNote, error) {
+						if *holds {
+							return GateNote{}, errUnread
+						}
+						return GateNote{}, nil
+					}
+				}
+			},
+			release: func(h *harness) { h.observe(runtime.Alive) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := &waitAnswer{standing: true}
+			holds := true
+			h := readyHarness(t, tc.claim, answer.wire, tc.holding(&holds))
+			answer.sent = func() int { return len(h.prompts()) }
+
+			// The hold that fails the send is the delivery's own error, which the deliver answers.
+			_ = h.handle(RequestDeliver{Claim: h.token, Task: "work the new entry", Phase: tc.phase, Generation: 5, Entry: 4})
+			h.wantPrompts(0)
+			if ends := answer.endsAsked(); len(ends) != 0 {
+				t.Fatalf("the wait was ended %+v while the task waited, want no end: no send happened", ends)
+			}
+
+			holds = false
+			tc.release(h)
+			sent := h.wantPrompts(1)[0]
+			if ends := answer.endsAsked(); len(ends) != 1 || ends[0] != (waitEnd{delivery: sent.DeliveryID, wait: heldWait}) {
+				t.Fatalf("the ends asked = %+v, want one, of %s naming the task's delivery %s before its prompt", ends, heldWait, sent.DeliveryID)
+			}
+		})
+	}
+}
+
 // A worker that declares a wait in the turn of its task and dies in that turn gets its task again
 // only once the wait ends. The death takes the task back unconfirmed and marked interrupted; while
 // the wait stands, the relaunched agent's ready, a hello and every sweep of the live process send
@@ -95,7 +183,7 @@ func heldLines(h *harness, delivery string) []string {
 // wait ends, the next sweep sends it, behind the sentence that its turn was interrupted.
 func TestAStandingWaitHoldsTheInterruptedTaskUntilItEnds(t *testing.T) {
 	answer := &waitAnswer{}
-	h := waitingHarness(t, queuedClaim(), answer)
+	h := readyHarness(t, queuedClaim(), answer.wire)
 	held := heldInADeclaringTurn(t, h, answer)
 
 	for range 3 {
@@ -131,7 +219,7 @@ func TestAStandingWaitHoldsTheInterruptedTaskUntilItEnds(t *testing.T) {
 // confirms it nor retires it at its end, and the task is sent once the wait ends.
 func TestATaskAWaitHoldsIsNotTakenForTheWorkersOwnTurnAfterARestart(t *testing.T) {
 	answer := &waitAnswer{}
-	h := waitingHarness(t, queuedClaim(), answer)
+	h := readyHarness(t, queuedClaim(), answer.wire)
 	held := heldInADeclaringTurn(t, h, answer)
 
 	h.restart()
@@ -159,7 +247,7 @@ func TestATaskAWaitHoldsIsNotTakenForTheWorkersOwnTurnAfterARestart(t *testing.T
 // holds an architect's task back, and the daemon reads no wait for it.
 func TestAWaitIsNeverAskedOfAnArchitectsTask(t *testing.T) {
 	answer := &waitAnswer{standing: true}
-	h := waitingHarness(t, rootClaim(), answer)
+	h := readyHarness(t, rootClaim(), answer.wire)
 	h.must(RequestDeliver{Claim: h.token, Task: "the tree's catch-up"})
 	h.wantPrompts(1)
 	if asked := answer.questions(); asked != 0 {

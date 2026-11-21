@@ -83,6 +83,12 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if !workflow.PastBound(c.Step.LastStep(), bound, now) {
 			continue
 		}
+		// A claim whose own report explains its quiet, and that reports no background work past its
+		// bound, is minted no fact whatever the record says, so the record is not read for it.
+		if _, told := backgroundStalledFact(c, s.cfg.WorkerBackground, now); !told &&
+			workflow.ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
+			continue
+		}
 		quiet = append(quiet, c)
 	}
 	if len(quiet) == 0 {

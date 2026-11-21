@@ -388,12 +388,13 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 // weighed against, as the tick's list weighs it), and walks of the pass's own records and of the
 // claims quietTrees already read. It makes no read per tree or per issue, and the caller builds it
 // at most once per pass, at the first of its two readers the pass reaches. The run is read inside
-// the pass's own transaction, as the claims were. It asks nothing of a phase row beyond a wait's
-// term (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave out a worker owed no
-// turn: such a worker is stopped all the more, and R6 names SilentPhaseWorker alone. A worker
-// the record gives a reason of the daemon's own for its quiet — a merger the closed design gate
-// holds, or one whose wait stands (dispatch://INFRA-2040 R1 and R3) — is no worker the daemon
-// names silent, so its claim in ready is work under way, as SilentPhaseWorker reads it.
+// the pass's own transaction, as the claims were. It asks nothing of a phase row but what a wait's
+// term reads (workflow.WaitStands). It does not ask workflow.PhaseWorkerOwedTurn, which the tick's
+// list adds to leave out a worker owed no turn: such a worker is stopped all the more, and R6 names
+// SilentPhaseWorker alone. A worker the record gives a reason of the daemon's own for its quiet —
+// a merger the closed design gate holds, or one whose wait stands (dispatch://INFRA-2040 R1 and
+// R3) — is no worker the daemon names silent, so its claim in ready is work under way, as
+// SilentPhaseWorker reads it.
 func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	claims []record.TreeClaim, now time.Time,
 ) (map[string]struct{}, error) {

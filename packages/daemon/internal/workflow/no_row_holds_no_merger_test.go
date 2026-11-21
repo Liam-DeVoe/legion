@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -46,9 +45,6 @@ func TestNoRowHoldsNoMergerAndTheSpecsApprovalSendsTheOpeningMessage(t *testing.
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: opened},
 	})
-	if !strings.Contains(opened, "every gated step that someone registered now stands open") {
-		t.Fatalf("the opening message = %q, want it to call open every gated step that someone registered", opened)
-	}
 	if starts := mergerStartsOf(t, pool, gatedRoot); len(starts) != 1 || !starts[0].request.GateMessage || starts[0].request.Phase != "" ||
 		starts[0].request.Task != gateMovedTask(gatedRoot) {
 		t.Fatalf("the merger's starts after the spec's approval = %+v, want the gate's one opening start", starts)

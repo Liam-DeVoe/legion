@@ -29,8 +29,8 @@ var (
 	quietReport = waitEndsAt.Add(-5 * time.Hour)
 )
 
-// claimed records the claim of issue's role as the rig's waiting does, live in session
-// ses-<role> with its phases row on entry 2, and declares no wait. It answers the claim's token.
+// claimed records the claim of issue's role, live in session ses-<role> with its phases row on
+// entry 2, and declares no wait; the rig's waiting declares one on it. It answers the claim's token.
 func (r *waitRig) claimed(issue string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token := waitToken(r.t, issue, role)
@@ -64,13 +64,16 @@ func (r *waitRig) reportsBackground(token claim.Token, running bool) {
 	}
 }
 
-// silenceOf is the worker-silent fact the sweep mints for issue's role, and its id.
+// silenceOf is the worker-silent fact the sweep mints for issue's role, and an event id of the
+// test's own for it, one per issue, role and step. The sweep's own id names the claim's token and
+// launch instead (internal/daemon's workerSilentEventID); no handler reads an id.
 func silenceOf(issue string, role claim.Role) (intake.WorkerSilent, string) {
 	return intake.WorkerSilent{Issue: issue, Role: role, Generation: 1, LastStep: quietStep, Bound: silenceBound},
 		fmt.Sprintf("worker-silent:%s:%s:%s", issue, role, quietStep.Format(time.RFC3339Nano))
 }
 
-// backgroundOf is the worker-background-stalled fact the sweep mints for issue's role, and its id.
+// backgroundOf is the worker-background-stalled fact the sweep mints for issue's role, and an
+// event id of the test's own for it, as silenceOf's is (internal/daemon's workerBackgroundEventID).
 func backgroundOf(issue string, role claim.Role) (intake.WorkerBackgroundStalled, string) {
 	return intake.WorkerBackgroundStalled{Issue: issue, Role: role, Generation: 1, ReportedAt: quietReport,
 			Kinds: []string{"async-job"}, Bound: backgroundBound},
@@ -307,4 +310,45 @@ func TestTheSilenceSweepsFilterHoldsBackHeldMergersAndStandingWaitsAlone(t *test
 	r.apply("dispatch", "spec-5", intake.DispatchArtifact{Key: waitRoot, ArtifactID: "artifact-208",
 		Kind: intake.DispatchArtifactVersion, Version: 5})
 	wantQuiet(decisions, "the spec's version 5 is unapproved and has its row", merger, waiting.Token)
+}
+
+// The silence sweep's filter (Engine.QuietByDesign) and the wake tick's (Engine.HeldMergers) hold
+// a merger by the one rule (HeldByDesignGate over the issue and its tree's gate rows), so they
+// answer alike for every merger, one whose tree root the project's record does not hold among
+// them: the root is no term of the hold, as the outbox's fence reads none (internal/daemon's
+// mergerHeld). The merger's issue stands in merging in a tree whose root is recorded under
+// another project, with the spec's version 4 of that tree unapproved. Both filters hold it.
+func TestTheHoldOfAMergerWhoseRootIsUnrecordedIsOneAnswerForBothFilters(t *testing.T) {
+	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
+	const root, child = "LEGION-220", "LEGION-221"
+	issue := func(key string, project string, at phase.Phase) record.Issue {
+		return record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root,
+			Project: project, Title: key, Phase: at, Generation: 1, Status: PhaseStatus(at), Rank: "U", HandedOver: true,
+			LastDispatchSeq: 1}
+	}
+	seedIssue(t, r.pool, issue(root, "OTHER", phase.Planning))
+	merging := issue(child, "LEGION", phase.Merging)
+	merging.Parent = new(root)
+	seedIssue(t, r.pool, merging)
+	seedGate(t, r.pool, record.DesignGate{Issue: root, ArtifactID: "artifact-220", LatestVersion: 4, ApprovedVersion: new(3)})
+	merger := waitToken(t, child, claim.RoleMerger)
+
+	var quiet map[claim.Token]struct{}
+	var held map[string]record.DesignGate
+	seedRecord(t, r.pool, func(tx pgx.Tx) error {
+		var err error
+		quiet, err = r.engine.QuietByDesign(context.Background(), tx,
+			[]record.RoleRunKey{{Token: merger, Issue: child, Role: claim.RoleMerger, Generation: 1}})
+		if err != nil {
+			return err
+		}
+		held, err = r.engine.HeldMergers(context.Background(), tx, []string{child})
+		return err
+	})
+	if gate, holds := held[child]; !holds || gate.LatestVersion != 4 {
+		t.Fatalf("the wake tick's filter answers %+v, want the merger of %s held by the spec's version 4", held, child)
+	}
+	if _, holds := quiet[merger]; !holds {
+		t.Fatalf("the silence sweep's filter answers %v, want the merger of %s held, as the wake tick's filter holds it", quiet, child)
+	}
 }

@@ -34,7 +34,7 @@ var waitTimeKinds = []record.OutboxKind{record.OutboxKindWaitDue, record.OutboxK
 // idleRelease puts the rig under a configuration with an idle release, as `runtime: kubernetes`
 // runs one with idle_minutes set: the workflow's idle period and the store its release reads, and
 // a runtime that bundles an issue's workspace and takes its pod down (releaseRuntime). It is
-// called before the tester first launches, so every process of the tester runs in that runtime.
+// called before the rig's worker first launches, so every process of it runs in that runtime.
 func (r *waitDeliveryRig) idleRelease() *releaseRuntime {
 	r.t.Helper()
 	rt := &releaseRuntime{Runtime: r.sup.deps.Runtime.(*fake.Runtime), onImage: true}
@@ -43,7 +43,7 @@ func (r *waitDeliveryRig) idleRelease() *releaseRuntime {
 	return rt
 }
 
-// dueAt is every row of the tester's issue of kinds the outbox lists due at at, in the order a lane
+// dueAt is every row of the rig's issue of kinds the outbox lists due at at, in the order a lane
 // runs them (record.Store.DueRows).
 func (r *waitDeliveryRig) dueAt(at time.Time, kinds ...record.OutboxKind) []record.OutboxRow {
 	r.t.Helper()
@@ -58,7 +58,7 @@ func (r *waitDeliveryRig) dueAt(at time.Time, kinds ...record.OutboxKind) []reco
 	return due
 }
 
-// drainAt runs the rows of the tester's issue of kinds that are due at at, as the issue's lanes
+// drainAt runs the rows of the rig's issue of kinds that are due at at, as the issue's lanes
 // run them (outbox.runRow: claimed, run, then finished, or put back on their backoff when they
 // wait), pass after pass until a pass runs nothing, and answers every row it ran. A row that a row
 // it ran wrote is listed by the next pass, as a lane's next drain lists it; a row put back on its
@@ -84,7 +84,7 @@ func (r *waitDeliveryRig) drainAt(at time.Time, kinds ...record.OutboxKind) []re
 	return nil
 }
 
-// settled waits for whatever the rows the outbox ran set going in the tester's machine, which a
+// settled waits for whatever the rows the outbox ran set going in the rig's worker's machine, which a
 // start that created the claim gave it.
 func (r *waitDeliveryRig) settled() {
 	if machine, found := r.sup.Machine(r.token); found {
@@ -120,7 +120,7 @@ func superviseOf(t *testing.T, row record.OutboxRow) record.SuperviseRequest {
 	return request
 }
 
-// resumes is every pod_resumes row of the tester's issue, oldest first, as role:kind.
+// resumes is every pod_resumes row of the rig's issue, oldest first, as role:kind.
 func (r *waitDeliveryRig) resumes() []string {
 	r.t.Helper()
 	rows, err := r.pool.Query(r.ctx, `select role || ':' || kind from pod_resumes where issue = $1 order by id`, r.issue.Key)
@@ -142,7 +142,7 @@ func (r *waitDeliveryRig) resumes() []string {
 	return found
 }
 
-// markRelease marks an idle release of the pod of the rig's role (the tester's) in progress, as the
+// markRelease marks an idle release of the pod of the rig's role in progress, as the
 // daemon's idle pass marks one (store.ReleaseIdleIssue, idleReleaseRows): the save of the
 // workspace, the stop of the role, which is the release's boundary, and the teardown, queued on
 // the issue's lifecycle lane with the release's mark, none of them run yet.
@@ -156,7 +156,7 @@ func (r *waitDeliveryRig) markRelease() {
 	}
 }
 
-// releaseMarked is whether a release of the tester's pod is still in progress.
+// releaseMarked is whether a release of the rig's worker's pod is still in progress.
 func (r *waitDeliveryRig) releaseMarked() bool {
 	r.t.Helper()
 	var marked bool
@@ -426,6 +426,77 @@ func TestASecondWaitInTheHeldTasksTurnFinishesTheOldWaitsStartWithNoDelivery(t *
 	}
 	if got := r.machine.Claim(); got.Pending != nil {
 		t.Fatalf("the tester holds %+v after the turn, want nothing", got.Pending)
+	}
+}
+
+// The same holds when an idle release took the worker's pod (D5, D7): the time of its wait is a
+// wake (pods.WakeWaitTime) whose start names the wait as the plain start does
+// (record.SuperviseRequest.WaitID), so a newer wait finishes it with no delivery. The tester
+// declares a wait in the first turn of its task of entry 1, its process dies in that turn, and the
+// relaunched agent holds that task, taken back unconfirmed and interrupted, while the wait stands;
+// then the release takes its pod. At the wait's time the outbox runs the wait's row, which ends
+// the wait and wakes the pod, and then the wake's start, which brings the tester back and is
+// refused behind the held task (supervise.ErrDeliveryPending). Once the pod is back the held task
+// goes first, and the tester declares a new wait in its turn. The wake's start, run again on its
+// backoff, finds the newer wait standing and finishes with no delivery, so no task of the old
+// wait's time reaches the claim as new work and the newer wait still stands.
+func TestASecondWaitInTheHeldTasksTurnFinishesTheOldWaitsWakeWithNoDelivery(t *testing.T) {
+	r := newWaitDeliveryRig(t)
+	r.idleRelease()
+	r.working(1, "Test it.")
+	wait := r.declare()
+	r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
+		Kind: runtime.Gone, At: time.Now()}})
+	r.boot()
+	held := r.machine.Claim().Pending
+	if held == nil || !held.Interrupted || !held.ConfirmedAt.IsZero() || held.Entry != 1 {
+		t.Fatalf("the relaunched tester holds %+v, want the task of entry 1 taken back unconfirmed and interrupted", held)
+	}
+	r.handle(supervise.RequestSuspend{Claim: r.token, Reason: "the idle release stopped the role", By: supervise.SuspendedByReleased})
+	if got := r.machine.Claim(); !got.Released() || got.Pending == nil || got.Pending.ID != held.ID {
+		t.Fatalf("the tester = %s by %s holding %+v, want it released and still holding the task it took back", got.State,
+			got.SuspendedBy, got.Pending)
+	}
+	r.wantPrompts(1, "the held task goes to no process while the wait stands")
+
+	ran := r.drainAt(wait.WakeAt, waitTimeKinds...)
+	if len(ran) != 2 || ran[0].Kind != record.OutboxKindWaitDue || ran[1].Kind != record.OutboxKindSupervise {
+		t.Fatalf("the outbox ran %+v at the wait's time, want the wait's row and then the wake's start", ran)
+	}
+	if resumes := r.resumes(); len(resumes) != 1 || resumes[0] != "tester:"+pods.WakeWaitTime {
+		t.Fatalf("the pod resumes = %v, want the one wake of the tester for its wait's time", resumes)
+	}
+	r.wantTimeCame(wait, fmt.Sprintf("row=%d", ran[1].ID), "wake=true")
+	start, queued := r.outboxRow(ran[1].ID)
+	if !queued || !strings.Contains(start.LastError, supervise.ErrDeliveryPending.Error()) || !start.NextAt.After(wait.WakeAt) {
+		t.Fatalf("the wake's start after its first run = %+v (queued %t), want it waiting on its backoff behind the held task", start, queued)
+	}
+
+	r.boot()
+	if resent := r.wantPrompts(2, "the held task goes first once the pod is back")[1]; resent.DeliveryID != held.ID {
+		t.Fatalf("once the pod was back the tester was sent %+v, want the held task %s", resent, held.ID)
+	}
+	r.takeTask()
+	second := r.declareUntil("the second review of the head", time.Now().Add(3*time.Hour))
+	ran = r.drainAt(start.NextAt, waitTimeKinds...)
+	if len(ran) != 1 || ran[0].ID != start.ID {
+		t.Fatalf("the outbox ran %+v on the start's backoff, want the old wait's wake", ran)
+	}
+	if _, queued := r.outboxRow(start.ID); queued {
+		t.Fatalf("the old wait's wake is still queued, want it finished")
+	}
+	if lines := r.lines("outbox start of a wait's time finished without acting: a newer wait of the claim stands",
+		fmt.Sprintf("row=%d", start.ID), "claim="+string(r.token), "wait="+wait.ID, "standing="+second.ID); len(lines) != 1 {
+		t.Fatalf("the old wait's wake was logged %d times as finished for the newer wait, want once; the log is:\n%s", len(lines), r.logs)
+	}
+
+	r.endTurn(held.ID)
+	r.wantPrompts(2, "the old wait's task reaches no one once a newer wait stands")
+	if standing := r.wantStanding(); standing.ID != second.ID {
+		t.Fatalf("the standing wait is %s, want the newer one, %s", standing.ID, second.ID)
+	}
+	if lines := r.lines(`msg="wait: ended"`, "wait="+second.ID); len(lines) != 0 {
+		t.Fatalf("the newer wait was ended: %q", lines)
 	}
 }
 

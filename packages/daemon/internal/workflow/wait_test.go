@@ -14,31 +14,17 @@ import (
 // times in it are the fixture's own.
 var waitNow = time.Date(2026, 11, 14, 4, 0, 0, 0, time.UTC)
 
-// waitReading is everything WaitStands reads of one claim's wait, held together so a row can
-// change exactly one term of the standing case and leave the rest as it stands.
-type waitReading struct {
-	issue record.Issue
-	root  record.Issue
-	row   record.PhaseRow
-	run   record.RoleRun
-	gate  record.TreeGate
-}
-
-func (w waitReading) stands() (record.ClaimWait, bool) {
-	return WaitStands(w.issue, w.root, w.row, w.run, w.gate)
-}
-
-func (w waitReading) cause() string {
-	return WaitEndCause(w.issue, w.root, w.row, w.run, w.gate)
-}
+// The cases below hold everything WaitStands reads of one claim's wait in one waitTerms, the
+// reading every reader of a wait takes, so a row can change exactly one term of the standing case
+// and leave the rest as it stands.
 
 // wait is the wait row the reading's claim holds.
-func (w *waitReading) wait() *record.ClaimWait { return w.run.Claim.Wait }
+func (w *waitTerms) wait() *record.ClaimWait { return w.run.Claim.Wait }
 
 // aStandingWait is the rule's true case: the implementer of an issue in implementing, of a tree
 // that runs, declared a wait in this session, at this generation, phase and phases row entry, and
 // its row records no completion. The tree's design gate is closed, which holds no implementer.
-func aStandingWait() waitReading {
+func aStandingWait() waitTerms {
 	issue := record.Issue{Key: "LEGION-209", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Implementing,
 		Generation: 3, Status: "in_progress"}
 	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Admitted,
@@ -47,7 +33,7 @@ func aStandingWait() waitReading {
 	wait := &record.ClaimWait{ID: "wait-1", Project: "legion", Token: token, Issue: issue.Key, Role: claim.RoleImplementer,
 		Generation: 3, Phase: phase.Implementing, PhaseEntry: 4, TakenEntry: 4, Session: "ses_implementer",
 		WaitingOn: "the review of the root's pull request", WakeAt: waitNow.Add(2 * time.Hour), DeclaredAt: waitNow}
-	return waitReading{
+	return waitTerms{
 		issue: issue,
 		root:  root,
 		row:   record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: token, Entry: 4},
@@ -59,7 +45,7 @@ func aStandingWait() waitReading {
 
 // aMergersStandingWait is the true case of a merger: the merger of an issue in merging declared a
 // wait, and the design gate stands open.
-func aMergersStandingWait() waitReading {
+func aMergersStandingWait() waitTerms {
 	w := aStandingWait()
 	w.issue.Phase = phase.Merging
 	w.wait().Role, w.wait().Phase = claim.RoleMerger, phase.Merging
@@ -92,43 +78,43 @@ func openSpecGate(root string) record.TreeGate {
 func TestAWaitStandsUntilOneOfItsTermsFailsAndItsCauseNamesThatTerm(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		start  func() waitReading
-		change func(*waitReading)
+		start  func() waitTerms
+		change func(*waitTerms)
 		cause  string
 	}{
 		{name: "an implementer's wait, all its terms holding", start: aStandingWait},
 		{name: "a merger's wait under an open design gate", start: aMergersStandingWait},
 		{
 			name:   "this daemon holds no claim of the role",
-			change: func(w *waitReading) { w.run.Claim = nil },
+			change: func(w *waitTerms) { w.run.Claim = nil },
 		},
 		{
 			name:   "the claim holds no wait",
-			change: func(w *waitReading) { w.run.Claim.Wait = nil },
+			change: func(w *waitTerms) { w.run.Claim.Wait = nil },
 		},
 		{
 			name:   "the claim's wait row has ended",
-			change: func(w *waitReading) { w.wait().EndedAt, w.wait().EndCause = waitNow, record.WaitReplaced },
+			change: func(w *waitTerms) { w.wait().EndedAt, w.wait().EndCause = waitNow, record.WaitReplaced },
 		},
 		{
 			name:   "the role's phases row records its completion",
-			change: func(w *waitReading) { w.row.CompletedAt = waitNow.Add(time.Minute) },
+			change: func(w *waitTerms) { w.row.CompletedAt = waitNow.Add(time.Minute) },
 			cause:  WaitEndCompleted,
 		},
 		{
 			// Retro is the implementer's too, so the phase is the one term that moved.
 			name:   "the issue moved from the wait's phase to another",
-			change: func(w *waitReading) { w.issue.Phase = phase.Retro },
+			change: func(w *waitTerms) { w.issue.Phase = phase.Retro },
 			cause:  WaitEndPhaseMoved(phase.Retro),
 		},
 		{
 			name:   "the role's phases row stands on a new entry of the same phase",
-			change: func(w *waitReading) { w.row.Entry = 5 },
+			change: func(w *waitTerms) { w.row.Entry = 5 },
 			cause:  WaitEndEntryMoved(5),
 		},
 		{
 			name: "the phase the wait was declared in is another role's",
-			change: func(w *waitReading) {
+			change: func(w *waitTerms) {
 				w.wait().Role = claim.RoleTester
 				w.row.Role = claim.RoleTester
 			},
@@ -136,28 +122,28 @@ func TestAWaitStandsUntilOneOfItsTermsFailsAndItsCauseNamesThatTerm(t *testing.T
 		},
 		{
 			name:   "the issue left the workflow by its Dispatch status",
-			change: func(w *waitReading) { w.issue.Status = "backlog" },
+			change: func(w *waitTerms) { w.issue.Status = "backlog" },
 			cause:  WaitEndLeftWorkflow,
 		},
 		{
 			name:   "the tree's root lingers after its close",
-			change: func(w *waitReading) { w.root.LingerUntil = &waitNow },
+			change: func(w *waitTerms) { w.root.LingerUntil = &waitNow },
 			cause:  WaitEndTreeLingers,
 		},
 		{
 			name:   "the issue runs a new generation",
-			change: func(w *waitReading) { w.issue.Generation = 4 },
+			change: func(w *waitTerms) { w.issue.Generation = 4 },
 			cause:  WaitEndNewGeneration,
 		},
 		{
 			name:   "the claim runs a fresh session",
-			change: func(w *waitReading) { w.run.Claim.Session = "ses_fresh" },
+			change: func(w *waitTerms) { w.run.Claim.Session = "ses_fresh" },
 			cause:  WaitEndFreshSession,
 		},
 		{
 			name:   "the design gate closed over a merger's wait",
 			start:  aMergersStandingWait,
-			change: func(w *waitReading) { w.gate = closedSpecGate(w.root.Key) },
+			change: func(w *waitTerms) { w.gate = closedSpecGate(w.root.Key) },
 			cause:  WaitEndDesignGateClosed,
 		},
 	} {
@@ -212,17 +198,17 @@ func TestAWaitsEndCauseIsItsFirstFailingTermInOneFixedOrder(t *testing.T) {
 
 	for _, step := range []struct {
 		cause  string
-		repair func(*waitReading)
+		repair func(*waitTerms)
 	}{
-		{cause: WaitEndCompleted, repair: func(w *waitReading) { w.row.CompletedAt = time.Time{} }},
-		{cause: WaitEndPhaseMoved(phase.Done), repair: func(w *waitReading) { w.issue.Phase = merging.Phase }},
-		{cause: WaitEndAnotherRolesPhase, repair: func(w *waitReading) { w.wait().Role = declared.Role }},
-		{cause: WaitEndLeftWorkflow, repair: func(w *waitReading) { w.issue.Status = merging.Status }},
-		{cause: WaitEndTreeLingers, repair: func(w *waitReading) { w.root.LingerUntil = nil }},
-		{cause: WaitEndNewGeneration, repair: func(w *waitReading) { w.issue.Generation = merging.Generation }},
-		{cause: WaitEndEntryMoved(declared.PhaseEntry + 1), repair: func(w *waitReading) { w.row.Entry = declared.PhaseEntry }},
-		{cause: WaitEndFreshSession, repair: func(w *waitReading) { w.run.Claim.Session = declared.Session }},
-		{cause: WaitEndDesignGateClosed, repair: func(w *waitReading) { w.gate = openSpecGate(w.root.Key) }},
+		{cause: WaitEndCompleted, repair: func(w *waitTerms) { w.row.CompletedAt = time.Time{} }},
+		{cause: WaitEndPhaseMoved(phase.Done), repair: func(w *waitTerms) { w.issue.Phase = merging.Phase }},
+		{cause: WaitEndAnotherRolesPhase, repair: func(w *waitTerms) { w.wait().Role = declared.Role }},
+		{cause: WaitEndLeftWorkflow, repair: func(w *waitTerms) { w.issue.Status = merging.Status }},
+		{cause: WaitEndTreeLingers, repair: func(w *waitTerms) { w.root.LingerUntil = nil }},
+		{cause: WaitEndNewGeneration, repair: func(w *waitTerms) { w.issue.Generation = merging.Generation }},
+		{cause: WaitEndEntryMoved(declared.PhaseEntry + 1), repair: func(w *waitTerms) { w.row.Entry = declared.PhaseEntry }},
+		{cause: WaitEndFreshSession, repair: func(w *waitTerms) { w.run.Claim.Session = declared.Session }},
+		{cause: WaitEndDesignGateClosed, repair: func(w *waitTerms) { w.gate = openSpecGate(w.root.Key) }},
 	} {
 		if got := w.cause(); got != step.cause {
 			t.Fatalf("WaitEndCause = %q, want %q: the first failing term in the fixed order", got, step.cause)

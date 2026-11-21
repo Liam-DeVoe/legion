@@ -58,16 +58,10 @@ func newWaitEndsRig(t *testing.T) *waitEndsRig {
 }
 
 // apply applies fact as source's event id through the production chain, failing the test on an
-// error or a refusal.
+// error or a refusal (applyFact).
 func (r *waitEndsRig) apply(source, id string, fact intake.Fact) {
 	r.t.Helper()
-	result, err := intake.ApplyFact(context.Background(), r.pool, source, id, fact, r.handlers...)
-	if err != nil {
-		r.t.Fatalf("apply %s/%s: %v", source, id, err)
-	}
-	if result.Refusal != nil {
-		r.t.Fatalf("apply %s/%s was refused: %+v", source, id, *result.Refusal)
-	}
+	applyFact(r.t, r.pool, source, id, fact, r.handlers...)
 }
 
 // issue records issue, failing the test on an error.
@@ -138,40 +132,20 @@ func (r *waitEndsRig) assertEnded(id string, token claim.Token, issue string, ro
 			r.t.Fatalf("the line %q does not carry %s", lines[0], want)
 		}
 	}
-	if r.stands(token, issue, role) {
+	if r.stands(token) {
 		r.t.Fatalf("wait %s still stands after its end", id)
 	}
 }
 
-// stands is what WaitStands answers for the wait of token on issue as the record stands now.
-func (r *waitEndsRig) stands(token claim.Token, key string, role claim.Role) bool {
+// stands is whether the wait of token stands as the record stands now, read as every reader of a
+// wait reads it (workflow.WaitStandsNow) under the steps the rig's engine gates.
+func (r *waitEndsRig) stands(token claim.Token) bool {
 	r.t.Helper()
 	var stands bool
 	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
-		issue, err := r.records.Issue(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		root, err := r.records.Issue(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		rows, err := r.records.Phases(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		gates, err := r.records.GatesOf(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		claims, err := r.records.RoleClaims(ctx, tx, []claim.Token{token})
-		if err != nil {
-			return err
-		}
-		_, stands = workflow.WaitStands(*issue, *root, record.PhaseRowOf(rows, role), record.RoleRun{Claim: claims[token]},
-			record.TreeGate{Steps: config.DesignGateRootIssues.Steps(), Rows: gates})
-		return nil
+		var err error
+		_, stands, err = workflow.WaitStandsNow(context.Background(), tx, r.records, config.DesignGateRootIssues.Steps(), token)
+		return err
 	}); err != nil {
 		r.t.Fatalf("read whether the wait of %s stands: %v", token, err)
 	}
@@ -196,7 +170,7 @@ func TestAReadmissionsNewGenerationEndsTheWaitInItsOwnFact(t *testing.T) {
 		DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
 		DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1})
 	id, token := r.waiting(child, root, claim.RoleImplementer, 1)
-	if !r.stands(token, child, claim.RoleImplementer) {
+	if !r.stands(token) {
 		t.Fatalf("the implementer's wait does not stand before the re-admission")
 	}
 

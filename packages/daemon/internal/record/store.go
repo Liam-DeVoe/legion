@@ -600,21 +600,9 @@ func scanIssue(row scanner) (*Issue, error) {
 const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, reviewed_head`
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
-		where issue = $1 order by role`, issue)
-	if err != nil {
-		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
-	}
-	defer rows.Close()
 	phases := []PhaseRow{}
-	for rows.Next() {
-		phase, err := scanPhase(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list phases for %s: %w", issue, err)
-		}
-		phases = append(phases, phase)
-	}
-	if err := rows.Err(); err != nil {
+	if err := eachPhase(ctx, tx, func(phase PhaseRow) { phases = append(phases, phase) },
+		`select `+phaseColumns+` from phases where issue = $1 order by role`, issue); err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
 	}
 	return phases, nil
@@ -628,23 +616,29 @@ func (s *Postgres) PhasesOf(ctx context.Context, tx pgx.Tx, issues []string) (ma
 	if len(issues) == 0 {
 		return phases, nil
 	}
-	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
-		where issue = any($1) order by issue, role`, issues)
-	if err != nil {
+	if err := eachPhase(ctx, tx, func(phase PhaseRow) { phases[phase.Issue] = append(phases[phase.Issue], phase) },
+		`select `+phaseColumns+` from phases where issue = any($1) order by issue, role`, issues); err != nil {
 		return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
+	}
+	return phases, nil
+}
+
+// eachPhase runs query, a select of phaseColumns, with args in tx, and hands found each phases row
+// it reads, in the query's order: the one scan Phases and PhasesOf share.
+func eachPhase(ctx context.Context, tx pgx.Tx, found func(PhaseRow), query string, args ...any) error {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		phase, err := scanPhase(rows)
 		if err != nil {
-			return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
+			return err
 		}
-		phases[phase.Issue] = append(phases[phase.Issue], phase)
+		found(phase)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
-	}
-	return phases, nil
+	return rows.Err()
 }
 
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised and whether
@@ -681,6 +675,7 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	}
 	return entries, nil
 }
+
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
 	var decision []byte
 	if phase.Decision != nil {

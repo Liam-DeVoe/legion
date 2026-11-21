@@ -52,13 +52,10 @@ func attachesWorkflow(rig *podUpdateRig, steps []record.DesignStep) *quietSweep 
 }
 
 // applies applies fact as the Dispatch event id through the attached workflow, failing the test
-// on an error or a refusal.
+// on an error or a refusal (applyFact).
 func (q *quietSweep) applies(id string, fact intake.Fact) {
 	q.t.Helper()
-	result, err := intake.ApplyFact(q.ctx, q.pool, "dispatch", id, fact, q.w.handlers...)
-	if err != nil || result.Refusal != nil {
-		q.t.Fatalf("apply %s = %+v, %v; want it applied", id, result.Refusal, err)
-	}
+	applyFact(q.t, q.pool, "dispatch", id, fact, q.w.handlers...)
 }
 
 // mintedFor is every fact the sweep minted for role's claim since the workflow was attached.
@@ -104,12 +101,8 @@ func (q *quietSweep) stands(at phase.Phase) {
 func (q *quietSweep) gatesSpec() {
 	q.t.Helper()
 	approved := 1
-	if err := pgx.BeginFunc(q.ctx, q.pool, func(tx pgx.Tx) error {
-		return q.records.PutGate(q.ctx, tx, record.DesignGate{Issue: podUpdateIssue, Step: record.DesignStepSpec,
-			ArtifactID: podUpdateArtifact, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
-	}); err != nil {
-		q.t.Fatalf("register the spec of %s: %v", podUpdateIssue, err)
-	}
+	putOutboxGate(q.t, q.pool, q.records, record.DesignGate{Issue: podUpdateIssue, Step: record.DesignStepSpec,
+		ArtifactID: podUpdateArtifact, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
 }
 
 // aQuietMerger is the issue in merging with its merger up between turns, level with the entry its

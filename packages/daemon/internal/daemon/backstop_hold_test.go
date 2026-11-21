@@ -164,7 +164,7 @@ func TestAHeldMergersBackstopWaitsForTheGateAndACIWakeAfterItReachesTheMerger(t 
 		t.Fatal("the CI wake's start is still queued after the outbox ran it, want it passed through the fence")
 	}
 	r.boot()
-	if woken := r.takeTask(); !strings.Contains(woken.Task, "The wake is a CI settlement on your pull request's head: "+heldMergerHead) {
+	if woken := r.takeTask(); !strings.Contains(woken.Task, heldMergerSettled) {
 		t.Fatalf("the merger was sent %q, want the CI wake's task", woken.Task)
 	}
 }

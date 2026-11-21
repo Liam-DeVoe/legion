@@ -13,8 +13,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// reportNews posts the tester's plugin's report that a delivery under key reached its session
-// after the declaration of wait, and answers the route's decoded 200.
+// reportNews posts the rig's worker's plugin's report that a delivery under key reached its
+// session after the declaration of wait, "" for a person's message, and answers the route's
+// decoded 200.
 func (r *waitDeliveryRig) reportNews(wait record.ClaimWait, key string) api.WaitNewsResponse {
 	r.t.Helper()
 	recorder := r.request("/legion/v1/claims/wait-news", api.WaitNewsRequest{ClaimToken: r.token, SessionID: waitingSession,

@@ -171,18 +171,33 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
+	return newIdleRigOf(t, phase.Implementing, claim.RoleImplementer, "implement it", nil)
+}
+
+// newIdleRigOf is the idle rig (idleRig) with its issue in at and its one live claim role's, in
+// session ses-<role>, idle with task pending in at. seed, when set, writes more of the issue's
+// record in a transaction of its own before the claim is seeded.
+func newIdleRigOf(t *testing.T, at phase.Phase, role claim.Role, task string,
+	seed func(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error,
+) *idleRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
-		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
+		Status: workflow.PhaseStatus(at), Rank: "U", LastDispatchSeq: 1}
 	putOutboxIssue(t, pool, records, issue)
+	if seed != nil {
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return seed(ctx, tx, records, issue) }); err != nil {
+			t.Fatalf("seed the record of %s: %v", issue.Key, err)
+		}
+	}
 	st := outboxTreeStore(t, pool, issue.Key)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
-	// the role-holder publication (store.PublishRoleHolders), so the seeded idle implementer
-	// leaves one queued row of that kind before any release is decided, and a test reads what a
-	// pass queued with queuedBy.
+	// the role-holder publication (store.PublishRoleHolders), so the seeded idle claim leaves one
+	// queued row of that kind before any release is decided, and a test reads what a pass queued
+	// with queuedBy.
 	st.PublishRoleHolders(nil)
 
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true,
@@ -196,26 +211,26 @@ func newIdleRig(t *testing.T) *idleRig {
 	// The teardown records the release through the supervisor's store, as the daemon's does.
 	sup.store = st
 
-	token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
-	locator, err := rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: claim.RoleImplementer})
+	token := mustClaimToken(t, issue.Key, role)
+	locator, err := rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: role})
 	if err != nil {
 		t.Fatalf("mint a locator: %v", err)
 	}
 	// The pod's Sandbox is named as the Kubernetes runtime names it, from a role claim of the
 	// issue (sandbox.SandboxName, which the runtime's own IssueSandbox answers): the roles of an
-	// issue share one Sandbox, so the implementer's token names the pod's.
+	// issue share one Sandbox, so the claim's token names the pod's.
 	rt.sandboxName = sandbox.SandboxName(token)
-	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
+	pending := supervise.Delivery{ID: "outbox:7", Task: task, Phase: at,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
-		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
+		Role: role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		State: supervise.StateIdle, Locator: &locator, Session: "ses-" + string(role),
+		SessionFile: "/tmp/" + string(role) + ".jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
 	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
-		t.Fatalf("seed the idle implementer: %v", err)
+		t.Fatalf("seed the idle %s: %v", role, err)
 	}
 	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
-		t.Fatalf("restore the idle implementer: %v", err)
+		t.Fatalf("restore the idle %s: %v", role, err)
 	}
 	machine, ok := sup.Machine(token)
 	if !ok {

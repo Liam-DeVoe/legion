@@ -69,15 +69,14 @@ func backstopUnfired(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 	return unfired
 }
 
-// factSpent is whether the fact applyFacts applied under event is marked applied.
+// factSpent is whether the fact applyFacts applied under event is marked applied (intake.Applied).
 func factSpent(t *testing.T, pool *pgxpool.Pool, event string) bool {
 	t.Helper()
-	var spent bool
-	if err := pool.QueryRow(context.Background(), `select exists (select 1 from processed_events where source = 'api' and event_id = $1)`,
-		event).Scan(&spent); err != nil {
+	applied, err := intake.Applied(context.Background(), pool, "api", []string{event})
+	if err != nil {
 		t.Fatalf("read the mark of %s: %v", event, err)
 	}
-	return spent
+	return applied[event]
 }
 
 // A backstop that comes due for a held merger whose pod was released is not taken while the gate

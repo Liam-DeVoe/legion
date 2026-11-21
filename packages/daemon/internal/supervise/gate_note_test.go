@@ -28,9 +28,9 @@ var (
 	// writes them (workflow.MergerGateNote).
 	closedGateNote = GateNote{Text: "The design gate of LEGION-208 closed: version 2 of its spec document (spec-artifact) is with its reviewer. " +
 		"Merge nothing, enqueue nothing, and take a pull request you queued back out of the merge queue.",
-		State: "closed", Step: "spec", Version: 2}
+		State: GateClosed, Step: "spec", Version: 2}
 	openGateNote = GateNote{Text: "The design gate of LEGION-208 stands open: every gated step that someone registered is approved.",
-		State: "open", Step: "spec", Version: 2}
+		State: GateOpen, Step: "spec", Version: 2}
 )
 
 // gateAnswer is a fake Deps.GateNote: it gives note for every delivery it is asked of, and keeps
@@ -40,6 +40,9 @@ type gateAnswer struct {
 	note  GateNote
 	asked []string
 }
+
+// wire sets the answer as the machine's Deps.GateNote.
+func (a *gateAnswer) wire(d *Deps) { d.GateNote = a.of }
 
 func (a *gateAnswer) of(_ context.Context, _ Claim, d Delivery) (GateNote, error) {
 	a.mu.Lock()
@@ -60,21 +63,6 @@ func (a *gateAnswer) questions() []string {
 	return append([]string(nil), a.asked...)
 }
 
-// designGateHarness is a machine over c whose design gate's answer is answer, with c brought up
-// to ready.
-func designGateHarness(t *testing.T, c Claim, answer *gateAnswer) *harness {
-	t.Helper()
-	h := newBareHarness(t)
-	h.token = c.Token
-	h.deps.GateNote = answer.of
-	if err := h.store.PutClaim(h.ctx, c); err != nil {
-		t.Fatal(err)
-	}
-	h.start(c)
-	h.reach(StateReady)
-	return h
-}
-
 // mergerClaim is the queued claim of the harness's issue's merger.
 func mergerClaim() Claim {
 	c := queuedClaim()
@@ -91,7 +79,7 @@ func mergerClaim() Claim {
 // the delivery the store holds is the task as it was queued.
 func TestAMergersTaskCarriesTheDesignGateNoteOfEachSend(t *testing.T) {
 	answer := &gateAnswer{note: closedGateNote}
-	h := designGateHarness(t, mergerClaim(), answer)
+	h := readyHarness(t, mergerClaim(), answer.wire)
 	const task = "Merge the head the review approved."
 	h.must(RequestDeliver{Claim: h.token, Task: task, Generation: 5, Entry: 3})
 
@@ -131,7 +119,7 @@ func TestAMergersTaskCarriesTheDesignGateNoteOfEachSend(t *testing.T) {
 // the gate holds only the merger's work.
 func TestNoDesignGateNoteIsAskedOfANonMergersTask(t *testing.T) {
 	answer := &gateAnswer{note: closedGateNote}
-	h := designGateHarness(t, queuedClaim(), answer)
+	h := readyHarness(t, queuedClaim(), answer.wire)
 	const task = "Implement the change."
 	h.must(RequestDeliver{Claim: h.token, Task: task, Generation: 5, Entry: 3})
 	if sent := h.wantPrompts(1)[0]; sent.Message != task {

@@ -119,7 +119,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pool == nil || s.roleFor == nil || s.waitStands == nil || s.holds == nil {
-		s.refuse(w, r, http.StatusInternalServerError, "the daemon reads no issue record, so it cannot say what this claim owes")
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon reads no issue record, wait or hold, so it cannot say what this claim owes")
 		return
 	}
 	position, err := s.handoffPosition(r.Context(), c.Issue, c.Role)
@@ -165,8 +165,8 @@ type owedStanding struct {
 // The wait and the hold are each read by the one rule every reader of it asks, which the daemon
 // hands this package (Options.WaitStands, Options.Holds), under the deployment's design-gate steps
 // (Options.Steps), so this answer, the state, the outbox's fence and the daemon's sends cannot
-// part. The wait is workflow.WaitStandsNow's, which reads the claim's wait row with no end first,
-// so a claim with none costs that one indexed read. The hold is workflow.HoldsNow's, over
+// part. The wait is workflow.WaitStandsNow's, which reads the claim with its wait row with no end
+// first, so a claim with none costs that one read. The hold is workflow.HoldsNow's, over
 // workflow.HeldByDesignGate, which reads nothing for a claim of any role but the merger. HoldsNow
 // reads the issue again in this transaction, under the Dispatch project the record files it under
 // (record.Issue.Project).

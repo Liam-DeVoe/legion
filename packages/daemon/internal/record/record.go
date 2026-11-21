@@ -2522,9 +2522,6 @@ type Store interface {
 	// row having no end, so an end that names a wait a newer declaration replaced, or one already
 	// ended, changes nothing and answers false.
 	EndWait(ctx context.Context, tx pgx.Tx, project string, token claim.Token, waitID, cause, endedBy string, at time.Time) (bool, error)
-	// StandingWait is the wait row of the claim token that has no end, nil for none. Whether that
-	// wait stands is workflow.WaitStands's to say.
-	StandingWait(ctx context.Context, tx pgx.Tx, token claim.Token) (*ClaimWait, error)
 	// StandingWaits is every wait row of project's claims (the claim project token, as
 	// claims.project holds it) that has no end, by token, in one read.
 	StandingWaits(ctx context.Context, tx pgx.Tx, project string) ([]ClaimWait, error)
@@ -2736,10 +2733,11 @@ type ClaimWait struct {
 // over a wait reads (workflow.WaitStands, whose terms workflow.WaitEndCause names): the wait's
 // issue, the issue's tree root, the wait's role's phases row, and the claim that declared it, all
 // read by the one statement that reads the wait (Store.StaleWaits), so a reading costs no query of
-// its own. Only what that rule reads is filled: of the issue its key, tree, phase, generation,
-// status and linger; of the root its key, tree and linger; of the row its issue, role, entry and
-// completion, the zero row where the role has none (PhaseRowOf); of the claim the session it runs
-// now, and the wait itself as its Wait.
+// its own. Only these are filled: of the issue its key, tree, phase, generation, status and
+// linger; of the root its key, tree and linger; of the row its issue, role, entry and completion,
+// the zero row where the role has none (PhaseRowOf); of the claim the session it runs now, and
+// the wait itself as its Wait. The rule reads every one of them but the keys, the trees and the
+// issue's own linger, which the statement reads beside them.
 type WaitReading struct {
 	Issue Issue
 	Root  Issue

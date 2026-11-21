@@ -1261,10 +1261,11 @@ type SuperviseRequest struct {
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
 	// WaitID names the wait whose time this start's task tells the worker of (WaitDue, written by
-	// workflow's waitDue): a start with no phase and no entry, so no phase fence holds it. The
-	// outbox finishes such a start with no delivery while a newer wait of the claim stands, since
-	// that task would end the newer wait as new work, and the time of a replaced wait sends
-	// nothing (dispatch://INFRA-2040 R3, D5 of its plan). Every other request names none.
+	// workflow's waitDue): a start with no phase and no entry, so no phase fence holds it, whether
+	// it is a plain start or the wake of a released claim (WakeKind pods.WakeWaitTime). The outbox
+	// finishes such a start with no delivery while a newer wait of the claim stands, since that
+	// task would end the newer wait as new work, and the time of a replaced wait sends nothing
+	// (dispatch://INFRA-2040 R3, D5 and D7 of its plan). Every other request names none.
 	WaitID string `json:"waitId,omitempty"`
 	// GateMessage marks the design gate's own start of a merger (workflow's deliverGateMove, at the
 	// gate's close and at its opening): a start with a task, no phase and no entry, so no phase
@@ -1274,7 +1275,7 @@ type SuperviseRequest struct {
 	// outbox's start carries the mark into the claim's delivery (supervise.RequestDeliver and
 	// Delivery.GateMessage), where the send reads it (supervise.Deps.GateNote). Every other
 	// request carries none. The release before decodes strictly (DisallowUnknownFields), so the
-	// way back of 20261119055700_pending_delivery_gate_message deletes the key from each row
+	// way back of 20261121160200_pending_delivery_gate_message deletes the key from each row
 	// before that release boots.
 	GateMessage bool `json:"gateMessage,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
@@ -1748,7 +1749,7 @@ const (
 // updateAskKeyShape is the shape of every key UpdateAskKey writes: `publish.` and 32 lowercase
 // hex digits, a key of the shape the Envoy listener mints for a publish, which
 // MINTED_DEDUPE_KEY_PATTERN in packages/contracts accepts.
-var updateAskKeyShape = regexp.MustCompile(`^publish\.[0-9a-f]{32}$`)
+var updateAskKeyShape = regexp.MustCompile(`^` + regexp.QuoteMeta(updateAskKeyPrefix) + `[0-9a-f]{32}$`)
 
 // UpdateAskKey is the dedupe key the daemon publishes the ask of round to token's claim under
 // (the daemon's updateAsk), where openedAt is when the round was opened on that claim

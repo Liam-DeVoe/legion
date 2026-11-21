@@ -483,7 +483,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// holds, no wait holds one back, no task carries a design gate's note, and every tree
 		// closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
-		plan.waitHolds, plan.gateNote = workflow.waitHolds, workflow.gateNote
+		plan.waitHolds, plan.endWait, plan.gateNote = workflow.waitHolds, workflow.endWait, workflow.gateNote
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
@@ -910,12 +910,13 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, waitHolds, gateNote, rootHears, rootTask and treeClosable are the workflow's
-	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
-	// as it was queued, no wait holds one back, no task carries a design gate's note, and every
-	// tree closes.
+	// phaseHolds, waitHolds, endWait, gateNote, rootHears, rootTask and treeClosable are the
+	// workflow's answers to the supervisor's predicates; nil without a workflow, where every
+	// delivery is sent as it was queued, no wait holds one back or is ended at a send, no task
+	// carries a design gate's note, and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
-	waitHolds    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error)
+	waitHolds    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, bool, error)
+	endWait      func(ctx context.Context, c supervise.Claim, d supervise.Delivery, wait string) error
 	gateNote     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (supervise.GateNote, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
@@ -1809,6 +1810,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
 		WaitHolds:               p.waitHolds,
+		EndWait:                 p.endWait,
 		GateNote:                p.gateNote,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -2767,15 +2769,6 @@ func (l *servingLatch) reach() { l.served.Store(true) }
 // on whatever goroutine a probe's request runs on.
 func (l *servingLatch) serving() bool { return l.served.Load() }
 
-// waitStandsNow and holdsNow are the workflow's one rule of a claim's wait
-// (workflow.WaitStandsNow) and of the design gate's hold on a merger (workflow.HoldsNow), which
-// serve hands the API's owed route (api.Options.WaitStands, api.Options.Holds). They are named
-// here because serve's own workflow runtime is named workflow, which hides the package there.
-var (
-	waitStandsNow = workflow.WaitStandsNow
-	holdsNow      = workflow.HoldsNow
-)
-
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -2783,7 +2776,9 @@ var (
 // anything waits — the workflow's outbox and the controller keeper would otherwise wait on a
 // machine whose relaunch holds it, and the stop on them — and then drains the API until drainBy,
 // letting the decisions its routes asked for finish, and ends them when the drain does (endDrain).
-func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt time.Time, bootID int64, listener net.Listener, s *supervision, p plan, workflow *workflowRuntime) error {
+//
+// w is the workflow's runtime, nil for a daemon with no workflow.
+func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt time.Time, bootID int64, listener net.Listener, s *supervision, p plan, w *workflowRuntime) error {
 	// A daemon with no workflow reads the records through the project's scope as one with it does
 	// (projectRecords), with no lane to wake.
 	records := record.Store(projectRecords{Store: record.NewStore(), project: cfg.Project})
@@ -2804,15 +2799,15 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
-	if workflow != nil {
-		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
-		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
-		handoffCompleted = workflow.handoffCompleted
-		roleHoldersChanged = workflow.roleHoldersChanged
-		githubAPI = workflow.githubAPI
-		consumerLag = workflow.consumers.Lag
-		pauses = workflow.pauses.service
-		architectStalls = workflow.admission.ArchitectStallArms
+	if w != nil {
+		records, handlers, client, tokens, grants = w.records, w.handlers, w.dispatch, w.apps, w.grants
+		claimReady, prepare, unread, await = w.claimReady, w.prepareObserved, w.repositoryUnread, w.awaitRecovery
+		handoffCompleted = w.handoffCompleted
+		roleHoldersChanged = w.roleHoldersChanged
+		githubAPI = w.githubAPI
+		consumerLag = w.consumers.Lag
+		pauses = w.pauses.service
+		architectStalls = w.admission.ArchitectStallArms
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2876,8 +2871,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
 		RoleFor:            phase.RoleFor,
-		WaitStands:         waitStandsNow,
-		Holds:              holdsNow,
+		WaitStands:         workflow.WaitStandsNow,
+		Holds:              workflow.HoldsNow,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,
@@ -2959,17 +2954,17 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		}
 		return err
 	})
-	if workflow != nil {
+	if w != nil {
 		// The workflow's loops, the boot fact, the orphan keeper and the controller watch each run
 		// for the life of the process beside the others, so each takes a hold mark of its own
 		// (store.ForConcurrentWorker): a mark they shared would have one loop's open transaction
 		// refuse the rest their first connection.
-		group.Go(func() error { return workflow.run(store.ForConcurrentWorker(serving)) })
+		group.Go(func() error { return w.run(store.ForConcurrentWorker(serving)) })
 		// The boot fact runs beside the already-started API server, so a slow census of claims
 		// never delays /healthz or repeats LEGION-653's boot-time deadlock. A failure while the
 		// daemon serves is retried (runBooted); only the daemon's stop ends it unapplied.
 		group.Go(func() error {
-			workflow.runBooted(store.ForConcurrentWorker(serving), bootID)
+			w.runBooted(store.ForConcurrentWorker(serving), bootID)
 			return nil
 		})
 	}

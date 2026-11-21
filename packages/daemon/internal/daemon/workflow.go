@@ -1131,31 +1131,44 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 }
 
 // waitHolds answers supervise's Deps.WaitHolds from the record, through the workflow's one rule
-// (workflow.Engine.WaitHoldsSend): it names the standing wait of c's worker when d is a task the
-// claim had already taken when it declared — one a death in its turn took back, or one of a phase
-// entry no higher than the entry it had taken — or the daemon's own delivery of a relaunch's
-// record (supervise.Delivery.Relaunch), which hands no work, and answers "" for any other
-// delivery, ending the wait first when d is new work, so the send goes on (dispatch://INFRA-2040
-// R3's third end).
+// (workflow.Engine.WaitHoldsSend): the standing wait of c's worker, "" for none, and whether it
+// holds d — a task the claim had already taken when it declared, one a death in its turn took back
+// or one of a phase entry no higher than the entry it had taken, or the daemon's own delivery of a
+// relaunch's record (supervise.Delivery.Relaunch), which hands no work. Any other delivery is new
+// work, which the wait does not hold: the machine ends the wait just before that delivery leaves
+// (endWait, dispatch://INFRA-2040 R3's third end).
 //
-// It reads and ends in one transaction of its own, which takes no lock of the daemon's: the
-// machine asks it holding its own lock, as it asks phaseHolds. The fact lock is not taken either,
-// and not needed: sendPending sends only to a ready or idle claim, and a wait is declared only in
-// a turn, so the declaration and this answer never run at once for one claim, and the end is a
-// compare-and-set on the wait's id that leaves a wait some fact ended meanwhile as that fact ended
-// it. The end's `wait: ended` line is written once the transaction commits.
-func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error) {
+// It only reads, in a read-only transaction of its own, which takes no lock of the daemon's: the
+// machine asks it holding its own lock, as it asks phaseHolds.
+func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, bool, error) {
 	var wait string
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+	var holds bool
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		wait, err = w.engine.WaitHoldsSend(scoped, tx, c.Token, d)
+		wait, holds, err = w.engine.WaitHoldsSend(ctx, tx, c.Token, d)
 		return err
 	}); err != nil {
-		return "", fmt.Errorf("weigh the send of %s against the wait of %s: %w", d.ID, c.Token, err)
+		return "", false, fmt.Errorf("weigh the send of %s against the wait of %s: %w", d.ID, c.Token, err)
+	}
+	return wait, holds, nil
+}
+
+// endWait answers supervise's Deps.EndWait: it ends wait, the standing wait of c's worker that d's
+// send ends as new work, through the workflow's one end of it (workflow.Engine.EndWaitAtSend), in
+// a transaction of its own, and logs `wait: ended` once that transaction commits. The fact lock is
+// not taken, and not needed: sendPending sends only to a ready or idle claim, and a wait is
+// declared only in a turn, so the declaration and this end never run at once for one claim, and
+// the end is a compare-and-set on the wait's id that leaves a wait some fact ended meanwhile as
+// that fact ended it.
+func (w *workflowRuntime) endWait(ctx context.Context, c supervise.Claim, d supervise.Delivery, wait string) error {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		return w.engine.EndWaitAtSend(scoped, tx, c, d, wait)
+	}); err != nil {
+		return fmt.Errorf("end the wait %s of %s at the send of %s: %w", wait, c.Token, d.ID, err)
 	}
 	committed()
-	return wait, nil
+	return nil
 }
 
 // gateNote answers supervise's Deps.GateNote: the design gate's state that a task of c's merger
@@ -1166,19 +1179,23 @@ func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d su
 // it holding its own lock, as it asks phaseHolds, so the read is a read-only transaction of its
 // own and takes no lock of the daemon's.
 func (w *workflowRuntime) gateNote(ctx context.Context, c supervise.Claim, d supervise.Delivery) (supervise.GateNote, error) {
-	return readMergerGateNote(ctx, w.pool, w.records, w.gatedSteps, c.Issue, c.Role, d.GateMessage)
+	build := workflow.MergerGateNote
+	if d.GateMessage {
+		build = workflow.MergerGateMessage
+	}
+	return readMergerGateNote(ctx, w.pool, w.records, w.gatedSteps, c.Issue, c.Role, build)
 }
 
 // readMergerGateNote is the design gate's state that a task or the update ask of role on the issue
-// key carries now (workflow.MergerGateNote), or the gate's whole message when message says the
-// task is the gate's own (workflow.MergerGateMessage): the issue and its tree's gate rows under
-// steps, the steps the deployment gates, read in a read-only transaction of its own. Only a
-// merger's carries one, so no other role's reads anything, and an issue the record does not hold
-// carries none.
+// key carries now, as build writes it (workflow.MergerGateNote, or workflow.MergerGateMessage for
+// the gate's own task): the issue and its tree's gate rows under steps, the steps the deployment
+// gates, read in a read-only transaction of its own. Only a merger's carries one, and only under a
+// deployment that gates a step, since no other is ever held or told the gate's state, so no other
+// reads anything; an issue the record does not hold carries none.
 func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.Store, steps []record.DesignStep,
-	key string, role claim.Role, message bool) (supervise.GateNote, error) {
+	key string, role claim.Role, build func(record.Issue, claim.Role, record.TreeGate) supervise.GateNote) (supervise.GateNote, error) {
 	var note supervise.GateNote
-	if role != claim.RoleMerger {
+	if role != claim.RoleMerger || len(steps) == 0 {
 		return note, nil
 	}
 	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -1190,12 +1207,7 @@ func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.St
 		if err != nil {
 			return err
 		}
-		gate := record.TreeGate{Steps: steps, Rows: rows}
-		if message {
-			note = workflow.MergerGateMessage(*issue, role, gate)
-		} else {
-			note = workflow.MergerGateNote(*issue, role, gate)
-		}
+		note = build(*issue, role, record.TreeGate{Steps: steps, Rows: rows})
 		return nil
 	}); err != nil {
 		return supervise.GateNote{}, fmt.Errorf("read the design gate of the tree of %s for its %s: %w", key, role, err)
@@ -1626,8 +1638,9 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		// The reconcile is the one admission pass outside a fact: its re-admissions, promotions
 		// and recorded observations are written in this transaction, so the waits they stopped end
-		// in it, as the last handler ends a fact's (workflow.WaitReconciler).
-		if err := w.engine.EndStaleWaits(scoped, tx, "reconcile/"+pass+":"+w.bootID); err != nil {
+		// in it, as the last handler ends a fact's (workflow.WaitReconciler), ended by this pass
+		// under the name it applies itself as (intake.WithAppliedFact above).
+		if err := w.engine.EndStaleWaits(scoped, tx); err != nil {
 			return err
 		}
 		return settle(scoped, tx)

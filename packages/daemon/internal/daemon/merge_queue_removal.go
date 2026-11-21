@@ -200,13 +200,13 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return nil
 	}
 	if held.Released() {
-		held, holds, err := r.deliveryHeld(ctx, m.issue, m.role)
+		gate, holds, err := r.deliveryHeld(ctx, m.issue, m.role)
 		if err != nil {
 			return err
 		}
 		if holds {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s: version %d of its %s document (%s) is with its reviewer",
-				m.what, m.issue.Tree, m.role, held.LatestVersion, held.Step.OrSpec(), held.ArtifactID)
+			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s: %s",
+				m.what, m.issue.Tree, m.role, workflow.GateWithItsReviewer(gate))
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released

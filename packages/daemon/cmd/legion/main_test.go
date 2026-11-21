@@ -1764,21 +1764,8 @@ func TestPlainStateNamesEachStandingWait(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(tc.served))
-			}))
-			defer server.Close()
-			t.Chdir(t.TempDir())
-			t.Setenv("LEGION_DAEMON_URL", server.URL)
-			t.Setenv("LEGION_ISSUE", "")
-
-			var out, errb bytes.Buffer
-			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
-				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
-			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			if out := plainStateOf(t, tc.served); !strings.Contains(out, tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out, tc.want)
 			}
 		})
 	}
@@ -1825,21 +1812,8 @@ func TestPlainStateNamesEachHeldMerger(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(tc.served))
-			}))
-			defer server.Close()
-			t.Chdir(t.TempDir())
-			t.Setenv("LEGION_DAEMON_URL", server.URL)
-			t.Setenv("LEGION_ISSUE", "")
-
-			var out, errb bytes.Buffer
-			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
-				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
-			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			if out := plainStateOf(t, tc.served); !strings.Contains(out, tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out, tc.want)
 			}
 		})
 	}

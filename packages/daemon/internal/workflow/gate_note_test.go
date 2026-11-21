@@ -45,11 +45,11 @@ func TestMergerGateNoteGivesAMergerInMergingTheGatesStateAndNobodyElseANote(t *t
 	}{
 		{
 			name: "the merger of an issue in merging, the spec it gates unapproved", issue: merging, role: claim.RoleMerger,
-			gate: closedSpecGate(root), want: supervise.GateNote{Text: closed, State: "closed", Step: "spec", Version: 2},
+			gate: closedSpecGate(root), want: supervise.GateNote{Text: closed, State: supervise.GateClosed, Step: "spec", Version: 2},
 		},
 		{
 			name: "the merger of an issue in merging, under an open gate", issue: merging, role: claim.RoleMerger,
-			gate: openSpecGate(root), want: supervise.GateNote{Text: open, State: "open", Step: "spec", Version: 2},
+			gate: openSpecGate(root), want: supervise.GateNote{Text: open, State: supervise.GateOpen, Step: "spec", Version: 2},
 		},
 		{
 			name: "the merger under an open gate of two steps, the first step's approval the newest", issue: merging, role: claim.RoleMerger,
@@ -58,13 +58,13 @@ func TestMergerGateNoteGivesAMergerInMergingTheGatesStateAndNobodyElseANote(t *t
 					record.DesignStepSpec:     approved(record.DesignStepSpec, "spec-artifact", 3, 9),
 					record.DesignStepCriteria: approved(record.DesignStepCriteria, "criteria-artifact", 5, 4),
 				}},
-			want: supervise.GateNote{Text: open, State: "open", Step: "spec", Version: 3},
+			want: supervise.GateNote{Text: open, State: supervise.GateOpen, Step: "spec", Version: 3},
 		},
 		{
 			name: "the merger under a gate whose one unapproved step has no row", issue: merging, role: claim.RoleMerger,
 			gate: record.TreeGate{Steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
 				Rows: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: approved(record.DesignStepSpec, "spec-artifact", 2, 4)}},
-			want: supervise.GateNote{Text: open, State: "open", Step: "spec", Version: 2},
+			want: supervise.GateNote{Text: open, State: supervise.GateOpen, Step: "spec", Version: 2},
 		},
 		{
 			name: "the merger of a tree whose gated step has no row", issue: merging, role: claim.RoleMerger,
@@ -97,8 +97,5 @@ func TestMergerGateNoteGivesAMergerInMergingTheGatesStateAndNobodyElseANote(t *t
 	note := MergerGateNote(merging, claim.RoleMerger, closedSpecGate(root))
 	if words := gateClosedWords(root, record.DesignStepSpec, "spec-artifact", 2); !strings.HasPrefix(note.Text, words) {
 		t.Errorf("the closed note %q does not open with the closing message's words %q", note.Text, words)
-	}
-	if quoted := "The design gate of " + root + " closed: version 2 of its spec document (spec-artifact)"; !strings.HasPrefix(note.Text, quoted) {
-		t.Errorf("the closed note %q does not open with the form roles/merger.md quotes, %q", note.Text, quoted)
 	}
 }

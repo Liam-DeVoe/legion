@@ -35,16 +35,6 @@ const (
 	gateNoteSentLine = `msg="supervise: the merger's task carries the design gate's state"`
 )
 
-// wantClosedNote asserts the merger's session received sent opening with the closed gate's note:
-// the closed gate, to merge nothing, and to take a queued pull request back out of the merge
-// queue, and then what the task says (says).
-func wantClosedNote(t *testing.T, sent fake.Prompt, says string, why string) {
-	t.Helper()
-	if !strings.HasPrefix(sent.Message, heldMergerClosedNote+"\n\n") || !strings.Contains(sent.Message, says) {
-		t.Fatalf("the merger's session received %q, want the closed gate's note in front of a task saying %q: %s", sent.Message, says, why)
-	}
-}
-
 // The merger's first task after a move of the design gate gives the gate's state as it stands at
 // the send, whenever the task was queued (R7). Each order wakes a merger whose pod the idle
 // release took, whose start names no phase and so passes the outbox's fence, and reads the first
@@ -63,7 +53,7 @@ func wantClosedNote(t *testing.T, sent fake.Prompt, says string, why string) {
 //     built at its send, gives the opening message, and the opening's start follows it with the
 //     opening message.
 func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T) {
-	const settled = "The wake is a CI settlement on your pull request's head: " + heldMergerHead
+	const settled = heldMergerSettled
 	for _, tc := range []struct {
 		name string
 		// closedBeforeWake closes the gate before the settlement wakes the merger.
@@ -84,7 +74,7 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 				r.drainAt(at, record.OutboxKindSupervise)
 			},
 			want: func(t *testing.T, r *waitDeliveryRig, first fake.Prompt) {
-				wantClosedNote(t, first, settled, "the gate was closed when the task was sent")
+				wantGateMessage(t, first, heldMergerClosedNote, settled, "the gate was closed when the task was sent")
 			},
 		},
 		{
@@ -100,7 +90,7 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 				r.closesTheGate()
 			},
 			want: func(t *testing.T, r *waitDeliveryRig, first fake.Prompt) {
-				wantClosedNote(t, first, settled, "the note is built at the send, after the gate closed, not where the outbox queued the task")
+				wantGateMessage(t, first, heldMergerClosedNote, settled, "the note is built at the send, after the gate closed, not where the outbox queued the task")
 				if lines := r.lines(gateNoteSentLine, "issue="+r.issue.Key, "delivery="+first.DeliveryID, "state=closed", "step=spec",
 					"version=2"); len(lines) != 1 {
 					t.Fatalf("the send was logged %d times as carrying the closed gate, want once; the log is:\n%s", len(lines), r.logs)
@@ -118,11 +108,7 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 				r.opensTheGate()
 			},
 			want: func(t *testing.T, r *waitDeliveryRig, first fake.Prompt) {
-				if !strings.HasPrefix(first.Message, heldMergerOpenNote+"\n\n") || !strings.Contains(first.Message, settled) ||
-					strings.Contains(first.Message, "The design gate of LEGION-208 closed") {
-					t.Fatalf("the merger's session received %q, want the open gate's note in front of the wake's task, and nothing that says the gate is closed",
-						first.Message)
-				}
+				wantGateMessage(t, first, heldMergerOpenNote, settled, "the open gate's note goes in front of the wake's task")
 			},
 			after: func(t *testing.T, r *waitDeliveryRig, first fake.Prompt, sent int, at time.Time) {
 				r.takeTask()
@@ -202,7 +188,7 @@ func TestEveryTaskAHeldMergersSessionReceivesNamesTheClosedGate(t *testing.T) {
 			Kind: runtime.Gone, At: time.Now()}})
 		r.boot()
 		resent := r.wantPrompts(sent+1, "the relaunched session is sent the task its death took back")[sent]
-		wantClosedNote(t, resent, heldMergerTask, "the task taken back from the turn is sent again during the hold")
+		wantGateMessage(t, resent, heldMergerClosedNote, heldMergerTask, "the task taken back from the turn is sent again during the hold")
 		if held := r.machine.Claim().Pending; held == nil || held.ID != resent.DeliveryID || held.ID == taken.ID || held.Task != heldMergerTask {
 			t.Fatalf("the merger holds %+v, want the task taken back under a new id, as it was queued, with no note stored", held)
 		}

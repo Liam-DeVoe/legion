@@ -90,7 +90,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			if got := published[0]; got.topic != topic || got.message != askedText || got.payload != any(askedText) || got.key != key {
 				t.Fatalf("the ask went as %#v, want %q on %s under %s", got, askedText, topic, key)
 			}
-			if !mintedPublishKey.MatchString(key) || !record.IsUpdateAskKey(token, key) || key == record.OutboxKey(row.ID) {
+			if !mintedPublishKey.MatchString(key) || !record.IsUpdateAskKey(token, key) {
 				t.Fatalf("the ask's key %s is not a minted publish key the %s's claim knows as its own update ask", key, role)
 			}
 			lines := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`)

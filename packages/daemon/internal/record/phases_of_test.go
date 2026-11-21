@@ -10,10 +10,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// PhasesOf reads the phases rows of many issues in one statement and answers each issue's rows as
-// Phases answers them, in role order, keyed by issue: an issue with no row has no entry, an issue
-// it was not asked about is not read, and no issues read nothing.
-func TestPhasesOfReadsEachIssuesPhasesRowsAsPhasesReadsThem(t *testing.T) {
+// PhasesOf reads the phases rows of many issues in one statement, as the batched reads of the rule
+// over a wait take them (workflow's readWaitTermsOf and endHeldMergersWaits), and answers each
+// issue's rows as Phases answers them, in role order, keyed by issue: an issue with no row has no
+// entry, an issue it was not asked about is not read, and no issues read nothing.
+func TestPhasesOfReadsTheWaitRulesPhasesRowsAsPhasesReadsThem(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()

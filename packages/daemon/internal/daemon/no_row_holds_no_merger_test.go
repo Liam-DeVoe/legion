@@ -85,17 +85,12 @@ func TestNoRowHoldsNoMergerUnderAGatedStepNobodyRegistered(t *testing.T) {
 	}
 
 	r.enter(1, "Merge the head the review approved.")
-	starts := entryStartRows(t, r.pool, r.issue.Key)
+	// The outbox's fence lets the merger's start at merging through: no gated step stands closed
+	// with a row (runStarts fails the test on the start's error).
+	starts := r.runStarts()
 	if len(starts) != 1 || starts[0].request.Role != claim.RoleMerger || starts[0].request.Phase != phase.Merging {
 		t.Fatalf("the start rows of %s = %+v, want the merger's one start at merging", r.issue.Key, starts)
 	}
-	if err := r.runner.execute(r.ctx, starts[0].row); err != nil {
-		t.Fatalf("the merger's start at merging = %v, want the outbox's fence to let it through: no gated step stands closed with a row", err)
-	}
-	if _, err := r.pool.Exec(r.ctx, "delete from outbox where id = $1", starts[0].row.ID); err != nil {
-		t.Fatalf("finish the merger's start row: %v", err)
-	}
-	r.settled()
 	r.boot()
 	merging := r.takeTask()
 	r.endTurn(merging.ID)
@@ -239,20 +234,17 @@ func TestNoRowHoldsNoMergerOfAChildHandedOverInMergingWithNoGateToCarry(t *testi
 }
 
 // applies applies fact as the Dispatch event id through the daemon's own fact handlers, failing the
-// test on an error or a refusal.
+// test on an error or a refusal (applyFact).
 func (r *waitDeliveryRig) applies(id string, fact intake.Fact) {
 	r.t.Helper()
-	result, err := intake.ApplyFact(r.ctx, r.pool, "dispatch", id, fact, r.w.handlers...)
-	if err != nil || result.Refusal != nil {
-		r.t.Fatalf("apply %s = %+v, %v; want it applied", id, result.Refusal, err)
-	}
+	applyFact(r.t, r.pool, "dispatch", id, fact, r.w.handlers...)
 }
 
 // owed is what the rig's claim's own session is told it owes now, asked over the daemon's owed
 // route (`POST /legion/v1/claims/owed`) with the session and the secret its registration holds.
-// The rig's API serves no owed route, so the route is served here over the rig's own supervisor,
-// store and steps, with the three rules the daemon hands the route (daemon.go's api.Options:
-// RoleFor, WaitStands and Holds).
+// The rig's API is built without the three rules the owed route needs, so the route is served here
+// over the rig's own supervisor, store and steps, with the three rules the daemon hands the route
+// (daemon.go's api.Options: RoleFor, WaitStands and Holds).
 func (r *waitDeliveryRig) owed() api.OwedResponse {
 	r.t.Helper()
 	handler := api.NewServer("127.0.0.1", 0, api.Options{Steps: r.w.gatedSteps, Supervisor: r.sup, Project: "legion",

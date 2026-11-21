@@ -225,14 +225,21 @@ type sentences struct{ abandoned, ended bool }
 
 // GateNote is the design gate's state a merger's delivery carries at its send (Deps.GateNote,
 // dispatch://INFRA-2040 R7): Text is the sentence the prompt opens with, empty for no note, and
-// State ("closed" or "open"), Step and Version are what the send's line names of it — the closed
-// step and its document's version, or the step whose approval stands newest under an open gate.
-// It is built at each send from the gate as it stands then and never stored, so a task queued
-// before the gate moved and sent after it says what the gate is when the merger reads it.
+// State (GateClosed or GateOpen), Step and Version are what the send's line names of it — the
+// closed step and its document's version, or the step whose approval stands newest under an open
+// gate. It is built at each send from the gate as it stands then and never stored, so a task
+// queued before the gate moved and sent after it says what the gate is when the merger reads it.
 type GateNote struct {
 	Text, State, Step string
 	Version           int
 }
+
+// GateClosed and GateOpen are the two states a GateNote with text names (GateNote.State): the
+// gate holds the merger, or it stands open.
+const (
+	GateClosed = "closed"
+	GateOpen   = "open"
+)
 
 // InFrontOf is text as the merger reads it behind the note: the note, a blank line, and text. A
 // note with no text leaves text as it is.
@@ -839,19 +846,20 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// dispatch://INFRA-2040 R3): the task stays pending and unconfirmed, as a task held for an
 	// answered update round does, and goes at the first send after the wait ends — the sweep's next
 	// observation of the live process, the end of the worker's next turn, a hello, a ready, or a
-	// start that reaches the claim. A task that is new work has ended the wait by the time the
-	// answer is "", and goes on below.
+	// start that reaches the claim. A task that is new work is not held: the wait it ends is ended
+	// just before the task leaves (endWaitAtSend), once every hold below has let it through, so no
+	// end names a send that did not happen.
 	//
 	// No send of this daemon carries such a task while the wait stands, so the question a restart
 	// left is false of it, as it is of the task an answered round holds (openRoundHoldsTask), and
 	// it is put down here. Left armed, the first turn of the worker's own — news, which is what a
 	// worker waits on — would be taken for this task's turn (turnStarted), and that turn's end
 	// would retire the task unsent.
-	wait, err := m.waitHolds(ctx, *p)
+	wait, holds, err := m.waitHolds(ctx, *p)
 	if err != nil {
 		return err
 	}
-	if wait != "" {
+	if holds {
 		m.askFirst = false
 		return nil
 	}
@@ -897,6 +905,13 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	if m.askFirst {
 		m.askFirst = false
 		if streaming, _ := m.streaming(ctx, conn); streaming {
+			// The earlier daemon's send reached the agent, which works the task in this turn, so
+			// the wait the task's new work ends is ended here, as at a send (endWaitAtSend). An end
+			// that fails leaves the question armed for the next decision.
+			if err := m.endWaitAtSend(ctx, *p, wait); err != nil {
+				m.askFirst = true
+				return err
+			}
 			// The agent's answer is the daemon's first word of the turn, so the turn is dated
 			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
 			// and the confirmation's write carries the date: a let-go in this turn reads a report
@@ -955,6 +970,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// (gateNote), and never stored with the delivery.
 	note, err := m.gateNote(ctx, *p)
 	if err != nil {
+		return err
+	}
+	if err := m.endWaitAtSend(ctx, *p, wait); err != nil {
 		return err
 	}
 	m.startSend(conn, *p, note)
@@ -1151,29 +1169,44 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	return holds, nil
 }
 
-// waitHolds asks whether the wait a phase worker declared holds d back now (Deps.WaitHolds), and
-// names that wait when it does, "" when nothing holds d. An architect's and the controller's
-// claims declare no wait and are never put to the answer, nor is any claim of a daemon with no
-// workflow, which supplies none. The line that says a held task waits is written once for each
-// delivery and wait (waitHeld): every sweep, hello and ready asks again while the wait stands.
-func (m *Machine) waitHolds(ctx context.Context, d Delivery) (string, error) {
+// waitHolds asks for the wait a phase worker declared that stands now, and whether it holds d back
+// (Deps.WaitHolds): the wait's id, "" when none stands, and true when it holds d. An architect's
+// and the controller's claims declare no wait and are never put to the answer, nor is any claim
+// of a daemon with no workflow, which supplies none. The line that says a held task waits is
+// written once for each delivery and wait (waitHeld): every sweep, hello and ready asks again
+// while the wait stands.
+func (m *Machine) waitHolds(ctx context.Context, d Delivery) (string, bool, error) {
 	if m.deps.WaitHolds == nil || m.claim.Role == claim.RoleArchitect || m.claim.Role == claim.RoleController {
-		return "", nil
+		return "", false, nil
 	}
-	wait, err := m.deps.WaitHolds(ctx, m.claim, d)
+	wait, holds, err := m.deps.WaitHolds(ctx, m.claim, d)
 	if err != nil {
-		return "", fmt.Errorf("read whether the wait of %s holds its task: %w", m.claim.Token, err)
+		return "", false, fmt.Errorf("read whether the wait of %s holds its task: %w", m.claim.Token, err)
 	}
-	if held := (heldByWait{delivery: d.ID, wait: wait}); wait != "" && held != m.waitHeld {
+	if held := (heldByWait{delivery: d.ID, wait: wait}); holds && held != m.waitHeld {
 		m.waitHeld = held
 		m.log.Info("supervise: a task the claim had taken waits: the claim's wait stands",
 			"issue", m.claim.Issue, "role", m.claim.Role, "delivery", d.ID, "wait", wait)
 	}
-	return wait, nil
+	return wait, holds, nil
 }
 
 // heldByWait is a delivery and the wait that held it back (Machine.waitHeld).
 type heldByWait struct{ delivery, wait string }
+
+// endWaitAtSend ends wait, the standing wait waitHolds named and that does not hold d, as d leaves
+// (Deps.EndWait, dispatch://INFRA-2040 R3's third end): just before d's send starts, or before
+// the confirmation of the send an earlier daemon made, once every other hold of the send has let d
+// through. "" ends nothing, and so does a daemon that supplies no answer.
+func (m *Machine) endWaitAtSend(ctx context.Context, d Delivery, wait string) error {
+	if wait == "" || m.deps.EndWait == nil {
+		return nil
+	}
+	if err := m.deps.EndWait(ctx, m.claim, d, wait); err != nil {
+		return fmt.Errorf("end the wait %s of %s at the send of %s: %w", wait, m.claim.Token, d.ID, err)
+	}
+	return nil
+}
 
 // gateNote asks the design gate's state d carries at this send (Deps.GateNote, dispatch://INFRA-2040
 // R7). Only a merger's delivery is put to the answer, since the gate holds only the merger's work;

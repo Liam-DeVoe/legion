@@ -186,38 +186,15 @@ func waitRows(t *testing.T, h *harness, token claim.Token) []record.ClaimWait {
 	return waits
 }
 
-// waitStands is what WaitStands answers for c's wait on the record as it stands now, read as every
-// reader of a wait reads it: the issue, its root, the role's phases row, the claim and the tree's
-// gate under the deployment's steps.
-func waitStands(t *testing.T, h *harness, c liveClaim, role claim.Role) bool {
+// waitStands is whether c's wait stands on the record as it stands now, read as every reader of a
+// wait reads it (workflow.WaitStandsNow) under the deployment's steps.
+func waitStands(t *testing.T, h *harness, c liveClaim) bool {
 	t.Helper()
-	ctx := context.Background()
-	records := record.NewStore()
 	var stands bool
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-		issue, err := records.Issue(ctx, tx, c.issue)
-		if err != nil {
-			return err
-		}
-		root, err := records.Issue(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		rows, err := records.Phases(ctx, tx, issue.Key)
-		if err != nil {
-			return err
-		}
-		gates, err := records.GatesOf(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		claims, err := records.RoleClaims(ctx, tx, []claim.Token{c.token})
-		if err != nil {
-			return err
-		}
-		_, stands = workflow.WaitStands(*issue, *root, record.PhaseRowOf(rows, role), record.RoleRun{Claim: claims[c.token]},
-			record.TreeGate{Steps: config.DesignGateRootIssues.Steps(), Rows: gates})
-		return nil
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		var err error
+		_, stands, err = workflow.WaitStandsNow(context.Background(), tx, record.NewStore(), config.DesignGateRootIssues.Steps(), c.token)
+		return err
 	}); err != nil {
 		t.Fatalf("read whether the wait of %s stands: %v", c.token, err)
 	}
@@ -345,7 +322,7 @@ func TestWaitIsRecordedWithTheEntryTheClaimHadTaken(t *testing.T) {
 				t.Fatalf("the recorded wait = %+v, want it declared on LEGION-208's implementer at generation 1, phase "+
 					"implementing, entry 3, in session %s", got, c.session)
 			}
-			if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+			if !waitStands(t, h.harness, c) {
 				t.Fatal("the recorded wait does not stand: a declaration is recorded only where it stands at once")
 			}
 			wantLogged(t, logLine(t, h.logs, "wait: declared"), "claim="+string(c.token), "issue=LEGION-208",
@@ -398,7 +375,7 @@ func TestWaitSurvivesARelaunchOfTheClaim(t *testing.T) {
 	if len(rows) != 1 || rows[0].ID != answer.ID || !rows[0].EndedAt.IsZero() || rows[0].Session != c.session {
 		t.Fatalf("claim_waits holds %+v after the relaunch, want wait %s as it was declared, with no end", rows, answer.ID)
 	}
-	if !waitStands(t, h.harness, c, claim.RoleImplementer) {
+	if !waitStands(t, h.harness, c) {
 		t.Fatal("the wait does not stand after the relaunch, which resumes the session that declared it")
 	}
 }
@@ -663,7 +640,7 @@ func TestWaitAndTheGateClosingAppliedAtOnceLeaveNoWaitStandingUnderTheHold(t *te
 		if rows := waitRows(t, h.harness, c.token); len(rows) != 1 || rows[0].ID != answer.ID {
 			t.Fatalf("claim_waits holds %+v, want the wait the declaration recorded", rows)
 		}
-		if !waitStands(t, h.harness, c, claim.RoleMerger) {
+		if !waitStands(t, h.harness, c) {
 			t.Fatal("the wait does not stand before the closing commits")
 		}
 		h.second.letGo()
@@ -671,7 +648,7 @@ func TestWaitAndTheGateClosingAppliedAtOnceLeaveNoWaitStandingUnderTheHold(t *te
 		if err := <-closed; err != nil {
 			t.Fatalf("close the gate: %v", err)
 		}
-		if waitStands(t, h.harness, c, claim.RoleMerger) {
+		if waitStands(t, h.harness, c) {
 			t.Fatal("the merger's wait still stands once the closing committed, under the hold")
 		}
 	})

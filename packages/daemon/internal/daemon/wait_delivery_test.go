@@ -54,7 +54,8 @@ const (
 	quietStartLine = "outbox start delivered nothing: the claim's wait stands"
 )
 
-// waitDeliveryRig is a tester at work in its issue's testing phase, as the daemon runs one: its
+// waitDeliveryRig is a phase worker at work in its issue's phase, as the daemon runs one — a
+// tester in testing unless a case builds it for another role (newWaitDeliveryRigOf): its
 // claim kept in Postgres, where the workflow reads it, its machine asking the daemon's own answers
 // before every send, its ready applied as the workflow fact through the production handlers, the
 // outbox's executor running the issue's start rows, and the API a worker and an operator call. The
@@ -77,7 +78,7 @@ type waitDeliveryRig struct {
 	// rig for another role (newWaitDeliveryRigOf).
 	role    claim.Role
 	machine *supervise.Machine
-	// conns is every connection a process of the tester was given, oldest first: a restarted
+	// conns is every connection a process of the rig's worker was given, oldest first: a restarted
 	// daemon's process speaks over one of its own.
 	conns []*fake.Conn
 }
@@ -140,12 +141,13 @@ func newWaitDeliveryRigOf(t *testing.T, issue record.Issue, role claim.Role, ste
 
 // supervise wires sup as the daemon wires its supervisor (daemon.go's plan, the workflow's
 // claimDurableState), over the rig's store, which the operator's routes read a claim's step from
-// (supervisor.Step), gives the tester's next process a connection of its own, and points the
+// (supervisor.Step), gives the rig's worker's next process a connection of its own, and points the
 // outbox and the API at sup. The machine asks the daemon's own answers before every send: the
-// phase, the wait, and the design gate's note a merger's task carries.
+// phase, the wait and its end at the send of new work, and the design gate's note a merger's task
+// carries.
 func (r *waitDeliveryRig) supervise(sup *supervisor) {
 	sup.store, sup.deps.Store, sup.deps.Log = r.st, r.st, r.log
-	sup.deps.PhaseHolds, sup.deps.WaitHolds, sup.deps.GateNote = r.w.phaseHolds, r.w.waitHolds, r.w.gateNote
+	sup.deps.PhaseHolds, sup.deps.WaitHolds, sup.deps.EndWait, sup.deps.GateNote = r.w.phaseHolds, r.w.waitHolds, r.w.endWait, r.w.gateNote
 	sup.OnDurableState(r.w.terminal)
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(r.token, conn)
@@ -178,7 +180,7 @@ func (r *waitDeliveryRig) restart() {
 	r.supervise(sup)
 }
 
-// enter writes the phases row of the rig's role (the tester's) on entry with task as that entry's
+// enter writes the phases row of the rig's role on entry with task as that entry's
 // work, as a transition that hands the role an entry writes it (workflow's enter), and queues the
 // start row that carries the task at that entry, in the phase the issue stands in, as the
 // transition's start does (workflow's started).
@@ -212,14 +214,14 @@ func (r *waitDeliveryRig) runStarts() []entryStartRow {
 	}
 	machine, found := r.sup.Machine(r.token)
 	if !found {
-		r.t.Fatal("the start rows left no claim for the tester")
+		r.t.Fatalf("the start rows left no claim for the %s", r.role)
 	}
 	r.machine = machine
 	machine.Wait()
 	return starts
 }
 
-// handle drives one event into the tester's machine and waits for what it set going.
+// handle drives one event into the rig's worker's machine and waits for what it set going.
 func (r *waitDeliveryRig) handle(ev supervise.Event) {
 	r.t.Helper()
 	if err := r.machine.Handle(r.ctx, ev); err != nil {
@@ -229,7 +231,7 @@ func (r *waitDeliveryRig) handle(ev supervise.Event) {
 }
 
 // boot drives the launched process through its shim's hello, its agent's registration on the
-// tester's session, issued the secret the wait route authenticates, and its ready.
+// rig's worker's session, issued the secret the wait route authenticates, and its ready.
 func (r *waitDeliveryRig) boot() {
 	r.t.Helper()
 	generation := r.machine.Claim().Generation
@@ -240,7 +242,7 @@ func (r *waitDeliveryRig) boot() {
 	r.handle(supervise.RequestReady{Claim: r.token, Generation: generation, Session: waitingSession})
 }
 
-// working starts the tester on entry's task: the start row, the launch's boot, the send, and the
+// working starts the rig's worker on entry's task: the start row, the launch's boot, the send, and the
 // turn that takes the task.
 func (r *waitDeliveryRig) working(entry int64, task string) supervise.Delivery {
 	r.t.Helper()
@@ -250,7 +252,7 @@ func (r *waitDeliveryRig) working(entry int64, task string) supervise.Delivery {
 	return r.takeTask()
 }
 
-// takeTask starts the turn of the task the tester was sent.
+// takeTask starts the turn of the task the rig's worker was sent.
 func (r *waitDeliveryRig) takeTask() supervise.Delivery {
 	r.t.Helper()
 	pending := r.machine.Claim().Pending
@@ -289,7 +291,7 @@ func (r *waitDeliveryRig) request(target string, body any, bearer string) *httpt
 	return recorder
 }
 
-// declare is the tester's declaration of a wait through the daemon's route, made in its turn, and
+// declare is the rig's worker's declaration of a wait through the daemon's route, made in its turn, and
 // answers the wait the record holds: on the review of the head, its time two hours ahead.
 func (r *waitDeliveryRig) declare() record.ClaimWait {
 	r.t.Helper()
@@ -315,7 +317,7 @@ func (r *waitDeliveryRig) declareUntil(waitingOn string, wakeAt time.Time) recor
 	return wait
 }
 
-// standing is the tester's wait and whether it stands, read from the record as every reader of a
+// standing is the rig's worker's wait and whether it stands, read from the record as every reader of a
 // wait reads it (workflow.WaitStandsNow).
 func (r *waitDeliveryRig) standing() (record.ClaimWait, bool) {
 	r.t.Helper()
@@ -331,7 +333,7 @@ func (r *waitDeliveryRig) standing() (record.ClaimWait, bool) {
 	return wait, stands
 }
 
-// wantStanding asserts the tester's wait stands, and answers it.
+// wantStanding asserts the rig's worker's wait stands, and answers it.
 func (r *waitDeliveryRig) wantStanding() record.ClaimWait {
 	r.t.Helper()
 	wait, stands := r.standing()
@@ -376,12 +378,13 @@ func (r *waitDeliveryRig) lines(fragments ...string) []string {
 	return found
 }
 
-// quietStarts is every line saying a start of the tester delivered nothing because wait stands.
+// quietStarts is every line saying a start of the rig's worker delivered nothing because wait
+// stands.
 func (r *waitDeliveryRig) quietStarts(wait record.ClaimWait) []string {
-	return r.lines(quietStartLine, "claim="+string(r.token), "issue="+r.issue.Key, "role=tester", "wait="+wait.ID)
+	return r.lines(quietStartLine, "claim="+string(r.token), "issue="+r.issue.Key, "role="+string(r.role), "wait="+wait.ID)
 }
 
-// prompts is every prompt a process of the tester was sent, over every connection it was given.
+// prompts is every prompt a process of the rig's worker was sent, over every connection it was given.
 func (r *waitDeliveryRig) prompts() []fake.Prompt {
 	var sent []fake.Prompt
 	for _, conn := range r.conns {
@@ -390,7 +393,7 @@ func (r *waitDeliveryRig) prompts() []fake.Prompt {
 	return sent
 }
 
-// wantPrompts asserts the tester's processes were sent n prompts, and answers them.
+// wantPrompts asserts the rig's worker's processes were sent n prompts, and answers them.
 func (r *waitDeliveryRig) wantPrompts(n int, why string) []fake.Prompt {
 	r.t.Helper()
 	sent := r.prompts()
@@ -526,10 +529,8 @@ func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *
 			r.wantStanding()
 			// Once the wait ends, the record it held is sent.
 			ended := r.machine.Claim().EndedWork
-			recorder := r.request("/legion/v1/claims/wait-news", api.WaitNewsRequest{ClaimToken: r.token, SessionID: waitingSession,
-				Secret: waitingSecret, WaitID: wait.ID}, "")
-			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ended":true`) {
-				t.Fatalf("the news report = %d %s, want 200 ending the wait", recorder.Code, recorder.Body)
+			if answer := r.reportNews(wait, ""); !answer.Ended {
+				t.Fatalf("the news report answered %+v, want it to end the wait", answer)
 			}
 			r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
 				Kind: runtime.Alive, At: time.Now()}})
@@ -625,10 +626,8 @@ func TestAWaitHoldsTheTaskADeathInItsDeclaringTurnTookBack(t *testing.T) {
 	}
 	r.wantStanding()
 
-	recorder := r.request("/legion/v1/claims/wait-news", api.WaitNewsRequest{ClaimToken: r.token, SessionID: waitingSession,
-		Secret: waitingSecret, WaitID: wait.ID}, "")
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ended":true`) {
-		t.Fatalf("the news report = %d %s, want 200 ending the wait", recorder.Code, recorder.Body)
+	if answer := r.reportNews(wait, ""); !answer.Ended {
+		t.Fatalf("the news report answered %+v, want it to end the wait", answer)
 	}
 	r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
 		Kind: runtime.Alive, At: time.Now()}})
@@ -695,10 +694,8 @@ func TestAWaitHoldsTheRelaunchsRecordAndSendsItOnceTheWaitEnds(t *testing.T) {
 		t.Fatalf("the standing wait is %s after the relaunch, want the one declared, %s", standing.ID, wait.ID)
 	}
 
-	recorder := r.request("/legion/v1/claims/wait-news", api.WaitNewsRequest{ClaimToken: r.token, SessionID: waitingSession,
-		Secret: waitingSecret, WaitID: wait.ID}, "")
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ended":true`) {
-		t.Fatalf("the news report = %d %s, want 200 ending the wait", recorder.Code, recorder.Body)
+	if answer := r.reportNews(wait, ""); !answer.Ended {
+		t.Fatalf("the news report answered %+v, want it to end the wait", answer)
 	}
 	r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
 		Kind: runtime.Alive, At: time.Now()}})

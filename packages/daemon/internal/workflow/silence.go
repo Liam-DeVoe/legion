@@ -121,12 +121,13 @@ type phaseWorkerReading struct {
 // is decided there.
 //
 // It reads in batches, never per claim: the project's wait rows with no end
-// (record.Store.StandingWaits); then, only for the keys of those claims and for mergers, since no
-// other claim can be held or waiting, what the two rules read of each (readWaitTermsOf): their
-// issues and those issues' roots, the roots' gates and, for the claims with a wait row, their
-// phases rows and their claims. A sweep that judges neither costs the one read of the waits. A
-// key whose issue or root the record does not hold is answered nothing, as the handlers pass it
-// over (phaseWorkerRecord).
+// (record.Store.StandingWaits); then, only for the keys of those claims and for mergers under a
+// deployment that gates a step, since no other claim can be held or waiting, what the two rules
+// read of each (readWaitTermsOf): their issues and those issues' roots, the roots' gates and, for
+// the claims with a wait row, their phases rows and their claims. A sweep that judges neither
+// costs the one read of the waits. A key whose issue the record does not hold is answered
+// nothing, as the handlers pass it over (phaseWorkerRecord); a merger whose root it does not hold
+// is held as every other reader of the hold holds it (heldMergers).
 func (e *Engine) QuietByDesign(ctx context.Context, tx pgx.Tx, keys []record.RoleRunKey) (map[claim.Token]struct{}, error) {
 	quiet := make(map[claim.Token]struct{})
 	if len(keys) == 0 {
@@ -146,7 +147,7 @@ func (e *Engine) QuietByDesign(ctx context.Context, tx pgx.Tx, keys []record.Rol
 	}
 	var judged []record.RoleRunKey
 	for _, key := range keys {
-		if _, waits := waiting[key.Token]; waits || key.Role == claim.RoleMerger {
+		if _, waits := waiting[key.Token]; waits || (key.Role == claim.RoleMerger && len(e.cfg.Steps) > 0) {
 			judged = append(judged, key)
 		}
 	}

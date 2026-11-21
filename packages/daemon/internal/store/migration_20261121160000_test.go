@@ -11,15 +11,15 @@ import (
 
 // claimWaitsVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const claimWaitsVersion = 20261119055500
+const claimWaitsVersion = 20261121160000
 
-// 20261119055500 adds claim_waits, the waits phase workers declare, kept apart from claims so no
+// 20261121160000 adds claim_waits, the waits phase workers declare, kept apart from claims so no
 // write of a claim's machine touches them (dispatch://INFRA-2040 D1). Before it the table does not
 // exist. After it a claim holds one wait with no end at most: a second such row of the same claim
 // is refused by claim_waits_standing, while an ended row of that claim and another claim's wait
 // with no end each stand beside it. A wait must say what it waits on: a text of spaces alone,
 // which btrim leaves empty, is refused.
-func TestTheClaimWaitsTableHoldsOneWaitWithNoEndPerClaimAfter20261119055500(t *testing.T) {
+func TestTheClaimWaitsTableHoldsOneWaitWithNoEndPerClaimAfter20261121160000(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimWaitsVersion-1)

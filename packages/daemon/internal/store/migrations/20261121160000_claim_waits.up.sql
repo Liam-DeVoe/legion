@@ -1,4 +1,4 @@
--- 20261119055500_claim_waits.up.sql — the waits a phase worker declares, one standing wait per
+-- 20261121160000_claim_waits.up.sql — the waits a phase worker declares, one standing wait per
 -- claim, each kept with its end once it has one (dispatch://INFRA-2040 R2, R3, R4).
 --
 -- A row is one declaration: the claim that made it (project, claim_token) on its issue and role,

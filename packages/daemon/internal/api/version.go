@@ -3118,11 +3118,12 @@ package api
 // recorded from 213 on (`request-shapes.json`). 213's records are 206's under its own number,
 // with the key paths of `wait` and `hold` under every claim view of the state and of the record
 // and on the owed answer, and the two new answers.
-// The change carries two store migrations beside it: `20261119055500_claim_waits`, the table
-// that keeps each wait apart from the claim's per-launch columns so a relaunch keeps it, and
-// `20261119055600_outbox_kinds_with_the_wait_due`, the outbox kind of a wait's time. Neither is
-// part of this number: a migration moves the daemon's own record, and the shapes a caller reads
-// are the two routes and the two keys above.
+// The change carries three store migrations beside it: `20261121160000_claim_waits`, the table
+// that keeps each wait apart from the claim's per-launch columns so a relaunch keeps it,
+// `20261121160100_outbox_kinds_with_the_wait_due`, the outbox kind of a wait's time, and
+// `20261121160200_pending_delivery_gate_message`, the mark that a merger's pending task is the
+// design gate's own message. None is part of this number: a migration moves the daemon's own
+// record, and the shapes a caller reads are the two routes and the two keys above.
 // (This change declared 125, the lowest number above the base's 111 that no open pull request
 // declared, read on 2026-11-14 against main at b994309153eba441588f393cabf50d0200684c49. It took
 // 167, 170 and 176 at the forward merges of 2026-11-19, 183 at the first of 2026-11-20, and 194

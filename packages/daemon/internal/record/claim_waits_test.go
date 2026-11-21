@@ -102,20 +102,10 @@ func TestOneWaitStandsPerClaimAndADeclarationReplacesIt(t *testing.T) {
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
-		standing, err := records.StandingWait(ctx, tx, first.Token)
-		must(t, err)
-		if standing == nil || !sameWait(*standing, second) {
-			t.Fatalf("the claim's standing wait = %+v, want the second declaration's %+v", standing, second)
-		}
 		waits, err := records.StandingWaits(ctx, tx, "legion")
 		must(t, err)
 		if len(waits) != 2 || !sameWait(waits[0], second) || !sameWait(waits[1], tester) {
 			t.Fatalf("the project's standing waits = %+v, want the implementer's second wait and the tester's, by token", waits)
-		}
-		none, err := records.StandingWait(ctx, tx, "legion-legion-legion-209-reviewer")
-		must(t, err)
-		if none != nil {
-			t.Fatalf("the standing wait of a claim that declared none = %+v, want none", none)
 		}
 	})
 }
@@ -184,10 +174,8 @@ func TestEndWaitEndsOnlyTheStandingWaitItNames(t *testing.T) {
 		if kept := waitRow(t, tx, second.ID); !sameWait(kept, done) {
 			t.Fatalf("the ended wait reads %+v after a second end, want its first end kept: %+v", kept, done)
 		}
-		standing, err := records.StandingWait(ctx, tx, second.Token)
-		must(t, err)
-		if standing != nil {
-			t.Fatalf("the claim's standing wait after its end = %+v, want none", standing)
+		if waits, err := records.StandingWaits(ctx, tx, second.Project); err != nil || len(waits) != 0 {
+			t.Fatalf("the project's standing waits after the claim's end = %+v, %v, want none", waits, err)
 		}
 		next := implementerWait("wait-3", 90)
 		replacedNow, err := records.DeclareWait(ctx, tx, next)

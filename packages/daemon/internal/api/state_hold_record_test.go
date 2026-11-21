@@ -29,8 +29,9 @@ const (
 	// from which that pod's plugin asks for the state.
 	holdPodUID  = "5c3a9e71-2b48-4d06-9f13-7a8e0c4d2b65"
 	holdPodAddr = "10.1.24.9"
-	// beforeTheHold is the contract before 213, the daemon contract that added each merger's
-	// `hold` (version.go's 213): a plugin on it is served no hold key.
+	// beforeTheHold is a contract below 213, the daemon contract that added each merger's `hold`
+	// (version.go's 213), and below 193 as well, which added `updateState` and `wake`: a plugin on
+	// it is served no hold key, and the two bands compose.
 	beforeTheHold = 169
 )
 

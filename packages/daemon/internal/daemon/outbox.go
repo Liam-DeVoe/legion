@@ -2273,14 +2273,15 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
-	note, err := readMergerGateNote(ctx, r.pool, r.records, r.gatedSteps, row.Issue, payload.Role, false)
+	note, err := readMergerGateNote(ctx, r.pool, r.records, r.gatedSteps, row.Issue, payload.Role, workflow.MergerGateNote)
 	if err != nil {
 		return err
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
 	if note.Text != "" {
-		fields = append(fields, "gateState", note.State, "gateStep", note.Step, "gateVersion", note.Version)
+		// The keys the send of a merger's task names the gate's state under (supervise's startSend).
+		fields = append(fields, "state", note.State, "step", note.Step, "version", note.Version)
 	}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
 		return r.publishToRole(ctx, topic, note.InFrontOf(payload.Message(row.Issue)), record.UpdateAskKey(token, payload.Round, held.UpdateOpenedAt),
@@ -2797,12 +2798,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A start whose task hands the claim no new work delivers nothing either while the claim's
 		// wait stands (startWaits): the phase's resume task, or a task of an entry the claim had
 		// taken when it declared. Bringing the claim back, which the state switch above has done,
-		// is all such a start gives a worker that waits.
+		// is all such a start gives a worker that waits. Only a resume task or a task of an entry
+		// can hand no new work (workflow.HandsNoNewWork), so no other start reads the wait: a wake's,
+		// the design gate's own, a wait's time, which waitTimeReplaced read the wait for above, and
+		// an architect's.
 		held, gave := machine.Claim(), false
 		ranNothing := state == supervise.StateFailed || state == supervise.StateRetired
 		keeps := (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload)
 		waits := false
-		if !keeps && payload.Task != "" {
+		if !keeps && payload.Task != "" && (payload.ResumeTask || payload.Entry != 0) {
 			if waits, err = r.startWaits(ctx, row, payload, issue.Key, token); err != nil {
 				return err
 			}
@@ -3065,8 +3069,9 @@ func (r *outbox) waitTimeReplaced(ctx context.Context, row record.OutboxRow, pay
 	return true, nil
 }
 
-// standingWait is the claim token's wait with no end and whether it stands, read in a read-only
-// transaction of its own as every reader of a wait reads it (workflow.WaitStandsNow).
+// standingWait is the claim token's wait that stands now and true, or the zero wait and false
+// where none stands, read in a read-only transaction of its own as every reader of a wait reads it
+// (workflow.WaitStandsNow).
 func (r *outbox) standingWait(ctx context.Context, token claim.Token) (record.ClaimWait, bool, error) {
 	var standing record.ClaimWait
 	var stands bool
@@ -4087,10 +4092,9 @@ func (r *outbox) mergerHeld(ctx context.Context, issue record.Issue) (record.Des
 // deliveryHeld is the closed gate that holds a held message to role on issue (deliverHeld), and
 // whether one does. The merger's is its hold (mergerHeld): a merger woken by the message during the
 // hold could enqueue the pull request again against the gate. Every other role's is the tree's
-// standing gate (classify.StandingGate), as a merge forward's messages to a released implementer,
-// tester or reviewer waited on it before the merger's hold had a rule of its own
-// (dispatch://INFRA-4374): the gate holds none of those roles' phases, and the wait is the
-// message's own.
+// standing gate (classify.StandingGate), on which a merge forward's messages to a released
+// implementer, tester or reviewer wait (dispatch://INFRA-4374): the gate holds none of those
+// roles' phases, and the wait is the message's own.
 func (r *outbox) deliveryHeld(ctx context.Context, issue record.Issue, role claim.Role) (record.DesignGate, bool, error) {
 	if role == claim.RoleMerger {
 		return r.mergerHeld(ctx, issue)
@@ -4137,8 +4141,8 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	if err != nil || !holds {
 		return err
 	}
-	return wait.Errorf("the merger of %s waits for the design gate of %s to open: version %d of its %s document (%s) is with its reviewer",
-		issue.Key, issue.Tree, held.LatestVersion, held.Step.OrSpec(), held.ArtifactID)
+	return wait.Errorf("the merger of %s waits for the design gate of %s to open: %s",
+		issue.Key, issue.Tree, workflow.GateWithItsReviewer(held))
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for

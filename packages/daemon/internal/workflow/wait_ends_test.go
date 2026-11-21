@@ -90,18 +90,11 @@ func (r *waitRig) issue(key string, at phase.Phase) {
 }
 
 // waiting declares a wait of role's worker on issue as the API does (intake.WaitDeclared): its
-// claim live in session ses-<role>, its phases row on entry 2, and the declaration applied, failing
-// the test on a refusal. It answers the wait recorded.
+// claim live in session ses-<role>, its phases row on entry 2 (claimed), and the declaration
+// applied, failing the test on a refusal. It answers the wait recorded.
 func (r *waitRig) waiting(issue string, role claim.Role) record.ClaimWait {
 	r.t.Helper()
-	token := waitToken(r.t, issue, role)
-	if _, err := r.pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session,
-		session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, 'legion', $2, $3, $4, 1, $5, '', 'working', 0, 0, 0, 0)`,
-		string(token), waitRoot, issue, string(role), "ses-"+string(role)); err != nil {
-		r.t.Fatalf("seed the claim of %s's %s: %v", issue, role, err)
-	}
-	seedPhase(r.t, r.pool, record.PhaseRow{Issue: issue, Role: role, Claim: token, Entry: 2})
+	token := r.claimed(issue, role)
 	id := "wait-" + strings.ToLower(issue) + "-" + string(role)
 	if result := r.apply("api", "wait-declared:"+id, intake.WaitDeclared{Token: token, Issue: issue, Role: role,
 		Session: "ses-" + string(role), Generation: 1, WaitID: id, WaitingOn: "the run on the branch's head",
@@ -129,39 +122,18 @@ func (r *waitRig) wait(id string) record.ClaimWait {
 	return wait
 }
 
-// stands is what WaitStands answers for wait on the record as it stands now, read as every reader
-// of a wait reads it: the issue, its root, the role's phases row, the claim and the tree's gate
-// under the steps engine gates.
+// stands is whether wait is the wait that stands now for its claim, read from the record as every
+// reader of a wait reads it (WaitStandsNow) under the steps engine gates.
 func (r *waitRig) stands(engine *Engine, wait record.ClaimWait) bool {
 	r.t.Helper()
+	var standing record.ClaimWait
 	var stands bool
 	seedRecord(r.t, r.pool, func(tx pgx.Tx) error {
-		ctx, store := context.Background(), record.NewStore()
-		issue, err := store.Issue(ctx, tx, wait.Issue)
-		if err != nil {
-			return err
-		}
-		root, err := store.Issue(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		rows, err := store.Phases(ctx, tx, issue.Key)
-		if err != nil {
-			return err
-		}
-		gates, err := store.GatesOf(ctx, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		claims, err := store.RoleClaims(ctx, tx, []claim.Token{wait.Token})
-		if err != nil {
-			return err
-		}
-		_, stands = WaitStands(*issue, *root, record.PhaseRowOf(rows, wait.Role), record.RoleRun{Claim: claims[wait.Token]},
-			record.TreeGate{Steps: engine.cfg.Steps, Rows: gates})
-		return nil
+		var err error
+		standing, stands, err = WaitStandsNow(context.Background(), tx, record.NewStore(), engine.cfg.Steps, wait.Token)
+		return err
 	})
-	return stands
+	return stands && standing.ID == wait.ID
 }
 
 // assertEnded asserts wait ended with cause, ended by endedBy at the engine's now, and the one

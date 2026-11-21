@@ -68,16 +68,6 @@ func (s *Postgres) EndWait(ctx context.Context, tx pgx.Tx, project string, token
 	return tag.RowsAffected() == 1, nil
 }
 
-// StandingWait is the claim's wait row that has no end, nil for none (Store.StandingWait).
-func (s *Postgres) StandingWait(ctx context.Context, tx pgx.Tx, token claim.Token) (*ClaimWait, error) {
-	wait, err := scanClaimWait(tx.QueryRow(ctx, `select `+claimWaitColumns+` from claim_waits w
-		where w.claim_token = $1 and w.ended_at is null`, string(token)))
-	if err != nil {
-		return nil, fmt.Errorf("read the standing wait of %s: %w", token, err)
-	}
-	return wait, nil
-}
-
 // StandingWaits is every wait row of project's claims that has no end, by token
 // (Store.StandingWaits). The partial index claim_waits_standing holds exactly these rows.
 func (s *Postgres) StandingWaits(ctx context.Context, tx pgx.Tx, project string) ([]ClaimWait, error) {

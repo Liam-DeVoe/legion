@@ -226,7 +226,7 @@ func TestTheDesignGateFenceHoldsTheMergersPhaseWorkAndNothingElse(t *testing.T) 
 		{name: "a CI settlement's wake", kind: pods.WakeChecks,
 			wake: func(r *waitDeliveryRig) { r.applies("settled", heldMergerSettlement()) },
 			says: func(*waitDeliveryRig) string {
-				return "The wake is a CI settlement on your pull request's head: " + heldMergerHead
+				return heldMergerSettled
 			}},
 		{name: "a message to its role", kind: pods.WakeRoleMessage,
 			wake: func(r *waitDeliveryRig) {
@@ -306,9 +306,7 @@ func TestTheDesignGateFenceHoldsTheMergersPhaseWorkAndNothingElse(t *testing.T) 
 
 	t.Run("the wait's own start", func(t *testing.T) {
 		r := newHeldMergerRig(t)
-		taken := r.working(1, heldMergerTask)
-		waited := r.declareUntil("the merge queue's run on the head", time.Now().Add(2*time.Hour))
-		r.endTurn(taken.ID)
+		waited := r.mergerWaiting()
 		r.drainAt(waited.WakeAt, record.OutboxKindWaitDue)
 		starts := entryStartRows(t, r.pool, r.issue.Key)
 		if len(starts) != 1 || starts[0].request.WaitID != waited.ID || starts[0].request.Phase != "" {
