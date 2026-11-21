@@ -120,13 +120,16 @@ type editLostError struct {
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	// A request that its own client closed before the answer (a page that navigated away, a
 	// search the bar replaced) failed for that alone, and nobody is left to read an answer: its
-	// line says 499 (accesslog.MarkClosedByClient), and it is answered and logged nothing more
-	// than a debug line, as the dashboard's assets are (routes' serveRetainedAsset). A cancel the
-	// client did not cause - a handler's own context, the server's lifetime - leaves the request's
-	// context live and is answered below like any other failure, as is a keyed write, whose
-	// handler runs on in a context of its own and answers a writer that hides the request's.
+	// line says 499 (accesslog.MarkClosedByClient), and it is answered nothing and logged one
+	// debug line, as the dashboard's assets are (routes' serveRetainedAsset). The line carries no
+	// part of the error: its chain carries whatever the request wrapped it in, the caller's own
+	// identity among it, and the request line already names the route and the caller (CodeQL
+	// go/clear-text-logging). A cancel the client did not cause - a handler's own context, the
+	// server's lifetime - leaves the request's context live and is answered below like any other
+	// failure, as is a keyed write, whose handler runs on in a context of its own and answers a
+	// writer that hides the request's.
 	if errors.Is(err, context.Canceled) && accesslog.MarkClosedByClient(w) {
-		slog.Debug("dispatch: API request closed by its client", "error", err)
+		slog.Debug("dispatch: API request closed by its client")
 		return
 	}
 	var apiErr *apiError
