@@ -91,7 +91,19 @@
 #   (z)  the fixture testdata/operator-token-minters-report.json is this script's --report from a
 #        world with an IAM finding, grade-ci's RBAC findings and an UNKNOWN, run_at fixed; the row
 #        fails when the committed file differs (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and
-#        OPERATOR_MINTERS_FIXTURE names another file to compare, as the row's control does).
+#        OPERATOR_MINTERS_FIXTURE names another file to compare, as the row's control does);
+#   (aa) a second cluster of the project named operator-cluster, in us-east1, holding the namespace
+#        envoy-operator, is a finding with --location us-central1, and UNKNOWN without it;
+#   (ab) the broker's pair is guarded: an agent ServiceAccount that may create pods in the broker's
+#        namespace, or create the broker ServiceAccount's token, and another cluster of the pool
+#        holding the broker's namespace, each exit 1;
+#   (ac) on the operator's cluster, ci/runner, outside the agent namespaces, with create pods in
+#        envoy-operator, and with cluster-admin, each exits 1;
+#   (ad) container.replicationControllers.create and update and container.nodes.proxy, each held on
+#        the project by an agent's Google service account, exit 1 (their RBAC rights are row b's);
+#   (ae) a CI account holding roles/gkehub.admin on the pool project exits 1;
+#   (af) a render binding the Group cluster-admins@example.com to cluster-admin exits 0: a Group
+#        other than the system ones is no finding in the code step, as in the live steps.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -191,6 +203,8 @@ case "${words[*]}" in
     [ ! -e "$world/refuse-credentials-$cluster" ] ||
       refuse container.clusters.get-credentials "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."
     [ -n "${KUBECONFIG:-}" ] || { echo "fake gcloud: get-credentials with no KUBECONFIG would write the caller's own kubeconfig" >&2; exit 2; }
+    # A second cluster of one name has its world at clusters/<name>@<location>.
+    if [ -d "$world/clusters/$cluster@${flag[location]:-}" ]; then cluster="$cluster@${flag[location]:-}"; fi
     printf 'cluster: %s\n' "$cluster" >"$KUBECONFIG"
     echo "Fetching cluster endpoint and auth data." >&2
     ;;
@@ -465,8 +479,9 @@ readonly container_admin=(
   container.clusterRoles.bind container.clusterRoles.escalate container.clusters.get container.clusters.impersonate
   container.cronJobs.create container.cronJobs.update container.daemonSets.create container.daemonSets.update
   container.deployments.create container.deployments.update container.jobs.create container.jobs.update
-  container.namespaces.create container.pods.attach container.pods.create container.pods.exec container.pods.get
+  container.namespaces.create container.nodes.proxy container.pods.attach container.pods.create container.pods.exec container.pods.get
   container.pods.portForward container.pods.update container.replicaSets.create container.replicaSets.update
+  container.replicationControllers.create container.replicationControllers.update
   container.roleBindings.create container.roleBindings.update container.roles.bind container.roles.escalate
   container.secrets.get container.secrets.list container.serviceAccounts.create container.serviceAccounts.createToken
   container.statefulSets.create container.statefulSets.update container.subjectAccessReviews.create
@@ -499,7 +514,8 @@ build_world() {
 
   local owner_perms=("${container_admin[@]}" iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken
     iam.serviceAccounts.signJwt iam.serviceAccounts.signBlob iam.serviceAccounts.actAs iam.serviceAccounts.implicitDelegation
-    iam.serviceAccountKeys.create cloudsql.users.create cloudsql.users.update secretmanager.versions.access storage.objects.get)
+    iam.serviceAccountKeys.create cloudsql.users.create cloudsql.users.update secretmanager.versions.access storage.objects.get
+    gkehub.memberships.create gkehub.memberships.update)
   echo '{}' >"$world/roles.json"
   role roles/container.admin "${container_admin[@]}"
   role roles/owner "${owner_perms[@]}"
@@ -519,6 +535,9 @@ build_world() {
   role roles/storage.objectViewer resourcemanager.projects.get resourcemanager.projects.list storage.objects.get storage.objects.list
   role roles/container.serviceAgent container.pods.create container.pods.update container.serviceAccounts.createToken container.secrets.get
   role roles/viewer container.pods.get resourcemanager.projects.get storage.objects.list
+  # Its names checked against `gcloud iam roles describe roles/gkehub.admin` on 2026-11-21.
+  role roles/gkehub.admin gkehub.memberships.create gkehub.memberships.delete gkehub.memberships.get gkehub.memberships.list \
+    gkehub.memberships.update resourcemanager.projects.get
 
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
@@ -690,7 +709,8 @@ if row a; then
   for step in "permission names" "code: RBAC" "code: IAM" "live: RBAC on operator-cluster" "live: GKE IAM on project $project" \
     "live: minters of $gsa" "live: minters of the broker account $broker" "live: hold writers: Cloud SQL users of example-instance" \
     "live: hold writers: Secret example-db/broker-db-login" "live: hold writers: the broker program's state in gs://example-state" \
-    "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR"; do
+    "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR" \
+    "live: who can register a cluster to the fleet of project $project"; do
     want_text "PASS $step: " "a clean world's $step"
   done
   want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here" \
@@ -745,6 +765,12 @@ rbac_rights=(
   "update|batch|cronjobs||envoy-operator|=update cronjobs.batch in envoy-operator"
   "get||secrets||envoy-operator|=get secrets in envoy-operator"
   "list||secrets||envoy-operator|=list secrets in envoy-operator"
+  "watch||secrets||envoy-operator|=watch secrets in envoy-operator"
+  "create||replicationcontrollers||envoy-operator|=create replicationcontrollers in envoy-operator"
+  "patch||replicationcontrollers||envoy-operator|=patch replicationcontrollers in envoy-operator"
+  "update||replicationcontrollers||envoy-operator|=update replicationcontrollers in envoy-operator"
+  "create||nodes|proxy|||=create nodes/proxy cluster-wide"
+  "get||nodes|proxy|||=get nodes/proxy cluster-wide"
 )
 rbac_right_row() {
   local right="${1#*=}" verb group resource sub namespace name
@@ -824,7 +850,7 @@ if row g; then
   add_cluster other-cluster us-east1
   run
   want_status 0 "a second cluster whose system namespaces alone may make namespaces"
-  want_text "PASS live: Workload Identity on other-cluster: " "a clean second cluster"
+  want_text "PASS live: Workload Identity on example-project/us-east1/other-cluster: " "a clean second cluster"
   passed "(g) a second cluster whose system namespaces alone may make namespaces and ServiceAccounts exits 0"
 
   base_world
@@ -832,7 +858,7 @@ if row g; then
   echo envoy-operator >>"$world/clusters/other-cluster/namespaces"
   run
   want_status 1 "the namespace envoy-operator on a second cluster"
-  want_text "FINDING cluster:other-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa" \
+  want_text "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa" \
     "the namespace envoy-operator on a second cluster"
   passed "(g) the namespace envoy-operator on a second cluster exits 1 naming the cluster"
 
@@ -841,7 +867,7 @@ if row g; then
   echo envoy-operator-control >>"$world/clusters/other-cluster/namespaces"
   run --namespace envoy-operator-control --gsa "$control_gsa"
   want_status 1 "the scratch namespace on a second cluster"
-  want_text "FINDING cluster:other-cluster: namespace envoy-operator-control exists there" "the scratch namespace on a second cluster"
+  want_text "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator-control exists there" "the scratch namespace on a second cluster"
   passed "(g) the scratch namespace envoy-operator-control made on a second cluster exits 1 naming the cluster (the plan's control)"
 
   base_world
@@ -849,7 +875,7 @@ if row g; then
   subject_grant other-cluster "$(sa_subject apps deployer)" create "" namespaces "" "" ""
   run
   want_status 1 "a ServiceAccount outside the system namespaces that may make a namespace"
-  want_line "FINDING system:serviceaccount:apps:deployer: create namespaces cluster-wide on cluster other-cluster" "apps/deployer making namespaces"
+  want_line "FINDING system:serviceaccount:apps:deployer: create namespaces cluster-wide on cluster example-project/us-east1/other-cluster" "apps/deployer making namespaces"
   passed "(g) a ServiceAccount outside the system namespaces of a second cluster that may make a namespace exits 1 naming the cluster"
 fi
 
@@ -1396,6 +1422,126 @@ if row z; then
   cmp -s "$fixture" "$temporary_dir/fixture-fresh.json" ||
     fail "the fixture $fixture differs from a fresh run (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it): $(diff "$fixture" "$temporary_dir/fixture-fresh.json" | sed -n '1,20p' || true)"
   passed "(z) the committed report fixture equals a fresh --report of its world"
+fi
+
+# add_sa CLUSTER NAMESPACE NAME: one more ServiceAccount, and its namespace, on a cluster's world.
+add_sa() {
+  edit "$world/clusters/$1/serviceaccounts.json" '. + [{namespace: $ns, name: $n}]' --arg ns "$2" --arg n "$3"
+  grep -qxF -- "$2" "$world/clusters/$1/namespaces" || echo "$2" >>"$world/clusters/$1/namespaces"
+}
+# add_cluster_at NAME LOCATION: a second cluster of one name, in the project's list, whose world is
+# clusters/<name>@<location>.
+add_cluster_at() {
+  edit "$world/clusters.json" '. + [{name: $n, location: $l, status: "RUNNING"}]' --arg n "$1" --arg l "$2"
+  make_cluster "$1@$2"
+}
+
+# --- (aa) The operator's cluster by name and location. ---
+if row aa; then
+  base_world
+  add_cluster_at operator-cluster us-east1
+  echo envoy-operator >>"$world/clusters/operator-cluster@us-east1/namespaces"
+  run --location us-central1
+  want_status 1 "a second operator-cluster holding envoy-operator, --location us-central1"
+  want_line "FINDING cluster:$project/us-east1/operator-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog" \
+    "a second operator-cluster holding envoy-operator, --location us-central1"
+  [ "$(count_prefix 'FINDING ')" -eq 1 ] || fail "a second operator-cluster holding envoy-operator: want that one finding, the operator's own cluster not read as another"
+  passed "(aa) a second cluster named operator-cluster elsewhere, holding envoy-operator, is a finding with --location"
+
+  base_world
+  add_cluster_at operator-cluster us-east1
+  echo envoy-operator >>"$world/clusters/operator-cluster@us-east1/namespaces"
+  run
+  want_status 2 "a second operator-cluster, no --location"
+  want_line "UNKNOWN live: clusters: --cluster operator-cluster names 2 clusters of the project (in us-central1, us-east1), and no --location says which is the operator's, so none of them is read" \
+    "a second operator-cluster, no --location"
+  want_text "UNKNOWN live: Workload Identity on $project/us-east1/operator-cluster: it has --cluster's name" "a second operator-cluster, no --location"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a second operator-cluster, no --location: a finding"
+  passed "(aa) two clusters named operator-cluster and no --location read UNKNOWN, and neither as the operator's"
+fi
+
+# --- (ab) The broker's pair, guarded as the operator's. ---
+if row ab; then
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" secrets-broker ""
+  run
+  want_status 1 "an agent ServiceAccount that may create pods in secrets-broker"
+  want_line "FINDING system:serviceaccount:legion:worker: create pods in secrets-broker" "an agent ServiceAccount that may create pods in secrets-broker"
+  passed "(ab) an agent ServiceAccount that may create pods in the broker's namespace exits 1"
+
+  base_world
+  add_cluster other-cluster us-east1
+  echo secrets-broker >>"$world/clusters/other-cluster/namespaces"
+  run
+  want_status 1 "another cluster of the pool holding secrets-broker"
+  want_line "FINDING cluster:$project/us-east1/other-cluster: namespace secrets-broker exists there, so its ServiceAccount secrets-broker/secrets-broker acts as the broker account $broker through the workload pool $project.svc.id.goog" \
+    "another cluster of the pool holding secrets-broker"
+  passed "(ab) another cluster of the pool holding the broker's namespace exits 1"
+
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" serviceaccounts token secrets-broker secrets-broker
+  run
+  want_status 1 "an agent ServiceAccount that may create the broker's token"
+  want_line "FINDING system:serviceaccount:legion:worker: create serviceaccounts/token secrets-broker in secrets-broker" \
+    "an agent ServiceAccount that may create the broker's token"
+  passed "(ab) an agent ServiceAccount that may create the broker ServiceAccount's token exits 1"
+fi
+
+# --- (ac) Every ServiceAccount of the operator's cluster, not only the agents'. ---
+if row ac; then
+  base_world
+  add_sa operator-cluster ci runner
+  subject_grant operator-cluster "$(sa_subject ci runner)" create "" pods "" envoy-operator ""
+  run
+  want_status 1 "ci/runner with create pods in envoy-operator"
+  want_line "FINDING system:serviceaccount:ci:runner: create pods in envoy-operator" "ci/runner with create pods in envoy-operator"
+  passed "(ac) ci/runner, outside the agent namespaces, with create pods in envoy-operator exits 1"
+
+  base_world
+  add_sa operator-cluster ci runner
+  cluster_admin operator-cluster "$(sa_subject ci runner)"
+  run
+  want_status 1 "ci/runner with cluster-admin"
+  want_line "FINDING system:serviceaccount:ci:runner: create serviceaccounts/token envoy-operator in envoy-operator" "ci/runner with cluster-admin"
+  passed "(ac) ci/runner, outside the agent namespaces, with cluster-admin exits 1"
+fi
+
+# --- (ad) The new container.* permissions, through IAM. ---
+new_container_row() {
+  base_world
+  role "projects/$project/roles/only.$1" "$1"
+  iam "$project_res" "projects/$project/roles/only.$1" "serviceAccount:$worker_gsa"
+  run
+  want_status 1 "$1 held by $worker_gsa"
+  want_line "FINDING serviceAccount:$worker_gsa: $1 on $project_res through projects/$project/roles/only.$1, granted at $project_res" "$1 held by $worker_gsa"
+}
+if row ad; then
+  each new_container_row container.replicationControllers.create container.replicationControllers.update container.nodes.proxy
+  passed "(ad) container.replicationControllers.create and update and container.nodes.proxy, each held by an agent's Google service account, exit 1"
+fi
+
+# --- (ae) Who can register a cluster to the pool's fleet. ---
+if row ae; then
+  base_world
+  iam "$project_res" roles/gkehub.admin "serviceAccount:$ci_gsa"
+  run
+  want_status 1 "a CI account holding roles/gkehub.admin"
+  want_line "FINDING serviceAccount:$ci_gsa: gkehub.memberships.create, gkehub.memberships.update on $project_res through roles/gkehub.admin, granted at $project_res" \
+    "a CI account holding roles/gkehub.admin"
+  passed "(ae) a CI account holding roles/gkehub.admin on the pool project exits 1"
+fi
+
+# --- (af) One rule for Groups: a Group other than the system ones is no finding in the code step. ---
+if row af; then
+  base_world
+  edit "$world/render.json" '.items += [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+    metadata: {name: "admins", namespace: "envoy-operator"},
+    roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
+    subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "cluster-admins@example.com"}]}]'
+  run
+  want_status 0 "a render binding the Group cluster-admins@example.com to cluster-admin"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a render binding the Group cluster-admins@example.com to cluster-admin: a finding"
+  passed "(af) a render binding a Group other than the system ones to cluster-admin exits 0, as the live steps judge it"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

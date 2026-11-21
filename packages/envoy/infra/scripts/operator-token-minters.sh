@@ -6,12 +6,14 @@
 # The broker's `operator` entry of BROKER_NATS_SERVICES names one Kubernetes ServiceAccount
 # (envoy-operator/envoy-operator by default). NATS takes that account's token, and the account acts,
 # through Workload Identity, as one Google service account, whose token reaches an agent only as the
-# administrator-tagged broker secret ENVOY_OPERATOR, released when a person approves. So holding the
-# operator's power takes one of: minting the ServiceAccount's token, running or entering a pod that
-# runs as it, becoming a principal that can, minting the Google service account's token, or making
-# a namespace and ServiceAccount of the same names on another cluster of the project's workload
-# pool. This check lists every principal that is not a person and holds such a right, and is the
-# precondition checked before the operator entry is applied, and again before go-live.
+# administrator-tagged broker secret ENVOY_OPERATOR, released when a person approves; the secrets
+# broker mints that token, so the broker's own ServiceAccount (--broker-workload) is guarded as the
+# operator's is. So holding the operator's power takes one of: minting a guarded ServiceAccount's
+# token, running or entering a pod that runs as it, becoming a principal that can, minting the Google
+# service account's token, making a namespace and ServiceAccount of the same names on another
+# cluster of the project's workload pool, or registering a cluster to the pool's fleet. This check
+# lists every principal that is not a person and holds such a right, and is the precondition checked
+# before the operator entry is applied, and again before go-live.
 #
 # It runs with the gcloud, kubectl and agent-secrets sign-ins of the shell it runs in: an identity
 # already held, never a person's administrator credential. It requests no credential, impersonates
@@ -22,10 +24,11 @@
 #   permission names  Each permission name the IAM steps ask about is in the predefined role that
 #                     grants it (`gcloud iam roles describe`): every container.* name in
 #                     roles/container.admin's includedPermissions, the Google service account ones
-#                     in roles/iam.serviceAccountTokenCreator, ...KeyAdmin and ...User, and the hold
+#                     in roles/iam.serviceAccountTokenCreator, ...KeyAdmin and ...User, the hold
 #                     writers' in roles/cloudsql.admin, roles/secretmanager.secretAccessor and
-#                     roles/storage.objectViewer. A name the role does not hold would find no
-#                     holder, which reads as clean, so it fails the run instead.
+#                     roles/storage.objectViewer, and the fleet's in roles/gkehub.admin. A name the
+#                     role does not hold would find no holder, which reads as clean, so it fails the
+#                     run instead.
 #   code: RBAC        What code declares, first: each --rbac-render file (the JSON render of the
 #                     program that declares the cluster's Roles and bindings, a List, an array or a
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
@@ -42,20 +45,25 @@
 #                     apply) and a resource type there that can grant on those resources but that
 #                     this check does not read are UNKNOWN. A group the code names is judged by its
 #                     members in the live steps, which expand it.
-#   live: clusters    `gcloud container clusters list` of --project, which must hold --cluster. A list
-#                     gcloud says is incomplete (a zone that did not respond) is UNKNOWN: a cluster
-#                     there is neither read nor counted.
+#   live: clusters    `gcloud container clusters list` of --project, which must hold --cluster. The
+#                     operator's cluster is --cluster in --location, or, without --location, the
+#                     list's one cluster of that name; a name the list holds more than once with no
+#                     --location is UNKNOWN, and no cluster of that name is read as the operator's or
+#                     as another. A list gcloud says is incomplete (a zone that did not respond) is
+#                     UNKNOWN: a cluster there is neither read nor counted.
 #   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
-#                     the principals being every ServiceAccount of the agent namespaces
-#                     (--agent-namespace) with the groups the API server gives it
-#                     (system:serviceaccounts, system:serviceaccounts:<namespace>,
-#                     system:authenticated), each group alone, the Google service account each is
-#                     bound to (its iam.gke.io/gcp-service-account annotation) with
-#                     system:authenticated, and the cluster's binding subjects (below). A review
-#                     without the groups would miss every grant made to a group. Its witness is a
-#                     review for the group the built-in cluster-admin binding names, system:masters,
-#                     which must be allowed: an API server whose answers cannot say yes proves
-#                     nothing by saying no.
+#                     the principals being every ServiceAccount outside the system namespaces
+#                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
+#                     groups the API server gives it (system:serviceaccounts,
+#                     system:serviceaccounts:<namespace>, system:authenticated), the groups of the
+#                     agent namespaces (--agent-namespace) each alone, the Google service account
+#                     each is bound to (its iam.gke.io/gcp-service-account annotation) with
+#                     system:authenticated, and the cluster's binding subjects (below). The rights
+#                     are the list below for each guarded pair. A review without the groups would
+#                     miss every grant made to a group. Its witness is a review for the group the
+#                     built-in cluster-admin binding names, system:masters, which must be allowed: an
+#                     API server whose answers cannot say yes proves nothing by saying no. An agent
+#                     namespace list that matches no ServiceAccount is UNKNOWN.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
 #                     project.
@@ -73,8 +81,9 @@
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
 #                     service account a pair is bound to. The guarded pairs are the operator's
-#                     (--namespace/--service-account) and each --guarded <namespace>/<service
-#                     account>, such as a route password reader reached the same way. On every
+#                     (--namespace/--service-account), the broker's (--broker-workload) and each
+#                     --guarded <namespace>/<service account>, such as a route password reader
+#                     reached the same way. On every
 #                     cluster of the pool (the operator's, every other cluster of the project, and
 #                     every member cluster of the pool project's fleet) no principal the step
 #                     reviews may create a namespace cluster-wide, or a ServiceAccount or a pod in a
@@ -98,12 +107,17 @@
 #                     container.namespaces.create, container.serviceAccounts.create and
 #                     container.pods.create on that project are judged as the GKE IAM step judges
 #                     its own (--project's are in that step).
+#   live: fleet       Policy Analyzer's holders of gkehub.memberships.create and update on the pool
+#     registration    project, each judged as in the GKE IAM step: a cluster registered to the
+#                     pool's fleet shares the pool's Workload Identity, so its ServiceAccount
+#                     envoy-operator/envoy-operator is the operator's member there.
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
-#                     get on the Secret --db-secret (a SubjectAccessReview for each agent principal,
-#                     and container.secrets.get through IAM), of storage.objects.get on the bucket of
-#                     --broker-state, and of secretmanager.versions.access on --signing-secret, which
-#                     the operator's Google service account alone may read and must be listed on.
+#                     get on the Secret --db-secret (a SubjectAccessReview for each principal of the
+#                     RBAC step, and container.secrets.get through IAM), of storage.objects.get on the
+#                     bucket of --broker-state, and of secretmanager.versions.access on
+#                     --signing-secret, which the operator's Google service account alone may read and
+#                     must be listed on.
 #   admin tag         `agent-secrets secret show <--secret> --json`, under the running session, must
 #                     show "admin": "true" and "tier": "human": the operator's credential is an
 #                     administrator's, released only when a person approves and never decided by a
@@ -117,10 +131,21 @@
 # (`kubectl get clusterrolebindings,rolebindings -A`) that is not a person is reviewed with
 # system:authenticated (system:anonymous with system:unauthenticated): a Google service account,
 # or any User the RBAC rule below does not allow, can be a finding. A person's email User subject
-# and every Group subject are never reviewed, so never a finding, as iam_verdict never makes a
-# `user:` member one and the accepted list names no person. A ServiceAccount subject is left out:
-# the cluster's own ServiceAccounts are reviewed with their groups already, and one named but not
-# made does not exist to act. A refused list of bindings is UNKNOWN, naming the permission.
+# is never reviewed, so never a finding, as iam_verdict never makes a `user:` member one and the
+# accepted list names no person. A ServiceAccount subject is left out: the cluster's own
+# ServiceAccounts are reviewed with their groups already, and one named but not made does not exist
+# to act. A refused list of bindings is UNKNOWN, naming the permission.
+#
+# Group subjects. A Group other than Kubernetes' own system groups is never reviewed, so never a
+# finding, in the code step as in the live steps. That holds while GKE's Google Groups for RBAC is
+# off on the cluster: the API server then gives no request a Google group, so such a Group names no
+# one who can act. The system groups that hold ServiceAccounts or anyone (system:serviceaccounts,
+# system:serviceaccounts:<namespace>, system:authenticated, system:unauthenticated) are reviewed,
+# each alone. When Google Groups for RBAC is turned on (a cluster's --security-group), a Group
+# subject naming a Google group's email gives its members its rights. Then change this step: list
+# each such group's members (`gcloud identity groups memberships list --group-email`, through
+# nested groups), review each member that is not a person as a User of its email, and make an
+# unreadable group UNKNOWN, as Policy Analyzer's expanded groups are judged by their members.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; Google's own service agents
@@ -131,14 +156,15 @@
 # project's top ancestor (`gcloud projects get-ancestors`), or --analysis-scope: a scope at the
 # project does not see a grant made on its folder or its organization.
 #
-# The rights, in --namespace unless cluster-wide: create serviceaccounts/token of --service-account;
-# impersonate that ServiceAccount, and users and groups cluster-wide; escalate and bind roles and
-# clusterroles, create and patch rolebindings and clusterrolebindings; create, and get (which
-# authorizes an exec, attach or port forward over WebSocket on API servers before 1.35), pods/exec,
-# pods/attach and pods/portforward; create, patch and update pods, and patch and update
-# pods/ephemeralcontainers; create, patch and update deployments, replicasets, statefulsets,
-# daemonsets, jobs and cronjobs, each of which runs a pod as the ServiceAccount; get and list
-# secrets.
+# The rights, in each guarded pair's namespace unless cluster-wide: create serviceaccounts/token of
+# the pair's ServiceAccount; impersonate that ServiceAccount, and users and groups cluster-wide;
+# escalate and bind roles and clusterroles, create and patch rolebindings and clusterrolebindings;
+# create, and get (which authorizes an exec, attach or port forward over WebSocket on API servers
+# before 1.35), pods/exec, pods/attach and pods/portforward; create, patch and update pods, and patch
+# and update pods/ephemeralcontainers; create, patch and update replicationcontrollers, deployments,
+# replicasets, statefulsets, daemonsets, jobs and cronjobs, each of which runs a pod as the
+# ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
+# node; get, list and watch secrets.
 #
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,
@@ -162,7 +188,8 @@
 #
 # The fixture testdata/operator-token-minters-report.json, beside this script, is this script's own
 # --report from a world of operator-token-minters.test.sh's, with run_at fixed: an IAM finding, RBAC
-# findings of a Google service account bound on a fleet member for two guarded pairs, and an
+# findings of a Google service account bound on a fleet member for each of three guarded pairs (the
+# operator's, the broker's and a --guarded one), and an
 # UNKNOWN. The writer hold's preflight, which reads --report, tests its reader against it, and the
 # test fails when the file differs from a fresh run (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it).
 #
@@ -183,6 +210,8 @@ usage() {
 usage: operator-token-minters.sh [flags]
   --project ID               the project that runs the operator's cluster
   --cluster NAME             the operator's cluster, one of the project's
+  --location LOCATION        the operator's cluster's location (a region or a zone); needed when the
+                             project holds more than one cluster named --cluster
   --pool-project ID          the project whose workload pool (ID.svc.id.goog) the operator's and
                              the broker's ServiceAccounts are in, and whose fleet's member clusters
                              share it (default --project)
@@ -190,9 +219,12 @@ usage: operator-token-minters.sh [flags]
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
                              to a Google service account, guarded as the operator's pair is, which is
-                             always guarded; repeatable
+                             always guarded, as the broker's (--broker-workload) is when it is named;
+                             repeatable
   --gsa EMAIL                the Google service account the operator's ServiceAccount acts as
-  --agent-namespace NS|GLOB  a namespace whose ServiceAccounts agents run as; repeatable
+  --agent-namespace NS|GLOB  a namespace whose ServiceAccounts agents run as; repeatable. Every
+                             ServiceAccount outside the system namespaces is reviewed; these name
+                             the groups reviewed alone, and one must hold a ServiceAccount
   --broker-account EMAIL     the secrets broker's Google service account, which mints the
                              operator's token for the secret ENVOY_OPERATOR
   --broker-workload NS/NAME  the broker's Kubernetes ServiceAccount, bound to --broker-account
@@ -215,7 +247,7 @@ usage_error() {
   exit 2
 }
 
-PROJECT="" CLUSTER="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
+PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT=""
 AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=()
 while [ "$#" -gt 0 ]; do
@@ -226,7 +258,7 @@ while [ "$#" -gt 0 ]; do
     --*=*) set -- "${flag#*=}" "$@"; flag="${flag%%=*}" ;;
   esac
   case "$flag" in
-    --project | --cluster | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
+    --project | --cluster | --location | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
       --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
@@ -238,6 +270,7 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project) PROJECT="$value" ;;
     --cluster) CLUSTER="$value" ;;
+    --location) LOCATION="$value" ;;
     --pool-project) POOL_PROJECT="$value" ;;
     --namespace) NAMESPACE="$value" ;;
     --service-account) KSA="$value" ;;
@@ -259,15 +292,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
-# The guarded pairs: the operator's first, then each --guarded, each once.
+# The guarded pairs: the operator's first, then the broker's (--broker-workload), then each
+# --guarded, each once.
 GUARDED=("$NAMESPACE/$KSA")
+pair_name='^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$'
+if [ -n "$BROKER_WORKLOAD" ]; then
+  [[ "$BROKER_WORKLOAD" =~ $pair_name ]] || usage_error "--broker-workload is <namespace>/<name>, each a Kubernetes name, not $BROKER_WORKLOAD"
+  [ "$BROKER_WORKLOAD" = "${GUARDED[0]}" ] || GUARDED+=("$BROKER_WORKLOAD")
+fi
 for pair in ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}; do
-  [[ "$pair" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$ ]] ||
-    usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name, not $pair"
+  [[ "$pair" =~ $pair_name ]] || usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name, not $pair"
   case " ${GUARDED[*]} " in *" $pair "*) ;; *) GUARDED+=("$pair") ;; esac
 done
 case "$DB_SECRET" in "" | */*) ;; *) usage_error "--db-secret is <namespace>/<name>, not $DB_SECRET" ;; esac
-case "$BROKER_WORKLOAD" in "" | */*) ;; *) usage_error "--broker-workload is <namespace>/<name>, not $BROKER_WORKLOAD" ;; esac
 case "$BROKER_STATE" in "" | gs://?*) ;; *) usage_error "--broker-state is gs://<bucket>[/<path>], not $BROKER_STATE" ;; esac
 case "$ANALYSIS_SCOPE" in "" | organizations/?* | folders/?* | projects/?*) ;; *) usage_error "--analysis-scope is organizations/N, folders/N or projects/ID" ;; esac
 command -v jq >/dev/null || usage_error "jq is not on PATH"
@@ -322,11 +359,14 @@ JQ_REC='def rec: map(tostring | gsub("[[:cntrl:]]"; " ")) | join("\u001f");'
 
 # --- The rights and the permissions. ---
 
-# Each right: verb, API group, resource, subresource, and scope: `ns` for --namespace, `cluster`
-# for cluster-wide, `named` for --namespace with --service-account as the resource name ("-" is
-# empty). A namespaced right is asked in --namespace, so a ClusterRoleBinding that grants it is
-# found too; escalate on clusterroles, the bindings of clusterroles and impersonating users and
-# groups are cluster-scoped objects, which only a ClusterRoleBinding grants.
+# Each right: verb, API group, resource, subresource, and scope: `ns` for a guarded pair's
+# namespace, `cluster` for cluster-wide, `named` for the pair's namespace with its ServiceAccount as
+# the resource name ("-" is empty). Every guarded pair (the operator's, the broker's, each
+# --guarded) gets each right on the operator's cluster. A namespaced right is asked in the
+# namespace, so a ClusterRoleBinding that grants it is found too; escalate on clusterroles, the
+# bindings of clusterroles, impersonating users and groups and a node's proxy are cluster-scoped,
+# which only a ClusterRoleBinding grants. A node's proxy reaches the kubelet's API, whose exec and
+# attach enter any pod on the node, the guarded ones included.
 RIGHTS_TABLE='
 create - serviceaccounts token named
 impersonate - serviceaccounts - named
@@ -349,6 +389,11 @@ get - pods portforward ns
 create - pods - ns
 patch - pods - ns
 update - pods - ns
+create - replicationcontrollers - ns
+patch - replicationcontrollers - ns
+update - replicationcontrollers - ns
+create - nodes proxy cluster
+get - nodes proxy cluster
 patch - pods ephemeralcontainers ns
 update - pods ephemeralcontainers ns
 create apps deployments - ns
@@ -371,16 +416,18 @@ patch batch cronjobs - ns
 update batch cronjobs - ns
 get - secrets - ns
 list - secrets - ns
+watch - secrets - ns
 '
 # The container.* permission of each right: what GKE's IAM authorizer checks for the same call,
 # with container.namespaces.create and container.serviceAccounts.create for the Workload Identity
-# step's other clusters.
+# step's other clusters. watch secrets is container.secrets.list's, as list is.
 CONTAINER_PERMISSIONS=(
   container.serviceAccounts.createToken container.clusters.impersonate
   container.roles.escalate container.roles.bind container.clusterRoles.escalate container.clusterRoles.bind
   container.roleBindings.create container.roleBindings.update container.clusterRoleBindings.create
   container.clusterRoleBindings.update container.pods.exec container.pods.attach container.pods.portForward
-  container.pods.create container.pods.update container.deployments.create container.deployments.update
+  container.pods.create container.pods.update container.replicationControllers.create
+  container.replicationControllers.update container.nodes.proxy container.deployments.create container.deployments.update
   container.replicaSets.create container.replicaSets.update container.statefulSets.create
   container.statefulSets.update container.daemonSets.create container.daemonSets.update container.jobs.create
   container.jobs.update container.cronJobs.create container.cronJobs.update container.secrets.get
@@ -392,6 +439,9 @@ GSA_PERMISSIONS=(
   iam.serviceAccountKeys.create
 )
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
+# Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
+# Workload Identity, so its ServiceAccount envoy-operator/envoy-operator is the operator's member.
+FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update)
 # granting_role sets GRANTING_ROLE to the predefined role whose includedPermissions must hold a
 # checked permission.
 granting_role() {
@@ -403,23 +453,26 @@ granting_role() {
     cloudsql.*) GRANTING_ROLE=roles/cloudsql.admin ;;
     secretmanager.*) GRANTING_ROLE=roles/secretmanager.secretAccessor ;;
     storage.*) GRANTING_ROLE=roles/storage.objectViewer ;;
+    gkehub.*) GRANTING_ROLE=roles/gkehub.admin ;;
   esac
 }
 
 # rights_json [db]: the rights as a JSON array of {verb, group, resource, sub, ns, name, key,
-# label}, with `db` the hold writers' get on --db-secret too. key is how a review's answer, which
-# echoes its attributes, finds its right.
+# label}, each right of the table for each guarded pair, each once, with `db` the hold writers' get
+# on --db-secret too. key is how a review's answer, which echoes its attributes, finds its right.
 rights_json() {
-  local verb group resource sub scope ns name
+  local verb group resource sub scope ns name pair
   {
-    while read -r verb group resource sub scope; do
-      [ -n "$verb" ] || continue
-      [ "$group" != - ] || group=""
-      [ "$sub" != - ] || sub=""
-      ns="$NAMESPACE" name=""
-      case "$scope" in cluster) ns="" ;; named) name="$KSA" ;; esac
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$verb" "$group" "$resource" "$sub" "$ns" "$name"
-    done <<<"$RIGHTS_TABLE"
+    for pair in "${GUARDED[@]}"; do
+      while read -r verb group resource sub scope; do
+        [ -n "$verb" ] || continue
+        [ "$group" != - ] || group=""
+        [ "$sub" != - ] || sub=""
+        ns="${pair%%/*}" name=""
+        case "$scope" in cluster) ns="" ;; named) name="${pair#*/}" ;; esac
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$verb" "$group" "$resource" "$sub" "$ns" "$name"
+      done <<<"$RIGHTS_TABLE"
+    done
     if [ "${1:-}" = db ] && [ -n "$DB_SECRET" ]; then
       printf 'get\t\tsecrets\t\t%s\t%s\n' "${DB_SECRET%%/*}" "${DB_SECRET#*/}"
     fi
@@ -427,7 +480,8 @@ rights_json() {
       | {verb: .[0], group: .[1], resource: .[2], sub: .[3], ns: .[4], name: .[5]}
       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|")),
              label: ("\(.verb) \(.resource)\(if .sub != "" then "/" + .sub else "" end)\(if .group != "" then "." + .group else "" end)"
-                     + (if .name != "" then " " + .name else "" end) + (if .ns != "" then " in " + .ns else " cluster-wide" end))}]'
+                     + (if .name != "" then " " + .name else "" end) + (if .ns != "" then " in " + .ns else " cluster-wide" end))}]
+    | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'
 }
 # GUARD_RIGHTS: the rights no principal the Workload Identity step reviews may hold on a cluster of
 # the pool, as rights_json writes rights: create namespaces cluster-wide, and for each guarded
@@ -476,8 +530,9 @@ BROKER_WI_MEMBER=""
 [ -z "$BROKER_WORKLOAD" ] || BROKER_WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$BROKER_WORKLOAD]"
 
 # k8s_subject KIND NAMESPACE NAME: sets SUBJECT, the principal's name in a finding, and SUBJECT_OK,
-# whether it is allowed: a person, a system component, a system namespace's ServiceAccount, the
-# group system:masters, Google's service agent, or the operator's own Google service account.
+# whether it is allowed: a person, a system component, a system namespace's ServiceAccount, a Group
+# other than the system groups that hold ServiceAccounts or anyone (the header's "Group subjects"),
+# Google's service agent, or the operator's own Google service account.
 k8s_subject() {
   local kind="$1" ns="$2" name="$3"
   SUBJECT_OK=false
@@ -490,7 +545,7 @@ k8s_subject() {
       SUBJECT="group:$name"
       case "$name" in
         system:serviceaccounts | system:serviceaccounts:* | system:authenticated | system:unauthenticated) ;;
-        system:*) SUBJECT_OK=true ;;
+        *) SUBJECT_OK=true ;;
       esac
       ;;
     User)
@@ -516,7 +571,7 @@ k8s_subject() {
 # --- The IAM checks: each a step, a resource, the permissions asked and a witness. ---
 
 declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=()
-CHECKS=(gke gsa broker sql dbsecret state signing)
+CHECKS=(gke gsa broker sql dbsecret state signing fleet)
 PROJECT_RES="//cloudresourcemanager.googleapis.com/projects/$PROJECT"
 BUCKET=""
 if [ -n "$BROKER_STATE" ]; then
@@ -568,6 +623,9 @@ if [ -z "$SIGNING_SECRET" ]; then
 elif [ -z "$GSA" ]; then
   CHECK_MISSING[signing]="no --gsa: the signing key's one reader, the operator's Google service account, is not named"
 fi
+CHECK_STEP[fleet]="live: who can register a cluster to the fleet of project ${POOL_PROJECT:-?}"
+CHECK_RESOURCE[fleet]="//cloudresourcemanager.googleapis.com/projects/$POOL_PROJECT"
+CHECK_PERMS[fleet]="${FLEET_PERMISSIONS[*]}"
 if [ -z "$PROJECT" ]; then
   for check in "${CHECKS[@]}"; do CHECK_MISSING[$check]="no --project: the project that runs the operator's cluster is not named"; done
 fi
@@ -648,7 +706,8 @@ role_perms() {
 # --- permission names ---
 step="permission names"
 mark
-checked_names=("${CONTAINER_PERMISSIONS[@]}" "${GSA_PERMISSIONS[@]}" "${SQL_PERMISSIONS[@]}" secretmanager.versions.access storage.objects.get)
+checked_names=("${CONTAINER_PERMISSIONS[@]}" "${GSA_PERMISSIONS[@]}" "${SQL_PERMISSIONS[@]}" "${FLEET_PERMISSIONS[@]}"
+  secretmanager.versions.access storage.objects.get)
 declare -A roles_used=() role_holds=()
 for permission in "${checked_names[@]}"; do
   granting_role "$permission"
@@ -748,6 +807,7 @@ covers() {
     gke:project | sql:project | dbsecret:project | state:project | signing:project) [ "${id#projects/}" = "$PROJECT" ] ;;
     gsa:project) [ "${id#projects/}" = "$GSA_PROJECT" ] ;;
     broker:project) [ "${id#projects/}" = "$BROKER_PROJECT" ] ;;
+    fleet:project) [ "${id#projects/}" = "$POOL_PROJECT" ] ;;
     gsa:serviceaccount) [ "${id##*/}" = "$GSA" ] ;;
     broker:serviceaccount) [ "${id##*/}" = "$BROKER" ] ;;
     signing:secret)
@@ -867,11 +927,17 @@ else
 fi
 
 # --- live: clusters ---
+# The operator's cluster is one name in one location. Two clusters of the project can share a name
+# in two locations, and the one that is not the operator's, holding the namespace envoy-operator, is
+# another cluster of the pool. --location says which; without it, the list's one cluster of that
+# name is the operator's, and with two or more none is: the run says so, and reads none of them as
+# the operator's or as another cluster.
 step="live: clusters"
-CLUSTERS_OK=false CLUSTERS_COMPLETE=false OPERATOR_LOCATION=""
+CLUSTERS_LISTED=false CLUSTERS_COMPLETE=false OPERATOR_FOUND=false OPERATOR_LOCATION="$LOCATION"
 # PROJECT_CLUSTERS: <project>/<location>/<name> of each cluster the project's list holds, which the
 # Workload Identity step reads, so its fleet part does not read one twice.
 declare -A PROJECT_CLUSTERS=()
+mark
 if [ -z "$PROJECT" ]; then
   unknown "$step" "no --project: the project that runs the operator's cluster is not named"
 elif [ -z "$CLUSTER" ]; then
@@ -884,22 +950,34 @@ elif ! jq -r '.[] | [.name, .location] | @tsv' "$WORK/clusters.json" >"$WORK/clu
   unknown "$step" "gcloud container clusters list answered no JSON list: $(first_line "$WORK/clusters.err.jq")"
 elif [ ! -s "$WORK/clusters.tsv" ]; then
   unknown "$step" "the project lists no cluster, so the operator's cluster cannot be read"
-elif ! grep -qxF -- "$CLUSTER" < <(cut -f1 "$WORK/clusters.tsv"); then
-  unknown "$step" "--cluster $CLUSTER is not among the project's clusters ($(cut -f1 "$WORK/clusters.tsv" | paste -sd ' '))"
 else
-  CLUSTERS_OK=true
-  OPERATOR_LOCATION="$(awk -F'\t' -v c="$CLUSTER" '$1 == c { print $2; exit }' "$WORK/clusters.tsv")"
+  CLUSTERS_LISTED=true
   while IFS=$'\t' read -r name location; do
     PROJECT_CLUSTERS["$PROJECT/$location/$name"]=1
   done <"$WORK/clusters.tsv"
+  clusters_text="$(awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$WORK/clusters.tsv")"
+  same_name="$(awk -F'\t' -v c="$CLUSTER" '$1 == c { n++; l = l (n > 1 ? ", " : "") $2 } END { print n + 0 "\t" l }' "$WORK/clusters.tsv")"
+  if [ -n "$LOCATION" ]; then
+    if [ -n "${PROJECT_CLUSTERS["$PROJECT/$LOCATION/$CLUSTER"]:-}" ]; then
+      OPERATOR_FOUND=true
+    else
+      unknown "$step" "--cluster $CLUSTER --location $LOCATION is not among the project's clusters ($clusters_text)"
+    fi
+  elif [ "${same_name%%$'\t'*}" -eq 1 ]; then
+    OPERATOR_FOUND=true OPERATOR_LOCATION="${same_name#*$'\t'}"
+  elif [ "${same_name%%$'\t'*}" -eq 0 ]; then
+    unknown "$step" "--cluster $CLUSTER is not among the project's clusters ($clusters_text)"
+  else
+    unknown "$step" "--cluster $CLUSTER names ${same_name%%$'\t'*} clusters of the project (in ${same_name#*$'\t'}), and no --location says which is the operator's, so none of them is read"
+  fi
   # gcloud lists what the zones that answered hold, and says on stderr which did not ("The following
   # zones did not respond: ... List results may be incomplete."), exiting 0.
   if grep -q 'did not respond' "$WORK/clusters.err"; then
     unknown "$step" "gcloud container clusters list says its list is incomplete, so a cluster in a zone that did not answer is neither read nor counted: $(grep -m 1 'did not respond' "$WORK/clusters.err" | sed 's/[[:cntrl:]]/ /g')"
   else
     CLUSTERS_COMPLETE=true
-    pass "$step" "the project runs $(cut -f1 "$WORK/clusters.tsv" | paste -sd ' ' | sed 's/ /, /g')"
   fi
+  ! unchanged || pass "$step" "the project runs $clusters_text; the operator's is $CLUSTER in $OPERATOR_LOCATION"
 fi
 
 # kube_for NAME LOCATION PROJECT: sets KUBE to a kubeconfig of this run's own for the GKE cluster;
@@ -1044,9 +1122,12 @@ bound_subjects() {
 }
 
 # --- live: RBAC on the operator's cluster ---
+# Every ServiceAccount outside the system namespaces is a principal, as on every other cluster of
+# the pool: a CI runner's ServiceAccount in a namespace no agent uses can still run a pod as the
+# operator. The agent namespaces name the groups also reviewed alone, and must hold a ServiceAccount.
 step="live: RBAC on $cluster_name"
 RBAC_OK=false
-if [ "$CLUSTERS_OK" != true ]; then
+if [ "$OPERATOR_FOUND" != true ]; then
   unknown "$step" "the operator's cluster could not be found (live: clusters)"
 elif [ "${#AGENT_NAMESPACES[@]}" -eq 0 ]; then
   unknown "$step" "no --agent-namespace: the namespaces whose ServiceAccounts agents run as are not named"
@@ -1056,39 +1137,47 @@ elif ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json
   unknown "$step" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
 else
   mark
-  # The operator's rights and the guarded pairs', each right once: where both list one, the
-  # operator's label stays.
+  # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
+  # list one, the full list's label stays.
   rights="$(jq -c --argjson guard "$GUARD_RIGHTS" '. + $guard | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$(rights_json db)")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n' "$WITNESS_RECORD" >"$WORK/principals.rec"
   declare -A seen_groups=() seen_accounts=()
-  accounts=0
+  accounts=0 agents=0
   while IFS="$US" read -r -u 3 ns name bound; do
-    agent_namespace "$ns" || continue
+    ! system_namespace "$ns" || continue
     accounts=$((accounts + 1))
     printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
       "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
-    seen_groups[system:serviceaccounts]=1 seen_groups[system:serviceaccounts:$ns]=1 seen_groups[system:authenticated]=1
-    [ -z "$bound" ] || seen_accounts[$bound]=1
+    if agent_namespace "$ns"; then
+      agents=$((agents + 1))
+      seen_groups[system:serviceaccounts]=1 seen_groups[system:serviceaccounts:$ns]=1 seen_groups[system:authenticated]=1
+    fi
+    # The Google service account a ServiceAccount is bound to acts as a User of its email; the
+    # operator's own is allowed, as k8s_subject says.
+    if [ -n "$bound" ]; then
+      k8s_subject User "" "$bound"
+      [ "$SUBJECT_OK" = true ] || seen_accounts[$bound]=1
+    fi
   done 3<"$WORK/serviceaccounts.rec"
-  if [ "$accounts" -eq 0 ]; then
-    unknown "$step" "the cluster lists no ServiceAccount in the agent namespaces (${AGENT_NAMESPACES[*]}), so there is no principal to review"
-  else
-    while IFS= read -r bound; do
-      printf 'serviceAccount:%s\x1f%s\x1fsystem:authenticated\n' "$bound" "$bound" >>"$WORK/principals.rec"
-    done < <(printf '%s\n' ${seen_accounts[@]+"${!seen_accounts[@]}"} | sed '/^$/d' | sort)
-    while IFS= read -r group; do
-      printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
-    done < <(printf '%s\n' "${!seen_groups[@]}" | sort)
-    bound_subjects "$KUBE" || unknown "$step" "$BOUND_ERROR"
-    if ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights"; then
-      unknown "$step" "$REVIEW_ERROR"
-    elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
-      RBAC_OK=true
-      if unchanged; then
-        pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]} + BOUND)) principals ($accounts ServiceAccounts of the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups, $BOUND binding subjects), $(jq length <<<"$rights") rights each: none allowed"
-      fi
+  [ "$agents" -gt 0 ] ||
+    unknown "$step" "the cluster lists no ServiceAccount in the agent namespaces (${AGENT_NAMESPACES[*]}), so no agent's principal is among those reviewed"
+  while IFS= read -r bound; do
+    printf 'serviceAccount:%s\x1f%s\x1fsystem:authenticated\n' "$bound" "$bound" >>"$WORK/principals.rec"
+  done < <(printf '%s\n' ${seen_accounts[@]+"${!seen_accounts[@]}"} | sed '/^$/d' | sort)
+  while IFS= read -r group; do
+    printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
+  done < <(printf '%s\n' ${seen_groups[@]+"${!seen_groups[@]}"} | sed '/^$/d' | sort)
+  bound_subjects "$KUBE" || unknown "$step" "$BOUND_ERROR"
+  if [ "$((accounts + ${#seen_accounts[@]} + BOUND))" -eq 0 ]; then
+    unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject, so there is no principal to review"
+  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights"; then
+    unknown "$step" "$REVIEW_ERROR"
+  elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
+    RBAC_OK=true
+    if unchanged; then
+      pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]} + BOUND)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups, $BOUND binding subjects), $(jq length <<<"$rights") rights each: none allowed"
     fi
   fi
 fi
@@ -1122,6 +1211,10 @@ SCOPE="$SCOPE_OF" SCOPE_FLAG="$SCOPE_OF_FLAG" SCOPE_ERROR="$SCOPE_OF_ERROR"
 # A check's own scope, for a resource outside --project: CHECK_SCOPE, CHECK_SCOPE_FLAG and
 # CHECK_SCOPE_ERROR, keyed by the check; a check with none uses the project's.
 declare -A CHECK_SCOPE=() CHECK_SCOPE_FLAG=() CHECK_SCOPE_ERROR=()
+if [ -n "$POOL_PROJECT" ] && [ "$POOL_PROJECT" != "$PROJECT" ]; then
+  scope_of "$POOL_PROJECT"
+  CHECK_SCOPE[fleet]="$SCOPE_OF" CHECK_SCOPE_FLAG[fleet]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[fleet]="$SCOPE_OF_ERROR"
+fi
 
 # analyze RESOURCE PERMISSIONS_CSV SCOPE_FLAG SCOPE: Policy Analyzer's holders of any of the
 # permissions on the resource, one line per binding and identity: identity, role, the resource the
@@ -1184,7 +1277,7 @@ live_iam() {
   fi
   mark
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
-    unknown "$step" "the agent principals' reviews for get on it could not be made (live: RBAC)"
+    unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi
   # Never `cut | grep -q` under pipefail: grep stops at its first match, and a long answer's next
   # write then fails the pipeline with SIGPIPE, reading a witness that is there as one that is not.
@@ -1235,6 +1328,7 @@ read_other_cluster() {
     [ "${exists[$ns]}" = yes ] || continue
     acts="the Google service account the pool binds it to"
     [ "$pair" != "$NAMESPACE/$KSA" ] || acts="$operator_account"
+    [ -z "$BROKER" ] || [ "$pair" != "$BROKER_WORKLOAD" ] || acts="the broker account $BROKER"
     finding "$principal" "namespace $ns exists there, so its ServiceAccount $pair acts as $acts through the workload pool $POOL_PROJECT.svc.id.goog" \
       "namespace $ns, guarding $pair" "$principal" "" ""
   done
@@ -1260,24 +1354,33 @@ read_other_cluster() {
   fi
 }
 
-# The project's other clusters.
+# The project's other clusters. A cluster is the operator's by name and location: one of the same
+# name elsewhere is another cluster of the pool, and while which one is the operator's is unknown,
+# none of that name is read.
 step="live: Workload Identity"
-if [ "$CLUSTERS_OK" != true ]; then
+if [ "$CLUSTERS_LISTED" != true ]; then
   unknown "$step" "the project's clusters could not be listed (live: clusters)"
 else
   [ "$CLUSTERS_COMPLETE" = true ] ||
     unknown "$step" "the project's cluster list is incomplete (live: clusters), so a cluster it leaves out is not read"
-  if [ "$CLUSTERS_COMPLETE" = true ] && [ "$(wc -l <"$WORK/clusters.tsv")" -eq 1 ]; then
+  if [ "$CLUSTERS_COMPLETE" = true ] && [ "$OPERATOR_FOUND" = true ] && [ "$(wc -l <"$WORK/clusters.tsv")" -eq 1 ]; then
     pass "$step" "the project runs the operator's cluster $CLUSTER alone"
   fi
   while IFS=$'\t' read -r -u 5 cluster location; do
-    [ "$cluster" != "$CLUSTER" ] || continue
-    cstep="live: Workload Identity on $cluster"
+    label="$PROJECT/$location/$cluster"
+    if [ "$cluster" = "$CLUSTER" ]; then
+      if [ "$OPERATOR_FOUND" != true ]; then
+        unknown "live: Workload Identity on $label" "it has --cluster's name, and which cluster of that name is the operator's is unknown (live: clusters), so it is not read"
+        continue
+      fi
+      [ "$location" != "$OPERATOR_LOCATION" ] || continue
+    fi
+    cstep="live: Workload Identity on $label"
     if ! kube_for "$cluster" "$location" "$PROJECT"; then
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
-    read_other_cluster "$cstep" "cluster:$cluster" " on cluster $cluster"
+    read_other_cluster "$cstep" "cluster:$label" " on cluster $label"
   done 5<"$WORK/clusters.tsv"
 fi
 
@@ -1364,10 +1467,18 @@ else
     fi
     members=$((members + 1))
     if [ -n "$gke_cluster" ]; then
-      if [ "$gke_project" = "$PROJECT" ] && [ "$gke_cluster" = "$CLUSTER" ] &&
-        { [ -z "$OPERATOR_LOCATION" ] || [ "$gke_location" = "$OPERATOR_LOCATION" ]; }; then
-        own=$((own + 1))
-        continue
+      # The operator's cluster is --cluster in the operator's location, never by name alone; a member
+      # of that name in the project, while the operator's location is unknown, cannot be told from it.
+      if [ "$gke_project" = "$PROJECT" ] && [ "$gke_cluster" = "$CLUSTER" ]; then
+        if [ -z "$OPERATOR_LOCATION" ]; then
+          unknown "live: Workload Identity on fleet member $id (cluster $gke_project/$gke_location/$gke_cluster)" \
+            "it has --cluster's name, and the operator's cluster's location is unknown (live: clusters), so it is not read"
+          continue
+        fi
+        if [ "$gke_location" = "$OPERATOR_LOCATION" ]; then
+          own=$((own + 1))
+          continue
+        fi
       fi
       if [ -n "${PROJECT_CLUSTERS["$gke_project/$gke_location/$gke_cluster"]:-}" ]; then
         above=$((above + 1))
@@ -1417,9 +1528,13 @@ for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort
   live_iam "$check"
 done
 
+# --- live: who can register a cluster to the pool project's fleet. A registered cluster shares the
+# pool's Workload Identity, so whoever registers one makes the operator's member on it. ---
+live_iam fleet
+
 # --- live: hold writers ---
 live_iam sql
-live_iam dbsecret "the agent principals' get on it is in the RBAC step"
+live_iam dbsecret "the RBAC step's principals' get on it is in that step"
 live_iam state
 live_iam signing
 
