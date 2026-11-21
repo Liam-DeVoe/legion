@@ -163,6 +163,11 @@ Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `liste
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
 The edge's send and read rules read that record, and no answer of the API carries it.
 
+A session record and an interest row each name the key they are stored under (`session_id`), which every writer sets.
+The server itself stores a record when a request names a key's subject as its reply subject, so a record that names another key, or names its key with no `machine_id`, no positive `updated_at` or (a session record) no `projects`, is no registration and reads as absent on every listener (`session.DecodeEntry`, the store's `boundInterest`).
+The next write of such a record replaces it at the stream sequence it is really stored at.
+A session record that names no key was written by an earlier build: every listener, the edge included, reads it as before for its sweeps, reapers and role routes, and the edge reads it as no project's (`sessionOfProjects`), so it lists such a session to no one and answers a send to it as to a missing session until the session's own listener writes the key.
+
 On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it was claimed under, and that function's comment says which key each name gets.
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;
 every other name keeps its bare role name as its key.

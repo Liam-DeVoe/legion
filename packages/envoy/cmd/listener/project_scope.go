@@ -148,13 +148,22 @@ func projectHeld(projects []string, project string) bool {
 }
 
 // sessionOfProjects reports whether a session whose entry is entry, in state, is one of projects':
-// the token that registered it (session.SessionEntry.Projects) lists one of them. An entry no
-// token's list was recorded on, one an earlier build wrote among them, is no project's, and so is
-// a gone session's, whatever entry the registry still answers for it: a record the registry reads
-// as absent (session.DecodeEntry) is gone, and the zero entry or a stale one beside it is no
-// session's scope.
+// its record names its own key (session.SessionEntry.SessionID) and the token that registered it
+// (session.SessionEntry.Projects) lists one of them. It is the edge's one test of a session's
+// scope: the send route, the list, the registry and registration views and the role read ask it,
+// so each reads three entries as no project's:
+//
+//   - a gone session's, whatever entry the registry still answers for it (a record the registry
+//     reads as absent, session.DecodeEntry, is gone, and the zero entry beside it is no scope);
+//   - one an earlier build wrote, which names no key: the registry reads it as before for every
+//     other purpose, so its session keeps its consumer, claims and row here, but such a record
+//     cannot be told from another session's record copied under this key, so the edge grants
+//     nothing across a project on it, and refuses a send to it and lists it to no one until the
+//     session's own listener writes the key;
+//   - one whose token's list names none of projects, an entry of no list among them.
 func sessionOfProjects(entry session.SessionEntry, state session.State, projects []string) bool {
-	return state != session.Gone && slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
+	return state != session.Gone && entry.SessionID != "" &&
+		slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
 }
 
 // rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of

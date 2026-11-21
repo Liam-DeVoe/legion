@@ -147,7 +147,7 @@ func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.Session
 	if err != nil {
 		return session.SessionEntry{}, err
 	}
-	holder, err := session.DecodeEntry(sessionID, entry.Value(), false)
+	holder, err := session.DecodeEntry(sessionID, entry.Value())
 	if err != nil {
 		return session.SessionEntry{}, fmt.Errorf("%w: session %s's record is not read as its registration: %w", nats.ErrKeyNotFound, sessionID, err)
 	}

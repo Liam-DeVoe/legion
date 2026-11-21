@@ -56,7 +56,7 @@ func (r *SessionRegistry) deleteAtRead(ctx context.Context, kv bus.KeyValue, ses
 	case err != nil:
 		return 0, err
 	}
-	if _, err := DecodeEntry(sessionID, entry.Value(), r.requireID); err != nil {
+	if _, err := DecodeEntry(sessionID, entry.Value()); err != nil {
 		if entry, err = leaderRecord(ctx, kv, sessionID); err != nil || entry == nil {
 			return 0, err
 		}
@@ -194,7 +194,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, err
 		}
 		revision := entry.Revision()
-		stored, err := DecodeEntry(sessionID, entry.Value(), r.requireID)
+		stored, err := DecodeEntry(sessionID, entry.Value())
 		if err != nil {
 			// A value this build cannot read names no instance and no moment, so it belongs
 			// to nobody and is older than every stop: it is deleted as an entry that meets
@@ -225,7 +225,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 				return EntryDeleted, nil
 			}
 			revision = leader.Revision()
-			if decoded, err := DecodeEntry(sessionID, leader.Value(), r.requireID); err == nil {
+			if decoded, err := DecodeEntry(sessionID, leader.Value()); err == nil {
 				stored = decoded
 			}
 		}

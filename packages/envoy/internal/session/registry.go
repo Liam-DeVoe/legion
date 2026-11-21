@@ -18,8 +18,8 @@ import (
 )
 
 // ErrEntryUnbound is a stored session record that is not the registration of the key it is stored
-// under (DecodeEntry): one naming another key, the empty key or no machine or registration time,
-// and, for a reader that requires the key, one naming none. Every reader reads it as no record.
+// under (DecodeEntry): one naming another key or the empty key, or naming its key with no machine,
+// registration time or projects. Every reader reads it as no record.
 var ErrEntryUnbound = errors.New("the session record is not the registration of its key")
 
 type SessionEntry struct {
@@ -28,8 +28,9 @@ type SessionEntry struct {
 	// registration but a copy of another session's, which the server itself stores when a request
 	// names the key's subject as its reply subject, so a direct get of one session's record can
 	// lay that session's machine and projects over another's key. It is empty only on a record
-	// an earlier build wrote, which names no key and is read as before, except by a registry that
-	// requires the key (WithSessionRequireID). An entry naming no key encodes none, so it reads as
+	// an earlier build wrote, which names no key and is read as before by every reader here; a
+	// reader that grants a session's scope across a project reads such an entry as no project's
+	// (cmd/listener's sessionOfProjects). An entry naming no key encodes none, so it reads as
 	// such a record and never as one naming the empty key, which every reader refuses.
 	SessionID string `json:"session_id,omitempty"`
 	// Port is always 0 for an entry this build writes: a registration naming a serving port is
@@ -135,10 +136,11 @@ type storedEntry struct {
 // request names key's subject as its reply subject: a direct get's copy of another session's
 // record, or of the session's own interest row, which names its key, machine and time but no
 // projects. A value naming no key is what every build before SessionEntry.SessionID wrote: it is
-// read exactly as before, unless requireID is set (WithSessionRequireID), which refuses it. A value
-// that is not JSON is the decode error itself, as before. A field this build does not know is no
-// refusal: a newer build's record must not read as gone here for the length of a rolling deploy.
-func DecodeEntry(key string, value []byte, requireID bool) (SessionEntry, error) {
+// read exactly as before, and its entry's SessionID is empty, which a reader of a session's scope
+// reads as no project's. A value that is not JSON is the decode error itself, as before. A field
+// this build does not know is no refusal: a newer build's record must not read as gone here for
+// the length of a rolling deploy.
+func DecodeEntry(key string, value []byte) (SessionEntry, error) {
 	var stored storedEntry
 	if err := json.Unmarshal(value, &stored); err != nil {
 		return SessionEntry{}, err
@@ -150,9 +152,6 @@ func DecodeEntry(key string, value []byte, requireID bool) (SessionEntry, error)
 		}
 	}
 	if stored.SessionID == nil {
-		if requireID {
-			return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no session, and this reader reads only a record naming its key", ErrEntryUnbound, key)
-		}
 		return entry, nil
 	}
 	switch {
@@ -205,24 +204,12 @@ type sessionRegistryOpts struct {
 	liveWindow        time.Duration
 	goneHorizon       time.Duration
 	lastSeenRetention time.Duration
-	requireID         bool
 	log               *slog.Logger
 	now               func() time.Time
 }
 
 func WithSessionReplicas(n int) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.replicas = n }
-}
-
-// WithSessionRequireID, with required set, makes the registry read a record naming no key as no
-// record (DecodeEntry), wherever it reads one: its cache, Refresh, the reaper's judgement and a
-// conditional delete. A listener in edge mode sets it: every record that names no key was written
-// by a build before SessionEntry.SessionID, and such a record cannot be told from another
-// session's record copied under this key, while the edge answers a session's projects from its
-// record. Every other listener reads such a record as its key's, so a fleet rolling onto this
-// build keeps every session an earlier listener registered.
-func WithSessionRequireID(required bool) SessionRegistryOption {
-	return func(o *sessionRegistryOpts) { o.requireID = required }
 }
 
 // BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with, and
@@ -324,9 +311,6 @@ type SessionRegistry struct {
 	// lastSeenRetention is WithLastSeenRetention's value; zero, as in a registry built from a
 	// struct literal, means one TTL (retention).
 	lastSeenRetention time.Duration
-	// requireID is WithSessionRequireID's value: a record naming no key reads as no record here
-	// (DecodeEntry). Fixed when the registry is opened, so no lock covers it.
-	requireID bool
 	// conn and js are the connection and the JetStream context the bucket was opened through,
 	// which the maximum age is written through (applyMaxAge), and maxAge is WithSessionMaxAge's value, zero when the deployment
 	// sets none and the bucket's own age stands. Both are fixed when the registry is opened, and
@@ -520,7 +504,6 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 		liveWindow:        opts.liveWindow,
 		goneHorizon:       opts.goneHorizon,
 		lastSeenRetention: opts.lastSeenRetention,
-		requireID:         opts.requireID,
 		conn:              conn,
 		js:                js,
 		maxAge:            opts.maxAge,
@@ -640,7 +623,7 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 
 // decodeLocked is the row a put record of the bucket, delivered or read, leaves in the cache, with
 // its local expiry measured from the record's Created (expiryFor). A record that is not the
-// registration of its key (DecodeEntry, under the registry's WithSessionRequireID) is an error, as
+// registration of its key (DecodeEntry) is an error, as
 // one that does not decode is: the copy keeps no row for it and evicts the row it held
 // (kvwatch.Rows.Decode), its caller logs it, and every read answers the session as having no
 // record — Lookup gone, Get and Refresh nats.ErrKeyNotFound, List without it — so no reader takes
@@ -653,7 +636,7 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 // does keep is answered absent once it is past its deadline (Get) and removed at it (expireDue).
 // Callers hold r.mu.
 func (r *SessionRegistry) decodeLocked(entry kvwatch.Entry) (*cachedSession, bool, error) {
-	item, err := DecodeEntry(entry.Key, entry.Value, r.requireID)
+	item, err := DecodeEntry(entry.Key, entry.Value)
 	if err != nil {
 		return nil, false, err
 	}

@@ -277,7 +277,7 @@ func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessio
 	if err != nil {
 		return 0, err
 	}
-	stored, err := DecodeEntry(sessionID, got.Value(), r.requireID)
+	stored, err := DecodeEntry(sessionID, got.Value())
 	if err != nil {
 		return 0, fmt.Errorf("judge session %s's record before deleting it: %w", sessionID, err)
 	}
