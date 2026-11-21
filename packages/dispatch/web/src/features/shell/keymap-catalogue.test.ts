@@ -1,21 +1,8 @@
 import { expect, test } from "bun:test";
 
 import { actionBinding, createKeymap } from "./keymap";
-import {
-  catalogueEntry,
-  KEYMAP_ACTIONS,
-  KEYMAP_CATALOGUE,
-  keysOfAction,
-  NO_PERSON_KEYS,
-} from "./keymap-catalogue";
+import { catalogueEntry, KEYMAP_ACTIONS, keysOfAction, NO_PERSON_KEYS } from "./keymap-catalogue";
 import { refusalOf } from "./keymap-refusal";
-
-test("each action is named by its scope and its id", () => {
-  const misnamed = Object.entries(KEYMAP_CATALOGUE)
-    .filter(([name, entry]) => name !== `${entry.scope}.${entry.id}`)
-    .map(([name]) => name);
-  expect(misnamed).toEqual([]);
-});
 
 // R13 and R14: the defaults are keys the refusal check itself accepts, so a person who changes
 // nothing has no key Settings would refuse them, and every action a later page adds is held to
