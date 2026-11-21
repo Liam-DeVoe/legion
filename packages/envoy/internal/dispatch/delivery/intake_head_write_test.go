@@ -239,9 +239,14 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // be a hand-back. The keeper's own acknowledgement is there to be read beside them, so a
 // recorder that saw nothing at all cannot pass the row by silence.
 //
-// The tables are put back once the holder has stopped delivering and before the keeper is
-// handed anything, so the keeper's handling is the ordinary one: it writes the head row the
-// holder could not, acknowledges the envelope, and is handed it exactly once.
+// The tables are put back once the holder's handler has returned and before the keeper's handler
+// passes its read of the pull request, so the keeper's handling is the ordinary one: it writes
+// the head row the holder could not, acknowledges the envelope, and is handed it exactly once.
+// The keeper's first read is held until then, as the holder's is: its take-over can come as soon
+// as the holder's row lapses, a margin (400 ms here) after the holder reports its hold lost, and
+// a keeper whose head write ran before the tables were back would hand the envelope back itself
+// and be handed it again (CI's race run of `8bb9f23736`: `["-NAK {\"delay\": 10000000000}"]`,
+// keeper 2 reads).
 //
 // The second case takes no table away: the holder's head write succeeds after its hold has
 // lapsed, and its acknowledgement is withheld as its hand-back is (intakeDelivery.holdCovers), so
@@ -288,7 +293,7 @@ func holdLapseRow(t *testing.T, headStored bool) {
 
 	holder := startHeadWriteProcess(t, pool, natsURL, true)
 	awaitBoundDurable(t, publisher)
-	keeper := startHeadWriteProcess(t, pool, natsURL, false)
+	keeper := startHeadWriteProcess(t, pool, natsURL, true)
 
 	// A merge, so the head row and its branch seed are written together and the write is the
 	// one that fails. The intake reads the pull request before it writes the head, and the
@@ -312,16 +317,15 @@ func holdLapseRow(t *testing.T, headStored bool) {
 	})
 	holder.release()
 
-	// The holder's subscription gone from the durable is its stop finished, so its handler has
-	// returned and whatever it was going to publish is behind it.
-	waitFor(t, 30*time.Second, func() bool {
-		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && !info.PushBound
-	}, func() string {
-		return "the holder has not let the durable go: " + consumerState(publisher)
+	// The holder's keyed runner idle is its handler returned, so whatever it was going to write
+	// or publish is behind it. Only then are the tables put back, and only then is the keeper's
+	// read let go, whenever its take-over handed it the envelope.
+	waitFor(t, 30*time.Second, func() bool { return keyedRunnerIdle(holder.intake) }, func() string {
+		return "the holder's handler never returned: " + consumerState(publisher)
 	})
 	restoreBranchCommits()
 	restoreOwedReads()
+	keeper.release()
 
 	// 60 s: the hold's lapse (intakeHoldTTL, 3 s here), the keeper's poll (durableBindInterval,
 	// 400 ms here) and its take-over's delete, subscribe and create under the consumer lease.
