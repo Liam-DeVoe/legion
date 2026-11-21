@@ -99,6 +99,38 @@ function viewportAt(width: number): { height: number; width: number } {
   return { height: width >= 768 ? 900 : 844, width };
 }
 
+/**
+ * Sets the viewport to `width` and waits out what the resize starts, so a row that reaches a
+ * width by a resize reads what a load at that width draws. It copies `resizeTo` of
+ * `issue-page-p.ts`, the header rows' own file, which no other part's rows read, since
+ * `issue-page.ts` takes no later change. The wait runs to the fourth frame after the first frame
+ * that draws the window at the new width (R), whose rendering fires the resize event and each
+ * width query's change (`useMediaQuery`) before its frame callbacks. Before R+1 React has drawn
+ * what those events asked for - the rail, the Contents pane, the view row's controls - and the
+ * observers of the band's and the view row's heights (`identity-block.ts`,
+ * `slots/view-row.tsx`) have published what R's layout measured. The three frames after R+1 are
+ * the header's: its labels, on an issue that has them, read the line on the frame after their
+ * box changes width, and again two frames later where that reading changed the box's own width.
+ *
+ * On a phone the window can stay wider than the viewport where the page overflows it, so the
+ * wait for the first frame at the new width is bounded.
+ */
+async function resizeTo(page: Page, width: number): Promise<void> {
+  await page.setViewportSize(viewportAt(width));
+  await page.evaluate(async (width) => {
+    const frame = () => {
+      const drawn = Promise.withResolvers<void>();
+      requestAnimationFrame(() => drawn.resolve());
+      return drawn.promise;
+    };
+    for (let frames = 0; frames < 30; frames += 1) {
+      await frame();
+      if (window.innerWidth === width) break;
+    }
+    for (let frames = 0; frames < 4; frames += 1) await frame();
+  }, width);
+}
+
 /** The column that holds the stage and the foot, inside its insets. */
 async function stageWidth(page: Page): Promise<number> {
   return page.getByTestId("issue-column").evaluate((column) => {
@@ -320,8 +352,11 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         message: "the pane is not 240 px wide at 1240 px",
       })
       .toBe(240);
-    await page.setViewportSize(viewportAt(1440));
-    await gotoIssue(page, presetPath(key, "spec"));
+    // Back at 1440 px by a resize, Spec's toggle turns the view on, as a reader turns it on: the
+    // pane drawn above goes in the render that draws the view.
+    await resizeTo(page, 1440);
+    await presetToggle(page, "spec").click();
+    await expect(page).toHaveURL(addressOf(key, "spec"));
     await expect(contentsPane(page), "a view draws the pane").toHaveCount(0);
     expect(await stageWidth(page), "the stage under a view is not 1328 px").toBe(1328);
 
@@ -420,24 +455,27 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await expect(sheet).toBeHidden();
 
     // At each of R10's widths, Details closed and open, nothing is wider than the window, the
-    // rail and the view row are whole, and no scrolling box of the frame scrolls sideways.
-    for (const width of WIDTHS) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+    // rail and the view row are whole, and no scrolling box of the frame scrolls sideways. The
+    // page stands at 390 px from the load above, with its sheet closed, and reaches each other
+    // width by a resize (`resizeTo`), which waits out the renders the width queries ask for.
+    for (const width of PHONE_FIRST) {
+      if (width !== 390) await resizeTo(page, width);
+      // A load leaves the focus on no control, and so does each width here, so `openDetails`'
+      // Shift+M reaches the page's own binding.
+      await focusNothing(page);
       for (const open of [false, true]) {
         if (open) await openDetails(page);
         await assertPageFits(page);
         await assertWhole(filterRow(page));
         await assertNoSidewaysScroll(filterRow(page), `the view row at ${width} px`);
-        // The shell draws the rail in the render that routes to the new page, from a width query
-        // read as it renders, and the view row was drawn above, so one count says whether this
-        // width has the rail.
+        // The shell draws the rail from a width query, whose render the load or the resize above
+        // waited out, so one count says whether this width has the rail.
         if ((await iconRail(page).count()) > 0) {
           await assertWhole(iconRail(page));
           await assertNoSidewaysScroll(iconRail(page), `the rail at ${width} px`);
         }
-        // The page draws the Contents pane in the render that draws the view row read above,
-        // from a width query read as it renders, so one count says whether this width has it.
+        // The page draws the Contents pane from a width query, whose render the load or the
+        // resize above waited out, so one count says whether this width has it.
         if ((await contentsPane(page).count()) > 0) {
           await assertNoSidewaysScroll(contentsPane(page), `the pane at ${width} px`);
         }
@@ -450,8 +488,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
           await closeDetails(page);
         }
       }
-      // The view row read above draws the Outline control in its own render, from a width query
-      // read as it renders, so one count says whether this width has it.
+      // The view row draws the Outline control from a width query, whose render the load or the
+      // resize above waited out, so one count says whether this width has it.
       if ((await outlineControl(page).count()) > 0) {
         await outlineControl(page).click();
         await assertNoSidewaysScroll(outlineSheet(page), `the Outline sheet at ${width} px`);
@@ -671,7 +709,8 @@ test("the five controls are toggles with an address each, one line at every widt
       await expect(page).toHaveURL(addressOf(key, "conversation"));
     }
     // With the menu open under the Outline sheet, Escape closes the sheet and leaves the menu.
-    await gotoIssue(page, `/issues/${key}`);
+    // Conversation, chosen above, left the page at the issue's own address at 390 px, and the
+    // press on the one control below takes the focus wherever it is.
     await presetChooser(page).click();
     await expect(openMenu(page)).toHaveCount(1);
     await outlineControl(page).click();
@@ -681,9 +720,10 @@ test("the five controls are toggles with an address each, one line at every widt
     await expect(openMenu(page), "Escape in the sheet closed the menu under it").toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(openMenu(page)).toHaveCount(0);
+    // Each width by a resize (`resizeTo`): the Outline control is drawn at 390 px too, so the
+    // count at 1023 px reads after the wait for the render that width's queries ask for.
     for (const width of [1023, 390]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await resizeTo(page, width);
       await expect(outlineControl(page), `no Outline control at ${width} px`).toHaveCount(1);
     }
 
@@ -691,8 +731,8 @@ test("the five controls are toggles with an address each, one line at every widt
     // 1280 px and 51 px below, no control in it under 24 px, and each control's words inside
     // its name.
     for (const width of PHONE_FIRST) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      // The page stands at 390 px from the resize above, and reaches each other width by one.
+      if (width !== 390) await resizeTo(page, width);
       await assertPageFits(page);
       const limit = width >= 1280 ? 35 : 51;
       await expect
@@ -723,7 +763,7 @@ test("the five controls are toggles with an address each, one line at every widt
       // A control's words are the text it shows less what it hides from assistive technology,
       // such as a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
-      // The poll above waited for the row to draw at this width and its controls were measured
+      // The resize waited out the row's render at this width and the poll above measured it
       // since, with no press between, so one count lists the buttons it shows.
       for (let at = 0; at < (await named.count()); at += 1) {
         // The count above found this control drawn, and its words are the ones its render wrote,
@@ -748,8 +788,7 @@ test("the five controls are toggles with an address each, one line at every widt
       [390, true],
       [1440, false],
     ] as const) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await resizeTo(page, width);
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       const row = await boxOf(filterRow(page), "the view row");
       if (stays) expect(Math.round(row.y), "the row left the top at 390 px").toBe(0);

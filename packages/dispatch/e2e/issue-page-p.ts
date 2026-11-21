@@ -59,6 +59,41 @@ export function viewportAt(width: number): { readonly height: number; readonly w
   return { height: width < 1024 ? 844 : DESKTOP.height, width };
 }
 
+/**
+ * Sets the viewport to `width` and waits out what the resize starts, so a row that reaches a
+ * width by a resize reads what a load at that width draws. The wait runs to the fourth frame
+ * after the first frame that draws the window at the new width (R), whose rendering fires the
+ * resize event and each width query's change (`useMediaQuery`) before its frame callbacks:
+ *
+ * 1. before R+1, React has drawn what those events asked for, and the labels' observer, which
+ *    saw R's layout, reads the line on R+1 (`IssuePropertiesRow.tsx`);
+ * 2. before R+2, that reading is drawn, and on R+1 an observer saw the layout of any render
+ *    that landed after R;
+ * 3. before R+3, the reading that observer asked for on R+2 is drawn;
+ * 4. before R+4, a second reading is drawn where the first changed the labels' box's own width
+ *    (seen on R+2, read on R+3). That is the frame the labels' walk reads each width at, the
+ *    fourth after the one its width changed in, so a resize reads the line no sooner than the
+ *    walk does.
+ *
+ * On a phone the window can stay wider than the viewport where the page overflows it, so the
+ * wait for the first frame at the new width is bounded.
+ */
+export async function resizeTo(page: Page, width: number): Promise<void> {
+  await page.setViewportSize(viewportAt(width));
+  await page.evaluate(async (width) => {
+    const frame = () => {
+      const drawn = Promise.withResolvers<void>();
+      requestAnimationFrame(() => drawn.resolve());
+      return drawn.promise;
+    };
+    for (let frames = 0; frames < 30; frames += 1) {
+      await frame();
+      if (window.innerWidth === width) break;
+    }
+    for (let frames = 0; frames < 4; frames += 1) await frame();
+  }, width);
+}
+
 /** A real issue's title, 115 characters: the one the header's widths were read on. */
 export const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
@@ -907,35 +942,39 @@ export function waitingPressInHistory(page: Page): Promise<number | null> {
 }
 
 /** A title of `lines` lines at the header's width: words added until the heading, drawn whole,
- *  takes that many lines of its own line height. */
-export async function titleOfLines(page: Page, lines: number): Promise<string> {
-  const words = ["The", "header", "keeps", "the", "press", "that", "ends", "a", "title", "edit"];
-  let title = "Edit";
-  for (let index = 0; index < 400; index += 1) {
-    title = `${title} ${words[index % words.length]}`;
-    // The caller waits for the header drawn first, and each call lays out and measures its own
-    // hidden copy within the call.
-    const drawn = await page.evaluate((text) => {
-      const heading = document.querySelector<HTMLElement>(
-        "[data-issue-page] [data-issue-header] h1"
-      );
-      if (heading === null) return 0;
-      const probe = heading.cloneNode() as HTMLElement;
-      probe.textContent = text;
-      probe.style.display = "block";
-      probe.style.webkitLineClamp = "unset";
-      probe.style.width = `${heading.getBoundingClientRect().width}px`;
-      probe.style.position = "absolute";
-      probe.style.visibility = "hidden";
-      heading.parentElement?.append(probe);
+ *  takes that many lines of its own line height. One page function adds the words and measures
+ *  each title on one hidden copy of the heading, laid out at the heading's width, so a word costs
+ *  a layout and no round trip. It waits for the document's fonts first, so a title is measured
+ *  in the face the header draws it in and not in the fallback a typeface still loading leaves.
+ *  The caller waits for the header drawn first. */
+export function titleOfLines(page: Page, lines: number): Promise<string> {
+  return page.evaluate(async (lines) => {
+    await document.fonts.ready;
+    const heading = document.querySelector<HTMLElement>("[data-issue-page] [data-issue-header] h1");
+    if (heading === null) throw new Error("the header draws no title");
+    const words = ["The", "header", "keeps", "the", "press", "that", "ends", "a", "title", "edit"];
+    const probe = heading.cloneNode() as HTMLElement;
+    probe.style.display = "block";
+    probe.style.webkitLineClamp = "unset";
+    probe.style.width = `${heading.getBoundingClientRect().width}px`;
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    heading.parentElement?.append(probe);
+    try {
       const lineHeight = Number.parseFloat(getComputedStyle(probe).lineHeight);
-      const count = Math.round((probe.getBoundingClientRect().height - 2) / lineHeight);
+      let title = "Edit";
+      for (let index = 0; index < 400; index += 1) {
+        title = `${title} ${words[index % words.length]}`;
+        probe.textContent = title;
+        if (Math.round((probe.getBoundingClientRect().height - 2) / lineHeight) === lines) {
+          return title;
+        }
+      }
+    } finally {
       probe.remove();
-      return count;
-    }, title);
-    if (drawn === lines) return title;
-  }
-  throw new Error(`no title takes ${lines} lines`);
+    }
+    throw new Error(`no title takes ${lines} lines`);
+  }, lines);
 }
 
 /** The page's clipboard, as `holdClipboard` replaces it. */

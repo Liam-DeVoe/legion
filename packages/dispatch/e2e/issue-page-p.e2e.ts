@@ -50,6 +50,7 @@ import {
   lineOrder,
   MEASURED_TITLE,
   propertiesLine,
+  resizeTo,
   seedHeader,
   shortControls,
   stickyReading,
@@ -165,15 +166,28 @@ async function pressOutOfTheEdit(
   await page.mouse.up();
 }
 
+/** Opens issue `key` within the app, as a link does, and waits for its key in the band: the band
+ *  draws the key of the issue the page has read, so the header a row reads next is that issue's
+ *  and not the one the page left. */
+async function openInApp(page: Page, key: string): Promise<void> {
+  await navigateInApp(page, `/issues/${key}`);
+  await expect(
+    identityBand(page).getByText(key, { exact: true }),
+    `the page did not open ${key}`
+  ).toBeVisible();
+}
+
 // Row (1): the header draws every property with a value at every width, on the measured title
 // and 20 labels.
 // On the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
 // targets, the page no wider than the window, the navigation's control first on row one and the
 // dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
-// SLOW(>=2s): 15,176 ms on chromium and 7,070 ms on iphone (one worker, Job e2e-rows-rdf2g at
-// 43949bc0): twelve loads of the issue on chromium and five on iphone, and at each of its widths
-// every part of the header read whole and Details opened and closed three times.
+// SLOW(>=2s): 33.7 s on chromium and 17.4 s on iphone (one worker on the two CPUs of the
+// INFRA-1109 pod, at 16b96e0b with this change; 42.2 s and 17.4 s there before it): six loads
+// of the issue, four resizes and two moves within the app on chromium, three loads and the two
+// moves on iphone, and at each of its widths every part of the header read whole and Details
+// opened and closed three times.
 test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -181,10 +195,18 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     const desktopProject = test.info().project.name !== "iphone";
 
     // No approval request waits on the reader: the approval control reads Not requested and
-    // carries no Approve, and the header holds its limit for that case.
-    for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+    // carries no Approve, and the header holds its limit for that case. Each pass loads the page
+    // at its first width and reaches the next by a resize (`resizeTo`), which waits out the
+    // renders a width asks for. This pass loads at 390 px, so the phone's width is read on a
+    // fresh load in every project, and the next pass loads at 1440 px.
+    const firstPass = desktopProject ? [IPHONE_13.width, DESKTOP.width] : [IPHONE_13.width];
+    for (const [index, width] of firstPass.entries()) {
+      if (index === 0) {
+        await page.setViewportSize(viewportAt(width));
+        await gotoIssue(page, `/issues/${seeded.key}`);
+      } else {
+        await resizeTo(page, width);
+      }
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
@@ -228,9 +250,16 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     ];
 
     let drawnAtDesktop: number | undefined;
-    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+    // Loaded at 1440 px, the first page the request shows on, and resized to each narrower width:
+    // each width ends with Details and the menus closed, scrolls the page to its top below, and
+    // takes the line's narrowing off before the labels are read again.
+    for (const [index, width] of (desktopProject ? [1440, 1280, 1024, 390] : [390]).entries()) {
+      if (index === 0) {
+        await page.setViewportSize(viewportAt(width));
+        await gotoIssue(page, `/issues/${seeded.key}`);
+      } else {
+        await resizeTo(page, width);
+      }
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -572,8 +601,11 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     await expect(labelsLeft(page), "a label that fits ends on a count").toHaveCount(0);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(0);
 
-    // A child of the issue, which has no children of its own, draws no children's progress.
-    await gotoIssue(page, `/issues/${seeded.childKeys[0]}`);
+    // A child of the issue, which has no children of its own, draws no children's progress. It
+    // and the parent below are opened within the app, as a link opens them. The page each move
+    // leaves fails the count read after it: the issue draws its children's progress, and the
+    // child draws no route marker.
+    await openInApp(page, seeded.childKeys[0]);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByTestId("issue-progress-children"),
@@ -583,7 +615,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // The parent, whose route reaches nobody, draws the header's one marker, after its approval
     // control and before its one label.
     await patchIssue(seeded.parentKey, { labels: ["dispatch"] });
-    await gotoIssue(page, `/issues/${seeded.parentKey}`);
+    await openInApp(page, seeded.parentKey);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(1);
     await expect(issueHeader(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
@@ -707,15 +739,8 @@ test("the approval entries stay in the header and read the document each step ap
     // makes of it, not what a read of the projects still pending would. A root of a project that
     // gates nothing carries the one chip, "Not requested".
     await expect(steps.locator("[data-approval-step]")).toHaveCount(3);
-    const openInApp = async (key: string) => {
-      await navigateInApp(page, `/issues/${key}`);
-      await expect(
-        identityBand(page).getByText(key, { exact: true }),
-        `the page did not open ${key}`
-      ).toBeVisible();
-    };
     const plain = await createIssue({ project: "PLAIN", spec: "The plan.", title: "Plain root" });
-    await openInApp(plain.key);
+    await openInApp(page, plain.key);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-approval-steps")).toHaveCount(0);
     await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
@@ -742,7 +767,7 @@ test("the approval entries stay in the header and read the document each step ap
       spec: "The child's plan.",
       title: "Child of the gated root",
     });
-    await oneChip(gatedChild.key, openInApp);
+    await oneChip(gatedChild.key, (opened) => openInApp(page, opened));
     const childOf = (parent: string, title: string) =>
       createIssue({ parent, project: "PLAIN", spec: "The child's plan.", title });
     const unapproved = await createIssue({
@@ -804,9 +829,10 @@ test("the approval entries stay in the header and read the document each step ap
 // in the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
-// SLOW(>=2s): 14,270 ms on chromium and 13,365 ms on iphone (one worker, Job e2e-rows-rdf2g at
-// 43949bc0): thirteen loads of the issue in two signed-in contexts, each waiting for the
-// typeface to load or fail, and the header's limits measured at twelve of them.
+// SLOW(>=2s): 21.4 s on chromium and 19.0 s on iphone (one worker on the two CPUs of the
+// INFRA-1109 pod, at 16b96e0b with this change; 39.9 s and 40.3 s there before it): four loads
+// of the issue in two signed-in contexts, each waiting for the typeface to load or fail, eight
+// resizes, and the header's limits measured at twelve widths.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -842,9 +868,21 @@ test("the header holds its limits when the typeface does not load @phone", async
         if (requestWaiting) {
           await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
         }
-        for (const width of [DESKTOP.width, IPHONE_13.width]) {
-          await page.setViewportSize(viewportAt(width));
-          await gotoIssue(page, `/issues/${seeded.key}`);
+        // Each pass loads the page once and reaches its other width by a resize (`resizeTo`),
+        // which waits out the renders a width asks for. The first pass reads 1440 px on the load
+        // above, at the same address and size with no write since; the second loads at 390 px
+        // with the request waiting. So each width is read once on a fresh load, and the face,
+        // loaded for the document, is the one each resize draws in.
+        const widths = requestWaiting
+          ? [IPHONE_13.width, DESKTOP.width]
+          : [DESKTOP.width, IPHONE_13.width];
+        for (const [index, width] of widths.entries()) {
+          if (index > 0) {
+            await resizeTo(page, width);
+          } else if (requestWaiting) {
+            await page.setViewportSize(viewportAt(width));
+            await gotoIssue(page, `/issues/${seeded.key}`);
+          }
           await expectHeaderDrawn(page);
           await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
           await expect
@@ -854,9 +892,16 @@ test("the header holds its limits when the typeface does not load @phone", async
             .toEqual(["loaded"]);
           await expectHeaderWithinItsLimit(page, width, requestWaiting, TYPEFACE);
         }
-        for (const width of [DESKTOP.width, 1024, IPHONE_13.width, 320]) {
-          await without.setViewportSize(viewportAt(width));
-          await gotoIssue(without, `/issues/${seeded.key}`);
+        // In the fallback each pass loads at 390 px, the phone's width the `@phone` tag is for,
+        // and resizes to the other three: a face whose request failed stays failed for the
+        // document, and a resize asks for no file.
+        for (const [index, width] of [IPHONE_13.width, 320, 1024, DESKTOP.width].entries()) {
+          if (index === 0) {
+            await without.setViewportSize(viewportAt(width));
+            await gotoIssue(without, `/issues/${seeded.key}`);
+          } else {
+            await resizeTo(without, width);
+          }
           await expectHeaderDrawn(without);
           await expect(issueHeader(without)).toContainText(MEASURED_TITLE);
           await expect
@@ -1220,10 +1265,11 @@ test("a press on the status straight out of the title's editor lands on the stat
 // `packages/dispatch/AGENTS.md` tags `@phone` for. A tap's mouse events come after its touch
 // events: the order `IssueTitleRow.tsx` holds the title's height by until the press is
 // delivered, at 390 px.
-// SLOW(>=2s): 10,227 ms on chromium and 4,970 ms on iphone (one worker, Job e2e-rows-rdf2g at
-// 43949bc0): at each width, for a title of two lines and of three, three loads of the issue and
-// a title built a word at a time, each word measured in the page: twelve loads on chromium and
-// six on iphone.
+// SLOW(>=2s): 20.4 s on chromium and 11.9 s on iphone (one worker on the two CPUs of the
+// INFRA-1109 pod, at 16b96e0b with this change; 26.4 s and 17.6 s there before it): at each
+// width both titles built a word at a time in one page function, then for each two loads of the
+// issue and the presses out of its edit: nine loads and a resize on chromium, five loads on
+// iphone.
 test("the press that ends a title edit reaches the control under it @phone", async ({
   browser,
 }) => {
@@ -1231,12 +1277,22 @@ test("the press that ends a title edit reaches the control under it @phone", asy
   await phase(browser, seedHeader, async (page, seeded) => {
     const tap = test.info().project.name === "iphone";
     const widths = tap ? [IPHONE_13.width] : [DESKTOP.width, IPHONE_13.width];
-    for (const width of widths) {
-      await page.setViewportSize(viewportAt(width));
-      for (const lines of [2, 3]) {
+    for (const [index, width] of widths.entries()) {
+      // Both titles are measured on the first page each width draws, before either is written:
+      // a load at the first width, and on chromium a resize to 390 px (`resizeTo`), which waits
+      // out the render that takes the rail away. The heading is a stretched grid item
+      // (`IssueTitleRow.tsx`), as wide as its row whatever title it draws, so the title the page
+      // draws when it is measured does not change the measure.
+      if (index === 0) {
+        await page.setViewportSize(viewportAt(width));
         await gotoIssue(page, `/issues/${seeded.key}`);
-        await expectHeaderDrawn(page);
-        const title = await titleOfLines(page, lines);
+      } else {
+        await resizeTo(page, width);
+      }
+      await expectHeaderDrawn(page);
+      const titles = { 2: await titleOfLines(page, 2), 3: await titleOfLines(page, 3) };
+      for (const lines of [2, 3] as const) {
+        const title = titles[lines];
         await patchIssue(seeded.key, { title });
         await gotoIssue(page, `/issues/${seeded.key}`);
         await expectHeaderDrawn(page);
@@ -1309,9 +1365,10 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 // a key ends finds the press under way, and a title of three lines stays drawn whole at 1440 px
 // instead of clamped to two. A drag of selected words is a press of the mouse, so the row runs at
 // the desktop width and on no phone.
-// SLOW(>=2s): 2,221 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): two loads, a three-line
-// title built a word at a time with a measurement in the page per word, and a drag of the
-// selected words in eight steps, polled until its dragend and the title's clamp.
+// SLOW(>=2s): 6.5 s (one worker on the two CPUs of the INFRA-1109 pod, at 16b96e0b with this
+// change; 7.8 s there before it): two loads, a three-line title built a word at a time in one
+// page function, and a drag of the selected words in eight steps, polled until its dragend and
+// the title's clamp.
 test("the title is clamped again after a key ends an edit whose words the reader dragged", async ({
   browser,
 }) => {
@@ -1962,10 +2019,10 @@ function framesDrawn(page: Page, frames: number): Promise<void> {
 // passed it: with the count's held width taken out, row (1) still passed.
 // This row narrows the line pixel by pixel and reads, at each width, that the chips drawn whole
 // and the count's number add up to every label, and that no chip is drawn cut.
-// SLOW(>=2s): 2,088 frames - four at each of 261 widths of the line, at two viewport widths -
-// after two loads of the issue: 36,518 to 37,382 ms on one worker with the walk in the page (three
-// runs, Job e2e-rows-5q7j2 at 13d67d68 with this walk), and 47,383 ms as three round trips a step
-// (one worker, Job e2e-rows-rdf2g at 43949bc0).
+// SLOW(>=2s): 522 widths of the line, 261 at each of two viewport widths, after one load and one
+// resize, each read once the labels' reading of it lands - about two frames a width where the
+// line's width changes, and four where it does not: 22.2 s on one worker on the two CPUs of the
+// INFRA-1109 pod (at 16b96e0b with this walk), where four frames at every width took 43.1 s.
 test("the labels' count names every label the line leaves out, at every width of the line", async ({
   browser,
 }) => {
@@ -1973,30 +2030,66 @@ test("the labels' count names every label the line leaves out, at every width of
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
+    // The page loads at 1440 px and reaches 1024 px by a resize (`resizeTo`): the labels read
+    // the line again whenever its width changes, and the walk starts from the line as drawn.
+    await gotoIssue(page, `/issues/${seeded.key}`);
     for (const width of [DESKTOP.width, 1024]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      if (width !== DESKTOP.width) await resizeTo(page, width);
       await expectHeaderDrawn(page);
       await expect(labelsLeft(page)).toBeVisible();
-      // The whole walk is one page function, so a step costs its four frames and no round trip of
-      // the row's: each width is set, drawn and read in the page, with the reading
+      // The whole walk is one page function, so a step costs its frames and no round trip of the
+      // row's: each width is set, drawn and read in the page, with the reading
       // `labelsAgainstTheCount` makes (`LABELS_READING`), and only what is wrong comes back.
+      // Each width goes in inside a frame's callbacks, so that frame (F) lays it out and the
+      // labels' observer sees it there. The step reads once the labels' reading of that width
+      // has landed, and no later than F+4, where it always read: by then the reading the
+      // observer asks for on F+1 has landed, and a second one where the first changed the
+      // labels' box's own width (seen on F+2, read on F+3). A reading lays every chip out and
+      // then draws the ones that fit, in one task, and the count is drawn throughout the walk,
+      // so each reading changes the box's children, which a `MutationObserver` on the box sees
+      // once that task ends. Where the box keeps its width, no reading comes, and the step reads
+      // at F+4.
       const wrong = await propertiesLine(page).evaluate(
         async (line, { labels, reading }) => {
           const read = new Function(`return ${reading}`)() as (
             line: Element
           ) => LabelsAgainstTheCount;
+          const box = line.querySelector<HTMLElement>('[data-testid="issue-header-labels"]');
+          if (box === null) throw new Error("the header draws no labels' box");
           const full = line.getBoundingClientRect().width;
           const wrong: string[] = [];
+          // Whether the walk runs inside a frame's callbacks, as it does where the last step
+          // read at F+4: the next width goes in there, and anywhere else waits for a frame.
+          let inFrame = false;
           for (let by = 0; by <= 260; by += 1) {
-            line.style.maxWidth = `${full - by}px`;
-            for (let frames = 0; frames < 4; frames += 1) {
+            if (!inFrame) {
               const drawn = Promise.withResolvers<void>();
               requestAnimationFrame(() => drawn.resolve());
               await drawn.promise;
             }
-            // Four animation frames have begun since the width changed (the read runs in the
-            // fourth's callback), so the labels were read again at that width.
+            line.style.maxWidth = `${full - by}px`;
+            // The box's width as the observer reads it on F, which a reading may change.
+            const observed = box.clientWidth;
+            const fourth = Promise.withResolvers<void>();
+            let frames = 0;
+            let frame = 0;
+            const next = () => {
+              frames += 1;
+              if (frames === 4) fourth.resolve();
+              else frame = requestAnimationFrame(next);
+            };
+            frame = requestAnimationFrame(next);
+            const readingLanded = () => {
+              const landed = Promise.withResolvers<void>();
+              const seen = new MutationObserver(() => landed.resolve());
+              seen.observe(box, { childList: true });
+              void fourth.promise.then(() => landed.resolve());
+              return landed.promise.finally(() => seen.disconnect());
+            };
+            await readingLanded();
+            if (frames < 4 && box.clientWidth !== observed) await readingLanded();
+            cancelAnimationFrame(frame);
+            inFrame = frames === 4;
             const { cut, left, whole } = read(line);
             if (whole + left !== labels || cut.length > 0) {
               wrong.push(
