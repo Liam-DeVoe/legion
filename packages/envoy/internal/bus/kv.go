@@ -511,7 +511,7 @@ func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(val
 // lands in between is kept, and returns that revision, 0 when there was none to read. A value
 // readable refuses is deleted at the revision the stream's leader reports for it, the one it is
 // stored at. A delete the bucket refuses at the revision a direct get reported is followed by one
-// read of the key from the stream's leader: a record the server wrote (WrittenByServer), which a
+// read of the key from the stream's leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a
 // direct get can report at another stream's sequence however its value reads, is deleted at the
 // sequence it is stored at, and any other answer leaves the refusal standing, a write that
 // landed in between being kept.
@@ -530,15 +530,7 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 	entry, err := kv.ReadStored(ctx, key, readable)
 	switch {
 	case err == nil:
-		revision := entry.Revision()
-		err := kv.Delete(key, nats.LastRevision(revision))
-		if err == nil || !IsCASConflict(err) {
-			return revision, err
-		}
-		if written, deleted, dropErr := kv.DeleteServerWritten(ctx, key); deleted {
-			return written, dropErr
-		}
-		return revision, err
+		return kv.DeleteAt(ctx, key, entry.Revision())
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return 0, nil
 	case errors.Is(err, ErrRefused):
@@ -548,8 +540,28 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 	}
 }
 
+// DeleteAt deletes key fenced on revision, the revision a read of the key reported, and returns the
+// revision the delete landed at. A delete the bucket refuses as a compare-and-swap conflict
+// (IsCASConflict - a wrong last sequence, reported as ErrKeyExists for a key holding a value and as
+// a wrong-last-sequence error otherwise) is followed by one read of the key from the stream's
+// leader: a record the server wrote (DeleteServerWritten), which a direct get reports at another
+// stream's sequence however its value reads, is deleted at the sequence it is stored at and that
+// sequence returned; any other compare-and-swap refusal is returned as its error with revision, a
+// write that landed between the read and the delete being kept. A delete refused for any other
+// reason is that error.
+func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (uint64, error) {
+	err := kv.Delete(key, nats.LastRevision(revision))
+	if err == nil || !IsCASConflict(err) {
+		return revision, err
+	}
+	if written, deleted, dropErr := kv.DeleteServerWritten(ctx, key); deleted {
+		return written, dropErr
+	}
+	return revision, err
+}
+
 // DeleteServerWritten deletes key's newest message when it is one the server wrote
-// (WrittenByServer), at the sequence the stream's leader reports it stored at, fenced there, and
+// (ReadFromLeader, LeaderServerWritten), at the sequence the stream's leader reports it stored at, fenced there, and
 // reports that sequence and whether it made the delete. It is the step a fenced delete the bucket
 // refused takes (DeleteAtRead, session.SessionRegistry.DeleteIf): a direct get reports such a
 // message at another stream's sequence however its value reads, so the delete fenced on that is
@@ -557,17 +569,14 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 // as it is and answered not deleted, with no error: the refusal stands for its caller to answer.
 // A read of the leader that fails is answered not deleted with its error.
 func (kv KeyValue) DeleteServerWritten(ctx context.Context, key string) (uint64, bool, error) {
-	leader, err := kv.NewestFromLeader(ctx, key)
-	if errors.Is(err, nats.ErrKeyNotFound) {
-		return 0, false, nil
-	}
+	leader, err := kv.ReadFromLeader(ctx, key)
 	if err != nil {
 		return 0, false, err
 	}
-	if leader.Operation() != nats.KeyValuePut || !WrittenByServer(leader) {
+	if !leader.WrittenByServer() {
 		return 0, false, nil
 	}
-	return leader.Revision(), true, kv.Delete(key, nats.LastRevision(leader.Revision()))
+	return leader.Revision, true, kv.Delete(key, nats.LastRevision(leader.Revision))
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

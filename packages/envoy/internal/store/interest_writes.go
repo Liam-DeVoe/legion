@@ -405,7 +405,7 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 
 // createInterest writes value as sessionID's row where the read its write was planned from found
 // none. A key with no row can still hold a message, a delete or a purge marker, which the write
-// replaces at the sequence the stream's leader reports it stored at (bus.KeyValue.NewestFromLeader);
+// replaces at the sequence the stream's leader reports it stored at (bus.KeyValue.ReadFromLeader);
 // only a key the stream holds no message for is created. nats.go's Create would replace the marker
 // at the revision a direct get reports for it, which for a marker the server copied from another
 // key's is the source's: the copy carries the source's Nats-Sequence header ahead of its own, so
@@ -413,12 +413,12 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 // as long as the copy stood. A key whose newest message is a row stored since that read is left to
 // Create, which the bucket refuses with nats.ErrKeyExists.
 func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, value []byte) (uint64, error) {
-	newest, err := kv.NewestFromLeader(ctx, sessionID)
+	leader, err := kv.ReadFromLeader(ctx, sessionID)
 	switch {
-	case err == nil && newest.Operation() != nats.KeyValuePut:
-		return kv.Update(sessionID, value, newest.Revision())
-	case err != nil && !errors.Is(err, nats.ErrKeyNotFound):
+	case err != nil:
 		return 0, err
+	case leader.Kind == bus.LeaderMarker:
+		return kv.Update(sessionID, value, leader.Revision)
 	}
 	return kv.Create(sessionID, value)
 }

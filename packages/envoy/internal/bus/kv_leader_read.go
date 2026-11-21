@@ -29,7 +29,7 @@ const (
 // sequence that is the key's revision, the time the stream stored it, and whether it is a put, a
 // delete marker or a purge marker. Its Delta is 0, which is what nats.go's own entry answers for a
 // read of one key (kv.go:676-682, whose kve carries no delta either). header is the headers the
-// stream stores with the message, read by WrittenByServer.
+// stream stores with the message, read by isServerWritten.
 type leaderEntry struct {
 	bucket   string
 	key      string
@@ -55,18 +55,18 @@ func (e leaderEntry) Operation() nats.KeyValueOp { return e.op }
 // Create, Update, Delete and Purge send the message with none of them.
 var serverWrittenHeaders = [...]string{nats.JSStream, nats.JSSubject, nats.JSSequence, nats.JSTimeStamp, "Nats-Stream-Source"}
 
-// WrittenByServer reports whether entry, a read of NewestFromLeader or GetFromLeader, is a message
+// isServerWritten reports whether entry, a read of NewestFromLeader or GetFromLeader, is a message
 // the server wrote on its own and no writer's record: its stored headers carry one of
 // serverWrittenHeaders, or a status line (which nats.go decodes as the Status header). The server
 // stores such a message as its answer to a request naming the key's subject as its reply subject
 // (a direct get's copy of another key's record, a JetStream answer, a status record), and a
 // RePublish of another stream that names the key's subject stores one too, whatever body that
 // stream was given. nats.go reads a KV entry's revision from the first Nats-Sequence header of a
-// direct get's answer, so such a message carrying one is reported at another stream's sequence,
-// and a write fenced on that is refused at every attempt; the leader's read reports the sequence
-// it is stored at. An entry of any other read is no leader read, and answers false: only the
-// stream message get carries the headers the stream stored.
-func WrittenByServer(entry nats.KeyValueEntry) bool {
+// direct get's answer, so such a message carrying one is reported at another stream's sequence, and
+// a write fenced on that is refused at every attempt; the leader's read reports the sequence it is
+// stored at. An entry of any other read is no leader read, and answers false. ReadFromLeader
+// classifies a leader read with it; LeaderEntry.WrittenByServer answers the classified result.
+func isServerWritten(entry nats.KeyValueEntry) bool {
 	read, ok := entry.(leaderEntry)
 	if !ok {
 		return false
@@ -80,6 +80,57 @@ func WrittenByServer(entry nats.KeyValueEntry) bool {
 		}
 	}
 	return false
+}
+
+// LeaderKind classifies a key's newest message read from the bucket's stream leader.
+type LeaderKind uint8
+
+const (
+	// LeaderAbsent is a key the stream holds no message for.
+	LeaderAbsent LeaderKind = iota
+	// LeaderMarker is a delete or purge marker.
+	LeaderMarker
+	// LeaderServerWritten is a put the server wrote on its own (isServerWritten), no writer's record.
+	LeaderServerWritten
+	// LeaderPut is a writer's put.
+	LeaderPut
+)
+
+// LeaderEntry is a key's newest message read from the bucket's stream leader (ReadFromLeader),
+// classified: its kind, the sequence it is stored at (Revision, 0 for an absent key, the true
+// stored sequence otherwise and never a copied one), and the value of a writer's put (nil for every
+// other kind). It is the one reading every caller that decides a delete, or the revision a write is
+// fenced on, shares, so a new kind of server-written message is classified in one place.
+type LeaderEntry struct {
+	Kind     LeaderKind
+	Revision uint64
+	Value    []byte
+}
+
+// WrittenByServer reports whether the leader's newest message for the key is a put the server wrote
+// on its own and no writer's record.
+func (e LeaderEntry) WrittenByServer() bool { return e.Kind == LeaderServerWritten }
+
+// ReadFromLeader reads key's newest message from the bucket's stream leader (NewestFromLeader) and
+// classifies it (LeaderEntry): a key the stream holds no message for is LeaderAbsent at revision 0,
+// a delete or purge marker is LeaderMarker, a put the server wrote is LeaderServerWritten, and a
+// writer's put is LeaderPut with its value, each marker and put at the sequence it is stored at. A
+// read the leader refused or did not answer is the error, not a kind: no caller may decide a delete
+// or a write over a key it could not read.
+func (kv KeyValue) ReadFromLeader(ctx context.Context, key string) (LeaderEntry, error) {
+	newest, err := kv.NewestFromLeader(ctx, key)
+	switch {
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return LeaderEntry{Kind: LeaderAbsent}, nil
+	case err != nil:
+		return LeaderEntry{}, err
+	case newest.Operation() != nats.KeyValuePut:
+		return LeaderEntry{Kind: LeaderMarker, Revision: newest.Revision()}, nil
+	case isServerWritten(newest):
+		return LeaderEntry{Kind: LeaderServerWritten, Revision: newest.Revision()}, nil
+	default:
+		return LeaderEntry{Kind: LeaderPut, Revision: newest.Revision(), Value: newest.Value()}, nil
+	}
 }
 
 // GetFromLeader reads key as Get reads it, with one difference: the leader of the bucket's

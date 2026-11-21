@@ -171,10 +171,13 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, err
 		}
 		revision := entry.Revision()
+		// A server-written record that does not decode as sessionID's registration is read as no
+		// record here (DecodeEntry refuses it) and, where the delete runs, deleted at the fenced
+		// delete's leader read (DeleteServerWritten below). One that does decode as the registration
+		// is read like the registration it looks like - a leader read would be needed to tell it
+		// from one, which this delete does not make - and no reader trusts it: every reader confirms
+		// a session by the leader read (StoredByWriter), which reads such a record as absent.
 		stored, err := DecodeEntry(sessionID, entry.Value())
-		if err == nil && bus.WrittenByServer(entry) {
-			err = fmt.Errorf("%w: stored under %s, it is a message the server wrote", ErrEntryUnbound, sessionID)
-		}
 		if err != nil {
 			// A value this build cannot read names no instance and no moment, so it belongs
 			// to nobody and is older than every stop: it is deleted as an entry that meets
@@ -201,42 +204,28 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 		if kept := conditions.keeps(stored); kept != EntryDeleted {
 			return kept, nil
 		}
-		_, answered, err = bus.Bounded(ctx, func() (struct{}, error) {
-			return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
+		deletedAt, answered, err := bus.Bounded(ctx, func() (uint64, error) {
+			return kv.DeleteAt(ctx, sessionID, revision)
 		})
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)
 		}
-		if errors.Is(err, nats.ErrKeyExists) {
-			// A refusal at the revision a direct get reported can be a record the server
-			// wrote, which a direct get reports at another stream's sequence however its value
-			// reads: such a record belongs to nobody, and it is deleted at the sequence it is
-			// stored at (bus.KeyValue.DeleteServerWritten). Any other refusal is a write that
-			// landed between the read and the delete, and the sequence runs once more for it.
-			dropped, answered, err := bus.Bounded(ctx, func() (uint64, error) {
-				revision, deleted, err := kv.DeleteServerWritten(ctx, sessionID)
-				if !deleted {
-					return 0, err
-				}
-				return revision, err
-			})
-			if !answered {
-				return EntryUnanswered, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
-			}
-			if err == nil && dropped != 0 {
-				r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, dropped))
-				return EntryDeleted, nil
-			}
+		switch {
+		case err == nil:
+			// DeleteAt landed the fenced delete, or deleted a record the server wrote at the
+			// sequence it is stored at (bus.KeyValue.DeleteServerWritten): the entry is gone.
+			r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, deletedAt))
+			return EntryDeleted, nil
+		case bus.IsCASConflict(err):
+			// A write landed between the read and the delete: the sequence runs once more for
+			// it, and after a retry the row is reported kept to that write.
 			if attempt == 0 {
 				continue
 			}
 			return EntryKeptAfterLostRace, nil
-		}
-		if err != nil {
+		default:
 			return EntryUnanswered, err
 		}
-		r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, revision))
-		return EntryDeleted, nil
 	}
 }
 

@@ -948,28 +948,28 @@ var errUndecodableEntry = errors.New("the stored value is no session entry")
 // key, or a RePublish of another stream naming the key's subject, carries that stream's header
 // ahead of its own: a write fenced on a direct get's revision is then refused at every attempt. The
 // leader's read reports the sequence the message is stored at, so the write replaces it there. On
-// that read a message the server wrote on its own (bus.WrittenByServer), a delete or purge marker,
+// that read a message the server wrote on its own (bus.LeaderServerWritten), a delete or purge marker,
 // and a value no read decodes are each errUndecodableEntry at the sequence they are stored at, which
 // the write replaces by an update with the caller's own entry; only a key the stream holds no
 // message for is revision 0, which the write creates.
 func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (SessionEntry, uint64, error) {
 	if fromLeader {
-		newest, err := kv.NewestFromLeader(ctx, sessionID)
+		leader, err := kv.ReadFromLeader(ctx, sessionID)
 		switch {
-		case errors.Is(err, nats.ErrKeyNotFound):
-			return SessionEntry{}, 0, nil
 		case err != nil:
 			return SessionEntry{}, 0, err
-		case newest.Operation() != nats.KeyValuePut:
-			return SessionEntry{}, newest.Revision(), fmt.Errorf("%w: stored under %s, its newest message is a delete or purge marker", errUndecodableEntry, sessionID)
-		case bus.WrittenByServer(newest):
-			return SessionEntry{}, newest.Revision(), fmt.Errorf("%w: stored under %s, it is a message the server wrote", errUndecodableEntry, sessionID)
+		case leader.Kind == bus.LeaderAbsent:
+			return SessionEntry{}, 0, nil
+		case leader.Kind == bus.LeaderMarker:
+			return SessionEntry{}, leader.Revision, fmt.Errorf("%w: stored under %s, its newest message is a delete or purge marker", errUndecodableEntry, sessionID)
+		case leader.Kind == bus.LeaderServerWritten:
+			return SessionEntry{}, leader.Revision, fmt.Errorf("%w: stored under %s, it is a message the server wrote", errUndecodableEntry, sessionID)
 		}
 		var entry SessionEntry
-		if err := json.Unmarshal(newest.Value(), &entry); err != nil {
-			return SessionEntry{}, newest.Revision(), fmt.Errorf("%w: %w", errUndecodableEntry, err)
+		if err := json.Unmarshal(leader.Value, &entry); err != nil {
+			return SessionEntry{}, leader.Revision, fmt.Errorf("%w: %w", errUndecodableEntry, err)
 		}
-		return entry, newest.Revision(), nil
+		return entry, leader.Revision, nil
 	}
 	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if errors.Is(err, nats.ErrKeyNotFound) {
@@ -1026,26 +1026,24 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 // StoredByWriter classifies it, with the revision added): the decoded entry and the revision the
 // message is stored at, found true, when the leader's newest message is a writer's put DecodeEntry
 // binds to sessionID; and the zero entry, found false, for a key the stream holds no message for,
-// a delete or purge marker, a put the server wrote (bus.WrittenByServer), and a put DecodeEntry
+// a delete or purge marker, a put the server wrote (bus.LeaderServerWritten), and a put DecodeEntry
 // refuses for sessionID - a record the server stored at the key's subject, a direct get's copy or
 // a RePublish among them, which no write of the entry may take for a writer's. A read the leader
 // refused or did not answer is the error, since no write may proceed over a key it could not read
 // from the leader.
 func readEntryFromLeader(ctx context.Context, kv bus.KeyValue, sessionID string) (entry SessionEntry, revision uint64, found bool, err error) {
-	newest, err := kv.NewestFromLeader(ctx, sessionID)
-	switch {
-	case errors.Is(err, nats.ErrKeyNotFound):
-		return SessionEntry{}, 0, false, nil
-	case err != nil:
+	leader, err := kv.ReadFromLeader(ctx, sessionID)
+	if err != nil {
 		return SessionEntry{}, 0, false, err
-	case newest.Operation() != nats.KeyValuePut, bus.WrittenByServer(newest):
-		return SessionEntry{}, newest.Revision(), false, nil
 	}
-	entry, decodeErr := DecodeEntry(sessionID, newest.Value())
+	if leader.Kind != bus.LeaderPut {
+		return SessionEntry{}, leader.Revision, false, nil
+	}
+	entry, decodeErr := DecodeEntry(sessionID, leader.Value)
 	if decodeErr != nil {
-		return SessionEntry{}, newest.Revision(), false, nil
+		return SessionEntry{}, leader.Revision, false, nil
 	}
-	return entry, newest.Revision(), true, nil
+	return entry, leader.Revision, true, nil
 }
 
 // rewriteStoredEntry is the change of sessionID's entry as the bucket holds it that
@@ -1245,7 +1243,7 @@ func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID strin
 // StoredByWriter reads sessionID's newest message on the session bucket's stream from the stream's
 // leader with the headers the stream stored with it (bus.KeyValue.NewestFromLeader) and returns the
 // record a writer stored there: the message decoded as sessionID's registration (DecodeEntry) when
-// it is a put carrying none of the headers the server writes (bus.WrittenByServer), with true. A
+// it is a put carrying none of the headers the server writes (bus.ReadFromLeader, LeaderPut), with true. A
 // message the server wrote - a direct get's copy of another key's record, or a RePublish of another
 // stream naming the key's subject, whatever body that stream was given - can read as a record of
 // sessionID (DecodeEntry) naming any projects, and neither the watcher's entries nor a direct get
@@ -1262,16 +1260,16 @@ func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) 
 		return res.entry, res.written, res.err
 	}
 	kv, _ := r.watcher.Handle()
-	newest, err := kv.NewestFromLeader(ctx, sessionID)
+	leader, err := kv.ReadFromLeader(ctx, sessionID)
 	switch {
-	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
+	case errors.Is(err, bus.ErrRefused):
 		return SessionEntry{}, false, nil
 	case err != nil:
 		return SessionEntry{}, false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
-	case newest.Operation() != nats.KeyValuePut, bus.WrittenByServer(newest):
+	case leader.Kind != bus.LeaderPut:
 		return SessionEntry{}, false, nil
 	}
-	entry, err := DecodeEntry(sessionID, newest.Value())
+	entry, err := DecodeEntry(sessionID, leader.Value)
 	if err != nil {
 		return SessionEntry{}, false, nil
 	}
