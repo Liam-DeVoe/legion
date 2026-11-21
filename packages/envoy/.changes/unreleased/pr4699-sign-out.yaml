@@ -10,4 +10,4 @@ body: |-
   forgets the token at a sign-out, as before.
 time: 2026-11-20T20:31:13Z
 custom:
-    Issue: pr<PR>
+    Issue: pr4699
