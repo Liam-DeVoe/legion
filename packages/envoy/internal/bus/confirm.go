@@ -165,8 +165,10 @@ func observeWithin(ctx context.Context, conn *nats.Conn) (connState, bool) {
 // The reads after the flush are made within ctx (observeWithin). Reads that have not answered when
 // ctx ends were made while nats.go holds its connection lock through a reconnect's handshake, and
 // fail the publish as unconfirmed, as a read that finds the connection not connected does. A
-// window's request passes context.Background(): its flush runs beside the wait for the answer, and
-// nothing waits for the flush's reads (window.request).
+// window's request passes context.Background(): its flush runs beside the wait for the answer.
+// Only the request's timeout waits for the flush's reads, when it fires before the flush has
+// returned (window.request). In production that timeout fires at the flush's own deadline; under a
+// test's expiry (requestExpiry) it can fire at once.
 //
 // One change goes unseen: the last error set to a shared nats.go value (ErrSlowConsumer,
 // ErrMaxSubscriptionsExceeded), then this publish's violation, then that same value again, all

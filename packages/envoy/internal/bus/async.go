@@ -583,8 +583,16 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		if begins := w.requestWaitBegins.Load(); begins != nil {
 			(*begins)(replies)
 		}
-		timer := time.NewTimer(time.Until(deadline))
-		defer timer.Stop()
+		var expired <-chan time.Time
+		var flushSettled func()
+		if expiry := w.client.requestExpiry; expiry != nil {
+			expired, flushSettled = expiry(deadline)
+		}
+		if expired == nil {
+			timer := time.NewTimer(time.Until(deadline))
+			defer timer.Stop()
+			expired = timer.C
+		}
 		// The record answers the request as soon as the violation is recorded too
 		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
 		// signal was taken before the message went out, so a violation recorded since closes it,
@@ -600,6 +608,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				if settled := settleFlush(err); settled != nil {
 					return settled
 				}
+				if flushSettled != nil {
+					flushSettled()
+				}
 			case reply := <-replies:
 				if settled, err := outcome(reply); settled {
 					replied = true
@@ -611,7 +622,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return err
 				}
 				return lost()
-			case <-timer.C:
+			case <-expired:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {
 					return err
@@ -620,8 +631,12 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				if flushed != nil {
-					// The flush is bounded by this very deadline, so it is returning now, and
-					// what it says belongs in the timeout's answer.
+					// The deadline bounds the flush's wait for the server's answer
+					// (confirmFlushed). In production the timeout fires at the deadline, so the
+					// flush is returning now, unless it still waits for nats.go's connection
+					// lock, which the deadline does not bound (readWithin lists such waits).
+					// Under a test's expiry (requestExpiry) the flush can run on until the
+					// deadline. Either way, what it says belongs in the timeout's answer.
 					if settled := settleFlush(<-flushed); settled != nil {
 						return settled
 					}
