@@ -237,7 +237,7 @@ func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, resp.Status)
+		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, redact.StatusLine(resp.StatusCode))
 	}
 	answer, err := redact.ReadAnswer(resp, maxKeySetBytes)
 	if err != nil {

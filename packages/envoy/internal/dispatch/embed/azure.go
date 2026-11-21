@@ -248,9 +248,9 @@ func azureStatusError(response *http.Response) error {
 	if answer, readErr := redact.ReadAnswer(response, azureErrorBodyLimit); readErr == nil {
 		_ = answer.Decode(&decoded)
 	}
-	err := fmt.Errorf("embed: azure embeddings: HTTP %s", response.Status)
+	err := fmt.Errorf("embed: azure embeddings: HTTP %s", redact.StatusLine(response.StatusCode))
 	if !decoded.Error.Code.IsEmpty() {
-		err = fmt.Errorf("embed: azure embeddings: HTTP %s, error code %q", response.Status, decoded.Error.Code)
+		err = fmt.Errorf("embed: azure embeddings: HTTP %s, error code %q", redact.StatusLine(response.StatusCode), decoded.Error.Code)
 	}
 	if azureThrottled(response.StatusCode) {
 		return &throttleError{err: err}

@@ -368,7 +368,7 @@ func readChatStream(response *http.Response, onText func(string) error) ([]ToolC
 		}
 		var frame chatWireFrame
 		if err := json.Unmarshal(data, &frame); err != nil {
-			return nil, fmt.Errorf("going: chat completions: HTTP %s, a frame that is not JSON", response.Status)
+			return nil, fmt.Errorf("going: chat completions: HTTP %s, a frame that is not JSON", redact.StatusLine(response.StatusCode))
 		}
 		if len(frame.Choices) == 0 {
 			continue
@@ -414,7 +414,7 @@ func chatStatusError(response *http.Response) error {
 		_ = answer.Decode(&decoded)
 	}
 	if !decoded.Error.Code.IsEmpty() {
-		return fmt.Errorf("going: chat completions: HTTP %s, error code %q", response.Status, decoded.Error.Code)
+		return fmt.Errorf("going: chat completions: HTTP %s, error code %q", redact.StatusLine(response.StatusCode), decoded.Error.Code)
 	}
-	return fmt.Errorf("going: chat completions: HTTP %s", response.Status)
+	return fmt.Errorf("going: chat completions: HTTP %s", redact.StatusLine(response.StatusCode))
 }

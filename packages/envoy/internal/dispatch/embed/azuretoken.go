@@ -168,9 +168,9 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 			Error redact.RemoteText `json:"error"`
 		}
 		if answer.Decode(&refusal) == nil && !refusal.Error.IsEmpty() {
-			return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s, error %q", response.Status, refusal.Error)
+			return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s, error %q", redact.StatusLine(response.StatusCode), refusal.Error)
 		}
-		return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s", response.Status)
+		return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s", redact.StatusLine(response.StatusCode))
 	}
 	var decoded entraTokenResponse
 	if err := answer.Decode(&decoded); err != nil {

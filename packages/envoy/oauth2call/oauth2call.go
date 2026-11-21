@@ -71,3 +71,7 @@ func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 func StreamAnswer(resp *http.Response, limit int64) io.ReadCloser {
 	return redact.StreamAnswer(resp, limit)
 }
+
+// StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and
+// its standard reason phrase, never the phrase the answering party wrote (Response.Status).
+func StatusLine(code int) string { return redact.StatusLine(code) }

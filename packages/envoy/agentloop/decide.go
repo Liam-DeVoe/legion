@@ -176,7 +176,7 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	case err != nil:
 		result.Fault, result.Detail = FaultProviderError, err.Error()
 	case resp.StatusCode/100 != 2:
-		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, answer.Words().String())
+		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", redact.StatusLine(resp.StatusCode), answer.Words().String())
 	case tooLarge:
 		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer went past the %d MiB a decision reads", answerLimit>>20)
 	default:

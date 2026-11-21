@@ -308,7 +308,7 @@ func NewOAuthRefusal(code, description string, carried ...string) (RemoteText, R
 // the error over this answer decides from the code as it came.
 func NewRetrieveError(status int, code, description RemoteText) *oauth2.RetrieveError {
 	return &oauth2.RetrieveError{
-		Response:         &http.Response{StatusCode: status, Status: statusLine(status)},
+		Response:         &http.Response{StatusCode: status, Status: StatusLine(status)},
 		ErrorCode:        code.reading(),
 		ErrorDescription: description.reading(),
 	}

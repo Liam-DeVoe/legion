@@ -45,6 +45,9 @@ type answerExempt struct {
 //   - every use of the Body field of a net/http.Response fails, but its Close called (body.Close())
 //     and an assignment to it: a read of the bytes, wherever they go next - a decoder, a string, a
 //     helper, a value of any type - is a read outside the reader, and the census does not follow it;
+//   - every use of the Status field of a net/http.Response fails, but an assignment to it: it is
+//     the status line as the answering party wrote it, whose phrase is that party's own words, so a
+//     message names an answer's status through redact.StatusLine, its code and the standard phrase;
 //   - every call of the standard library's own readers of a response's body (gate.answers.readers:
 //     (*net/http.Response).Write, net/http/httputil.DumpResponse) fails, for the same reason;
 //   - each call of the reader is listed, and a census that lists none is UNKNOWN, since it cannot
@@ -105,16 +108,22 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 			}
 			switch n := n.(type) {
 			case *ast.SelectorExpr:
-				if !a.responseBody(n) {
-					return true
-				}
 				switch {
-				case a.closed(n, parents):
-					add("close", true, exprString(n), "the body closed")
-				case a.assigned(n, parents):
-					add("set", true, exprString(n), "the body set, not read")
-				default:
-					add("body", false, exprString(n), "a read of an answer's body outside "+readerNames(cfg)+": read it through the reader, whose Answer decodes it into typed values with the request's record, prints it only as the rule reads it, or streams it as data")
+				case a.responseField(n, "Body"):
+					switch {
+					case a.closed(n, parents):
+						add("close", true, exprString(n), "the body closed")
+					case a.assigned(n, parents):
+						add("set", true, exprString(n), "the body set, not read")
+					default:
+						add("body", false, exprString(n), "a read of an answer's body outside "+readerNames(cfg)+": read it through the reader, whose Answer decodes it into typed values with the request's record, prints it only as the rule reads it, or streams it as data")
+					}
+				case a.responseField(n, "Status"):
+					if a.assigned(n, parents) {
+						add("status-set", true, exprString(n), "the status line set, not read")
+					} else {
+						add("status", false, exprString(n), "a read of an answer's status line as the answering party wrote it, whose phrase is its own words: name the status through redact.StatusLine (oauth2call.StatusLine), its code and the standard phrase")
+					}
 				}
 			case *ast.CallExpr:
 				name := a.calleeName(n)
@@ -171,15 +180,15 @@ type answerReader struct {
 	readers, makers map[string]bool
 }
 
-// responseBody reports whether sel selects the Body field of a net/http.Response, directly or
+// responseField reports whether sel selects the field name of a net/http.Response, directly or
 // through an embedded one.
-func (a *answerReader) responseBody(sel *ast.SelectorExpr) bool {
+func (a *answerReader) responseField(sel *ast.SelectorExpr, name string) bool {
 	s := a.info.Selections[sel]
 	if s == nil || s.Kind() != types.FieldVal {
 		return false
 	}
 	v, ok := s.Obj().(*types.Var)
-	if !ok || v.Name() != "Body" || v.Pkg() == nil || v.Pkg().Path() != "net/http" {
+	if !ok || v.Name() != name || v.Pkg() == nil || v.Pkg().Path() != "net/http" {
 		return false
 	}
 	t := s.Recv()

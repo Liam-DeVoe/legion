@@ -43,7 +43,7 @@ func (t *modelTransport) client() *http.Client {
 		// more of it than the server a credential would have gone to. (Go's own
 		// client wraps the error in a *url.Error that names the Location in full.)
 		return fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
-			t.kind, req.Response.Status, req.URL.Host)
+			t.kind, redact.StatusLine(req.Response.StatusCode), req.URL.Host)
 	}}
 }
 

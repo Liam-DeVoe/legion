@@ -388,7 +388,7 @@ func controlAlias(words string) string {
 	{id: "21", what: "a field of the boundary's answer set from the status line the answering party wrote, not through the rule", stage: 2,
 		expect: []string{"field census", "net/http.Response.Status = r.Status", "newOAuthAnswer"},
 		plant: func(c *controlRun) error {
-			return c.edit("packages/envoy/internal/redact/oauth2.go", "Status: statusLine(r.StatusCode)", "Status: r.Status")
+			return c.edit("packages/envoy/internal/redact/oauth2.go", "Status: StatusLine(r.StatusCode)", "Status: r.Status")
 		}},
 	{id: "22", what: "planted library calls through a repository interface, through a type parameter, through the HTTP client Config.Client builds, and a TypeScript library function handed out of callLibrary and called outside it", stage: 2,
 		each: [][]string{
@@ -613,6 +613,39 @@ type controlGitHubAnswer struct{ *http.Response }
 func controlClassify(answer controlGitHubAnswer) (int, []byte) {
 	raw, _ := io.ReadAll(answer.Body)
 	return answer.StatusCode, raw
+}
+`)
+		}},
+	{id: "28", what: "a planted read of an answer's status line as the answering party wrote it, printed in an error and logged through a helper, beside an assignment to a status line, which the census passes", stage: 2,
+		each: [][]string{
+			{"answer census", plantDir + "control_status.go:11", "controlStatus", "status line as the answering party wrote it"},
+			{"answer census", plantDir + "control_status.go:16", "controlStatusLogged", "status line as the answering party wrote it"},
+		},
+		absent: []string{"controlStatusSet"},
+		plant: func(c *controlRun) error {
+			return c.write(plantDir+"control_status.go", `package cipherclient
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+)
+
+// controlStatus prints an answer's status line as the answering party wrote it.
+func controlStatus(resp *http.Response) error {
+	return fmt.Errorf("the broker answered %s", resp.Status)
+}
+
+// controlStatusLogged logs it through a helper that takes the line as a string.
+func controlStatusLogged(log *slog.Logger, answered struct{ *http.Response }) {
+	controlLog(log, answered.Status)
+}
+
+func controlLog(log *slog.Logger, status string) { log.Info("answered", "status", status) }
+
+// controlStatusSet sets a status line, which reads nothing the answering party wrote.
+func controlStatusSet(resp *http.Response) {
+	resp.Status = "200 OK"
 }
 `)
 		}},

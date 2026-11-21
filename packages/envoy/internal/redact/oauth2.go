@@ -163,7 +163,7 @@ func withheld(err error) string {
 	text := strings.Join(classes, " over ") + " (message withheld: no record of its requests)"
 	var re *oauth2.RetrieveError
 	if errors.As(err, &re) && re.Response != nil {
-		text += ", status " + statusLine(re.Response.StatusCode)
+		text += ", status " + StatusLine(re.Response.StatusCode)
 	}
 	return text
 }
@@ -245,7 +245,7 @@ type OAuthAnswer struct {
 func newOAuthAnswer(re *oauth2.RetrieveError, carried []string, recorded bool) *OAuthAnswer {
 	answer := &oauth2.RetrieveError{Response: &http.Response{}}
 	if r := re.Response; r != nil {
-		answer.Response = &http.Response{Status: statusLine(r.StatusCode), StatusCode: r.StatusCode, Header: retryAfter(r.Header)}
+		answer.Response = &http.Response{Status: StatusLine(r.StatusCode), StatusCode: r.StatusCode, Header: retryAfter(r.Header)}
 	}
 	if !recorded {
 		return &OAuthAnswer{code: NewRemoteText(re.ErrorCode), answer: answer}
@@ -262,10 +262,12 @@ func newOAuthAnswer(re *oauth2.RetrieveError, carried []string, recorded bool) *
 	return &OAuthAnswer{code: NewRemoteText(re.ErrorCode), refusalCode: refusalCode, refusalMessage: refusalMessage, answer: answer}
 }
 
-// statusLine is the status line of an answer with status code: the code and its standard reason
-// phrase (http.StatusText), never the phrase the answering party wrote, which can quote a
-// credential's URL and which x/oauth2 prints for an answer with no error code.
-func statusLine(code int) string {
+// StatusLine is the status line of an answer with status code, as a message may print it: the code
+// and its standard reason phrase (http.StatusText), never the phrase the answering party wrote
+// (net/http's Response.Status), which whatever answers in a server's place can write to echo the
+// request back or to quote a credential's URL, and which x/oauth2 prints for an answer with no
+// error code. A code with no standard phrase prints alone.
+func StatusLine(code int) string {
 	return strings.TrimSpace(strconv.Itoa(code) + " " + http.StatusText(code))
 }
 
