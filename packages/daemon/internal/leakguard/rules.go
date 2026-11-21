@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unsafe"
 
 	"github.com/spf13/viper"
 	"github.com/zricethezav/gitleaks/v8/config"
@@ -123,84 +122,34 @@ func (r *rules) scan(ctx context.Context, records []Record, rep *report) error {
 	return nil
 }
 
-// batchBytes is the most record text one batch of the rule pass holds, each record's header
-// counted at recordHeader bytes beside its text, so that a batch of short lines is bounded by its
-// records as well as by their bytes. A record longer than this is a batch of its own.
-const batchBytes = 64 << 20
-
-// recordHeader is what a record costs a batch beyond its text: its two string headers. The label
-// is not counted: every line record of one file carries the one path string its diff header was
-// read into.
-const recordHeader = int(unsafe.Sizeof(Record{}))
-
 // pass is one rule pass over records that arrive one at a time, as a push's diff is read: it
-// holds at most one batch of them (batchBytes, or the Guard's own bound in a test), scans a batch
-// once it is full, and keeps nothing of a scanned batch but its refusal lines. The lines come out
-// as scan answers them for all the records at once, since a batch is scanned in the order its
-// records arrived and scan reports each record on its own.
-//
-// Its memory is one batch, plus the detector's own cost of scanning one record of it, plus at most
-// refusalLines refusal lines; whatever reads the records holds one line of its own beside that.
-// None of it grows with the size of the push.
+// scans each record as it arrives and keeps nothing of it but its refusal lines, so its memory is
+// the record in hand, the detector's own cost of scanning it, and at most refusalLines refusal
+// lines and a count of the rest. Whatever reads the records holds one line of its own beside
+// that. None of it grows with the size of the push.
 type pass struct {
 	ctx    context.Context
 	engine *rules
-	limit  int
-	// scanned, where it is not nil, is handed each batch before it is scanned: a test's seam
-	// (Guard.onBatch), which reads what a batch held.
-	scanned func(batch []Record)
-	batch   []Record
-	size    int
-	report  report
+	report report
 	// err is a scan that did not finish: the context ended under it. Every add after it answers
 	// it, so that the reader of the records stops.
 	err error
 }
 
-// add takes one record into the pass, scanning the batch first where the record would take it past
-// the bound, and scanning the record alone where it is past the bound by itself.
+// add scans one record.
 func (p *pass) add(record Record) error {
-	if p.err != nil {
-		return p.err
+	if p.err == nil {
+		p.err = p.engine.scan(p.ctx, []Record{record}, &p.report)
 	}
-	cost := len(record.Text) + recordHeader
-	if len(p.batch) > 0 && p.size+cost > p.limit {
-		if err := p.flush(); err != nil {
-			return err
-		}
-	}
-	p.batch = append(p.batch, record)
-	p.size += cost
-	if p.size >= p.limit {
-		return p.flush()
-	}
-	return nil
+	return p.err
 }
 
-// flush scans the batch and lets it go.
-func (p *pass) flush() error {
-	if len(p.batch) == 0 {
-		return p.err
-	}
-	if p.scanned != nil {
-		p.scanned(p.batch)
-	}
-	err := p.engine.scan(p.ctx, p.batch, &p.report)
-	// The records are let go whatever the scan answered: the slice is kept for the next batch,
-	// and its old entries would otherwise keep each scanned text alive.
-	clear(p.batch)
-	p.batch, p.size = p.batch[:0], 0
-	if err != nil {
-		p.err = err
-	}
-	return err
-}
-
-// end scans what is left and answers the pass as a write of what: nil where no record matched, a
-// refusal naming every record that did, and a setup failure where a scan did not finish.
+// end answers the pass as a write of what: nil where no record matched, a refusal naming the
+// records that did, at most refusalLines of them and a count of the rest, and a setup failure
+// where a scan did not finish.
 func (p *pass) end(what string) error {
-	if err := p.flush(); err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
+	if p.err != nil {
+		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: p.err}
 	}
 	if len(p.report.lines) == 0 {
 		return nil

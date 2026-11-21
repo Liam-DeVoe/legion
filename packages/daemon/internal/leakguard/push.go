@@ -115,8 +115,8 @@ func PushName(remote string) string {
 // committer, the message, each added or renamed path, and each added line. Under a deployment
 // that runs no shared check (sharedCheck) the rules are the whole of it.
 //
-// The records are scanned as they are read (pass), so the rule pass holds one batch of them and
-// never the push's whole diff.
+// The records are scanned one at a time as git writes them (pass), so the rule pass never holds
+// the push's whole diff.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.sharedCheck(what)
@@ -151,10 +151,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return err
 	}
-	if err := g.pushRecords(ctx, req, pass.add); err != nil {
-		if pass.err != nil {
-			return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: pass.err}
-		}
+	if err := g.pushRecords(ctx, req, pass.add); err != nil && pass.err == nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
 	return pass.end(what)
@@ -362,7 +359,7 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
 	width := max(parents, 1)
 	path, header := "", false
-	return g.gitRead(ctx, dir, func(out io.Reader) error {
+	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
 		return eachLine(out, func(line []byte) error {
 			line = bytes.TrimRight(line, "\r\n")
 			switch {
@@ -381,6 +378,7 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 			return nil
 		})
 	}, diffTree(parents, "--unified=0", "--no-color", commit)...)
+	return err
 }
 
 // eachLine hands each line of r to fn, its "\n" included where it has one, as a slice fn must
@@ -443,21 +441,14 @@ func short(commit string) string {
 // failed on its standard error. Reading the two apart also keeps a warning git writes on its
 // standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
-	return g.gitWith(ctx, dir, child{}, args...)
+	return g.gitWith(ctx, dir, nil, args...)
 }
 
-// gitRead is git for an output read as git writes it, by read, rather than answered whole: a
-// push's diff.
-func (g *Guard) gitRead(ctx context.Context, dir string, read func(io.Reader) error, args ...string) error {
-	_, err := g.gitWith(ctx, dir, child{stdout: read}, args...)
-	return err
-}
-
-// gitWith is git with the rest of c's shape: a stdout read as it is written.
-func (g *Guard) gitWith(ctx context.Context, dir string, c child, args ...string) (string, error) {
+// gitWith is git with its standard output read by stdout as git writes it, where stdout is not
+// nil, rather than answered whole: a push's diff is read so.
+func (g *Guard) gitWith(ctx context.Context, dir string, stdout func(io.Reader) error, args ...string) (string, error) {
 	var stderr bytes.Buffer
-	c.argv, c.dir, c.stderr = gitArgv(args...), dir, &stderr
-	status, out, err := g.run(ctx, c)
+	status, out, err := g.run(ctx, child{argv: gitArgv(args...), dir: dir, stderr: &stderr, stdout: stdout})
 	if err != nil {
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}

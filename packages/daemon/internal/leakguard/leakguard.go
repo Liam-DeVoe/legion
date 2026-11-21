@@ -23,11 +23,10 @@
 // every component the repository and company rules match replaced by "<name>", the masking
 // .github/scripts/check-private-names.sh does (its named_parts function, which its mask applies).
 //
-// The rule pass of a push reads git's diff as git writes it and scans the records in batches of
-// at most 64 MiB of record text, a line longer than that in a batch of its own (pass), and a
-// refusal names at most 1000 lines, counting the rest (refusalLines). Its peak memory is about
-// one batch, one line of git's output and the detector's own cost of scanning one record, whatever
-// the size of the push.
+// The rule pass of a push reads git's diff as git writes it and scans each record as it arrives
+// (pass), and a refusal names at most 1000 lines, counting the rest (refusalLines). So the pass
+// holds one line of git's output, the record in hand and the detector's cost of scanning it,
+// whatever the size of the push.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -102,11 +101,6 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
-	// The rest are seams this package's own tests set directly: batchLimit bounds a batch of the
-	// rule pass in place of batchBytes where it is not 0, and onBatch is handed each batch before
-	// it is scanned (pass.scanned).
-	batchLimit int
-	onBatch    func(batch []Record)
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
@@ -215,11 +209,7 @@ func (g *Guard) rulePass(ctx context.Context, what string) (*pass, error) {
 	if err != nil {
 		return nil, &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
 	}
-	limit := batchBytes
-	if g.batchLimit > 0 {
-		limit = g.batchLimit
-	}
-	return &pass{ctx: ctx, engine: engine, limit: limit, scanned: g.onBatch}, nil
+	return &pass{ctx: ctx, engine: engine}, nil
 }
 
 // TextRequest is a piece of text a write would publish, as the shared check's text shape reads it:

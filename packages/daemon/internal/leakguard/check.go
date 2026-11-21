@@ -416,9 +416,9 @@ type child struct {
 	stderr io.Writer
 	// stdout, where it is not nil, reads the child's standard output as the child writes it,
 	// from a pipe the child holds the other end of, and run answers none of it: a push's diff is
-	// read this way (Guard.gitRead), so that no copy of the whole output is held. It reads to the
-	// end of the pipe; an error it answers closes the pipe, which ends the child's writes, and is
-	// run's error.
+	// read this way (Guard.gitWith), so that no copy of the whole output is held. It reads to the
+	// end of the pipe, or until the context ends; an error it answers closes the pipe, which ends
+	// the child's writes, and is run's error.
 	stdout func(io.Reader) error
 }
 
@@ -443,11 +443,12 @@ func program(base []string, name string) string {
 // a signal ended, which has no status; and, after those, an error c.stdout answered. A status is
 // an answer, and no status is not.
 //
-// c.stdout reads from an *os.File pipe, never through exec's own copying goroutine: exec waits
-// for that goroutine at most procgroup.WaitDelay once the child has exited, and a reader still
-// scanning the end of a diff past that wait would lose what it had not read yet and go on
-// writing after run returned. With the pipe, the reader is this goroutine, and run waits for the
-// child only once the reader has read to the end.
+// c.stdout reads the pipe exec's StdoutPipe gives, in this goroutine and before Wait, as
+// StdoutPipe requires, so a reader still scanning the end of a diff never loses what it had not
+// read yet. The read is bounded by ctx: once ctx ends, the pipe's read deadline is set to now. A
+// descendant that left the child's process group (setsid) can hold the pipe open after the group
+// is gone, and neither the group's stop nor exec's WaitDelay, which run during Wait, would end a
+// read made before it.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
@@ -462,39 +463,44 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// check is the git it runs against the remote.
 	killed := procgroup.Configure(cmd)
 	var printed bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &printed, &printed
+	cmd.Stderr = &printed
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
 	}
-	var out, in *os.File
-	if c.stdout != nil {
-		var err error
-		if out, in, err = os.Pipe(); err != nil {
+	var out *os.File
+	if c.stdout == nil {
+		cmd.Stdout = &printed
+	} else {
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
 			return 0, "", err
 		}
-		defer out.Close()
-		cmd.Stdout = in
+		file, ok := pipe.(*os.File)
+		if !ok {
+			return 0, "", fmt.Errorf("exec's standard output pipe is a %T, which takes no read deadline", pipe)
+		}
+		out = file
 	}
 	started := time.Now()
 	err := cmd.Start()
-	if in != nil {
-		// The child holds its own copy of the write end; this one closed, the reader sees the
-		// end of the pipe once the child and anything it started have closed theirs.
-		in.Close()
-	}
 	var readErr error
 	if err == nil {
 		if out != nil {
+			stop := context.AfterFunc(ctx, func() { _ = out.SetReadDeadline(time.Now()) })
 			readErr = c.stdout(out)
+			stop()
 			// A reader that stopped early leaves the child writing into a pipe nobody reads:
 			// closed, its next write fails and it ends, rather than blocking the wait below.
-			out.Close()
+			// Wait closes it again, which changes nothing.
+			_ = out.Close()
 		}
 		err = cmd.Wait()
 	}
 	err = procgroup.Err(err)
 	switch {
-	case killed():
+	// A read the context's end stopped is a stop like the group's: the child may have exited
+	// before the context ended, and exec then runs no Cancel, so killed alone would not see it.
+	case killed(), readErr != nil && ctx.Err() != nil:
 		stopped := &stoppedError{
 			program:   filepath.Base(c.argv[0]),
 			ran:       time.Since(started),
