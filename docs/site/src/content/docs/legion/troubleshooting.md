@@ -1661,6 +1661,11 @@ answer in time), the issue is told nothing and nothing waits on the record:
 the daemon reads the issue again from Dispatch's listing and GitHub, 30 s doubling to 10 min,
 until GitHub answers,
 and then moves it, or says why not with the line above, with no event of the issue and no restart.
+A pass that read the record before another pass moved it moves nothing either, since two reads of
+Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
+pass over the listing):
+the daemon reads that issue again from Dispatch's listing and GitHub at once, and the record ends
+on what Dispatch resolves then.
 The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
 and whatever runs for it.
 

@@ -107,6 +107,17 @@ type Config struct {
 	// hearRecorded). It is told every recording and every correction, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
+	// FollowIssue is asked, on the commit of a fact whose correction ApplyRepositoryChange did not
+	// write because the record's repository moved after the fact was prepared
+	// (intake.DispatchIssue.PreparedAgainst), for a follow of that issue: the daemon reads
+	// Dispatch's resolution of it and GitHub again (workflowRuntime.requestFollowOf), so the record
+	// still ends on what Dispatch resolves. Asked from that transaction's commit hook, it is asked
+	// exactly when the skip is committed, and a transaction rolled back asks nothing. A process
+	// that stops between that commit and the hook loses only the ask: its next boot's listing has
+	// every recorded issue Dispatch resolves to another repository than its record names followed
+	// (the daemon's prepareRecorded, requestFollow). Nil asks for none, which is a test that drives
+	// its follows itself.
+	FollowIssue func(key string)
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
 	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
 	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved

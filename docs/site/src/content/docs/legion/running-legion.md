@@ -43,11 +43,17 @@ host. When GitHub does not answer such a pass's reads (a failure, its rate limit
 time), the pass applies nothing and says nothing on the issue, and the daemon reads that issue
 again from Dispatch's listing and GitHub, 30 seconds doubling to 10 minutes, until GitHub
 answers, with no event of the issue and no restart: the change is then applied, or waits as
-below. A change onto a repository a role App is not installed on, or one GitHub does not have, is
-not applied; the record keeps what it has, the daemon says so once on the issue, and the record
-carries the waiting change (`repoChangePending` and `repoChangeReason` of `legion state --json`)
-until the issue's next event or the daemon's next boot, the two passes that read the repository
-again: installing the missing App starts no pass by itself. The daemon reads no repository
+below. A pass that read the record before another pass moved it applies nothing either, since
+two reads of Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives
+late, after a pass over the listing), and the daemon reads that issue again from Dispatch's
+listing and GitHub at once, so the record ends on what Dispatch resolves then; a daemon that
+stops before that read leaves it to its next boot, which reads again every recorded issue
+Dispatch resolves to another repository than its record names. A change onto a repository a
+role App is not installed on, or one GitHub does not have, is not applied; the record keeps what
+it has, the daemon says so once on the issue, and the record carries the waiting change
+(`repoChangePending` and `repoChangeReason` of `legion state --json`) until the issue's next
+event or the daemon's next boot, the two passes that read the repository again: installing the
+missing App starts no pass by itself. The daemon reads no repository
 mapping from Dispatch, so nothing else reads such a repository again, and a change of the
 project's default repository in Dispatch, which sends no event of the issues that inherit it,
 moves such an issue at that issue's next event or at the next boot. An issue whose repository

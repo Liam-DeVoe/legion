@@ -2704,7 +2704,16 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // record's, or the one Dispatch still names after it — and a spelling that differs in case are no
 // change and read nothing. A resolution that names no repository reads nothing either: the
 // engine tells the issue so without a read.
+//
+// Whatever the resolution, the fact carries the repository recorded holds
+// (intake.DispatchIssue.PreparedAgainst), and its correction is applied only while the record
+// still holds it (workflow.Engine.ApplyRepositoryChange): a correction moves no sequence, so a
+// fact prepared before another correction moved the record — a late event applied after a
+// follow, or a follow pass's row whose record a fact moved between the pass's read of the
+// records and its write — writes nothing, and the engine asks for a follow of the issue at its
+// commit, which reads Dispatch and GitHub fresh.
 func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue, boot bool, reads followReads) intake.DispatchIssue {
+	issue.PreparedAgainst = recorded.Repo
 	if issue.ResolvedRepoMissing {
 		issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
 	}
@@ -2851,15 +2860,23 @@ func (w *workflowRuntime) correctionReads(ctx context.Context, key, resolved str
 // (record.Issue.Outdates), which that correction leaves as it stands. Reads GitHub did not answer
 // ask for a follow of the issue (requestFollowOf), as an event's do: the hand-over is applied
 // whatever its correction writes, so nothing else would read the change again. It runs outside
-// the fact lock, as every preparation does, since the fact's apply performs no I/O.
+// the fact lock, as every preparation does, since the fact's apply performs no I/O. The fact
+// carries the repository the record holds at this preparation
+// (intake.Handover.PreparedAgainst), as an event's does: a follow whose Dispatch read is at the
+// outbox read's own sequence cannot be ordered against it, so once a correction moves the record
+// before the hand-over applies, its correction writes nothing and the engine asks for a follow of
+// the issue at its commit (workflow.Engine.ApplyRepositoryChange).
 func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.Handover) (intake.Handover, error) {
 	if handover.ResolvedRepo == "" {
 		return handover, nil
 	}
 	recorded, err := w.recordOf(ctx, handover.Issue)
-	if err != nil || recorded == nil || w.repositories.same(handover.ResolvedRepo, recorded.Repo) ||
-		recorded.Outdates(record.ReadSeq, handover.Seq) {
+	if err != nil || recorded == nil {
 		return handover, err
+	}
+	handover.PreparedAgainst = recorded.Repo
+	if w.repositories.same(handover.ResolvedRepo, recorded.Repo) || recorded.Outdates(record.ReadSeq, handover.Seq) {
+		return handover, nil
 	}
 	answer := w.correctionReads(ctx, handover.Issue, handover.ResolvedRepo)
 	if answer.read == nil && answer.refusal == "" {
@@ -2873,7 +2890,12 @@ func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.H
 // follows what Dispatch's listing resolves it to, through the single-issue correction every other
 // pass makes. The boot's listing asks for one when it finds a recorded issue Dispatch resolves to
 // another repository, which that listing reads GitHub for none of (prepareRecorded), so the
-// issue's change is read once the boot is over rather than at its next event.
+// issue's change is read once the boot is over rather than at its next event. That is also what
+// covers the follow a skipped correction asks for at its commit (workflow.Config.FollowIssue,
+// requestFollowOf) where the process stopped after the commit and before the ask: the record the
+// skip left can disagree with Dispatch only where Dispatch now resolves the issue elsewhere, and
+// the next boot's listing reads every recorded issue's resolution, following each one resolved
+// to another repository and telling each one resolved to none as any pass does.
 func (w *workflowRuntime) requestFollow() {
 	w.followMu.Lock()
 	w.followEvery = true
@@ -2884,10 +2906,12 @@ func (w *workflowRuntime) requestFollow() {
 
 // requestFollowOf asks the refresher for a follow of the recorded issue key alone: an event's or
 // a hand-over's preparation whose correction's reads GitHub did not answer (prepareRecorded,
-// prepareHandover). Its fact is applied all the same and its correction writes nothing, so
-// without the follow nothing in the running process would read the change again until the
-// issue's next event or the next boot. The follow reads that issue alone, so it reads no other
-// issue's waiting change sooner than that issue's own next event or the next boot would.
+// prepareHandover), and the engine at the commit of a fact whose correction it did not write
+// because the record moved after the fact was prepared (workflow.Config.FollowIssue). Its fact is
+// applied all the same and its correction writes nothing, so without the follow nothing in the
+// running process would read the change again until the issue's next event or the next boot. The
+// follow reads that issue alone, so it reads no other issue's waiting change sooner than that
+// issue's own next event or the next boot would.
 //
 // Both requests count their follow (followRequested) under followMu, the lock followRecorded
 // takes the owed issues under: a pass that took a request's count without its issue would store
@@ -2921,7 +2945,10 @@ func (w *workflowRuntime) requestFollowOf(key string) {
 // rather than in the refresher's loop for that reason: one set holds every issue owed, whoever
 // owes it. Only a pass that leaves nothing stores the count it took as applied; once GitHub
 // answers for every issue owed, a pass settles the follow, its correction applying or the change
-// waiting on the record with GitHub's refusal, as any answered correction does.
+// waiting on the record with GitHub's refusal, as any answered correction does. A row whose
+// record a fact moved after the pass read the records writes nothing, and the engine asks for its
+// follow at the pass's commit (followListing): that ask counts a follow above the count this
+// pass took, so the count it stores settles nothing of it and the next pass reads the issue.
 func (w *workflowRuntime) followRecorded(ctx context.Context) {
 	w.followMu.Lock()
 	follows, every, owed := w.followRequested.Load(), w.followEvery, w.followOwed
@@ -3005,12 +3032,17 @@ func (w *workflowRuntime) followReasons() []string {
 // event, as the boot's listing leaves it (admit's applySummary). One read serves every issue
 // because each correction writes its own issue's row alone, and what a correction reads of a
 // record (its repository, the change waiting on it, its last Dispatch sequence) is written by
-// facts, which apply under that same lock. The pod an issue's correction leaves on the repository
-// it left is replaced by the ordinary per-issue update round, which reads the record, and each
-// correction asks for a read of the live records at the commit (projectRecords'
-// CorrectIssueRepository), which takes that repository out of the cache set and the live set once
-// no other live record names it. The records are read first, so a project the workflow records no
-// issue of asks Dispatch for no listing.
+// facts, which apply under that same lock. Each row is applied against the record the pass read
+// before it prepared the row (intake.DispatchIssue.PreparedAgainst, prepareRecorded): a row whose
+// record a fact moved onto another repository between that read and this write writes nothing,
+// and the engine asks for its issue's follow at the commit (workflow.Config.FollowIssue), so the
+// issue stays owed for the next pass, which reads it fresh, as a row GitHub did not answer stays
+// owed. The pod an issue's correction leaves on the repository it left is replaced by the
+// ordinary per-issue update round, which reads the record, and each correction asks for a read
+// of the live records at the commit (projectRecords' CorrectIssueRepository), which takes that
+// repository out of the cache set and the live set once no other live record names it. The
+// records are read first, so a project the workflow records no issue of asks Dispatch for no
+// listing.
 func (w *workflowRuntime) followListing(ctx context.Context, only map[string]bool) (left map[string]bool, err error) {
 	reading, cancelReads := context.WithTimeout(ctx, appMintAttempt)
 	defer cancelReads()

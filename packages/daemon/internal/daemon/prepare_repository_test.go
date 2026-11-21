@@ -46,9 +46,11 @@ func refusingGitHub(t *testing.T) string {
 // A recorded issue's event is prepared from its record while Dispatch resolves the issue where the
 // record already holds it, and reads nothing at all: an event naming that repository, in any
 // spelling, is applied as it is, and a retained event, which names no repository
-// (ResolvedRepoMissing), takes the record's. Neither GitHub nor Dispatch is read for any of them:
-// a recorded issue's repository never comes from its issue detail, and a resolution that is the
-// record's own repository is no change for a correction to read GitHub for.
+// (ResolvedRepoMissing), takes the record's. Each carries the repository the record holds, which
+// its correction is applied against (intake.DispatchIssue.PreparedAgainst). Neither GitHub nor
+// Dispatch is read for any of them: a recorded issue's repository never comes from its issue
+// detail, and a resolution that is the record's own repository is no change for a correction to
+// read GitHub for.
 func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 	ctx := context.Background()
 	installs := &installations{}
@@ -61,17 +63,20 @@ func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 		{
 			name:  "an event on the repository the record holds",
 			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
+			want: intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets",
+				PreparedAgainst: "acme/widgets"},
 		},
 		{
 			name:  "a retained event, which names no repository",
 			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepoMissing: true},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
+			want: intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets",
+				PreparedAgainst: "acme/widgets"},
 		},
 		{
 			name:  "an event on the record's repository in another spelling",
 			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets"},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets"},
+			want: intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets",
+				PreparedAgainst: "acme/widgets"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

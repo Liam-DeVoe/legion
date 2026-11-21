@@ -96,6 +96,15 @@ type DispatchIssue struct {
 	// decode's own among them, and for a preparation whose reads GitHub did not answer or refused:
 	// only a preparation sets it.
 	RepositoryRead *ghbranch.Repository
+	// PreparedAgainst is the repository the issue's record held when this fact was prepared (the
+	// daemon's prepareRecorded, from the record that preparation read), kept in memory with the
+	// fact and never stored. The record's correction is written only while the record still holds
+	// it (workflow.Engine.ApplyRepositoryChange): two reads of Dispatch at one sequence cannot be
+	// ordered, and a correction moves no sequence, so a fact prepared before another correction
+	// moved the record would put the record back on an older resolution. Empty for every fact no
+	// preparation of a recorded issue made, the decode's own among them, which is applied as it
+	// was before this field.
+	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -254,6 +263,11 @@ type Handover struct {
 	RepositoryRead        *ghbranch.Repository
 	RepositoryRefusal     string
 	RepositoryRefusalKind RepositoryRefusalKind
+	// PreparedAgainst is the repository the issue's record held at the outbox's preparation of
+	// the fact (the daemon's prepareHandover), as an event's preparation carries it
+	// (DispatchIssue.PreparedAgainst), kept in memory and never stored: admission's correction is
+	// written only while the record still holds it. Empty where nothing prepared the fact.
+	PreparedAgainst string
 }
 
 func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
@@ -1800,13 +1814,14 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
 // issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone, and what
-// that preparation read of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and
-// its kind) where the event resolves the issue to that same repository, which a recorded issue's
-// correction is written from (workflow.Engine.ApplyRepositoryChange): the daemon's own status
-// write resolves the issue as the view does, so its correction would otherwise read as unread. A
-// view prepared in place of no event applies nothing. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// carrying the view's Ancestry and Reread, which the preparation read for the view alone, the
+// repository the record held at that preparation (PreparedAgainst), and what that preparation read
+// of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and its kind) where the
+// event resolves the issue to that same repository, which a recorded issue's correction is written
+// from (workflow.Engine.ApplyRepositoryChange): the daemon's own status write resolves the issue as
+// the view does, so its correction would otherwise read as unread. A view prepared in place of no
+// event applies nothing. Every other fact applies as it is, so no handler sees Observed or
+// Delivered.
 //
 // A view older than an event of the issue the daemon has already applied (the mirror, which every
 // applied issue event writes first, holds a later sequence) applies nothing while the issue is
@@ -1837,7 +1852,7 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		return nil, false, nil
 	default:
 		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
+		delivered.Ancestry, delivered.Reread, delivered.PreparedAgainst = issue.Ancestry, issue.Reread, issue.PreparedAgainst
 		if strings.EqualFold(delivered.ResolvedRepo, issue.ResolvedRepo) {
 			delivered.RepositoryRead, delivered.RepositoryRefusal, delivered.RepositoryRefusalKind =
 				issue.RepositoryRead, issue.RepositoryRefusal, issue.RepositoryRefusalKind

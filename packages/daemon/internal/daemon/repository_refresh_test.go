@@ -107,7 +107,7 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	records := projectRecords{Store: record.NewStore(), project: "LEGION", live: w.wakeLive}
 	w.records = records
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
-		Steps: config.DesignGateOff.Steps()}, quietLogger())
+		FollowIssue: w.requestFollowOf, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {

@@ -166,11 +166,27 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // listing admission reconciles at boot (its applySummary; the recovery listing takes no recorded
 // issue), admission's outbox hand-over (its consumeHandover), and the daemon's follow over
 // Dispatch's listing (its followRecorded), which it makes once a boot is over for the recorded
-// issues that boot's listing found resolved to another repository, and for each issue whose
-// event's or hand-over's reads GitHub did not answer, until GitHub answers. The correction is one
-// statement in that transaction (record.Store.CorrectIssueRepository, whose one caller this is):
-// no park, no rerun and no new generation, so an issue keeps its phase, its generation and
-// whatever is running for it while its repository moves.
+// issues that boot's listing found resolved to another repository, for each issue whose event's
+// or hand-over's reads GitHub did not answer, until GitHub answers, and for each issue whose fact
+// this skipped because its record moved (below). The correction is one statement in that
+// transaction (record.Store.CorrectIssueRepository, whose one caller this is): no park, no rerun
+// and no new generation, so an issue keeps its phase, its generation and whatever is running for
+// it while its repository moves.
+//
+// A fact is applied only to the record it was prepared against. Its preparation stamps it with
+// the repository the record held then (intake.DispatchIssue.PreparedAgainst), and while the record
+// holds another — compared as every repository name is (sameRepository), so a configured rename's
+// other name or a spelling in another case is no move — this writes nothing and says nothing. Two
+// reads of Dispatch at one sequence cannot be ordered, and a correction moves no sequence
+// (record.Store.CorrectIssueRepository writes none), so a fact prepared before another correction
+// moved the record — a hand-over's read against a follow's at the same sequence, or a late event
+// against a follow that read Dispatch after the event — would otherwise put the record back on an
+// older resolution, and nothing would read the issue again before its next event or the next
+// boot. The issue is owed a follow instead, which reads Dispatch and GitHub fresh
+// (Config.FollowIssue): it is asked from this transaction's commit hook, so a skip that commits is
+// never lost and one rolled back asks nothing, and Config.FollowIssue says what covers a process
+// that stops in between. A follow pass's own rows are checked here alike, each prepared against
+// the record the pass read before its write. A fact no preparation stamped is applied as before.
 //
 // The repository is resolved from the fact alone (correctionResolution): the refusal the fact's
 // preparation read from GitHub — a role App not installed on it, a repository GitHub does not
@@ -199,6 +215,17 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // until GitHub answers.
 func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	resolved := fact.ResolvedRepo
+	// The record moved after the fact was prepared: it takes nothing from the fact, and a follow
+	// reads the issue fresh once this transaction commits (the doc above says why).
+	if fact.PreparedAgainst != "" && !e.sameRepository(fact.PreparedAgainst, issue.Repo) {
+		key := issue.Key
+		if follow := e.cfg.FollowIssue; follow != nil {
+			intake.OnCommit(ctx, func() { follow(key) })
+		}
+		e.logOnCommit(ctx, "workflow: a repository correction prepared before the record moved writes nothing; the issue is followed again",
+			"issue", key, "prepared", fact.PreparedAgainst, "record", issue.Repo, "resolved", resolved)
+		return nil
+	}
 	// The common pass: Dispatch names the repository the record already holds — the same name, or
 	// the other name of a configured rename (sameRepository), so re-pointing every open issue at
 	// the repository a transfer moved to corrects none of them. It writes only when a change the

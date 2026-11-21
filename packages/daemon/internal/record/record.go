@@ -349,6 +349,14 @@ func (i Issue) Outdates(kind SeqKind, seq int64) bool {
 	return seq < i.LastDispatchSeq
 }
 
+// Behind says whether Dispatch's log of the issue had run past the record's sequence where a fact
+// carries seq: the fact shows at least one event the record has not applied. It asks where the
+// record stands against the log, not whether the fact moves the record (Outdates). For every seq
+// but 0 it is the opposite of Outdates as of an event; a seq of 0, a fact nothing read a sequence
+// for, is neither ahead of the record nor older than it. Admission asks it of the boot's listing
+// (Reconcile, applySummary).
+func (i Issue) Behind(seq int64) bool { return seq > i.LastDispatchSeq }
+
 // RepositoryCorrection is what a correction of an issue's repository left on its record: the
 // repository the record held before it (Before) and the moment the daemon applied it (At). The
 // two are one value because neither says anything alone, so a record holds a correction or nil.

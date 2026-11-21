@@ -709,6 +709,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.FollowIssue = w.requestFollowOf
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
@@ -1437,9 +1438,12 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			// one's change onto that repository waiting on its record, and, for a recorded issue
 			// moved onto one, the read its correction writes (intake.DispatchIssue.RepositoryRead).
 			// The boot's own listing reads GitHub for no repository, so a recorded issue's fact
-			// carries no read there and its change applies nothing until the follow after it.
+			// carries no read there and its change applies nothing until the follow after it. A
+			// recorded issue's fact carries the repository its record held at the preparation
+			// too (intake.DispatchIssue.PreparedAgainst), which its correction is applied against.
 			fact.Ancestry, fact.RepositoryRead = prepared.Ancestry, prepared.RepositoryRead
 			fact.RepositoryRefusal, fact.RepositoryRefusalKind = prepared.RepositoryRefusal, prepared.RepositoryRefusalKind
+			fact.PreparedAgainst = prepared.PreparedAgainst
 		case labelledTriageRoot:
 			// A labelled triage root the workflow records nothing of, which the arm above takes
 			// every recorded one out of. The listing carries no actor, so the setter is read from
