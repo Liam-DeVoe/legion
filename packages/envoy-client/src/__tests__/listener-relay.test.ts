@@ -27,14 +27,11 @@ import {
 } from "../../test/relay-socket-stand-in";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
-import {
-  createConsumerDelivery,
-  inboundUnavailable,
-  registerWithRelay,
-} from "../consumer-delivery";
+import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import { connectListenerRelay, ListenerRelay } from "../listener-relay";
+import { registerWithRelay } from "../relay-registration";
 import { sessionSettings } from "../session-settings";
 import { createEnvoyClient, expandSubscriptionTopics } from "../transport";
 

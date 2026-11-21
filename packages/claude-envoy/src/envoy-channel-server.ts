@@ -19,7 +19,6 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
   createDeliveryDedupe,
@@ -48,6 +47,7 @@ import {
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
 import { ListenerRelay } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
+import { registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
   type SessionConfigFile,
   sessionConfigFile,

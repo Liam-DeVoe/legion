@@ -43,8 +43,6 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  NoRelaySubjectError,
-  registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
 import {
   createDeliveryDedupe,
@@ -118,6 +116,7 @@ import {
   followNatsCredential,
   keepNatsCredential,
 } from "@legion/envoy-client/nats-credential";
+import { NoRelaySubjectError, registerWithRelay } from "@legion/envoy-client/relay-registration";
 import {
   readSessionAnswers,
   sessionAnswersFailureLine,

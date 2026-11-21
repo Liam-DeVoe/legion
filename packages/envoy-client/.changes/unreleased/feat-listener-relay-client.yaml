@@ -27,6 +27,8 @@ body: |-
   no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
   naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
   (`registerWithRelay`'s `drop`), logs one line naming them, and registers the rest at once.
+  `registerWithRelay`, `RelayRegistration`, `RegisteringRelay` and `NoRelaySubjectError` move from
+  `@legion/envoy-client/consumer-delivery` to `@legion/envoy-client/relay-registration`.
   `test/relay-socket-stand-in` (`@legion/envoy-client/test/relay-socket-stand-in`) serves the
   socket and a broker's token exchange on one origin, and a test's own listener routes beside them
   (`routes`), for a plugin's tests and an outside driver's.
