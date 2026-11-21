@@ -97,7 +97,7 @@ func awaitSessionConsumerStored(t *testing.T, conn *natsgo.Conn, sessionID strin
 	testnats.AwaitConsumerStored(t, conn, bus.Stream, name)
 }
 
-// awaitSessionMachine waits up to 10 s for listener's GET /v1/sessions to list sessionID as
+// awaitSessionMachine waits up to listenerWait for listener's GET /v1/sessions to list sessionID as
 // registered through machineID, so a delivery through this listener reads that session entry.
 func (p *listenerProcess) awaitSessionMachine(t *testing.T, sessionID, machineID string) {
 	t.Helper()

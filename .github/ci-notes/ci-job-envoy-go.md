@@ -56,7 +56,7 @@ binaries, beside 37 packages with no test files (both runs of the pair at 8cfd26
 from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
 jobs 132732382594 and 132742525106) it took 519.5 s and 594.1 s from the first event of
 its stream to the last, and every other call of this step had ended before it did. All nine
-calls are started in the background at the step's head, the long ones longest first, so the
+calls are started in the background at the step's head, the long ones first, so the
 step costs the longest of them rather than their sum. The short calls follow the long ones,
 and their order among themselves decides nothing: in run 2 the last of them ended at
 07:50:49 while the package list ran until 07:58:31.

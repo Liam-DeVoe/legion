@@ -52,7 +52,7 @@ func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	return st
 }
 
-// within returns f's error, or an error when f has not returned within 10 s: a record that a
+// within returns f's error, or an error when f has not returned within eventWait: a record that a
 // broken hand-over leaves waiting on its record's writer fails its test instead of hanging the
 // package until go test's timeout.
 func within(f func() error) error {

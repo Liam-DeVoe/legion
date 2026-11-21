@@ -145,7 +145,7 @@ func (k *writeKV) holdNextWrite() (entered <-chan struct{}, release func()) {
 	return reached, func() { close(gate) }
 }
 
-// recv waits up to 10 s for ch, failing the test when it never comes, so a regression in the
+// recv waits up to eventWait for ch, failing the test when it never comes, so a regression in the
 // hand-over fails the test instead of hanging it.
 func recv(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
@@ -249,7 +249,7 @@ func waitQueued(t *testing.T, s *Store, key string, n int) {
 	}
 }
 
-// waitAll waits up to 10 s for every call started on wg, failing the test if one hangs.
+// waitAll waits up to eventWait for every call started on wg, failing the test if one hangs.
 func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 	t.Helper()
 	done := make(chan struct{})

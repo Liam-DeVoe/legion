@@ -217,7 +217,7 @@ func (r *pendingRequest) String() string {
 
 // awaitLockWaits polls until reached holds, given how many sessions of the test's database wait on
 // a lock whose statement matches a LIKE pattern (storetest.CountLockWaits), and fails the test with
-// never when it does not within 10 s.
+// never when it does not within concurrentWait.
 func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, never string, reached func(waiting func(like string) int) bool) {
 	t.Helper()
 	waiting := func(like string) int {

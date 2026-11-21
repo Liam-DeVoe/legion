@@ -187,8 +187,9 @@ jobs:
       # 134.082 s on a two-vCPU pod (INFRA-636), more than the 2m below. -timeout 2m, by R6 from
       # the pair at 8cfd2682 (envoy-go's comment gives the rule): this call's one package on the
       # slower run is internal/dispatch/api, 49.6 s (run 44657415021, job 136039517954), and
-      # 49.6 / 30 = 1.65, so 2m. The `go test -json` stream goes to a file the upload step below
-      # publishes and is replayed to the log, as the architecture-note step's is.
+      # 49.6 / 30 = 1.65, so 2m; its slowest reading since is 59.5 s (run 44717243297 at 66058706,
+      # job 136223826114), 1.98, the same 2m. The `go test -json` stream goes to a file the upload
+      # step below publishes and is replayed to the log, as the architecture-note step's is.
       - name: Test the wall-clock measurements alone
         env:
           DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -218,7 +219,9 @@ jobs:
       #
       # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
       # call's slowest package on the slower run is cmd/spec-check, 20.0 s (run 44657322918, job
-      # 136026780288), and 20.0 / 30 = 0.67, so 1m, the smallest whole minute there is.
+      # 136026780288), and 20.0 / 30 = 0.67, so 1m, the smallest whole minute there is; its
+      # slowest reading since is 22.7 s (run 44717243297 at 66058706, job 136223826114), 0.76, the
+      # same 1m.
       # The `go test -json` stream goes to a file the upload step below publishes and is replayed
       # to the log, as the display-tree fixture check's is.
       - name: Test the architecture-note and spec-file rules and their commands
@@ -240,8 +243,10 @@ jobs:
       # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py. -timeout 1m, by R6 from the pair
       # at 8cfd2682 (envoy-go's comment gives the rule): this call's slowest package on the slower
       # run is internal/wirecheck, 2.3 s (run 44657322918, job 136026780288), and 2.3 / 30 = 0.08,
-      # so 1m, the smallest whole minute there is. The `go test -json` stream goes to a file the
-      # upload step below publishes and is replayed to the log, as the architecture-note step's is.
+      # so 1m, the smallest whole minute there is; its slowest reading since is 3.2 s (run
+      # 44717243297 at 66058706, job 136223826114), 0.11, the same 1m. The `go test -json` stream
+      # goes to a file the upload step below publishes and is replayed to the log, as the
+      # architecture-note step's is.
       - name: Test the listener's wire package, its clients and wirecheck
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
@@ -283,10 +288,11 @@ jobs:
       # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
       # call's one package, internal/dispatch/pmdoc, read 0.026 s and 0.026 s (runs 44657322918
       # and 44657415021, jobs 136026780288 and 136039517954), and 0.026 / 30 = 0.001, so 1m, the
-      # smallest whole minute there is. The `go test -json` stream goes to a file the
-      # upload step below publishes and is replayed to the log, as the race lane's steps do, for
-      # the reason envoy-go's unit step gives: the log keeps the package line of a green run and
-      # the whole stream of a red one.
+      # smallest whole minute there is; its slowest reading since is 0.033 s (run 44717243297 at
+      # 66058706, job 136223826114), 0.001, the same 1m. The `go test -json` stream goes to a
+      # file the upload step below publishes and is replayed to the log, as the race lane's steps
+      # do, for the reason envoy-go's unit step gives: the log keeps the package line of a green
+      # run and the whole stream of a red one.
       - name: Check the web app's display-tree fixture is up to date
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"

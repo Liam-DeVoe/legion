@@ -43,9 +43,10 @@ jobs:
     # go test as -timeout. The job's bound is its slowest time, 1,306 s (run 44687712471, job
     # 136126011060), against 1,270 s and 1,265 s in the pair (jobs 136026779922 and
     # 136039518473), 21.77 minutes, plus that -timeout plus 6: 21.77 + 39 + 6 = 66.77, so 67.
-    # Run 44790111577 at 85f6b018 (job 136476756266) read the package at 1,105.3 s and the job at
-    # 1,243 s, and run 44846096964 at 28ce7c74 (job 136669775497) at 1,120.9 s and 1,254 s, under
-    # those, so neither raised either limit. The limit must fire before the runner cancels the
+    # Run 44717243297 at 66058706 (job 136223826570) read the package at 1,095.4 s and the job at
+    # 1,227 s, run 44790111577 at 85f6b018 (job 136476756266) at 1,105.3 s and 1,243 s, and run
+    # 44846096964 at 28ce7c74 (job 136669775497) at 1,120.9 s and 1,254 s, under those, so none of
+    # the three raised either limit. The limit must fire before the runner cancels the
     # job, so a hung test prints the dump that names it.
     timeout-minutes: 67
     services:

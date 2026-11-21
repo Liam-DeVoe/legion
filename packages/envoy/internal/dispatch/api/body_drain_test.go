@@ -42,7 +42,7 @@ type heldBackBody struct {
 }
 
 // sendPartOfBody posts a body of size bytes to target, sending its head and first, and none of
-// the rest. The connection gives up on the server after 30 s.
+// the rest. The connection gives up on the server after throughputWait(t).
 func sendPartOfBody(t *testing.T, address, target string, header http.Header, size int, first []byte) *heldBackBody {
 	t.Helper()
 	connection, err := net.Dial("tcp", address)

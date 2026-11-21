@@ -44,7 +44,7 @@ func (rig *sessionConsumerRig) requireNoConsumer(t *testing.T, sessionID string)
 }
 
 // awaitNoConsumer waits for the stream to hold no consumer named for sessionID and fails the
-// test when it still does 5 s on. The deregistration answers before its delete runs
+// test when it still does listenerWait on. The deregistration answers before its delete runs
 // (sessionDelivery.deleteAfterAnswer), so a row that reads the stream the moment the answer
 // comes reads it before the delete.
 func (rig *sessionConsumerRig) awaitNoConsumer(t *testing.T, sessionID string) {

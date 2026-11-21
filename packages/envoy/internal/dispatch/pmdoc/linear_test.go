@@ -1107,9 +1107,8 @@ func TestALateCallFinishingAfterItsTestDoesNotPanicHelper(t *testing.T) {
 // waitForLeakToClear blocks until cleared closes or fails t: the deregistration goroutine
 // runWithDeadline spawned on a deadline miss closes cleared the instant it has removed its own
 // entry from leaking, so a later test in this same binary never starts measuring while this
-// test's own synthetic leak is still registered. 10s (packages/envoy/internal/cistore/burst_test.go's
-// waitAll uses the same bound for the same kind of wait) is far more than the handoff needs; past
-// it, something is wrong.
+// test's own synthetic leak is still registered. 10s is far more than the handoff needs; past it,
+// something is wrong.
 func waitForLeakToClear(t *testing.T, cleared <-chan struct{}) {
 	t.Helper()
 	select {

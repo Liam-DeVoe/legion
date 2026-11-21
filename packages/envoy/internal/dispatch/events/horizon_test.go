@@ -1232,7 +1232,7 @@ func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 	t.Log(strings.TrimSpace(warning))
 }
 
-// waitForStallWarnings waits up to ten seconds for logged to hold want stall warnings, which a
+// waitForStallWarnings waits up to 30 seconds for logged to hold want stall warnings, which a
 // Horizon logs on a goroutine of its own, and returns how many it holds.
 func waitForStallWarnings(logged *storetest.LockedLog, want int) int {
 	deadline := time.Now().Add(30 * time.Second)
