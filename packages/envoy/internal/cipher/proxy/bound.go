@@ -751,24 +751,24 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // serves the person to and a call opened before it must not outlive it. Every other check that
 // decides nothing - Dispatch refusing the broker's own account, an answer the broker can neither
 // ask for nor read - leaves the call to the reads after it, logged, as a read that failed does.
+// The hold is asked whatever the connection read answers: of the operator that read names, and,
+// when the read fails with no refusal of the grant, of the operator the call was admitted under
+// (connInfo.grant). A read that fails so is the requests package's project check that cannot ask
+// Dispatch, among others, and that is the outage in which only the hold's kept answer and its
+// deadline still say whether the person may be served, so such a read must not skip them.
 func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *cutCall {
 	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
 		return &cutCall{http.StatusProxyAuthRequired, codeGrantNotLive, "this grant expired while the proxy carried this call"}
 	}
 	grant, err := s.grants.AirlockConnection(ctx, info.password)
 	if err != nil {
-		return s.carryRead("connection", err)
-	}
-	if grant.Operator != "" {
-		switch err := s.hold.Check(ctx, grant.Operator); {
-		case errors.Is(err, hold.ErrHeld):
-			return &cutCall{http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(grant.Operator)}
-		case errors.Is(err, hold.ErrDeadlinePassed):
-			s.log.Error(holdUnreadable, "person", grant.Operator, "error", err)
-			return &cutCall{http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + grant.Operator + " cannot be read: " + hold.Reason(err)}
-		case err != nil:
-			s.log.Error(holdUnreadable, "person", grant.Operator, "error", err)
+		if cut := s.carryRead("connection", err); cut != nil {
+			return cut
 		}
+		return s.carryHold(ctx, info.grant.Operator)
+	}
+	if cut := s.carryHold(ctx, grant.Operator); cut != nil {
+		return cut
 	}
 	if _, carried := grant.Names[chosen.name]; !carried {
 		return &cutCall{http.StatusForbidden, codeNoBoundName, chosen.name + " is no longer a name of this grant"}
@@ -783,6 +783,25 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
 	}
 	if !slotReleased(secret, chosen.slot) {
 		return &cutCall{http.StatusForbidden, codeNoValue, noSlotValue(chosen)}
+	}
+	return nil
+}
+
+// carryHold is carryRefusal's hold of operator, the person a carried call's grant acts for: nil
+// for no person (an unmapped pod's grant, a service's) and while the gate serves them, else the
+// cut a held answer or a passed deadline makes, as carryRefusal says.
+func (s *Server) carryHold(ctx context.Context, operator string) *cutCall {
+	if operator == "" {
+		return nil
+	}
+	switch err := s.hold.Check(ctx, operator); {
+	case errors.Is(err, hold.ErrHeld):
+		return &cutCall{http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(operator)}
+	case errors.Is(err, hold.ErrDeadlinePassed):
+		s.log.Error(holdUnreadable, "person", operator, "error", err)
+		return &cutCall{http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + operator + " cannot be read: " + hold.Reason(err)}
+	case err != nil:
+		s.log.Error(holdUnreadable, "person", operator, "error", err)
 	}
 	return nil
 }

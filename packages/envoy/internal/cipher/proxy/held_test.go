@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -589,5 +590,66 @@ func TestHeldAirlockCarriedCallUnderADeadline(t *testing.T) {
 		time.Sleep(5 * watchFast)
 		h.served(t, h.client(bobPlaceholder), bob, "a new connection once ada's deadline passed")
 		h.carriesOn(t, bob, "once ada's deadline passed")
+	})
+}
+
+// dispatchDown is the outage of TestHeldAirlockCarriedCallWhileDispatchIsDown: the gate's Dispatch
+// stand-in answers nothing, and the connection read of each grant fails as the requests package's
+// project check fails while it cannot ask Dispatch (requests.ErrProjectAccessUnavailable), which
+// refuses no grant and leaves a carried call to the reads after it.
+func (h *heldRig) dispatchDown() {
+	h.dispatch.SetDown(true)
+	unavailable := fmt.Errorf("airlock connection: the project check: %w", requests.ErrProjectAccessUnavailable)
+	h.grants.refuseConnection(workerPlaceholder, unavailable)
+	h.grants.refuseConnection(bobPlaceholder, unavailable)
+}
+
+// TestHeldAirlockCarriedCallWhileDispatchIsDown: the hold is asked of a carried call's person even
+// when the connection read cannot say whether the grant still carries it, as it cannot while
+// Dispatch is down and the grant holds a project-tagged name. Each of ada's and bob's calls is
+// served; then Dispatch goes down, and with it the project check of each connection read.
+//
+//   - A hold the broker kept: another broker process kept Dispatch's answer that holds ada just
+//     before the outage (person_standing), and the gate's 30-second cache of her earlier answer
+//     lapses. Her joined connection and streamed answer are cut within the watch, 403
+//     MEMBERSHIP_HELD in the gate's words: an outage releases nobody Dispatch held.
+//   - A deadline passed: on a broker that requires a deadline, the gate's clock passes ada's kept
+//     deadline during the outage. Her carried calls are cut 503 HOLD_UNCHECKABLE, saying Dispatch's
+//     answer that she is not held has passed its deadline.
+//
+// In each, bob, whom nothing holds and whose deadline has not passed, keeps his calls: a project
+// check that cannot ask Dispatch ends no carried call.
+//
+// Control: carryRefusal leaving the call to the connection read when that read fails (the hold
+// asked only after a read that succeeded), as it did: ada's calls are carried on, and each row
+// fails naming her served.
+func TestHeldAirlockCarriedCallWhileDispatchIsDown(t *testing.T) {
+	t.Run("a hold the broker kept", func(t *testing.T) {
+		h := newHeldRig(t, metrics.New(), nil)
+		ada := h.openSide(t, "ada", workerPlaceholder, workerValue, testGrantID)
+		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
+
+		h.dispatchDown()
+		if err := h.store.KeepPersonStanding(context.Background(), heldPerson, true, time.Now(), nil); err != nil {
+			t.Fatalf("keep a held answer of %s: %v", heldPerson, err)
+		}
+		h.passThirtySeconds()
+		h.cutWithinTheWatch(t, ada, "while Dispatch is down, the broker having kept her hold")
+
+		time.Sleep(5 * watchFast)
+		h.carriesOn(t, bob, "while Dispatch is down")
+	})
+
+	t.Run("a deadline passed", func(t *testing.T) {
+		h := newHeldRigWith(t, metrics.New(), nil, true)
+		ada := h.openSide(t, "ada", workerPlaceholder, workerValue, testGrantID)
+		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
+
+		h.dispatchDown()
+		h.clock.set(h.clock.read().Add(24*time.Hour + time.Second))
+		h.cutWithin(t, ada, http.StatusServiceUnavailable, adaLapsed, "while Dispatch is down, once her deadline passed")
+
+		time.Sleep(5 * watchFast)
+		h.carriesOn(t, bob, "while Dispatch is down, his deadline a day ahead")
 	})
 }
