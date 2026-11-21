@@ -110,7 +110,7 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // TestAStepRecordThatDispatchRefusesEndsWithAWarning for the step record a rating is), and so does
 // a 400 STEP_INPUT naming the rating (TestARatingOnARecordOfAnotherKindEndsWithAWarning).
 func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
-	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
+	notFound := noRouteError("no route for PUT /api/v1/issues/LEGION-1/…")
 	for _, route := range []struct {
 		name    string
 		payload record.OutboxPayload

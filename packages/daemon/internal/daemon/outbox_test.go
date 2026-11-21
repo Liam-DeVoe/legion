@@ -3438,9 +3438,8 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
 				Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
 				Agent: "legion-legion-legion-2-implementer", Generation: 1, StartedAt: &started}, now))
-			noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for " + tc.route}
-			noStepRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
-				Message: "no route for PUT /api/v1/issues/LEGION-2/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b"}
+			noRoute := noRouteError("no route for " + tc.route)
+			noStepRoute := noRouteError("no route for PUT /api/v1/issues/LEGION-2/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b")
 			client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, recordErr: noStepRoute}
 			tc.meets(client, noRoute)
 			logs := &syncBuffer{}

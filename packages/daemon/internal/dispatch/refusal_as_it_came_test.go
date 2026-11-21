@@ -34,3 +34,41 @@ func TestADispatchRefusalIsReadFromItsCodeAsItCame(t *testing.T) {
 		t.Errorf("the refusal prints %q, want Dispatch's words as the rule reads them", err)
 	}
 }
+
+// TestADispatchRefusalsSentenceIsReadAsItCame: Dispatch's refusals whose sentence a decision reads
+// - the 400 INVALID_JSON naming a field a Dispatch from before it refuses (PermanentRefusal), and a
+// router's 404 NOT_FOUND "no route for" (NoRoute) - are decided on the sentence as it came (Error's
+// Said), never on the rule's reading of it (Error's Message): a sentence whose URL holds a quote,
+// which the rule prints as not readable (url), and one that repeats a run of the token the request
+// carried, which the rule cuts from it (token). Each decision still holds, and the error prints
+// as the rule reads the sentence, which names neither the URL's query nor the token's run.
+func TestADispatchRefusalsSentenceIsReadAsItCame(t *testing.T) {
+	for _, c := range []struct {
+		name, token, body, hidden string
+		status                    int
+		decided                   func(error) bool
+	}{
+		{"newer-field-url", dispatchToken, `{"code":"INVALID_JSON","error":"invalid JSON body: json: unknown field \"labels_add\"; see https://dispatch.example/fields?f=\"labels_add\""}`, `f="labels_add"`,
+			http.StatusBadRequest, func(err error) bool { _, permanent := PermanentRefusal(err); return !permanent }},
+		{"newer-field-token", "dsp_labels_add_9f3c1e7a", `{"code":"INVALID_JSON","error":"invalid JSON body: json: unknown field \"labels_add\""}`, "labels_add",
+			http.StatusBadRequest, func(err error) bool { _, permanent := PermanentRefusal(err); return !permanent }},
+		{"no-route-url", dispatchToken, `{"code":"NOT_FOUND","error":"no route for GET /api/v1/issues/an-issue; see https://dispatch.example/routes?r=\"issues\""}`, `r="issues"`,
+			http.StatusNotFound, NoRoute},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			t.Cleanup(server.Close)
+			_, err := New(server.URL, c.token).GetIssue(context.Background(), "an-issue")
+			if !c.decided(err) {
+				t.Errorf("Dispatch's %d %s = %v, want it decided on its sentence as it came", c.status, c.body, err)
+			}
+			if err != nil && strings.Contains(err.Error(), c.hidden) {
+				t.Errorf("the refusal prints %q, want its sentence as the rule reads it", err)
+			}
+		})
+	}
+}

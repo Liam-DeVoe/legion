@@ -592,16 +592,18 @@ func daemonActor(key string) actor {
 }
 
 // dispatchError is Dispatch's refusal with status, read as answer, as an *Error: Dispatch's code as
-// it came where the rule prints it unchanged (oauth2call.CodedRefusal, RemoteText.SendBack), so
-// what the refusal is (PermanentRefusal, Claimed) is decided on Dispatch's own code, and its error
-// as the rule reads it, decoded field by field, so an error naming a URL beside the JSON quote
-// that ends it costs the refusal nothing of its code. A body that is not Dispatch's refusal is
-// codeless, its words as the rule reads them its message, or statusText where it says nothing.
+// it came where the rule prints it unchanged (oauth2call.CodedRefusal, RemoteText.SendBack), and
+// its sentence as it came (Said), so what the refusal is (PermanentRefusal, Claimed, NoRoute) is
+// decided on Dispatch's own words, and its sentence as the rule reads it (Message), decoded field
+// by field, so a sentence naming a URL beside the JSON quote that ends it costs the refusal
+// nothing of its code. A body that is not Dispatch's refusal is codeless, its words as the rule
+// reads them its message, or statusText where it says nothing.
 func dispatchError(status int, statusText string, answer oauth2call.Answer) *Error {
 	refusal := &Error{Status: status}
 	var coded oauth2call.CodedRefusal
 	if answer.Decode(&coded) == nil {
 		refusal.Code, _ = coded.Code.SendBack()
+		refusal.Said = coded.Error
 		refusal.Message = coded.Error.String()
 	} else {
 		refusal.Message = answer.Words().String()

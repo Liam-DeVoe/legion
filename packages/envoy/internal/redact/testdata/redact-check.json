@@ -243,6 +243,10 @@
       {
         "holder": "github.com/sjawhar/envoy/oauth2call.CodedRefusal",
         "test": "print-oauth2call.CodedRefusal"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.Error",
+        "test": "print-dispatch.Error"
       }
     ],
     "reflection": [
@@ -1995,7 +1999,10 @@
       "answer": "github.com/sjawhar/envoy/internal/redact.Answer",
       "methods": ["Decode", "Status", "StreamTo", "Words"],
       "readers": ["(*net/http.Response).Write", "net/http/httputil.DumpResponse"],
-      "makers": ["github.com/sjawhar/envoy/internal/redact.NewRemoteText"],
+      "makers": [
+        "github.com/sjawhar/envoy/internal/redact.NewRemoteText",
+        "github.com/sjawhar/envoy/oauth2call/oauth2calltest.Said"
+      ],
       "record": "github.com/sjawhar/envoy/internal/redact.Carried",
       "recorder": "(github.com/sjawhar/envoy/internal/redact.RemoteText).WithoutTokens",
       "exempt": [
@@ -2008,6 +2015,11 @@
           "file": "packages/envoy/internal/dispatch/auth/callback.go",
           "function": "github.com/sjawhar/envoy/internal/dispatch/auth.ParseCallback",
           "why": "the OAuth callback's own query, which the person's browser sends to Dispatch: it answers no request Dispatch sent, so there is no request record to read, and the rule reads the words"
+        },
+        {
+          "file": "packages/envoy/oauth2call/oauth2calltest/oauth2calltest.go",
+          "function": "github.com/sjawhar/envoy/oauth2call/oauth2calltest.Said",
+          "why": "a test's own words, for the value a client would have decoded from an answer: Said is a maker (gate.answers.makers), so the census holds every call of it outside a test file to the record rule, and only test files call it"
         }
       ]
     }
@@ -5080,11 +5092,25 @@
       "production": "daemon cipher refusal: the broker's code decided as it came (oauth2call.CodedRefusal, SendBack)"
     },
     {
+      "id": "cipher-unknown-field-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestAnOlderBrokersUnknownFieldIsReadAsItCame",
+      "production": "daemon cipher refusesAnUnknownField: an older broker's unknown field decided on its words as they came, beside a URL the rule cannot read"
+    },
+    {
       "id": "dispatch-decided-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestADispatchRefusalIsReadFromItsCodeAsItCame",
       "production": "daemon dispatchError: Dispatch's code decided as it came (oauth2call.CodedRefusal, SendBack)"
+    },
+    {
+      "id": "dispatch-sentence-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchRefusalsSentenceIsReadAsItCame",
+      "production": "daemon dispatch PermanentRefusal and NoRoute: Dispatch's sentence decided as it came (Error.Said), beside a URL the rule cannot read and beside a run of the request's token"
     },
     {
       "id": "notify-decided-as-it-came",
@@ -5120,6 +5146,13 @@
       "package": "./oauth2call",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oauth2call.CodedRefusal",
       "production": "github.com/sjawhar/envoy/oauth2call.CodedRefusal: every printer at every placement"
+    },
+    {
+      "id": "print-dispatch.Error",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.Error",
+      "production": "github.com/sjawhar/legion/daemon/internal/dispatch.Error: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-boot-limit-names-github",

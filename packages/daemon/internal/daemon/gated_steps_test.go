@@ -130,7 +130,7 @@ func TestTheRoutersNotFoundIsAWaitOnlyForAKindThatWaitsForItsRoute(t *testing.T)
 			row: mustOutboxRow(t, "LEGION", record.GatedStepsPublish{Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}}, now)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for " + tc.route}
+			noRoute := noRouteError("no route for " + tc.route)
 			err := (&outbox{dispatch: &outboxDispatch{gatedStepsErr: noRoute, recordErr: noRoute}}).execute(context.Background(), tc.row)
 			var refusal *dispatch.Error
 			switch {

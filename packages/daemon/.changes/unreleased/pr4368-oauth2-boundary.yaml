@@ -15,7 +15,13 @@ body: |-
   cache's answer names, the reason, holder state and holder the controller probe logs of a role
   lookup, and GitHub's rate-limit headers in the daemon's limit lines each print as the rule
   reads them (`oauth2call.Header`, `oauth2call.RoleLookup`), a rate-limit header that is a number
-  as that number.
+  as that number. What a refusal is - GitHub's rate limit, its plan refusal, a ref it already
+  has, a code or sentence of Dispatch's, the secrets broker's, the Envoy listener's or the
+  daemon's own - is decided on the answer as it came and never on the rule's reading of it, which
+  prints a whole body whose one URL sits beside a JSON quote, as GitHub's documentation URL does,
+  as not readable: the rate-limit classifier, `ghbranch`, the cipher and Dispatch clients, the
+  listener calls and `legion controller start` each read the answer through `Answer.Decode` or
+  `oauth2call.Holds`, and Dispatch's `Error` holds its sentence as it came (`Said`).
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

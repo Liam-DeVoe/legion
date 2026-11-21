@@ -488,7 +488,7 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	r.seedClaim(issue, claim.RoleTester, "ses-1", supervise.StateWorking, time.Minute)
 	r.client.answers = []error{
 		fmt.Errorf("publish the role holders of %s: %w", issue, errors.New("Dispatch is down")),
-		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/" + issue + "/role-holders"},
+		noRouteError("no route for PUT /api/v1/issues/" + issue + "/role-holders"),
 		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"},
 		&dispatch.Error{Status: http.StatusInternalServerError, Code: "INTERNAL", Message: "internal server error"},
 		&dispatch.Error{Status: http.StatusBadRequest, Message: "<html>400 Bad Request</html>"},

@@ -28,3 +28,24 @@ func TestABrokerRefusalIsReadFromItsCodeAsItCame(t *testing.T) {
 		t.Errorf("the refusal prints %q, want the broker's words as the rule reads them", err)
 	}
 }
+
+// TestAnOlderBrokersUnknownFieldIsReadAsItCame: a broker from before the claim refuses it as an
+// unknown field in a sentence whose URL holds a quote, which the rule prints as not readable. The
+// refusal is still that broker's, decided on its words as they came (refusesAnUnknownField), so
+// the enrollment is sent once more without the claim and the broker's second answer enrols it.
+func TestAnOlderBrokersUnknownFieldIsReadAsItCame(t *testing.T) {
+	claimed := podEnrollment
+	claimed.Claim = plannerClaim
+	broker, client := newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{
+		{http.StatusBadRequest, `{"code":"INVALID_ENROLLMENT","error":"body must be one valid JSON object: json: unknown field \"claim\"; see https://broker.example/fields?f=\"claim\""}`},
+		{http.StatusCreated, `{"enrollment_id":"enr-older","lease_expires_at":"2026-09-26T12:15:00Z"}`},
+	}
+	got, err := client.Enroll(context.Background(), claimed)
+	broker.mu.Lock()
+	calls := len(broker.enrollReqs)
+	broker.mu.Unlock()
+	if err != nil || got.ID != "enr-older" || calls != 2 {
+		t.Fatalf("Enroll = %+v, %v after %d calls; want the older broker's enr-older on the second", got, err, calls)
+	}
+}

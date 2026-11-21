@@ -40,7 +40,14 @@ body: |-
   blob's encoding, print only as what the client checked them to be. The token client's retry
   line, and `agent-secrets-devrelay`'s line for a looked-up state, print the broker's text as the
   address lets it print (`cipheraddr.Address.WordsOf`): beside an address that is not clean, its
-  code printed whole while the trade's error withheld it.
+  code printed whole while the trade's error withheld it. A client decides on an answer as it
+  came and the rule runs only where text leaves the process: `redact.Holds` tests an answer's
+  bytes in place and `redact.ContainsFold` finds a phrase of its wording in any case (both moved
+  from the GitHub App client, and forwarded by `oauth2call`), `oauth2call.CodedRefusal` decodes a
+  `{"code","error"}` refusal field by field, and `oauth2call/oauth2calltest` gives a module
+  outside this one the box print test for a holder it declares. An Authorization's scheme
+  (Bearer, token, Basic, any word before its first space) is no credential: only the part after
+  it is, so an answer's word beside the scheme is not cut with it.
   The helper splits an `invalid_request` description at its first `": "` only where the rule reads
   the whole description as clean. The broker's words in `redact.Error`, `redact.Cause` and
   `cipheraddr.Address.Words`, and the words in the helper's `BrokerError`, `agent-secrets`' and

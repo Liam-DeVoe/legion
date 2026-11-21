@@ -514,7 +514,7 @@ func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 	}
 	r.client.answers = []error{
 		fmt.Errorf("publish the design gates of %s: %w", issue, errors.New("Dispatch is down")),
-		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/" + issue + "/design-gates"},
+		noRouteError("no route for PUT /api/v1/issues/" + issue + "/design-gates"),
 		&dispatch.Error{Status: http.StatusNotFound, Message: "<html>404 Not Found</html>"},
 		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ISSUE", Message: `"spec" names no document: artifact_id is the document that step's gate recorded`},
 		&dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "issue not found"},

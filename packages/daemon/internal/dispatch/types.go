@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // Client is the Dispatch surface the workflow needs. It deliberately exposes only the reads and
@@ -377,11 +379,17 @@ type HandoffAuthor struct {
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body.
+// carry Dispatch's normal error body. Message is what the error prints: Dispatch's sentence as
+// the rule reads it, with the credentials the request carried redacted. Said is that sentence as
+// it came, held as Dispatch's words (oauth2call.RemoteText): what a decision on the sentence reads
+// (NoRoute, PermanentRefusal), compared as it came, since the rule's reading of a sentence whose
+// URL it cannot read is WordsNotReadable and a word that holds a run of the request's token is cut
+// from it. It prints only as the rule reads it.
 type Error struct {
 	Status  int
 	Code    string
 	Message string
+	Said    oauth2call.RemoteText
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against
@@ -444,7 +452,7 @@ const IssueNotFound = "ISSUE_NOT_FOUND"
 func NoRoute(err error) bool {
 	var refusal *Error
 	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
-		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+		refusal.Said.HasPrefix(noRouteMessagePrefix)
 }
 
 const (
@@ -478,7 +486,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
 		refusal.Status == http.StatusConflict && refusal.Code == ParentContended,
-		refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_JSON" && unknownNewerField(refusal.Message):
+		refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_JSON" && unknownNewerField(refusal.Said):
 		return nil, false
 	}
 	return refusal, true
@@ -492,9 +500,11 @@ func PermanentRefusal(err error) (*Error, bool) {
 // body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
-func unknownNewerField(message string) bool {
+// unknownNewerField is whether said, Dispatch's sentence as it came, refuses one of newerFields by
+// name.
+func unknownNewerField(said oauth2call.RemoteText) bool {
 	for _, field := range newerFields {
-		if strings.Contains(message, `unknown field "`+field+`"`) {
+		if said.Contains(`unknown field "` + field + `"`) {
 			return true
 		}
 	}

@@ -490,8 +490,8 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 		{name: "408", err: &dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT", Message: "slow"}},
 		{name: "429", err: &dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "later"}},
 		{name: "a codeless 400", err: &dispatch.Error{Status: http.StatusBadRequest, Message: "Bad Request"}},
-		{name: "an older Dispatch's refusal of a newer field", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON",
-			Message: `invalid JSON body: json: unknown field "labels_add"`}},
+		{name: "an older Dispatch's refusal of a newer field", err: dispatchRefusal(http.StatusBadRequest, "INVALID_JSON",
+			`invalid JSON body: json: unknown field "labels_add"`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			newStepRecordRig(t, answersInTurn(tc.err)).retriedThenLanded(1)
