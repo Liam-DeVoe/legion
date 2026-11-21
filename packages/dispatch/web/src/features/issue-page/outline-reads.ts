@@ -13,6 +13,7 @@ import {
   issueAsksQuery,
   issueCommentsQuery,
   issueMessagesQuery,
+  type NamesFailure,
   treeDocumentIds,
   useIssueTree,
 } from "./useIssueTree";
@@ -87,6 +88,21 @@ export interface OutlineReads {
    *  waits on, since until then a read still out can draw rows above the row it would land on,
    *  and a failed read answers too, where `readsHeld` would wait for ever. */
   readonly readsSettled: boolean;
+  /** The whole tree (`useIssueTree`). */
+  readonly root: TreeNode;
+}
+
+/** What a view the stage draws in the outline's place reads of the issue's tree
+ *  (`useViewReads`). Each field is one value for as long as the reads say the same; the object
+ *  holding them is new on every render. */
+export interface ViewReads {
+  /** The names' line while it stands (`IssueTreeView.namesFailure`), the outline's own: one
+   *  line in the outline's words with its Retry, as the outline draws it last of its lines
+   *  (`OutlineReads.failed`), and the one empty list (`NO_FAILED_READS`) while none stands. */
+  readonly names: readonly FailedRead[];
+  /** What the page publishes of its batched names read (`IssueTreeView.published`), which the
+   *  view hands its rows in the render that draws them. */
+  readonly published: PublishedReferences;
   /** The whole tree (`useIssueTree`). */
   readonly root: TreeNode;
 }
@@ -187,6 +203,27 @@ function blocksUnreadable(issue: IssueDetails, id: string): string {
   return STATE_LINES.decisions_document_unreadable;
 }
 
+/** The names' line while it stands (`IssueTreeView.namesFailure`), in the outline's words: the
+ *  outline's (`useOutlineReads`) and a view's (`useViewReads`), drawn by one rule. One value for
+ *  as long as the names' failure says the same, and the one empty list while none stands. */
+function useNamesLine(namesFailure: NamesFailure | undefined): readonly FailedRead[] {
+  return useMemo(
+    (): readonly FailedRead[] =>
+      namesFailure === undefined
+        ? NO_FAILED_READS
+        : [
+            {
+              ...namesFailure,
+              bringsQuestions: false,
+              key: "names",
+              message: STATE_LINES.names_unreadable,
+              placesRows: false,
+            },
+          ],
+    [namesFailure]
+  );
+}
+
 /**
  * The issue's tree, the reads the outline waits on, and the line of each that stands failed, the
  * names' as the tree says it (`failed`): for whatever draws or lands on the outline, and for the
@@ -257,21 +294,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     },
     queries: queriesOf(six),
   });
-  const names = useMemo(
-    (): readonly FailedRead[] =>
-      namesFailure === undefined
-        ? NO_FAILED_READS
-        : [
-            {
-              ...namesFailure,
-              bringsQuestions: false,
-              key: "names",
-              message: STATE_LINES.names_unreadable,
-              placesRows: false,
-            },
-          ],
-    [namesFailure]
-  );
+  const names = useNamesLine(namesFailure);
   const failed = useMemo(
     () =>
       own.failed.length + documents.failed.length + names.length === 0
@@ -288,4 +311,16 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     readsSettled: own.settled && documents.settled,
     root,
   };
+}
+
+/**
+ * The issue's tree as a view the stage draws in the outline's place reads it - the Verification
+ * view and the Plan view, which watch the reads they draw from themselves - and the names' line
+ * the outline draws (`useNamesLine`), in one call. A view's references wait on the page's names
+ * (`published`), so while the names reads stand failed each stays its address, and the view
+ * says so as the outline does, with the same line and the same Retry.
+ */
+export function useViewReads(issue: IssueDetails): ViewReads {
+  const { namesFailure, published, root } = useIssueTree(issue);
+  return { names: useNamesLine(namesFailure), published, root };
 }

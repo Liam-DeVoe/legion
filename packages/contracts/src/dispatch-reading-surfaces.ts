@@ -116,6 +116,7 @@ export type DispatchReadingSurface =
   | "node-row-parent-line"
   | "node-row-chip"
   | "outline-crumb"
+  | "issue-pin"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -544,8 +545,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "node-row-child-title",
   },
   // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
-  // line a filter's row names a node's parent by, and a crumb above a zoom, each projected from
-  // the node's own words and cut by R1's first-line rule; and a chip, which names a tie's target.
+  // line a filter's row names a node's parent by, a crumb above a zoom and a pin in Details, each
+  // projected from the node's own words and cut by R1's first-line rule; and a chip, which names
+  // a tie's target.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
@@ -598,6 +600,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "outline-crumb",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssuePins.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueMargin.test.tsx",
+      test: "a pin's line reads a reference as its target's name",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, Details' Pinned section",
+    reason: `A pin names its record on one line, its first line cut by R1's rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-pin",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.

@@ -108,8 +108,9 @@ const NO_REFERENCES: ReadonlySet<string> = new Set();
 const NO_READINGS: ReadonlyMap<string, ReferenceNameReading> = new Map();
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
 
-/** What the store holds while no page publishes. */
-const NOTHING_PUBLISHED: PublishedReferences = {
+/** What the store holds while no page publishes, and what a surface that publishes nothing hands
+ *  what it draws: no reference at all. */
+export const NOTHING_PUBLISHED: PublishedReferences = {
   ambiguous: NO_REFERENCES,
   asked: NO_REFERENCES,
   gone: NO_REFERENCES,
@@ -273,7 +274,7 @@ function useReadingName(
 export function namesBlockByLine(
   route: DispatchReferenceRoute | undefined,
   reading: ReferenceNameReading | undefined
-): reading is Extract<ReferenceNameReading, { readonly tree: DisplayTree }> {
+): boolean {
   return (
     route !== undefined &&
     referenceTargetKind(route) === "block" &&
@@ -294,7 +295,9 @@ function blockLineReading(
   reference: string,
   reading: ReferenceNameReading
 ): ReferenceNameReading | undefined {
-  if (!namesBlockByLine(parseNodeReference(reference), reading)) return undefined;
+  if (!("tree" in reading) || !namesBlockByLine(parseNodeReference(reference), reading)) {
+    return undefined;
+  }
   const tree = firstWordedBlock(reading.tree) ?? reading.tree;
   return reading.fallback === undefined ? { tree } : { fallback: reading.fallback, tree };
 }

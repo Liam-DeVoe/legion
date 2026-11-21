@@ -44,14 +44,16 @@ export function nodeLineOf(node: Parameters<typeof useNodeLine>[0]): string {
   return line ?? "";
 }
 
-/** The one line a filter's row names a node's parent by (`node-line.tsx`'s `ParentLink`): its
- *  line (`nodeLineOf`), and the page's word for its kind where its words hold none. */
+/** The one line a filter's row names a node's parent by (`node-line.tsx`'s `NodeParentLine`):
+ *  its line (`nodeLineOf`), and the page's word for its kind where its words hold none. */
 export function parentLinkWords(node: Parameters<typeof useNodeLine>[0]): string {
   return lineOrKindWord(nodeLineOf(node), node.type);
 }
 
-/** Publishes `published` for as long as it is drawn, as a page publishes its batched read. */
-function Publisher({ published }: { published: PublishedReferences }): ReactNode {
+/** Publishes `published` to the names store for as long as it is drawn, as a page publishes its
+ *  batched read beside what it draws (`useIssueTree.ts`): in the layout phase of the commit that
+ *  draws it, after what is drawn before it has rendered. */
+export function Publisher({ published }: { published: PublishedReferences }): ReactNode {
   usePublishReferenceNames(published);
   return null;
 }
@@ -89,7 +91,7 @@ export function publishedNames(
  *  and every chip's reference as one the page asks for, answered or not yet. */
 export function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
   return {
-    ...chipNaming(chips.filter((chip) => chip.answered).map((chip) => [chip.ref, chip] as const)),
+    ...chipNaming(chips.filter((chip) => chip.answered)),
     asked: new Set(chips.map((chip) => chip.ref)),
   };
 }

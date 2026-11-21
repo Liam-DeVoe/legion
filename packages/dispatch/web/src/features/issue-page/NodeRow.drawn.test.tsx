@@ -17,6 +17,7 @@ import type { SentRequest } from "../conversation/send-request";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
+  NOTHING_PUBLISHED,
   PublishedReferenceNames,
   type PublishedReferences,
   ReferenceNamesProvider,
@@ -107,15 +108,6 @@ function knowParties(queryClient: QueryClient, { login, role, session }: Parties
   if (login !== undefined) queryClient.setQueryData(["users"], [{ login }]);
 }
 
-/** What a page that has published nothing hands its rows: no reference at all. */
-const NO_PUBLICATION: PublishedReferences = {
-  ambiguous: new Set(),
-  asked: new Set(),
-  gone: new Set(),
-  readings: new Map(),
-  unnamed: new Set(),
-};
-
 /** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
  *  the render that draws it, as the page publishes its one batched read and hands it its rows
  *  (`useIssueTree.ts`, `IssueTree.tsx`); nothing where it is undefined. */
@@ -128,7 +120,7 @@ function Named({
 }): ReactNode {
   usePublishReferenceNames(published);
   return (
-    <PublishedReferenceNames published={published ?? NO_PUBLICATION}>
+    <PublishedReferenceNames published={published ?? NOTHING_PUBLISHED}>
       {children}
     </PublishedReferenceNames>
   );
