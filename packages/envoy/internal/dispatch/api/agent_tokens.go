@@ -575,14 +575,8 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	var memberKind *string
 	var replaced bool
 	legacyWindow, markWindow := store.AccountBindingWindows()
-	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
-			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind,
-			`+tokenAccountReplaced(accountsHeldSQL("$2::boolean", "$3", "$4"))+`
-		from agent_tokens
-		left join people on people.email = canonical_login(agent_tokens.owner)
-		where agent_tokens.token_hash = $1
-	`, hash[:], s.deps.SignInIssuer != "", legacyWindow, markWindow).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced)
+	err := s.deps.Store.Pool.QueryRow(ctx, personalTokenActorSQL, hash[:], s.deps.SignInIssuer != "", legacyWindow, markWindow).
+		Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -614,6 +608,19 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
 	}, nil
 }
+
+// personalTokenActorSQL is personalTokenActor's one statement, over the token's hash ($1), whether
+// the deployment's sign-in records accounts ($2) and the binding's two windows ($3, $4,
+// store.AccountBindingWindows). Named so a plan row explains the statement the request runs
+// (TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssTokens).
+var personalTokenActorSQL = `
+		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
+			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind,
+			` + tokenAccountReplaced(accountsHeldSQL("$2::boolean", "$3", "$4")) + `
+		from agent_tokens
+		left join people on people.email = canonical_login(agent_tokens.owner)
+		where agent_tokens.token_hash = $1
+	`
 
 // tokenAccountReplaced is the SQL expression, over the row agent_tokens joined to its owner's
 // people row and whether the account binding holds (recordsAccounts: the deployment's sign-in

@@ -20,7 +20,9 @@ func TestOnlyClearAccount(t testing.TB, database *store.Store, email string) {
 // TestOnlyRecordAccountUnkept sets people.sub of email to subject with the trigger that keeps an
 // account change for the account binding's catch-up (people_account_binding_replacement,
 // migrations 20261121121717 and 20261121180429) turned off for that one transaction, standing in
-// for a recording made before this release, which nothing kept: the change still ends the
+// for a change the database stamped and nothing kept, which a build without the binding makes by
+// signing in while this release's migrations run, after 20261117175133 and before 20261121121717
+// (a recording made before this release has no recording time at all): the change still ends the
 // address's sessions and stamps sub_recorded_at, as every change does (people_binding_columns), but
 // no account_binding_replacements row names it. Only a test may write it, and the name and the
 // testing.TB it takes say so.

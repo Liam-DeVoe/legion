@@ -19,7 +19,10 @@ body: |-
   revoked (the new holder mints again), and the broker is owed a revocation of each replaced
   account. A personal token the binding refuses, and every token recording no account made while
   one was live, is refused and then revoked, and the broker is owed each account a token of the
-  address recorded, so no later time with a build without the binding admits it again.
+  address recorded, so no later time with a build without the binding admits it again. A new
+  index on the owner as `people.email` holds it (migration
+  `20261121192554_agent_tokens_canonical_owner`, built concurrently) lets the check of a token
+  recording no account read only its address's tokens.
 time: 2026-11-20T22:58:44.165301240Z
 custom:
     Issue: pr4674

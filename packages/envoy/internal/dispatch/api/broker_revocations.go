@@ -108,10 +108,13 @@ func RunBrokerRevocations(ctx context.Context, pass func(context.Context) time.T
 //
 // Each pass first catches up what the account binding did not revoke (catchUpAccountBindings),
 // broker or none: the changes of an address's account the database kept, and the live personal
-// tokens the binding refuses. So a revocation that catch-up owes is paid in the same pass; while an
-// address has something to catch up and the binding is off, the pass asks for the next within
-// accountBindingCatchUpPoll. Every change of an account wakes the loop (the trigger
-// people_account_binding_replacement announces it on store.BrokerRevocationsChannel).
+// tokens the binding refuses. So a revocation that catch-up owes is claimed and paid in the same
+// pass, unless revocations owed before it fill the pass's claim (brokerRevocationBatch) or a
+// revocation of its address is owed before it or was claimed within brokerRevocationRetry
+// (store's payableBrokerRevocation); while an address has something to catch up and the binding
+// is off, the pass asks for the next within accountBindingCatchUpPoll. Every change of an account
+// wakes the loop (the trigger people_account_binding_replacement announces it on
+// store.BrokerRevocationsChannel).
 func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 	pending := s.catchUpAccountBindings(ctx)
 	next := s.payOwedBrokerCredentials(ctx)

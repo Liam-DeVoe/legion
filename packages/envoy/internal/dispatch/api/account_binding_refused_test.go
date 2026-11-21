@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,15 +13,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // A personal token the account binding refuses is revoked once the binding holds, with everything
 // it could have minted, and the broker is told, against a real broker. At carol's address account-a
 // holds two tokens, one recording account-a and one recording no account, and account-b's
-// recording replaces account-a with nothing kept (storetest.TestOnlyRecordAccountUnkept: a
-// recording made before this release, whose trigger keeps every later change), so nothing is
-// revoked. Once the binding holds, both are refused (tokenAccountReplaced, by the account the first
-// records and by the time the second was made) but neither is revoked.
+// recording replaces account-a with nothing kept (storetest.TestOnlyRecordAccountUnkept: a change
+// the database stamped and nothing kept, as one made while this release's migrations run), so
+// nothing is revoked. Once the binding holds, both are refused (tokenAccountReplaced, by the
+// account the first records and by the time the second was made) but neither is revoked.
 //
 // Then a build without the binding is in the fleet. Both tokens act, as that build lets them, and
 // each mints a token that records no account and was made after account-b's recording; the one
@@ -180,10 +182,10 @@ func TestARefusedTokenThatOutlivedItsRecordingIsRevokedWithWhatItMintedOnceTheBi
 // refusedParentAndOverlapChild sets up, at owner's address, a token the binding refuses and a token
 // it minted while a build without the binding was in the fleet: account-a is recorded, a token
 // recording no account is made, and account-b's recording replaces account-a with nothing kept
-// (storetest.TestOnlyRecordAccountUnkept, a recording made before this release), so the token is
-// refused but live. Then a build without the binding registers, the token mints a child through
-// handler (201), and that build leaves and its mark ages out, so the binding holds. It answers the
-// child's plaintext and id.
+// (storetest.TestOnlyRecordAccountUnkept, a change the database stamped and nothing kept), so the
+// token is refused but live. Then a build without the binding registers, the token mints a child
+// through handler (201), and that build leaves and its mark ages out, so the binding holds. It
+// answers the child's plaintext and id.
 func refusedParentAndOverlapChild(t *testing.T, handler http.Handler, database *store.Store, owner string) (child, childID string) {
 	t.Helper()
 	seedPeople(t, database, owner)
@@ -250,6 +252,44 @@ func TestATokenMintedWhileARefusedTokenWasLiveMintsAndApprovesNothingOnceTheBind
 	if response := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, holder); response.Code != http.StatusOK {
 		t.Errorf("control: account-b's token answers %d %s; want 200", response.Code, response.Body.String())
 	}
+}
+
+// The arm for a token minted while a refused token was live (store.MintedWhileRefusedLiveSQL, in
+// tokenAccountReplaced) reads only the address's own tokens: personalTokenActor runs it on every
+// request of a token recording no account made after its address's recording, so a scan of
+// agent_tokens there would grow each such request with the whole table. Over 5000 tokens of 500
+// other addresses, analyzed, the statement the request runs (personalTokenActorSQL), explained
+// with sequential scans off, scans agent_tokens sequentially nowhere, searches
+// agent_tokens_canonical_owner (migration 20261121192554) by its key, canonical_login(owner), and
+// reads every index it searches by that index's first key.
+//
+// Control, run by hand: with that index dropped before the plan, the row fails twice: "the arm's
+// read of the address's tokens searches no agent_tokens_canonical_owner", and the arm's subplan
+// reads agent_tokens_owner_created_at by `created_at`, "which names nothing of that index's first
+// key column `owner`", a read of the whole index. Without the index that arm costs a request of
+// such a token about 30 ms over 10,000 tokens and 290 ms over 100,000; with it, about 0.02 ms.
+func TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssTokens(t *testing.T) {
+	_, database, _ := newTestServer(t, testServerOptions{signInIssuer: "https://accounts.google.com"})
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into agent_tokens (owner, name, token_hash, prefix, subject, created_at)
+		select 'seed-' || (n % 500) || '@example.com', 'seed ' || n, sha256(('seed-' || n)::bytea), 'seed',
+			case when n % 2 = 0 then 'account-seed' end, now() - make_interval(secs => n)
+		from generate_series(1, 5000) n`); err != nil {
+		t.Fatalf("setup: seed agent_tokens: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `analyze agent_tokens`); err != nil {
+		t.Fatalf("setup: analyze agent_tokens: %v", err)
+	}
+	legacyWindow, markWindow := store.AccountBindingWindows()
+	hash := sha256.Sum256([]byte("dsp_the token the plan is read for"))
+	plan := planWithoutSeqScans(t, database, personalTokenActorSQL, hash[:], true, legacyWindow, markWindow)
+	if explaintest.SeqScansRelation(t, plan, "agent_tokens") {
+		t.Fatalf("a personal token's check scans agent_tokens sequentially; want each read of it through an index:\n%s", plan)
+	}
+	keys := explaintest.NewIndexKeys(database.Pool)
+	keys.RequireIndexKeyed(t, plan, "agent_tokens_canonical_owner", "the arm's read of the address's tokens", explaintest.CondRequired)
+	keys.RequireIndexKeyed(t, plan, explaintest.AnyIndex, "a personal token's check", explaintest.CondRequired)
 }
 
 // A change of the address's account that no row keeps still wakes the revocation loop: the trigger

@@ -408,10 +408,9 @@ const AddressLockSharedSQL = `select pg_advisory_xact_lock_shared(hashtext('disp
 // RowsAffected is how many it revoked. A token's owner is compared in the form people.email holds,
 // model.CanonicalLogin's (canonical_login, migration 20261117000831: every Unicode space trimmed,
 // A-Z lowered and nothing else folded), so a token whose owner some writer stored in another case,
-// or wrapped in a tab or a no-break space, is the address's too. That comparison reads every token
-// rather than agent_tokens_owner_created_at, which costs nothing that matters: SignInSubject runs it
-// only when another Google account replaces the one the address recorded, under the people row's
-// lock, in the transaction that ends the address's sessions.
+// or wrapped in a tab or a no-break space, is the address's too. That comparison can read the
+// address's own tokens through agent_tokens_canonical_owner (migration 20261121192554), which
+// agent_tokens_owner_created_at, on the owner as stored, cannot serve.
 const revokeAddressTokensSQL = `
 	update agent_tokens set revoked_at = now()
 	where canonical_login(owner) = $1 and revoked_at is null
@@ -431,8 +430,8 @@ const otherAccountsSQL = `
 
 // revokeOtherAccountsTokensSQL revokes every personal token of $1 that is not revoked yet and
 // recorded an account other than $2, or recorded none, stamping revoked_at as
-// revokeAddressTokensSQL does. It reads every token as that does, only on the address's first
-// recording, under the people row's lock.
+// revokeAddressTokensSQL does. It reads the address's tokens as that does, only on the address's
+// first recording, under the people row's lock.
 //
 // A token recording no account was minted by a credential bound to none, before this recording,
 // so it is one of the accounts that held the address before $2 as much as a token naming one.
