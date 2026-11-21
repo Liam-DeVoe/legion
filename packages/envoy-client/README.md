@@ -296,9 +296,10 @@ is open: a connection of the shape a session plugin holds over NATS (`InboundCon
 `subscribe`, `publish`, `flush`, `isClosed`, `drain`, `close`, `status` and `closed`), so the
 plugin's consumer delivery runs on either. Each open is `GET <listener>/v1/sessions/<session>/relay`,
 a WebSocket of subprotocol `envoy-relay.v1`, with a fresh proof of the session's broker token
-(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). The setting is refused
-for a listener at a plain http address of another machine, where the socket would carry the token
-unencrypted; this machine's own listener may be plain http. The frames are JSON: the
+(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). With the setting, a
+listener at a plain http address of another machine turns Envoy off as a whole, its tools
+included, since the token would cross the network unencrypted; this machine's own listener may be
+plain http, and a NATS session (a pod inside its cluster) keeps a plain http listener. The frames are JSON: the
 session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay receipt on a frame's
 reply, which is all the socket takes; the listener sends `msg`, whose `headers` map each name, case
 kept, to the list of its values in order (`RelaySocketHeaders.get` and `values`), and `err`. A
@@ -611,10 +612,10 @@ before; `listener` is the relay socket at `<ENVOY_URL>/v1/sessions/<session>/rel
 session's broker credential (`relayCredential`, `brokerCredential`), which is the only credential
 the socket admits. `listener` is refused, turning off inbound messages alone, beside a NATS server
 (`ENVOY_INBOUND is listener, and ENVOY_NATS_URL names NATS servers: set one of the two`, or the
-file's `envoy.natsUrls`), with a bearer for the listener, on a machine with no broker route, for a
-caller that names no session (`noSessionNamed`), and for a listener at a plain http address of
-another machine, where the socket would carry the token unencrypted (`localhost`, 127.0.0.0/8 and
-`::1` may stay plain http); any other value is refused as `ENVOY_INBOUND
+file's `envoy.natsUrls`), with a bearer for the listener, on a machine with no broker route, and for a
+caller that names no session (`noSessionNamed`); a listener at a plain http address of another
+machine turns Envoy off as a whole (`localhost`, 127.0.0.0/8 and `::1` may stay plain http); any
+other value is refused as `ENVOY_INBOUND
 is neither nats nor listener`, never echoing it. The NATS credential is resolved only when there
 are NATS servers to use it on, so a caller that opens no NATS connection resolves none.
 A seed is the credential wherever one is set. Otherwise

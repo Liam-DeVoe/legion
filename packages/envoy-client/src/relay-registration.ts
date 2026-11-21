@@ -12,7 +12,7 @@ import { registrationTopics } from "./stream-topics";
 import { type DeliveryRequest, EnvoyApiError, expandSubscriptionTopics } from "./transport";
 
 /** What a registration needs of a session's relay; `ConsumerDelivery` is one. */
-export type RegisteringRelay = Pick<ConsumerDelivery, "setFollowed" | "registration">;
+export type RegisteringRelay = Pick<ConsumerDelivery, "setFollowed" | "unfollow" | "registration">;
 
 /** What `registerWithRelay` is handed; `Result` is the host client's registration answer. */
 export interface RelayRegistration<Result> {
@@ -143,8 +143,8 @@ export async function registerWithRelay<Result>({
     throw refused;
   }
   let topics = registrationTopics(ownAgentSubject, followed, roles);
+  relay.setFollowed(topics);
   for (;;) {
-    relay.setFollowed(topics);
     let result: Result;
     try {
       result = await send(topics, relay.registration());
@@ -158,6 +158,11 @@ export async function registerWithRelay<Result>({
       log(
         `the listener refused ${refused.topics.join(", ")} for this session's projects (${refused.reason}); the session no longer follows them and registers the rest`
       );
+      // Only the refused topics leave the relay's follows: another registration may have added a
+      // topic while this one waited, and the listener, which merges what each registration
+      // names into the session's row, goes on relaying it. Taking this call's own list again
+      // would drop that topic here, and its frames would be answered done unhandled.
+      relay.unfollow(refused.topics);
       topics = topics.filter((topic) => !refused.topics.includes(topic));
       continue;
     }

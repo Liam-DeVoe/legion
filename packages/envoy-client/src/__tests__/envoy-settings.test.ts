@@ -807,19 +807,39 @@ describe("which inbound a session takes", () => {
     });
   });
 
-  test("ENVOY_INBOUND=listener with a plain http listener off this machine is refused naming why; on this machine it is taken", () => {
-    // The socket carries the session's token and every frame: over plain http to another machine
-    // anyone on the path reads them.
+  test("ENVOY_INBOUND=listener with a plain http listener off this machine turns Envoy off, its tools too; on this machine it is taken, and a NATS session keeps it", () => {
+    // Over plain http to another machine the session's token, on the socket and on every call of
+    // its tools, crosses the network unencrypted, so Envoy is off as a whole: no credential is
+    // left for a tool to send. A NATS session is a pod's, inside its cluster, and keeps it.
+    const resolve = (env: EnvoyEnvironment) =>
+      envoySettings(
+        env,
+        readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() }),
+        {
+          session: "ses_a",
+        }
+      );
     expect(
-      settings({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: "http://envoy.example:9020" })
-        .inbound
+      resolve({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: "http://envoy.example:9020" })
     ).toEqual({
-      off: "ENVOY_INBOUND is listener, but the listener's address is plain http to envoy.example, which is not this machine, so the relay socket would carry the session's token unencrypted: use an https address",
+      enabled: false,
+      notice: null,
+      error:
+        "ENVOY_INBOUND is listener, but the listener's address is plain http to envoy.example, which is not this machine, so the session's token would cross the network unencrypted: Envoy is off; use an https address",
     });
     for (const url of ["http://127.0.0.1:9020", "http://localhost:9020", "http://[::1]:9020"]) {
       const { inbound } = settings({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: url });
       expect({ url, relay: "relaySetting" in inbound }).toEqual({ url, relay: true });
     }
+    const nats = resolve({
+      ...pod(),
+      ENVOY_URL: "http://envoy-listener.example:9020",
+      ENVOY_NATS_URL: "nats://nats.internal.example:4222",
+    });
+    expect({
+      enabled: nats.enabled,
+      credential: nats.enabled ? nats.credential?.scheme : undefined,
+    }).toEqual({ enabled: true, credential: "DPoP" });
   });
 
   test("another value is refused naming the setting and its two values, not the value", () => {

@@ -113,6 +113,7 @@ export async function registerOnce(
   await registerWithRelay({
     relay: {
       setFollowed: () => undefined,
+      unfollow: () => undefined,
       registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
     },
     ownAgentSubject: "notifications.agent.ses_a",

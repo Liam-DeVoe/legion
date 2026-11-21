@@ -654,8 +654,11 @@ export class ListenerRelay implements InboundConnection {
     const session = sessionName(this.#options.session);
     this.#socketSession = session;
     void this.#upgradeHeaders(session).then((upgrade) => {
+      // An open a later one replaced says nothing, its failure included: `follow` may have moved
+      // to another session, whose report this is now.
       if (generation !== this.#generation) return;
       if ("failed" in upgrade) {
+        this.#outage.refused(upgrade.error);
         const delay = this.#reopenAfter({ refused: undefined, after: this.#closedWith });
         this.#failed(session, upgrade.failed, delay);
         return;
@@ -677,10 +680,13 @@ export class ListenerRelay implements InboundConnection {
   }
 
   /** The upgrade's `Authorization` and proof for `session`, or why they could not be had: a trade
-   *  that failed, which is told once per outage. */
+   *  that failed, which the open that asked tells once per outage, if it still stands. */
   async #upgradeHeaders(
     session: string
-  ): Promise<{ readonly headers: Readonly<Record<string, string>> } | { readonly failed: string }> {
+  ): Promise<
+    | { readonly headers: Readonly<Record<string, string>> }
+    | { readonly failed: string; readonly error: unknown }
+  > {
     try {
       if (session === "") {
         throw new LoggableError("this process names no session for its relay socket");
@@ -693,8 +699,7 @@ export class ListenerRelay implements InboundConnection {
       );
       return { headers };
     } catch (error) {
-      this.#outage.refused(error);
-      return { failed: `its token could not be had (${messageFor(error)})` };
+      return { failed: `its token could not be had (${messageFor(error)})`, error };
     }
   }
 

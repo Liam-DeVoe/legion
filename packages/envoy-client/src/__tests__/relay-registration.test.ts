@@ -38,12 +38,15 @@ describe("one registration", () => {
   const UNCAPTURED = "notifications.team";
   const TEAM = "notifications.team.deploys";
 
-  /** A relay that records what a registration stamped on it. */
+  /** A relay that records what a registration stamped on it, and what it forgot. */
   function fakeRelay() {
     const followed: string[][] = [];
+    const unfollowed: string[][] = [];
     return {
       followed,
+      unfollowed,
       setFollowed: (topics: Iterable<string>) => followed.push([...topics]),
+      unfollow: (topics: Iterable<string>) => unfollowed.push([...topics]),
       registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
     };
   }
@@ -326,6 +329,87 @@ describe("one registration", () => {
     expect(logs).toEqual([
       `the listener refused ${SLACK} for this session's projects (topic_not_in_project); the session no longer follows them and registers the rest`,
     ]);
+  });
+
+  test("a refusal answered after another registration added a topic keeps that topic, and its frame reaches the host", async () => {
+    // Registrations overlap: one waits on its answer while the host follows a new topic and a
+    // second registration of that topic is accepted. When the first is then refused a topic, only
+    // that topic leaves the session's follows; the new one stays, and a frame on it is handed to
+    // the host and answered done only after it was.
+    const kept = "notifications.dispatch.issue.DSP-2.>";
+    const added = "notifications.dispatch.issue.DSP-3.>";
+    const denied = "notifications.github.acme.priv.>";
+    const followed = new Set([kept, denied]);
+    const handed: string[] = [];
+    const receipts: string[] = [];
+    const delivery = createConsumerDelivery({
+      sessionID: "ses_a",
+      host: {
+        deliver: (frame) => {
+          handed.push(frame.subject);
+          frame.done();
+        },
+        gap: () => undefined,
+        log: () => undefined,
+      },
+      publish: (_reply, body) => {
+        receipts.push(body);
+      },
+      ledger: { delivered: () => false, liveFailed: async () => true },
+      persist: () => true,
+    });
+    const refusedNow = () => refusal(403, projectRefusal([denied]));
+    const registration = (send: (topics: readonly string[]) => Promise<string>) =>
+      registerWithRelay({
+        relay: delivery,
+        ownAgentSubject: AGENT,
+        followed,
+        outage: inboundUnavailable(
+          () => undefined,
+          () => undefined
+        ),
+        send,
+        answered: () => undefined,
+        drop: (topics) => {
+          for (const topic of topics) followed.delete(topic);
+        },
+        log: () => undefined,
+      });
+
+    const firstAnswer = Promise.withResolvers<string>();
+    let firstSent = false;
+    const first = registration(() => {
+      if (firstSent) return Promise.resolve("registered again");
+      firstSent = true;
+      return firstAnswer.promise;
+    });
+    followed.add(added);
+    await registration((topics) =>
+      topics.includes(denied) ? Promise.reject(refusedNow()) : Promise.resolve("registered")
+    );
+    firstAnswer.reject(refusedNow());
+    await first;
+
+    expect(Object.keys(delivery.snapshot().follows).sort()).toEqual([kept, added].sort());
+    const headers: Record<string, string> = {
+      "Envoy-Subject": "notifications.dispatch.issue.DSP-3.comment",
+      "Envoy-Stream-Seq": "1",
+      "Envoy-Stream-Id": "stream-1",
+      "Envoy-Delivered": "1",
+      "Envoy-Stored-At": new Date().toISOString(),
+    };
+    delivery.receive({
+      reply: "notifications.envoy.relayreply.one",
+      headers: { get: (name) => headers[name] ?? "" },
+      data: new TextEncoder().encode(JSON.stringify({ event_id: "evt-1", source: "agent" })),
+    });
+    await until(
+      () => receipts.includes("done"),
+      5_000,
+      () => `the frame was never answered done; receipts ${JSON.stringify(receipts)}`
+    );
+    expect(handed).toEqual(["notifications.dispatch.issue.DSP-3.comment"]);
+    delivery.close();
   });
 });
 

@@ -6,8 +6,9 @@ body: |-
   `envoySettings`' `inbound` then carries `{ relaySetting, relayCredential }`, the session's broker
   credential, and the choice is refused, turning off inbound messages alone and naming why, beside
   a NATS server (`ENVOY_NATS_URL` or `envoy.natsUrls`, naming both), with a bearer for the listener,
-  with no broker route, for a caller that names no session, for a listener at a plain http address
-  of another machine (the socket would carry the token unencrypted), and for any other value. The
+  with no broker route, for a caller that names no session, and for any other value; a listener at a
+  plain http address of another machine turns Envoy off as a whole, its tools included (the token
+  would cross the network unencrypted), while a NATS session keeps a plain http listener. The
   start
   notice says the socket carries no live view. `connectListenerRelay`
   (`@legion/envoy-client/listener-relay`) opens `<ENVOY_URL>/v1/sessions/<session>/relay`
@@ -33,7 +34,10 @@ body: |-
   no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
   naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
   and tell the session which, once, with the reason (`registerWithRelay`'s `drop`,
-  `refusedTopicsNoticeText`), logs one line naming them, and registers the rest at once.
+  `refusedTopicsNoticeText`), logs one line naming them, and registers the rest at once; the refusal
+  forgets only those topics on the relay (`ConsumerDelivery.unfollow`), so a topic another
+  registration added meanwhile keeps being handed to the host. A trade that fails for a session the
+  socket has since followed away from tells no outage.
   `registerWithRelay`, `RelayRegistration`, `RegisteringRelay` and `NoRelaySubjectError` move from
   `@legion/envoy-client/consumer-delivery` to `@legion/envoy-client/relay-registration`.
   `test/relay-socket-stand-in` (`@legion/envoy-client/test/relay-socket-stand-in`) serves the

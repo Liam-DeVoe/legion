@@ -309,6 +309,13 @@ export interface ConsumerDelivery {
    * it changed.
    */
   setFollowed(topics: Iterable<string>): void;
+  /**
+   * Forgets only `topics`, keeping every other follow and its stamp: what a registration the
+   * listener refused for some topics does, since another registration may have added a topic
+   * since this one took the follows (`setFollowed`), and that one's frames must still be handed
+   * over. Persists the snapshot when it changed.
+   */
+  unfollow(topics: Iterable<string>): void;
   /** Offers the snapshot to the host's `persist`, when it changed: call it after a frame is
    *  written. */
   persist(): void;
@@ -786,6 +793,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
         next.set(topic, follows.get(topic) ?? at);
       }
       follows = next;
+      persist();
+    },
+    unfollow(topics) {
+      for (const topic of topics) follows.delete(topic);
       persist();
     },
     persist,

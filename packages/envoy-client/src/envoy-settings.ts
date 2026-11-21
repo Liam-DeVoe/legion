@@ -354,16 +354,14 @@ const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
  * the setting that named it), naming both rather than one of the two silently winning; for a
  * listener credential that is not the session's broker token, which is the only one the socket
  * admits; for a caller that names no session, whose token would be the machine's or the
- * signed-in person's, not the session the socket is for; and for a listener at a plain http
- * address (`url`) of another machine, where the socket would carry the token and every frame
- * unencrypted. This machine's own listener (`localhost`, 127.0.0.0/8, `::1`) may be plain http.
+ * signed-in person's, not the session the socket is for. A listener at a plain http address of
+ * another machine is refused before this, for Envoy as a whole (`plainHttpOffMachine`).
  */
 function listenerInbound(
   source: string,
   natsSetting: string | undefined,
   credential: RequestCredential | { readonly noBrokerRoute: string },
-  session: BrokerSessionName | undefined,
-  url: string
+  session: BrokerSessionName | undefined
 ): EnvoyInbound {
   if (natsSetting !== undefined) {
     return {
@@ -384,13 +382,18 @@ function listenerInbound(
       noSessionNamed: true,
     };
   }
-  const host = URL.canParse(url) ? new URL(url) : undefined;
-  if (host?.protocol === "http:" && !LOOPBACK_HOST.test(host.hostname)) {
-    return {
-      off: `${source} is listener, but the listener's address is plain http to ${host.hostname}, which is not this machine, so the relay socket would carry the session's token unencrypted: use an https address`,
-    };
-  }
   return { relaySetting: source, relayCredential: credential };
+}
+
+/**
+ * The host `url` names when it is plain http to another machine, else undefined. This machine's
+ * own listener (`localhost`, 127.0.0.0/8, `::1`) may be plain http.
+ */
+function plainHttpOffMachine(url: string): string | undefined {
+  const host = URL.canParse(url) ? new URL(url) : undefined;
+  return host?.protocol === "http:" && !LOOPBACK_HOST.test(host.hostname)
+    ? host.hostname
+    : undefined;
 }
 
 /**
@@ -515,6 +518,17 @@ export function envoySettings(
     // Never echoed: a credential pasted into the wrong setting would be.
     inbound = { off: `${choice.source} is neither nats nor listener` };
   } else if (choice?.value === "listener") {
+    // A session that takes its messages through the socket is on a machine outside the
+    // deployment: over plain http to another machine its token and every frame would cross
+    // networks unencrypted, on the socket and on every call of its tools, so Envoy is off as a
+    // whole. A NATS session keeps a plain http listener: a pod reaches its listener so inside its
+    // cluster's network, with a token each request binds to a fresh proof.
+    const host = plainHttpOffMachine(url);
+    if (host !== undefined) {
+      return offWithError(
+        `${choice.source} is listener, but the listener's address is plain http to ${host}, which is not this machine, so the session's token would cross the network unencrypted: Envoy is off; use an https address`
+      );
+    }
     const natsSetting =
       namedNatsUrls.length > 0
         ? "ENVOY_NATS_URL"
@@ -525,8 +539,7 @@ export function envoySettings(
       choice.source,
       natsSetting,
       credential ?? { noBrokerRoute },
-      options.session,
-      url
+      options.session
     );
   } else if (natsUrls.length === 0) inbound = { off: NO_NATS_SERVER };
   else {

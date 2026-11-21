@@ -617,6 +617,47 @@ describe("a relay socket", () => {
     expect(restored.count).toBe(1);
   }, 60_000);
 
+  test("a trade that fails for a session the relay has since followed away from tells no outage", async () => {
+    // `follow` opens for the session the host moved to while the old session's trade still waits;
+    // when that trade fails, its open no longer stands, and the outage report is the new
+    // session's, so it is told nothing.
+    const listener = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request, server) =>
+        server.upgrade(request, { headers: { "Sec-WebSocket-Protocol": "envoy-relay.v1" } })
+          ? undefined
+          : new Response("not an upgrade", { status: 400 }),
+      websocket: { message: () => undefined },
+    });
+    started.push(() => listener.stop(true));
+    let session = "ses_a";
+    const oldTrade = Promise.withResolvers<Readonly<Record<string, string>>>();
+    const token = fixtureSecret("relay");
+    const told: string[] = [];
+    const relay = new ListenerRelay({
+      url: `http://127.0.0.1:${listener.port}`,
+      session: () => session,
+      credential: {
+        scheme: "DPoP",
+        headers: async (_method, _url, forSession) =>
+          forSession === "ses_a"
+            ? oldTrade.promise
+            : { Authorization: `DPoP ${token}`, DPoP: "a-proof" },
+        secret: () => token,
+      },
+      outage: { refused: (why) => told.push(String(why)) },
+      log: () => undefined,
+    });
+    started.push(() => relay.close());
+    session = "ses_b";
+    await relay.follow(5_000);
+    oldTrade.reject(new Error("the trade for ses_a failed"));
+    // A round trip on ses_b's socket: anything the old trade's failure set off has run by now.
+    await relay.flush();
+    expect(told).toEqual([]);
+  });
+
   test("follows the session its name reads now, with that session's own token", async () => {
     const server = standIn();
     let session = "ses_a";
