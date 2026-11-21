@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 )
 
@@ -119,8 +120,5 @@ func withEmptyChanged(body []byte) ([]byte, bool) {
 	// The object's closing brace is its last byte but JSON's whitespace after it, such as the
 	// newline json.Encoder ends each value with.
 	closing := len(bytes.TrimRight(body, " \t\r\n")) - 1
-	added := make([]byte, 0, len(body)+len(member))
-	added = append(added, body[:closing]...)
-	added = append(added, member...)
-	return append(added, body[closing:]...), true
+	return slices.Concat(body[:closing], []byte(member), body[closing:]), true
 }
