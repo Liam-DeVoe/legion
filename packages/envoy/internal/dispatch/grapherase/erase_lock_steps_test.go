@@ -33,6 +33,14 @@ var ownerLockStatement = lockstep.OwnerLockStatement
 // transaction of its own, which ends before the locking transaction begins (searchLeft).
 var untouchedBeforeTheNode = []string{"graph_tuples", "graph_erasures", "events"}
 
+// takenBeforeTheOwners are the tables whose rows the erase's locking transaction takes before its
+// first owner lock (lockInStoreOrder), each a row a background pass holds for a whole transaction:
+// the term statistics totals row of each project of its owners, whose snapshot it clears
+// (api.TakeErasedTermTotalsTx), and the keyword fill's cursor row, which it takes `for share`
+// (textversions.HoldFillBack). Neither is a row the node derives, so a test that holds the erase
+// to having written none of those yet reads past these two.
+var takenBeforeTheOwners = []string{"search_term_totals", "search_text_versions_fill"}
+
 // commentLockStatement is how the statement starts that takes the erased comment's own comments
 // row, `for update`, right after its node row (lockProjectionRows).
 const commentLockStatement = "select 1 from comments where node_kind = $1 and node_address = $2 order by id for update"
@@ -400,9 +408,9 @@ func TestTheEraseTakesABlocksRowsBeforeItTouchesItsText(t *testing.T) {
 		t.Errorf("the erase waits behind the block's document_blocks row at %q, which is not the statement that takes the block's rows right after its node row (it starts %q)",
 			waited, blockLockStatement)
 	}
-	if len(written) > 0 {
+	if derived := slices.DeleteFunc(slices.Clone(written), func(table string) bool { return slices.Contains(takenBeforeTheOwners, table) }); len(derived) > 0 {
 		t.Errorf("the erase waits at the block's document_blocks row holding a write's lock on %v: it wrote before it took the row, where it should have written nothing yet, neither the block's text in document_block_texts nor a row of embeddings",
-			written)
+			derived)
 	}
 
 	if err := holder.Rollback(ctx); err != nil {
