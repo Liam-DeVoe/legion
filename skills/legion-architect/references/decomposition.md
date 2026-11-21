@@ -99,8 +99,7 @@ Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
 
-When an issue must wait on a sibling or on an issue outside this tree, read its links with `dispatch read`, then set its `blocked_by` list in one call naming every blocker (`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`), because that call replaces the whole list.
-A credential scoped to one project cannot link another project's issue (`PROJECT_SCOPE`).
+When an issue must wait on a sibling or on an issue outside this tree, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
 A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
 Legion starts the issue once its blockers close.
 
