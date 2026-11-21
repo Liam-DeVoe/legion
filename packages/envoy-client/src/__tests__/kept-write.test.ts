@@ -7,7 +7,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchClient } from "../dispatch-http";
 
 // A write whose path names a text Dispatch's reviewer holds, which has not posted (an issue, an
 // ask, a comment or a message: `heldTargets` in packages/envoy/internal/dispatch/api/
@@ -20,7 +20,7 @@ import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 // as a write that may or may not have landed: a Dispatch that kept an upload to a held issue
 // before that layer ran, as one built before INFRA-3231's last simplify pass did, carried no
 // `Idempotency-Key` back on its 202, and the client read it as an answer of something in
-// Dispatch's place. Its Markdown round trip shows the client the layer first. `dispatch
+// Dispatch's place. Its Markdown round trip carries its key back first. `dispatch
 // issue-update` reads the issue before its write, and Dispatch answers
 // a session's read of a held issue 409 HELD_TEXT (`answerHeldRead`, held_routes.go), so its
 // update is never sent. Each row drives the `dispatch` command against a stub Dispatch that
@@ -155,7 +155,6 @@ beforeEach(() => {
   requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
@@ -218,8 +217,8 @@ describe("a write Dispatch keeps beside a held text", () => {
     expect(writes()).toEqual(["POST /api/v1/issues/DSP-1/results"]);
   });
 
-  // The Markdown round trip carries its key back, which shows the client that Dispatch runs its
-  // keyed layer; the kept upload carries none, and is read as kept all the same.
+  // The Markdown round trip carries its key back; the kept upload, a call of its own, carries
+  // none, and is read as kept all the same.
   test("dispatch artifact's upload to an issue prints the kept line and exits 0", async () => {
     const { code, stdout, stderr } = await run([
       "artifact",
@@ -292,9 +291,8 @@ describe("a write Dispatch keeps beside a held text", () => {
     expect(writes()).toEqual(["POST /api/v1/issues/DSP-1/artifacts"]);
   });
 
-  // The session's write of a moment before, whose answer carried its key back, has shown the
-  // client that Dispatch runs its keyed layer; the kept upload carries none, and is still read as
-  // kept.
+  // The session's write of a moment before carried its key back; the kept upload, a call of its
+  // own, carries none, and is still read as kept.
   test("a picture upload Dispatch keeps after the session's last write still reads as kept", async () => {
     writeFileSync(join(stateDir, "shot.png"), PNG);
     expect(await run(["message", "--issue", HELD_ISSUE, "--body", "First."])).toMatchObject({

@@ -1,17 +1,14 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // A write the server's reviewer holds (INFRA-3231's R5) answers with its reserved id and a `held`
 // object: no person sees the text until the review ends and the writer edits it or posts it. The
 // command's text is what the agent reads of the write, so it must not say the text posted, and it
 // must say that Dispatch holds it. Tester's red test: at fb63391f the command prints
 // "Posted comment <id>" and "Posted. You've sent …" for a held comment and a held ask.
-
-beforeEach(forgetKeyedLayerMemory);
 
 const config = {
   enabled: true,

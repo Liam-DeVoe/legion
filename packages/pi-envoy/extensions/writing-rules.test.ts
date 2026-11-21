@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -128,7 +127,6 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  forgetKeyedLayerMemory();
   rmSync(scratch, { recursive: true, force: true });
 });
 
