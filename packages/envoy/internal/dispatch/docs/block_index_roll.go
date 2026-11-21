@@ -378,7 +378,7 @@ var rollNow time.Time
 // and message whose row names none, through the backfill's object pass (graphcensus's
 // WriteOwedObjectNodes), states gone the node of every document a build before this one removed
 // (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then states every stale lens
-// gone with everything under it (graphcensus's StateStaleLensesGone). It counts each in tick, and
+// gone with everything under it (refs.StateStaleLensesGone). It counts each in tick, and
 // answers whether it stopped with work left.
 //
 // The release before this one writes those four kinds' rows with no node, as it writes a
@@ -399,12 +399,12 @@ var rollNow time.Time
 // document are stale, and the stale sweep below takes them gone.
 //
 // Then, in one transaction of its own, it states gone every lens whose recorded row no longer
-// stands at its document's address, each with its whole part_of subtree (graphcensus's
-// StateStaleLensesGone), whatever the state of the node at that address: a build before this one
-// removes a document and states nothing, or states its node gone and nothing beneath it, or makes a
-// new document at the address, and none of them takes a lens gone, while every read answers such a
-// lens as gone already (refs.StaleSQL). So no lens a removal by an earlier build left stale stays
-// live in the store.
+// stands at its document's address, each with its whole part_of subtree
+// (refs.StateStaleLensesGone), whatever the state of the node at that address: a build before
+// this one removes a document and states nothing, or states its node gone and nothing beneath it,
+// or makes a new document at the address, and none of them takes a lens gone, while every read
+// answers such a lens as gone already (refs.StaleSQL). So no lens a removal by an earlier build
+// left stale stays live in the store.
 //
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
@@ -445,7 +445,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	var staleLensesGone int
 	if err := pgx.BeginFunc(ctx, s.store.Pool, func(tx pgx.Tx) error {
 		var err error
-		staleLensesGone, err = graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
+		staleLensesGone, err = refs.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
 		return err
 	}); err != nil {
 		failed = append(failed, fmt.Errorf("state the stale lenses gone: %w", err))

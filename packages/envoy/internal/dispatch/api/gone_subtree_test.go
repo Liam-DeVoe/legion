@@ -32,7 +32,7 @@ func storedStateOf(t *testing.T, rig reasoningRig, address string) string {
 
 // A node taken to gone takes its whole part_of subtree with it, transitively and in one write,
 // whatever the kind of each node under it and whoever may see it (the architect's ruling of
-// 2026-11-20 on INFRA-1950's R5): a lens invoked on a lens and one invoked on a finding hang under
+// 2026-11-20 on the spec's R5): a lens invoked on a lens and one invoked on a finding hang under
 // that lens or finding through part_of (R6), so a person's gone on the first lens takes its
 // finding, the lens on it with its finding, the lens on its finding with that lens's finding, and a
 // lens another person keeps for themselves under it. A risk and a constraint taken to gone take the
@@ -422,7 +422,7 @@ func requireNamedParent(t *testing.T, rig reasoningRig, address, want string, ve
 
 // A finding asked for `project` under a lens its author keeps for themselves is refused 400
 // VISIBILITY_WIDER_THAN_PARENT naming the lens, and nothing is stored, as a risk or a lens asked for
-// `project` under or on such a node is (the ruling of 2026-11-20 07:15Z on INFRA-1950's R1): no
+// `project` under or on such a node is (the ruling of 2026-11-20 07:15Z on the spec's R1): no
 // write is narrowed in silence. A finding asked for no visibility takes its lens's, `author`.
 func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	rig := newReasoningRig(t)

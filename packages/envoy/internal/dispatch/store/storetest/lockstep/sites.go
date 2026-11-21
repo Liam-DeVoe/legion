@@ -155,7 +155,7 @@ var storeWriteCallSites = map[string]string{
 	// (PlanUncaused, QueueNodes), before its row goes, with each changed_by_run of the node
 	// retracted; then the row's delete; then, where a lens stands on the node, the stale lenses'
 	// statement for the document's address, whose order
-	// graphcensus/orphans.go#StateStaleLensesGone's own entry proves, since this site's driver
+	// refs/stale_lenses.go#StateStaleLensesGone's own entry proves, since this site's driver
 	// removes a document no lens stands on; then, after the room's announcement, the
 	// artifact.removed event and the gone statement it causes, in one batch (appendCausingEvent).
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
@@ -220,7 +220,7 @@ var storeWriteCallSites = map[string]string{
 	// ascending (kind, id) and their state tuples at the sentinel, appending no event. Its order is
 	// the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner locks
 	// writeNodeState takes first too.
-	"graphcensus/orphans.go#StateStaleLensesGone": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"refs/stale_lenses.go#StateStaleLensesGone": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner locks it writes under before that
 	// row, and its projection rows after it.

@@ -521,7 +521,7 @@ func setStored(node *model.GraphNode, stored StoredNode) {
 // where it never runs - it costed the closure walk over c-read-cost's corpus (64,106 blocks) at
 // 985,892 where the same walk without it cost 74,308, past jit_above_cost and the inlining and
 // optimisation thresholds, so Postgres compiled the walk's 553 expressions on every read: 11.8 s,
-// past the walk's 2 s bound, where the walk itself reads in 0.1 s (dispatch://INFRA-1950).
+// past the walk's 2 s bound, where the walk itself reads in 0.1 s (cybermonklabs/legion#4193).
 type NodeKinds struct {
 	kinds []string
 	any   bool

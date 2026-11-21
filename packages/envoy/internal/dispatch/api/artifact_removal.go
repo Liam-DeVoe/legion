@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -65,9 +64,9 @@ import (
 // so the delete of that row leaves it stale (refs.StaleSQL), and every read answers it, and all
 // that stands under it at every depth, as gone at once. In the transaction that deletes the row,
 // after the delete, the removal states each of them gone through the statement the orphan sweep
-// runs, for the document's address (graphcensus.StateStaleLensesGone): its findings, its risks and
-// the lenses on those, those the person may not see among them, each written again as the store
-// holds it but for its state, keeping its cause, with one state tuple at the sentinel signed by the
+// runs, for the document's address (refs.StateStaleLensesGone): its findings, its risks and the
+// lenses on those, those the person may not see among them, each written again as the store holds
+// it but for its state, keeping its cause, with one state tuple at the sentinel signed by the
 // person at the removal's time (spec requirement r-proposed). The removal takes no person check of
 // its own for them: it is the person's already (routeScopes), and the cascade is part of the
 // delete. It reads, with the rest of what it reads before its first write, whether any lens stands
@@ -224,7 +223,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// the document at the same time, through the statement the orphan sweep runs, in this
 	// transaction (spec requirement r-proposed).
 	if lensed {
-		if _, err := graphcensus.StateStaleLensesGone(r.Context(), tx, artifact.RefKey, removedAt, actor); err != nil {
+		if _, err := refs.StateStaleLensesGone(r.Context(), tx, artifact.RefKey, removedAt, actor); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the lenses on the removed document %s gone: %w", artifact.ID, err))
 			return
 		}

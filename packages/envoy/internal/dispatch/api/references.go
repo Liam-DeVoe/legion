@@ -804,8 +804,8 @@ const referencesClosureBound = 2 * time.Second
 // statement above jit_above_cost: over c-read-cost's corpus (64,106 blocks) the walk cost 74,308
 // and read in 99 ms with no JIT before that test was bound, and 109,177 after, when Postgres
 // compiled its 514 expressions on every read, 0.76 to 0.84 s of a 0.9 s read
-// (dispatch://INFRA-1950). The settings carry no argument, so pgx sends them in one Exec over the
-// simple protocol, which takes a statement list.
+// (cybermonklabs/legion#4193). The settings carry no argument, so pgx sends them in one Exec over
+// the simple protocol, which takes a statement list.
 func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) ([]refs.Member, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()

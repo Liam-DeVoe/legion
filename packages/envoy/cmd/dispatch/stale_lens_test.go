@@ -53,9 +53,9 @@ const (
 //
 // Two earlier builds and this one serve one database, as a roll and a rollback serve them: main's,
 // the commit MAIN_BASELINE_SHA names, whose removal and create of a document write no node, and
-// dispatch://INFRA-1150's, the commit BASELINE_SHA names, whose removal states the document's node
-// gone and nothing more and whose create writes the document's node (queueNewArtifact). The test
-// refuses a BASELINE_SHA whose migrations lack 20261109013400 (graph_store) and a
+// cybermonklabs/legion#4173's, the commit BASELINE_SHA names, whose removal states the document's
+// node gone and nothing more and whose create writes the document's node (queueNewArtifact). The
+// test refuses a BASELINE_SHA whose migrations lack 20261109013400 (graph_store) and a
 // MAIN_BASELINE_SHA whose migrations hold it. Each earlier build is built by baseBuildOf and run
 // through startDispatchProcessWith with dispatchOptions.Binary, as
 // TestTheStoreCensusReadsZeroDifferences runs its older build. The earlier builds boot on the
@@ -82,13 +82,13 @@ const (
 //     this build's tick LB reads live with its on naming B's address, and still so after this
 //     build's backfill, envoy-dispatch backfill-graph-store, and after B is retired through
 //     docs.RetireDocument, at B's last version, @v1.
-//   - Second, main's server removes A, and dispatch://INFRA-1150's server makes B, which writes the
-//     document's node for B.
-//   - Third, dispatch://INFRA-1150's server removes A, which states A's node gone, and main's server
-//     makes B, which writes no node, so B's row stands behind A's gone node. With the lease held the
-//     person's lens write on B's address answers 409 NODE_GONE; once this build's tick has run its
-//     object pass on B's artifact.created event, B's node reads live and the same write answers
-//     201.
+//   - Second, main's server removes A, and cybermonklabs/legion#4173's server makes B, which
+//     writes the document's node for B.
+//   - Third, cybermonklabs/legion#4173's server removes A, which states A's node gone, and main's
+//     server makes B, which writes no node, so B's row stands behind A's gone node. With the lease
+//     held the person's lens write on B's address answers 409 NODE_GONE; once this build's tick
+//     has run its object pass on B's artifact.created event, B's node reads live and the same
+//     write answers 201.
 func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	ctx := context.Background()
 	roll := newStaleLensRoll(t)
@@ -136,26 +136,26 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	t.Logf("B's last version is %d", last)
 	roll.requireLensLive(t, first, lb, "the retirement", first.address+"@v"+strconv.Itoa(last))
 
-	// ───── the second case: main removes A, dispatch://INFRA-1150's build makes B ─────
+	// ───── the second case: main removes A, cybermonklabs/legion#4173's build makes B ─────
 	roll.startEarlierBuilds(t)
 	second := roll.lensedDocument(t, "the second case", "Made again by the store's first build.md")
 	free = roll.holdTheLease(t)
 	removeTypedDocument(t, roll.main.process, roll.main.name, second.a)
 	roll.makeB(t, second, roll.base)
 	roll.requireDocumentNode(t, second, graphstore.StateLive, "A's node stands live behind B's row")
-	roll.requireStatedByBsCreate(t, second, true, "dispatch://INFRA-1150's create writes the document's node for B, stating it gone and then live")
+	roll.requireStatedByBsCreate(t, second, true, "cybermonklabs/legion#4173's create writes the document's node for B, stating it gone and then live")
 	roll.requireAnsweredAsGone(t, second, http.StatusOK, nil)
 	roll.stopEarlierBuilds(t)
 	free()
 	event = roll.awaitThisBuildsTick(t, second)
 	roll.requireGoneAfterTheTick(t, second, event)
 
-	// ───── the third case: dispatch://INFRA-1150's build removes A, main makes B ─────
+	// ───── the third case: cybermonklabs/legion#4173's build removes A, main makes B ─────
 	roll.startEarlierBuilds(t)
 	third := roll.lensedDocument(t, "the third case", "Made again over a gone node.md")
 	free = roll.holdTheLease(t)
 	removeTypedDocument(t, roll.base.process, roll.base.name, third.a)
-	roll.requireDocumentNode(t, third, graphstore.StateGone, "dispatch://INFRA-1150's removal states A's node gone")
+	roll.requireDocumentNode(t, third, graphstore.StateGone, "cybermonklabs/legion#4173's removal states A's node gone")
 	roll.makeB(t, third, roll.main)
 	roll.requireDocumentNode(t, third, graphstore.StateGone, "main's create writes no node, so B's row stands behind A's gone node")
 	if before := roll.sendLens(t, dispatchTestLogin, map[string]any{"on": third.address, "kind": staleLensKind}); before.status != http.StatusConflict || before.code() != "NODE_GONE" {
@@ -197,10 +197,10 @@ type staleLensRoll struct {
 
 // newStaleLensRoll reads the two commits and refuses either where its migrations do not match the
 // build it names (requireTheStoreMigration), makes the run's empty database (censusDatabase),
-// builds main's build, dispatch://INFRA-1150's and this one, and boots them on that database in the
-// order of their releases: main's, then dispatch://INFRA-1150's, then this build, which migrates it
-// to its own schema. Every build serves from then on. This build then makes the project and the
-// spec's issue.
+// builds main's build, cybermonklabs/legion#4173's and this one, and boots them on that database
+// in the order of their releases: main's, then cybermonklabs/legion#4173's, then this build, which
+// migrates it to its own schema. Every build serves from then on. This build then makes the
+// project and the spec's issue.
 func newStaleLensRoll(t *testing.T) *staleLensRoll {
 	t.Helper()
 	mainCommit := testbaseline.MainCommit(t)
@@ -218,7 +218,7 @@ func newStaleLensRoll(t *testing.T) *staleLensRoll {
 		pool:        pool,
 		main: &earlierBuild{name: "main's build (" + mainCommit + ")",
 			binary: baseBuildOf(t, mainCommit, testbaseline.MainVariable)},
-		base: &earlierBuild{name: "dispatch://INFRA-1150's build (" + baseCommit + ")",
+		base: &earlierBuild{name: "cybermonklabs/legion#4173's build (" + baseCommit + ")",
 			binary: baseBuildOf(t, baseCommit, testbaseline.Variable)},
 		head: cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp),
 	}
@@ -234,25 +234,25 @@ func newStaleLensRoll(t *testing.T) *staleLensRoll {
 
 // requireTheStoreMigration fails the test unless commit, the commit variable names, holds the
 // migration that made the store (predicateCostStoreMigration) where holds is true, and lacks it
-// where holds is false: BASELINE_SHA must name a build of dispatch://INFRA-1150, whose create and
-// removal write a document's node, and MAIN_BASELINE_SHA a build of main from before the store,
-// which writes none, or a case would read neither build's writes.
+// where holds is false: BASELINE_SHA must name a build of cybermonklabs/legion#4173, whose create
+// and removal write a document's node, and MAIN_BASELINE_SHA a build of main from before the
+// store, which writes none, or a case would read neither build's writes.
 func requireTheStoreMigration(t *testing.T, variable, commit string, holds bool) {
 	t.Helper()
 	held := holdsTheStore(commit)
 	switch {
 	case holds && !held:
-		t.Fatalf("%s names %s, whose migrations lack 20261109013400 (graph_store, %s), so it is no build of dispatch://INFRA-1150, whose create writes the document's node and whose removal states it gone: set %s to `git merge-base origin/legion/INFRA-1150 HEAD`, or once that branch has merged to `git merge-base origin/main HEAD`",
+		t.Fatalf("%s names %s, whose migrations lack 20261109013400 (graph_store, %s), so it is no build of cybermonklabs/legion#4173, whose create writes the document's node and whose removal states it gone: set %s to the merge base of HEAD and that pull request's branch, as this file's run command sets it, or once that pull request has merged to `git merge-base origin/main HEAD`",
 			variable, commit, predicateCostStoreMigration, variable)
 	case !holds && held:
-		t.Fatalf("%s names %s, whose migrations hold 20261109013400 (graph_store, %s), so it is no build of main that writes no node: set %s to `git merge-base origin/main HEAD` while dispatch://INFRA-1150 is unmerged, or once it has merged to the first parent of its merge commit on main",
+		t.Fatalf("%s names %s, whose migrations hold 20261109013400 (graph_store, %s), so it is no build of main that writes no node: set %s to `git merge-base origin/main HEAD` while cybermonklabs/legion#4173 is unmerged, or once it has merged to the first parent of its merge commit on main",
 			variable, commit, predicateCostStoreMigration, variable)
 	}
 	t.Logf("%s names %s, which holds the migration that made the store: %t", variable, commit, held)
 }
 
-// startEarlierBuilds starts main's build and then dispatch://INFRA-1150's, in the order of their
-// releases, each once the one before it is healthy, on the run's database.
+// startEarlierBuilds starts main's build and then cybermonklabs/legion#4173's, in the order of
+// their releases, each once the one before it is healthy, on the run's database.
 func (r *staleLensRoll) startEarlierBuilds(t *testing.T) {
 	t.Helper()
 	for _, build := range []*earlierBuild{r.main, r.base} {
