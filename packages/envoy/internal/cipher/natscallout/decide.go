@@ -85,6 +85,11 @@ type Request struct {
 	User, Password string
 	// Host is the client's address, for the log.
 	Host string
+	// Name is the CONNECT's connection name. A held daemon's scope carries it
+	// (natsgrant.Scope.Connection), so a daemon connection named for one generation of one of its
+	// consumers is granted that fresh name; no other kind's grant reads it. A reconnect sends it
+	// again and is decided again.
+	Name string
 }
 
 // Decision is the user the service answers a connection with.
@@ -297,7 +302,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry))
+	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry), req.Name)
 	if err != nil {
 		return Decision{}, err
 	}

@@ -43,7 +43,9 @@ import (
 // Dispatch is never asked inside a decision: a decision reads only the pass the service holds.
 //
 // A daemon entry held this way is narrowed to natsgrant.WithinProjects(natsgrant.Daemon(), scope),
-// whose consumers are the ones a Legion daemon opens once it opens its consumers per project. So
+// whose consumers are the ones a Legion daemon opens once it opens its consumers per project. The
+// scope carries connection, the CONNECT's name (Request.Name), so a daemon connection named for one
+// generation of one of those consumers is granted that fresh name too (Scope.Connection). So
 // no deployment may list a daemon entry with "-" until the release gate for that daemon opens:
 // both `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that lands it>` and
 // `daemon-release-gate.sh <that commit>` print GATE OPEN, and the listener leg's GATE OPEN has been
@@ -51,7 +53,7 @@ import (
 // projects' wakes for the stream's 72-hour retention after the last listener moves. The change
 // that lists daemon entries with "-" waits on that gate, with both readings quoted in its pull
 // request.
-func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
+func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
 	switch entry.Kind {
 	case KindDispatch:
 		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVWrite(bus.PrivateProjectsBucket)...)
@@ -99,7 +101,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
 		}
 	}
-	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account})
+	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account, Connection: connection})
 	if err != nil {
 		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 	}

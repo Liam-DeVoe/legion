@@ -226,6 +226,63 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	require.Equal(t, "PUB's exception", string(msg.Data))
 }
 
+// A held daemon's connection named for one generation of one of its consumers,
+// legion-go-PUB-<kind>/<generation> (natsgrant.DaemonGenerationConnection), is granted exactly that
+// fresh name beside its fixed ones: the scope carries the connection's name (Scope.Connection),
+// read from the CONNECT and so read again at each reconnect. A name with no generation, one of
+// another project's consumer, and the daemon's ordinary name get the held grant alone. The
+// control is the held grant with no connection, which grants no fresh name, so the rows can tell
+// the two apart.
+func TestAHeldDaemonConnectionNamedForAGenerationGetsThatNameAlone(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	exchange := map[string][]string{pubDaemonAccount: {"PUB"}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
+	deps := heldDeps(t, tokens, exchange, dispatch, services)
+	const fresh = "legion-go-PUB-github~RFuDfoOI3HLgXUdIZvZnZx"
+	held, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Identity: pubDaemonAccount})
+	require.NoError(t, err)
+	for _, row := range []struct {
+		name string
+		want string
+	}{
+		{name: natsgrant.DaemonGenerationConnection(fresh), want: fresh},
+		{name: "legion-go-PUB-github"},
+		{name: natsgrant.DaemonGenerationConnection("legion-go-PRIV-github~RFuDfoOI3HLgXUdIZvZnZx")},
+		{name: "legion-daemon PUB"},
+		{name: ""},
+	} {
+		req := serviceRequest("pub-daemon-token")
+		req.Name = row.name
+		decision, err := Decide(t.Context(), deps, services, req)
+		require.NoError(t, err, "named %q", row.name)
+		want, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Identity: pubDaemonAccount, Connection: row.name})
+		require.NoError(t, err)
+		require.Equal(t, want, decision.Grant, "named %q", row.name)
+		var named []string
+		for _, entry := range decision.Grant.Publish {
+			if strings.Contains(entry, "~") {
+				named = append(named, entry)
+			}
+		}
+		if row.want == "" {
+			require.Equal(t, held, decision.Grant, "named %q: a name with no generation of PUB gets the held grant alone", row.name)
+			require.Empty(t, named, "named %q", row.name)
+			continue
+		}
+		require.Len(t, named, 4, "named %q: the generation's create, info, pull and acks: %v", row.name, named)
+		for _, entry := range named {
+			require.Contains(t, entry, row.want, "named %q", row.name)
+		}
+	}
+	require.NotEqual(t, held, func() natsgrant.Permissions {
+		g, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Identity: pubDaemonAccount, Connection: natsgrant.DaemonGenerationConnection(fresh)})
+		require.NoError(t, err)
+		return g
+	}(), "control: the generation's grant differs from the held one")
+}
+
 // No admission waits on Dispatch: the service makes a pass at its start and every 20 s after,
 // and a decision reads only the pass it holds. Dispatch here answers its first ask about PUB at
 // once and blocks three seconds on every later one. With a second pass blocked, PUB's daemon is
