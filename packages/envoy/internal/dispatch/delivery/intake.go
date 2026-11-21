@@ -534,9 +534,12 @@ func consumerGenerationMetadata() map[string]string {
 // handling is read from the delivery, which is also what says whether that hand-back may be
 // made, and nothing else calls deliver.
 //
-// Every line the delivery writes, its callees' included, is held until it has answered
+// Every line the delivery writes, its callees' included, is held until it knows its answer
 // (deliveryLines): a delivery that hands its envelope back writes them under the hand-back's one
-// cadence (handBackLineDue), and every other delivery at their own levels.
+// cadence (handBackLineDue), and every other delivery at their own levels. They are written
+// before NATS is answered, so a reader that sees the answer, the durable's ack floor past the
+// message or its redelivery, finds the delivery's lines in the log; a line the answer itself
+// writes goes straight to the log under the same decision.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
 	lines := &deliveryLines{}
@@ -547,22 +550,34 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	// other path acknowledges.
 	redeliver := false
 	defer func() {
-		handedBack := false
+		const (
+			answerAcknowledge = iota
+			answerHandBack    // the intake stopped first: handed back for any holder's next delivery
+			answerLeave       // the hold no longer covers it: left with the durable, unanswered
+			answerHandBackOwn // redelivered to this process after redeliverAfter
+		)
+		answer := answerAcknowledge
 		switch {
 		case handling.Err() != nil:
 			log.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
-			d.handBack(log, msg)
+			answer = answerHandBack
 		case !d.holdCovers(), redeliver && !d.mayAnswer():
 			log.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope is left unanswered with the durable for the next holder's take-over",
 				"subject", msg.Subject, "redeliver", redeliver)
+			answer = answerLeave
 		case redeliver:
-			d.handBackOwn(log, msg, in.redeliverAfter)
-			handedBack = true
-		default:
-			d.acknowledge(log, msg)
+			answer = answerHandBackOwn
 		}
 		_, due := handBackLineDue(msg)
-		lines.write(handedBack && !due)
+		lines.write(answer == answerHandBackOwn && !due)
+		switch answer {
+		case answerAcknowledge:
+			d.acknowledge(log, msg)
+		case answerHandBack:
+			d.handBack(log, msg)
+		case answerHandBackOwn:
+			d.handBackOwn(log, msg, in.redeliverAfter)
+		}
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()

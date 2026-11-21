@@ -12,20 +12,21 @@ import (
 // until the delivery knows how it ends (Intake.deliver). A delivery hands its logger to its
 // callees on its context (logging.NewContext), and every line on the way to its answer is written
 // through the logger that context carries (logging.FromContext): the intake's own, the head
-// read's, the attribution's and the GitHub client's. Once the delivery has answered, its lines are
-// written to the default logger in the order they were held: each at its own level, except where
-// the delivery handed its envelope back outside the hand-back's cadence (handBackLineDue), where
-// each is written at DEBUG. A handed-back envelope is delivered every headWriteRedeliverAfter for
-// as long as its fault lasts, so a line written at each delivery would be one line every 10
-// seconds for each of up to intakeMaxAckPending envelopes for up to the 72 hours of the bus; the
-// read of the owed read's revision wrote a WARN line at each such delivery while
-// pull_request_reads_owed was locked, 22 WARN lines over 21 deliveries in 330 s (acceptance of
+// read's, the attribution's and the GitHub client's. Once the delivery knows its answer, and
+// before it gives NATS that answer, its lines are written to the default logger in the order they
+// were held: each at its own level, except where the delivery hands its envelope back outside the
+// hand-back's cadence (handBackLineDue), where each is written at DEBUG. So a reader that sees the
+// answer finds the lines in the log. A handed-back envelope is delivered every
+// headWriteRedeliverAfter for as long as its fault lasts, so a line written at each delivery would
+// be one line every 10 seconds for each of up to intakeMaxAckPending envelopes for up to the 72
+// hours of the bus; the read of the owed read's revision wrote a WARN line at each such delivery
+// while pull_request_reads_owed was locked, 22 WARN lines over 21 deliveries in 330 s (acceptance of
 // cybermonklabs/legion#4209 at def907052c, D9). A line written after the delivery's lines were
-// written goes straight to the default logger under the same decision, at DEBUG where the
-// delivery's lines were: a fetch of GitHub that several callers share outlives its first caller
-// (githubapp.Client.RepositoryToken runs it on context.WithoutCancel), so its line can come once
-// that delivery has answered (the quality audit of cybermonklabs/legion#4209 at 3a21edb2c9). No
-// line is lost.
+// written, the answer's own among them, goes straight to the default logger under the same
+// decision, at DEBUG where the delivery's lines were: a fetch of GitHub that several callers share
+// outlives its first caller (githubapp.Client.RepositoryToken runs it on context.WithoutCancel), so
+// its line can come once that delivery has answered (the quality audit of cybermonklabs/legion#4209
+// at 3a21edb2c9). No line is lost.
 type deliveryLines struct {
 	mu      sync.Mutex
 	held    []heldLine
