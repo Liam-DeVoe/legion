@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
 import { dayLabel } from "../activity/activity-model";
+import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
 import {
   buildHistory,
   type HistoryBlock,
@@ -711,7 +712,7 @@ test("a repaired block is named by its question's first words, never by its id",
     "repaired server-owned state on block “Which layout reads best on a phone?”"
   );
   expect(line?.block).toEqual({
-    path: `/issues/${KEY}/asks/q1`,
+    path: buildIssuePath({ id: "q1", key: KEY, kind: "ask" }),
     words: "Which layout reads best on a phone?",
   });
 });
@@ -731,7 +732,7 @@ test("a question's block marked malformed is named by the question's first words
   expect(line?.text).toBe(
     "marked decision “Which layout reads best on a phone?” malformed: it names no options"
   );
-  expect(line?.block?.path).toBe(`/issues/${KEY}/asks/q1`);
+  expect(line?.block?.path).toBe(buildIssuePath({ id: "q1", key: KEY, kind: "ask" }));
 });
 
 test("a refused check is named by its words where its id is a UUID, and by its id where that is a slug", () => {
@@ -756,11 +757,18 @@ test("a refused check is named by its words where its id is a UUID, and by its i
   expect(lines.map((line) => line.block)).toEqual([
     undefined,
     {
-      path: `/issues/${KEY}/artifacts/verification-md#b-${CHECK_BLOCK}`,
+      path: checkPath(),
       words: "The units pass on a clean checkout.",
     },
   ]);
 });
+
+/** The page address of the check `BLOCKS` names by its words: its `ref`, read as a route. */
+function checkPath(): string {
+  const route = parseNodeReference(`dispatch://${KEY}/artifact/verification-md#b-${CHECK_BLOCK}`);
+  if (route === undefined) throw new Error("the check's ref reads as no route");
+  return buildReferencePath(route);
+}
 
 test("a block whose id is a UUID that no node carries reads as a block that is gone", () => {
   seq = 0;
