@@ -1009,14 +1009,32 @@ A command whose call asks Dispatch something before it writes asks it in its dry
 its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
 such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
 (`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
-Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for text
-that is not blank), or one the call refuses for its size. Text past the 1 MiB of UTF-8 one
-document holds is refused with `CAP_EXCEEDED` and exit 1 without asking Dispatch anything
-(`inlineTextTooLarge`): the call refuses it before it reads whether the owner holds the name, so
-the two answer alike under a held name too, and the dry run builds no client for it, so it refuses
-it with no Dispatch configured too. Text whose round trip Dispatch answers 413 is refused with
-exit 1, as the call refuses it; such text is within the document limit, whose round trip's body
-is under the route's own limit, so only a Dispatch that reads less than that answers so. The step
+Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for every
+text but the empty string), or one the call refuses for the text alone. Blank text (what Go's
+`strings.TrimSpace` empties, `goBlankPattern`) is asked for a refusal alone, never for its
+spelling, and a check of it that gets no answer leaves the upload to make its own refusal. Text
+past the 1 MiB of UTF-8 one document holds is refused with `CAP_EXCEEDED` and exit 1 without
+asking Dispatch anything (`documentTooLarge`): the call refuses it before it reads whether the
+owner holds the name, so the two answer alike under a held name too, and the dry run builds no
+client for it, so it refuses it with no Dispatch configured too. A round trip answer Dispatch
+marks as its refusal of the text (the `Dispatch-Text-Refusal: 1` header, `TEXT_REFUSAL_HEADER`),
+at any status, is refused with Dispatch's own refusal (`<CODE>: <message>`) and exit 1, as the
+call refuses it: the route makes, in the order, status, code and words of an upload of a new
+document, every check that upload makes of the text alone - a NUL character (`NUL_CHARACTER`),
+the bytes, the parse (`INVALID_MARKDOWN`), an ask block's content rule (`INVALID_ASK_BLOCK`), the
+elements and the rendering (`CAP_EXCEEDED`), any failure of its seed on the text - and marks
+each refusal, so a check Dispatch adds to the upload reaches the dry run with no change here. An
+unmarked answer says nothing of the text, whatever its status. A `--path` file Dispatch stores as
+a Markdown document (a path ending in .md or .markdown, which the upload carries as
+`text/markdown`) is read once, as the call reads it
+(`documentFileBytes`), and held to the same size: the call and its dry run refuse a file past
+1 MiB before anything is asked. The dry run then sends the round trip the file's bytes (`file`,
+base64), which Dispatch checks as it checks an upload's file part, a byte that is not UTF-8
+(`INVALID_UTF8`) among them, and takes only its refusal (`storedFileCheck`), never a spelling,
+since the call stores a Markdown file as the store spells it and asks the round trip nothing
+about it; a file Dispatch stores as its bytes is asked nothing. What only the call checks, since
+it needs more than the text, stays the call's: whether the owner holds the name, the token of a
+replacement, a block pointer's or a CI check block's target, and the issue's state. The step
 waits at most 5 s. When it gets no answer (no Dispatch configured, any other failure, no answer in
 time, or a Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on
 stderr says why and what the call does then, so the JSON stays alone on stdout. With

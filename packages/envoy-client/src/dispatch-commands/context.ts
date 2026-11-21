@@ -105,6 +105,8 @@ export interface DryRunContext {
   readonly tool: string;
   /** The arguments as the call's check parsed them. */
   readonly args: ToolArguments;
+  /** The directory the call resolves a relative file path against, as the call does. */
+  readonly cwd: string;
   /**
    * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
    * `deadline`, and its own deadline is the same budget (`deadlineMs`), so a failure after the

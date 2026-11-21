@@ -60,6 +60,17 @@ export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
 export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB; a larger file is stored as a binary artifact under another content type`;
 
 /**
+ * The response header, valued `1`, that `POST /api/v1/markdown/round-trip` puts on its refusal of
+ * a text for the text alone, whatever the refusal's status: a refusal of the checks an upload of a
+ * new markdown document makes of the text, which the route makes in that upload's own order,
+ * status, code and words. Generated into Go as `contracts.TextRefusalHeader`. `dispatch artifact`
+ * reads an answer carrying it as the call's own refusal and any other failure of the round trip as
+ * no answer at all, so a check of the text Dispatch adds to that upload, at any status, reaches the
+ * call and its dry run with no change to the client.
+ */
+export const TEXT_REFUSAL_HEADER = "Dispatch-Text-Refusal";
+
+/**
  * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
  * as `contracts.MaxIssuePageLimit`, which the server enforces, and the `dispatch_issues` tool's
  * `limit` takes the same bound, so the two ends agree.

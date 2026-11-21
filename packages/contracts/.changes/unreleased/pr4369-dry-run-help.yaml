@@ -5,6 +5,12 @@ body: |-
   A Dispatch tool spec can carry `dryRunHelp`, the sentence its command's `--dry-run` help prints.
   The `dispatch_artifact` spec's sentence says that the dry run asks Dispatch how it would store
   inline text, and refuses a text that Dispatch would store under another spelling or that the
-  call refuses for its size. `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and
-  `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of markdown one document may hold and the text
-  of Dispatch's `413 CAP_EXCEEDED` for an upload past it, generated into Go for the server.
+  call refuses for the text alone, and that for a Markdown file it refuses a file past the
+  document limit and sends Dispatch the file's bytes, refusing what Dispatch refuses of them but
+  never their spelling. `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and `MARKDOWN_DOCUMENT_TOO_LARGE`
+  are the most bytes of markdown one document may hold and the text of Dispatch's
+  `413 CAP_EXCEEDED` for an upload past it, generated into Go for the server.
+  `TEXT_REFUSAL_HEADER` (`Dispatch-Text-Refusal`), generated into Go as
+  `contracts.TextRefusalHeader`, is the header the markdown round trip puts on its refusal of a
+  text for the text alone. The round trip's request type, `MarkdownRoundTripInput`, takes a file's
+  bytes as base64 in `file` beside `markdown`.

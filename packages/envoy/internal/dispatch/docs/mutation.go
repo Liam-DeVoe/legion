@@ -641,6 +641,41 @@ func mergeUpdates(updates [][]byte) ([]byte, error) {
 	}
 }
 
+// SeedRendering is the markdown a new document's seed of markdown stores, or the refusal that seed
+// makes of the text before it writes anything (SeedText): the steps of the seed that read nothing
+// but the text - its parse, its asks' content rule, its render and the weigh of that rendering
+// against the limits one document holds (weighRendering). It reads and writes nothing. The
+// markdown round trip answers from it, so every refusal the seed makes of a text alone is the
+// round trip's too, in the same words.
+func SeedRendering(markdown string) (string, error) {
+	seeded, _, err := seedRendering(markdown)
+	return seeded.markdown, err
+}
+
+// seedRendering is the part of SeedText that reads the text alone: its parse over no live
+// document, as an upload is taken, with the read-back that parse made (parseWrittenReplacing), its
+// asks held to their content rule, its render with each block's offsets, and that rendering
+// weighed against the limits one document holds, against no rendering before it. SeedText and
+// SeedRendering share it, so the two refuse a text alike and store the same rendering of it, and
+// the text is parsed once and rendered once.
+func seedRendering(markdown string) (renderedTree, pmdoc.WrittenReadBack, error) {
+	tree, read, err := parseWrittenReplacing(nil, markdown)
+	if err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	if err := validateWrittenAskBlocks(tree); err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, &ErrInvalidAskBlock{Reason: err}
+	}
+	canonical, offsets, err := renderTreeWithOffsets(tree)
+	if err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	if err := weighRendering("", canonical); err != nil {
+		return renderedTree{}, pmdoc.WrittenReadBack{}, err
+	}
+	return renderedTree{tree: tree, markdown: canonical, offsets: offsets}, read, nil
+}
+
 // SeedText writes a new room's first Yjs update inside the caller's artifact
 // creation transaction. A new room is loaded from this update on first use.
 func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
@@ -648,23 +683,14 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if !joined {
 		return "", errUnjoined
 	}
-	tree, read, err := parseWrittenReplacing(nil, markdown)
+	seeded, read, err := seedRendering(markdown)
 	if err != nil {
 		return "", err
 	}
-	if err := validateWrittenAskBlocks(tree); err != nil {
-		return "", &ErrInvalidAskBlock{Reason: err}
-	}
-	canonical, offsets, err := renderTreeWithOffsets(tree)
-	if err != nil {
-		return "", err
-	}
-	if err := weighRendering("", canonical); err != nil {
-		return "", err
-	}
+	tree := seeded.tree
 	// A new document holds no pointer and no check block before this write, so every one it
 	// seeds is checked.
-	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, offsets); err != nil {
+	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, seeded.offsets); err != nil {
 		return "", err
 	}
 	if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, nil); err != nil {
@@ -682,12 +708,12 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	// settlement that indexes the seeded ask blocks needs to know who wrote them. The ledger
 	// records it once the transaction commits (Ledger.creditRooms), so a seed that never commits
 	// leaves the document no state.
-	ledgerFrom(ctx).seeded(artifactID, renderedTree{tree: tree, markdown: canonical, offsets: offsets}, actor)
+	ledgerFrom(ctx).seeded(artifactID, seeded, actor)
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
 	// one of it (Ledger.ReadBackOf).
 	ledgerFrom(ctx).wroteReadBack(artifactID, read)
-	return canonical, nil
+	return seeded.markdown, nil
 }
 
 // ReplaceText replaces the entire live document tree so connected clients

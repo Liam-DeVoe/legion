@@ -47,6 +47,7 @@ import {
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
   STORE_UNCONFIRMED_CAUSE,
+  TEXT_REFUSAL_HEADER,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -535,6 +536,12 @@ const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
 // server's refusal and the one \`dispatch artifact\` makes before it sends cannot drift apart.
 const MarkdownDocumentMaxBytes = ${MARKDOWN_DOCUMENT_MAX_BYTES}
 const MarkdownDocumentTooLarge = ${JSON.stringify(MARKDOWN_DOCUMENT_TOO_LARGE)}
+
+// TextRefusalHeader is the response header, valued 1, that POST /api/v1/markdown/round-trip puts on
+// its refusal of a text for the text alone, whatever the refusal's status (markdownRoundTrip).
+// Generated from TEXT_REFUSAL_HEADER in packages/contracts so the route and \`dispatch artifact\`,
+// which reads an answer carrying it as the call's own refusal, name it once.
+const TextRefusalHeader = ${JSON.stringify(TEXT_REFUSAL_HEADER)}
 
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,

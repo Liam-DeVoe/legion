@@ -385,7 +385,8 @@ export async function runDispatchCli(
     // A command whose call asks Dispatch a question before it writes asks it here too, from the
     // session's Dispatch as the call resolves it, and is refused as the call is, with its output
     // and exit code (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store
-    // its inline text, and refuses a text the call refuses for its spelling or its size. With
+    // its inline text, and whether Dispatch refuses a Markdown file's bytes, and refuses a text
+    // the call refuses for its spelling or for the text alone. With
     // DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments alone
     // (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's other
     // answers) is read here. Every line besides a refusal goes to stderr, so the standard output
@@ -397,6 +398,7 @@ export async function runDispatchCli(
       const verdict = await step({
         tool: parsed.tool,
         args: checked.args,
+        cwd: io.cwd,
         deadline,
         deadlineMs,
         client: () => {

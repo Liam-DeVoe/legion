@@ -2004,7 +2004,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error. */
+    /** @description The markdown Dispatch would store for the text a body gives it, exactly one of {markdown}, the text an inline upload sends, and {file}, the bytes of a file an upload sends, as base64: the checks, the parse and the render an upload of a new markdown document makes of the text alone. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text that upload refuses for the text alone is refused as that upload refuses it, with its status, code and words: 400 NUL_CHARACTER for text holding U+0000, 400 INVALID_UTF8 for a file holding a byte that is not UTF-8, 413 CAP_EXCEEDED for text past the bytes one document holds, for text making more elements than one document may, or for text whose rendering is past either, 400 INVALID_MARKDOWN for markdown the parser refuses or whose rendering no reader reads back, 400 INVALID_ASK_BLOCK for an ask block that breaks its content rule, and any other failure of the upload's seed on the text at the status the upload answers it with. Each such refusal, whatever its status, carries the response header Dispatch-Text-Refusal: 1, and no other answer of the route does. Text of whitespace alone that none of these refuses is answered with the empty markdown. */
     post: operations["postApiV1MarkdownRoundTrip"];
     delete?: never;
     options?: never;
@@ -5658,7 +5658,9 @@ export interface components {
       code: string;
     };
     MarkdownRoundTripInput: {
-      markdown: string;
+      /** Format: base64 */
+      file?: string;
+      markdown?: string;
     };
     MarkdownRoundTripResponse: {
       markdown: string;

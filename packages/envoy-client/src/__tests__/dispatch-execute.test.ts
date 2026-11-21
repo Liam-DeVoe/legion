@@ -15,6 +15,7 @@ import {
   SEARCH_QUERY_MAX,
   type SearchResult,
   type TablePosition,
+  TEXT_REFUSAL_HEADER,
   zodSchemaApi,
 } from "@legion/contracts";
 import {
@@ -12273,22 +12274,39 @@ describe("executeDispatchTool", () => {
     expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
   });
 
-  // A body Dispatch itself refused as too large is the one failure a repeat can never get
-  // through, so the refusal names what to do instead of saying to send the upload again
-  // (review round 3, finding 2). A name whose extension keeps the bytes has --path; a .md
-  // name has not, since --path parses and renders it the same way.
+  // A round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER) is the call's
+  // refusal, in Dispatch's own words, whatever its status: the route marks so every refusal of the
+  // checks the upload of a new document makes of the text alone, at the status the upload answers
+  // it with, a 5xx for a failure of the seed on the text among them. So the call refuses the text
+  // as its upload would be refused, under every name, asks nothing again, and uploads nothing.
   test.each([
-    ["notes.md", false],
-    ["Design notes", true],
-  ])("names the bound rather than a retry when Dispatch refuses the round trip's body (%s)", async (name, asBytes) => {
+    [
+      "notes.md",
+      413,
+      "CAP_EXCEEDED",
+      "document too large to store: this write's markdown makes more than 65536 elements",
+    ],
+    [
+      "Design notes",
+      413,
+      "CAP_EXCEEDED",
+      "document too large to store: this write's markdown makes more than 65536 elements",
+    ],
+    ["notes.md", 500, "INTERNAL", "internal server error"],
+  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error) => {
     const posts: string[] = [];
+    let asked = 0;
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") {
-        return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
+        asked += 1;
+        return new Response(JSON.stringify({ error, code }), {
+          status,
+          headers: { "Content-Type": "application/json", [TEXT_REFUSAL_HEADER]: "1" },
+        });
       }
       if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
@@ -12313,17 +12331,16 @@ describe("executeDispatchTool", () => {
       (caught: unknown) => caught
     );
 
-    expect(failure).toBeInstanceOf(Error);
-    const message = failure instanceof Error ? failure.message : String(failure);
-    expect(message).toContain("request body exceeds 6292480 bytes");
-    expect(message).toContain("sending the upload again does not change that");
-    expect(message).not.toContain("Send the upload again once that call is answered");
-    // The remedy is a step a writer can take: every text that reaches this refusal is within the
-    // megabyte one document holds, and this Dispatch refuses a request that long, so "a document
-    // of its own" is the upload already refused and would be refused the same way.
-    expect(message).toContain("shorten the text or split it across documents");
-    expect(message).not.toContain("write it to a document of its own");
-    expect(message.includes("Send it as a file with path (--path <file>)")).toBe(asBytes);
+    expect(failure).toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code,
+        status,
+        message: error,
+        textRefusal: true,
+      })
+    );
+    expect(asked).toBe(1);
     expect(posts).toEqual([]);
   });
 
@@ -12332,6 +12349,9 @@ describe("executeDispatchTool", () => {
   test.each([
     [401, "UNAUTHENTICATED", "the bearer token is not valid"],
     [500, "INTERNAL", "the document service is down"],
+    // The route's own refusal of a body past its bound, which no text within the document's
+    // bytes reaches, is no refusal of the text: it carries no mark.
+    [413, "CAP_EXCEEDED", "request body exceeds 6292480 bytes"],
   ])("refuses the upload when the round trip answers %i, naming what failed", async (status, code, error) => {
     const posts: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
