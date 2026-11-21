@@ -19,12 +19,15 @@ import (
 // fewer inputs of a base of either kind fails by name (atFloor), and so does a sweep whose inputs of
 // a base read, in their order, as other kinds than the digest's, and a base with no floor or a floor
 // of no base (floorsCover). So a fault that drops inputs, of a sweep's meaning or of its writers, a
-// sweep that builds inputs and does not derive them, a sweep that stops judging an input that moves
-// a state toward true, and a fault that moves inputs from one kind to the other, as many each way
-// as it likes, cannot pass. A base, a scenario, a sweep or a reader that adds, takes out or moves an
-// input changes the digest, so the table is written again, on purpose, from a run of the sweeps. It
-// is a function that gives a new table at each call, so that no writer can lower a floor
-// (sweepMaps).
+// sweep that builds inputs and does not derive them or drops an input from its judgment, and a fault
+// that moves inputs from one kind to the other, as many each way as it likes, cannot pass. The
+// floors count what the reader did with an input, not what the judgment found: a judgment that
+// stops reporting an input that moves a state toward true, and counts it as read, meets them. That
+// judgment fails by its known positive (knownPositive), which each sweep judges at silent-leg and
+// must report, and which no floor counts. A base, a scenario, a sweep or a reader that adds, takes
+// out or moves an input changes the digest, so the table is written again, on purpose, from a run
+// of the sweeps. It is a function that gives a new table at each call, so that no writer can lower
+// a floor (sweepMaps).
 func sweepFloors() map[string]map[string]sweepFloor {
 	return map[string]map[string]sweepFloor{
 		"tree": {

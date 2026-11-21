@@ -152,12 +152,53 @@ func baseStates(t *testing.T, base fs.FS) map[string]string {
 // true by a right, with what each of them changed, and the kind of each input judged, in the order
 // of the inputs: 'r' read, 'x' refused (kinds). An input that fails the comparison fails the test
 // and is counted nowhere. So the floors (atFloor), which count the inputs judged and the digest of
-// their kinds, fail by name where the sweep skips an input that it built and where it stops judging
-// an input that moves a state toward true.
+// their kinds, fail by name where the sweep skips an input that it built or drops one that it
+// judged. known is how many times the sweep reported its known positive (knownPositive), which no
+// floor counts: a sweep whose judgment no longer reports an input that moves a state toward true
+// with no right, whether it skips that judgment, counts such an input as read or computes it blind,
+// fails by name there (sweepAgainst).
 type sweepCount struct {
-	inputs, refused, same, moved, byRight int
-	rights                                []string
-	kinds                                 []byte
+	inputs, refused, same, moved, byRight, known int
+	rights                                       []string
+	kinds                                        []byte
+}
+
+// counted counts the judged input in as of the kind kind, and is whether it counted it: it counts
+// no known positive, which the floors do not hold.
+func (n *sweepCount) counted(in sweepInput, kind byte) bool {
+	if in.known {
+		return false
+	}
+	n.kinds = append(n.kinds, kind)
+	return true
+}
+
+// report fails the test by failure, the line of the input in that moves a state toward true with
+// no right; or, where in is the known positive, counts that the sweep reported it.
+func (n *sweepCount) report(t *testing.T, in sweepInput, failure string) {
+	t.Helper()
+	if in.known {
+		n.known++
+		return
+	}
+	t.Error(failure)
+}
+
+// knownPositiveBase is the base at which each sweep judges its known positive (knownPositive).
+const knownPositiveBase = "silent-leg"
+
+// knownPositive is silent-leg, base, with its failing result of
+// production-delivery-takes-under-a-second (results.json /5) taken out: the check then reads true
+// at the third subject, where silent-leg reads it false (the row of a failing result of
+// TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), a move toward true with no right, which
+// each sweep must report.
+func knownPositive(t *testing.T, base fstest.MapFS) sweepInput {
+	t.Helper()
+	return sweepInput{
+		what:  "the known positive, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out",
+		fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, func() treeWriter { return leftOutAt }),
+		known: true,
+	}
 }
 
 // sweepAgainst derives each input of the base name and compares its states with those of the base:
@@ -178,7 +219,9 @@ type sweepCount struct {
 // fails the test too: its writer wrote nothing, and it would read as the base and pass. So does an
 // input whose files are those of an earlier input of the list, byte for byte (inputKey): the sweep
 // would read one case twice and the case that it means not at all, as when a writer or a table
-// turned one input into another.
+// turned one input into another. At knownPositiveBase, the sweep also judges its known positive,
+// last, by the same code as each input, and fails by name unless it reported that input once
+// (sweepCount.known); no floor counts it.
 func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
 	built := setUp(t, "a separate build of the base "+name, func(t *testing.T) map[string]fstest.MapFS {
@@ -187,6 +230,9 @@ func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepIn
 	baseAsBuilt(t, name, base, built)
 	whole := baseStates(t, built)
 	n := sweepCount{inputs: len(inputs)}
+	if name == knownPositiveBase {
+		inputs = append(slices.Clone(inputs), knownPositive(t, built))
+	}
 	seen := map[[sha256.Size]byte]string{}
 	for _, in := range inputs {
 		if sameFiles(t, built, in.fsys) {
@@ -202,34 +248,41 @@ func sweepAgainst(t *testing.T, name string, base fstest.MapFS, inputs []sweepIn
 		got, err := sweepStates(in.fsys)
 		switch {
 		case err != nil:
-			n.refused++
-			n.kinds = append(n.kinds, 'x')
+			if n.counted(in, 'x') {
+				n.refused++
+			}
 		case maps.Equal(got, whole):
-			n.same++
-			n.kinds = append(n.kinds, 'r')
+			if n.counted(in, 'r') {
+				n.same++
+			}
 		default:
 			toward := towardTrue(whole, got)
 			if in.right != "" && in.allowed != nil {
 				beyond := maps.Clone(got)
 				maps.DeleteFunc(beyond, func(at, state string) bool { return in.allowed[at] == state })
 				if rest := towardTrue(whole, beyond); len(rest) > 0 {
-					t.Errorf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(rest, "; "))
+					n.report(t, in, fmt.Sprintf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(rest, "; ")))
 					continue
 				}
 			}
 			switch {
 			case len(toward) == 0:
-				n.moved++
-				n.kinds = append(n.kinds, 'r')
+				if n.counted(in, 'r') {
+					n.moved++
+				}
 			case in.right != "":
-				n.moved++
-				n.byRight++
-				n.rights = append(n.rights, in.what)
-				n.kinds = append(n.kinds, 'r')
+				if n.counted(in, 'r') {
+					n.moved++
+					n.byRight++
+					n.rights = append(n.rights, in.what)
+				}
 			default:
-				t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
+				n.report(t, in, fmt.Sprintf("%s: %s", in.what, strings.Join(toward, "; ")))
 			}
 		}
+	}
+	if name == knownPositiveBase && n.known != 1 {
+		t.Errorf("the sweep judged its known positive at %s, which moves a state toward true with no right, and reported it %d times, where it must report it once: its judgment no longer reports an input that moves a state toward true", name, n.known)
 	}
 	return n
 }
@@ -609,13 +662,15 @@ func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
 }
 
 // sweepInput is one input of the sweep: what it changed, for the line of a failure alone, the files
-// of the scenario with it, the reason of its right to move a state toward true, "" for none, and
-// the states that the right allows, by place, nil for a right that covers each place.
+// of the scenario with it, the reason of its right to move a state toward true, "" for none, the
+// states that the right allows, by place, nil for a right that covers each place, and whether it is
+// the sweep's known positive (knownPositive), which the sweep must report and no floor counts.
 type sweepInput struct {
 	what    string
 	fsys    fstest.MapFS
 	right   string
 	allowed map[string]string
+	known   bool
 }
 
 // pathOfOneSpace is the right of a repository path of a tree of the history written " ": a real
