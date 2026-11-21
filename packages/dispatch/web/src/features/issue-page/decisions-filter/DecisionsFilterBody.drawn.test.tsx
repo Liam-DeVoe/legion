@@ -262,10 +262,14 @@ function renderBody(
   },
   props: BodyProps = {},
   {
+    answeredAgo,
     main = false,
     requests = false,
     stage = false,
   }: {
+    /** How many milliseconds ago the cached reads answered, under the app's own `staleTime` of
+     *  30 s (`main.tsx`) in place of the default here, where no answer ever goes stale. */
+    answeredAgo?: number;
     /** Whether the body is drawn in the app's main element, which takes the focus as the body
      *  mounts, after the body's own first effects, as on a page opened by a link inside the app
      *  (`PageChangeMain`). */
@@ -281,15 +285,21 @@ function renderBody(
   } = {}
 ): Drawn {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    defaultOptions: {
+      queries: {
+        retry: false,
+        staleTime: answeredAgo === undefined ? Number.POSITIVE_INFINITY : 30_000,
+      },
+    },
   });
+  const answered = answeredAgo === undefined ? undefined : { updatedAt: Date.now() - answeredAgo };
   // The reads the page's tree is built from, under the keys it reads them by.
-  if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made));
-  if (asks !== null) client.setQueryData(["asks", KEY], asks);
-  client.setQueryData(["comments", KEY], comments);
+  if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made), answered);
+  if (asks !== null) client.setQueryData(["asks", KEY], asks, answered);
+  client.setQueryData(["comments", KEY], comments, answered);
   // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
   // placed by its quote alone, and no case makes a request for them.
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
+  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], [], answered);
   const issue = issueDetails();
   const root = issueTree(children);
   // The view the slot hands the body where no address names a node and no words are typed
@@ -1252,6 +1262,38 @@ test("an entry that moves to another part by no act of the reader keeps the focu
   );
   await waitFor(() => expect(rowsOfPart(tied, "review")).toContain(D("minor")));
   await waitFor(() => expect(focusedRow(tied)).toBe(D("minor")));
+});
+
+// The page's reads are refreshed by events, never by age (decision 180, R8): the stage mounts the
+// view again on each press of Decisions, so under the app's `staleTime` of 30 s a press 31 s after
+// the reads answered asks none of them again. Staleness is per observer, so that holds for every
+// observer the view mounts: the seam's four reads, and the decisions read that Keep and Change
+// draw from on each row of the review list (`DecisionActions.tsx`). The tester, at ed6312c5 on a
+// running build: a press 35 s after the load asked the decisions read again on an issue whose
+// review list holds rows, and asked nothing on an issue whose review list holds none.
+test("the view opened after the app's staleTime asks no read again, its rows' Keep and Change included", async () => {
+  const names = [
+    "getIssueDecisions",
+    "listIssueAsks",
+    "listComments",
+    "getArtifactBlocks",
+  ] as const;
+  // Each read held, so a read the mount started reaches no server.
+  const reads = names.map((read) =>
+    spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
+  );
+  try {
+    const view = renderBody(wholeIssue(), {}, { answeredAgo: 31_000 });
+    // Keep and Change are drawn on the review list's rows, so their own read is mounted too.
+    expect(rowOf(view, D("first")).querySelectorAll("button[data-row-action]").length).toBe(2);
+    await act(() => nextFrame());
+    expect(
+      Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls.length]))
+    ).toEqual({ getArtifactBlocks: 0, getIssueDecisions: 0, listComments: 0, listIssueAsks: 0 });
+    view.unmount();
+  } finally {
+    for (const read of reads) read.mockRestore();
+  }
 });
 
 // A closed issue takes no write, so the review list keeps its rows and draws no control.
