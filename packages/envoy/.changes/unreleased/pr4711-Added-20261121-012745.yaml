@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A project's switch to private closes it to developer boxes first. The owner's switch starts the
+  project's closing state (`closing_since` on `GET /api/v1/projects/{key}/access`): it revokes every
+  live personal token that lists the project, and the membership answer says
+  `closed_to_developer_boxes`, so the secrets broker mints and renews no developer-box token of
+  it. With a secrets broker configured, the switch completes only once the broker counts no live
+  developer-box token of the project and the closing state is 60 s old; until then it answers
+  `409 DEVELOPER_BOX_TOKENS_LIVE`, or `503 DEVELOPER_BOX_TOKENS_UNAVAILABLE` while the broker does
+  not answer, and keeps the closing state. A personal token's mint or edit naming a project that is
+  closing, or private by its full switch, is `403 PRIVATE_PROJECT_TOKEN`.
+time: 2026-11-21T01:27:45Z
+custom:
+    Issue: pr4711
