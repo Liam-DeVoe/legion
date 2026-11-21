@@ -465,13 +465,21 @@ func (r *leaverRig) browser(t *testing.T, p *leaverPerson, method, path, body st
 	if r.iapKeys == nil {
 		return cookieRequest(r.handler, method, path, body, p.signedIn)
 	}
-	request := httptest.NewRequest(method, "http://dispatch.test"+path, strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	r.handler.ServeHTTP(recorder, r.iapRequest(t, p, method, path, strings.NewReader(body)))
+	return recorder
+}
+
+// iapRequest is method path with body as it leaves p's browser through IAP, on a rig built
+// withIAP: the dashboard's own headers and the fresh assertion IAP signs for the request
+// (iapAssertion). A body of a kind httptest.NewRequest cannot measure sends no length.
+func (r *leaverRig) iapRequest(t *testing.T, p *leaverPerson, method, path string, body io.Reader) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(method, "http://dispatch.test"+path, body)
 	request.Header.Set("Origin", "http://dispatch.test")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(identity.IAPAssertionHeader, r.iapAssertion(t, p.email))
-	recorder := httptest.NewRecorder()
-	r.handler.ServeHTTP(recorder, request)
-	return recorder
+	return request
 }
 
 // iapAssertion is the assertion IAP signs, for the audience the IAP boot names (testIAPAudience),

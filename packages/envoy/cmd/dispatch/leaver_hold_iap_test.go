@@ -240,6 +240,66 @@ func (r *leaverRig) decideAtBrowser(t *testing.T, p *leaverPerson, decision, rec
 	return r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/"+recordID+"/"+decision, leaverBody(t, map[string]string{"code": code}))
 }
 
+// TestIAPHeldPersonDecidesNothingWhoseBodyArrivesAfterTheHold (approverStanding,
+// browserDeciderHeld): a decision at a person's browser under IAP reads her standing once its body
+// has arrived, as a personal token's decision does (the api package's
+// TestAHeldApproverRelaysNoApproval), since IAP admitted the request and Dispatch resolved its
+// caller before the body, which a browser may hold back as long as it likes. Ada sends the headers
+// of an approve of her pending machine login at her browser; while the body is held back the
+// membership pass finds her account suspended, and once the body arrives the approve is 401
+// MEMBERSHIP_HELD in the Directory's words. A later pass finds her account active, and a deny of
+// the same login, its body held back across a pass that finds her account suspended again, is
+// refused the same way. Once a pass finds her account active again her approval of that login
+// serves and approves it: neither refused decision reached the broker, which would have approved
+// or denied it.
+//
+// Control: ask Standing before the decision reads its body (browserDeciderHeld ahead of
+// decisionFor): the read sees no hold yet, ada's approve is relayed and answered 200, and the test
+// fails there.
+func TestIAPHeldPersonDecidesNothingWhoseBodyArrivesAfterTheHold(t *testing.T) {
+	r := newLeaverRig(t, withBrokerGate(), withIAP())
+	r.directoryAccount(adaEmail, false)
+	ada := r.signIn(t, adaEmail)
+	if err := r.membershipPass(nil).Run(context.Background()); err != nil {
+		t.Fatalf("the first membership pass: %v", err)
+	}
+	recordID, code := r.pendingMachineLogin(t, ada)
+	directoryFinds := func(suspended bool) func() {
+		return func() {
+			r.directoryAccount(adaEmail, suspended)
+			r.directoryPass(t, adaEmail)
+		}
+	}
+
+	for _, decision := range []string{"approve", "deny"} {
+		decided := r.decideAtBrowserHeld(t, ada, decision, recordID, code, directoryFinds(true))
+		expectRefusal(t, "ada@example.com's "+decision+" at her browser whose body arrived after the Directory held her", decided.Code, decided.Body.Bytes(), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapBrowserDecisionHeldText)
+		if t.Failed() {
+			return
+		}
+		directoryFinds(false)()
+	}
+
+	approved := r.decideAtBrowser(t, ada, "approve", recordID, code)
+	var decided struct {
+		State string `json:"state"`
+	}
+	if approved.Code != http.StatusOK || json.Unmarshal(approved.Body.Bytes(), &decided) != nil || decided.State != "approved" {
+		t.Errorf("ada@example.com's approval at her browser after the release answered %d %s, want 200 approved: a refused decision reached the broker", approved.Code, approved.Body.String())
+	}
+}
+
+// decideAtBrowserHeld is decideAtBrowser with the body held back (heldBody, serveHeld): once
+// Dispatch waits on the body it runs whileHeld, then lets the body go and answers the response.
+func (r *leaverRig) decideAtBrowserHeld(t *testing.T, p *leaverPerson, decision, recordID, code string, whileHeld func()) *httptest.ResponseRecorder {
+	t.Helper()
+	decided := leaverBody(t, map[string]string{"code": code})
+	body := newHeldBody(decided)
+	request := r.iapRequest(t, p, http.MethodPost, "/api/v1/credential-requests/"+recordID+"/"+decision, body)
+	request.ContentLength = int64(len(decided))
+	return serveHeld(t, r.handler, request, body, whileHeld)
+}
+
 // directoryAccount makes the fake Directory answer email's own Workspace account, suspended as
 // suspended says: users.get 200 with the account's id, "directory-<email>", and email as its
 // primary address.
