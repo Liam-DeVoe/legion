@@ -474,7 +474,7 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 			if tc.state != nil {
 				state := *tc.state
 				state.Family = consumernames.SessionFamily
-				if _, err := consumernames.NewKVStore(consumernames.SessionFamily, consumernames.ConnRequester{Conn: conn}).WriteSentinel(ctx, state, 0); err != nil {
+				if _, err := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn}).WriteSentinel(ctx, state, 0); err != nil {
 					t.Fatal(err)
 				}
 			}

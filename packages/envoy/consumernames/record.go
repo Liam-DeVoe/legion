@@ -166,9 +166,9 @@ type StoreState struct {
 	Key string `json:"key"`
 	// Family is the store's family, required: SessionFamily for the bucket's sentinel,
 	// DispatchFamily for Dispatch's store, DaemonFamily(project) for a daemon's. Key alone cannot
-	// tell two stores apart, so each store reads only a sentinel that names the family it was made
-	// for (NewKVStore, NewPGStore). WriteSentinel writes whatever family its caller gives;
-	// CreateSessionBucket writes SessionFamily.
+	// tell two stores apart, so each store reads only a sentinel that names its own family: the
+	// session family's for KVStore, the one NewPGStore was given for PGStore. WriteSentinel writes
+	// whatever family its caller gives; CreateSessionBucket writes SessionFamily.
 	Family string `json:"family"`
 	// Cutover is the family's cutover marker: CutoverDone, CutoverRolledBack, or "" before any.
 	Cutover string `json:"cutover,omitempty"`
@@ -267,7 +267,8 @@ var (
 	// before its context ended.
 	ErrBusy = errors.New("consumer names: another process's operation is in flight")
 	// ErrSentinelFamily is a well-formed sentinel under a store's sentinel key that names another
-	// family than the store's own (NewKVStore, NewPGStore): a missing sentinel, as ErrNoSentinel.
+	// family than the store's own (KVStore's SessionFamily, NewPGStore's family): a missing
+	// sentinel, as ErrNoSentinel.
 	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
 	// creates it: its start differs from what the operation reserved, or a setting no correction in

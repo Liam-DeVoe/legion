@@ -284,7 +284,7 @@ func storeStreamInfoOverTheSentinel(t *testing.T, conn *natsgo.Conn) {
 	if err := conn.PublishRequest("$JS.API.STREAM.INFO.KV_"+consumernames.SessionBucket, "$KV."+consumernames.SessionBucket+"."+consumernames.SentinelKey, nil); err != nil {
 		t.Fatal(err)
 	}
-	store := consumernames.NewKVStore(consumernames.SessionFamily, consumernames.ConnRequester{Conn: conn})
+	store := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn})
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, err := store.State(context.Background())
@@ -315,7 +315,7 @@ func markTheCutoverDone(t *testing.T, conn *natsgo.Conn) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := consumernames.NewKVStore(consumernames.SessionFamily, consumernames.ConnRequester{Conn: conn})
+	store := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn})
 	state, err := store.State(ctx)
 	if err != nil {
 		t.Fatal(err)

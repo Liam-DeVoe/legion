@@ -50,7 +50,7 @@ func startingSentinelRig(t *testing.T, sentinel func(t *testing.T, conn *natsgo.
 func writeSentinel(family string) func(t *testing.T, conn *natsgo.Conn) {
 	return func(t *testing.T, conn *natsgo.Conn) {
 		t.Helper()
-		store := consumernames.NewKVStore(consumernames.SessionFamily, consumernames.ConnRequester{Conn: conn})
+		store := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn})
 		if _, err := store.WriteSentinel(context.Background(), consumernames.StoreState{Family: family, Cutover: consumernames.CutoverDone, Boundary: 1}, 0); err != nil {
 			t.Fatal(err)
 		}

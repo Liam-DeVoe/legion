@@ -119,7 +119,7 @@ func sessionConsumerMetadata(sessionID string) map[string]string {
 // The session consumers keep their records in it, and the listener its own durable's
 // (consumernames.DurableKey).
 func (c *Client) SelectionStore() *consumernames.KVStore {
-	return consumernames.NewKVStore(consumernames.SessionFamily, clientRequester{c})
+	return consumernames.NewKVStore(clientRequester{c})
 }
 
 // ConsumerNames is how c's session consumers are named (WithConsumerNames): consumernames.ModeFixed

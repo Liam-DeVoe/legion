@@ -78,7 +78,7 @@ func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValu
 		ctx, cancel = context.WithTimeout(ctx, createBucketWait)
 		defer cancel()
 	}
-	store := newKVStore(config.Bucket, state.Family, ConnRequester{conn})
+	store := newKVStore(config.Bucket, ConnRequester{conn})
 	_, _, err = untilAnswered(ctx, config.Bucket, func() ([]byte, uint64, error) { return store.last(ctx, SentinelKey) })
 	if err != nil && !errors.Is(err, ErrNoRecord) && !errors.Is(err, ErrRecordDeleted) {
 		return nil, err
@@ -122,37 +122,30 @@ func (r ConnRequester) Request(ctx context.Context, msg *nats.Msg) (*nats.Msg, e
 	return r.Conn.RequestMsgWithContext(ctx, msg)
 }
 
-// KVStore is a Store over a KV bucket's stream, through raw requests: each read takes the key's
-// last message from the stream's leader (a stream message get, which a direct get is not), so a
-// record written a moment ago is never read as absent, and a key whose last message is a delete
-// or a purge marker is seen as one (ErrRecordDeleted) rather than as a key never written. Each
-// write is a publish conditional on the key's last sequence, which is the record's revision.
+// KVStore is the session family's Store, over the selection bucket's stream, through raw requests:
+// each read takes the key's last message from the stream's leader (a stream message get, which a
+// direct get is not), so a record written a moment ago is never read as absent, and a key whose
+// last message is a delete or a purge marker is seen as one (ErrRecordDeleted) rather than as a key
+// never written. Each write is a publish conditional on the key's last sequence, which is the
+// record's revision. The session family is the one a KV bucket keeps, its session consumers'
+// records and the listener durables' (DurableKey); Dispatch's and the daemons' are in Postgres
+// (NewPGStore). So its sentinel must name SessionFamily.
 type KVStore struct {
-	bucket string
-	// family is the family the store's sentinel must name (NewKVStore).
-	family  string
+	bucket  string
 	request Requester
 	// timeout bounds a request whose ctx carries no deadline.
 	timeout time.Duration
 }
 
-// NewKVStore is the store of family's selection records, through request. The family fixes the
-// bucket, and the store reads only a sentinel that names family (StoreState.Family): SessionFamily
-// is the one family a KV bucket keeps (SessionBucket), its session consumers' records and the
-// listener durables', while Dispatch's and the daemons' records are in Postgres (NewPGStore). Any
-// other family is a caller's error no store can serve, so NewKVStore panics on it, as
-// time.NewTicker does on a period that is not positive.
-func NewKVStore(family string, request Requester) *KVStore {
-	if family != SessionFamily {
-		panic(fmt.Sprintf("consumer names: the family %q keeps its records in no KV bucket", family))
-	}
-	return newKVStore(SessionBucket, family, request)
+// NewKVStore is the session family's store over SessionBucket, through request.
+func NewKVStore(request Requester) *KVStore {
+	return newKVStore(SessionBucket, request)
 }
 
-// newKVStore is a KVStore over bucket whose sentinel must name family: createBucket's, which a
-// test runs on the session bucket's configuration under other names.
-func newKVStore(bucket, family string, request Requester) *KVStore {
-	return &KVStore{bucket: bucket, family: family, request: request, timeout: 5 * time.Second}
+// newKVStore is NewKVStore over bucket: createBucket's, which a test runs on the session bucket's
+// configuration under other names.
+func newKVStore(bucket string, request Requester) *KVStore {
+	return &KVStore{bucket: bucket, request: request, timeout: 5 * time.Second}
 }
 
 // Bucket is the bucket the store reads.
@@ -167,8 +160,8 @@ func (s *KVStore) State(ctx context.Context) (StoreState, error) {
 	return state, err
 }
 
-// sentinel reads the sentinel and its revision. A value under SentinelKey that is not the sentinel
-// of the store's family (decodeSentinel) is a missing sentinel, naming the key and the value's
+// sentinel reads the sentinel and its revision. A value under SentinelKey that is not the session
+// family's sentinel (decodeSentinel) is a missing sentinel, naming the key and the value's
 // sequence: a sentinel naming Dispatch's or a daemon's store under the session bucket's key is none
 // of its own.
 func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
@@ -179,7 +172,7 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	if err != nil {
 		return StoreState{}, 0, err
 	}
-	state, err := decodeSentinel(SentinelKey, s.family, data)
+	state, err := decodeSentinel(SentinelKey, SessionFamily, data)
 	if err != nil {
 		return StoreState{}, 0, fmt.Errorf("%w: the bucket %s's %s at sequence %d holds no sentinel (%w)", ErrNoSentinel, s.bucket, SentinelKey, revision, err)
 	}

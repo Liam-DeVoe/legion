@@ -175,7 +175,8 @@ func TestASentinelsFamilyRoundTrips(t *testing.T) {
 	}
 }
 
-// Each store reads only a sentinel that names the family it was made for (NewKVStore, NewPGStore):
+// Each store reads only a sentinel that names its own family (KVStore the session family's, a
+// PGStore the one NewPGStore was given):
 // a key alone cannot tell two stores apart, so a well-formed sentinel naming another family, or one
 // naming none, under the store's sentinel key is a missing sentinel, never a marker read. The
 // control in each store is a sentinel of its own family, read. Without the family, PGStore read
