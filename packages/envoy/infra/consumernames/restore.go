@@ -2,10 +2,1502 @@ package consumernames
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
+	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
-// restore is not built yet: SCAFFOLD, replaced by its builder before any push (hardening ledger).
-func (r *run) restore(context.Context) error {
-	return errors.New("envoy-infra consumer-names restore: not built yet")
+// The rollback's commands as the hold's journal names them in workflow rollback
+// (internal/holdrecord/table.go tableFor): restore --prepare once, restore --key for each name it
+// left with no start (Repeatable), then restore --finish, which is final. Each is Stoppable from
+// cybermonklabs/legion#4679's next head on (restore --finish already is), so each refusal after
+// its intent ends it with a stop entry (restoreStop).
+const (
+	restoreCommandPrepare = "restore --prepare"
+	restoreCommandKey     = "restore --key"
+	restoreCommandFinish  = "restore --finish"
+)
+
+// The phases of one logical name's rollback, as its record's restore field holds them
+// (selection.Restore.Phase).
+const (
+	// restorePlanned: the target and its start are written, and nothing is deleted yet.
+	restorePlanned = "planned"
+	// restoreNoStart: no start is known; restore --key gives one, and restore --finish stops
+	// naming the name until it has.
+	restoreNoStart = "no_start"
+	// restoreKept: the target exists and passes over nothing from the start, so it stays.
+	restoreKept = "kept"
+	// restoreSourceDeleted: the target, the current and the candidate are gone, and restore
+	// --finish creates the target at the start.
+	restoreSourceDeleted = "source_deleted"
+	// restoreCreated: restore --finish created the target at the start.
+	restoreCreated = "created"
+)
+
+const (
+	// restoreSetKind and restoreSetKey name the hold record restore --prepare saves its set in.
+	// The broker's routes hold four kinds of record (internal/cipher/natshold RecordKind); a
+	// rollback hold runs no convert, so its kind convert under its own key holds restore's set,
+	// the rollback's counterpart of convert's saved set (key set).
+	restoreSetKind = "convert"
+	restoreSetKey  = "restore"
+	// restoreServerID prefixes each output of restore --prepare's done entry that records a
+	// declared server's /varz server_id, by pod.
+	restoreServerID = "server_id."
+	// restoreAttempts bounds how often one name's step reads its record again after a refused
+	// conditional write (selection.ErrConflict).
+	restoreAttempts = 16
+)
+
+// restoreRuleSet is the rules a restore runs by. Every field set is an earlier design's rule, and
+// only a test's control sets one, to show the row fails under it; a real run keeps them all
+// unset.
+type restoreRuleSet struct {
+	// lastFloorFirst is round 17's start: the record's last_floor + 1, whatever name and stream
+	// it was read from, before every other start.
+	lastFloorFirst bool
+	// keepAnyTarget is round 17's phase kept: a target that exists stays, at restore --prepare
+	// and at restore --finish, with no floor check.
+	keepAnyTarget bool
+	// firstCreateWhenAbsent is round 16's start: a name whose current is absent starts at the
+	// stream's end, its first-create rule.
+	firstCreateWhenAbsent bool
+	// createdIsFinal is round 17's finish: a record at phase created is done, its target unread.
+	createdIsFinal bool
+	// noMarkers leaves every family's broker cutover record and store marker as they are.
+	noMarkers bool
+	// noStopEntry is the rule before restore --prepare and --key were Stoppable in rollback: a
+	// refusal after a restore command's intent writes no stop entry, so its intent stays pending
+	// and only that command's rerun is admitted.
+	noStopEntry bool
+}
+
+// restoreRules are the rules restore runs by (restoreRuleSet). A test that sets one runs alone.
+var restoreRules restoreRuleSet
+
+// restoreHook, when set, runs at each point of a restore it names (a record's write, a create)
+// with the logical name, and an error it answers ends the command there as a kill would: no stop
+// entry, so the command's intent stays pending and only its rerun is admitted. Only a test sets
+// it.
+var restoreHook func(point, logical string) error
+
+// restoreKill is restoreHook's end of a command, which restoreStop passes through unwritten.
+type restoreKill struct{ err error }
+
+func (k *restoreKill) Error() string { return k.err.Error() }
+
+func restoreAt(point, logical string) error {
+	if restoreHook == nil {
+		return nil
+	}
+	if err := restoreHook(point, logical); err != nil {
+		return &restoreKill{err: err}
+	}
+	return nil
+}
+
+// restoreSet is restore --prepare's saved set, written as the hold's record (restoreSetKind,
+// restoreSetKey) before its first mutation: each logical name of every family, its target F (its
+// fixed name), the start S its rules gave, and the configuration F is created with. A rerun after
+// a crash takes each from here, never from a consumer an earlier run deleted, and restore --finish
+// creates each F from it.
+type restoreSet struct {
+	Names []restoreSetName `json:"names"`
+}
+
+// restoreSetName is one logical name of a restoreSet.
+type restoreSetName struct {
+	Family  string `json:"family"`
+	Logical string `json:"logical"`
+	Target  string `json:"target"`
+	// Start is 0 for a name with no start (restorePhase restoreNoStart).
+	Start uint64 `json:"start,omitempty"`
+	// Config is F's configuration, nil when no consumer of the name and no convert set held one.
+	Config *jetstream.ConsumerConfig `json:"config,omitempty"`
+}
+
+// restore runs restore --prepare, --key or --finish (§4 of the design).
+func (r *run) restore(ctx context.Context) error {
+	switch {
+	case r.o.prepare:
+		return r.restorePrepare(ctx)
+	case r.o.finish:
+		return r.restoreFinish(ctx)
+	}
+	return r.restoreKey(ctx)
+}
+
+// restoreRun is a restore's reach: the operator's connection and client of the hold routes, the
+// notification stream's identity and last sequence, every family's broker cutover row, and each
+// family's store, opened once.
+type restoreRun struct {
+	r        *run
+	nc       *nats.Conn
+	records  *holdrecord.Client
+	streamID string
+	lastSeq  uint64
+	cutovers []holdrecord.CutoverRow
+	stores   map[string]familyStore
+	// barrier is whether the selection bucket's barrier stands for the reads to come: false at
+	// first, and again after each restart, which can move the bucket's leader.
+	barrier bool
+	// left is what this run changed, which a stop entry names (restoreStop).
+	left *restoreLeft
+}
+
+// restoreReach opens a restore's reach, which records what it changes in left.
+func (r *run) restoreReach(ctx context.Context, left *restoreLeft) (*restoreRun, error) {
+	records, err := r.hold(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nc, _, err := r.conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	info, err := streamInfo(ctx, nc, notifications)
+	if err != nil {
+		return nil, unknownf(err, "the info of %s", notifications)
+	}
+	cutovers, err := records.Cutovers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &restoreRun{r: r, nc: nc, records: records, streamID: selection.StreamIdentity(info),
+		lastSeq: info.State.LastSeq, cutovers: cutovers, stores: map[string]familyStore{}, left: left}, nil
+}
+
+// store is family's store. The selection bucket is read only behind the hold's bucket barrier
+// (writerhold.ReadBucket), as convert reads it, so every read is past the last write a server
+// accepted before the hold or before the latest restart; a bucket that does not exist is
+// selection.ErrNoStore.
+func (rr *restoreRun) store(ctx context.Context, family string) (familyStore, error) {
+	if family == familySession && !rr.barrier {
+		stream := "KV_" + selection.SessionBucket
+		if err := rr.answered(ctx, func(ctx context.Context) error { _, err := streamInfo(ctx, rr.nc, stream); return err }); err != nil {
+			var api *jetstream.APIError
+			if errors.As(err, &api) && api.ErrorCode == errStreamNotFound {
+				return nil, fmt.Errorf("%w: %s (%w)", selection.ErrNoStore, stream, err)
+			}
+			return nil, unknownf(err, "the info of %s", stream)
+		}
+		if err := writerhold.ReadBucket(ctx, rr.nc, selection.SessionBucket, rr.r.o.holdID, func(context.Context) error { return nil }); err != nil {
+			return nil, restoreHubError(err)
+		}
+		rr.barrier = true
+	}
+	if st, ok := rr.stores[family]; ok {
+		return st, nil
+	}
+	st, err := rr.r.store(ctx, family)
+	if err != nil {
+		return nil, err
+	}
+	rr.stores[family] = st
+	return st, nil
+}
+
+// reconnect moves restore to a connection made after a restart (run.reconnect), with the
+// selection bucket's store on it, and the bucket's barrier put again before its next read, since
+// the restart can move the bucket's leader.
+func (rr *restoreRun) reconnect(ctx context.Context) error {
+	delete(rr.stores, familySession)
+	rr.barrier = false
+	nc, _, err := rr.r.reconnect(ctx)
+	if err != nil {
+		return err
+	}
+	rr.nc = nc
+	return nil
+}
+
+// restoreSettleWithin bounds how long restore asks again a JetStream request no leader answered:
+// after a restart each stream's and consumer's group elects a leader again, and a request in
+// between times out, finds no responder, or answers 503.
+const restoreSettleWithin = time.Minute
+
+// answered runs request again, every 250 ms, while its error says no leader answered it
+// (restoreUnanswered), until restoreSettleWithin passes; any other outcome is request's.
+func (rr *restoreRun) answered(ctx context.Context, request func(context.Context) error) error {
+	deadline := time.Now().Add(restoreSettleWithin)
+	for {
+		err := request(ctx)
+		if err == nil || !restoreUnanswered(err) || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// restoreUnanswered reports whether err is a JetStream request no leader answered: a timeout, no
+// responders, or the API's 503.
+func restoreUnanswered(err error) bool {
+	var api *jetstream.APIError
+	if errors.As(err, &api) {
+		return api.Code == 503
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders)
+}
+
+// info reads consumer name of the notification stream (consumerInfo), asked again while no leader
+// answers.
+func (rr *restoreRun) info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	var info *jetstream.ConsumerInfo
+	err := rr.answered(ctx, func(ctx context.Context) error {
+		var err error
+		info, err = consumerInfo(ctx, rr.nc, notifications, name)
+		return err
+	})
+	return info, err
+}
+
+// delete deletes consumer name of the notification stream (deleteConsumer), asked again while no
+// leader answers: a delete that landed unanswered reads as not found the next time, which is no
+// error. The run's account (restoreLeft) records each name it deleted or found gone.
+func (rr *restoreRun) delete(ctx context.Context, name string) error {
+	err := rr.answered(ctx, func(ctx context.Context) error { return deleteConsumer(ctx, rr.nc, notifications, name) })
+	if err == nil {
+		rr.left.deleted = append(rr.left.deleted, name)
+	}
+	return err
+}
+
+// families are the families a restore covers, sorted: the session consumers' and the listener
+// durables' (the selection bucket), Dispatch's when --dispatch-database-file names its store, each
+// daemon --daemon-database names, and every family a broker cutover row names, whose store must
+// then be named.
+func (rr *restoreRun) families() []string {
+	set := map[string]bool{familySession: true}
+	if rr.r.o.dispatchDatabaseFile != "" {
+		set[familyDispatch] = true
+	}
+	for _, project := range rr.r.o.daemonProjects() {
+		set[daemonFamily(project)] = true
+	}
+	for _, row := range rr.cutovers {
+		set[row.Family] = true
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
+// hasCutoverRow reports whether a broker cutover row names family.
+func (rr *restoreRun) hasCutoverRow(family string) bool {
+	return slices.ContainsFunc(rr.cutovers, func(row holdrecord.CutoverRow) bool { return row.Family == family })
+}
+
+// restoreEntry is one logical name's record as restore listed it.
+type restoreEntry struct {
+	member   member
+	record   selection.Record
+	revision uint64
+	// deleted is a key whose last write is a delete or purge marker: its record is lost.
+	deleted bool
+}
+
+// entries lists every record of family's store, by logical name, and false for a family whose
+// store does not exist and that no broker cutover row names, which has nothing to restore.
+func (rr *restoreRun) entries(ctx context.Context, family string) ([]restoreEntry, bool, error) {
+	st, err := rr.store(ctx, family)
+	if errors.Is(err, selection.ErrNoStore) && !rr.hasCutoverRow(family) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var out []restoreEntry
+	if family == familySession {
+		keys, err := statusSelectionKeys(ctx, rr.nc)
+		if errors.Is(err, selection.ErrNoStore) && !rr.hasCutoverRow(family) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		for _, key := range keys {
+			if key.Key == selection.SentinelKey || strings.HasPrefix(key.Key, "hold.barrier.") {
+				continue
+			}
+			m, err := restoreMember(family, key.Key)
+			if err != nil {
+				return nil, false, unknownf(err, "the key %q of %s", key.Key, selection.SessionBucket)
+			}
+			entry := restoreEntry{member: m, revision: key.Seq, deleted: key.Deleted}
+			if !key.Deleted {
+				if err := json.Unmarshal(key.Value, &entry.record); err != nil {
+					return nil, false, unknownf(err, "the record of %q in %s", key.Key, selection.SessionBucket)
+				}
+			}
+			out = append(out, entry)
+		}
+		return out, true, nil
+	}
+	pg, ok := st.(*selection.PGStore)
+	if !ok {
+		return nil, false, fmt.Errorf("%s's store %T lists no records", family, st)
+	}
+	records, err := pg.List(ctx)
+	if errors.Is(err, selection.ErrNoStore) && !rr.hasCutoverRow(family) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	for _, logical := range slices.Sorted(maps.Keys(records)) {
+		m, err := restoreMember(family, logical)
+		if err != nil {
+			return nil, false, unknownf(err, "the row %q of %s's %s", logical, family, selection.IntakeConsumersTable)
+		}
+		record, revision, err := pg.Read(ctx, logical)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, restoreEntry{member: m, record: record, revision: revision})
+	}
+	return out, true, nil
+}
+
+// restoreMember is the member a record of family keyed logical is: a session id or a listener
+// durable's selection.DurableKey in the selection bucket, Dispatch's or a daemon's durable name in
+// its intake_consumers.
+func restoreMember(family, logical string) (member, error) {
+	name := logical
+	if family == familySession {
+		switch {
+		case selection.CheckDurableKey(logical) == nil:
+			durable, err := restoreDurableName(logical)
+			if err != nil {
+				return member{}, err
+			}
+			name = durable
+		case selection.CheckKey(logical) == nil:
+			name = sessionFixedPrefix + logical
+		default:
+			return member{}, fmt.Errorf("%q is no session id and no durable's key", logical)
+		}
+	}
+	m, ok := classify(name)
+	if !ok || m.Family != family || m.Logical != logical {
+		return member{}, fmt.Errorf("%q is no logical name of family %s", logical, family)
+	}
+	return m, nil
+}
+
+// restoreDurableName is the durable name selection.DurableKey made key from: each "=" and two
+// hex digits written back as its byte.
+func restoreDurableName(key string) (string, error) {
+	escaped := strings.TrimPrefix(key, "durable.")
+	var name strings.Builder
+	for i := 0; i < len(escaped); i++ {
+		if escaped[i] != '=' {
+			name.WriteByte(escaped[i])
+			continue
+		}
+		if i+2 >= len(escaped) {
+			return "", fmt.Errorf("the durable key %q ends inside an escape", key)
+		}
+		b, err := strconv.ParseUint(escaped[i+1:i+3], 16, 8)
+		if err != nil {
+			return "", fmt.Errorf("the durable key %q holds a malformed escape", key)
+		}
+		name.WriteByte(byte(b))
+		i += 2
+	}
+	return name.String(), nil
+}
+
+// restoreKeyMember is the member --key names: a listener durable's key, any family's fixed name
+// (classify), or a session id.
+func restoreKeyMember(key string) (member, error) {
+	if selection.CheckDurableKey(key) == nil {
+		return restoreMember(familySession, key)
+	}
+	if m, ok := classify(key); ok {
+		return m, nil
+	}
+	if err := selection.CheckKey(key); err != nil {
+		return member{}, err
+	}
+	return restoreMember(familySession, key)
+}
+
+// restoreFloor is the ack floor restore reads of a consumer: its stream sequence as the server
+// reports it, which is never above what the consumer acked.
+func restoreFloor(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream }
+
+// readSet reads the hold's saved set, and false when restore --prepare has written none.
+func (rr *restoreRun) readSet(ctx context.Context) (restoreSet, bool, error) {
+	records, err := rr.records.Records(ctx, rr.r.o.holdID, restoreSetKind)
+	if err != nil {
+		return restoreSet{}, false, err
+	}
+	for _, record := range records {
+		if record.Key != restoreSetKey {
+			continue
+		}
+		var set restoreSet
+		if err := json.Unmarshal(record.Value, &set); err != nil {
+			return restoreSet{}, false, unknownf(err, "hold %s's %s record %s", rr.r.o.holdID, restoreSetKind, restoreSetKey)
+		}
+		return set, true, nil
+	}
+	return restoreSet{}, false, nil
+}
+
+// savedSet is the hold's saved set: the one an earlier run wrote, else one built now and written
+// before any mutation.
+func (rr *restoreRun) savedSet(ctx context.Context) (restoreSet, error) {
+	if set, found, err := rr.readSet(ctx); err != nil || found {
+		return set, err
+	}
+	set, err := rr.buildSet(ctx)
+	if err != nil {
+		return restoreSet{}, err
+	}
+	value, err := json.Marshal(set)
+	if err != nil {
+		return restoreSet{}, err
+	}
+	if _, err := rr.records.PutRecord(ctx, rr.r.o.holdID, restoreSetKind, restoreSetKey, 0, value); err != nil {
+		var refusal *holdrecord.RouteError
+		if errors.As(err, &refusal) && refusal.Code == "gen_mismatch" {
+			// Another run of this command wrote its set first: that one governs.
+			if set, found, err := rr.readSet(ctx); err != nil || found {
+				return set, err
+			}
+		}
+		return restoreSet{}, err
+	}
+	return set, nil
+}
+
+// buildSet reads every family's records and gives each logical name its target, its start and its
+// target's configuration.
+func (rr *restoreRun) buildSet(ctx context.Context) (restoreSet, error) {
+	var set restoreSet
+	for _, family := range rr.families() {
+		entries, present, err := rr.entries(ctx, family)
+		if err != nil {
+			return restoreSet{}, err
+		}
+		if !present {
+			continue
+		}
+		for _, entry := range entries {
+			name, err := rr.planName(ctx, family, entry)
+			if err != nil {
+				return restoreSet{}, err
+			}
+			set.Names = append(set.Names, name)
+		}
+	}
+	return set, nil
+}
+
+// planName is entry's name in the saved set: its target, its start (restoreStart) and the
+// configuration its target is created with: the target's own while it exists, else that of the
+// record's current, its operation's candidate or the old name of that operation, the first the
+// server holds, else the target's as the cutover's convert saved it.
+func (rr *restoreRun) planName(ctx context.Context, family string, entry restoreEntry) (restoreSetName, error) {
+	name := restoreSetName{Family: family, Logical: entry.member.Logical, Target: entry.member.Fixed}
+	infos := map[string]*jetstream.ConsumerInfo{}
+	read := func(consumer string) (*jetstream.ConsumerInfo, error) {
+		if consumer == "" {
+			return nil, nil
+		}
+		if info, ok := infos[consumer]; ok {
+			return info, nil
+		}
+		info, err := rr.info(ctx, consumer)
+		if err != nil {
+			return nil, unknownf(err, "the info of %s", consumer)
+		}
+		infos[consumer] = info
+		return info, nil
+	}
+	if !entry.deleted {
+		start, err := rr.restoreStart(entry.record, read)
+		if err != nil {
+			return restoreSetName{}, err
+		}
+		name.Start = start
+	}
+	sources := []string{name.Target, entry.record.Current}
+	if op := entry.record.Op; op != nil {
+		sources = append(sources, op.Candidate, op.Old)
+	}
+	for _, source := range sources {
+		info, err := read(source)
+		if err != nil {
+			return restoreSetName{}, err
+		}
+		if info != nil {
+			name.Config = restoreTargetConfig(info.Config, name.Target)
+			return name, nil
+		}
+	}
+	config, err := rr.convertedConfig(ctx, family, name.Target)
+	if err != nil {
+		return restoreSetName{}, err
+	}
+	if config != nil {
+		name.Config = restoreTargetConfig(*config, name.Target)
+	}
+	return name, nil
+}
+
+// restoreStart is the start S of a record (§4 step 2): the open operation's saved start; else, with
+// the current present, its ack floor + 1; else the last floor + 1 when it was read from that
+// current on this stream; else the record's saved start; else 0, no start known.
+func (rr *restoreRun) restoreStart(record selection.Record, read func(string) (*jetstream.ConsumerInfo, error)) (uint64, error) {
+	if lf := record.LastFloor; restoreRules.lastFloorFirst && lf != nil {
+		return lf.Floor + 1, nil
+	}
+	current, err := read(record.Current)
+	if err != nil {
+		return 0, err
+	}
+	if restoreRules.firstCreateWhenAbsent && current == nil {
+		return rr.lastSeq + 1, nil
+	}
+	if record.Op != nil && record.Start > 0 {
+		return record.Start, nil
+	}
+	if current != nil {
+		return restoreFloor(current) + 1, nil
+	}
+	if lf := record.LastFloor; lf != nil && record.Current != "" && lf.Name == record.Current && lf.StreamID != "" && lf.StreamID == rr.streamID {
+		return lf.Floor + 1, nil
+	}
+	return record.Start, nil
+}
+
+// restoreTargetConfig is config, a consumer's of one logical name, as its target F is created:
+// named F, without the selection's logical-name metadata, which no fixed consumer carried, and
+// without the metadata the server writes itself (keys beginning "_nats."). The start is set at the
+// create (restoreRun.create).
+func restoreTargetConfig(config jetstream.ConsumerConfig, target string) *jetstream.ConsumerConfig {
+	config.Name, config.Durable = target, target
+	config.OptStartSeq, config.OptStartTime = 0, nil
+	config.FilterSubjects = slices.Clone(config.FilterSubjects)
+	config.Metadata = maps.Clone(config.Metadata)
+	maps.DeleteFunc(config.Metadata, func(key, _ string) bool {
+		return key == selection.LogicalMetadataKey || strings.HasPrefix(key, "_nats.")
+	})
+	if len(config.Metadata) == 0 {
+		config.Metadata = nil
+	}
+	return &config
+}
+
+// convertedConfig is target's configuration as a convert saved it before it deleted the target
+// (convert.go convertSet), read from the convert record of the hold family's broker cutover row
+// names, then of every other hold a cutover row names; nil when none holds it.
+func (rr *restoreRun) convertedConfig(ctx context.Context, family, target string) (*jetstream.ConsumerConfig, error) {
+	var holds []string
+	for _, row := range rr.cutovers {
+		if row.Family == family && !slices.Contains(holds, row.HoldID) {
+			holds = append([]string{row.HoldID}, holds...)
+		} else if !slices.Contains(holds, row.HoldID) {
+			holds = append(holds, row.HoldID)
+		}
+	}
+	for _, hold := range holds {
+		set, _, found, err := readConvertSet(ctx, rr.records, hold)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		for _, saved := range set.Names {
+			if saved.Fixed == target && saved.Config != nil {
+				return saved.Config, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// restorePrepare is restore --prepare --hold ID (§4 step 2): the saved set, then each name settled
+// to its phase, then the declared servers' ids, read after the last delete, in its done entry,
+// which restore --finish's restart must replace. Every refusal after its intent writes its stop
+// entry, naming each record it left at each phase and each consumer it deleted (restoreStop); its
+// rerun goes on from the phase each record holds.
+func (r *run) restorePrepare(ctx context.Context) error {
+	a, err := r.admit(ctx, restoreCommandPrepare, nil)
+	if err != nil {
+		return err
+	}
+	left := &restoreLeft{}
+	if err := r.restorePrepareAdmitted(ctx, a, left); err != nil {
+		return restoreStop(ctx, a, err, left)
+	}
+	return nil
+}
+
+// restorePrepareAdmitted is restore --prepare after its intent, recording what it changes in left.
+func (r *run) restorePrepareAdmitted(ctx context.Context, a *admission, left *restoreLeft) error {
+	rr, err := r.restoreReach(ctx, left)
+	if err != nil {
+		return err
+	}
+	set, err := rr.savedSet(ctx)
+	if err != nil {
+		return err
+	}
+	var unresolved []string
+	phases := map[string]int{}
+	for _, name := range set.Names {
+		phase, err := rr.settle(ctx, name, name.Start)
+		if err != nil {
+			return err
+		}
+		phases[phase]++
+		if phase == restoreNoStart {
+			unresolved = append(unresolved, name.Family+"/"+name.Logical)
+		}
+	}
+	op, err := r.operatorHub(ctx)
+	if err != nil {
+		return err
+	}
+	declared, err := writerhold.Discover(ctx, op.Hub)
+	if err != nil {
+		return restoreHubError(err)
+	}
+	outputs := map[string]string{"names": strconv.Itoa(len(set.Names)), "no_start": strings.Join(unresolved, " ")}
+	for _, server := range declared {
+		outputs[restoreServerID+server.Pod] = server.Varz.ServerID
+	}
+	if err := a.done(ctx, outputs); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.stdout, "restore --prepare: %d names: %d kept, %d source_deleted, %d with no start\n", len(set.Names),
+		phases[restoreKept], phases[restoreSourceDeleted], phases[restoreNoStart])
+	for _, name := range unresolved {
+		fmt.Fprintf(r.stdout, "  %s has no start: give it one with restore --key <K> --from <seq> --hold %s\n", name, r.o.holdID)
+	}
+	return nil
+}
+
+// settle takes one name of the saved set to the phase restore --prepare leaves it at, from the
+// phase its record holds, each step a conditional write: its restore field written with its
+// target and start, phase planned (no_start for a start of 0); then the target kept when its ack
+// floor + 1 is at most the start, else deleted; the current, the candidate and the operation's old
+// name, fresh names never used again, deleted and retired; then phase kept or source_deleted. A
+// record whose restore field names another target or start is a rollback's of an earlier hold,
+// which this one plans again.
+func (rr *restoreRun) settle(ctx context.Context, name restoreSetName, start uint64) (string, error) {
+	st, err := rr.store(ctx, name.Family)
+	if err != nil {
+		return "", err
+	}
+	for range restoreAttempts {
+		record, revision, err := rr.readRecord(ctx, st, name)
+		if err != nil {
+			return "", err
+		}
+		restore := record.Restore
+		if restore == nil || restore.Target != name.Target || restore.Start != start {
+			next := record
+			next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restorePlanned}
+			if start == 0 {
+				next.Restore.Phase = restoreNoStart
+			}
+			if _, err := st.Write(ctx, name.Logical, next, revision); errors.Is(err, selection.ErrConflict) {
+				continue
+			} else if err != nil {
+				return "", err
+			}
+			rr.left.wrote(name, next.Restore.Phase)
+			if err := restoreAt(next.Restore.Phase, name.Logical); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if restore.Phase != restorePlanned {
+			return restore.Phase, nil
+		}
+		target, err := rr.info(ctx, name.Target)
+		if err != nil {
+			return "", unknownf(err, "the info of %s", name.Target)
+		}
+		keep := target != nil && (restoreRules.keepAnyTarget || restoreFloor(target)+1 <= start)
+		if target != nil && !keep {
+			if err := rr.delete(ctx, name.Target); err != nil {
+				return "", unknownf(err, "the delete of %s", name.Target)
+			}
+		}
+		next := record
+		next.Retired = slices.Clone(record.Retired)
+		for _, fresh := range restoreFreshNames(record, name.Target) {
+			if err := rr.delete(ctx, fresh); err != nil {
+				return "", unknownf(err, "the delete of %s", fresh)
+			}
+			if !slices.Contains(next.Retired, fresh) {
+				next.Retired = append(next.Retired, fresh)
+			}
+		}
+		if err := restoreAt("deleted", name.Logical); err != nil {
+			return "", err
+		}
+		next.Current, next.Op = "", nil
+		next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restoreSourceDeleted}
+		if keep {
+			next.Restore.Phase = restoreKept
+		}
+		if _, err := st.Write(ctx, name.Logical, next, revision); errors.Is(err, selection.ErrConflict) {
+			continue
+		} else if err != nil {
+			return "", err
+		}
+		rr.left.wrote(name, next.Restore.Phase)
+		if err := restoreAt(next.Restore.Phase, name.Logical); err != nil {
+			return "", err
+		}
+		return next.Restore.Phase, nil
+	}
+	return "", fmt.Errorf("%s's record changed under each of %d writes", name.Logical, restoreAttempts)
+}
+
+// restoreFreshNames are the names of record a restore deletes beside its target: the current, the
+// operation's candidate and its old name, each once, the target never among them.
+func restoreFreshNames(record selection.Record, target string) []string {
+	var names []string
+	add := func(name string) {
+		if name != "" && name != target && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	add(record.Current)
+	if record.Op != nil {
+		add(record.Op.Candidate)
+		add(record.Op.Old)
+	}
+	return names
+}
+
+// readRecord reads name's record and its revision. A selection-bucket key whose last write is a
+// delete marker reads as an empty record at the marker's revision, so the next write lands over the
+// marker; a key never written is an empty record at revision 0.
+func (rr *restoreRun) readRecord(ctx context.Context, st familyStore, name restoreSetName) (selection.Record, uint64, error) {
+	record, revision, err := st.Read(ctx, name.Logical)
+	switch {
+	case errors.Is(err, selection.ErrNoRecord):
+		return selection.Record{}, 0, nil
+	case errors.Is(err, selection.ErrRecordDeleted) && name.Family == familySession:
+		keys, err := statusSelectionKeys(ctx, rr.nc)
+		if err != nil {
+			return selection.Record{}, 0, err
+		}
+		for _, key := range keys {
+			if key.Key == name.Logical && key.Deleted {
+				return selection.Record{}, key.Seq, nil
+			}
+		}
+		return selection.Record{}, 0, unknownf(nil, "%s's delete marker is gone from %s between two reads", name.Logical, selection.SessionBucket)
+	case err != nil:
+		return selection.Record{}, 0, err
+	}
+	return record, revision, nil
+}
+
+// restoreKey is restore --key K --from SEQ --hold ID: it gives a name restore --prepare left with
+// no start its start, then settles it as restore --prepare does. K's form is checked before its
+// intent, as a flag's value; everything after its intent that refuses (a name that has its start
+// already, one restore --prepare did not save) writes its stop entry (restoreStop), so restore
+// --finish is admitted after it.
+func (r *run) restoreKey(ctx context.Context) error {
+	m, err := restoreKeyMember(r.o.key)
+	if err != nil {
+		return fmt.Errorf("--key %q: %w", r.o.key, err)
+	}
+	a, err := r.admit(ctx, restoreCommandKey, map[string]string{"key": r.o.key, "from": formatSeq(r.o.from)})
+	if err != nil {
+		return err
+	}
+	left := &restoreLeft{}
+	if err := r.restoreKeyAdmitted(ctx, a, m, left); err != nil {
+		return restoreStop(ctx, a, err, left)
+	}
+	return nil
+}
+
+// restoreKeyAdmitted is restore --key after its intent, recording what it changes in left.
+func (r *run) restoreKeyAdmitted(ctx context.Context, a *admission, m member, left *restoreLeft) error {
+	rr, err := r.restoreReach(ctx, left)
+	if err != nil {
+		return err
+	}
+	name, err := rr.keyName(ctx, m)
+	if err != nil {
+		return err
+	}
+	phase, err := rr.settle(ctx, name, r.o.from)
+	if err != nil {
+		return err
+	}
+	if err := a.done(ctx, map[string]string{"family": name.Family, "logical": name.Logical, "target": name.Target,
+		"start": formatSeq(r.o.from), "phase": phase}); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.stdout, "restore --key: %s/%s restores %s at %d (%s)\n", name.Family, name.Logical, name.Target, r.o.from, phase)
+	return nil
+}
+
+// keyName is m's name in the saved set, refused unless its record is at phase no_start, or already
+// carries --from's start for the same target (a rerun).
+func (rr *restoreRun) keyName(ctx context.Context, m member) (restoreSetName, error) {
+	set, found, err := rr.readSet(ctx)
+	if err != nil {
+		return restoreSetName{}, err
+	}
+	if !found {
+		return restoreSetName{}, errors.New("hold " + rr.r.o.holdID + " has no saved set: restore --prepare runs first")
+	}
+	i := slices.IndexFunc(set.Names, func(n restoreSetName) bool { return n.Family == m.Family && n.Logical == m.Logical })
+	if i < 0 {
+		return restoreSetName{}, fmt.Errorf("%s/%s is no name restore --prepare saved", m.Family, m.Logical)
+	}
+	name := set.Names[i]
+	st, err := rr.store(ctx, name.Family)
+	if err != nil {
+		return restoreSetName{}, err
+	}
+	record, _, err := rr.readRecord(ctx, st, name)
+	if err != nil {
+		return restoreSetName{}, err
+	}
+	switch restore := record.Restore; {
+	case restore == nil || restore.Target != name.Target:
+		return restoreSetName{}, fmt.Errorf("%s/%s has no rollback of %s in its record: restore --prepare has not reached it", name.Family, name.Logical, name.Target)
+	case restore.Phase == restoreNoStart, restore.Start == rr.r.o.from:
+		return name, nil
+	}
+	return restoreSetName{}, fmt.Errorf("%s/%s restores %s at %d already (phase %s), not at --from %d",
+		name.Family, name.Logical, name.Target, record.Restore.Start, record.Restore.Phase, rr.r.o.from)
+}
+
+// restoreFinish is restore --finish --hold ID (§4 steps 3 and 4). Every name must have its start
+// first. Then, as its first effect, it runs the hold's restart, proof and barrier again
+// (restoreRestartRound), which ends every server-side writer of each target restore --prepare
+// deleted, and requires every declared server's id to differ from the one restore --prepare
+// recorded. It reads each record's live target and completes only when each is present at its
+// safe start: a kept target passing its floor check is adopted; one failing it is deleted, and
+// the restart runs once more, after that last read that saw the name present, before the target
+// is created; a created target at its start is adopted, at another start refused; an absent one
+// is created at its start. Then every family's broker cutover row and store marker read
+// rolled_back, and its done entry completes the hold. Every refusal after its intent writes its
+// stop entry, naming what the run left (restoreStop).
+func (r *run) restoreFinish(ctx context.Context) error {
+	a, err := r.admit(ctx, restoreCommandFinish, nil)
+	if err != nil {
+		return err
+	}
+	left := &restoreLeft{}
+	if err := r.restoreFinishAdmitted(ctx, a, left); err != nil {
+		return restoreStop(ctx, a, err, left)
+	}
+	return nil
+}
+
+// restoreFinishAdmitted is restore --finish after its intent, recording what it changes in left.
+func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *restoreLeft) error {
+	rr, err := r.restoreReach(ctx, left)
+	if err != nil {
+		return err
+	}
+	set, found, err := rr.readSet(ctx)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("hold " + r.o.holdID + " has no saved set of restore --prepare")
+	}
+	recorded, err := rr.preparedServerIDs(ctx)
+	if err != nil {
+		return err
+	}
+	var unresolved []string
+	for _, name := range set.Names {
+		st, err := rr.store(ctx, name.Family)
+		if err != nil {
+			return err
+		}
+		record, _, err := rr.readRecord(ctx, st, name)
+		if err != nil {
+			return err
+		}
+		if restore := record.Restore; restore == nil || restore.Target != name.Target || restore.Start == 0 || restore.Phase == restorePlanned || restore.Phase == restoreNoStart {
+			unresolved = append(unresolved, name.Family+"/"+name.Logical)
+		}
+	}
+	if len(unresolved) > 0 {
+		return fmt.Errorf("these names have no settled start, so nothing is restarted or created: %s; give each its start with restore --key <K> --from <seq> --hold %s",
+			strings.Join(unresolved, ", "), r.o.holdID)
+	}
+	op, err := r.operatorHub(ctx)
+	if err != nil {
+		return err
+	}
+	round := func() (writerhold.Declared, error) {
+		after, err := restoreRestartRound(ctx, op, r.o.holdID)
+		if err != nil {
+			return nil, restoreHubError(err)
+		}
+		if err := restoreServersRestarted(recorded, after); err != nil {
+			return nil, err
+		}
+		if err := rr.reconnect(ctx); err != nil {
+			return nil, err
+		}
+		return after, nil
+	}
+	after, err := round()
+	if err != nil {
+		return err
+	}
+	var creates []restoreSetName
+	fence := false
+	for _, name := range set.Names {
+		create, deleted, err := rr.check(ctx, name)
+		if err != nil {
+			return err
+		}
+		fence = fence || deleted
+		if create {
+			creates = append(creates, name)
+		}
+	}
+	if fence {
+		// A target this run saw present after its restart, and deleted: its server-side writer
+		// may still write until its server restarts once more.
+		if after, err = round(); err != nil {
+			return err
+		}
+	}
+	for _, name := range creates {
+		if err := rr.create(ctx, name); err != nil {
+			return err
+		}
+	}
+	if !restoreRules.noMarkers {
+		if err := rr.markRolledBack(ctx); err != nil {
+			return err
+		}
+	}
+	outputs := map[string]string{"names": strconv.Itoa(len(set.Names)), "created": strconv.Itoa(len(creates))}
+	for _, server := range after {
+		outputs[restoreServerID+server.Pod] = server.Varz.ServerID
+	}
+	if err := a.done(ctx, outputs); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.stdout, "restore --finish: %d names restored, %d targets created at their starts; every family reads %s\n",
+		len(set.Names), len(creates), selection.CutoverRolledBack)
+	return nil
+}
+
+// check reads name's record and its live target after the restart, and answers whether the
+// target is to be created at its start, and whether check deleted a target it saw present, which
+// needs one more restart before the create (§4 step 4, "The fence before a create"). A delete
+// stays answered across a refused write: the target is gone whatever the next read finds.
+func (rr *restoreRun) check(ctx context.Context, name restoreSetName) (create, deleted bool, err error) {
+	st, err := rr.store(ctx, name.Family)
+	if err != nil {
+		return false, false, err
+	}
+	for range restoreAttempts {
+		record, revision, err := rr.readRecord(ctx, st, name)
+		if err != nil {
+			return false, deleted, err
+		}
+		if record.Restore == nil || record.Restore.Target != name.Target {
+			return false, deleted, fmt.Errorf("%s/%s's record holds no rollback of %s", name.Family, name.Logical, name.Target)
+		}
+		restore := *record.Restore
+		target, err := rr.info(ctx, name.Target)
+		if err != nil {
+			return false, deleted, unknownf(err, "the info of %s", name.Target)
+		}
+		atStart := target != nil && target.Config.DeliverPolicy == jetstream.DeliverByStartSequencePolicy && target.Config.OptStartSeq == restore.Start
+		next := record
+		switch restore.Phase {
+		case restoreKept:
+			switch {
+			case target != nil && (restoreRules.keepAnyTarget || restoreFloor(target)+1 <= restore.Start):
+				if record.Current == name.Target {
+					return false, deleted, nil
+				}
+				next.Current = name.Target
+			case target != nil:
+				// A native policy's start cannot change in place (nats-server consumer.go
+				// 2541-2557), so the target goes and is created at the start.
+				if err := rr.delete(ctx, name.Target); err != nil {
+					return false, deleted, unknownf(err, "the delete of %s", name.Target)
+				}
+				deleted = true
+				next.Current = ""
+				next.Restore = &selection.Restore{Target: name.Target, Start: restore.Start, Phase: restoreSourceDeleted}
+			default:
+				return true, deleted, nil
+			}
+		case restoreCreated:
+			switch {
+			case restoreRules.createdIsFinal, atStart && record.Current == name.Target:
+				return false, deleted, nil
+			case atStart:
+				next.Current = name.Target
+			case target != nil:
+				return false, deleted, fmt.Errorf("restore target %s exists with another start (%s at %d, not %d)",
+					name.Target, target.Config.DeliverPolicy, target.Config.OptStartSeq, restore.Start)
+			default:
+				// Removed for inactivity after its create (consumer.go 2234-2275): this run's
+				// restart came after the run that saw it present.
+				return true, deleted, nil
+			}
+		case restoreSourceDeleted:
+			switch {
+			case atStart:
+				// An earlier run created it and ended before its record said so.
+				next.Current = name.Target
+				next.Restore = &selection.Restore{Target: name.Target, Start: restore.Start, Phase: restoreCreated}
+			case target != nil:
+				if err := rr.delete(ctx, name.Target); err != nil {
+					return false, deleted, unknownf(err, "the delete of %s", name.Target)
+				}
+				return true, true, nil
+			default:
+				return true, deleted, nil
+			}
+		default:
+			return false, deleted, fmt.Errorf("%s/%s is at phase %q, which restore --finish does not settle", name.Family, name.Logical, restore.Phase)
+		}
+		if _, err := st.Write(ctx, name.Logical, next, revision); errors.Is(err, selection.ErrConflict) {
+			continue
+		} else if err != nil {
+			return false, deleted, err
+		}
+		rr.left.wrote(name, next.Restore.Phase)
+		return next.Restore.Phase == restoreSourceDeleted, deleted, nil
+	}
+	return false, deleted, fmt.Errorf("%s's record changed under each of %d writes", name.Logical, restoreAttempts)
+}
+
+// create creates name's target at its start with its saved configuration, by the operator's
+// CONSUMER.CREATE with action create, then writes current = the target and phase created. An
+// answer that does not come is settled by the target's info: present at the start is the create.
+func (rr *restoreRun) create(ctx context.Context, name restoreSetName) error {
+	if name.Config == nil {
+		return fmt.Errorf("restore target %s has no saved configuration: no consumer of %s/%s existed at restore --prepare, and no convert saved it",
+			name.Target, name.Family, name.Logical)
+	}
+	st, err := rr.store(ctx, name.Family)
+	if err != nil {
+		return err
+	}
+	record, revision, err := rr.readRecord(ctx, st, name)
+	if err != nil {
+		return err
+	}
+	start := record.Restore.Start
+	config := *name.Config
+	config.FilterSubjects = slices.Clone(config.FilterSubjects)
+	config.Metadata = maps.Clone(config.Metadata)
+	config.DeliverPolicy, config.OptStartSeq, config.OptStartTime = jetstream.DeliverByStartSequencePolicy, start, nil
+	if m, err := restoreMember(name.Family, name.Logical); err == nil && strings.HasPrefix(m.Fixed, listenerFixedPrefix) && config.DeliverSubject != "" {
+		// The listener's push consumer gets a new random deliver inbox, as startListenerSubscription
+		// gives it (cmd/listener/durable.go).
+		config.DeliverSubject = nats.NewInbox()
+	}
+	// The config is made once, its inbox included, so a create sent again is the same create, which
+	// the server answers with the consumer it made.
+	err = rr.answered(ctx, func(ctx context.Context) error {
+		_, err := writeConsumer(ctx, rr.nc, notifications, config, actionCreateConsumer)
+		return err
+	})
+	if err != nil {
+		// An earlier send of this create may have landed: the target at its start is the create.
+		info, readErr := rr.info(ctx, name.Target)
+		atStart := readErr == nil && info != nil && info.Config.OptStartSeq == start && info.Config.DeliverPolicy == jetstream.DeliverByStartSequencePolicy
+		var api *jetstream.APIError
+		switch {
+		case atStart:
+		case errors.As(err, &api) && !restoreUnanswered(err) && readErr == nil:
+			return fmt.Errorf("the create of restore target %s at %d: %w", name.Target, start, err)
+		default:
+			return unknownf(errors.Join(err, readErr), "the create of restore target %s at %d", name.Target, start)
+		}
+	}
+	rr.left.created = append(rr.left.created, name.Target)
+	if err := restoreAt("target", name.Logical); err != nil {
+		return err
+	}
+	next := record
+	next.Current = name.Target
+	next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restoreCreated}
+	for range restoreAttempts {
+		_, err := st.Write(ctx, name.Logical, next, revision)
+		if !errors.Is(err, selection.ErrConflict) {
+			if err != nil {
+				return err
+			}
+			rr.left.wrote(name, restoreCreated)
+			if err := restoreAt(restoreCreated, name.Logical); err != nil {
+				return err
+			}
+			fmt.Fprintf(rr.r.stdout, "  %s/%s: %s created at %d\n", name.Family, name.Logical, name.Target, start)
+			return nil
+		}
+		if record, revision, err = rr.readRecord(ctx, st, name); err != nil {
+			return err
+		}
+		next = record
+		next.Current = name.Target
+		next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restoreCreated}
+	}
+	return fmt.Errorf("%s's record changed under each of %d writes", name.Logical, restoreAttempts)
+}
+
+// markRolledBack writes every family's broker cutover row rolled_back, and the marker
+// cutover = rolled_back in each family's store that exists: the selection bucket's sentinel and
+// each intake_consumers sentinel row. A creator in the fresh mode then refuses every consumer call
+// until convert runs again (selection.Admit), and one in the fixed mode runs, since rolled_back is
+// no done.
+func (rr *restoreRun) markRolledBack(ctx context.Context) error {
+	for _, family := range rr.families() {
+		st, err := rr.store(ctx, family)
+		if errors.Is(err, selection.ErrNoStore) && !rr.hasCutoverRow(family) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := rr.records.PutCutover(ctx, family, selection.CutoverRolledBack, rr.r.o.holdID); err != nil {
+			return fmt.Errorf("the %s cutover row: %w", family, err)
+		}
+		rr.left.marked = append(rr.left.marked, family+" broker cutover row")
+		if err := restoreMark(ctx, family, st); err != nil {
+			return err
+		}
+		rr.left.marked = append(rr.left.marked, family+" store marker")
+	}
+	return nil
+}
+
+// restoreMark writes cutover = rolled_back in st's sentinel, keeping what else it holds (the
+// selection bucket's B), by a write conditional on the sentinel's revision (convertSentinel), read
+// again after a refused one.
+func restoreMark(ctx context.Context, family string, st familyStore) error {
+	for range restoreAttempts {
+		state, revision, err := convertSentinel(ctx, st, family)
+		if err != nil {
+			return unknownf(err, "the %s family's store marker", family)
+		}
+		if state.Cutover == selection.CutoverRolledBack {
+			return nil
+		}
+		state.Cutover = selection.CutoverRolledBack
+		if _, err := st.WriteSentinel(ctx, state, revision); errors.Is(err, selection.ErrConflict) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("write the %s family's store marker: %w", family, err)
+		}
+		return nil
+	}
+	return unknownf(nil, "the %s family's store marker moved under %d writes", family, restoreAttempts)
+}
+
+// preparedServerIDs are the server ids restore --prepare's done entry recorded, by pod.
+func (rr *restoreRun) preparedServerIDs(ctx context.Context) (map[string]string, error) {
+	d, _, err := rr.records.Journal(ctx, rr.r.o.holdID)
+	if err != nil {
+		return nil, err
+	}
+	var outputs map[string]string
+	for _, op := range d.Ops {
+		if op.Command == restoreCommandPrepare && op.State == "done" {
+			outputs = op.Outputs
+		}
+	}
+	ids := map[string]string{}
+	for key, id := range outputs {
+		if pod, ok := strings.CutPrefix(key, restoreServerID); ok {
+			ids[pod] = id
+		}
+	}
+	if len(ids) == 0 {
+		return nil, errors.New("restore --prepare's done entry records no server id, so no restart can be shown to come after its deletes")
+	}
+	return ids, nil
+}
+
+// restoreServersRestarted refuses unless every server restore --prepare recorded is among after,
+// the servers the restart left, each with another id.
+func restoreServersRestarted(recorded map[string]string, after writerhold.Declared) error {
+	var findings []string
+	seen := map[string]bool{}
+	for _, server := range after {
+		seen[server.Pod] = true
+		switch old, ok := recorded[server.Pod]; {
+		case !ok:
+			findings = append(findings, fmt.Sprintf("server %s is no server restore --prepare recorded", server.Pod))
+		case old == server.Varz.ServerID:
+			findings = append(findings, fmt.Sprintf("server %s still has the id %s that restore --prepare recorded", server.Pod, old))
+		}
+	}
+	for _, pod := range slices.Sorted(maps.Keys(recorded)) {
+		if !seen[pod] {
+			findings = append(findings, fmt.Sprintf("server %s, which restore --prepare recorded, was not restarted", pod))
+		}
+	}
+	if len(findings) > 0 {
+		return errors.New(strings.Join(findings, "; "))
+	}
+	return nil
+}
+
+// restoreRestartRound is §3a's steps 3 to 5 on the hub inside hold holdID: every declared server
+// restarted one eviction at a time and proved, then the meta barrier, answering the servers with
+// their new ids. It is writerhold.RestartProveAndBarrier's body, built from writerhold's exported
+// steps until that function is exported to this module's branch.
+func restoreRestartRound(ctx context.Context, op *writerhold.Operator, holdID string) (writerhold.Declared, error) {
+	nc, err := op.Connect(ctx)
+	if err != nil {
+		return nil, unknownf(err, "connect to the hub as the operator for the restart")
+	}
+	defer nc.Close()
+	render, err := writerhold.Precondition(ctx, op.Hub)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := writerhold.Discover(ctx, op.Hub)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := writerhold.ReadClaims(ctx, op.Hub, render, op.Disks)
+	if err != nil {
+		return nil, err
+	}
+	restart := writerhold.Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, Probe: op.Probe,
+		Bind: func(ctx context.Context, pod string, step1, now writerhold.Varz) error {
+			if err := writerhold.CheckReload(writerhold.StepProof, pod, step1, now); err != nil {
+				return err
+			}
+			return render.ProveBinding(ctx, op.Hub, op.Disks, pod, now, claims[render.Claim(pod)])
+		}}
+	restarted, err := restart.Run(ctx, nc)
+	if err != nil {
+		return nil, err
+	}
+	after := make(writerhold.Declared, len(restarted))
+	for i, server := range restarted {
+		after[i] = writerhold.DeclaredServer{Pod: server.Pod, Varz: server.Varz}
+	}
+	if err := (writerhold.MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}).Run(ctx, nc, nil); err != nil {
+		return nil, err
+	}
+	return after, nil
+}
+
+// restoreHubError is err, a writerhold step's, as this command reports it: a writerhold.Unknown is
+// UNKNOWN, exit 2; a refusal stays one.
+func restoreHubError(err error) error {
+	var unknown *writerhold.Unknown
+	if errors.As(err, &unknown) {
+		return &Unknown{What: "the hub's restart", Err: err}
+	}
+	return err
+}
+
+// restoreStop writes a restore command's stop entry (admission.stop), its reason cause and what
+// this run left (restoreLeft), and answers the same text with cause wrapped, so an UNKNOWN cause
+// still exits 2. Every error after a restore command's intent comes here: restore --prepare,
+// --key and --finish are each Stoppable in rollback, so the stop ends the intent and the hold is
+// never left with only a rerun admissible. Where the workflow's table holds the command not
+// Stoppable, admission.stop writes nothing, and the intent stays pending. admission.stop answers a
+// plain error when its stop entry is written, and one wrapping the write's error when it is not. A
+// test's kill (restoreKill) writes nothing, as a killed process writes nothing.
+func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLeft) error {
+	var kill *restoreKill
+	if errors.As(cause, &kill) {
+		return cause
+	}
+	what := fmt.Errorf("%w; %s", cause, left)
+	if restoreRules.noStopEntry {
+		return what
+	}
+	if err := errors.Unwrap(a.stop(ctx, what.Error())); err != nil {
+		return errors.Join(what, fmt.Errorf("and its stop entry: %w", err))
+	}
+	return what
+}
+
+// restoreLeftListed bounds how many names each list of a stop entry's account names; the rest are
+// counted, and each record's restore field holds its own phase.
+const restoreLeftListed = 32
+
+// restoreLeft is what one run of a restore command changed outside the journal, which its stop
+// entry names, so whoever reads a stopped hold knows what the run left before acting: each record
+// it wrote, by the phase it last wrote there, each consumer it deleted or found gone, each target
+// it created, and each broker cutover row and store marker it set rolled_back.
+type restoreLeft struct {
+	phases  map[string]string
+	order   []string
+	deleted []string
+	created []string
+	marked  []string
+}
+
+// wrote records that this run wrote name's record with its restore field at phase.
+func (l *restoreLeft) wrote(name restoreSetName, phase string) {
+	key := name.Family + "/" + name.Logical
+	if l.phases == nil {
+		l.phases = map[string]string{}
+	}
+	if _, ok := l.phases[key]; !ok {
+		l.order = append(l.order, key)
+	}
+	l.phases[key] = phase
+}
+
+// String is the account a stop entry's reason ends with.
+func (l *restoreLeft) String() string {
+	var parts []string
+	for _, phase := range []string{restorePlanned, restoreNoStart, restoreKept, restoreSourceDeleted, restoreCreated} {
+		var names []string
+		for _, key := range l.order {
+			if l.phases[key] == phase {
+				names = append(names, key)
+			}
+		}
+		if len(names) > 0 {
+			parts = append(parts, "records at "+phase+": "+restoreListed(names))
+		}
+	}
+	if len(l.deleted) > 0 {
+		parts = append(parts, "consumers deleted or found gone: "+restoreListed(l.deleted))
+	}
+	if len(l.created) > 0 {
+		parts = append(parts, "targets created: "+restoreListed(l.created))
+	}
+	if len(l.marked) > 0 {
+		parts = append(parts, "rolled_back now: "+restoreListed(l.marked))
+	}
+	if len(parts) == 0 {
+		return "this run changed no selection record, consumer, cutover row or store marker"
+	}
+	return "this run left " + strings.Join(parts, "; ") + "; each record's restore field holds its phase, and the command's rerun goes on from it"
+}
+
+// empty reports whether this run changed nothing outside the journal.
+func (l *restoreLeft) empty() bool {
+	return len(l.phases) == 0 && len(l.deleted) == 0 && len(l.created) == 0 && len(l.marked) == 0
+}
+
+// restoreLeftUnchanged is what a stop records as left when no run of its command in this hold
+// changed anything outside the journal: holdrecord.LeftUnchanged's value, which this tree's
+// holdrecord does not export yet (cybermonklabs/legion#4679's next head does).
+const restoreLeftUnchanged = "unchanged"
+
+// restoreStopLeftKey is the key of a stop entry's outputs that holds what its command left, as
+// holdrecord's AppendStopLeft writes it (internal/holdrecord/journal.go, Operation).
+const restoreStopLeftKey = "left"
+
+// journal is what a's stop entry records as left (holdrecord's AppendStopLeft): this run's
+// account together with every earlier run of a's command in this hold (restoreJournalLeft). It
+// reads the hold's journal, and for restore --prepare whether a run has saved the restore set. A
+// read that fails is never taken as unchanged.
+func (l *restoreLeft) journal(ctx context.Context, a *admission) string {
+	d, _, err := a.r.records.Journal(ctx, a.r.o.holdID)
+	if err != nil {
+		return fmt.Sprintf("%s; what earlier runs of %s left is unknown: the hold's journal could not be read (%v)", l, a.command, err)
+	}
+	setSaved := true
+	if a.command == restoreCommandPrepare {
+		if records, err := a.r.records.Records(ctx, a.r.o.holdID, restoreSetKind); err == nil {
+			setSaved = slices.ContainsFunc(records, func(r holdrecord.Record) bool { return r.Key == restoreSetKey })
+		}
+	}
+	return restoreJournalLeft(d, a.command, setSaved, l)
+}
+
+// restoreJournalLeft is what a stop of command records as left, from d, the hold's journal with
+// this run's intent as command's latest entry, and l, this run's account. It is
+// restoreLeftUnchanged only when no run of command in this hold changed anything outside the
+// journal: for restore --prepare while no run has saved the restore set (setSaved false), since
+// each of its changes outside the journal follows that save; for every command when this run
+// changed nothing and each earlier run of the command ended in a stop that recorded unchanged. A
+// done entry and a run cut after its intent (an intent the command's next intent follows) count as
+// changes. Otherwise it is this run's account and how each earlier run ended; an earlier stop's own
+// account is in that stop entry, so it is named, not copied, and the text does not grow with each
+// rerun.
+func restoreJournalLeft(d holdrecord.Done, command string, setSaved bool, l *restoreLeft) string {
+	if command == restoreCommandPrepare && !setSaved {
+		return restoreLeftUnchanged
+	}
+	var ops []holdrecord.Operation
+	for _, op := range d.Ops {
+		if op.Command == command {
+			ops = append(ops, op)
+		}
+	}
+	// The latest entry is this run's intent; every intent before it began an earlier run.
+	if n := len(ops); n > 0 && ops[n-1].State == "intent" {
+		ops = ops[:n-1]
+	}
+	unchanged := l.empty()
+	var earlier []string
+	for i, op := range ops {
+		if op.State != "intent" {
+			continue
+		}
+		end, leftNothing := "ended with no entry (cut after its intent), and the records hold what it wrote", false
+		if i+1 < len(ops) {
+			switch next := ops[i+1]; {
+			case next.State == "stop" && next.Outputs[restoreStopLeftKey] == restoreLeftUnchanged:
+				end, leftNothing = "stopped, and its stop recorded it left nothing changed", true
+			case next.State == "stop" && next.Outputs[restoreStopLeftKey] != "":
+				end = "stopped, and its stop entry records what it left"
+			case next.State == "stop":
+				end = "stopped, and its stop recorded nothing of what it left"
+			case next.State == "done":
+				end = "is done"
+			}
+		}
+		unchanged = unchanged && leftNothing
+		earlier = append(earlier, fmt.Sprintf("run %d %s", len(earlier)+1, end))
+	}
+	switch {
+	case unchanged:
+		return restoreLeftUnchanged
+	case len(earlier) == 0:
+		return l.String()
+	}
+	return l.String() + "; earlier runs of " + command + " in this hold: " + restoreListed(earlier)
+}
+
+// restoreListed is names joined, at most restoreLeftListed of them, and how many more.
+func restoreListed(names []string) string {
+	if len(names) <= restoreLeftListed {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:restoreLeftListed], ", "), len(names)-restoreLeftListed)
 }
