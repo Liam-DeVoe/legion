@@ -146,27 +146,31 @@ func keepFor(window time.Duration) func(holdtest.HoldRead) holdtest.HoldRead {
 
 // failOpen is a view that maps every reading the auth service reads as unknown to released: a
 // failed read, no row, a row no key of keys verifies, and a row below the highest gen it has
-// read each answer a fresh released at that gen, signed with key so the replica's own checks pass
-// it. Its control rows show what the unknown answer stops.
+// answered each answer a fresh released one gen above every answer before, signed with key so the
+// replica's own checks pass it, its floor among them (#4679's signedrecord.Floor keeps each gen's
+// row digest, so a different row at a gen already read is a fork). Its control rows show what the
+// unknown answer stops.
 func failOpen(keys []ed25519.PublicKey, key ed25519.PrivateKey) func(holdtest.HoldRead) holdtest.HoldRead {
 	return func(read holdtest.HoldRead) holdtest.HoldRead {
 		var mu sync.Mutex
-		var highest uint64
+		var last uint64
+		var made bool // the last answer was one failOpen made
 		return func(ctx context.Context) (natshold.Reading, bool, error) {
 			reading, found, err := read(ctx)
 			mu.Lock()
 			defer mu.Unlock()
-			if err == nil && found && reading.Gen >= highest &&
+			if err == nil && found && (reading.Gen > last || reading.Gen == last && !made) &&
 				signedrecord.Verify(keys, reading.Sig, signedrecord.HoldRow(reading.Gen, reading.Phase, reading.HoldID, reading.SignedAt)) == nil {
-				highest = reading.Gen
+				last, made = reading.Gen, false
 				return reading, true, nil
 			}
+			last, made = last+1, true
 			at := time.Now().UTC().Truncate(time.Microsecond)
-			sig, signErr := signedrecord.Sign(key, signedrecord.HoldRow(highest, string(natsgrant.OperatorPhaseReleased), "", at))
+			sig, signErr := signedrecord.Sign(key, signedrecord.HoldRow(last, string(natsgrant.OperatorPhaseReleased), "", at))
 			if signErr != nil {
 				return natshold.Reading{}, false, signErr
 			}
-			return natshold.Reading{Gen: highest, Phase: string(natsgrant.OperatorPhaseReleased), SignedAt: at, Sig: sig}, true, nil
+			return natshold.Reading{Gen: last, Phase: string(natsgrant.OperatorPhaseReleased), SignedAt: at, Sig: sig}, true, nil
 		}
 	}
 }

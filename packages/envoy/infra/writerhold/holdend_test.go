@@ -94,10 +94,11 @@ func (h *heldStack) putRowBack(text string) {
 // Nothing is admitted after a done `hold release` or `hold abort`. After a release, `streams
 // update --hold` is refused and writes no intent; and with the row as it stood before the release
 // put back (held, under that hold id, signed), as a process that read the row before another
-// ended the hold would act on it, the journal's end rule still refuses it: "the hold has ended:
-// hold release is done". The same holds after an abort that ended a hold whose update stopped
-// having made something. The control is the same command in a hold of the same workflow that has
-// not ended, which runs and is done.
+// ended the hold would act on it, the routes that served the release refuse it below their row
+// floor (UNKNOWN), and routes restarted with no floor answer it, so the journal's end rule refuses
+// it: "the hold has ended: hold release is done". The same holds after an abort that ended a hold
+// whose update stopped having made something. The control is the same command in a hold of the
+// same workflow that has not ended, which runs and is done.
 func TestHoldNoCommandAfterTheHoldEnded(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
@@ -112,6 +113,10 @@ func TestHoldNoCommandAfterTheHoldEnded(t *testing.T) {
 	code, _, _ = h.streamsRun(nil, "update", "--hold", released)
 	require.Equal(t, 1, code, "an update after the hold's release")
 	h.putRowBack(before)
+	code, _, stderr := h.streamsRun(nil, "update", "--hold", released)
+	require.Equal(t, 2, code, "the routes that served the release refuse the held row put back below their floor")
+	require.Contains(t, stderr, "below its floor")
+	h.s.Broker.Restart() // routes with no floor, as after the broker's restart: the end rule refuses
 	code, stdout, stderr := h.streamsRun(nil, "update", "--hold", released)
 	require.Equal(t, 1, code, "an update after the hold's release, the held row put back")
 	require.Contains(t, stderr, "the hold has ended: hold release is done")
@@ -130,6 +135,10 @@ func TestHoldNoCommandAfterTheHoldEnded(t *testing.T) {
 	require.Contains(t, stdout, "ENVOY_MEASURE made")
 	after = h.rowText()
 	h.putRowBack(before)
+	code, _, stderr = h.streamsRun(nil, "update", "--hold", aborted)
+	require.Equal(t, 2, code, "the routes that served the abort refuse the held row put back below their floor")
+	require.Contains(t, stderr, "below its floor")
+	h.s.Broker.Restart()
 	code, _, stderr = h.streamsRun(nil, "update", "--hold", aborted)
 	require.Equal(t, 1, code, "an update after the hold's abort, the held row put back")
 	require.Contains(t, stderr, "the hold has ended: hold abort is done")
@@ -223,6 +232,10 @@ func TestHoldAReleaseKilledBeforeItsDoneEntry(t *testing.T) {
 
 	h.putRowBack(held)
 	code, _, stderr := h.streamsRun(nil, "update", "--hold", id)
+	require.Equal(t, 2, code, "the routes that served the release refuse the held row put back below their floor")
+	require.Contains(t, stderr, "below its floor")
+	h.s.Broker.Restart() // routes with no floor, as after the broker's restart: the end rule refuses
+	code, _, stderr = h.streamsRun(nil, "update", "--hold", id)
 	require.Equal(t, 1, code, "an update after the rerun's done entry, the held row put back")
 	require.Contains(t, stderr, "the hold has ended: hold release is done")
 	h.putRowBack(released)

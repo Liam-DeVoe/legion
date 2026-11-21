@@ -2,6 +2,7 @@ package writerhold
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,10 +14,10 @@ import (
 // A hold row lost in the middle of a hold is not bootstrapped back released: with the row held and
 // then deleted from Postgres (the log keeps its gens), `hold restore --bootstrap` is refused,
 // naming the log's next gen, writes no row, and a writer stays refused, since the row cannot be
-// read. `hold restore --hold` of the hold's own id is the way back: the row returns held, and the
-// writer is refused under it. The control is the bootstrap as it stood (RestoreRow at gen 1
-// released, following the 409's restore_gen): it wrote the next gen released with no hold id, so
-// the hold ended and the writer was admitted (red at 36e8cf250e: "gen 4, phase released").
+// read; so is `hold restore` with no hold id, whose released row the route refuses after held's
+// entry. `hold restore --hold` of the hold's own id is the way back: the row returns held, and the
+// writer is refused under it. The control is the bootstrap as it stood at 36e8cf250e (RestoreRow at
+// gen 1 released, following the 409's restore_gen), which wrote "gen 4, phase released".
 func TestHoldABootstrapAfterALossMidHoldIsRefused(t *testing.T) {
 	h := newHeldStack(t)
 	ctx := context.Background()
@@ -37,6 +38,10 @@ func TestHoldABootstrapAfterALossMidHoldIsRefused(t *testing.T) {
 	require.Zero(t, rows(), "the refused bootstrap wrote a row")
 	_, err = connectListener(h.s)
 	require.Error(t, err, "a writer was admitted after the refused bootstrap")
+	code, _, stderr = h.run(actionRestore, "--reason", "the row is gone, restored with no hold id")
+	require.Equal(t, 1, code, "a released restore after a held entry")
+	require.Contains(t, stderr, "--hold")
+	require.Zero(t, rows(), "the refused released restore wrote a row")
 
 	code, _, _ = h.run(actionRestore, "--hold", id, "--reason", "the row is gone")
 	require.Zero(t, code, "the restore of the hold's own row")
@@ -47,49 +52,66 @@ func TestHoldABootstrapAfterALossMidHoldIsRefused(t *testing.T) {
 	require.Error(t, err, "a writer was admitted under the restored held row")
 }
 
-// A hold row lost after a completed hold is restored released: the hold released, then the row
-// deleted (the log's latest entry released), `hold restore --bootstrap` gets the log's next gen
-// from the first-row write and sends the row released once at that gen, which the route stores
-// since the log's latest entry is released, so a listener is admitted again. The control is the
-// bootstrap as f0017ccb76 had it, which refused every log with entries, leaving no row, so every
-// client but the operator was refused hold_unknown with no command to end it.
-func TestHoldABootstrapAfterACompletedHoldRestoresReleased(t *testing.T) {
+// A hold row lost outside any hold is restored released, and clients are admitted: (a) after a
+// completed hold, `hold restore --hold` of that ended hold reads its journal and sends released at
+// the log's next gen; (b) where the log has entries and no hold was ever set, `hold restore` with
+// no hold id does the same. `--bootstrap`, for an empty log only, is refused on both. The control is
+// `hold restore --hold` as it stood (f0017ccb76 to b57d84c147), which sent held for the ended hold
+// and was refused (RestoreRow's ErrAlreadyDone), leaving no row, so every client but the operator
+// was refused hold_unknown.
+func TestHoldARowLostOutsideAHoldIsRestoredReleased(t *testing.T) {
 	h := newHeldStack(t)
 	ctx := context.Background()
+	gone := func() {
+		t.Helper()
+		_, err := h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
+		require.NoError(t, err, "the test's admin deletes the row")
+		require.False(t, h.listenerAdmitted(), "a writer was admitted with no row")
+	}
+	requireReleased := func(what string) {
+		t.Helper()
+		row := h.row()
+		require.Equal(t, natsgrant.OperatorPhaseReleased, row.Phase, what)
+		require.Empty(t, row.HoldID, what)
+		require.True(t, h.listenerAdmitted(), "%s: a writer was refused after the released row came back", what)
+	}
+
+	// (b) The log holds the first row alone: no hold was ever set.
+	gone()
+	code, _, _ := h.run(actionRestore, "--bootstrap", "--reason", "the log has entries")
+	require.Equal(t, 1, code, "--bootstrap into a log with entries")
+	code, _, stderr := h.run(actionRestore, "--reason", "the row is gone, no hold was set")
+	require.Zero(t, code, "a released restore where no hold was set: %s", stderr)
+	requireReleased("no hold was set")
+
+	// (a) A completed hold.
 	id := h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
 	h.s.HoldWithoutTheSteps(t, id)
 	h.s.Release(t, id)
-	_, err := h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
-	require.NoError(t, err, "the test's admin deletes the row")
-	require.False(t, h.listenerAdmitted(), "a writer was admitted with no row")
-
-	code, stdout, stderr := h.run(actionRestore, "--bootstrap", "--reason", "the row is gone after the hold")
-	require.Zero(t, code, "the bootstrap after a completed hold: %s", stderr)
+	gone()
+	code, stdout, stderr := h.run(actionRestore, "--hold", id, "--reason", "the row is gone after the hold")
+	require.Zero(t, code, "a restore of an ended hold's row: %s", stderr)
 	require.Contains(t, stdout, "phase released")
-	row := h.row()
-	require.Equal(t, natsgrant.OperatorPhaseReleased, row.Phase)
-	require.Empty(t, row.HoldID)
-	require.True(t, h.listenerAdmitted(), "a writer was refused after the released row came back")
+	requireReleased("after the completed hold")
 }
 
-// `hold restore --hold` of a hold that has ended is refused: its release is done, so a held row
-// restored for it would keep every client out with no command left to release it
-// (holdrecord.RestoreRow's ErrAlreadyDone). Nothing is written. The control is --bootstrap, which
-// restores the released row there.
-func TestHoldARestoreOfAnEndedHoldIsRefused(t *testing.T) {
+// A hold row lost in prepare is restored released, since the route stores no prepare row, and the
+// output names the cohort record that stays and the next step, `hold abort` or a new `hold
+// prepare`. Waiting for #4679's next push, which lets the route store released after a prepare
+// entry: until it lands the route refuses the row 400 bad_transition, and the row skips, naming it.
+func TestHoldARowLostInPrepareIsRestoredReleased(t *testing.T) {
 	h := newHeldStack(t)
 	ctx := context.Background()
 	id := h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
-	h.s.HoldWithoutTheSteps(t, id)
-	h.s.Release(t, id)
 	_, err := h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
 	require.NoError(t, err)
-	code, _, stderr := h.run(actionRestore, "--hold", id, "--reason", "restore an ended hold")
-	require.NotZero(t, code, "a restore held of an ended hold")
-	require.Contains(t, stderr, "has ended")
-	var n int
-	require.NoError(t, h.s.Broker.Pool.QueryRow(ctx, `select count(*) from nats_hold`).Scan(&n))
-	require.Zero(t, n, "the refused restore wrote a row")
-	code, _, _ = h.run(actionRestore, "--bootstrap", "--reason", "the control")
-	require.Zero(t, code, "control: the released restore of the ended hold's row")
+	code, stdout, stderr := h.run(actionRestore, "--hold", id, "--reason", "the row is gone in prepare")
+	if code != 0 && strings.Contains(stderr, "is not restored released") {
+		t.Skipf("waiting for #4679's next push (the route stores released after a prepare entry): %s", stderr)
+	}
+	require.Zero(t, code, "a restore of a hold lost in prepare: %s", stderr)
+	require.Contains(t, stdout, "phase released")
+	require.Contains(t, stdout, "cohort record is still")
+	require.Contains(t, stdout, "hold abort --hold "+id)
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
 }

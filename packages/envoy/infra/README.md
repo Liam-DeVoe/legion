@@ -3319,7 +3319,7 @@ envoy-infra hold prepare  --workflow W --reason R --minters-report F
 envoy-infra hold set      (--hold ID | --workflow W --reason R) --minters-report F [--restored T=D]... [--snapshot T=S]...
 envoy-infra hold abort    --hold ID --reason R
 envoy-infra hold release  --hold ID --reason R
-envoy-infra hold restore  (--bootstrap | --hold ID) --reason R
+envoy-infra hold restore  [--bootstrap | --hold ID] --reason R
 envoy-infra hold prove    --hold ID --restored T=D...
 envoy-infra hold keygen   --signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing
 ```
@@ -3341,9 +3341,11 @@ pending, printing what each stop left. In hub-restore, after a done `hold prove`
 admitted only after a stop, and checks each claim against the newest done prove's disk; a proven
 disk that is gone (a 404, or another id under its name) is named in its stop, and a restore onto
 another disk and a new prove follow. Once `hold release` or `hold abort` is done, no command is
-admitted in that hold. `hold restore --hold ID` puts a row lost mid-hold back held (refused for a
-hold that has ended); `hold restore --bootstrap` writes the first row into an empty log, or the
-released row a completed hold left at the log's next gen, and is refused mid-hold. A journal or
+admitted in that hold. `hold restore --hold ID` puts a row lost in a set hold back held, and
+restores released for a hold that has ended or was lost in prepare, naming `hold abort` or a new
+`hold prepare` for the cohort record that stays; `hold restore` with neither flag writes the
+released row at the log's next gen, refused mid-hold; `hold restore --bootstrap` writes the first
+row into an empty log only. A journal or
 row the broker answers below its floor (an older signed record put back into its database) is
 UNKNOWN. Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a reading that
 is not whole, which is never a pass.

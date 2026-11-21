@@ -45,7 +45,7 @@ const usage = `usage: envoy-infra hold status|prepare|set|abort|release|restore|
   set      (--hold ID | --workflow W --reason R) --minters-report F [--restored T=D]... [--snapshot T=S]...
   abort    --hold ID --reason R
   release  --hold ID --reason R
-  restore  (--bootstrap | --hold ID) --reason R
+  restore  [--bootstrap | --hold ID] --reason R
   prove    --hold ID --restored T=D...
   keygen   --signing-key-secret projects/P/secrets/` + SigningKeySecret + `
 
@@ -215,8 +215,8 @@ func (o options) usageProblem() string {
 	case actionAbort, actionRelease:
 		add(need("hold", o.holdID))
 	case actionRestore:
-		if o.bootstrap == (o.holdID != "") {
-			add("exactly one of --bootstrap and --hold is required")
+		if o.bootstrap && o.holdID != "" {
+			add("--bootstrap and --hold are exclusive: --bootstrap writes the first row into an empty log")
 		}
 	case actionProve:
 		add(need("hold", o.holdID))
@@ -383,32 +383,26 @@ func mapLine(label string, m map[string]string) string {
 	return label + " " + strings.Join(parts, " ")
 }
 
-// restore writes a lost hold row back through POST /v1/nats-hold/restore: with --bootstrap a
-// released row with no hold id, with --hold the row held under that hold id, at the gen the route
-// names (holdrecord.RestoreRow signs it afresh there), so a row lost mid-hold comes back closed and
-// the hold goes on. --bootstrap sends the first row, gen 1 (holdrecord.Client.Bootstrap), which
-// lands only in an empty log. A log that already holds entries answers its next gen, and the row is
-// sent released once more at that gen: the route stores it only while the log's latest entry is
-// released, the row a completed hold left, and refuses it 400 bad_transition after a held or
-// prepare entry, a row lost mid-hold, which --bootstrap never replaces. That refusal names the
-// log's next gen and `hold restore --hold`, and nothing is written, so no row reads released and
-// every writer stays refused.
+// restore writes a lost hold row back through POST /v1/nats-hold/restore, at the log's next gen,
+// which the route names (holdrecord.RestoreRow signs a held row afresh there). --bootstrap writes
+// the first row, gen 1 released (holdrecord.Client.Bootstrap), and only into an empty log; a log
+// with entries is refused, naming its next gen and `hold restore`. Otherwise it reads the journal
+// first. With --hold of a hold whose `hold set` is done and which has not ended, the row comes back
+// held with its id, so the hold goes on closed. With --hold of a hold lost in prepare (the route
+// stores no prepare row), of a hold that has ended (a done `hold release` or `hold abort`), or with
+// no --hold, the row comes back released with no hold id; after prepare the output says the hold's
+// cohort record stays and names `hold abort` or a new `hold prepare`. The route stores a released
+// row only while the log's latest entry allows it, and refuses it 400 bad_transition after a held
+// entry, a row lost mid-hold, which a released row never replaces: that refusal names `hold restore
+// --hold`, and nothing is written, so no row reads released and every writer stays refused.
 func restore(ctx context.Context, records *holdrecord.Client, o options, stdout io.Writer) error {
+	var lost *holdrecord.RestoreGenError
+	var refused *holdrecord.RouteError
 	if o.bootstrap {
 		err := records.Bootstrap(ctx)
-		var lost *holdrecord.RestoreGenError
-		var refused *holdrecord.RouteError
 		switch {
 		case errors.As(err, &lost):
-			row, err := records.RestoreRow(ctx, lost.RestoreGen, natsgrant.OperatorPhaseReleased, "", o.reason)
-			if errors.As(err, &refused) && refused.Code == "bad_transition" {
-				return refusef(StepPreflight, "the log's next gen is %d and its latest entry is not released: the row was lost mid-hold, which --bootstrap never replaces, so restore it with `hold restore --hold <its hold id>`, which keeps it held", lost.RestoreGen)
-			}
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(stdout, "restored the row the last hold left: gen %d, phase released\n", row.Gen)
-			return nil
+			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and the log's next gen is %d: restore the row with `hold restore`, naming an open hold with --hold <its hold id>", lost.RestoreGen)
 		case errors.As(err, &refused) && refused.Code == "row_exists":
 			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and a row is there (row_exists)")
 		case err != nil:
@@ -417,11 +411,36 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		fmt.Fprintln(stdout, "wrote the first row: gen 1, phase released")
 		return nil
 	}
-	row, err := records.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, o.holdID, o.reason)
+	phase, holdID, prepared := natsgrant.OperatorPhaseReleased, "", false
+	if o.holdID != "" {
+		d, _, err := records.Journal(ctx, o.holdID)
+		if err != nil {
+			return err
+		}
+		switch {
+		case latestState(d, holdrecord.CommandRelease) == "done" || latestState(d, holdrecord.CommandAbort) == "done":
+		case latestState(d, holdrecord.CommandSet) == "done":
+			phase, holdID = natsgrant.OperatorPhaseHeld, o.holdID
+		default:
+			// A hold lost in prepare: the route stores no prepare row, so the row comes back
+			// released, and the hold's cohort record stays for its next step.
+			prepared = true
+		}
+	}
+	row, err := records.RestoreRow(ctx, 1, phase, holdID, o.reason)
+	if phase != natsgrant.OperatorPhaseHeld && errors.As(err, &lost) {
+		row, err = records.RestoreRow(ctx, lost.RestoreGen, phase, holdID, o.reason)
+	}
+	if errors.As(err, &refused) && refused.Code == "bad_transition" {
+		return refusef(StepPreflight, "the log's latest entry is held or prepare, so the row was lost mid-hold and is not restored %s: restore it with `hold restore --hold <its hold id>`", phase)
+	}
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "restored the row: gen %d, phase %s, hold %q\n", row.Gen, row.Phase, row.HoldID)
+	if prepared {
+		fmt.Fprintf(stdout, "hold %s was lost in prepare: its cohort record is still in the broker's database; end it with `hold abort --hold %s`, or begin again with a new `hold prepare`\n", o.holdID, o.holdID)
+	}
 	return nil
 }
 

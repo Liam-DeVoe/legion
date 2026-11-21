@@ -448,6 +448,8 @@ func TestHoldTheReadFlag(t *testing.T) {
 	s := holdStack(t)
 	pool := s.Broker.Pool
 	moveRow(t, s, natsgrant.OperatorPhasePrepare, "h-flag")
+	// The hold's journal, which RestoreRow reads before it restores a held row (#4679's round 3).
+	require.NoError(t, s.Records.StartJournal(ctx, "h-flag", holdrecord.WorkflowBucketsCreate, nil))
 	moveRow(t, s, natsgrant.OperatorPhaseHeld, "h-flag")
 	connectProbe := func() (*holdClient, error) { return connectToHold(s, s.ProbeCredential()) }
 
