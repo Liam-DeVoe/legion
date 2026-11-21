@@ -34,11 +34,13 @@ const hubRecordBuffer = 1 << 16
 //
 // The reason is what tells the server's give-up from every other refusal, and the server's log
 // cannot: it logs its give-up (hubGaveUp) naming no connection, and every refusal with the same
-// "authentication error" line. The callout ends with no reason only when it read no answer inside
-// its authorization timeout (server/auth_callout.go:457-466); every other way out of it names one,
-// an answer that refuses, one the server cannot open or will not take, or a request it could not
-// send, and the server sends that string as the event's reason (server/auth.go:762-785). So a
-// refusal event with no reason is a request the server gave up on.
+// "authentication error" line. The callout ends with no reason only when its own timer ended its
+// wait for the answer (server/auth_callout.go:457-466); every other way out of it names one, an
+// answer that refuses, one the server cannot open or will not take, or a request it could not send,
+// and the server sends that string as the event's reason (server/auth.go:762-785). So a refusal
+// event with no reason is a request the server gave up on. One case reads the same: the server
+// reads an answer it refuses in the instant its timer fires, and its wait wakes to both and takes
+// the timer.
 //
 // The server queues both, the request and the event, on its one queue of internal messages, which
 // one goroutine sends in order (server/events.go:713-751, internalSendLoop :499-673). So read
@@ -64,6 +66,13 @@ func newHubRecordUser(t *testing.T) (testnats.StaticUser, string) {
 	return testnats.StaticUser{NKey: public, Publish: []string{"_INBOX.>"}, Subscribe: []string{authSubject, hubRefusals}}, seed
 }
 
+// hubRecordStep is how long one connect or flush of the record may take: what is left of the test
+// binary's deadline, less the time its failure takes to report, so that the deadline is its only
+// bound (an hour under -timeout 0).
+func hubRecordStep(t *testing.T) time.Duration {
+	return testwait.Bounded(t, time.Hour, 30*time.Second)
+}
+
 // recordHub reads the record of the server at url as the static user whose seed is seed, from the
 // moment it returns, across a restart of the server: it reconnects as a bus client does, and sends
 // its subscriptions again (awaitResubscribed). keys' curve key opens the requests the server seals
@@ -79,14 +88,14 @@ func recordHub(t *testing.T, url, seed string, keys testnats.CalloutKeys) *hubRe
 	r := &hubRecord{url: url, public: public, xkey: xkey,
 		sent: make(chan *nats.Msg, hubRecordBuffer), refused: make(chan *nats.Msg, hubRecordBuffer)}
 	r.conn, err = nats.Connect(url, nats.Nkey(public, user.Sign), nats.MaxReconnects(-1),
-		nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))
+		nats.ReconnectWait(100*time.Millisecond), nats.Timeout(hubRecordStep(t)))
 	require.NoError(t, err, "the record's user is a static auth user, admitted without a callout")
 	t.Cleanup(r.conn.Close)
 	r.requests, err = r.conn.ChanSubscribe(authSubject, r.sent)
 	require.NoError(t, err)
 	r.refusals, err = r.conn.ChanSubscribe(hubRefusals, r.refused)
 	require.NoError(t, err)
-	require.NoError(t, r.conn.Flush())
+	require.NoError(t, r.conn.FlushTimeout(hubRecordStep(t)))
 	return r
 }
 
@@ -125,7 +134,7 @@ func (r *hubRecord) read(t *testing.T) hubVerdicts {
 	stranger, err := nkeys.CreateUser()
 	require.NoError(t, err)
 	refused, err := nats.Connect(r.url, nats.Nkey(r.public, stranger.Sign), nats.Name(mark), nats.NoReconnect(),
-		nats.Timeout(testwait.Bounded(t, time.Minute, time.Second)))
+		nats.Timeout(hubRecordStep(t)))
 	if err == nil {
 		refused.Close()
 	}
@@ -166,21 +175,51 @@ func (r *hubRecord) read(t *testing.T) hubVerdicts {
 	return verdicts
 }
 
+// hubOutcome is what the server's record says became of the request on one nonce, other than a
+// give-up.
+type hubOutcome int
+
+const (
+	// hubUnsent: the record holds no request on the nonce.
+	hubUnsent hubOutcome = iota
+	// hubKept: the server refused nothing on the connection, so it took the request's answer.
+	hubKept
+	// hubRefused: the server refused the connection for the reason the record holds.
+	hubRefused
+)
+
+// hubNonce is one nonce whose request the server did not give up on, and what became of it.
+type hubNonce struct {
+	nonce      string
+	outcome    hubOutcome
+	connection uint64
+	reason     string
+}
+
+func (n hubNonce) String() string {
+	switch n.outcome {
+	case hubKept:
+		return fmt.Sprintf("%s (connection %d): the server took its answer and refused nothing on it", n.nonce, n.connection)
+	case hubRefused:
+		return fmt.Sprintf("%s (connection %d): the server refused it: %s", n.nonce, n.connection, n.reason)
+	default:
+		return n.nonce + ": the server's record holds no request on it"
+	}
+}
+
 // gaveUpOn splits nonces into those whose request the server gave up on, by its own record, and
-// every other, each with what the record says of it: that the server refused its connection for a
-// reason, that it refused it not at all, so it took the request's answer, or that it holds no
-// request on that nonce.
-func (v hubVerdicts) gaveUpOn(nonces []string) (gaveUp, other []string) {
+// every other, each with what the record says became of it.
+func (v hubVerdicts) gaveUpOn(nonces []string) (gaveUp []string, other []hubNonce) {
 	for _, nonce := range nonces {
 		connection, sent := v.connection[nonce]
 		reason, refused := v.refused[connection]
 		switch {
 		case !sent:
-			other = append(other, nonce+": the server's record holds no request on it")
+			other = append(other, hubNonce{nonce: nonce, outcome: hubUnsent})
 		case !refused:
-			other = append(other, fmt.Sprintf("%s (connection %d): the server took its answer and refused nothing on it", nonce, connection.id))
+			other = append(other, hubNonce{nonce: nonce, outcome: hubKept, connection: connection.id})
 		case reason != "":
-			other = append(other, fmt.Sprintf("%s (connection %d): the server refused it: %s", nonce, connection.id, reason))
+			other = append(other, hubNonce{nonce: nonce, outcome: hubRefused, connection: connection.id, reason: reason})
 		default:
 			gaveUp = append(gaveUp, nonce)
 		}

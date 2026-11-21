@@ -109,12 +109,13 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 //
 // An admission the server gave up on is not one the row counts. The server waits two seconds for
 // an answer from the moment it queues the request, and the hub, the service and the five hundred
-// clients share this one process: on two CPUs with other work on them, the server read the answers
-// to 27 requests the service had decided within a second of their sending only after its two
-// seconds had run (dispatch://INFRA-3904). Which requests it gave up on is the server's to say, so
-// the row reads that from the server's own record of each one (hubRecord), and fails on every
-// other admission no client holds. TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout is
-// the row about answering inside the server's timeout.
+// clients share this one process: in one run on two CPUs with eight busy loops on them, the server
+// gave up on 27 requests the service had decided 0.39 to 1.04 s after their sending, before it had
+// read their answers. Which requests it gave up on is the server's to say, so the row reads that
+// from the server's own record of each one (hubRecord), and fails on every other admission no
+// client holds. So a late answer alone does not fail this row: a decision, or its wait for a slot,
+// past the service's budget still does (backLog, slowest), and a hold-up in the delivery of
+// requests to the service fails TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	connections := 500
 	if raceEnabled {
@@ -192,9 +193,12 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	backDeps.Log = slog.New(slog.NewTextHandler(backLog, nil))
 	back := startService(t, url, keys, backDeps, backDecided.wrap(timed))
 	backUp := time.Now()
-	testwait.UntilPolling(t, 50*time.Millisecond, "every connection admitted again", func() (int, bool) {
+	testwait.UntilPolling(t, 50*time.Millisecond, "every connection admitted again, or one closed for good", func() (int, bool) {
 		connected := 0
 		for _, nc := range conns {
+			if nc.IsClosed() {
+				return connected, true
+			}
 			if nc.IsConnected() {
 				connected++
 			}
@@ -274,10 +278,10 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	t.Run("control: admissions no client holds that the server did not give up on", func(t *testing.T) {
 		// Each client's first request is admitted as a user the server does not keep: for half the
 		// clients one already expired, whose answer the server refuses as it reads it, and for the
-		// other half one that expires within two seconds, which the server takes and then closes
+		// other half one that expires within three seconds, which the server takes and then closes
 		// the connection of as the user expires. Each client is admitted again on a later nonce,
-		// decided as usual. The server gave up on none of those first requests, so the row's check
-		// names every one of them, with what the server did with it.
+		// decided as usual. The row's check names every one of those first requests, with what the
+		// server did with it, but one the server gave up on, which a loaded machine can make it do.
 		keys := testnats.NewCalloutKeys(t)
 		recordUser, recordSeed := newHubRecordUser(t)
 		_, url := testnats.StartWithCalloutServer(t, keys, recordUser)
@@ -292,7 +296,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 				if firsts.Add(1)%2 == 0 {
 					decision.Expires = time.Now().Add(-time.Minute)
 				} else {
-					decision.Expires = time.Now().Add(2 * time.Second)
+					decision.Expires = time.Now().Add(3 * time.Second)
 				}
 			}
 			return decision, err
@@ -319,18 +323,14 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
 		require.Len(t, unheld, control, "the nonces do not show the admissions the server did not keep")
 		gaveUp, other := record.read(t).gaveUpOn(unheld)
-		require.Empty(t, gaveUp, "the server's record names admissions it did not give up on as ones it did")
-		refused, kept := 0, 0
+		outcomes := map[hubOutcome]int{}
 		for _, each := range other {
-			switch {
-			case strings.Contains(each, "the server refused it: "):
-				refused++
-			case strings.Contains(each, "refused nothing on it"):
-				kept++
-			}
+			outcomes[each.outcome]++
 		}
-		require.Equal(t, []int{control / 2, control / 2}, []int{refused, kept},
-			"the row's check does not name each admission the server refused and each it took and then lost: %v", other)
+		require.Equal(t, control, len(gaveUp)+outcomes[hubRefused]+outcomes[hubKept],
+			"the server's record does not hold each admission the server did not keep: %v", other)
+		require.Positive(t, outcomes[hubRefused], "the row's check does not name an admission the server refused: %v", other)
+		require.Positive(t, outcomes[hubKept], "the row's check does not name an admission the server took and then lost: %v", other)
 	})
 
 	t.Run("control: clients that give up on a refused credential", func(t *testing.T) {
