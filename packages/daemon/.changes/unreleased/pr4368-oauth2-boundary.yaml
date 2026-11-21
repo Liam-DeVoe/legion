@@ -29,7 +29,8 @@ body: |-
   forget compares the holder with the claim's session as it came and prints the holder's state as
   one of the listener's words or as the rule reads it, and the outbox's re-hold compares a 504's
   holder with the architect's session as it came, so a notice that names that session no longer
-  spends its copies at once.
+  spends its copies at once. The line of a conflicting head's base rules names the required
+  status checks GitHub answers as the rule reads them, while R0 decides on them as they came.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

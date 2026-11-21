@@ -351,6 +351,10 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/cipher.APIError",
         "test": "print-cipher.APIError"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.checkContext",
+        "test": "print-daemon.checkContext"
       }
     ],
     "reflection": [
@@ -4715,6 +4719,13 @@
       "production": "agent-secrets githubTokensAlone: the --github-token refusals name a released key only where this run asked for it (releasedName, releasedNames)"
     },
     {
+      "id": "agentsecrets-github-token-accounts",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGitHubTokenRefusalPrintsNoAccountOfTheRelease",
+      "production": "agent-secrets githubTokensAlone: the refusal of a release of other than one installation counts its accounts and prints none (heldAccounts)"
+    },
+    {
       "id": "agentsecrets-answer-words-ttl-revoke",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
@@ -5693,6 +5704,27 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape/control",
       "production": "daemon workflowRuntime.readPermission: a login and a documented permission still log as they came"
+    },
+    {
+      "id": "daemon-answer-words-base-rules",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem",
+      "production": "daemon workflowRuntime.readBaseRules: the required contexts GitHub names are logged as the rule reads them (checkContext.Said), and kept as they came for R0",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readBaseRules",
+      "capture": "daemon.answer-words/base-rules",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/base_rules.go",
+        "preimage": "\"required\", said, \"strict\"",
+        "replacement": "\"required\", rules.Required, \"strict\""
+      }
+    },
+    {
+      "id": "print-daemon.checkContext",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.checkContext",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.checkContext: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-answer-words-merge-queue-merged",
@@ -8079,6 +8111,16 @@
       "site": "daemon cipher refusal: the broker's code taken through SendBack, which TokenExpired and RegistrarNotListed read",
       "source": "the review of #4368 at c82c3a0d9f, finding 2",
       "guard": "cipher-code-as-it-came-beside-a-quoting-pod-token"
+    },
+    {
+      "site": "daemon readBaseRules: the required status check contexts GitHub names, logged as they came",
+      "source": "the class search of round 5's deep review",
+      "guard": "daemon-answer-words-base-rules"
+    },
+    {
+      "site": "agent-secrets --github-token: the accounts of a release of other than one installation, printed as the broker wrote them",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-github-token-accounts"
     }
   ]
 }

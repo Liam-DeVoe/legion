@@ -23,11 +23,12 @@ import (
 const planRefusal = "make this repository public to enable this feature"
 
 // githubBranchRule is one rule GET /rules/branches/{branch} answers: every rule of every ruleset
-// that applies to the branch, its parameters read only for a `required_status_checks` rule
-// (requiredStatusChecks), since each type of rule has parameters of its own.
+// that applies to the branch, its parameters read as a `required_status_checks` rule's
+// (requiredStatusChecks) and kept only for one, since each type of rule has parameters of its own
+// and none of the others names their two fields.
 type githubBranchRule struct {
-	Type       string          `json:"type"`
-	Parameters json.RawMessage `json:"parameters"`
+	Type       string               `json:"type"`
+	Parameters requiredStatusChecks `json:"parameters"`
 }
 
 // requiredStatusChecks is the parameters of a `required_status_checks` rule: the contexts it
@@ -35,7 +36,7 @@ type githubBranchRule struct {
 // merges.
 type requiredStatusChecks struct {
 	RequiredStatusChecks []struct {
-		Context string `json:"context"`
+		Context checkContext `json:"context"`
 	} `json:"required_status_checks"`
 	Strict bool `json:"strict_required_status_checks_policy"`
 }
@@ -48,13 +49,30 @@ type githubBranch struct {
 	Protection struct {
 		Enabled              bool `json:"enabled"`
 		RequiredStatusChecks struct {
-			EnforcementLevel string   `json:"enforcement_level"`
-			Contexts         []string `json:"contexts"`
+			EnforcementLevel string         `json:"enforcement_level"`
+			Contexts         []checkContext `json:"contexts"`
 			Checks           []struct {
-				Context string `json:"context"`
+				Context checkContext `json:"context"`
 			} `json:"checks"`
 		} `json:"required_status_checks"`
 	} `json:"protection"`
+}
+
+// checkContext is a status check context GitHub names, a JSON string read twice: Name as it came,
+// which the rules keep and R0 decides on (record.BaseRules.Required), and Said, GitHub's words,
+// which the answer's Decode holds with the read's record (oauth2call.Answer.Decode), so the line
+// that names the contexts prints them as the rule reads them.
+type checkContext struct {
+	Name string
+	Said oauth2call.RemoteText
+}
+
+// UnmarshalJSON reads data, a JSON string, as the context as it came and as GitHub's words.
+func (c *checkContext) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &c.Name); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &c.Said)
 }
 
 // readBaseRules reads the rules base, the base branch of pr, holds for its required status checks
@@ -81,11 +99,11 @@ type githubBranch struct {
 // branch that does not exist), a 5xx, a read that runs out of issueRead, which bounds each read as
 // it bounds the per-issue read's - is a read whose rules the daemon does not know: Unread says why,
 // R0 acts on it at once (record.ConflictRulesUnread), and nothing else fails. Each call logs one
-// line with what it read.
+// line with what it read, the contexts as the rule reads GitHub's words.
 func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.Client, pr record.PullRequest, base string) record.BaseRules {
-	rules := baseRules(ctx, github, base)
+	rules, said := baseRules(ctx, github, base)
 	attributes := []any{"repo", pr.Repo, "pullRequest", pr.Number, "base", base,
-		"required", rules.Required, "strict", rules.Strict, "unread", rules.Unread}
+		"required", said, "strict", rules.Strict, "unread", rules.Unread}
 	if rules.Unread != "" {
 		w.log.Warn("github: read the base's rules for a conflicting head", attributes...)
 	} else {
@@ -94,45 +112,55 @@ func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.C
 	return rules
 }
 
-// baseRules is readBaseRules' two reads and what they come to, without its log line.
-func baseRules(ctx context.Context, github githubrest.Client, base string) record.BaseRules {
+// baseRules is readBaseRules' two reads and what they come to, without its log line, with each
+// required context as GitHub's words (said), in the order of Required.
+func baseRules(ctx context.Context, github githubrest.Client, base string) (rules record.BaseRules, said []oauth2call.RemoteText) {
 	path := ghbranch.RefPath(base)
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path)
 	cancel()
 	if err != nil {
-		return unreadRules(err)
+		return unreadRules(err), nil
 	}
+	words := map[string]oauth2call.RemoteText{}
 	var required []string
+	add := func(named checkContext) {
+		required = append(required, named.Name)
+		if _, seen := words[named.Name]; !seen {
+			words[named.Name] = named.Said
+		}
+	}
 	strict := false
 	for _, rule := range rulesets {
 		if rule.Type != "required_status_checks" {
 			continue
 		}
-		var checks requiredStatusChecks
-		if err := json.Unmarshal(rule.Parameters, &checks); err != nil {
-			return record.BaseRules{Unread: fmt.Sprintf("decode a required_status_checks rule of %s: %v", base, err)}
+		for _, check := range rule.Parameters.RequiredStatusChecks {
+			add(check.Context)
 		}
-		for _, check := range checks.RequiredStatusChecks {
-			required = append(required, check.Context)
-		}
-		strict = strict || checks.Strict
+		strict = strict || rule.Parameters.Strict
 	}
 	var branch githubBranch
 	read, cancel = context.WithTimeout(ctx, issueRead)
 	err = github.Get(read, "/branches/"+path, &branch)
 	cancel()
 	if err != nil {
-		return unreadRules(err)
+		return unreadRules(err), nil
 	}
 	if protection := branch.Protection; protection.Enabled && protection.RequiredStatusChecks.EnforcementLevel != "off" {
-		required = append(required, protection.RequiredStatusChecks.Contexts...)
+		for _, named := range protection.RequiredStatusChecks.Contexts {
+			add(named)
+		}
 		for _, check := range protection.RequiredStatusChecks.Checks {
-			required = append(required, check.Context)
+			add(check.Context)
 		}
 	}
 	slices.Sort(required)
-	return record.BaseRules{Required: slices.Compact(required), Strict: strict}
+	required = slices.Compact(required)
+	for _, name := range required {
+		said = append(said, words[name])
+	}
+	return record.BaseRules{Required: required, Strict: strict}, said
 }
 
 // unreadRules is what a failed read of the base's rules comes to: no rules for GitHub's refusal of

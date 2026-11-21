@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -168,7 +169,8 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 }
 
 // TestGitHubTokensAloneNamesNoToken: the two refusals name the secret, or the names the grant
-// released, with the flag and the accounts, and no part of any token. A grant that holds one
+// released, with the flag and how many installations it holds, and no part of any token or any
+// account (TestAGitHubTokenRefusalPrintsNoAccountOfTheRelease). A grant that holds one
 // release beside a password leaves that password as it is. The refusal of a release of two names
 // a remedy the caller can take: a narrowing that leaves one installation, or the same run
 // without the flag. It never asks for --github-owner again, which the caller gave already and
@@ -188,10 +190,10 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 
 	err := githubTokensAlone(map[string]string{"TWO_APP": githubTokenReleases["TWO_APP"]}, []string{"TWO_APP"})
 	if err == nil || !strings.Contains(err.Error(), "TWO_APP") || !strings.Contains(err.Error(), "--github-token") ||
-		!strings.Contains(err.Error(), "acme, ada") || strings.Contains(err.Error(), "ghs_") ||
+		!strings.Contains(err.Error(), "2 installations (2 logins") || strings.Contains(err.Error(), "ghs_") ||
 		!strings.Contains(err.Error(), "a narrowing that leaves one installation") ||
 		strings.Contains(err.Error(), "name the account with --github-owner") {
-		t.Fatalf("githubTokensAlone of two installations = %v, want a refusal naming TWO_APP, --github-token, both accounts and a remedy the caller can take, and no token", err)
+		t.Fatalf("githubTokensAlone of two installations = %v, want a refusal naming TWO_APP, --github-token, its two logins and a remedy the caller can take, and no token", err)
 	}
 
 	err = githubTokensAlone(map[string]string{"PLAIN": githubTokenReleases["PLAIN"], "OTHER": "another-password"}, []string{"OTHER", "PLAIN"})
@@ -210,5 +212,46 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 	// The refusal is not printed here: in the failure this guards it holds the key.
 	if strings.Contains(err.Error(), tokenKey) {
 		t.Fatal("githubTokensAlone's refusal of a release keyed by a token form quotes that key")
+	}
+}
+
+// TestAGitHubTokenRefusalPrintsNoAccountOfTheRelease: a release of other than one installation is
+// refused, and its accounts are keys of the broker's answer, which no record holds: whatever
+// answers in the broker's place can write an account that is a run of the release's Proof header
+// and still a login (Proof1234Run). The refusal says how many installations the release holds and
+// whether they are one login in several cases, which a narrowing to that owner cannot tell apart,
+// or several logins, and prints none of the accounts. It printed each.
+func TestAGitHubTokenRefusalPrintsNoAccountOfTheRelease(t *testing.T) {
+	release := func(accounts ...string) string {
+		var entries []string
+		for i, account := range accounts {
+			entries = append(entries, fmt.Sprintf(`%q:{"installation_id":%d,"token":"ghs_installation_%d","expires_at":"2100-01-01T00:00:00Z"}`, account, i+1, i))
+		}
+		return `{"installations":{` + strings.Join(entries, ",") + `}}`
+	}
+	for _, tc := range []struct {
+		name     string
+		accounts []string
+		want     string
+	}{
+		{"one login in two cases", []string{"Proof1234Run", "proof1234run"}, "2 installations (one login in 2 cases, not printed: an account of the broker's answer"},
+		{"two logins", []string{"acme", "Proof1234Run"}, "2 installations (2 logins, not printed: an account of the broker's answer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := githubTokensAlone(map[string]string{"APP": release(tc.accounts...)}, []string{"APP"})
+			// Control: the value is read as a release, so the refusal is the one that names its
+			// installations.
+			if err == nil || !strings.Contains(err.Error(), "a narrowing that leaves one installation") {
+				t.Fatalf("githubTokensAlone = %v, want the refusal of a release of %d installations", err, len(tc.accounts))
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal = %q, want it to say %q", err, tc.want)
+			}
+			for _, account := range tc.accounts {
+				if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(account)) {
+					t.Errorf("the refusal prints the release's account %q: %q", account, err)
+				}
+			}
+		})
 	}
 }

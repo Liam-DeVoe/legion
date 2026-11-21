@@ -174,10 +174,11 @@ func githubTokensOf(value string) (tokens map[string]string, ok bool) {
 // and for Ada alike. The refusal therefore asks for a narrowing that leaves one installation, or
 // for the same run without the flag, whose child reads the token out of the JSON object. A grant
 // with no release at all is a flag that does nothing, and the caller would learn of it only at
-// GitHub's 401. Each refusal names the secret or the names it read, the accounts and the flag,
-// and no part of any token. A name it prints is one this run asked for (asked), as the person
-// typed it: a released name is a key of the broker's answer, which no record holds, so a name the
-// release holds that this run did not ask for is counted and not printed (releasedName).
+// GitHub's 401. Each refusal names the secret or the names it read, how many installations the
+// release holds, and the flag, and no part of any token. A name it prints is one this run asked
+// for (asked), as the person typed it: a released name is a key of the broker's answer, which no
+// record holds, so a name the release holds that this run did not ask for is counted and not
+// printed (releasedName). An account is such a key too, and prints nowhere (heldAccounts).
 func githubTokensAlone(values map[string]string, asked []string) error {
 	names := slices.Sorted(maps.Keys(values))
 	// The releases are rewritten only once the walk found no reason to refuse, so a refusal
@@ -192,7 +193,7 @@ func githubTokensAlone(values map[string]string, asked []string) error {
 		if len(accounts) != 1 {
 			held := "no installation"
 			if len(accounts) > 0 {
-				held = fmt.Sprintf("%d installations (%s)", len(accounts), strings.Join(accounts, ", "))
+				held = fmt.Sprintf("%d installations (%s)", len(accounts), heldAccounts(accounts))
 			}
 			return fmt.Errorf("--github-token hands over one installation's token, and the release of %s holds %s: ask again with a narrowing that leaves one installation, or without --github-token, and read the token out of the JSON object the release hands over", releasedName(name, asked), held)
 		}
@@ -207,4 +208,22 @@ func githubTokensAlone(values map[string]string, asked []string) error {
 	}
 	maps.Copy(values, alone)
 	return nil
+}
+
+// unprintedAccounts is what a refusal prints in place of the accounts a release holds.
+const unprintedAccounts = "not printed: an account of the broker's answer, which the rule cannot read with the release request's credentials redacted"
+
+// heldAccounts is what a refusal says of accounts, the two or more installations a release
+// holds: whether they are one login in several cases, which a narrowing to that owner cannot
+// tell apart (GitHubApp.Mint compares the owner without regard to case), or several logins; and
+// none of them. An account is a key of the broker's answer, or of whatever answers in its place,
+// which can echo the release's Proof header in a login's shape; encoding/json decodes a key into
+// no redact.RemoteText, so no record of the request holds it (releasedName).
+func heldAccounts(accounts []string) string {
+	for _, account := range accounts[1:] {
+		if !strings.EqualFold(account, accounts[0]) {
+			return fmt.Sprintf("%d logins, %s", len(accounts), unprintedAccounts)
+		}
+	}
+	return fmt.Sprintf("one login in %d cases, %s", len(accounts), unprintedAccounts)
 }
