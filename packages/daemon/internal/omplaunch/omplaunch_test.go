@@ -245,6 +245,32 @@ func TestWithPrefix(t *testing.T) {
 	}
 }
 
+// PrefixMasked takes every word of the prefix of MaskedPrefixWord characters or more out of a
+// launch's output a line at a time, the program included, and the value alone of a NAME=value
+// word, wherever each stands; a shorter word stays, a line that names the variable with another
+// value stays, and a line that still holds a 10-character run of a word, folded or cut, is not
+// printed. The credentials are made up: a token pasted as the program, a token an env word sets,
+// and a proxy URL's password.
+func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
+	const program, value = "madeUpProgramToken0123", "madeUpEnvValue0123456"
+	proxy := "https://legion:madeUpProxyPass0123" + "@proxy.example"
+	prefix := []string{program, "OMP_TOKEN=" + value, "--", proxy}
+	text := "sh: 1: " + program + ": not found; OMP_TOKEN=" + value + " (" + value + "x); -- kept; " + proxy + "\n" +
+		"OMP_TOKEN=other is set\n" +
+		"the token MADEUPENVVALUE0123456 is refused\n" +
+		"cut: madeUpProgramTo…"
+	want := "sh: 1: <prefix word 0>: not found; <prefix word 1> (<prefix word 1>x); -- kept; <prefix word 3>\n" +
+		"OMP_TOKEN=other is set\n" +
+		"(a line of 42 bytes that holds part of the launch prefix, not printed)\n" +
+		"(a line of 23 bytes that holds part of the launch prefix, not printed)"
+	if got := PrefixMasked(text, prefix); got != want {
+		t.Fatalf("PrefixMasked = %q, want %q", got, want)
+	}
+	if got := PrefixMasked("nothing of it", nil); got != "nothing of it" {
+		t.Fatalf("PrefixMasked with no prefix = %q, want the text as it was", got)
+	}
+}
+
 // PrefixShown names the prefix's program, without its directory, and how many arguments follow,
 // never an argument: a made-up token set with env, and a made-up proxy URL with a password, are
 // the arguments here. A first word that is a NAME=value word shows as one. WithPrefixShown puts

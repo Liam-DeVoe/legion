@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -562,49 +563,35 @@ func executePrivateKeyCommand(command, field string) (string, error) {
 // keyCommandWordShown stands for a word of private_key_command in what its stderr prints.
 const keyCommandWordShown = "[a word of the command]"
 
-// keyCommandWords are the words of command after its first, of heldRun characters or more, with
-// any quote around them taken off, the longest first so a word holding another is replaced whole:
-// where an operator names the secret the command reads (a secretsd key, a variable), and where the
-// key itself lands when it is pasted into the command in its name's place.
-func keyCommandWords(command string) []string {
-	fields := strings.Fields(command)
-	var words []string
-	for i, field := range fields {
-		if word := strings.Trim(field, `'"`); i > 0 && len(word) >= heldRun {
-			words = append(words, word)
+// keyCommandWords are the words of command, the first included, of redact.HeldRun characters or
+// more, with any quote around them taken off, each shown as keyCommandWordShown: where an operator
+// names the secret the command reads (a secretsd key, a variable), where the key itself lands when
+// it is pasted into the command in its name's place, and the whole command when the key is pasted
+// in the command's place (`sh: 1: <key>: not found`).
+func keyCommandWords(command string) []redact.Word {
+	var words []redact.Word
+	for _, field := range strings.Fields(command) {
+		if word := strings.Trim(field, `'"`); len(word) >= redact.HeldRun {
+			words = append(words, redact.Word{Text: word, Shown: keyCommandWordShown})
 		}
 	}
-	slices.SortStableFunc(words, func(a, b string) int { return len(b) - len(a) })
 	return words
 }
 
 // keyCommandShown is text, private_key_command's stderr or a line of it, as the daemon prints it:
-// stderrShown's rule with each of words in the key name's place, replaced by keyCommandWordShown,
-// and ok false, nothing of it to be printed, when what is left still holds heldRun characters in a
-// row of one of words, compared without case, or a PEM block's first line, which is the private
-// key itself.
-func keyCommandShown(text string, words []string) (shown string, ok bool) {
+// redact.Withheld's rule over words, the rule stderrShown prints a `secrets` command's stderr by,
+// and ok false, nothing of it to be printed, when what is left still holds a run of a word or a PEM
+// block's first line, which is the private key itself.
+func keyCommandShown(text string, words []redact.Word) (shown string, ok bool) {
 	if strings.Contains(text, "-----BEGIN") {
 		return "", false
 	}
-	for _, word := range words {
-		text = strings.ReplaceAll(text, word, keyCommandWordShown)
-	}
-	folded := strings.ToLower(text)
-	for _, word := range words {
-		lower := strings.ToLower(word)
-		for i := 0; i+heldRun <= len(lower); i++ {
-			if strings.Contains(folded, lower[i:i+heldRun]) {
-				return "", false
-			}
-		}
-	}
-	return text, true
+	return redact.Withheld(text, words)
 }
 
 // keyCommandStderr is private_key_command's whole stderr as its refusal quotes it
 // (keyCommandShown), or the words that say it is withheld.
-func keyCommandStderr(stderr string, words []string) string {
+func keyCommandStderr(stderr string, words []redact.Word) string {
 	text := strings.TrimSpace(stderr)
 	if shown, ok := keyCommandShown(text, words); ok {
 		return shown
@@ -619,7 +606,7 @@ func keyCommandStderr(stderr string, words []string) string {
 type keyCommandLines struct {
 	out     io.Writer
 	field   string
-	words   []string
+	words   []redact.Word
 	partial []byte
 	inPEM   bool
 }

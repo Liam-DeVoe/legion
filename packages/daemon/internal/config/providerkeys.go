@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -178,27 +179,20 @@ func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// heldRun is the shortest run of a key name's characters a printed stderr may not hold, the run
-// the printed-credential tests count as a leak.
-const heldRun = 10
-
-// stderrShown is the `secrets` child's stderr as a refusal prints it: with keyNameShown in place
-// of each exact copy of name, and dropped, its length printed instead, when what is left still
-// holds heldRun characters in a row of name, compared without case. The CLI is not this
-// repository's, so it can quote the name folded, wrapped, escaped or cut short.
+// stderrShown is the `secrets` child's stderr as a refusal prints it, by redact.Withheld's rule:
+// keyNameShown in place of each copy of name, and dropped, its length printed instead, when what
+// is left still holds redact.HeldRun characters in a row of name, compared without case. The CLI
+// is not this repository's, so it can quote the name folded, wrapped, escaped or cut short.
 func stderrShown(stderr, name string) string {
 	text := strings.TrimSpace(stderr)
 	if text == "" {
 		return ""
 	}
-	text = strings.ReplaceAll(text, name, keyNameShown)
-	folded, lowerName := strings.ToLower(text), strings.ToLower(name)
-	for i := 0; i+heldRun <= len(lowerName); i++ {
-		if strings.Contains(folded, lowerName[i:i+heldRun]) {
-			return fmt.Sprintf(": its stderr (%d bytes) holds part of the key name, so it is not printed", len(strings.TrimSpace(stderr)))
-		}
+	shown, ok := redact.Withheld(text, []redact.Word{{Text: name, Shown: keyNameShown}})
+	if !ok {
+		return fmt.Sprintf(": its stderr (%d bytes) holds part of the key name, so it is not printed", len(text))
 	}
-	return ": " + text
+	return ": " + shown
 }
 
 // pathValue is PATH's value in env, the last assignment winning, and "" when env holds none.

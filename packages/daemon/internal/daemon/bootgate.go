@@ -958,9 +958,9 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	// The tail of the probe's stderr is cut by redact.Tail, which reads it whole through the URL
 	// rule first: Oh My Pi and a plugin can quote a URL with a token, and a tail cut first could
 	// start inside its userinfo or its query, where the rule no longer finds either. The launch
-	// prefix's arguments are taken out before that (prefixArgumentsMasked): a prefix that refuses
-	// or fails can echo them.
-	tail, _ := redact.Tail(prefixArgumentsMasked(strings.TrimSpace(stderr.String()), g.prefix), maxProbeStderr)
+	// prefix's words, and each NAME=value word's value, are taken out before that
+	// (omplaunch.PrefixMasked): a prefix that refuses or fails can echo them.
+	tail, _ := redact.Tail(omplaunch.PrefixMasked(strings.TrimSpace(stderr.String()), g.prefix), maxProbeStderr)
 	return ran{
 		exit:     cmd.ProcessState.ExitCode(),
 		end:      end,
@@ -971,33 +971,6 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 		timedOut: timedOut,
 		elapsed:  time.Since(started),
 	}, nil
-}
-
-// maskedArgument is the shortest argument word of the launch prefix prefixArgumentsMasked takes
-// out of a probe's stderr: a shorter word (a flag, `--`, a short name) is too common to replace
-// without rewriting what Oh My Pi said, and holds no credential worth the name.
-const maskedArgument = 8
-
-// prefixArgumentsMasked is text with every copy of each argument of prefix (each word after the
-// program) of maskedArgument characters or more replaced by `<argument N>`, N its place after the
-// program, the longest first so a word holding another is replaced whole. A launch prefix such as
-// `env NAME=<token>` or a proxy wrapper handed a URL with a password carries a credential in an
-// argument, and one that refuses or fails can echo it in the stderr a refusal quotes.
-func prefixArgumentsMasked(text string, prefix []string) string {
-	if len(prefix) < 2 {
-		return text
-	}
-	order := make([]int, 0, len(prefix)-1)
-	for i := 1; i < len(prefix); i++ {
-		if len(prefix[i]) >= maskedArgument {
-			order = append(order, i)
-		}
-	}
-	slices.SortStableFunc(order, func(a, b int) int { return len(prefix[b]) - len(prefix[a]) })
-	for _, i := range order {
-		text = strings.ReplaceAll(text, prefix[i], fmt.Sprintf("<argument %d>", i))
-	}
-	return text
 }
 
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and

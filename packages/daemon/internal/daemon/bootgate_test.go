@@ -804,32 +804,37 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 }
 
 // A launch prefix with arguments is named by its program and how many arguments follow, and a
-// prefix that fails echoing its argument has that argument taken out of the stderr the refusal
-// quotes: the argument here is a made-up credential, as `env NAME=<token>` or a proxy URL with a
-// password would hand one.
-func TestTheLoadProbeQuotesNoArgumentOfTheLaunchPrefix(t *testing.T) {
-	const argument = "madeUpPrefixArgument0123"
+// prefix that fails echoing its words has them taken out of the stderr the refusal quotes: its
+// program's path, an argument, and the value alone of a NAME=value argument, each wherever it
+// stands. The argument and the value are made-up credentials, as `env NAME=<token>` or a proxy
+// URL with a password would hand one.
+func TestTheLoadProbeQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
+	const argument, value = "madeUpPrefixArgument0123", "madeUpPrefixValue0123"
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	echoing := filepath.Join(t.TempDir(), "echoing-prefix")
-	if err := os.WriteFile(echoing, []byte("#!/bin/sh\necho \"proxy refused $1, and again: $1\" >&2\nexit 3\n"), 0o755); err != nil {
+	script := "#!/bin/sh\necho \"$0: proxy refused $1, and again:$1; token ${2#*=} rejected\" >&2\nexit 3\n"
+	if err := os.WriteFile(echoing, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gate.prefix = []string{echoing, argument}
+	gate.prefix = []string{echoing, argument, "OMP_TOKEN=" + value}
 
 	err := gate.verify(context.Background())
 
 	if err == nil {
 		t.Fatal("the gate passed a launch whose prefix failed")
 	}
-	for _, want := range []string{"for launch command \"echoing-prefix (1 argument, not shown) " + f.path + "\"", "proxy refused <argument 1>, and again: <argument 1>"} {
+	for _, want := range []string{"for launch command \"echoing-prefix (2 arguments, not shown) " + f.path + "\"",
+		"<prefix word 0>: proxy refused <prefix word 1>, and again:<prefix word 1>; token <prefix word 2> rejected"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not say %q: %v", want, err)
 		}
 	}
-	for i := 0; i+10 <= len(argument); i++ {
-		if strings.Contains(err.Error(), argument[i:i+10]) {
-			t.Fatalf("the refusal %v holds %q of the prefix's argument", err, argument[i:i+10])
+	for _, secret := range []string{argument, value} {
+		for i := 0; i+10 <= len(secret); i++ {
+			if strings.Contains(err.Error(), secret[i:i+10]) {
+				t.Fatalf("the refusal %v holds %q of the prefix's words", err, secret[i:i+10])
+			}
 		}
 	}
 }

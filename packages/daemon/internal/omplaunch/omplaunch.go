@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -199,4 +200,46 @@ func WithPrefixShown(prefix []string, invocation string) string {
 		return invocation
 	}
 	return strings.Join(PrefixShown(prefix), " ") + " " + invocation
+}
+
+// MaskedPrefixWord is the shortest text of the launch prefix PrefixMasked takes out of a launch's
+// output: a shorter one (a flag, `--`, a short name) is too common to replace without rewriting
+// what Oh My Pi said, and holds no credential worth the name.
+const MaskedPrefixWord = 8
+
+// PrefixMasked is text, the output of a launch that ran with prefix, a line at a time by
+// redact.Withheld's rule, the rule the `secrets` and private_key_command outputs are printed by:
+// every copy of each of the prefix's words, its program included, and of the value of each
+// NAME=value word (the part after its first "="), of MaskedPrefixWord characters or more, is
+// replaced by `<prefix word N>`, N the word's place in prefix (0 the program), wherever it stands;
+// and a line that still holds redact.HeldRun characters in a row of a word, or of such a value,
+// compared without case, is not printed, its length printed instead. A NAME=value word whole is
+// taken out only as an exact copy, so a line that names the variable is kept. A prefix such as
+// `env NAME=<token>`, a proxy wrapper handed a URL with a password, or a credential pasted where
+// the program goes carries a credential in its words, and a launch that refuses or fails can echo
+// it, whole, as the value alone, folded or cut, in the output a refusal quotes.
+func PrefixMasked(text string, prefix []string) string {
+	var words []redact.Word
+	for place, word := range prefix {
+		shown := fmt.Sprintf("<prefix word %d>", place)
+		_, value, assigns := strings.Cut(word, "=")
+		if len(word) >= MaskedPrefixWord {
+			words = append(words, redact.Word{Text: word, Shown: shown, Exact: assigns})
+		}
+		if assigns && len(value) >= MaskedPrefixWord {
+			words = append(words, redact.Word{Text: value, Shown: shown})
+		}
+	}
+	if len(words) == 0 {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if shown, ok := redact.Withheld(line, words); ok {
+			lines[i] = shown
+		} else {
+			lines[i] = fmt.Sprintf("(a line of %d bytes that holds part of the launch prefix, not printed)", len(line))
+		}
+	}
+	return strings.Join(lines, "\n")
 }

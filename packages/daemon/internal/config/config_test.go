@@ -830,6 +830,21 @@ func TestAPrivateKeyCommandsStderrQuotesNoWordOfItOrAPrivateKey(t *testing.T) {
 		"granted, unended\n"; live.String() != want {
 		t.Fatalf("the live lines = %q, want %q", live.String(), want)
 	}
+	// A key pasted in the command's place is the command's first word: the shell's refusal quotes
+	// it (`sh: 1: <key>: not found`), and the refusal and the live line show it as a word of the
+	// command. The key is a made-up base64 blob.
+	const pasted = "TWFkZVVwUGFzdGVkQXBwS2V5MDEyMzQ1Njc4OQ"
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", "private_key_command: "+pasted, 1)
+	_, err := Load(writeConfigFile(t, body), noEnv)
+	if err == nil || !strings.Contains(err.Error(), "[a word of the command]: not found") || strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("Load error = %v, want the shell's refusal with the pasted key as a word of the command", err)
+	}
+	live.Reset()
+	pastedLines := &keyCommandLines{out: &live, field: "github_apps.implement.private_key_command", words: keyCommandWords(pasted)}
+	_, _ = pastedLines.Write([]byte("sh: 1: " + pasted + ": not found\n"))
+	if want := "sh: 1: [a word of the command]: not found\n"; live.String() != want {
+		t.Fatalf("the live line = %q, want %q", live.String(), want)
+	}
 }
 
 func TestLoadRefusesEveryStage3Key(t *testing.T) {
