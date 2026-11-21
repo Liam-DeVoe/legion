@@ -757,7 +757,10 @@ func (report madeReport) checkedAt(seq uint64) *replicaRendering {
 	return report.checked.rendering
 }
 
-// peerApply is one of the hook's applies while it runs: the allowance ygo holds it to.
+// peerApply is one of the hook's applies while it runs: the allowance ygo holds it to, and
+// release, what gives back the grant of the pod's load concurrency the hook holds for a heavy
+// apply (weighPeerUpdate): nil for an apply that holds none, and once the room's update observer
+// has given it back (releaseGrant). release is read and written under mu.
 //
 // It is also what the room's apply check keeps of the apply (renderCheck): startAt, how many
 // commits the room had made as the apply began, and counted, whether that was known
@@ -769,6 +772,7 @@ func (report madeReport) checkedAt(seq uint64) *replicaRendering {
 // them are the check's, in render_check.go (began, passed, noteChecked).
 type peerApply struct {
 	budget    crdt.ApplyBudget
+	release   func()
 	startAt   uint64
 	counted   bool
 	checked   bool
@@ -1101,13 +1105,16 @@ func (a *roomApplies) refusedContent(origin any) []crdt.ContentKind {
 
 // applying runs apply, one of the hook's own applies with origin, under budget: reserved before
 // the apply and dropped as it returns, so ygo's three questions are answered from it for exactly
-// this apply and every other origin's apply is unbounded. Nil, a room no load listed, runs the
-// apply under whatever the document itself was built with.
-func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func() error) error {
+// this apply and every other origin's apply is unbounded. release, where it is not nil, gives back
+// the grant the hook holds for the apply, which the room's update observer calls as it ends for
+// the apply's commit (releaseGrant). Nil, a room no load listed, runs the apply under whatever the
+// document itself was built with, and keeps no release: such a room has no update observer of the
+// room's, so its hook gives the grant back as it returns.
+func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, release func(), apply func() error) error {
 	if a == nil {
 		return apply()
 	}
-	running := &peerApply{budget: budget}
+	running := &peerApply{budget: budget, release: release}
 	a.mu.Lock()
 	if a.inFlight == nil {
 		a.inFlight = make(map[any]*peerApply)
@@ -1120,6 +1127,30 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 		a.mu.Unlock()
 	}()
 	return apply()
+}
+
+// releaseGrant gives back the grant the hook holds for its apply with origin, where one of its
+// applies with origin is in flight and still holds one, and does nothing for every other origin.
+// The room's update observer calls it as it ends, after its drain of the room's update log and
+// before ygo's persistence observer (onLoadDocument, weighPeerUpdate). It takes the release out
+// of the apply's record under mu before it calls it, so a second call - a later commit of the same
+// origin while the apply is still in flight - gives back nothing; the release is the grant's own,
+// which gives back nothing once given back, so the hook's own release as it returns gives back
+// nothing either. ygo runs the observer on the goroutine that commits, which for the apply's own
+// commit is the one the apply runs on, so the grant is only ever released from that goroutine.
+func (a *roomApplies) releaseGrant(origin any) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	var release func()
+	if running, reserved := a.inFlight[origin]; reserved {
+		release, running.release = running.release, nil
+	}
+	a.mu.Unlock()
+	if release != nil {
+		release()
+	}
 }
 
 // noteQueued records after, what the room's pending queue holds once an apply of the hook's has
@@ -1324,9 +1355,10 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // (loadSlots, heavyUpdateWeight), so a reconnect storm's whole-state handoffs are read
 // and decode as many at a time as the pool holds rather than all at once, and a frame small in
 // bytes and heavy in structs decodes inside the pool too; typing never waits on it. The grant is
-// given back as soon as the apply has integrated and its check has passed, before its commit's
-// observers run (crdt.ApplyBudget.Integrated), and as the apply returns where it was refused or
-// rolled back.
+// given back as the room's update observer for the apply's commit ends, once that observer has
+// decoded the commit into the room's replica and before ygo's persistence observer runs
+// (roomApplies.releaseGrant), and as the hook returns where the apply was refused, was rolled
+// back or changed nothing.
 //
 // A room with no measurement at all is a document that left the Proof schema while it was live,
 // which the socket path refuses to open in the first place (refuseOutsideSchema), or one no load
@@ -1428,21 +1460,30 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// as soon as the apply returns, with what its scans passed.
 	scans := weighing.roomScans()
 	scanning := scans.reserve(info.Origin, scanCeiling(len(info.Update)))
-	// A heavy apply's grant goes back once the apply has integrated and its check has passed,
-	// before the commit's observers run (crdt.ApplyBudget.Integrated, theorem-labs/ygo
-	// v1.55.1-theorem.15): the update's decode and the check's rendering are garbage by then, and
-	// the structs it integrated are the room's, which the room budget charges. One of those
-	// observers hands the commit to the room's persistence worker, and waits while the room's queue
-	// of updates to store is full, or for the worker's exit once it has begun to exit (ygo's
-	// persistStranded), and the worker waits for the pool to decode what it stores, checks and
-	// compacts: held through that wait, the grant would hold that apply and the worker against each
-	// other. An apply that is refused or rolled back never reaches the callback, and gives the grant
-	// back as the hook returns; the release is the grant's own, so it gives it back once either
-	// way. The callback runs on this goroutine, the one apply runs on.
+	// A heavy apply's grant goes back at the end of the room's update observer for the commit the
+	// apply makes (roomApplies.releaseGrant, onLoadDocument), after that observer's drain of the
+	// room's update log: the drain decodes the commit's update a second time, into the room's
+	// replica (renderedReplica.applyUpdate), a whole decode as heavy as the apply's own, and the
+	// grant covers it. ygo runs the room's observer before its persistence observer, on this
+	// goroutine: the room registers its observer in its load hook, ygo registers the persistence
+	// observer once that hook has returned (provider/websocket/server.go, loadRoom), and ygo calls a
+	// document's update observers in the order they were registered. The persistence observer hands
+	// the commit to the room's persistence worker and waits while the room's queue of updates to
+	// store is full, or for the worker's exit once it has begun to exit (ygo's persistStranded), and
+	// the worker waits for the pool to decode what it stores, checks and compacts: held through that
+	// wait, the grant would hold this apply and the worker against each other, and it is given back
+	// before it. The room's observer waits for the replica's lock holding the grant, and no holder of
+	// that lock waits for the pool (renderedReplica.start, holdFreeLoad), so that wait ends. ygo
+	// fires no observer for an apply it refused or rolled back, nor an update observer for one that
+	// changed nothing (reearth/ygo#350), and each of those gives the grant back as the hook returns.
+	// The observer takes the release out of the apply's record as it calls it, and the release is
+	// the grant's own, which gives back nothing once given back, so the grant goes back once
+	// whichever way the apply ends. ygo runs the observer on this goroutine, the one apply runs on.
+	var release func()
 	if grant != nil {
-		allowance.budget.Integrated = grant.release
+		release = grant.release
 	}
-	err := applies.applying(info.Origin, allowance.budget, apply)
+	err := applies.applying(info.Origin, allowance.budget, release, apply)
 	scans.settle(scanning, err)
 	// A drain the room took back leaves the update that released it standing and committed
 	// (crdt.ErrApplyCheckDrain), which ygo answers as the success it is and relays as what it

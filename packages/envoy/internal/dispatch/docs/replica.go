@@ -840,9 +840,10 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 // The decode runs under a grant of the pod's load concurrency where the pool has room for one
 // at once, weighed on the base it decodes (copyWeight), and beside the pool's holders where it
 // has not (holdFreeLoad), given back once the copy is the replica's. It may not wait: it runs
-// under mu, which a live write holding a grant waits for to clone the replica (warmFork), so a
-// wait here would hold that write and this replica against each other. No observer holds a
-// grant as it runs (podLoadSlots).
+// under mu, which a live write holding a grant waits for to clone the replica (warmFork), and
+// which the room's update observer waits for holding a heavy apply's grant until it has drained
+// that apply's commit (weighPeerUpdate, roomApplies.releaseGrant), so a wait here would hold that
+// write or that apply and this replica against each other.
 //
 // The first run of a replica its load handed no copy takes the load's rendering (loaded) as
 // base's rather than render base, when the rendering is still there: a weak pointer that no

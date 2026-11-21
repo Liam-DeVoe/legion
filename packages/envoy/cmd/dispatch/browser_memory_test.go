@@ -3494,16 +3494,17 @@ func copyWeightForTest(stateBytes, structs int64) int64 {
 
 // A room's persistence worker reads back each heavy commit it stores (docs' StoreUpdateStored,
 // heavyUpdateWeight): a whole decode of the commit's update, made after the apply that took the
-// update has given its own grant back (docs' weighPeerUpdate, crdt.ApplyBudget.Integrated). That
-// decode takes what its copy costs out of the pod's load concurrency and waits for it as every
-// other decode does (docs' holdServerLoad), so a step 2's apply and its read-back are each counted
-// in the pool, one after the other. This drive weighs those read-backs at their heaviest against
-// the pod. Under the Go limit a 4 GiB pod gives the server, with the pool held full by the heavy
-// writers and the folds of TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory, as
-// many rooms of A3's mebibyte of prose (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays) as the
-// budget holds each send, all at once, the heaviest step 2 the hook applies with a slot, so every
-// room's worker reads back the heaviest commit a step 2 under 2 MiB makes, and waits for the pool
-// to do it.
+// update has given its own grant back, as the room's update observer for its commit ends, before
+// ygo's persistence observer hands the commit to the worker (docs' weighPeerUpdate,
+// roomApplies.releaseGrant). That decode takes what its copy costs out of the pod's load
+// concurrency and waits for it as every other decode does (docs' holdServerLoad), so a step 2's
+// apply and its read-back are each counted in the pool, one after the other. This drive weighs
+// those read-backs at their heaviest against the pod. Under the Go limit a 4 GiB pod gives the
+// server, with the pool held full by the heavy writers and the folds of
+// TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory, as many rooms of A3's mebibyte
+// of prose (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays) as the budget holds each send, all
+// at once, the heaviest step 2 the hook applies with a slot, so every room's worker reads back the
+// heaviest commit a step 2 under 2 MiB makes, and waits for the pool to do it.
 //
 // The step 2 (heaviestStepTwo) is a chain of items under one client, each typed at the head of a
 // text nested under the margin, ahead of the one before it, and then deleted: as many as fit
@@ -3956,11 +3957,14 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // when that history was replaced past the room's cursor (docs' gateAppend, storedHistoryHolds): it
 // folds the history the store holds now and decodes the update onto the document that fold
 // leaves, under one grant of the pod's load concurrency, which it waits for as every other decode
-// does: no holder of the pool waits on the worker, since a heavy apply gives its grant back before
-// its commit reaches the worker's queue (docs' weighPeerUpdate, crdt.ApplyBudget.Integrated). So
-// does the compaction the same worker runs as its room closes (servicePersistenceAdapter.Compact).
-// This drive weighs both at their heaviest against the pod. Under the Go limit a 4 GiB pod gives
-// the server, with the pool held full by the heavy writers and the folds of
+// does. No apply's grant waits on the worker: a heavy apply gives its grant back as the room's
+// update observer for its commit ends, before ygo's persistence observer hands the commit to the
+// worker's queue (docs' weighPeerUpdate, roomApplies.releaseGrant). The one holder of the pool
+// that does wait on the worker is a joined transaction waiting for the document's lock, which
+// Join's WriteRequestBound ends (docs' gateAppend). The compaction the same worker runs as its
+// room closes waits the same way (servicePersistenceAdapter.Compact). This drive weighs
+// both at their heaviest against the pod. Under the Go limit a 4 GiB pod gives the server, with
+// the pool held full by the heavy writers and the folds of
 // TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory, as many rooms of the heaviest state
 // measured as the budget holds, each on a history replaced past its cursor, type one keystroke
 // each at once, so every room's worker waits for the full pool to fold that history, and then

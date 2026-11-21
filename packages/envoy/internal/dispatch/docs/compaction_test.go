@@ -133,10 +133,10 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 // persistStranded): at ygo's shutdown a browser's read loop can still commit a heavy apply. With
 // the pool full but for that apply's grant, the room's close at the shutdown finishes, its rows
 // older than the tail folded, and the apply returns, because the apply gave its grant back before
-// its commit's observers ran (weighPeerUpdate, crdt.ApplyBudget.Integrated): the compaction's fold
-// gets what the apply gave back. Held through the commit, the grant is what the fold waited for
-// while the apply waited for the fold's worker to exit. The compaction took only free bytes before,
-// under a mark on its context this change deleted.
+// its commit's persistence observer ran (weighPeerUpdate, roomApplies.releaseGrant): the
+// compaction's fold gets what the apply gave back. Held through that observer, the grant is what
+// the fold waited for while the apply waited for the fold's worker to exit. The compaction took
+// only free bytes before, under a mark on its context this change deleted.
 func TestARoomsClosingCompactionWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

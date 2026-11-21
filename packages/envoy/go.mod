@@ -312,8 +312,10 @@ require (
 // v1.55.1-theorem.15 adds ApplyBudget.Integrated, a callback the apply-budget callback can return
 // with an apply's budget, which the document calls once that apply has integrated and passed its
 // apply check, right after the commit releases the document's lock and before the commit's first
-// observer, and never for an apply that is refused or rolled back. A heavy browser apply gives its
-// grant of the pod's load concurrency back there (weighPeerUpdate), so no grant is held while
-// the commit's persistence observer waits on the room's queue of updates to store or on its
-// worker's exit. The tag is on 7768e28e, the head of release/v1.55.1/2026-11-21.2.
+// observer, and never for an apply that is refused or rolled back. Dispatch sets no Integrated: a
+// heavy browser apply gives its grant of the pod's load concurrency back as the room's own update
+// observer for the commit ends (weighPeerUpdate, roomApplies.releaseGrant), once the room's
+// replica has decoded the commit and before ygo's persistence observer, so no grant is held while
+// that observer waits on the room's queue of updates to store or on its worker's exit. The tag is
+// on 7768e28e, the head of release/v1.55.1/2026-11-21.2.
 replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.15

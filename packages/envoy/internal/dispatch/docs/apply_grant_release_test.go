@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,15 +17,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// This file tests a heavy browser apply's grant of the pod's load concurrency given back once the
-// apply has integrated and passed its check, before its commit's observers run
-// (Service.weighPeerUpdate, crdt.ApplyBudget.Integrated), and the waits of a room's persistence
-// worker that the grant, held through the commit, closed into a cycle. One of the commit's
-// observers hands the update to the worker through a queue of 256 updates and waits while it is
-// full, or for the worker's exit once the worker has begun to exit (ygo's persistStranded), so a
-// worker that waited for the pool while the apply held it waited for itself. The grant goes back
-// before that observer runs, so each wait ends. Each test holds the pool full with that apply's
-// grant in it and fails by its timeout with the hook's use reverted.
+// This file tests a heavy browser apply's grant of the pod's load concurrency, held through the
+// room's update observer for the apply's commit, whose drain decodes the commit into the room's
+// replica, and given back as that observer ends, before ygo's persistence observer runs
+// (Service.weighPeerUpdate, roomApplies.releaseGrant); and the waits of a room's persistence
+// worker that the grant, held through the persistence observer, closed into a cycle. The
+// persistence observer hands the update to the worker through a queue of 256 updates and waits
+// while it is full, or for the worker's exit once the worker has begun to exit (ygo's
+// persistStranded), so a worker that waited for the pool while the apply held it waited for
+// itself. The grant goes back before that observer runs, so each wait ends. Each test of a cycle
+// holds the pool full with that apply's grant in it and fails by its timeout with the grant held
+// until the hook returns.
 
 // heavyRoomUpdate is an update a browser could send live, a room's document: a chain of
 // chainStructs characters under the margin (marginChain), declaring more structs than an apply
@@ -67,8 +70,9 @@ func fillPoolBut(t *testing.T, pool *loadSlots, leave int64) {
 
 // observerGate is the first commit of a room to reach the room's update observer once the gate
 // is armed (beforeObserveUpdate): the apply has integrated and passed its check, the document is
-// released, and the commit's persistence observer, which ygo runs after the room's own, has not
-// run. reached closes as that commit arrives there; release lets a held commit go on.
+// released, the apply still holds its grant, which it gives back as the room's observer ends, and
+// the commit's persistence observer, which ygo runs after the room's own, has not run. reached
+// closes as that commit arrives there; release lets a held commit go on.
 type observerGate struct {
 	reached chan struct{}
 	release func()
@@ -271,25 +275,35 @@ func holdWorkerBehindAFullQueue(t *testing.T, service *Service, artifactID strin
 	return first, release
 }
 
-// heapGivenBackTolerance is how far the live heap a heavy apply leaves behind it as its commit's
-// first observer runs may stand past what the room budget charges the room for that commit: what
-// the process allocates beside the room between the two readings - the test's own bookkeeping,
-// the scheduler's and the database driver's buffers - which no room budget counts. A mebibyte;
-// the readings this test logs stand millions of bytes inside the charge.
+// heapGivenBackTolerance is how far the live heap a heavy apply leaves behind it, once it has given
+// its grant back, may stand past what the room budget charges the room for that commit: what the
+// process allocates beside the room between the two readings - the test's own bookkeeping, the
+// scheduler's and the database driver's buffers - which no room budget counts. A mebibyte; the
+// readings this test logs stand millions of bytes inside the charge.
 const heapGivenBackTolerance = 1 << 20
 
 // A heavy browser apply holds its grant of the pod's load concurrency while it decodes and
-// integrates the update and its check renders what it left, and gives it back once the apply
-// has integrated and passed that check, before its commit's first observer runs
-// (Service.weighPeerUpdate, crdt.ApplyBudget.Integrated): the heap it gave back is the transient
-// heap of the decode and the check, and what the apply leaves is the room's, which the room budget
-// charges. So as the commit's first observer runs, the pool holds nothing of the apply's, the
-// room's charge stands where it stood before the apply (the release moves nothing of it), and the
-// live heap, read the way liveHeap does, has grown by no more than the charge the room's observer
-// then adds for the commit, with heapGivenBackTolerance beside it. Before, the grant was given back
-// only as the hook returned, after every observer, one of which waits while the room's queue of
-// updates to store is full.
-func TestAHeavyApplysGrantGoesBackBeforeItsCommitsObserversAndWhatItLeavesIsTheRooms(t *testing.T) {
+// integrates the update and its check renders what it left, and on through the room's update
+// observer for its commit, whose drain decodes the commit's update a second time, into the room's
+// replica (renderedReplica.applyUpdate); it gives the grant back as that observer ends, before
+// ygo's persistence observer runs (Service.weighPeerUpdate, roomApplies.releaseGrant). So while
+// the replica decodes the commit the pool holds the apply's whole grant, and the room's charge
+// still stands where it stood before the apply, since the drain charges the room only once it has
+// taken the commit (chargeAdded). By the time the room's persistence worker comes to store the
+// commit, which ygo's persistence observer hands it after the room's observer has returned, the
+// pool holds nothing of the apply's, the room's charge stands where the hook leaves it, past where
+// it stood before, and the live heap, read the way liveHeap does, has grown by no more than that
+// charge, with heapGivenBackTolerance beside it: what the apply gave back was the transient heap of
+// its decode, its check and the replica's decode, and what it leaves is the room's, which the room
+// budget charges.
+//
+// The apply's goroutine is held, until the worker has read the pool, in an update observer of the
+// test's own, which ygo runs after the persistence observer since the test registers it once the
+// room has loaded, so the worker reads the pool before the hook returns. Given back as the commit's
+// observers began (crdt.ApplyBudget.Integrated), the grant left the replica's decode outside the
+// pool; given back as the hook returned, it was held through the persistence observer, which
+// waits while the room's queue of updates to store is full.
+func TestAHeavyApplysGrantCoversTheReplicasDecodeAndGoesBackBeforeThePersistenceObserver(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // no settlement takes a grant or charges the room beside the apply
 	live, update, grant := loadedRoom(t, service, artifactID, "First.\n")
@@ -305,13 +319,53 @@ func TestAHeavyApplysGrantGoesBackBeforeItsCommitsObserversAndWhatItLeavesIsTheR
 		held, charged int64
 		heap          uint64
 	}
-	var atObserver reading
+	// The replica's decode of the commit: ygo calls the replica document's update observers inside
+	// that decode's apply (renderedReplica.applyUpdate), under the replica's lock.
+	var atDecode reading
+	var decoded atomic.Bool
+	replica := replicaFor(t, service, live)
+	replica.mu.Lock()
+	if replica.doc == nil {
+		replica.mu.Unlock()
+		t.Fatal("the loaded room's replica holds no document")
+	}
+	stopDecode := replica.doc.OnUpdate(func([]byte, any) {
+		if decoded.CompareAndSwap(false, true) {
+			atDecode = reading{held: pool.held.Load(), charged: chargedWeight(charge)}
+		}
+	})
+	replica.mu.Unlock()
+	t.Cleanup(stopDecode)
 	var observed atomic.Bool
 	service.beforeObserveUpdate = func(room string) {
-		if room == artifactID && observed.CompareAndSwap(false, true) {
-			atObserver = reading{held: pool.held.Load(), charged: chargedWeight(charge), heap: liveHeap()}
+		if room == artifactID {
+			observed.Store(true)
 		}
 	}
+	// The worker's store of the commit, which it begins once the persistence observer has handed
+	// it the commit: the room's observer has returned by then.
+	var atStore reading
+	read := make(chan struct{})
+	var readOnce sync.Once
+	service.beforeRoomAppend = func(room string) error {
+		if room == artifactID && decoded.Load() {
+			readOnce.Do(func() {
+				atStore = reading{held: pool.held.Load(), charged: chargedWeight(charge), heap: liveHeap()}
+				close(read)
+			})
+		}
+		return nil
+	}
+	stopHold := live.OnUpdate(func(_ []byte, origin any) {
+		if _, heavy := origin.(*int); heavy {
+			select {
+			case <-read:
+			case <-time.After(roomWait(t)):
+			}
+		}
+	})
+	t.Cleanup(stopHold)
+
 	charged := chargedWeight(charge)
 	heap := liveHeap()
 	select {
@@ -325,34 +379,141 @@ func TestAHeavyApplysGrantGoesBackBeforeItsCommitsObserversAndWhatItLeavesIsTheR
 	if !observed.Load() {
 		t.Fatal("the heavy apply's commit never reached the room's observer")
 	}
+	if !decoded.Load() {
+		t.Fatal("the room's replica never decoded the heavy apply's commit")
+	}
+	select {
+	case <-read:
+	default:
+		t.Fatal("the room's worker never came to store the heavy apply's commit before the hook returned")
+	}
 	chargedAfter := chargedWeight(charge)
-	grown := int64(atObserver.heap) - int64(heap)
-	t.Logf("the apply took %d bytes of the pool; at its commit's first observer the pool held %d, the room's charge stood at %d (%d before the apply, %d once its observers had run, %+d), and the live heap at %d (%d before, %+d against the charge's %+d and a tolerance of %d)",
-		grant, atObserver.held, atObserver.charged, charged, chargedAfter, chargedAfter-charged,
-		atObserver.heap, heap, grown, chargedAfter-charged, heapGivenBackTolerance)
+	grown := int64(atStore.heap) - int64(heap)
+	t.Logf("the apply took %d bytes of the pool; while the replica decoded its commit the pool held %d and the room's charge stood at %d (%d before the apply); as the worker came to store the commit the pool held %d, the room's charge stood at %d (%d once the hook had returned, %+d), and the live heap at %d (%d before, %+d against the charge's %+d and a tolerance of %d)",
+		grant, atDecode.held, atDecode.charged, charged, atStore.held, atStore.charged, chargedAfter, chargedAfter-charged,
+		atStore.heap, heap, grown, chargedAfter-charged, heapGivenBackTolerance)
 
 	if grants := taken.all(); len(grants) == 0 || grants[0] != grant {
 		t.Fatalf("the pool's grants left %v held, want the apply's own %d first (copyWeight)", grants, grant)
 	}
-	if atObserver.held != 0 {
-		t.Fatalf("the pool held %d bytes as the commit's first observer ran, want none: the apply held its %d-byte grant through its commit", atObserver.held, grant)
+	if atDecode.held != grant {
+		t.Fatalf("the pool held %d bytes while the room's replica decoded the commit, want the apply's whole %d-byte grant held during the replica's decode: the apply gave its grant back before the room's observer drained its commit", atDecode.held, grant)
 	}
-	if atObserver.charged != charged {
-		t.Fatalf("the room's charge stood at %d as the commit's first observer ran, want the %d it stood at before the apply: giving the grant back moved the room's charge", atObserver.charged, charged)
+	if atDecode.charged != charged {
+		t.Fatalf("the room's charge stood at %d while the room's replica decoded the commit, want the %d it stood at before the apply: the room is charged once the drain has taken the commit", atDecode.charged, charged)
+	}
+	if atStore.held != 0 {
+		t.Fatalf("the pool held %d bytes as the room's worker came to store the commit, want none: the apply held its %d-byte grant past the room's observer, through the persistence observer", atStore.held, grant)
 	}
 	if chargedAfter <= charged {
 		t.Fatalf("the room's charge stood at %d once the apply had returned, want past the %d before it: the room charges the structs the apply left", chargedAfter, charged)
 	}
+	if atStore.charged != chargedAfter {
+		t.Fatalf("the room's charge stood at %d as the room's worker came to store the commit, with the grant given back, and at %d once the hook had returned: giving the grant back moved the room's charge", atStore.charged, chargedAfter)
+	}
 	if grown > chargedAfter-charged+heapGivenBackTolerance {
-		t.Fatalf("the live heap grew by %d bytes by the commit's first observer, past the %d the room's charge grew by and %d beside it: the heap the apply gave back was not transient",
+		t.Fatalf("the live heap grew by %d bytes by the worker's store of the commit, past the %d the room's charge grew by and %d beside it: the heap the apply gave back was not transient",
 			grown, chargedAfter-charged, heapGivenBackTolerance)
 	}
 }
 
-// heldCommitKeys is how many margin keys the commit cycle (i)'s worker is held at sets: each key a
-// struct of its own, so the commit declares more structs than an update may and still be stored
-// with no grant (heavyUpdateWeight), and its read-back waits for the pool, while what it takes
-// stays within the heavy apply's grant, which declares chainStructs.
+// observerOrder is the order in which a test saw the steps of one commit's observers it names.
+type observerOrder struct {
+	mu    sync.Mutex
+	steps []string
+}
+
+func (o *observerOrder) record(step string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.steps = append(o.steps, step)
+}
+
+func (o *observerOrder) recorded() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.steps)
+}
+
+// ygo calls a document's update observers in the order they were registered, and the room's own
+// observer, which the room registers in its load hook (onLoadDocument), comes before ygo's
+// persistence observer, which ygo registers once that hook has returned
+// (provider/websocket/server.go, loadRoom). A heavy apply's grant goes back as the room's observer
+// for its commit ends (Service.weighPeerUpdate, roomApplies.releaseGrant), so that order is what
+// keeps the persistence observer from closing a cycle: with the room's persistence worker held at
+// its store of a heavy commit behind a full queue of updates to store, and the pool full but for
+// the apply's grant, the apply's commit reaches the room's observer while the worker is held, and
+// the persistence observer, which waits while the queue is full, returns only after it; and the
+// worker, let go, waits for the pool to read the commit it holds back (StoreUpdateStored,
+// holdServerLoad), gets what the apply gave back, and stores it, and the apply's commit hands its
+// update over and the hook returns.
+//
+// The test records the order of the two observers' calls on the apply's commit: the room's as it
+// begins (beforeObserveUpdate), and the persistence observer's as it returns, which an update
+// observer of the test's own reads, since ygo runs it after the persistence observer once the
+// test registers it after the room has loaded. With the room's observer after the persistence
+// observer, the commit reaches the room's observer only once the worker reads the queue again,
+// which it does not while the test holds it, so the test fails there; and the grant, held through
+// the persistence observer's wait, leaves the worker's read-back waiting for the pool for good,
+// which is what fails it by its timeout with the grant held until the hook returns.
+func TestTheRoomsUpdateObserverRunsBeforeThePersistenceObserverSoTheWorkersReadBackGetsTheGrant(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	live, update, grant := loadedRoom(t, service, artifactID, "First.\n")
+	pool, waited := poolOfOneSlot(t, nil)
+	fillPoolBut(t, pool, grant)
+	before := storedHead(t, service.store, artifactID)
+	first, releaseWorker := holdWorkerBehindAFullQueue(t, service, artifactID, live, heldCommitKeys)
+	if weight, heavy := heavyUpdateWeight(first); !heavy || weight > grant {
+		t.Fatalf("the commit the worker holds is %d bytes declaring %d structs, weighed at %d (heavy: %t), want a heavy update weighed within the apply's %d-byte grant",
+			len(first), declaredStructs(first), weight, heavy, grant)
+	}
+
+	const roomObserver, persistenceObserver = "the room's update observer", "the persistence observer"
+	var order observerOrder
+	observer := holdNextObserver(t, service, artifactID, false)
+	reached := service.beforeObserveUpdate
+	service.beforeObserveUpdate = func(room string) {
+		if room == artifactID {
+			select {
+			case <-observer.reached:
+			default:
+				order.record(roomObserver)
+			}
+		}
+		reached(room)
+	}
+	stopAfter := live.OnUpdate(func(_ []byte, origin any) {
+		if _, heavy := origin.(*int); heavy {
+			order.record(persistenceObserver)
+		}
+	})
+	t.Cleanup(stopAfter)
+	heavy := applyHeavy(service, artifactID, live, update)
+	awaitHeavyApply(t, observer, heavy)
+	if steps := order.recorded(); !slices.Equal(steps, []string{roomObserver}) {
+		t.Fatalf("with the room's worker held behind a full queue the apply's commit reached %q, want the room's update observer alone: the persistence observer waits for the worker", steps)
+	}
+
+	// The worker goes on to read the first commit back with every byte of the pool held but what
+	// the apply gave back, if it did.
+	releaseWorker()
+	wait := min(roomWait(t), besideAFullPoolWait)
+	end := time.Now().Add(wait)
+	requireAnswered(t, heavy, time.After(time.Until(end)), "the heavy apply", wait, waited)
+	waitFor(t, time.Until(end), "the room to store the first commit", func() bool {
+		return storedHead(t, service.store, artifactID) > before
+	})
+	if steps := order.recorded(); !slices.Equal(steps, []string{roomObserver, persistenceObserver}) {
+		t.Fatalf("the apply's commit ran its observers in the order %q, want %q", steps, []string{roomObserver, persistenceObserver})
+	}
+}
+
+// heldCommitKeys is how many margin keys the commit the worker is held at sets in cycle (i) and in
+// the test of the observers' order above: each key a struct of its own, so the commit declares
+// more structs than an update may and still be stored with no grant (heavyUpdateWeight), and its
+// read-back waits for the pool, while what it takes stays within the heavy apply's grant, which
+// declares chainStructs.
 const heldCommitKeys = 2 * unslottedApplyStructs
 
 // Cycle (i). The room's persistence worker decodes each heavy update it stores into a fresh copy
@@ -361,11 +522,11 @@ const heldCommitKeys = 2 * unslottedApplyStructs
 // room's queue of updates to store and waits while the queue is full. With the queue full behind a
 // heavy commit the worker holds, and the pool full but for the apply's own grant, the worker's
 // decode of that commit waits for the pool, and the room stores it, and the apply returns, because
-// the apply gave its grant back before its commit's observers ran. Held through the commit, the
-// grant is what the decode waited for while the apply waited for the decode's worker. The decode
-// took only free bytes before (holdFreeLoad), which held no apply and worker against each other
-// but let it run beside a full pool counted by nothing. A lighter commit's decode takes nothing,
-// so the worker the test holds holds a heavy one.
+// the apply gave its grant back before its commit's persistence observer ran. Held through that
+// observer, the grant is what the decode waited for while the apply waited for the decode's
+// worker. The decode took only free bytes before (holdFreeLoad), which held no apply and worker
+// against each other but let it run beside a full pool counted by nothing. A lighter commit's
+// decode takes nothing, so the worker the test holds holds a heavy one.
 func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -397,11 +558,12 @@ func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 // (headUnderDocumentLock, coverFork), and the room's persistence worker stores a room's updates
 // under that same lock (AppendRoomFlush). So a write of the server's own, which waits for its
 // fork's bytes with no deadline, held the lock the worker waited for while it waited for bytes a
-// heavy apply held through its commit, and the apply waited for that worker to read the room's
-// full queue of updates to store. With the pool full but for half the apply's grant, the write
-// commits and the room stores its updates and the apply returns, because the apply gave its grant
-// back before its commit's observers ran: the write's fork, a copy of the room the apply grew,
-// fits in what the apply gave back and the half beside it, and in the half alone it does not.
+// heavy apply held through its commit's persistence observer, and the apply waited there for that
+// worker to read the room's full queue of updates to store. With the pool full but for half the
+// apply's grant, the write commits and the room stores its updates and the apply returns, because
+// the apply gave its grant back before its commit's persistence observer ran: the write's fork, a
+// copy of the room the apply grew, fits in what the apply gave back and the half beside it, and in
+// the half alone it does not.
 func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -459,10 +621,11 @@ func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t 
 // artifactID's room, is inside its commit, as a browser's read loop can still commit while ygo
 // shuts down: the room's persistence worker retires from the room's queue of updates to store and
 // compacts the room as it exits (servicePersistenceAdapter.Compact), and the apply's commit, held
-// at the room's observer until the worker has begun that compaction (beforeClosingCompaction),
-// then hands its update to ygo's stranded persistence, which waits for the worker to exit
-// (persistStranded). beforeClose, where it is not nil, runs once the apply's commit is held and
-// before the shutdown begins. It answers the shutdown's error and the hook's.
+// at the room's observer, its grant still held, until the worker has begun that compaction
+// (beforeClosingCompaction), then drains into the room's replica, gives its grant back as the
+// room's observer ends, and hands its update to ygo's stranded persistence, which waits for the
+// worker to exit (persistStranded). beforeClose, where it is not nil, runs once the apply's commit
+// is held and before the shutdown begins. It answers the shutdown's error and the hook's.
 func closeBehindAHeavyApply(t *testing.T, service *Service, artifactID string, live *crdt.Doc, update []byte, beforeClose func()) (closed, applied <-chan error) {
 	t.Helper()
 	compacting := make(chan struct{})
@@ -504,8 +667,8 @@ func requireFoldedThrough(t *testing.T, service *Service, artifactID string, fol
 // once the worker has retired waits for it to exit (ygo's persistStranded). With the only buffered
 // fold held by a holder waiting for the pool, and the pool full but for a heavy apply's grant,
 // the room's close finishes and the apply returns, because the apply gave its grant back before
-// its commit's observers ran. Held through the commit, the grant kept the holder waiting, the
-// holder kept the compaction waiting, and the compaction kept the apply waiting.
+// its commit's persistence observer ran. Held through that observer, the grant kept the holder
+// waiting, the holder kept the compaction waiting, and the compaction kept the apply waiting.
 func TestTheClosingCompactionsWaitForABufferedFoldEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -545,9 +708,9 @@ func TestTheClosingCompactionsWaitForABufferedFoldEndsOnceAHeavyApplyGaveItsGran
 // made once the worker has retired waits for it to exit (ygo's persistStranded). With every
 // connection of the compaction pool held by a fold waiting for the pool, and the pool full but
 // for a heavy apply's grant, the room's close finishes and the apply returns, because the apply
-// gave its grant back before its commit's observers ran. Held through the commit, the grant kept
-// those folds waiting, they kept the compaction waiting for a connection, and the compaction kept
-// the apply waiting.
+// gave its grant back before its commit's persistence observer ran. Held through that observer,
+// the grant kept those folds waiting, they kept the compaction waiting for a connection, and the
+// compaction kept the apply waiting.
 func TestTheClosingCompactionsWaitForACompactionConnectionEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

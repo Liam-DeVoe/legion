@@ -33,11 +33,11 @@ const besideAFullPoolWait = 30 * time.Second
 // (ygo's persistence observer). With the queue full and the pool full but for that apply's grant,
 // a keystroke whose append finds the history a compaction folded past its room's cursor is
 // stored, and the apply returns, because the apply gave its grant back before its commit's
-// observers ran (weighPeerUpdate, crdt.ApplyBudget.Integrated): the gate's fold waits for the pool
-// and gets what the apply gave back. Held through the commit, the grant is what the fold waited
-// for while the apply waited for the fold's worker. The fold took only free bytes before, under a
-// mark on the worker's context this change deleted, so a fold of every room whose history was
-// replaced ran beside a full pool, counted by nothing and bounded by nothing.
+// persistence observer ran (weighPeerUpdate, roomApplies.releaseGrant): the gate's fold waits for
+// the pool and gets what the apply gave back. Held through that observer, the grant is what the
+// fold waited for while the apply waited for the fold's worker. The fold took only free bytes
+// before, under a mark on the worker's context this change deleted, so a fold of every room whose
+// history was replaced ran beside a full pool, counted by nothing and bounded by nothing.
 //
 // The history past the cursor is one folded row, which the gate decodes as one run
 // (runsDocument), or that row and one written after it, which the gate folds and reads back

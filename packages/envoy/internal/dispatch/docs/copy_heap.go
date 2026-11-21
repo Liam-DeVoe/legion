@@ -53,11 +53,12 @@ import (
 // decodes it makes inside the grant it already holds take nothing more (withLoadSlot, holdLoad).
 //
 // The third is one apply of a browser's update over unslottedApplyBytes, or declaring more than
-// unslottedApplyStructs structs, held from before the hook reads the update until the apply has
-// integrated and passed its check, or until a refused apply returns (Service.weighPeerUpdate,
-// crdt.ApplyBudget.Integrated): a reconnect storm's whole-state handoffs then decode as many at a
-// time as the pool holds rather than all at once, while a keystroke, far under both, never waits
-// for the pool, at its apply or at its store (heavyUpdateWeight).
+// unslottedApplyStructs structs, held from before the hook reads the update until the room's
+// update observer for the apply's commit has decoded that commit into the room's replica, or
+// until the hook returns where the apply was refused, was rolled back or changed nothing
+// (Service.weighPeerUpdate, roomApplies.releaseGrant): a reconnect storm's whole-state handoffs
+// then decode as many at a time as the pool holds rather than all at once, while a keystroke, far
+// under both, never waits for the pool, at its apply or at its store (heavyUpdateWeight).
 //
 // The fourth is the answer to one browser's first sync, held from before that answer is built
 // until its frames are in the browser's write queue (Service.weighStateAnswer): answering a
@@ -110,9 +111,10 @@ const unslottedApplyStructs = unslottedApplyBytes / bytesOfHeapAStruct
 // of them, so its store never waits behind the heavy takers queued for the pool, as its apply
 // never does. The room's replica decodes the commit's update too, and makes no judgement: it
 // applies it to its own document (renderedReplica.applyUpdate) in the room's update observer,
-// which runs once a heavy apply has given its grant back (crdt.ApplyBudget.Integrated), or in a
-// read at an exact commit position that drains the room's log first (renderedReplica.atPoint),
-// and takes nothing of the pool for it, heavy update or not.
+// which for a heavy apply's commit runs inside that apply's grant and gives it back as it ends
+// (roomApplies.releaseGrant), or in a read at an exact commit position that drains the room's log
+// first (renderedReplica.atPoint), and takes nothing of the pool of its own for it, heavy update
+// or not.
 func heavyUpdateWeight(update []byte) (weight int64, heavy bool) {
 	var declared uint64
 	if len(update) > 2*unslottedApplyStructs {
@@ -166,24 +168,31 @@ const loadSlotsName = "load"
 //     that load's own. The transaction drops every fork, and with them its grant, before it
 //     publishes any of them (Ledger.publish).
 //
-// An apply's grant is given back before the commit the apply makes runs its observers
-// (Service.weighPeerUpdate, crdt.ApplyBudget.Integrated). One of them hands the commit to the
-// room's persistence worker through a queue of 256 updates and waits while that queue is full
-// (ygo's persistence observer), and once the worker has begun to exit waits for it to finish, the
-// compaction it runs as it exits included (ygo's persistStranded, which a socket still committing
-// at ygo's shutdown reaches). So the worker waits for its bytes as every other decode does - its
-// read-back of each heavy update it stores (StoreUpdateStored, AppendUpdatesWithCredit), its gate's
-// decodes of a history replaced under the room (storedHistoryHolds) and its compaction as it exits
-// (servicePersistenceAdapter.Compact). Its gate's decodes wait holding the document's lock and a
-// connection of the room-appends pool (AppendRoomFlush), and one holder of the pool waits for that
-// lock: a joined transaction that holds the grant its first document's fork took and waits for its
-// second document's advisory lock (joinLiveWrite, readFork), so the worker can wait for bytes that
-// transaction holds while the transaction waits for the worker's lock. Nothing in that pair gives
-// way; Join's WriteRequestBound ends the transaction's wait for a caller's request, which is
-// answered 503 and gives its grant back, and the worker then takes its bytes (above). No other
-// holder waits on the worker: an apply holds no grant by the time its commit reaches that queue,
-// a live write publishes once its transaction has given its grant back (Ledger.publish), and a
-// server write's decode-cap copy gives its grant back before the write commits (structsAfter).
+// An apply's grant is given back at the end of the room's own update observer for the commit the
+// apply makes, once that observer has decoded the commit into the room's replica, a decode the
+// grant covers (Service.weighPeerUpdate, roomApplies.releaseGrant). ygo runs that observer before
+// its persistence observer, on the goroutine that commits: the room registers it in its load hook,
+// ygo registers the persistence observer once that hook has returned
+// (provider/websocket/server.go, loadRoom), and ygo calls a document's update observers in the
+// order they were registered. The persistence observer hands the commit to the room's persistence
+// worker through a queue of 256 updates and waits while that queue is full, and once the worker
+// has begun to exit waits for it to finish, the compaction it runs as it exits included (ygo's
+// persistStranded, which a socket still committing at ygo's shutdown reaches). So the worker waits
+// for its bytes as every other decode does - its read-back of each heavy update it stores
+// (StoreUpdateStored, AppendUpdatesWithCredit), its gate's decodes of a history replaced under the
+// room (storedHistoryHolds) and its compaction as it exits (servicePersistenceAdapter.Compact).
+// Its gate's decodes wait holding the document's lock and a connection of the room-appends pool
+// (AppendRoomFlush), and one holder of the pool waits for that lock: a joined transaction that
+// holds the grant its first document's fork took and waits for its second document's advisory
+// lock (joinLiveWrite, readFork), so the worker can wait for bytes that transaction holds while
+// the transaction waits for the worker's lock. Nothing in that pair gives way; Join's
+// WriteRequestBound ends the transaction's wait for a caller's request, which is answered 503 and
+// gives its grant back, and the worker then takes its bytes (above). No other holder waits on the
+// worker: an apply holds no grant by the time its commit reaches that queue, a live write
+// publishes once its transaction has given its grant back (Ledger.publish), and a server write's
+// decode-cap copy gives its grant back before the write commits (structsAfter). Before it gives
+// its grant back, the room's observer waits for the replica's lock, and no holder of that lock
+// waits for the pool (renderedReplica.start, holdFreeLoad, above), so that wait ends.
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
@@ -472,8 +481,10 @@ func holdServerLoad(ctx context.Context, bytes int64) func() {
 // runs beside the pool's holders where they are not. It is what the one decode that may not wait
 // takes: the replica's build from a base (renderedReplica.start), which runs under the replica's
 // lock. A live write holds its grant for its fork's whole life and waits for that lock to clone
-// the replica (warmFork), so a wait here would hold that write and that replica against each
-// other, each waiting for what the other holds.
+// the replica (warmFork), and the room's update observer waits for it holding a heavy apply's
+// grant until it has drained that apply's commit (roomApplies.releaseGrant), so a wait here would
+// hold that write or that apply and that replica against each other, each waiting for what the
+// other holds.
 //
 // What such a decode holds outside the pool is one room's own second copy and the decoder above
 // it (roomCopies), which the room budget charges where the replica keeps it; and a room builds

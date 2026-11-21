@@ -320,11 +320,11 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 // store. Its decodes of a heavy update wait for their bytes of the pod's load concurrency as every
 // other decode does - the decode of the update itself (holdServerLoad, AppendUpdatesWithCredit)
 // and the ones its gate makes of a history replaced under the room (storedHistoryHolds) - since no
-// holder of that pool waits on this worker: a heavy apply gives its grant back before its commit
-// hands the update to the worker's queue (weighPeerUpdate, crdt.ApplyBudget.Integrated). Its
-// decode of a lighter update, a keystroke or a paste, takes nothing, as that update's apply took
-// nothing (heavyUpdateWeight), so a keystroke is stored, and answered, without waiting behind the
-// heavy takers queued for the pool.
+// holder of that pool waits on this worker: a heavy apply gives its grant back as the room's own
+// update observer for its commit ends, before ygo's persistence observer hands the update to the
+// worker's queue (weighPeerUpdate, roomApplies.releaseGrant). Its decode of a lighter update, a
+// keystroke or a paste, takes nothing, as that update's apply took nothing (heavyUpdateWeight), so
+// a keystroke is stored, and answered, without waiting behind the heavy takers queued for the pool.
 func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room string, update []byte) (stored bool, err error) {
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
@@ -439,9 +439,10 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 // this compaction included: ygo's persistence observer hands it to persistStranded, which waits
 // for the worker's persistDone. The compaction's fold and read-back (foldRead, fold) and a parked
 // fold's check of the stored versions (disagreeingVersion) wait for their bytes of the pod's load
-// concurrency all the same, since a heavy apply gives its grant back before its commit's
-// observers run (weighPeerUpdate, crdt.ApplyBudget.Integrated), so a commit stranded behind
-// this compaction holds none of the pool.
+// concurrency all the same, since a heavy apply gives its grant back as the room's own update
+// observer for its commit ends, before ygo's persistence observer strands that commit here
+// (weighPeerUpdate, roomApplies.releaseGrant), so a commit stranded behind this compaction holds
+// none of the pool.
 func (a *servicePersistenceAdapter) Compact(ctx context.Context, room string) error {
 	if hook := a.service.beforeClosingCompaction; hook != nil {
 		hook(room)
@@ -970,6 +971,20 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		return s.classifyDrained(room, instance, logged, seq, contentChanged, asks)
 	}
 	doc.OnUpdate(func(update []byte, origin any) {
+		// A heavy browser apply's grant of the pod's load concurrency goes back as this observer
+		// ends for the apply's commit (roomApplies.releaseGrant, weighPeerUpdate), so the drain
+		// below, whose decode of the commit's update into the replica is as heavy as the apply's
+		// own (renderedReplica.applyUpdate), runs inside it, and ygo's persistence observer, which
+		// ygo runs after this one on this goroutine, runs holding none of it. The release is
+		// deferred, so it runs on every way out: the return after the drain; a panic of any step
+		// here - a suppression slot's finish, a test's hook, the drain itself - which ygo carries
+		// past the commit's later observers, the persistence observer among them, and raises once
+		// they have run (crdt.Doc.Transact); and a failed test's hook ending the goroutine
+		// (runtime.Goexit). The observer has no other way out. The release is taken out of the
+		// apply's record as it is called, and the hook's own release as it returns gives back
+		// nothing once this one has, so the grant goes back once. A commit of any other origin
+		// holds no grant here and gives back nothing.
+		defer replica.applies().releaseGrant(origin)
 		// A published write's update is already durable, and so is a catch-up's batch of another
 		// process's rows (remoteUpdateOrigin). Its suppression slot is finished here, before ygo's
 		// persistence observer, which the room registers after OnLoadDocument, hands the update to
