@@ -610,12 +610,14 @@ func routes() []apiRoute {
 		// Write the writer hold's row while there is none, the first row or one a database admin
 		// deleted, judged by the log's latest entry, which must verify (409 below_floor otherwise,
 		// storing nothing): held with a hold id, only after a prepare or held entry of that hold
-		// id, or released, only after a released or prepare entry, or a held one whose hold's
-		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
-		// clients mid-hold, and a hold the log shows ended is not held again), at one above the
-		// highest gen nats_hold_log holds (1 for an empty log), signed over that gen. Another gen is
-		// 409 gen_mismatch naming restore_gen, the gen to sign afresh, since the operator's
-		// commands cannot read the log; a row that is there is 409 row_exists.
+		// id, or released, only after a released entry, a prepare entry of the hold id it names
+		// (409 hold_mismatch otherwise, no hold id included, so the prepared hold is not left
+		// where no command reaches it), or a held one whose hold's signed journal shows it ended
+		// (400 bad_transition otherwise, so no restore frees the clients mid-hold, and a hold the
+		// log shows ended is not held again), at one above the highest gen nats_hold_log holds (1
+		// for an empty log), signed over that gen. Another gen is 409 gen_mismatch naming
+		// restore_gen, the gen to sign afresh, since the operator's commands cannot read the log; a
+		// row that is there is 409 row_exists.
 		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
 		// Write one record of the hold the row names, whatever its phase: its cohort, its
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the

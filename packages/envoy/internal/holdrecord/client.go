@@ -260,9 +260,11 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // with no hold id, or a row lost while the hold was `prepare`, before its journal starts or after
 // (restored with that hold's id, as `hold abort` from `prepare` leaves it), reads no journal and
 // is sent once, at gen alone, the gen a RestoreGenError named: the route stores it after a
-// released or prepare entry, since a prepare row refuses no client, or after a held one whose
-// hold's signed journal shows it ended, and refuses it 400 `bad_transition` after any other held
-// entry, so a released row never lands mid-hold.
+// released entry, after a prepare entry only with that entry's hold id (409 `hold_mismatch` for
+// another or none: a released row under another id leaves the prepared hold where no command
+// reaches it), since a prepare row refuses no client, or after a held one whose hold's signed
+// journal shows it ended, and refuses it 400 `bad_transition` after any other held entry, so a
+// released row never lands mid-hold.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err

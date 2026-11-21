@@ -4164,14 +4164,16 @@ cohort-delete route deletes the hold's cohort on that row, and abort's done entr
 When the row was lost before the journal was written, there is nothing for Admit to read: run
 `hold abort`, whose cohort delete the route admits on the released row of a hold with no done
 record, and which writes no entry. The next hold starts with `hold set` and a new hold id. The route
-stores `released` only after a verified `released` or `prepare` entry, since a `prepare` row refuses
-no client, or after a `held` one whose hold's signed journal shows `hold release` or `hold abort`
-done; after any other `held` entry it refuses `bad_transition`, so no restore frees every client
-while a command of a hold may run. Whatever the log shows, it refuses a `released` row naming a hold
-whose signed journal shows `hold set` done and no end: that hold is held by its own record. The log
-and the floors are per database and per process: a database writer who empties the log lets
-`Bootstrap` write gen 1 again on a replica that has served no row since it started, sent by a client
-that has seen no row.
+stores `released` only after a verified `released` entry; after a `prepare` entry only with that
+entry's hold id, since a `prepare` row refuses no client and a `released` row under another id, or
+none, would leave the prepared hold's cohort and journal where no command reaches them (409
+`hold_mismatch`); or after a `held` one whose hold's signed journal shows `hold release` or `hold
+abort` done. After any other `held` entry it refuses `bad_transition`, so no restore frees every
+client while a command of a hold may run. Whatever the log shows, it refuses a `released` row
+naming a hold whose signed journal shows `hold set` done and no end: that hold is held by its own
+record. The log and the floors are per database and per process: a database writer who empties
+the log lets `Bootstrap` write gen 1 again on a replica that has served no row since it started,
+sent by a client that has seen no row.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
