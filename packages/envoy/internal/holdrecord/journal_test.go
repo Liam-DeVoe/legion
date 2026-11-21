@@ -871,6 +871,55 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// The condition on rule (2): an abort admitted on its own pending intent is a rerun of a crashed
+	// abort, which repeats the whole abort from its start (the disk check against the newest done
+	// prove, then the reconcile over every store) and trusts nothing the crashed run wrote. Here the
+	// abort, admitted on its own stop from before the new prove, crashes between the reconcile's
+	// writes and the release; its rerun is admitted, reconciles again and releases.
+	t.Run("hub-restore: an abort that crashes before its release is rerun whole and releases", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-rerun", holdrecord.WorkflowHubRestore, twoDisks)
+		run(t, c, "h-rerun", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-7"}, map[string]string{"disk.A": "disk-7", "disk_id.A": "7"})
+		if _, err := c.Admit(ctx, "h-rerun", cmd("streams census"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-rerun", "streams census", "the run is not clean", "UNKNOWN: KV_envoy_roles' info cannot be read"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-rerun", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-rerun", holdrecord.CommandAbort, "the done prove's disk of A is gone: disk-7 answers 404", holdrecord.LeftUnchanged); err != nil {
+			t.Fatal(err)
+		}
+		run(t, c, "h-rerun", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-9"}, map[string]string{"disk.A": "disk-9", "disk_id.A": "9"})
+		// The abort, admitted on its own stop, runs its disk check and the reconcile's writes, then
+		// its process is killed before the release: its intent is its latest entry.
+		if _, err := c.Admit(ctx, "h-rerun", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("abort after its own stop and the new prove: %v", err)
+		}
+		d, _ := journal(t, c, "h-rerun")
+		if e := last(t, d); e.Command != holdrecord.CommandAbort || e.State != "intent" {
+			t.Fatalf("after the crash the journal ends %+v, want abort's pending intent", e)
+		}
+		// The rerun is admitted on its own pending intent, repeats the check and the reconcile, and
+		// releases.
+		if _, err := c.Admit(ctx, "h-rerun", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("the crashed abort's rerun: %v", err)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-rerun", "the rerun released"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-rerun", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-rerun"); !d.Complete {
+			t.Fatal("the rerun's done entry did not complete the record")
+		}
+	})
+
 	t.Run("a pending convert makes every other command busy until its rerun finishes", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)

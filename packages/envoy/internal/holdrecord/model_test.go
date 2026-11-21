@@ -1926,9 +1926,13 @@ var failWalks = make(chan struct{}, 2)
 func TestTheHoldJournalModel(t *testing.T) {
 	// A soft memory limit keeps the walks' heap near their live size, about 1.4 GiB each, rather
 	// than twice it, so two at once stay inside a CI runner. It is lifted in Cleanup, which runs
-	// after the parallel subtests; a defer would run before they resume.
-	prev := debug.SetMemoryLimit(4 << 30)
-	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+	// after the parallel subtests; a defer would run before they resume. Bound 3's opt-in walk
+	// holds more than 4 GiB live, where the limit would only make the collector run without end,
+	// so it runs without the limit, in the capped scope its comment names.
+	if os.Getenv("HOLDRECORD_MODEL_BOUND3") != "1" {
+		prev := debug.SetMemoryLimit(4 << 30)
+		t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+	}
 	if currentModel.Name != "v63" || currentModel.rules != currentRules || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal ||
 		v62.BackupCommand || v62.HubAbortAfterStop || v62.AbortAfterOwnStop || v62.DiskGoneRestore {
 		t.Fatalf("the current rules are %q, the model's runs another table than the package's, or v62 carries a rule added since; the counts below are v62's and v63's", currentModel.Name)
