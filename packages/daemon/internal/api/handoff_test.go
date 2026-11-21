@@ -872,7 +872,7 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 		t.Fatalf("handoff facts = %#v, want one deduplicated fact", got)
 	}
 	fact, ok := got[0].(intake.HandoffComplete)
-	if !ok || fact.Role != claim.RoleTester || fact.HandoffRecord != written || fact.Commit != "" {
+	if !ok || fact.Role != claim.RoleTester || fact.HandoffRecord != written || fact.Commit != headSHA {
 		t.Fatalf("handoff fact = %#v", got[0])
 	}
 }
@@ -1744,7 +1744,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 				t.Fatalf("pending in the late turn after the busy re-send = %+v, want the new entry's task confirmed", p)
 			}
 
-			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
+			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
@@ -2006,7 +2006,7 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 	holdingTask(t, h, tester, supervise.RequestDeliver{
 		Task: "test LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Testing, Entry: 1})
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("the completion of the held task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
@@ -2096,7 +2096,7 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			}
 			request := HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "the work is done", Commit: headSHA}
 			if tc.role == claim.RoleTester {
-				request = HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "tests pass",
+				request = HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "tests pass", Commit: headSHA,
 					HandoffID: worker.writeHandoff("test", 1), HandoffVersion: 1}
 			}
 

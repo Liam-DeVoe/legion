@@ -520,9 +520,12 @@ func (r *handoffRecordsLive) notNew() {
 // commit.
 //
 // The control is those same three against records naming no head - the body every other step of
-// this proof writes, and the body every role wrote before the head moved into the record: the
-// completion carries no commit at all, and the daemon refuses such a completion
-// HANDOFF_STALE_ENTRY when it is of an earlier phase entry, since it says nothing about a head.
+// this proof writes, and the body every role wrote before the head moved into the record. The
+// planner's and the reviewer's completion carries no commit at all, and the daemon refuses such a
+// completion HANDOFF_STALE_ENTRY when it is of an earlier phase entry, since it says nothing
+// about a head. The tester's is refused before it is sent, naming the new record to write: the
+// testing move reads the check states at the head the test record names and at no other, and the
+// daemon refuses a tester's completion naming no commit (TESTED_HEAD_REQUIRED).
 func (r *handoffRecordsLive) completionHead() {
 	t := r.t
 	roles := []struct{ phase, word, role, session string }{
@@ -546,6 +549,18 @@ func (r *handoffRecordsLive) completionHead() {
 	for _, each := range roles {
 		written := r.write(each.session, r.headNone, each.word, r.smallBody(r.headNone, each.word, "a record naming no head"))
 		r.note("control: handoff-write as %s: %s, its body naming no head", each.session, written.line)
+		if each.role == "tester" {
+			out, code := r.bun(each.session, []string{"LEGION_ISSUE=" + r.headNone},
+				filepath.Join(r.root, "scripts", "e2e", "completion-head.ts"), each.phase, each.role)
+			refusal := strings.TrimSpace(string(out.stderr))
+			r.note("control: findHandoffReport as the tester of %s in %s exited %d: %s", r.headNone, each.phase, code, refusal)
+			if code != 1 || strings.TrimSpace(string(out.stdout)) != "" || !strings.Contains(refusal, "names no head") ||
+				!strings.Contains(refusal, "write a new handoff with `head` set to the 40-character lower-case commit you tested") {
+				t.Fatalf("the tester's completion of %s, whose test record names no head, = exit %d, stdout %q, stderr %q; want it refused before it is sent, naming the record to write",
+					r.headNone, code, out.stdout, refusal)
+			}
+			continue
+		}
 		line, report := r.completionReport(each.session, r.headNone, each.phase, each.role)
 		r.note("control: the completion findHandoffReport would send as the %s of %s in %s: %s", each.role, r.headNone, each.phase, line)
 		if report.Commit != nil || strings.Contains(line, "commit") {

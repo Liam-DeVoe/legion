@@ -427,7 +427,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
 	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-		" Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
+		" Handoff commit: " + headOne + "." + " Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
 	}

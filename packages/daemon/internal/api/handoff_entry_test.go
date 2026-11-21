@@ -271,7 +271,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 			if tc.serving != 0 {
 				takeTask(t, h, tester.token, "outbox:77", "test it again", tc.serving, 1)
 			}
-			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
+			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if tc.refused {
 				message := refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ENTRY")
