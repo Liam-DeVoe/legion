@@ -10,8 +10,11 @@
  * with a scratch HOME (and, for a devbox context with a user-level context file, CLAUDE_CONFIG_DIR
  * at context.ts's scratch Claude Code config directory), in the case's context (context.ts),
  * against a recorder on 127.0.0.1 (recorder.ts) that every model provider of the scratch profile
- * points at. The hook's `context` handler gives the model the arm's messages and its `tool_call`
- * handler blocks every call. The
+ * points at. The Envoy plugin defines its tools only when it has a listener to reach, so the run
+ * of a profile that installs it, in any context (a devbox one included), gets a stand-in Envoy
+ * listener on that recorder and a sink for the NATS server it dials (a subagent's run gets the
+ * listener alone), and a Legion pane's run gets both and a stand-in daemon. The hook's `context`
+ * handler gives the model the arm's messages and its `tool_call` handler blocks every call. The
  * recorder keeps the turn's request and answers it with a fixed end-of-turn reply, so no tool runs
  * and the turn's request never reaches the gateway. One capture per case and arm: the body, as Oh
  * My Pi sent it byte for byte, and its record are saved under `outDir`, and a capture already
@@ -138,6 +141,9 @@ const CAPTURE_TRIES = 3;
 const STAND_IN_SESSION = "session-1";
 const STAND_IN_MACHINE = "machine-1";
 const STAND_IN_STREAM = "stream-1";
+/** The name a profile gives the Envoy plugin: its directory's (build.ts names each plugin after
+ *  its directory, `packages/pi-envoy` in cybermonklabs/legion). */
+const ENVOY_PLUGIN = "pi-envoy";
 
 /** An Oh My Pi run that ended with no model request a capture can take. */
 class RunEnded extends Error {}
@@ -391,6 +397,10 @@ export interface CaptureRecord {
     readonly endpoints: Readonly<Record<string, string>>;
     readonly dispatch: string;
   } | null;
+  /** The endpoints of the stand-in Envoy listener the capture gave Oh My Pi (`ENVOY_URL`, and
+   *  `ENVOY_NATS_URL` where the run takes inbound messages), each a listener of this process on
+   *  127.0.0.1; null when it gave none. */
+  readonly envoy: { readonly endpoints: Readonly<Record<string, string>> } | null;
   /** Every request the capture's listeners took, as `<method> <path>` (the query left out), and
    *  how many connections the NATS sink took: all of them went to 127.0.0.1. */
   readonly connections: { readonly http: readonly string[]; readonly nats: number };
@@ -1221,6 +1231,22 @@ export async function captureBody(
     }
   }
 
+  // The stand-in Envoy listener the capture run gets, as the variables that name it. The Envoy
+  // plugin defines its tools only when it has a listener to reach, and the real session had one.
+  // A Legion pane, and any other context whose profile installs the Envoy plugin (a devbox one
+  // among them), get the listener and the NATS sink. A subagent runs inside its parent's process,
+  // whose Envoy plugin is on and takes no inbound message for it: its capture gets the listener's
+  // URL alone, so the plugin defines its tools and registers nothing. Other contexts get none.
+  const subagent = c.context.startsWith("subagent:");
+  const envoyPlugin = context.record.plugins.some(
+    (plugin) => plugin.name === ENVOY_PLUGIN && plugin.as === "extension"
+  );
+  const envoyVariables: readonly ("ENVOY_URL" | "ENVOY_NATS_URL")[] = subagent
+    ? ["ENVOY_URL"]
+    : pane !== undefined || envoyPlugin
+      ? ["ENVOY_URL", "ENVOY_NATS_URL"]
+      : [];
+
   // What the recorder does with each request, by the run it is in.
   const wanted = new Set(hints.filter((h) => h.cached === undefined).map((h) => h.skill.name));
   const written = new Map<string, HintReply>();
@@ -1256,17 +1282,19 @@ export async function captureBody(
       return new Response(null, { status: 204 });
     }
     const endpoint = request.path.split("?")[0];
-    // The stand-in Envoy listener, for the claim boot of a pane whose plugins register the
-    // session and claim its role before the first model request (cybermonklabs/legion before
-    // the claim moved to the session's first turn): the registration is answered with the
-    // session's interest and a consumer for it, which every client version parses (one that
-    // predates session consumers reads it as core delivery), and the role claim with that
-    // interest. The consumer is `@legion/envoy-client/test/subscribe-answer`'s, the one every
-    // stand-in listener of this repository answers, so it never drifts from what the client
-    // accepts. Its answers name the session's working directory and made-up ids, no path or
-    // name of the capture's. Every other Envoy route is refused.
+    // The stand-in Envoy listener, for a run given its URL (`envoyVariables`): the session's
+    // registration, which the Envoy plugin of a session that takes inbound messages makes as it
+    // starts, and which the claim boot of a pane whose plugins claim its role before the first
+    // model request made too (cybermonklabs/legion before the claim moved to the session's first
+    // turn), is answered with the session's interest and a consumer for it, which every client
+    // version parses (one that predates session consumers reads it as core delivery), and the
+    // role claim with that interest. The consumer is
+    // `@legion/envoy-client/test/subscribe-answer`'s, the one every stand-in listener of this
+    // repository answers, so it never drifts from what the client accepts. Its answers name the
+    // session's working directory and made-up ids, no path or name of the capture's, so they hold
+    // no harness string. Every other Envoy route is refused.
     if (
-      pane !== undefined &&
+      envoyVariables.length > 0 &&
       request.method === "POST" &&
       (endpoint === "/envoy/v1/interests/subscribe" || endpoint === "/envoy/v1/roles/set")
     ) {
@@ -1353,14 +1381,15 @@ export async function captureBody(
     ENVOY_URL: `${recorder.url}/envoy`,
     ENVOY_NATS_URL: `nats://127.0.0.1:${nats.port}`,
   };
-  // The pane environment a Legion role's Oh My Pi has, each value made up for this capture. A
-  // subagent runs inside its parent's process, whose Envoy plugin is on: its capture gets the
-  // stand-in Envoy listener alone, so the plugin defines its tools, and no Legion claim.
-  const paneEnvironment: Record<string, string> =
+  // The Envoy endpoints of `envoyVariables`, and the environment of the plugins' stand-ins, each
+  // value made up for this capture: for a Legion pane the pane environment a Legion role's Oh My
+  // Pi has, and for any other context those Envoy endpoints alone, with no Legion claim.
+  const envoyEndpoints: Record<string, string> = Object.fromEntries(
+    envoyVariables.map((name) => [name, endpoints[name]])
+  );
+  const standInEnvironment: Record<string, string> =
     pane === undefined
-      ? c.context.startsWith("subagent:")
-        ? { ENVOY_URL: endpoints.ENVOY_URL }
-        : {}
+      ? envoyEndpoints
       : {
           LEGION_ROLE: pane.role,
           LEGION_TREE: CAPTURE_TREE,
@@ -1381,10 +1410,10 @@ export async function captureBody(
   let sentToolNames = recordedTools;
   const toolsLeftOut: { readonly name: string; readonly reason: string }[] = [];
   let promptFile: string | undefined;
-  /** One Oh My Pi run: the hint run (`hintRun`) or the capture run. The hint run holds no pane
-   *  environment: the skill listing does not depend on it, and its role claim would end the run
-   *  before the hints are written. It holds no recorded prompt or tools either, so Oh My Pi lists,
-   *  and asks a hint for, each skill. */
+  /** One Oh My Pi run: the hint run (`hintRun`) or the capture run. The hint run holds no
+   *  stand-in environment: the skill listing does not depend on it, and a pane's role claim would
+   *  end the run before the hints are written. It holds no recorded prompt or tools either, so Oh
+   *  My Pi lists, and asks a hint for, each skill. */
   const runOmp = async (): Promise<number> => {
     const runStarted = performance.now();
     runs += 1;
@@ -1434,7 +1463,7 @@ export async function captureBody(
           ...(options.configFiles === undefined || options.configFiles.length === 0
             ? {}
             : { PI_CONFIG_FILES: options.configFiles.join(":") }),
-          ...(hintRun ? {} : paneEnvironment),
+          ...(hintRun ? {} : standInEnvironment),
           // A devbox context's user-level context file, where Oh My Pi reads one (context.ts).
           ...(context.claudeConfigDir === undefined
             ? {}
@@ -1665,6 +1694,7 @@ export async function captureBody(
               dispatch:
                 "off: its read of people's answers on each request would put its failure into the request",
             },
+      envoy: envoyVariables.length === 0 ? null : { endpoints: envoyEndpoints },
       connections: {
         http: recorder.requests.map((request) => `${request.method} ${request.path.split("?")[0]}`),
         nats: natsConnections,

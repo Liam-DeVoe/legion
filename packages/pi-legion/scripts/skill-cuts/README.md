@@ -223,8 +223,13 @@ Per task, the host's first request is captured once against a recorder, in the c
 task's own profile (Oh My Pi through `capture.ts`, which lists the skill under the hint Oh My Pi
 has a model write, with the plugins' stand-ins, and sends a subagent's recorded prompt with only
 the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile that
-installs the skills as local plugins), then sent `--runs` times. A capture follows the harness
-strings rule above: a session task stands for its own session, and a written task for the one
+installs the skills as local plugins), then sent `--runs` times. The plugins' stand-ins of an Oh
+My Pi capture listen on 127.0.0.1. A Legion role's run gets a stand-in Legion daemon, a stand-in
+Envoy listener and a sink for the NATS server the Envoy plugin dials. The run of every other
+profile that installs the Envoy plugin, whatever its context (a devbox one included), gets that
+listener and that sink, since the plugin defines its tools only when it has a listener to reach;
+a subagent's run gets the listener alone. A capture follows the harness strings rule above: a
+session task stands for its own session, and a written task for the one
 `--context-session` names (the session its profile was rebuilt from; `<path hash>` is the
 SHA-256 of that session file's path in hex), or for none, with neutral values, when it is not
 given. The runs of a profile's tasks are sent together, once each of its tasks has its capture,

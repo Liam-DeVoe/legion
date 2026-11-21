@@ -28,7 +28,7 @@ import {
   skillListing,
   userTurnKey,
 } from "./capture";
-import { type Case, pathHash } from "./cases";
+import { type Case, type Profile, pathHash } from "./cases";
 import { localSource, skillFrontmatter } from "./context";
 import { BudgetSpent } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
@@ -359,6 +359,81 @@ function systemBlocks(body: { readonly [field: string]: unknown }): string[] {
         typeof block === "object" && block !== null ? String(Reflect.get(block, "text")) : ""
       )
     : [];
+}
+
+/** The Envoy and Legion plugins as the worker image ships them: each one's bundle, built from this
+ *  checkout into the made-up repository acme/legion at COMMIT, its manifest naming the bundle. */
+const PLUGINS = [
+  {
+    name: "pi-envoy",
+    entry: "envoy",
+    externals: ["pi-ai", "pi-coding-agent", "pi-tui", "pi-utils"],
+  },
+  {
+    name: "pi-legion",
+    entry: "legion",
+    externals: ["pi-coding-agent", "pi-tui", "pi-utils"],
+  },
+];
+/** The profile's entry of the dispatch-first skill, which the Envoy plugin reads from its skills
+ *  at load. */
+const DISPATCH_FIRST = {
+  repo: "acme/skills",
+  commit: COMMIT,
+  path: "skills/dispatch-first",
+  name: "dispatch-first",
+};
+let pluginsBuilt = false;
+
+/** The profile's entries of the plugins `names` of PLUGINS. The first call builds every one of
+ *  them and writes the dispatch-first skill into acme/skills. */
+function builtPlugins(names: readonly string[]): Profile["plugins"] {
+  if (!pluginsBuilt) {
+    const repo = path.join(dir, "repos/acme/legion", COMMIT);
+    const packages = path.resolve(import.meta.dir, "../../..");
+    for (const plugin of PLUGINS) {
+      const dist = path.join(repo, "packages", plugin.name, "dist");
+      const built = Bun.spawnSync(
+        [
+          "bun",
+          "build",
+          `extensions/${plugin.entry}.ts`,
+          "--outdir",
+          dist,
+          "--target",
+          "bun",
+          "--format",
+          "esm",
+          ...plugin.externals.flatMap((name) => ["--external", `@oh-my-pi/${name}`]),
+        ],
+        { cwd: path.join(packages, plugin.name), stderr: "pipe" }
+      );
+      expect({
+        code: built.exitCode,
+        stderr: built.exitCode === 0 ? "" : built.stderr.toString(),
+      }).toEqual({ code: 0, stderr: "" });
+      writeTree(path.join(repo, "packages", plugin.name), {
+        "package.json": JSON.stringify({
+          name: `@acme/${plugin.name}`,
+          files: ["dist"],
+          omp: { extensions: [`dist/${plugin.entry}.js`], skills: ["dist/skills"] },
+        }),
+      });
+    }
+    writeTree(path.join(dir, "repos/acme/skills", COMMIT), {
+      "skills/dispatch-first/SKILL.md": readFileSync(
+        path.resolve(packages, "../skills/dispatch-first/SKILL.md"),
+        "utf8"
+      ),
+    });
+    pluginsBuilt = true;
+  }
+  return names.map((name) => ({
+    repo: "acme/legion",
+    commit: COMMIT,
+    path: `packages/${name}`,
+    name,
+  }));
 }
 
 describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
@@ -706,58 +781,6 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
   test(
     "a Legion-context capture defines the Legion and Envoy plugins' tools, and every endpoint it reached was a listener of its own on 127.0.0.1",
     async () => {
-      // The two plugins as the worker image ships them: each one's bundle, built from this
-      // checkout into a made-up repository at a made-up commit, its manifest naming the bundle.
-      const repo = path.join(dir, "repos/acme/legion", COMMIT);
-      const packages = path.resolve(import.meta.dir, "../../..");
-      const plugins = [
-        {
-          name: "pi-envoy",
-          entry: "envoy",
-          externals: ["pi-ai", "pi-coding-agent", "pi-tui", "pi-utils"],
-        },
-        {
-          name: "pi-legion",
-          entry: "legion",
-          externals: ["pi-coding-agent", "pi-tui", "pi-utils"],
-        },
-      ];
-      for (const plugin of plugins) {
-        const dist = path.join(repo, "packages", plugin.name, "dist");
-        const built = Bun.spawnSync(
-          [
-            "bun",
-            "build",
-            `extensions/${plugin.entry}.ts`,
-            "--outdir",
-            dist,
-            "--target",
-            "bun",
-            "--format",
-            "esm",
-            ...plugin.externals.flatMap((name) => ["--external", `@oh-my-pi/${name}`]),
-          ],
-          { cwd: path.join(packages, plugin.name), stderr: "pipe" }
-        );
-        expect({
-          code: built.exitCode,
-          stderr: built.exitCode === 0 ? "" : built.stderr.toString(),
-        }).toEqual({ code: 0, stderr: "" });
-        writeTree(path.join(repo, "packages", plugin.name), {
-          "package.json": JSON.stringify({
-            name: `@acme/${plugin.name}`,
-            files: ["dist"],
-            omp: { extensions: [`dist/${plugin.entry}.js`], skills: ["dist/skills"] },
-          }),
-        });
-      }
-      // The Envoy plugin reads the dispatch-first skill from its skills at load.
-      writeTree(path.join(dir, "repos/acme/skills", COMMIT), {
-        "skills/dispatch-first/SKILL.md": readFileSync(
-          path.resolve(packages, "../skills/dispatch-first/SKILL.md"),
-          "utf8"
-        ),
-      });
       await captures();
       const base = f1Case("legion-1");
       const c: Case = {
@@ -765,21 +788,8 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         context: "legion:acme:implementer",
         profile: {
           ...base.profile,
-          skills: [
-            ...base.profile.skills,
-            {
-              repo: "acme/skills",
-              commit: COMMIT,
-              path: "skills/dispatch-first",
-              name: "dispatch-first",
-            },
-          ],
-          plugins: plugins.map((plugin) => ({
-            repo: "acme/legion",
-            commit: COMMIT,
-            path: `packages/${plugin.name}`,
-            name: plugin.name,
-          })),
+          skills: [...base.profile.skills, DISPATCH_FIRST],
+          plugins: builtPlugins(["pi-envoy", "pi-legion"]),
           appendSystemPrompt: "You are a made-up role of a made-up project.",
         },
       };
@@ -817,6 +827,106 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(texts(body.messages).some((text) => text.includes("127.0.0.1"))).toBe(false);
       expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
       expect(record.exit.code === 0 || record.exit.reason !== "").toBe(true);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a devbox capture that loads the Envoy plugin and gives it no listener to reach, so
+  // its body defines none of the Envoy tools the dev box's sessions had.
+  test(
+    "a devbox capture whose profile installs the Envoy plugin defines the Envoy tools, reaches only its own stand-in listener, and is otherwise a devbox capture: its user-level CLAUDE.md, no Legion plugin, no scratch path in its body",
+    async () => {
+      await captures();
+      const base = f1Case("devbox-envoy-1");
+      const c: Case = {
+        ...base,
+        profile: {
+          ...base.profile,
+          skills: [...base.profile.skills, DISPATCH_FIRST],
+          plugins: builtPlugins(["pi-envoy"]),
+        },
+      };
+      expect(c.context).toBe("devbox");
+      const { record, body } = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+          session: SESSION,
+        }
+      );
+      expect(record.context.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+        ["pi-envoy", "extension"],
+      ]);
+      expect(record.pluginTools.envoy).toContain("envoy_send");
+      expect(record.pluginTools.devices).toEqual(expect.arrayContaining(record.pluginTools.envoy));
+      expect(record.pluginTools.leftOut).toEqual([]);
+      expect(record.extensionErrors).toEqual([]);
+      // Every Envoy endpoint the run was given is a listener of the capture's own on 127.0.0.1,
+      // the run reached them (an Envoy route of the recorder, or a dial of the NATS sink), and no
+      // stand-in daemon. In one value, so a failure shows every request the run made.
+      expect(Object.keys(record.envoy?.endpoints ?? {})).toEqual(["ENVOY_URL", "ENVOY_NATS_URL"]);
+      for (const endpoint of Object.values(record.envoy?.endpoints ?? {})) {
+        expect(endpoint).toMatch(/^(http|nats):\/\/127\.0\.0\.1:\d+(\/|$)/);
+      }
+      const { http, nats } = record.connections;
+      expect({
+        reachedEnvoy: nats > 0 || http.some((request) => /^\w+ \/envoy\/v1\//.test(request)),
+        daemon: http.filter((request) => /^\w+ \/legion\//.test(request)),
+        turn: http.includes("POST /v1/messages"),
+        http,
+      }).toEqual({ reachedEnvoy: true, daemon: [], turn: true, http });
+      expect(record.otherRequests).toEqual([]);
+      // No Legion plugin, pane or claim: the profile installs none.
+      expect(record.pluginTools.tools).not.toContain("legion");
+      expect(record.pluginTools.legion).toBe(false);
+      expect(record.legion).toBeNull();
+      // Its one context file is still the user-level CLAUDE.md, shown at the dev box's.
+      const system = systemBlocks(body).join("\n");
+      expect(system).toContain(
+        `<file path="${DEVBOX_CLAUDE}/CLAUDE.md">\n# Made-up user rules\n\nKeep each answer short.`
+      );
+      expect(system.match(/<file path="/g)).toHaveLength(1);
+      // The harness-strings rule holds with the listener's answers in the run: no path of the
+      // capture's scratch, no endpoint of its listeners, no id of the run's own session (which
+      // the answers echo) but in `metadata`, which a replay draws again for every run
+      // (gateway.ts's `freshIdentity`), and the session's own reminder.
+      const sent = JSON.stringify(body);
+      for (const scratchPath of [
+        record.scratch,
+        path.join(dir, "scratch"),
+        path.join(dir, "old"),
+        path.join(dir, "new"),
+      ]) {
+        expect(sent).not.toContain(scratchPath);
+      }
+      // Oh My Pi's own bash tool names 127.0.0.1 in every capture; no listener's port is named.
+      for (const endpoint of Object.values(record.envoy?.endpoints ?? {})) {
+        expect(sent).not.toContain(new URL(endpoint).host);
+      }
+      const sessions = path.join(record.scratch, "sessions");
+      const transcripts = readdirSync(sessions, { recursive: true })
+        .map(String)
+        .filter((file) => file.endsWith(".jsonl"));
+      expect(transcripts.length).toBe(1);
+      const runSession = readFileSync(path.join(sessions, transcripts[0] as string), "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { type: string; id?: string })
+        .find((entry) => entry.type === "session")?.id;
+      expect(runSession).toMatch(/^[0-9a-f-]{36}$/);
+      const { metadata: _, ...unreplaced } = body;
+      expect(JSON.stringify(unreplaced)).not.toContain(runSession as string);
+      const first = (body.messages as { content: { text?: string }[] }[])[0]?.content[0]?.text;
+      expect(first).toBe(SESSION_REMINDER);
+      expect(record.harness.cwd.value).toBe(SESSION_CWD);
+      expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
     },
     ROW_TIMEOUT_MS
   );
