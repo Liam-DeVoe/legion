@@ -3,7 +3,7 @@
   "findings": [
     {
       "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
-      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update, container.certificateSigningRequests.approve on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
       "role": "roles/container.admin",
       "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
       "permissions": [
@@ -44,7 +44,8 @@
         "container.mutatingWebhookConfigurations.create",
         "container.mutatingWebhookConfigurations.update",
         "container.validatingWebhookConfigurations.create",
-        "container.validatingWebhookConfigurations.update"
+        "container.validatingWebhookConfigurations.update",
+        "container.certificateSigningRequests.approve"
       ],
       "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
     },
@@ -725,6 +726,16 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "patch clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create certificatesigningrequests, update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client and kubernetes.io/* cluster-wide, so it can have a client certificate signed for any user or group but system:masters on cluster example-grade/us-east1/grade-cluster",
+      "role": "create certificatesigningrequests, update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client and kubernetes.io/* cluster-wide, so it can have a client certificate signed for any user or group but system:masters",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create certificatesigningrequests, update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client and kubernetes.io/* cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },

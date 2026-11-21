@@ -36,7 +36,9 @@
 #        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1;
 #   (bh) container.mutatingWebhookConfigurations.create and update and
 #        container.validatingWebhookConfigurations.create and update, each held on the project by an
-#        agent's Google service account, exit 1 (their RBAC rights are row bf's).
+#        agent's Google service account, exit 1 (their RBAC rights are row bf's);
+#   (bk) container.certificateSigningRequests.approve held on the project by an agent's Google
+#        service account exits 1 (its RBAC chain is row bj's).
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -238,7 +240,7 @@ member_iam_permissions=(container.clusters.impersonate container.clusterRoles.bi
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
   container.roleBindings.create container.roleBindings.update container.nodes.proxy container.mutatingWebhookConfigurations.create
   container.mutatingWebhookConfigurations.update container.validatingWebhookConfigurations.create
-  container.validatingWebhookConfigurations.update resourcemanager.projects.setIamPolicy
+  container.validatingWebhookConfigurations.update container.certificateSigningRequests.approve resourcemanager.projects.setIamPolicy
   resourcemanager.folders.setIamPolicy resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy
   secretmanager.secrets.setIamPolicy iam.roles.update)
 member_iam_row() {
@@ -299,4 +301,11 @@ if row bh; then
   each new_container_row container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update \
     container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
   passed "(bh) container.mutatingWebhookConfigurations.create and update and container.validatingWebhookConfigurations.create and update, each held by an agent's Google service account, exit 1"
+fi
+
+# --- (bk) The certificate approval permission, through IAM: GKE's IAM authorizer checks
+# container.certificateSigningRequests.approve for an approval (row bj has its RBAC chain). ---
+if row bk; then
+  each new_container_row container.certificateSigningRequests.approve
+  passed "(bk) container.certificateSigningRequests.approve held by an agent's Google service account exits 1"
 fi

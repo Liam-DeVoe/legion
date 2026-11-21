@@ -58,10 +58,13 @@ sa_record() {
 declare -A FOUND_SAS=()
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
-# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS.
-# Returns 1 when the witness was refused.
+# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS,
+# and the certificate signing chain's (CSR_RIGHTS), which is one finding for a principal allowed
+# both the approval and a signer, naming create too when it is allowed. Returns 1 when the witness
+# was refused.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false who
+  local principal label verdict error reason witness_refused=false who chain
+  local -A csr_create=() csr_approval=() csr_signers=()
   FOUND_SAS=()
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
@@ -70,6 +73,15 @@ judge_reviews() {
     fi
     case "$verdict" in
       allowed)
+        case "$label" in
+          "$CSR_CREATE") csr_create[$principal]=1; continue ;;
+          "$CSR_APPROVAL") csr_approval[$principal]="$reason"; continue ;;
+          "$CSR_SIGNER_PREFIX"*)
+            label="${label#"$CSR_SIGNER_PREFIX"}"
+            csr_signers[$principal]="${csr_signers[$principal]:+${csr_signers[$principal]} and }${label% cluster-wide}"
+            continue
+            ;;
+        esac
         if [[ "$principal" == seed:* ]]; then
           who="${principal#seed:system:serviceaccount:}"
           [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
@@ -83,6 +95,19 @@ judge_reviews() {
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
+  while IFS= read -r principal; do
+    [ -n "${csr_signers[$principal]:-}" ] || continue
+    chain="${csr_create[$principal]:+create certificatesigningrequests, }update certificatesigningrequests/approval and approve signers ${csr_signers[$principal]} cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
+    if [[ "$principal" == seed:* ]]; then
+      who="${principal#seed:system:serviceaccount:}"
+      [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$chain"
+      continue
+    fi
+    finding "$principal" "$chain$2" "$chain" "$3" "$chain" "${csr_approval[$principal]}"
+    if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$chain"
+    fi
+  done < <(printf '%s\n' ${csr_approval[@]+"${!csr_approval[@]}"} | sed '/^$/d' | sort)
   if [ "$witness_refused" = true ]; then
     unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
     return 1

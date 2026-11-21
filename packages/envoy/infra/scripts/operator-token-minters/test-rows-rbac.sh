@@ -62,7 +62,12 @@
 #        or cannot be read on the operator's cluster or another, reads UNKNOWN;
 #   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
 #        (ci-bot@corp.example) bound to cluster-admin reads UNKNOWN: that cluster's own
-#        authenticator names its users, so the name proves no person.
+#        authenticator names its users, so the name proves no person;
+#   (bj) a client certificate signed by the cluster: legion/worker that may create certificate
+#        signing requests, update their approval and approve the signer
+#        kubernetes.io/kube-apiserver-client (rv9, beside a person who may mint the operator's
+#        token), one that may approve for kubernetes.io/* without create, and ci/runner on another
+#        cluster each exit 1 naming the chain; create alone exits 0.
 
 # --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
 # (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
@@ -627,4 +632,47 @@ if row bi; then
   want_text "UNKNOWN live: Workload Identity on fleet member edge: it takes its users from its own authenticator, not Google, so the User subjects bound here that look like emails (ci-bot@corp.example) are not known to be people" \
     "ci-bot@corp.example bound to cluster-admin on a non-GKE member"
   passed "(bi) an email-shaped User bound on a fleet member that is no GKE cluster reads UNKNOWN"
+fi
+
+# --- (bj) A client certificate the cluster signs. A certificate signed for
+# kubernetes.io/kube-apiserver-client authenticates as any user and groups its request names but
+# system:masters, so whoever may update a request's approval and approve that signer becomes anyone,
+# a person who may mint the operator's token included. ---
+csr_row() {
+  local who=system:serviceaccount:legion:worker cluster=operator-cluster subject suffix="" want
+  base_world
+  subject="$(sa_subject legion worker)"
+  if [ "$1" = other-cluster ]; then
+    add_cluster other-cluster us-east1
+    add_sa other-cluster ci runner
+    cluster=other-cluster subject="$(sa_subject ci runner)" who=system:serviceaccount:ci:runner
+    suffix=" on cluster $project/us-east1/other-cluster"
+  fi
+  case "$1" in
+    rv9)
+      subject_grant operator-cluster "$(user_subject ops@example.com)" create "" serviceaccounts token envoy-operator envoy-operator
+      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
+      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
+      want="create certificatesigningrequests, update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
+      ;;
+    wildcard | other-cluster)
+      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" "kubernetes.io/*"
+      want="update certificatesigningrequests/approval and approve signers kubernetes.io/* cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
+      ;;
+    create-only)
+      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
+      run
+      want_status 0 "create certificatesigningrequests alone"
+      return
+      ;;
+  esac
+  run
+  want_status 1 "a certificate signing chain ($1)"
+  want_line "FINDING $who: $want$suffix" "a certificate signing chain ($1)"
+}
+if row bj; then
+  each csr_row rv9 wildcard other-cluster create-only
+  passed "(bj) who may approve kubernetes.io/kube-apiserver-client certificate signing requests, with create (rv9) or without, on the operator's cluster or another, exits 1 naming the chain; create alone exits 0"
 fi

@@ -233,9 +233,15 @@
 # replicasets, statefulsets, daemonsets, jobs and cronjobs, each of which runs a pod as the
 # ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
 # node; get, list and watch secrets; and, cluster-wide on every cluster of the pool, create, update
-# and patch of each admissionregistration.k8s.io resource its discovery lists. roles/container.admin
-# names no permission for the admission policies (read with `gcloud iam roles describe` on
-# 2026-11-21), so IAM is asked the webhook configurations' alone.
+# and patch of each admissionregistration.k8s.io resource its discovery lists, and the certificate
+# signing chain: a certificate signed for kubernetes.io/kube-apiserver-client authenticates as any
+# user and groups its request names but system:masters, and GKE cannot turn the certificates API
+# off, so a principal allowed update certificatesigningrequests/approval and approve on signers
+# (kubernetes.io/kube-apiserver-client or kubernetes.io/*, by name) is one finding, naming create
+# certificatesigningrequests too when it is allowed; create alone signs nothing. The code step does
+# not read the chain. roles/container.admin names no permission for the admission policies (read
+# with `gcloud iam roles describe` on 2026-11-21), so IAM is asked the webhook configurations'
+# alone, and container.certificateSigningRequests.approve for the chain.
 #
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,

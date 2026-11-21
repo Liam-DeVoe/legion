@@ -4109,7 +4109,8 @@ precondition for the `operator` entry, run again before go-live. It runs with th
 shell it runs in, requests no credential, and lists each principal that is not a person and can
 mint the token of a guarded ServiceAccount (the operator's, the secrets broker's, and each
 `--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, write
-a binding or a webhook or admission policy, mint the operator's Google service account's token, make
+a binding or a webhook or admission policy, have the cluster sign it a client certificate for any
+user, mint the operator's Google service account's token, make
 a guarded namespace on another cluster of the project or of the workload pool's fleet, register a
 cluster to that fleet, set IAM policy over any of these, or write the writer hold's tables beside
 the broker's routes, and each principal that can become one of those: through IAM impersonation,

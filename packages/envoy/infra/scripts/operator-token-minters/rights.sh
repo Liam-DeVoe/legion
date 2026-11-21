@@ -74,6 +74,21 @@ watch - secrets - ns
 # never a name it does not; every API server serves the two webhook configurations, so a discovery
 # that lists either one short is not whole.
 ADMISSION_ALWAYS=(mutatingwebhookconfigurations validatingwebhookconfigurations)
+# The certificate signing chain, asked cluster-wide on every cluster of the pool: a certificate
+# signed for kubernetes.io/kube-apiserver-client authenticates as any user and groups its request
+# names but system:masters, and GKE cannot turn the certificates API off. Whoever may update a
+# request's approval and approve that signer (by its name, or kubernetes.io/*, the two names the API
+# server asks) can become anyone, so judge_reviews reports that pair as one finding, naming create
+# too when the principal may make its own request; create alone signs nothing.
+CSR_CREATE="create certificatesigningrequests.certificates.k8s.io cluster-wide"
+CSR_APPROVAL="update certificatesigningrequests/approval.certificates.k8s.io cluster-wide"
+CSR_SIGNER_PREFIX="approve signers.certificates.k8s.io "
+CSR_RIGHTS="$(jq -n -c --arg create "$CSR_CREATE" --arg approval "$CSR_APPROVAL" --arg signer "$CSR_SIGNER_PREFIX" '
+  [{verb: "create", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "", ns: "", name: "", label: $create},
+   {verb: "update", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "approval", ns: "", name: "", label: $approval},
+   ("kubernetes.io/kube-apiserver-client", "kubernetes.io/*"
+    | {verb: "approve", group: "certificates.k8s.io", resource: "signers", sub: "", ns: "", name: ., label: "\($signer)\(.) cluster-wide"})]
+  | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))})')"
 # The container.* permission of each right: what GKE's IAM authorizer checks for the same call,
 # with container.namespaces.create and container.serviceAccounts.create for the Workload Identity
 # step's other clusters. watch secrets is container.secrets.list's, as list is, and patch is
@@ -92,6 +107,7 @@ CONTAINER_PERMISSIONS=(
   container.secrets.list container.namespaces.create container.serviceAccounts.create
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
+  container.certificateSigningRequests.approve
 )
 GSA_PERMISSIONS=(
   iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken iam.serviceAccounts.signJwt
@@ -113,6 +129,7 @@ MEMBER_PERMISSIONS=(container.namespaces.create container.serviceAccounts.create
   container.roles.escalate container.roleBindings.create container.roleBindings.update container.nodes.proxy
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
+  container.certificateSigningRequests.approve
   "${IAM_WRITE_PERMISSIONS[@]}")
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
@@ -183,7 +200,8 @@ done <<<"$RIGHTS_TABLE" | jq -R -s -c '[split("\n")[] | select(length > 0) | spl
 # holder grants itself any of those: impersonate users, groups and serviceaccounts, escalate and
 # bind clusterroles, and create, patch and update clusterrolebindings, cluster-wide, and create and
 # get nodes/proxy; bind and escalate roles and create, patch and update rolebindings in each guarded
-# namespace (guard-rights.jq). The admission rights are each cluster's own (admission_rights).
-GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq")"
+# namespace (guard-rights.jq); and the certificate signing chain's rights (CSR_RIGHTS). The
+# admission rights are each cluster's own (admission_rights).
+GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq" | jq -c --argjson csr "$CSR_RIGHTS" '. + $csr')"
 GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
 GUARDED_TEXT="${GUARDED_TEXT%, }"
