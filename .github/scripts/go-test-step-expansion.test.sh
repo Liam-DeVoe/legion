@@ -84,6 +84,7 @@ check "the text keeps the quotes the line wrote" \
   "$(is "$(text_of "$line")" "go test -run '^(TestOne|TestTwo)\$' ./pkg")"
 
 echo "case: what it leaves for the caller to refuse"
+# shellcheck disable=SC2016 # a step's own line, its $EXTRA left for the reader, not this shell
 check "a value needing the shell is left in place" \
   "$(is "$(command_of 'GOFLAGS=$EXTRA go test ./pkg')" 'GOFLAGS=$EXTRA go test ./pkg')"
 check "a wrapper GO_WRAPPERS does not name is left in place" \
@@ -144,6 +145,7 @@ done
 echo "case: a -skip is read rather than dropped, in either form a step may write it"
 pattern='^(TestTheShippedWordsNameTheWaitingLineBand)$'
 for form in "-skip '$pattern'" "-skip=$pattern"; do
+  # shellcheck disable=SC2016 # Python source; its backquoted `text` is a comment, no expansion
   read -r in_packages retained <<<"$(py 'step = ex.Step(workflow="(a test case)", job="(a job)",
                name="(a step)", workdir="packages/envoy", script="")
 text = f"go test -count=1 {sys.argv[1]} ./internal/textcheck/"
@@ -269,17 +271,21 @@ check "the probe's copy is the same, line for line" "$(is "$ours" "$theirs")"
 # and the assignment calls a script the reader refused; so each leg is read as a step of its own,
 # with GitHub's values in its text, and a test two legs run is a pair two steps run.
 echo "case: a matrix of one key is read once per leg, with that leg's values"
+# shellcheck disable=SC2016 # GitHub's ${{ … }} expressions, as a step writes them; the reader substitutes them
 legs=$(py 'body = {"strategy": {"fail-fast": False, "matrix": {"shard": [1, 2, 3]}}}
 for suffix, values in ex.legs("(a job)", body):
     print(suffix.strip(), ex.substitute(sys.argv[1], values))' \
   'run ${{ strategy.job-index }} of ${{strategy.job-total}} as shard ${{ matrix.shard }}, at ${{ runner.temp }}')
+# shellcheck disable=SC2016 # the expression the reader must leave as written
 check "three legs, each its index, the count and its value; another expression is left as written" "$(is "$legs" \
   '(leg 1 of 3, shard 1) run 0 of 3 as shard 1, at ${{ runner.temp }}
 (leg 2 of 3, shard 2) run 1 of 3 as shard 2, at ${{ runner.temp }}
 (leg 3 of 3, shard 3) run 2 of 3 as shard 3, at ${{ runner.temp }}')"
+# shellcheck disable=SC2016 # Python source holding an expression the reader must leave as written
 check "a job with no matrix is one leg, its text unchanged" \
   "$(is "$(py 'print([(s, ex.substitute("x ${{ matrix.shard }}", v)) for s, v in ex.legs("(a job)", {})])')" \
     "[('', 'x \${{ matrix.shard }}')]")"
+# shellcheck disable=SC2016 # a computed matrix as a workflow writes it, ${{ … }} not expanded
 for shape in '{"shard": [1, 2], "os": ["a"]}' '{"include": [{"shard": 1}]}' '{"shard": "${{ fromJSON(x) }}"}' '{"shard": []}'; do
   refused=$(py 'import json
 try:
@@ -292,6 +298,7 @@ else:
 done
 
 echo "case: envoy-go-race-api's step is read once per leg, each assigning its -run from the shard script"
+# shellcheck disable=SC2016 # Python source testing for ${{ left in a leg's text
 api=$(py 'import yaml
 path = ".github/workflows/ci-job-envoy-go-race-api.yaml"
 found = {path: yaml.safe_load((ex.ROOT / path).read_text())}
