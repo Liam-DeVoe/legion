@@ -2021,7 +2021,10 @@ check_passed_on() {
     [ "$(claim_json "${agent[$store:planner.token]}" | jq -r .state)" = retired ]; then
     record_result "$crit" PASS "replied as $expect, passed to the controller with the asker; the planner's claim stayed retired"
   else
-    record_result "$crit" FAIL "kind $kind (want $expect), or not listed in questionsForController, or the claim moved"
+    # A fault turns any reply into kind not_answered (answer.Answer), so the kind alone can read
+    # as wanted when the reply was refused: the line names the fault, and what the controller
+    # was told, beside it.
+    record_result "$crit" FAIL "kind $kind (want $expect), fault $(jq -r '(.fault // "") | if . == "" then "none" else . end' <<<"${line:-null}")$(jq -r 'if (.detail // "") == "" then "" else " (" + .detail + ")" end' <<<"${line:-null}"), controller reason $(legion_cmd state --json | jq -r --arg q "$event" '[.questionsForController[]? | select((((.id // "") + " " + (.ref // "")) | contains($q))) | .reason] | if length == 0 then "none" else join(",") end'), claim $(claim_json "${agent[$store:planner.token]}" | jq -r .state)"
   fi
 }
 
