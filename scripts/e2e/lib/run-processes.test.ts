@@ -20,7 +20,8 @@ const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
 const skip = skipWithout("perl");
-// python3: the newline-name row renames its process through prctl (ctypes).
+// python3: the newline-name row renames its process through prctl (ctypes), and the not-dumpable
+// rows make processes not dumpable through it (unreadablePy).
 const withoutPython = skipWithout("python3");
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
@@ -40,6 +41,7 @@ beforeAll(() => {
     `#!/bin/sh\nprintf 'grep\\n' >>"${calls}"\nexec /usr/bin/grep "$@"\n`,
     { mode: 0o755 }
   );
+  writeFileSync(unreadablePy, unreadableScript);
 });
 
 // Every process a row starts, with its start time read when it is recorded, killed when the row ends
@@ -409,6 +411,229 @@ exit 2`
     expect(unreadable.said).toBe("");
     expect(unreadable.out).toBe("run_processes 0\nstop_marked_processes 0\n");
     expect(unreadable.named).toContain(String(marked));
+    expect(await gone(marked)).toBe(true);
+  }
+);
+
+// unreadablePy READY MODE [GO] is a python3 whose /proc/<pid>/environ is root's, so this user's
+// test of it fails: it makes itself not dumpable (prctl PR_SET_DUMPABLE 0, as ssh-agent and
+// gpg-agent do at their start), checks that PR_GET_DUMPABLE reads 0, writes its pid to READY
+// through a rename, and sleeps. MODE `orphan` first forks and leaves its session (setsid), and the
+// parent exits once READY is there, as ssh-agent backgrounds: the kernel gives the process to a
+// reaper above the shell that ran it. MODE `wait` first waits for the file GO, then forks the
+// process that does so, and itself sleeps on. MODE `zombie` forks a child that exits at once and is
+// never waited for, and writes the child's pid: a zombie's environ is root's as well.
+const unreadablePy = join(dir, "unreadable.py");
+const unreadableScript = `import ctypes, os, sys, time
+ready, mode = sys.argv[1], sys.argv[2]
+def wait_for(path):
+    for _ in range(400):
+        if os.path.exists(path):
+            return
+        time.sleep(0.05)
+    sys.exit("no " + path)
+def say(pid):
+    with open(ready + ".tmp", "w") as f:
+        f.write("%d\\n" % pid)
+    os.rename(ready + ".tmp", ready)
+if mode == "zombie":
+    child = os.fork()
+    if child == 0:
+        os._exit(0)
+    say(child)
+    time.sleep(60)
+    sys.exit(0)
+if mode == "wait":
+    wait_for(sys.argv[3])
+    if os.fork() != 0:
+        time.sleep(60)
+        sys.exit(0)
+elif mode == "orphan":
+    if os.fork() != 0:
+        wait_for(ready)
+        os._exit(0)
+    os.setsid()
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:
+    sys.exit("prctl(PR_SET_DUMPABLE, 0) did not hold")
+say(os.getpid())
+time.sleep(60)
+`;
+// unreadableSh holds the shell functions of the not-dumpable rows' harnesses: `unreadable READY
+// MODE` runs unreadablePy as the run runs a process, MODE `child` and `zombie` in the background
+// and `orphan` in the foreground, which returns once its parent has exited; `linked READY` waits for
+// READY, sets `pid` to the pid it names and adds that process to the row's proc root unless it is
+// there already; `state PID` prints PID's state letter, or `gone`; and `readable PID` whether this
+// user may read its environ.
+const unreadableSh = `unreadable() {
+  case $2 in
+    orphan) python3 -I ${JSON.stringify(unreadablePy)} "$@" </dev/null >/dev/null 2>"$1.err" ;;
+    *) python3 -I ${JSON.stringify(unreadablePy)} "$@" </dev/null >/dev/null 2>"$1.err" & ;;
+  esac
+  linked "$1"
+}
+linked() {
+  local i
+  for i in $(seq 1 200); do [ ! -s "$1" ] || break; sleep 0.05; done
+  [ -s "$1" ] || { echo "no $1: $(cat "$1.err" 2>/dev/null)" >&2; return 1; }
+  read -r pid <"$1"
+  [ -e "$proc_root/$pid" ] || ln -s "/proc/$pid" "$proc_root/$pid"
+}
+state() {
+  local s=
+  { IFS= read -r -d '' s <"/proc/$1/stat"; } 2>/dev/null || :
+  [ -n "$s" ] || { echo gone; return 0; }
+  s=\${s##*) }
+  echo "\${s%% *}"
+}
+readable() { if { : <"/proc/$1/environ"; } 2>/dev/null; then echo readable; else echo unreadable; fi; }`;
+
+// pastStarts waits until the kernel's boot clock, in the clock ticks of a process's start (stat
+// field 22), has passed the start of each of PIDS: the walk tells a process older than the run's
+// shell by its start, on a clock of 10 ms ticks, so one that started in the same tick as the
+// harness's shell would read as one the run started. It waits on the platform's clock, which no
+// fake timer moves, and gives up after 2 s.
+async function pastStarts(pids: number[]): Promise<void> {
+  const tck = Number(Bun.spawnSync(["getconf", "CLK_TCK"]).stdout.toString().trim());
+  const latest = Math.max(...pids.map((pid) => Number(startOf(pid))));
+  for (let i = 0; i < 200; i++) {
+    const uptime = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+    if (Math.floor(uptime * tck) > latest) return;
+    await Bun.sleep(10);
+  }
+  throw new Error(`the boot clock did not pass tick ${latest} within 2 s`);
+}
+
+test.skipIf(skip || withoutPython)(
+  "a walk that cannot read the environment of a process of this user started during the run is no answer: a child of the run that made itself not dumpable, one that did so once it had left for a reaper as ssh-agent does, and one grep could not read after the test passed it make run_processes and stop_marked_processes exit 2 naming it, and leave it running",
+  async () => {
+    // The filter that keeps grep to the environments this user may read took a not-dumpable process
+    // of this user for another user's, so the walk read clean and the sweep ended nothing while a
+    // process the run started ran on, its mark unread: an ssh-agent the run started, or any process
+    // that sets PR_SET_DUMPABLE to 0. Each harness starts its process after its own shell, as a run
+    // starts its processes, and adds it to the row's proc root. The third is a sleep that grep says
+    // it could not read, as for a process that made itself not dumpable between this user's test
+    // and grep's open: its grep runs the real one and then says so, with exit 2.
+    const work = join(dir, "not-dumpable");
+    mkdirSync(work);
+    const raced = join(dir, "grep-raced");
+    mkdirSync(raced);
+    writeFileSync(
+      join(raced, "grep"),
+      `#!/bin/bash
+/usr/bin/grep "$@"
+read -r p <"$WORK/raced.pid"
+echo "grep: $proc_root/$p/environ: Permission denied" >&2
+exit 2
+`,
+      { mode: 0o755 }
+    );
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilRunning(marked, "sleep");
+    const sweep = (start: string, path = "") => {
+      const r = harness(
+        work,
+        `${unreadableSh}
+${start}
+echo "pid $pid"
+echo "environ $(readable "$pid")"
+[ "$(proc_parent "$pid")" = "$$" ] && echo "parent shell" || echo "parent reaper"
+st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $st"
+st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_marked_processes $st"
+echo "after $(state "$pid")"`,
+        path
+      );
+      const pid = /^pid (\d+)$/m.exec(r.out)?.[1] ?? "";
+      if (pid !== "") started.push(Number(pid));
+      return {
+        err: r.err,
+        out: r.out.replace(/^pid \d+\n/m, ""),
+        pid,
+        said: readFileSync(join(work, "rp.err"), "utf8"),
+      };
+    };
+    const child = sweep(`unreadable "$work/child.ready" child`);
+    const orphan = sweep(`unreadable "$work/orphan.ready" orphan`);
+    const read = sweep(
+      `sleep 60 </dev/null >/dev/null 2>&1 &
+pid=$!
+echo "$pid" >"$work/raced.pid"
+ln -s "/proc/$pid" "$proc_root/$pid"`,
+      raced
+    );
+    for (const [name, r, environ, parent] of [
+      ["child", child, "unreadable", "shell"],
+      ["orphan", orphan, "unreadable", "reaper"],
+      ["raced", read, "readable", "shell"],
+    ] as const) {
+      expect({ name, err: r.err, out: r.out }).toEqual({
+        name,
+        err: "",
+        out: `environ ${environ}\nparent ${parent}\nrun_processes 2\nstop_marked_processes 2\nafter S\n`,
+      });
+      // One line, naming this process alone: the processes earlier sweeps of the row started, before
+      // this harness's shell, are in its proc root too and are no word of it.
+      expect({ name, said: r.said.trimEnd() }).toEqual({
+        name,
+        said: expect.stringMatching(
+          new RegExp(
+            `^procs_naming: process ${r.pid} \\([^)\\n]+\\) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming \\S+ were not checked$`
+          )
+        ),
+      });
+    }
+    expect(state(marked)).toBe("S");
+  }
+);
+
+test.skipIf(skip || withoutPython)(
+  "a process of this user whose environment cannot be read and that cannot carry the run's mark does not fail the walk: one not dumpable from before the run, as a devbox's own ssh-agent is, one another session starts during the run below a process older than the run, and a zombie of the run's",
+  async () => {
+    // A devbox runs its user's ssh-agent, gpg-agent and forward, none dumpable; other sessions of
+    // the same user start more during a run (a tailscaled login session's process, another agent's
+    // tool); and a zombie's environ is root's too. A walk that failed on each would fail every
+    // sweep there. The first started before the harness's shell; the second is the child that a
+    // process older than that shell, the row's stand-in for another session, forks once the
+    // harness has started; the third is the zombie child of a process the harness started. The
+    // marked sleep is still named and ended.
+    const work = join(dir, "cannot-carry");
+    mkdirSync(work);
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    const before = spawn(["python3", "-I", unreadablePy, join(work, "before.ready"), "child"], {
+      cwd: dir,
+    });
+    const session = spawn(
+      ["python3", "-I", unreadablePy, join(work, "session.ready"), "wait", join(work, "go")],
+      { cwd: dir }
+    );
+    await untilRunning(marked, "sleep");
+    await pastStarts([before, session]);
+    const r = harness(
+      work,
+      `${unreadableSh}
+linked "$work/before.ready"; before=$pid
+: >"$work/go"
+linked "$work/session.ready"; session=$pid
+unreadable "$work/zombie.ready" zombie; zombie=$pid
+echo "pids $session $!"
+for i in $(seq 1 200); do [ "$(state "$zombie")" != Z ] || break; sleep 0.05; done
+echo "before $(state "$before") $(readable "$before"), session $(state "$session") $(readable "$session"), zombie $(state "$zombie")"
+st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?; echo "run_processes $st"
+st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_marked_processes $st"
+echo "after: before $(state "$before"), session $(state "$session"), zombie $(state "$zombie")"`
+    );
+    for (const pid of /^pids (\d+) (\d+)$/m.exec(r.out)?.slice(1) ?? []) started.push(Number(pid));
+    expect(r.err).toBe("");
+    expect({
+      out: r.out.replace(/^pids .*\n/m, ""),
+      said: readFileSync(join(work, "rp.err"), "utf8"),
+      stop: readFileSync(join(work, "stop.err"), "utf8"),
+    }).toEqual({
+      out: "before S unreadable, session S unreadable, zombie Z\nrun_processes 0\nstop_marked_processes 0\nafter: before S, session S, zombie Z\n",
+      said: "",
+      stop: "",
+    });
+    expect(pids(readFileSync(join(work, "rp.out"), "utf8"))).toEqual([String(marked)]);
     expect(await gone(marked)).toBe(true);
   }
 );
