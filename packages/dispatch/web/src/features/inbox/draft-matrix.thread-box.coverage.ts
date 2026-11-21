@@ -364,6 +364,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("InboxBody | ThreadCardRow | form | if (paneShown) return …", { reason: REASONS[13] }),
   ...answers("InboxBody | ThreadCardRow | form | (paneShown) ? …", { reason: REASONS[13] }),
   ...answers("InboxBody | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
+  ...answers("InboxBody | ThreadCardRow | form | <section className>", { reason: REASONS[13] }),
   ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
   ...answers("InboxBody | - | form | if (paneShown && paneSelection.selectedNow.current === id)", {
