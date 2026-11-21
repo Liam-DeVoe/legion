@@ -106,6 +106,10 @@ export interface OwnerResolution {
   readonly owner: Owner | null;
   /** The conversation upload a `dispatch://agent/...` ref names; it has no issue or project. */
   readonly agentArtifact?: AgentArtifactRef;
+  /** Set when the call needed an owner and the resolution pushed that it found none: no issue and
+   *  no LEGION_ISSUE, a LEGION_ISSUE that is not an issue, or a bare number with no GitHub
+   *  repository in cwd. Unset whenever the call names its owner or rightly has none. */
+  readonly ownerMissing?: true;
 }
 export interface CheckedCall {
   /** Every problem the check found; the call is refused once, listing them all. */
