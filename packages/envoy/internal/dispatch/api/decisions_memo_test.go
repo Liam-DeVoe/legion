@@ -2,27 +2,33 @@ package api
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// heldVersions is the version numbers memo keeps, the most recently used first. It fails t unless
-// what the memo charges is exactly what its entries were charged, its map and its list hold the
-// same entries, and the charge is within the memo's bound.
-func heldVersions(t *testing.T, memo *storedCutMemo) []int {
+// heldKeys is the keys memo keeps, the most recently used first: each stored version by its
+// number, and the document as it stands as "live". It fails t unless what the memo charges is
+// exactly what its entries were charged, its map and its list hold the same entries, and the
+// charge is within the memo's bound.
+func heldKeys(t *testing.T, memo *documentCutMemo) []string {
 	t.Helper()
-	var numbers []int
+	var keys []string
 	var charged int64
 	for element := memo.order.Front(); element != nil; element = element.Next() {
-		entry := element.Value.(*storedCutEntry)
-		if memo.items[entry.key] != element {
-			t.Fatalf("version %d is in the memo's list but its map names another element", entry.key.number)
+		entry := element.Value.(*documentCutEntry)
+		name := strconv.Itoa(entry.key.number)
+		if entry.key.live {
+			name = "live"
 		}
-		numbers = append(numbers, entry.key.number)
+		if memo.items[entry.key] != element {
+			t.Fatalf("key %s is in the memo's list but its map names another element", name)
+		}
+		keys = append(keys, name)
 		charged += entry.size
 	}
-	if len(memo.items) != len(numbers) {
-		t.Fatalf("the memo's map holds %d entries and its list %d", len(memo.items), len(numbers))
+	if len(memo.items) != len(keys) {
+		t.Fatalf("the memo's map holds %d entries and its list %d", len(memo.items), len(keys))
 	}
 	if memo.held != charged {
 		t.Fatalf("the memo charges %d bytes, and its entries were charged %d", memo.held, charged)
@@ -30,21 +36,23 @@ func heldVersions(t *testing.T, memo *storedCutMemo) []int {
 	if memo.held > memo.limit {
 		t.Fatalf("the memo charges %d bytes, past its bound of %d", memo.held, memo.limit)
 	}
-	return numbers
+	return keys
 }
 
-// The memo of stored versions' cuts (storedCuts) is held to its bound in bytes, under a bound of
+// The memo of a document's cuts (documentCuts) is held to its bound in bytes, under a bound of
 // three entries here rather than 32 MiB. Each store keeps what is charged within the bound,
 // dropping the least recently used entries first, as many as the new entry needs; a read marks
 // its entry the most recently used; an entry charged more than the whole bound is not kept, and
 // the entries already kept stay; a version whose markdown the parser refuses is parsed once and
-// then served as refused; and an entry is served only for the markdown it was cut from.
-func TestTheStoredCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound(t *testing.T) {
+// then served as refused; an entry is served only for the markdown it was cut from; and the
+// document as it stands is kept under a key of its own, which no stored version's key is.
+func TestTheDocumentCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound(t *testing.T) {
 	const markdownBytes = 100
-	entry := int64(markdownBytes + storedCutOverheadBytes)
-	memo := newStoredCutMemo(3 * entry)
-	key := func(number int) storedVersionKey {
-		return storedVersionKey{artifactID: "2e5d211a-b79d-48a7-9e08-3eece00fffed", number: number}
+	const artifactID = "2e5d211a-b79d-48a7-9e08-3eece00fffed"
+	entry := int64(markdownBytes + documentCutOverheadBytes)
+	memo := newDocumentCutMemo(3 * entry)
+	key := func(number int) documentCutKey {
+		return documentCutKey{artifactID: artifactID, number: number}
 	}
 	// markdown is version number's text, size bytes long; cutOf is a cut of it with no decisions,
 	// charged its bytes and one overhead.
@@ -57,14 +65,14 @@ func TestTheStoredCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound(t *testing.T
 	}
 	holds := func(want string) {
 		t.Helper()
-		if got := fmt.Sprint(heldVersions(t, memo)); got != want {
-			t.Fatalf("the memo holds versions %s, most recently used first, want %s", got, want)
+		if got := fmt.Sprint(heldKeys(t, memo)); got != want {
+			t.Fatalf("the memo holds %s, most recently used first, want %s", got, want)
 		}
 	}
 
 	for number := 1; number <= 3; number++ {
 		memo.put(key(number), cutOf(number, markdownBytes))
-		heldVersions(t, memo)
+		heldKeys(t, memo)
 	}
 	holds("[3 2 1]")
 	if memo.held != memo.limit {
@@ -82,7 +90,7 @@ func TestTheStoredCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound(t *testing.T
 	holds("[5 4 1]")
 
 	// An entry charged two entries' bytes drops the two least recently used.
-	memo.put(key(6), cutOf(6, int(2*entry)-storedCutOverheadBytes))
+	memo.put(key(6), cutOf(6, int(2*entry)-documentCutOverheadBytes))
 	holds("[6 5]")
 
 	// An entry charged more than the whole bound is not kept, and drops nothing.
@@ -119,4 +127,22 @@ func TestTheStoredCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound(t *testing.T
 		t.Fatalf("the cut of version 8's other markdown = %#v after %d parses, want it parsed again", cut, parsed)
 	}
 	holds("[8 6]")
+
+	// The document as it stands is kept under its live key, apart from every stored version's: its
+	// cut is no cut of version 0, the number that names the time before the document's first
+	// version, though the live key leaves its own number at 0. Kept, it drops version 6, the least
+	// recently used, and a second cut of it parses nothing.
+	live := documentCutKey{artifactID: artifactID, live: true}
+	standing := markdown(9, markdownBytes)
+	if cut := memo.cut(live, standing); parsed != 3 || cut.markdown != standing {
+		t.Fatalf("the cut of the document as it stands = %#v after %d parses, want it parsed once", cut, parsed)
+	}
+	if _, held := memo.get(key(0), standing); held {
+		t.Fatal("the memo serves the document as it stands under the key of version 0")
+	}
+	memo.cut(live, standing)
+	if parsed != 3 {
+		t.Fatalf("a second cut of the document as it stands parsed it again: %d parses, want 3", parsed)
+	}
+	holds("[live 8]")
 }

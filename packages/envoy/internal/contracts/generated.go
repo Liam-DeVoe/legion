@@ -292,6 +292,13 @@ const DispatchEventBodyMax = 32000
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = 262144
 
+// MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
+// MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
+// MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the
+// server's refusal and the one `dispatch artifact` makes before it sends cannot drift apart.
+const MarkdownDocumentMaxBytes = 1048576
+const MarkdownDocumentTooLarge = "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type"
+
 // PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
 // from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
 // counted as Unicode code points, the rating's reason holds. Generated from

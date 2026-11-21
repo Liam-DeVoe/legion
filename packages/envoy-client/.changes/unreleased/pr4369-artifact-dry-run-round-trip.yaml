@@ -4,12 +4,14 @@ custom:
 body: |-
   `dispatch artifact --dry-run` with inline content asks Dispatch how it would store the text
   (`POST /api/v1/markdown/round-trip`), as the call does, and refuses a text that Dispatch would
-  store under another spelling with the call's own refusal and exit code. It stores nothing. When
-  Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry run
-  passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry run
-  sends no second attempt after a failed one, and names the failure Dispatch answers, such as a
-  500; where Dispatch says the token is no longer live, it presents a fresh token once. A text
-  longer than the check reads (Dispatch's 413) passes too, saying the call refuses that upload
-  every time it is sent. `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then
-  checks the arguments alone, as it did before. It leaves a `dispatch result` record's dry run
-  as it was, asking Dispatch for the pull-request body line, as it did before too.
+  store under another spelling with the call's own refusal and exit code. It stores nothing. The
+  dry run and the call refuse a text past the document limit (1 MiB of UTF-8) with Dispatch's own
+  `CAP_EXCEEDED` message, before they send anything, and a text past the round trip's own limit
+  (Dispatch's 413) with the call's refusal; each exits 1. When Dispatch gives no answer within
+  5 s, or has no such route, or is not configured, the dry run passes and says so on stderr, so
+  its standard output is the arguments' JSON alone. The dry run sends no second attempt after a
+  failed one, and names the failure Dispatch answers, such as a 500; where Dispatch says the token
+  is no longer live, it presents a fresh token once. `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's
+  dry run local: it then checks the arguments alone, as it did before. It leaves a
+  `dispatch result` record's dry run as it was, asking Dispatch for the pull-request body line,
+  as it did before too.

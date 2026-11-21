@@ -1947,7 +1947,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
     dryRunHelp:
-      "Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses a text that Dispatch would store under another spelling with the call's own refusal. Otherwise it prints the arguments as JSON. It stores nothing. When Dispatch cannot answer, it says so on stderr and passes.",
+      "Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses, with the call's own refusal and exit code, a text that Dispatch would store under another spelling or that the call refuses for its size: one past 1 MiB of UTF-8, which it refuses without asking, or one longer than the round trip reads. Otherwise it prints the arguments as JSON. It stores nothing. When Dispatch cannot answer, it says so on stderr and passes.",
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +

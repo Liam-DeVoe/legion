@@ -2,9 +2,16 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  IDEMPOTENCY_KEY_HEADER,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
+  PATH_KEEPS_BYTES,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -1116,6 +1123,117 @@ describe("the dispatch CLI", () => {
     ]);
   });
 
+  // A text past the bytes one document holds, counted in UTF-8 as Dispatch counts them: each "é"
+  // is one UTF-16 unit and two bytes, so the text's length is under the limit and its bytes are
+  // past it. The call refuses it in Dispatch's own words before it asks the round trip or uploads,
+  // and its dry run alike, asking Dispatch nothing: the same exit, the same stdout, and the same
+  // line in this session's ledger.
+  test("an upload's dry run refuses a text past the document limit in UTF-8 bytes as the call does, sending nothing", async () => {
+    const content = `# Notes\n\n${"é".repeat(MARKDOWN_DOCUMENT_MAX_BYTES / 2)}\n`;
+    expect(content.length).toBeLessThan(MARKDOWN_DOCUMENT_MAX_BYTES);
+    expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(MARKDOWN_DOCUMENT_MAX_BYTES);
+    const refusal =
+      "CAP_EXCEEDED: a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type";
+
+    const dry = await run([...UPLOAD, "--dry-run"], omp, content);
+    expect(requests).toEqual([]);
+    const call = await run(UPLOAD, omp, content);
+    expect(call).toEqual({ code: 1, stdout: `${refusal}\n`, stderr: "" });
+    expect(dry).toEqual(call);
+    // The call read whether the issue holds the name, and asked nothing else.
+    expect(requests).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-1/artifacts", body: undefined },
+    ]);
+    expect(ledger("ses-1").map(({ tool, error }) => ({ tool, error }))).toEqual([
+      { tool: "dispatch_artifact", error: refusal },
+      { tool: "dispatch_artifact", error: refusal },
+    ]);
+  });
+
+  // A text whose round trip Dispatch refuses as too large, as errMarkdownRoundTripTooLarge answers
+  // a body past the route's own limit: the call refuses it naming what to do instead of sending it
+  // again, with --path where the name keeps the bytes, and its dry run alike, with the same exit
+  // and the same stdout. Neither uploads.
+  test("an upload's dry run refuses a text whose round trip Dispatch answers 413 as the call does", async () => {
+    roundTrip = () =>
+      Response.json(
+        { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" },
+        { status: 413 }
+      );
+    const refusal = `Dispatch could not say how it would store this text, so nothing was uploaded: POST ${ROUND_TRIP} failed with CAP_EXCEEDED: request body exceeds 6292480 bytes. This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.`;
+    for (const [name, asBytes] of [
+      ["notes.md", ""],
+      ["notes", ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`],
+    ] as const) {
+      const argv = ["artifact", "--issue", "DSP-1", "--name", name, "--content-file", "-"];
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, NOTES);
+      expect(requests, name).toEqual([
+        { method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } },
+      ]);
+      requests.length = 0;
+      const call = await run(argv, omp, NOTES);
+      expect(call, name).toEqual({ code: 1, stdout: `${refusal}${asBytes}\n`, stderr: "" });
+      expect(dry, name).toEqual(call);
+      expect(
+        requests.filter((request) => request.method === "POST"),
+        name
+      ).toEqual([{ method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } }]);
+    }
+  });
+
+  // The dry run's client stops at the dry run's deadline and takes the same budget as its own
+  // deadline, so a credential is given that budget less the request's reserve
+  // (`credentialDeadline`): of 600 ms, it waits 300. A broker credential whose renewal the broker
+  // holds answers with the live token in hand once its wait ends, and the round trip still has its
+  // reserve to be sent and answered. A client stopped by the dry run's deadline alone, with the
+  // client's own minute as its budget, gives the credential the whole 600 ms, and the round trip
+  // then goes out on a deadline already spent.
+  test("an upload's dry run leaves the round trip its reserve after a credential that answers only when its wait ends", async () => {
+    let trades = 0;
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async () => {
+        trades += 1;
+        // The first trade's token is good for 200 s, inside the renewal window from the first, so
+        // the next request renews it; the broker holds each renewal.
+        if (trades > 1) return await new Promise<Response>(() => {});
+        return Response.json({
+          access_token: fixtureSecret("live"),
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 200,
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const pod = {
+      ...omp,
+      DISPATCH_TOKEN: undefined,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    };
+    const passed = { code: 0, stdout: NOTES_JSON, stderr: "" };
+    try {
+      // The first dry run trades for the token the second one holds.
+      expect(await run([...UPLOAD, "--dry-run"], pod, NOTES)).toEqual(passed);
+      expect(await run([...UPLOAD, "--dry-run"], pod, NOTES, { dryRunDeadlineMs: 600 })).toEqual(
+        passed
+      );
+      expect(trades).toBe(2);
+      expect(requests).toEqual([
+        { method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } },
+        { method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } },
+      ]);
+    } finally {
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+  });
+
   test("an upload's dry run passes a text Dispatch keeps, printing the arguments alone", async () => {
     // The store adds the final line feed this text lacks, which is no other spelling.
     const content = "# Notes\n\n- one";
@@ -1161,13 +1279,6 @@ describe("the dispatch CLI", () => {
         status: 500,
         answer: { code: "INTERNAL", error: "the document service is down" },
         stderr: unasked(`POST ${ROUND_TRIP} failed with INTERNAL: the document service is down`),
-      },
-      // Dispatch's own answer that the text is past what the check reads, which the call then
-      // refuses every time it is sent.
-      {
-        status: 413,
-        answer: { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" },
-        stderr: `dispatch: warning: Dispatch refused to say how it would store the text: POST ${ROUND_TRIP} failed with CAP_EXCEEDED: request body exceeds 6292480 bytes. The text is longer than the check reads, so the call refuses the upload every time it is sent.\n`,
       },
     ];
     for (const { status, answer, stderr } of cases) {

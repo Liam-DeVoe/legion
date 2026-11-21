@@ -255,7 +255,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	if kind == "doc" && len(input.content) > maxDocumentMarkdownBytes {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type")
+		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, contracts.MarkdownDocumentTooLarge)
 		return
 	}
 	// A markdown document is stored as text. Its inline content was read as a JSON string, which

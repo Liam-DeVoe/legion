@@ -161,7 +161,7 @@ func (s *server) otherRendererDecisionsAt(
 // parse runs while the query holds a pool connection. It then puts each version's decisions into
 // versions, its markdown cut by decisionCuts: a version whose markdown is current's, the
 // document's as it stands, takes current's cut rather than a second parse of the same markdown,
-// and every other takes the cut the process keeps for that version of artifactID (storedCuts),
+// and every other takes the cut the process keeps for that version of artifactID (documentCuts),
 // which parses its markdown only where none is kept. So a view parses each version it reads at
 // most once, and none whose cut is kept. A version whose markdown the parser refuses is marked
 // refused (storedDecisions.refused) rather than read as a version that holds no decision's text.
@@ -182,7 +182,7 @@ func scanStoredDecisions(artifactID string, rows pgx.Rows, current documentCut, 
 	for _, version := range stored {
 		cut := current
 		if version.markdown != current.markdown {
-			cut = storedCuts.cut(storedVersionKey{artifactID: artifactID, number: version.number}, version.markdown)
+			cut = documentCuts.cut(documentCutKey{artifactID: artifactID, number: version.number}, version.markdown)
 		}
 		versions[version.number] = storedDecisions{
 			otherRenderer: pmdoc.OtherRenderer(version.stamp), refused: !cut.read, decisions: cut.cuts,

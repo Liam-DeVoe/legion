@@ -4,4 +4,7 @@ custom:
 body: |-
   A Dispatch tool spec can carry `dryRunHelp`, the sentence its command's `--dry-run` help prints.
   The `dispatch_artifact` spec's sentence says that the dry run asks Dispatch how it would store
-  inline text and refuses a text that Dispatch would store under another spelling.
+  inline text, and refuses a text that Dispatch would store under another spelling or that the
+  call refuses for its size. `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and
+  `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of markdown one document may hold and the text
+  of Dispatch's `413 CAP_EXCEEDED` for an upload past it, generated into Go for the server.

@@ -1007,14 +1007,17 @@ them (an issue from LEGION_ISSUE or the ref). It stores nothing, and reads no st
 but what a `dispatch result` record's dry run reads (below).
 A command whose call asks Dispatch something before it writes asks it in its dry run too, through
 its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
-such step is `dispatch artifact`'s: for inline content that is not blank, it makes the call's own
-stored-text check (`storedTextCheck`, `POST /api/v1/markdown/round-trip`), and refuses a text that
-Dispatch would store under another spelling with the call's refusal and exit code. The step waits
-at most 5 s. When it gets no answer (no Dispatch configured, a failure, no answer in time, or a
-Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on stderr says
-why and what the call does then, so the JSON stays alone on stdout. With `DISPATCH_DRY_RUN_LOCAL=1`
-an upload's dry run asks Dispatch nothing, for a caller that reads the arguments alone; the
-variable does not change a `dispatch result` record's dry run. That dry run asks Dispatch through
+such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
+(`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
+Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for text
+that is not blank), or one the call refuses for its size, which is text past the 1 MiB of UTF-8
+one document holds (`CAP_EXCEEDED`, refused without asking) or text whose round trip Dispatch
+answers 413 (exit 1, as the call). The step waits at most 5 s. When it gets no answer (no Dispatch
+configured, any other failure, no answer in time, or a Dispatch without the route), the dry run
+passes, and one `dispatch: warning:` line on stderr says why and what the call does then, so the
+JSON stays alone on stdout. With `DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch
+nothing, for a caller that reads the arguments alone; the variable does not change a
+`dispatch result` record's dry run. That dry run asks Dispatch through
 the call itself (`dryRunAsksDispatch`): it needs Dispatch on, as the record does, reads what the
 record reads (this session's title among it), and after the arguments prints the pull-request body
 line Dispatch answers on `POST …/results/dry-run`, recording nothing. A retraction's dry run sends

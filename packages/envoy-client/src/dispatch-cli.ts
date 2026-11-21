@@ -383,12 +383,13 @@ export async function runDispatchCli(
       return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
     }
     // A command whose call asks Dispatch a question before it writes asks it here too, from the
-    // session's Dispatch as the call resolves it, and is refused as the call is
-    // (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store its inline
-    // text. With DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments
-    // alone (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's
-    // other answers) is read here. Every line besides a refusal goes to stderr, so the standard
-    // output of a dry run that passes is the JSON alone.
+    // session's Dispatch as the call resolves it, and is refused as the call is, with its output
+    // and exit code (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store
+    // its inline text, and refuses a text the call refuses for its spelling or its size. With
+    // DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments alone
+    // (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's other
+    // answers) is read here. Every line besides a refusal goes to stderr, so the standard output
+    // of a dry run that passes is the JSON alone.
     const step = dispatchCommands[parsed.tool as DispatchToolName]?.dryRun;
     if (step !== undefined && env.DISPATCH_DRY_RUN_LOCAL !== "1") {
       const deadlineMs = io.dryRunDeadlineMs ?? DRY_RUN_DEADLINE_MS;
@@ -403,13 +404,15 @@ export async function runDispatchCli(
           if (!settings.enabled) {
             throw new Error(file.path === null ? file.error : dispatchOffText(settings));
           }
-          // The client's own deadline is the dry run's, so a credential is given that budget less
-          // the request's reserve. The waits before asking a route again, and before sending the
-          // round trip again after a failed attempt, would outlast the deadline: the step sends no
-          // second attempt after a failed one (it still presents a fresh token once where Dispatch
-          // says the token is no longer live), says what Dispatch answered, and has an answer of
-          // its own to a Dispatch that holds no such route.
+          // The client stops at the dry run's deadline, and its own deadline is the same budget,
+          // so a failure after the budget is the deadline's and a credential is given that budget
+          // less the request's reserve. The waits before asking a route again, and before sending
+          // the round trip again after a failed attempt, would outlast the deadline: the step
+          // sends no second attempt after a failed one (it still presents a fresh token once where
+          // Dispatch says the token is no longer live), says what Dispatch answered, and has an
+          // answer of its own to a Dispatch that holds no such route.
           return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
+            signal: deadline,
             deadlineMs,
             retryNoRoute: false,
             writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] },
@@ -418,6 +421,10 @@ export async function runDispatchCli(
       });
       if (verdict.kind === "refused") {
         return refuse(verdict.refusal.message, USAGE, parsed.tool);
+      }
+      // An error the call throws exits 1 there, printed as `messageFor` prints it, and so here.
+      if (verdict.kind === "thrown") {
+        return refuse(messageFor(verdict.error), REFUSED, parsed.tool);
       }
       if (verdict.warning !== undefined) io.stderr(`${verdict.warning}\n`);
     }

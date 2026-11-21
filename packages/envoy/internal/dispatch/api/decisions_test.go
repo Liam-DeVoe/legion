@@ -948,7 +948,7 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 }
 
 // A decisions view parses each markdown it reads once, and the next view parses none of them
-// again: the process keeps each cut, the parser's refusal included (storedCuts). alice keeps
+// again: the process keeps each cut, the parser's refusal included (documentCuts). alice keeps
 // listDecision at the version that wrote it and its link to hold-it, which a build of another
 // renderer version stored in its own spelling (respellVersion), so the keeps' pass and the links'
 // pass both name that version. She keeps tableDecision at version 1 under a sum its text does not

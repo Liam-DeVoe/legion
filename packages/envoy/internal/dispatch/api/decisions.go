@@ -237,9 +237,9 @@ func (s *server) specOpenQuestions(
 // version (noCut), so it is never read as another decision of its heading. The cut parses the
 // whole document, so it is made only where a mark can change a decision - some decision links the
 // spec, or waits for review under a keep - and neither mark changes any other decision. It is
-// taken from the cuts the process keeps (storedCuts) under the number 0, which no stored version
-// has, so a view of a markdown an earlier view cut parses none of it again. Each stored version
-// the marks read is cut by scanStoredDecisions.
+// taken from the cuts the process keeps (documentCuts) under the document's live key, which names
+// no stored version, so a view of a markdown an earlier view cut parses none of it again. Each
+// stored version the marks read is cut by scanStoredDecisions.
 //
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
@@ -328,7 +328,7 @@ func (s *server) readDecisions(
 	if !mark || !markable {
 		return decisions, nil
 	}
-	current := storedCuts.cut(storedVersionKey{artifactID: document.ID, number: 0}, markdown)
+	current := documentCuts.cut(documentCutKey{artifactID: document.ID, live: true}, markdown)
 	keyAt := make(map[int]sectionKey, len(current.cuts))
 	for key, cut := range current.cuts {
 		keyAt[cut.start] = key
@@ -542,7 +542,7 @@ type decisionCut struct {
 // (storedDecisions.refused).
 //
 // Each call parses the whole markdown, 8.5 to 13.4 ms for a document of 25 to 43 KB, so a view
-// cuts a markdown only where the process keeps no cut of it (storedCuts): the document as it
+// cuts a markdown only where the process keeps no cut of it (documentCuts): the document as it
 // stands (readDecisions) and each stored version it reads (scanStoredDecisions).
 func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) {
 	if decisionCutsObserver != nil {
@@ -612,7 +612,7 @@ var decisionCutsObserver func(markdown string)
 
 // documentCut is a markdown cut into its decisions (decisionCuts): its cuts, and whether the
 // parser read it. The process keeps each one, the document's as it stands and each stored
-// version's, by its version (storedCuts), shared by every view that reads it, so nothing writes to
+// version's, by its key (documentCuts), shared by every view that reads it, so nothing writes to
 // one once it is cut.
 type documentCut struct {
 	markdown string

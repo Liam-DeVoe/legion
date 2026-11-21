@@ -107,14 +107,14 @@ export interface DryRunContext {
   /** The arguments as the call's check parsed them. */
   readonly args: ToolArguments;
   /**
-   * The client the call builds, from the session's Dispatch as the call resolves it. Its own
-   * deadline is the dry run's (`deadlineMs`), so a credential is given that budget less the
-   * request's reserve, and it asks no request again that Dispatch answered with no route. It
-   * prints each warning of the session's configuration on stderr, and throws, naming why, when
-   * the session has no Dispatch. A step calls it only for arguments it asks Dispatch about, so a
-   * dry run of any other arguments builds no client here and prints no configuration warning. The
-   * one other dry run that sends a request is a `dispatch result` record's, which runs as the
-   * record does (`dryRunAsksDispatch`).
+   * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
+   * `deadline`, and its own deadline is the same budget (`deadlineMs`), so a failure after the
+   * budget is the deadline's and a credential is given that budget less the request's reserve. It
+   * asks no request again that Dispatch answered with no route. It prints each warning of the
+   * session's configuration on stderr, and throws, naming why, when the session has no Dispatch.
+   * A step calls it only for arguments it asks Dispatch about, so a dry run of any other arguments
+   * builds no client here and prints no configuration warning. The one other dry run that sends a
+   * request is a `dispatch result` record's, which runs as the record does (`dryRunAsksDispatch`).
    */
   readonly client: () => DispatchClient;
   /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */
@@ -122,10 +122,17 @@ export interface DryRunContext {
   readonly deadlineMs: number;
 }
 
-/** What a dry-run step found: the call's own refusal, which the dry run prints and exits 2 on, or
- *  a pass, with a warning for stderr when the step could not get its answer. */
+/**
+ * What a dry-run step found, which the dry run answers with the call's own output and exit code:
+ * - `refused`: the call's refusal of its arguments, a `ToolInputError`, which the dry run prints
+ *   and exits 2 on;
+ * - `thrown`: an error the call throws that is no `ToolInputError`, its refusal of a text for its
+ *   size among them, which the dry run prints as `messageFor` prints it and exits 1 on;
+ * - `passed`: a pass, with a warning for stderr when the step could not get its answer.
+ */
 export type DryRunVerdict =
   | { readonly kind: "refused"; readonly refusal: ToolInputError }
+  | { readonly kind: "thrown"; readonly error: Error }
   | { readonly kind: "passed"; readonly warning?: string };
 
 export interface ResolvedArtifact {
