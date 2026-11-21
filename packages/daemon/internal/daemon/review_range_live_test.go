@@ -306,7 +306,8 @@ func (r *reviewRangeLive) pass(issue *reviewRangeIssue, round int) handoffWritte
 	t := r.t
 	t.Helper()
 	test := r.write(issue.tester.session, issue.key, "test", r.smallBody(issue.key, "test", fmt.Sprintf("round %d passes", round)))
-	status, failure := issue.tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: test.id, HandoffVersion: test.version})
+	testedAs(t, r.st.Pool(), issue.key, "", true)
+	status, failure := issue.tester.complete(api.HandoffCompleteRequest{Summary: "tested", HandoffID: test.id, HandoffVersion: test.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's passing completion of round %d = %d %+v, want 200", round, status, failure)
 	}

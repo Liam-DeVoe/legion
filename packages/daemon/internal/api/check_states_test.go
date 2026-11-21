@@ -1,0 +1,279 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
+
+// applyStates applies one check.state_changed event of issue at head of repo for each of states,
+// the first at serial and each next one at the serial after, through intake.ApplyFact and the
+// harness's workflow (newWorkflowHandoffHarness), as the live consumer applies a fact: each is the
+// payload of packages/contracts/fixtures/dispatch-events/check-state-changed.json with the state's
+// fields, decoded by the intake's own decoder of a Dispatch event. A harness that records facts
+// rather than deciding them applies the events through a workflow of the project's own
+// configuration, which holds them as the daemon's does. A state naming no set carries the set of
+// every check states name; one naming no check is the set form, and no state at all is the set
+// form of a head with no check.
+func applyStates(t *testing.T, h *harness, issue, repo, head string, serial int64, states ...intake.DispatchCheckState) {
+	t.Helper()
+	engine := h.engine
+	if engine == nil {
+		engine = workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}
+	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-events", "check-state-changed.json"))
+	if err != nil {
+		t.Fatalf("read the shared fixture of check.state_changed: %v", err)
+	}
+	var fixture struct {
+		Type      string          `json:"type"`
+		Actor     json.RawMessage `json:"actor"`
+		CheckForm json.RawMessage `json:"check_form"`
+		SetForm   json.RawMessage `json:"set_form"`
+	}
+	if err := json.Unmarshal(encoded, &fixture); err != nil || fixture.Type == "" {
+		t.Fatalf("decode the shared fixture of check.state_changed: %v", err)
+	}
+	if len(states) == 0 {
+		states = []intake.DispatchCheckState{{Checks: []string{}}}
+	}
+	var named []string
+	for _, state := range states {
+		if state.Check != "" && !slices.Contains(named, state.Check) {
+			named = append(named, state.Check)
+		}
+	}
+	project, _, _ := strings.Cut(issue, "-")
+	for i, state := range states {
+		form := fixture.CheckForm
+		if state.Check == "" {
+			form = fixture.SetForm
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(form, &payload); err != nil {
+			t.Fatalf("decode the fixture's payload: %v", err)
+		}
+		checks := state.Checks
+		if checks == nil {
+			checks = named
+		}
+		if checks == nil {
+			checks = []string{}
+		}
+		at := serial + int64(i)
+		payload["issue"], payload["repo"], payload["head"], payload["checks"], payload["serial"] = issue, repo, head, checks, at
+		payload["pull_requests"] = []int{42}
+		if state.Check != "" {
+			roles := state.Roles
+			if roles == nil {
+				roles = []string{}
+			}
+			payload["check"], payload["check_version"], payload["state"], payload["reason"] = state.Check, 1, state.State, state.Reason
+			payload["roles"], payload["ci_case"] = roles, state.CICase
+		}
+		seq := 1000 + at
+		event, err := json.Marshal(map[string]any{
+			"id": 5000 + seq, "issue_key": issue, "seq": seq, "type": fixture.Type, "notify": false,
+			"created_at": "2026-11-21T06:00:00Z", "actor": fixture.Actor, "payload": payload,
+		})
+		if err != nil {
+			t.Fatalf("encode the event: %v", err)
+		}
+		fact, unread, err := intake.DecodeDispatchEvent(project, issue, event)
+		if _, ok := fact.(intake.DispatchCheckState); !ok || err != nil || len(unread) != 0 {
+			t.Fatalf("the state event of serial %d decoded to %#v, unread %q, %v; want a check state", at, fact, unread, err)
+		}
+		result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "dispatch", fmt.Sprintf("dispatch-event:%s:%d", issue, seq), fact, engine)
+		if err != nil || result.Refusal != nil {
+			t.Fatalf("apply the state event of serial %d: %+v, %v", at, result.Refusal, err)
+		}
+	}
+}
+
+// testedAs applies, ahead of a tester's completion of issue's testing whose record names no
+// serial, the state event that decides its move: k1, the head's one check, yes from the tester
+// where passes, and no for a fail where not, at head, or at the head of the pull request on record
+// where head is "", as a completion naming no commit tests. It takes the serial after the highest
+// the daemon holds of issue.
+func testedAs(t *testing.T, h *harness, issue, head string, passes bool) {
+	t.Helper()
+	repo := "acme/widgets"
+	var serial int64
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		pr, err := record.NewStore().PullRequest(context.Background(), tx, issue)
+		if err != nil {
+			return err
+		}
+		if pr != nil {
+			repo = pr.Repo
+			if head == "" {
+				head = pr.HeadSHA
+			}
+		}
+		return tx.QueryRow(context.Background(), `select coalesce(max(serial), 0) from check_state_serials where issue = $1`, issue).Scan(&serial)
+	}); err != nil {
+		t.Fatalf("read the pull request and the serials of %s: %v", issue, err)
+	}
+	state := intake.DispatchCheckState{Check: "k1", State: "yes", Roles: []string{"tester"}, Checks: []string{"k1"}}
+	if !passes {
+		state = intake.DispatchCheckState{Check: "k1", State: "no", Reason: "fail", Checks: []string{"k1"}}
+	}
+	applyStates(t, h, issue, repo, head, serial+1, state)
+}
+
+// passOf is check's state yes from roles, at a head whose set is checks.
+func passOf(check string, checks []string, roles ...string) intake.DispatchCheckState {
+	return intake.DispatchCheckState{Check: check, State: "yes", Roles: roles, Checks: checks}
+}
+
+// writeTestHandoff is c writing version of its issue's test handoff under its own session, which
+// Dispatch stored with serial as the issue's check states serial once the states its results
+// changed were published (`check_states_serial`), and returns its id.
+func (c liveClaim) writeTestHandoff(version int, serial int64) string {
+	id := c.writeHandoff("test", version)
+	handoff := c.h.handoffs.handoffs[id]
+	handoff.CheckStatesSerial = serial
+	c.h.handoffs.handoffs[id] = handoff
+	return id
+}
+
+// verdictNotTaken is the refusal of a phase completion that names a verdict.
+const verdictNotTaken = "a phase completion carries no verdict: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded"
+
+// A phase completion carries no verdict. A tester's completion naming one, from a plugin at
+// CheckStatesContract, is refused 400 VERDICT_NOT_TAKEN with nothing recorded, and the same
+// completion with none is taken, carrying the check states serial of the record it names. Another
+// role's completion naming one is refused alike. A tester's plugin below the contract, mid-turn
+// when its daemon was upgraded, still sends pass: the route takes the completion and ignores the
+// verdict, whose key is the completion's with none, and the tester's phase row holds no verdict.
+// Another role below the contract is refused.
+func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
+	if DaemonAPIVersion < CheckStatesContract {
+		t.Fatalf("the daemon declares contract %d, below CheckStatesContract %d", DaemonAPIVersion, CheckStatesContract)
+	}
+	t.Run("a tester's plugin at the contract", func(t *testing.T) {
+		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+		seedIssueAt(t, h, "LEGION-208", phase.Testing)
+		tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+		written := tester.writeTestHandoff(1, 5)
+		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "Every check passes.", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("facts after the refusal = %#v, want none", got)
+		}
+		completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "Every check passes.", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
+		if fact := lastCompletion(t, facts); fact.Role != claim.RoleTester || fact.HandoffRecord != written || fact.StatesSerial != 5 || fact.Commit != headSHA {
+			t.Fatalf("the completion = %+v, want the tester's naming %s at %s with the record's serial 5", fact, written, headSHA)
+		}
+	})
+	t.Run("another role's plugin at the contract", func(t *testing.T) {
+		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+		seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+		implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+		written := implementer.writeHandoff("implement", 1)
+		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("facts after the refusal = %#v, want none", got)
+		}
+	})
+	t.Run("a tester's plugin below the contract", func(t *testing.T) {
+		h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+		seedIssueAt(t, h, "LEGION-208", phase.Testing)
+		seedPullRequest(t, h, "LEGION-208", headSHA)
+		tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+		grant := tester.grant(t)
+		h.makeStale(t, tester.token, tester.session, tester.secret, CheckStatesContract-1)
+		if c := h.stored(tester.token); c.State != supervise.StateWorking || c.PluginContract != CheckStatesContract-1 {
+			t.Fatalf("the claim is %s at contract %d, want working at %d: this case proves nothing", c.State, c.PluginContract, CheckStatesContract-1)
+		}
+		written := tester.writeTestHandoff(1, 0)
+		completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
+		var row map[string]any
+		var keys []string
+		if err := h.store.Pool().QueryRow(context.Background(), `select to_jsonb(p) from phases p where issue = 'LEGION-208' and role = 'tester'`).Scan(&row); err != nil {
+			t.Fatalf("read the tester's phase row: %v", err)
+		}
+		if _, held := row["verdict"]; held || row["handoff_record"] != written {
+			t.Fatalf("the tester's phase row = %v, want the completion naming %s and no verdict", row, written)
+		}
+		rows, err := h.store.Pool().Query(context.Background(), `select event_id from processed_events where source = 'api'`)
+		if err != nil {
+			t.Fatalf("read the processed completions: %v", err)
+		}
+		for rows.Next() {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				t.Fatalf("read a processed completion: %v", err)
+			}
+			keys = append(keys, key)
+		}
+		if len(keys) != 1 || !strings.HasSuffix(keys[0], ":"+written+":") {
+			t.Fatalf("the processed completions = %q, want one whose key ends with the record and an empty verdict segment", keys)
+		}
+		if at, _, _ := handoffRecord(t, h, "LEGION-208"); at != phase.Testing {
+			t.Fatalf("after the completion LEGION-208 is in %s, want testing: no state is held, so the verdict pass moved nothing", at)
+		}
+	})
+	t.Run("another role's plugin below the contract", func(t *testing.T) {
+		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+		seedIssueAt(t, h, "LEGION-208", phase.Reviewing)
+		reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+		grant := reviewer.grant(t)
+		h.makeStale(t, reviewer.token, reviewer.session, reviewer.secret, CheckStatesContract-1)
+		written := reviewer.writeHandoff("review", 1)
+		refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "reviewed", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
+			http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("facts after the refusal = %#v, want none", got)
+		}
+	})
+}
+
+// The tester's move reads nothing of Dispatch but the test handoff record the completion names:
+// the tester completes testing at the head before the state of k2 arrives, and the issue waits;
+// the state event of k2 then arrives and moves it to reviewing. The Dispatch stand-in's log of
+// every request it answered holds the one read of that record, and no read of results, events or
+// a check.
+func TestTheTesterMoveReadsNothingOfDispatchButTheHandoff(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	checks := []string{"k1", "k2"}
+	applyStates(t, h, "LEGION-208", "acme/widgets", headSHA, 1, passOf("k1", checks, "tester"))
+	written := tester.writeTestHandoff(1, 1)
+	grant := tester.grant(t)
+	h.handoffs.requests = nil
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
+	if at, _, _ := handoffRecord(t, h, "LEGION-208"); at != phase.Testing {
+		t.Fatalf("after the completion LEGION-208 is in %s, want testing: no state of k2 is held", at)
+	}
+	applyStates(t, h, "LEGION-208", "acme/widgets", headSHA, 2, passOf("k2", checks, "tester"))
+	if at, _, _ := handoffRecord(t, h, "LEGION-208"); at != phase.Reviewing {
+		t.Fatalf("after the state of k2 LEGION-208 is in %s, want reviewing", at)
+	}
+	if want := []string{"GET /api/v1/handoffs/" + written}; !slices.Equal(h.handoffs.requests, want) {
+		t.Fatalf("the daemon asked Dispatch %q, want %q alone", h.handoffs.requests, want)
+	}
+}

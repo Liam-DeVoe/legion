@@ -2463,4 +2463,34 @@ package api
 // different numbers, so the two still move together.
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
-const DaemonAPIVersion = 188
+//
+// 206: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
+// (`api.HandoffCompleteRequest`, contracts' `LegionHandoffCompleteRequest`) keeps `verdict` for a
+// production check's report alone: a phase completion that names one from a plugin at this
+// contract or a later one is refused 400 `VERDICT_NOT_TAKEN`, "a phase completion carries no
+// verdict: Dispatch's check states at the tested head decide the testing phase; send it again
+// without verdict; nothing was recorded", and the refusals `TESTER_VERDICT_REQUIRED` and
+// `VERDICT_ROLE_FORBIDDEN` go. The states Dispatch publishes of the issue's `before_merge` checks
+// as `check.state_changed` decide the testing phase: the tester completes with no verdict, naming
+// its `test` record, whose `check_states_serial` the daemon waits to hold every state event
+// through; at the head that record names, the issue goes to `reviewing` when each check of the
+// head's set passes, back to `implementing` with a task naming each check that does not, and waits
+// while a check has no state, a state Dispatch could not read, or a CI run that goes on with no
+// result (workflow's decideTesting). A tester's plugin below this contract, in a turn when its
+// daemon was upgraded, still sends `pass` or `fail`: the route takes its completion and ignores
+// the verdict, which no longer makes the completion's key, and any other role's verdict below it
+// is refused as above (`api.CheckStatesContract`). The reviewer's task no longer names `Tester's
+// verdict:`, and a `phase-finished` notice loses `verdict`: from the tester's phase its `reason`
+// names each check that does not pass at the tested head, or what the move waits for. No shape of
+// `GET /legion/v1/state` moves.
+// (This entry takes 206, above main's 202: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on
+// 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.)
+const DaemonAPIVersion = 206
+
+// CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
+// entry of 206 above): a plugin at it or above has its completion naming one refused
+// VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
+// across the upgrade still completes and Dispatch's check states decide its phase. A later bump
+// of DaemonAPIVersion leaves it where it is.
+const CheckStatesContract = 206

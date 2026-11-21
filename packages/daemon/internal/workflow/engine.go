@@ -241,6 +241,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchAskRestored(ctx, tx, fact)
 	case intake.HandoffComplete:
 		return e.handoff(ctx, tx, fact)
+	case intake.DispatchCheckState:
+		return e.checkState(ctx, tx, fact)
 	case intake.PullRequestOpened:
 		return e.pullRequestOpened(ctx, tx, fact)
 	case intake.PullRequestSynchronized:
@@ -933,16 +935,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
 	// decision, or with an approval of other code - was not stuck before it, and is told.
 	found := e.reviewRound(*issue, row, pr)
-	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
-	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
+	row.Claim, row.HandoffCommit, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Summary, e.now()
+	row.HandoffRecord, row.HandoffVersion, row.StatesSerial = fact.HandoffRecord, fact.HandoffVersion, fact.StatesSerial
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return intake.Result{}, err
 	}
 	// Two of the six movements are this one write (the rule in dispatchIssue): the handoff the
 	// role recorded, and the completion that reports it. Every refusal above returned before it,
 	// so a completion that changed nothing marks nothing, and the completions that move the issue
-	// no further than this row — a tester reporting neither verdict, an implementer whose pull
-	// request has not been recorded yet, a role reporting a phase the issue has already left —
+	// no further than this row — a tester whose move waits for check states, an implementer whose
+	// pull request has not been recorded yet, a role reporting a phase the issue has already left —
 	// are movements all the same, which is why the mark is here and not only in the transitions
 	// below.
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
@@ -960,12 +962,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 		return intake.Result{}, e.implementationReady(ctx, tx, *issue, row, pr)
 	case phase.Testing:
-		if fact.Verdict == "fail" {
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterFailed, "", row, pr, "")
-		}
-		if fact.Verdict == "pass" {
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, "", row, pr, "")
-		}
+		// The tester's completion carries no verdict: the check states Dispatch published at the
+		// tested head decide, once the daemon holds them through the serial its test record names.
+		return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, true)
 	case phase.Reviewing:
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
@@ -2189,18 +2188,22 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
-// summary and no verdict and cannot tell it from a worker that finished its phase.
+// summary and cannot tell it from a worker that finished its phase. No worker reports a verdict,
+// so the tester's move back says in its reason what the check states said: each check that does
+// not pass at the tested head (decideTesting).
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
-		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+	case TriggerTesterFailed:
+		return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Reason: reason}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
-	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary}
 }
 
 func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {

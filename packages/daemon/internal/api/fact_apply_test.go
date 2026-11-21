@@ -147,7 +147,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			r.runs(t, "LEGION-208", testingPlace, tester.token)
 			written := tester.writeHandoff("test", 1)
 			return []agentRequest{{tester.token, func() *httptest.ResponseRecorder {
-				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1})
+				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: written, HandoffVersion: 1})
 			}}}
 		}},
 		"POST /legion/v1/phase/backward": {waits: func(t *testing.T, r *awaitRig) []agentRequest {

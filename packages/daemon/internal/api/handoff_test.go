@@ -190,6 +190,7 @@ func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writ
 	h := newHarness(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.engine = engine
 	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
@@ -751,7 +752,8 @@ func TestHandoffCompleteAnswersALeftCompletionNamingNoRecordAsNoLongerTheRolesPh
 		{
 			name: "its completion of testing taken, the issue in reviewing",
 			stand: func(t *testing.T, h *harness, tester liveClaim) phase.Phase {
-				completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				testedAs(t, h, "LEGION-208", headSHA, true)
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
 					Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
 				return phase.Reviewing
 			},
@@ -773,7 +775,7 @@ func TestHandoffCompleteAnswersALeftCompletionNamingNoRecordAsNoLongerTheRolesPh
 			assertIssuePhase(t, h, at)
 			before := phaseRowOf(t, h, "LEGION-208", claim.RoleTester)
 
-			refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}),
+			refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA}),
 				http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
 			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); !reflect.DeepEqual(after, before) {
 				t.Fatalf("the tester's row after the refusal = %+v, want it as it stood, %+v", after, before)
@@ -844,6 +846,9 @@ func TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord(t *tes
 	}
 }
 
+// A phase completion is held to the fields of its role: the implementer's to its commit, and no
+// completion names a verdict (VERDICT_NOT_TAKEN, TestAPhaseCompletionCarriesNoVerdict). The
+// tester's completion names its record and no verdict, and a retry of it is deduplicated.
 func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
@@ -851,12 +856,11 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	written := tester.writeHandoff("test", 1)
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}), http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
 
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 
-	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
+	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: written, HandoffVersion: 1}
 	completion(t, h.complete(request))
 	// A retried completion of the same phase naming the same record changes nothing, and says so.
 	request.GrantID = tester.grant(t)
@@ -868,7 +872,7 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 		t.Fatalf("handoff facts = %#v, want one deduplicated fact", got)
 	}
 	fact, ok := got[0].(intake.HandoffComplete)
-	if !ok || fact.Role != claim.RoleTester || fact.Verdict != "pass" || fact.HandoffRecord != written || fact.Commit != "" {
+	if !ok || fact.Role != claim.RoleTester || fact.HandoffRecord != written || fact.Commit != "" {
 		t.Fatalf("handoff fact = %#v", got[0])
 	}
 }
@@ -1348,7 +1352,7 @@ func TestHandoffCompleteAcceptsACompletionFromATurnNoDeliveryBacks(t *testing.T)
 		t.Fatalf("pending after the turn = %+v, want it retired", pending)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from a notice-started turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 }
@@ -1384,7 +1388,7 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 	ctx := context.Background()
 	complete := func() *httptest.ResponseRecorder {
 		t.Helper()
-		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
+		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 	}
 
 	// The worker is still on generation 1's task while the issue has moved to 2: refused, and the
@@ -1541,7 +1545,7 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	if restarted := h.supervisor.restart(t, tester.token); restarted.Claim().ServingGeneration != 1 {
 		t.Fatalf("the rebuilt claim serves generation %d, want 1", restarted.Claim().ServingGeneration)
 	}
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion after the restart = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1590,7 +1594,7 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 		t.Fatalf("pending after the acknowledgement = %+v, want it delivered and unconfirmed", p)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1740,7 +1744,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 				t.Fatalf("pending in the late turn after the busy re-send = %+v, want the new entry's task confirmed", p)
 			}
 
-			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
 				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
@@ -1827,7 +1831,7 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 				notice()
 			}
 
-			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
 			if !tc.accepted {
 				refused(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
 				return
@@ -1872,7 +1876,7 @@ func TestAnOperatorsTaskLeavesTheRunTheClaimIsServing(t *testing.T) {
 		t.Fatalf("end the operator's turn: %v", err)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion after the operator's task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1921,7 +1925,7 @@ func TestATakenBackConfirmationDoesNotMoveTheRunTheClaimIsServing(t *testing.T) 
 	// The completion is the old run's, so it is refused as stale before any fact is applied:
 	// crediting the new run would accept a completion of a task the worker has not read. The
 	// refusal points the worker to the new run's task, which it has not read yet.
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_GENERATION")
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_GENERATION")
 	if waiting := machine.Claim().Pending; !strings.Contains(message, "generation 1's") || !strings.Contains(message, waiting.ID) {
 		t.Fatalf("the refusal = %q, want it to attribute the completion to run 1 and name the waiting task %s", message, waiting.ID)
 	}
@@ -1940,7 +1944,7 @@ func TestHandoffCompleteRefusesACompletionFromAClaimThatTookNoTask(t *testing.T)
 	registration := h.registered(boot, session)
 	untasked := liveClaim{h: h, token: token, session: session, secret: registration.Secret, tree: "LEGION-208", issue: "LEGION-208"}
 
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: untasked.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: untasked.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NO_RUN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: untasked.grant(t), Summary: "tests pass", HandoffID: untasked.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NO_RUN")
 }
 
 // untaskedClaim launches role's claim on issue and registers its session, with no task delivered
@@ -2002,7 +2006,7 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 	holdingTask(t, h, tester, supervise.RequestDeliver{
 		Task: "test LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Testing, Entry: 1})
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("the completion of the held task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
@@ -2092,7 +2096,7 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			}
 			request := HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "the work is done", Commit: headSHA}
 			if tc.role == claim.RoleTester {
-				request = HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "tests pass", Verdict: "pass",
+				request = HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "tests pass",
 					HandoffID: worker.writeHandoff("test", 1), HandoffVersion: 1}
 			}
 
@@ -2132,7 +2136,7 @@ func TestHandoffCompleteHoldsAnAdoptedRunToTheHeldTasksOwnEntry(t *testing.T) {
 	holdingTask(t, h, tester, supervise.RequestDeliver{
 		Task: "test LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Testing, Entry: 1})
 
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
 		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
@@ -2205,7 +2209,7 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 				tester.replaceRegistration(t)
 			}
 
-			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
 			if delivered != 2 {
 				// A completion attributed to the run that is over is refused before the workflow.
 				if message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_STALE_GENERATION"); !strings.Contains(message, fmt.Sprintf("generation %d's", delivered)) {

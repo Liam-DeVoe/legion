@@ -212,7 +212,7 @@ func TestImplementationReachesTestingWhenHandoffAndPullRequestArriveInEitherOrde
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			handoff := func() {
-				if _, err := intake.ApplyFact(ctx, pool, "api", "handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Commit: "abc123", HandoffRecord: "implement-1", HandoffVersion: 1, Verdict: "pass"}, engine, admissionStub{}); err != nil {
+				if _, err := intake.ApplyFact(ctx, pool, "api", "handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Commit: "abc123", HandoffRecord: "implement-1", HandoffVersion: 1}, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact handoff: %v", err)
 				}
 			}
@@ -342,27 +342,29 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	}
 }
 
-// A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
-// bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
-// from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
-func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
+// A reviewer started on the tester's pass is told the tester's handoff as the Dispatch record it
+// reads with `dispatch handoff-read`, with no commit, since this completion of the tester's names
+// none, and no verdict of the tester's: no completion carries one, and the check states at the
+// head decided the move.
+func TestAReviewerIsToldTheTestersRecordAndNoVerdict(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	testedAs(t, pool, engine, "LEGION-208", "", true)
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "tester-passed", intake.HandoffComplete{
-		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "passed", Verdict: "pass", HandoffRecord: "test-handoff", HandoffVersion: 3,
-	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "passed", HandoffRecord: "test-handoff", HandoffVersion: 3,
+	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
-	if strings.Contains(task, "Handoff verdict") {
-		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
+	if strings.Contains(strings.ToLower(task), "verdict") {
+		t.Fatalf("reviewer task %q still names a verdict", task)
 	}
 }
 
@@ -387,17 +389,6 @@ func reviewerPrompt(t *testing.T) string {
 		prompt.Write(part)
 	}
 	return prompt.String()
-}
-
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
-	prompt := reviewerPrompt(t)
-	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("the reviewer's prompt does not say %q", want)
-		}
-	}
 }
 
 // The reviewer is told the commit its later round reads from, and the entry of each round, by
@@ -434,29 +425,44 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 }
 
 // The architect learns what a phase produced from its phase-finished notice: the worker's own
-// summary, and beside it the verdict the tester gave. Neither stands in for the other; a notice
-// that carried the verdict in its summary told the architect "pass" and nothing the tester wrote.
-func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T) {
-	pool := migratedPool(t)
-	ctx := context.Background()
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
-
-	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-passed", intake.HandoffComplete{
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Generation: 1, Summary: "twelve scenarios pass against the head", Verdict: "pass", HandoffRecord: "test-handoff", HandoffVersion: 1,
-	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact tester completion: %v", err)
-	}
-	var payload []byte
-	if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished'").Scan(&payload); err != nil {
-		t.Fatalf("read the phase-finished notice: %v", err)
-	}
-	var notice map[string]any
-	if err := json.Unmarshal(payload, &notice); err != nil {
-		t.Fatalf("decode notice %s: %v", payload, err)
-	}
-	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" || notice["verdict"] != "pass" {
-		t.Fatalf("phase-finished notice = %s, want the tester's summary and its verdict pass", payload)
+// summary, and, for the tester's move back, the reason naming each check that does not pass. No
+// notice carries a verdict: the check states decided the move.
+func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndNoVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		passes bool
+		reason string
+	}{
+		{"a pass", true, ""},
+		{"a fail", false, "these checks do not pass at " + headOne + ": k1: no (fail)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			ctx := context.Background()
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			testedAs(t, pool, engine, "LEGION-208", headOne, tc.passes)
+			if _, err := intake.ApplyFact(ctx, pool, "api", "tester-completed", intake.HandoffComplete{
+				Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Generation: 1, Summary: "twelve scenarios pass against the head", Commit: headOne,
+				HandoffRecord: "test-handoff", HandoffVersion: 1,
+			}, engine, admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact tester completion: %v", err)
+			}
+			var payload []byte
+			if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished'").Scan(&payload); err != nil {
+				t.Fatalf("read the phase-finished notice: %v", err)
+			}
+			var notice map[string]any
+			if err := json.Unmarshal(payload, &notice); err != nil {
+				t.Fatalf("decode notice %s: %v", payload, err)
+			}
+			_, verdict := notice["verdict"]
+			if reason, _ := notice["reason"].(string); notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" ||
+				verdict || reason != tc.reason {
+				t.Fatalf("phase-finished notice = %s, want the tester's summary, the reason %q and no verdict", payload, tc.reason)
+			}
+		})
 	}
 }
 
@@ -622,15 +628,21 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		},
 		{
 			name: "tester pass", current: phase.Testing, role: claim.RoleTester,
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				testedAs(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-208", headOne, true)
+			},
 			fact: func() intake.Fact {
-				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Verdict: "pass", HandoffRecord: "test", HandoffVersion: 1}
+				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Commit: headOne, HandoffRecord: "test", HandoffVersion: 1}
 			},
 			wantPhase: phase.Reviewing, wantStatus: "needs_review", wantOutbox: []string{"dispatch_status", "supervise", "notice"},
 		},
 		{
 			name: "tester fail", current: phase.Testing, role: claim.RoleTester,
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				testedAs(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-208", headOne, false)
+			},
 			fact: func() intake.Fact {
-				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Verdict: "fail", HandoffRecord: "test", HandoffVersion: 1}
+				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Commit: headOne, HandoffRecord: "test", HandoffVersion: 1}
 			},
 			wantPhase: phase.Implementing, wantStatus: "in_progress", wantOutbox: []string{"dispatch_status", "supervise", "notice"},
 		},

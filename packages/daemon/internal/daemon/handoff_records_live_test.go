@@ -411,7 +411,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	}
 	r.note("Dispatch's test record of %s: version %d (id %s) by session %s, the body written byte for byte", r.a7, daemonRecord.Version, daemonRecord.ID, daemonRecord.Author.ID)
 
-	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
+	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
 	if status != http.StatusForbidden || failure.Code != "HANDOFF_SESSION_MISMATCH" ||
 		!strings.Contains(failure.Error, daemonSession) || !strings.Contains(failure.Error, tester.session) {
 		t.Fatalf("the tester's completion naming the daemon session's record = %d %+v, want 403 HANDOFF_SESSION_MISMATCH naming %s and %s",
@@ -427,11 +427,12 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	if again := r.dispatch.latest(r.a7, "test"); again.Body != daemonRecord.Body || again.Author.ID != tester.session {
 		t.Fatalf("the rewritten test record = %+v, want the same body under %s", again, tester.session)
 	}
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: rewritten.id, HandoffVersion: rewritten.version})
+	testedAs(t, r.st.Pool(), r.a7, "", true)
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", HandoffID: rewritten.id, HandoffVersion: rewritten.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's completion naming its own record = %d %+v, want 200", status, failure)
 	}
-	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict pass): %d", tester.session, rewritten.id, status)
+	r.note("the state of %s's check at its head held as yes from the tester; POST /legion/v1/handoff/complete as %s naming %s: %d", r.a7, tester.session, rewritten.id, status)
 	// The tester's turn ends with its completion, as a worker's does. Main's supervision holds a
 	// phase task while another role of the issue is in a turn, since the two would share the
 	// working copy (supervise's sendPending), so the reviewer is prompted only once it has.
@@ -478,12 +479,13 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("the tester's shim was prompted: %q", task.Message)
 	test := r.write(tester.session, r.renew, "test", r.smallBody(r.renew, "test", "round 1 fails"))
 	r.note("handoff-write as %s: %s", tester.session, test.line)
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Verdict: "fail", HandoffID: test.id, HandoffVersion: test.version})
+	testedAs(t, r.st.Pool(), r.renew, "", false)
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", HandoffID: test.id, HandoffVersion: test.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's failing completion = %d %+v, want 200", status, failure)
 	}
 	tester.endTurn()
-	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict fail): %d", tester.session, test.id, status)
+	r.note("the state of %s's check at its head held as no for fail; POST /legion/v1/handoff/complete as %s naming %s: %d", r.renew, tester.session, test.id, status)
 	r.waitPhase(r.renew, phase.Implementing)
 	r.note("read back: %s is back in implementing", r.renew)
 	task = implementer.awaitPrompt()

@@ -53,15 +53,17 @@ func backwardMoves(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	return moves
 }
 
-// testerFails is the tester's fail of the round named, which sends the work back from testing.
-// The tester's row is seeded afresh each time because the transition before it cleared the
-// handoff the completion writes (clearHandoff).
+// testerFails is the tester's round named ending on a check that fails at the head, which sends
+// the work back from testing: the state event of the fail, then the tester's completion. The
+// tester's row is seeded afresh each time because the transition before it cleared the handoff the
+// completion writes (clearHandoff).
 func testerFails(t *testing.T, pool *pgxpool.Pool, engine *Engine, round string) {
 	t.Helper()
 	standsIn(t, pool, phase.Testing, "testing")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	testedAs(t, pool, engine, "LEGION-208", "", false)
 	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-		Role: claim.RoleTester, Claim: "test-claim", Summary: "the fix is not in", Verdict: "fail",
+		Role: claim.RoleTester, Claim: "test-claim", Summary: "the fix is not in",
 		HandoffRecord: "test-" + round, HandoffVersion: 1})
 }
 

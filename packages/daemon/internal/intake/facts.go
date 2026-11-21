@@ -1025,7 +1025,6 @@ type HandoffComplete struct {
 	// at all, so a fact reaching the workflow always names a run.
 	Generation uint64
 	Summary    string
-	Verdict    string
 	// Commit is the commit the completion reports: for the planner, the implementer's implementing
 	// round, the tester and the reviewer the head their handoff record names, empty where a
 	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
@@ -1037,6 +1036,13 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
+	// StatesSerial is the check states serial of the record a tester's completion names, as Dispatch
+	// answered the read of it (`check_states_serial`): every check.state_changed event the tester's
+	// results caused has a serial at or below it, so the testing move waits until the daemon holds
+	// each serial through it (record.Store.StatesFenceReached). 0 for every other completion and for
+	// a record written before Dispatch kept one, whose fence passes at once. No completion carries a
+	// verdict: the states Dispatch publishes at the tested head decide the testing phase.
+	StatesSerial int64
 	// PlanRating is the rating of the plan the issue ran, as the completion named it: the route held
 	// it to the scale and to a reason (api's planRatingOf, its one producer), and nil is a
 	// completion that named none. Only the completion that ends the retro carries one, and which

@@ -667,7 +667,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 			t.Fatalf("mint the grant the tester completes with: %v", err)
 		}
 		body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass",
-			Verdict: "pass", HandoffID: handoff, HandoffVersion: version})
+			HandoffID: handoff, HandoffVersion: version})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -740,6 +740,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	handoffs.mu.Lock()
 	handoffs.handoffs[own.ID] = own
 	handoffs.mu.Unlock()
+	testedAs(t, rig.pool, rig.issue.Key, "", true, engine)
 	if status, body := complete(own.ID, own.Version); status != http.StatusOK {
 		t.Fatalf("the completion of entry 2's task = %d %s, want 200: the worker's turn is on the entry its phases row names", status, body)
 	}

@@ -601,7 +601,12 @@ type PhaseRow struct {
 	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
 	// from its own first crossing.
 	CapTold int
-	Verdict string
+	// StatesSerial is, on the tester's row, the check states serial of the record its completion
+	// of testing named (intake.HandoffComplete.StatesSerial): the testing move decides once the
+	// daemon holds every state event of the issue through it (Store.StatesFenceReached), and 0, a
+	// record that carries none, passes that fence at once. Every other row holds 0. The next phase's
+	// start clears it with the rest of the handoff (workflow's clearHandoff).
+	StatesSerial int64
 	// Summary is what the role reported with its completion, which the architect is told when the
 	// phase ends.
 	Summary string
@@ -2063,7 +2068,7 @@ type Store interface {
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// check states serial and summary. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.

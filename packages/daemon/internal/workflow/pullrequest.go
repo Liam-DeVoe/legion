@@ -477,6 +477,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !awaitsMerge(issue) {
 		return nil, nil
 	}
+	// The merge ends the use of the issue's check states: no head of it is tested again, so the
+	// states, sets and serials the daemon holds of it go (record.Store.DeleteCheckStates).
+	if err := e.store.DeleteCheckStates(ctx, tx, issue.Key); err != nil {
+		return nil, err
+	}
 	issue.Phase, issue.Hold = phase.Merging, nil
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {

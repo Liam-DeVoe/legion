@@ -106,6 +106,9 @@ import (
 // The check states the daemon keeps of Dispatch's check.state_changed (20261121065041) are applied
 // after all of these and touch no outbox_kind_check: the migration creates check_states,
 // check_state_sets and check_state_serials, empty, and adds issues.check_states_seq at 0.
+// The phase verdict's removal (20261121074614) is applied after it and touches no
+// outbox_kind_check: it drops phases.verdict, adds phases.states_serial at 0, and takes the key
+// verdict out of each queued notice.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -115,7 +118,7 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
-	20261120055717, 20261121065041,
+	20261120055717, 20261121065041, 20261121074614,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -133,8 +136,9 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157 and dispatch://INFRA-4729's 20261120055717. That is why
 // the loop below holds the list rather than counting it, so that a version added above any of them
-// is named here rather than read as main's. The check states' 20261121065041, which came after
-// them, stands above main's newest too, and is named in that list with the rest.
+// is named here rather than read as main's. The check states' 20261121065041 and the phase
+// verdict's removal, 20261121074614, which came after them, stand above main's newest too, and are
+// named in that list with the rest.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

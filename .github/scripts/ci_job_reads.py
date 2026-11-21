@@ -546,6 +546,10 @@ RULES = {
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1069")),
+    f"{DAEMON}/internal/api/check_states_test.go": reads(
+        (f"{FIX}/dispatch-events/check-state-changed.json",
+         "internal/api/check_states_test.go applyStates os.ReadFile (../../../contracts/fixtures/dispatch-events): "
+         "each state event a test applies is the payload Envoy's golden writes")),
     # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
     # internal/supervise declares, which it reads by parsing that package's own sources.
     f"{DAEMON}/internal/api/reachstates_test.go": [
@@ -567,6 +571,10 @@ RULES = {
     # with nobody noticing (dispatch://INFRA-1413).
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
+    f"{DAEMON}/internal/daemon/check_states_test.go": reads(
+        (f"{FIX}/dispatch-events/check-state-changed.json",
+         "internal/daemon/check_states_test.go testedFact os.ReadFile (../../../contracts/fixtures/dispatch-events): "
+         "each state event a test applies is the payload Envoy's golden writes")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
@@ -743,6 +751,10 @@ RULES = {
          "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451"),
         (f"{DAEMON}/internal/projection/project_test.go",
          "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451")),
+    f"{DAEMON}/internal/workflow/check_states_test.go": reads(
+        (f"{FIX}/dispatch-events/check-state-changed.json",
+         "internal/workflow/check_states_test.go readCheckStatesFixture os.ReadFile (../../../contracts/fixtures/dispatch-events): "
+         "each state event a test applies is the payload Envoy's golden writes")),
     f"{DAEMON}/internal/workflow/engine_test.go": reads(
         ("skills/legion-worker/references/merge-gate.md",
          "internal/workflow/engine_test.go:432 reads it under ../../../..")),
