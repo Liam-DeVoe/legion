@@ -90,7 +90,7 @@ When the merger reports:
 A head that conflicts with its base keeps the issue in its phase.
 The daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
 A conflict it does not act on yet is recorded:
-the tester and the reviewer go on at that head, an approval of it ends the review round, and the daemon acts on entry to `accepting`, or `retro` without `acceptance:owner`.
+the task's steps go on at that head, a reviewer step's approval of it ends its review round, and the daemon acts on entry to `accepting`, or `retro` without `acceptance:owner`.
 When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
