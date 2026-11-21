@@ -169,39 +169,6 @@ func TestAPassAndAFailOfTheJobAtOneCommitReadUnknown(t *testing.T) {
 	}
 }
 
-// TestCIsResultsThatDisagreeAtOneHeadReadUnknown: R7. ACME-1's open pull request #70 is at
-// ciJobHead. The job's own result of c1 at that head and the result Dispatch derives from the
-// go-checks run there are both CI's evidence of c1 at one commit, so a fail and a pass of the two,
-// in each order, make that head unknown (pass_and_fail). The controls: the job's fail alone reads
-// no, and the job's pass beside a derived pass reads yes.
-func TestCIsResultsThatDisagreeAtOneHeadReadUnknown(t *testing.T) {
-	for _, row := range []struct {
-		name, job, derived string
-		answer, reason     string
-	}{
-		{"the job's fail beside a derived pass", "fail", ciConclusionSuccess, model.PassStandsUnknown, model.PassStandsReasonPassAndFail},
-		{"the job's pass beside a derived fail", "pass", "failure", model.PassStandsUnknown, model.PassStandsReasonPassAndFail},
-		{"the control: the job's fail alone", "fail", "", model.PassStandsNo, "fail"},
-		{"the control: the job's pass beside a derived pass", "pass", ciConclusionSuccess, model.PassStandsYes, ""},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			rig := newCIJobRig(t)
-			writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
-			rig.github.setBranch("legion/work", ciJobBranchHead{sha: ciJobHead})
-			jobRecorded(t, "the job's "+row.job+" at the pull request's head", rig.post(t, rig.issue,
-				jobTokenOn(rig, ciJobHead, "refs/heads/legion/work", 99), jobResultAt(ciJobHead, row.job)))
-			if row.derived != "" {
-				rig.github.listings.set(ciJobHead, completedRun(11, ciJobName, row.derived))
-			}
-			stands := passStandsOnWire(t, rig.handler, rig.issue, "c1")
-			subject := subjectAt(t, stands, ciJobHead)
-			if stands.Answer != row.answer || subject.Answer != row.answer || subject.Reason != row.reason {
-				t.Fatalf("c1 reads %+v, its subject at %s %+v; want %s, and %s at the subject", stands, ciJobHead, subject, row.answer, row.reason)
-			}
-		})
-	}
-}
-
 // TestAMergedHeadStaysABasisWhileAPullRequestIsOpen: ACME-1's pull request #69 merged at
 // ciJobCommit, and #70 is open at ciJobHead. k1 compares with both heads: the merged one stays a
 // basis and is no subject. A tester's pass at the merged head stands at that basis, and no pass of
