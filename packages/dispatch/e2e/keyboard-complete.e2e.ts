@@ -1266,6 +1266,9 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
   const menu = page.getByRole("menu");
 
   const snooze = inboxRow(page, first).getByRole("button", { name: /^Snooze / });
+  // Waited for here, within `expectTimeout`, where the tap would wait out the action's timeout
+  // for a card that draws no such button, so the base fails the row's first step by name.
+  await expect(snooze, "k-phone: the first card draws its Snooze menu's trigger").toBeVisible();
   await snooze.tap();
   await expect(
     menu,
@@ -1712,7 +1715,13 @@ test("k-link-click: in the plan the reader edits and in its past version, a plai
     );
     await expect(serves, `k-link-click: ${view} draws the task's serves link`).toBeVisible();
     await markDocument(page);
-    await serves.click();
+    // Bounded at `expectTimeout`, as the row's own assertions are: a link the page draws but that
+    // takes no click fails here by name, where the click would wait out the action's timeout.
+    await serves.click({ timeout: expectTimeout }).catch((error: unknown) => {
+      throw new Error(`${step}: the link took no click within ${expectTimeout} ms`, {
+        cause: error,
+      });
+    });
     await expect(page, `${step} moves the page to the spec`).toHaveURL(
       new RegExp(`/issues/${seed.key}/spec(?:[?#].*)?$`)
     );
@@ -2366,9 +2375,9 @@ async function pressInDocument(
 
 /** The tall approval requests, each of a spec at least four times the column's height, and a
  *  question its asker reworded, whose card draws the `<summary>` of its earlier wording: forty
- *  paragraphs of its question stand above that summary, past the column's height, and its nine
- *  options below it, so the column can stand away from its top at the summary with room to
- *  scroll on down. */
+ *  paragraphs of its question stand above that summary, past the column's height, and its eight
+ *  options (the most a question takes) below it, so the column can stand away from its top at
+ *  the summary with room to scroll on down. */
 async function seedListAndDocument(): Promise<{
   readonly reworded: string;
   readonly tall: readonly SeededApproval[];
@@ -2383,7 +2392,7 @@ async function seedListAndDocument(): Promise<{
   const ask = await createAsk(
     issue.key,
     {
-      options: Array.from({ length: 9 }, (_, index) => ({ label: `Window ${index + 1}` })),
+      options: Array.from({ length: 8 }, (_, index) => ({ label: `Window ${index + 1}` })),
       question: `Which lease does the audit read?\n\n${windows}`,
     },
     asker
@@ -5311,6 +5320,10 @@ test("k-pane-head: on approval requests and questions whose titles are 1 and 300
     const [short, long] = ids;
     if (short === undefined || long === undefined) throw new Error(`${what} were not seeded`);
     await openInPane(page, short, drawn, step);
+    // Waited for here, within `expectTimeout`, where `readHead`'s first read of the priority, an
+    // `evaluate`, would wait out its timeout for a head that draws no such button, so the base
+    // fails the row by name.
+    await expect(PRIORITY.find(head), step("the head draws its priority control")).toBeVisible();
     const shortHead = await readHead(page, controls);
     await openInPane(page, long, drawn, step);
     const longHead = await readHead(page, controls);
