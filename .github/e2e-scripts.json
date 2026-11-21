@@ -188,7 +188,7 @@
     },
     {
       "script": "cutover-proof-kind.sh",
-      "needs": "a throwaway kind cluster on a Linux host, with docker, go, kubectl, jq and kind, into which it loads an image it builds of this tree's envoy-listener, fixturebuckets and the nats-server packages/envoy/go.mod pins"
+      "needs": "a throwaway kind cluster on a Linux host, with docker, go, kubectl, jq and kind, into which it loads an image it builds of this tree's envoy-listener and the nats-server packages/envoy/go.mod pins; it builds fixturebuckets and runs it from the host"
     },
     {
       "script": "dispatch-two-builds.sh",

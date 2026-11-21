@@ -1552,31 +1552,6 @@ func (c *t7TapConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// t7Published records the subjects an operator connection publishes to, in order (a PUB or HPUB
-// line's subject), through its tap.
-type t7Published struct {
-	mu       sync.Mutex
-	subjects []string
-}
-
-var t7PubLine = regexp.MustCompile(`(?m)^H?PUB (\S+) `)
-
-func (p *t7Published) tap(b []byte) []byte {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, match := range t7PubLine.FindAllSubmatch(b, -1) {
-		p.subjects = append(p.subjects, string(match[1]))
-	}
-	return b
-}
-
-// Subjects are the subjects published so far.
-func (p *t7Published) Subjects() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]string(nil), p.subjects...)
-}
-
 // index is the first position of subject among subjects, or -1.
 func index(subjects []string, subject string) int { return slices.Index(subjects, subject) }
 

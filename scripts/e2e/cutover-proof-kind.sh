@@ -35,9 +35,10 @@
 # Run it from a checkout on a Linux host as
 #   bash scripts/e2e/cutover-proof-kind.sh
 # with docker, go, kubectl, jq and kind (LEGION_E2E_KIND names the binary when it is not on PATH)
-# installed. It builds this tree's envoy-listener and fixturebuckets, and nats-server at the
-# version packages/envoy/go.mod pins, statically, into one image on busybox, and loads it into the
-# cluster. Every kubectl call names the run's kubeconfig and context, so the caller's kubeconfig is
+# installed. It builds this tree's envoy-listener and the nats-server packages/envoy/go.mod pins,
+# statically, into one image on busybox, and loads it into the cluster; fixturebuckets, which it
+# also builds, runs from the host through a port-forward. Every kubectl call names the run's
+# kubeconfig and context, so the caller's kubeconfig is
 # never read, and the cluster is deleted on any exit. CUTOVER_PROOF_EVIDENCE_DIR (default a fresh
 # /tmp directory, kept and printed) keeps the transcript and, on a failure, the cluster's pods,
 # events and logs.
@@ -268,8 +269,9 @@ done
 pass
 
 begin image
-# This tree's listener and fixturebuckets, and the nats-server go.mod pins (the listener refuses a
-# server version that can skip a message, internal/natsversion), each static, in one image.
+# This tree's listener and the nats-server go.mod pins (the listener refuses a server version that
+# can skip a message, internal/natsversion), each static, in one image; fixturebuckets, built here
+# too, runs from the host.
 mkdir -p "$work/image"
 (cd "$root/packages/envoy" &&
   CGO_ENABLED=0 go build -o "$work/image/envoy-listener" ./cmd/listener &&

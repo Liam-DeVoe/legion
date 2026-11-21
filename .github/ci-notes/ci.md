@@ -428,12 +428,6 @@ Markdown file. The 230 that ride in today are the pmdoc parser's corpus
 (internal/dispatch/pmdoc/testdata), which only the jobs that run pmdoc's tests
 read, so a guide or a corpus case written under packages/envoy/internal starts no
 notices build (dispatch://INFRA-1413's A2).
-One package directory the step loads does hold one now: internal/dispatch/store, whose
-README.md the check counts as read (a package directory counts as `<dir>/*`), since the
-infra commands link internal/dispatch/delivery (infra/streams/census.go,
-infra/consumernames/families.go). The exclusion is therefore
-`'!packages/envoy/internal/**/testdata/**/*.md'`, every Markdown file under internal but
-that README, which the filter names.
 
 ## sessions_script: The session message-wait suite's own job: the suite
 
@@ -751,9 +745,6 @@ pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 The job reads no Markdown file: the listener, the renderer and the contracts
 between them are its whole input, so a guide written under one of the directory
 patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/cipher-client/**'` and the rest) would start it for nothing.
-One Markdown file is read now: internal/dispatch/store's README.md, in a package directory
-natsd's closure holds (the check counts a package directory as `<dir>/*`). So the exclusion
-is written per tree the filter's patterns reach, which leaves that one README in.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 

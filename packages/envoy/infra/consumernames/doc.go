@@ -9,9 +9,11 @@
 // Every command runs as the deployment's one operator identity, whose NATS grant is the writer
 // hold's phase's (natsgrant.Operator), and reads the hold row through the broker's routes first
 // (holdrecord.Client): status runs while the row is released, prepare while it is prepared, and
-// every command that changes state only while the row is held, inside a hold, each writing its
-// intent and its done or stop entry in the hold's journal (holdrecord.Client.Admit, AppendDone,
-// AppendStop). The selection records themselves are the families' stores: the session consumers'
+// every command that changes state only while the row is held, inside a hold. A held command a
+// workflow of the hold's table names writes its intent and its done or stop entry in the hold's
+// journal (holdrecord.Client.Admit, AppendDone, AppendStopLeft); cleanup and replace, which no
+// workflow names, and prepare, which runs before the hold is set, write none, and status only
+// reads. The selection records themselves are the families' stores: the session consumers'
 // and each listener's durable's in the KV bucket consumernames.SessionBucket, Dispatch's two
 // durables' in Dispatch's intake_consumers table, and each Legion daemon's in its own database's
 // intake_consumers table, which the operator reaches with its own database credential.
