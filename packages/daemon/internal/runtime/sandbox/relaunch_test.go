@@ -2279,3 +2279,34 @@ func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
 		}
 	}
 }
+
+// A pod's events are printed with every key of the providers Secret in its place: the kubelet's
+// mount failure quotes the key, and a provider_keys value can be a provider's key pasted where its
+// name goes, here a made-up one. The event's type and reason, and the rest of its message, stay.
+func TestAPendingPodsEventsNameNoKeyOfTheProvidersSecret(t *testing.T) {
+	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
+	g := newRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": pasted} }))
+	loc := g.spawn(workerSpec(t))
+	name := loc.Sandbox.Name
+	pod := g.pod(name)
+	if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: name + ".1", Namespace: testNamespace},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: name, UID: pod.UID},
+		Type:           "Warning", Reason: "FailedMount",
+		Message: `MountVolume.SetUp failed for volume "providers" : references non-existent secret key: ` + pasted,
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	g.update(pod, func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending })
+	g.eventually("the informer to see the pending pod", func() bool {
+		p := g.r.storedPod(name)
+		return p != nil && p.Status.Phase == corev1.PodPending
+	})
+	detail := g.r.waitedOut(g.ctx, g.sandbox(name))
+	if strings.Contains(detail, pasted) {
+		t.Fatalf("waitedOut = %q, prints the made-up key of the providers Secret", detail)
+	}
+	if want := `events: Warning FailedMount: MountVolume.SetUp failed for volume "providers" : references non-existent secret key: [a providers Secret key]`; !strings.Contains(detail, want) {
+		t.Errorf("waitedOut = %q, want it to carry %q", detail, want)
+	}
+}
