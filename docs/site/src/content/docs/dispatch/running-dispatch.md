@@ -326,9 +326,11 @@ accounts they name, and step 2 ends at once whatever those accounts hold at the 
 would also have stopped a Google ID token issued to such an account before its address moved,
 which lives at most an hour, and the broker can still trade one during that hour. Every move
 Dispatch recorded comes before step 1, an operator's block run after the stop included, so an hour
-after step 1 every such token has expired. The ten minutes more cover the broker's clock, which
-checks each token's expiry and stamps each credential, against Dispatch's database's, which stamps
-the reset's start; widen them where the two clocks are further apart. Step 4 then ends whatever
+after step 1 every such token has expired. The ten minutes more cover two clocks of the broker's
+against the clock of Dispatch's database, which stamps the reset's start: the broker process's,
+which checks each token's expiry, and the broker database's, which stamps each credential's
+creation (`created_at`, its `default now()`), the moment the close's lists compare with the wait's
+end. Widen them where either is further from Dispatch's database's. Step 4 then ends whatever
 such a token traded, and the close refuses until that wait has passed and its own read of the
 broker finds no person credential live that was made before the wait ended. One made after it can
 only be the address holder's, so the close leaves it, and a person who signed in early keeps
@@ -366,7 +368,7 @@ SQL
 ) || { echo 'UNKNOWN: the broker database could not be read, so nothing was reset'; exit 1; }
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v broker_greatest="$greatest" <<'SQL'
 begin;
-lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations in exclusive mode;
+lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations, deployment_resets in exclusive mode;
 create temp table reset_generation on commit drop as select greatest((extract(epoch from clock_timestamp()) * 1000000)::bigint, :'broker_greatest'::bigint + 1, coalesce((select max(generation) from user_sessions), 0) + 1, coalesce((select max(generation) from session_generation_floors), 0) + 1) as generation;
 insert into session_generation_floors (login, generation) select '*', generation from reset_generation on conflict (login) do update set generation = excluded.generation where excluded.generation > session_generation_floors.generation;
 update user_sessions set generation = r.generation from reset_generation r where user_sessions.generation < r.generation;
@@ -380,7 +382,9 @@ SQL
 ```
 
 It prints the number it raised to. Run again, it raises again, past the first number, and records
-a later start.
+a later start. It locks `deployment_resets` with the other tables, and the close locks it before it
+records the end, so a close run beside step 1 either records its end before step 1 takes the lock,
+or waits for step 1 to commit, then finds step 1's start as the newest mark and records nothing.
 
 **End every person's credential at the broker.** The broker serves a person's sign-in on a
 machine, a machine login a person approved and an approval-page session without asking Dispatch,
@@ -530,7 +534,10 @@ pages() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct log
 left=$( { signins && logins && pages; } ) || { echo 'UNKNOWN: the broker database could not be read, so the reset is not closed'; exit 1; }
 if [ -n "$left" ]; then printf 'STILL LIVE, so the reset is not closed: run the credentials block again, then this one\n%s\n' "$left"; exit 1; fi
 ended=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
+begin;
+lock table deployment_resets in exclusive mode;
 insert into deployment_resets (mark) select 'end' from (select mark, at from deployment_resets order by id desc limit 1) m where m.mark = 'start' and now() >= m.at + interval '1 hour 10 minutes' returning at;
+commit;
 SQL
 ) || { echo "UNKNOWN: Dispatch's database could not be read or written, so the reset is not closed"; exit 1; }
 [ -n "$ended" ] || { echo 'NOT CLOSED: step 1 ran again since this close read the wait; run the credentials block again once its wait has passed, then this one'; exit 1; }
@@ -559,8 +566,9 @@ token in its `dispatch_token_file`.
 page against Dispatch's database and a real broker's, over the histories a lone restore leaves:
 a replacement the broker never applied, an address recorded with no account, and a take-back the
 lost database still owed. `api.TestTheResetClosesOnlyAnHourAfterItsStartOnACleanRead` runs the
-credentials block's two runs and the close. `store.TestTheResetEndsEveryCookieAndToken` runs the
-first block alone, over a second restore from before a first reset.
+credentials block's two runs and the close, and `api.TestTheResetCloseWaitsForAStepOneStillOpen`
+runs the close while step 1 is open. `store.TestTheResetEndsEveryCookieAndToken` runs the first
+block alone, over a second restore from before a first reset.
 
 The other way round, when it is **the broker's database that was restored alone**, nothing above
 finds it: every revocation Dispatch paid before the restore is settled at Dispatch, so the loop
