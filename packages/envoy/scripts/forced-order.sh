@@ -13,8 +13,10 @@
 # replace added, so every other module version is the one CI's own build of it links, on either
 # nats-server (2.10.29 adds go.uber.org/automaxprocs, which it requires, and changes no other
 # version). A workspace that does not use the module, or that holds a replace, is refused, since
-# the build would then link other module versions than CI's. A module with no workspace builds on
-# a copy of its go.mod with the replace added (go test -modfile, which go refuses in a workspace).
+# the build would then link other module versions than CI's, and so is a module whose go.mod
+# replaces nats-server, whose hooked copy would take the replacement's place. A module with no
+# workspace builds on a copy of its go.mod with the replace added (go test -modfile, which go
+# refuses in a workspace).
 # The script reads go's JSON (go work edit -json, go mod download -json) with jq. Nothing else of
 # nats-server changes, and no
 # build without this script sees a hook.
@@ -138,8 +140,15 @@ else
   build="a copy of $module/go.mod, with no workspace"
 fi
 flags=(${modflags[@]+"${modflags[@]}"} -tags odatrace -race)
-linked="$("${go_cmd[@]}" list ${modflags[@]+"${modflags[@]}"} -m -f '{{.Version}}' "$nats_server")" ||
+# The version the build requires, and the module that replaces it, if any: for a replaced module
+# go list's .Version is the requirement, not what the build links, and the hooked copy's replace
+# below would take the replacement's place, so a module that replaces nats-server is refused.
+listed="$("${go_cmd[@]}" list ${modflags[@]+"${modflags[@]}"} -m \
+  -f '{{.Version}}{{with .Replace}} {{.Path}}{{with .Version}}@{{.}}{{end}}{{end}}' "$nats_server")" ||
   die "go list could not read the nats-server version $build links"
+linked="${listed%% *}"
+[ "$listed" = "$linked" ] ||
+  die "$module's build replaces $nats_server with ${listed#* }: the hooks patch an upstream release, and the hooked copy would replace the replacement, so a replaced nats-server is refused"
 [ -n "$server" ] || server="${linked#v}"
 patch_dir="$hooked/v$server"
 [ -f "$patch_dir/server.patch" ] && [ -f "$patch_dir/zz_measure_write.go" ] ||

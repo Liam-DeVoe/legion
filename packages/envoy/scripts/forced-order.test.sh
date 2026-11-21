@@ -71,6 +71,16 @@ refused drop-not-a-point 'forced-order.sh: -drop stream: no hook of nats-server 
 # -server with an empty value is no version, not the default.
 refused server-empty "forced-order.sh: -server '' names no version" \
   '^=== RUN' -server '' ./internal/testnats/hooktest/
+# A module whose go.mod replaces nats-server requires one version and links another, and the
+# hooked copy would take the replacement's place: the script refuses it rather than hook the
+# version the requirement names. The fixture replaces it with a local module, so no go command
+# needs the network; its directory is not named for the case, whose log is $out/<case name>.
+mkdir -p "$out/replacing-module/fork"
+printf 'module github.com/nats-io/nats-server/v2\n\ngo 1.21\n' >"$out/replacing-module/fork/go.mod"
+printf 'module example.com/replaced\n\ngo 1.21\n\nrequire github.com/nats-io/nats-server/v2 v2.15.1\n\nreplace github.com/nats-io/nats-server/v2 => ./fork\n' \
+  >"$out/replacing-module/go.mod"
+refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
+  '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
-echo "forced-order.test.sh: $failed failed of 3"
+echo "forced-order.test.sh: $failed failed of 4"
 [ "$failed" -eq 0 ]
