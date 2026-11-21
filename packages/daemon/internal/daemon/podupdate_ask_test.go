@@ -21,13 +21,13 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-// The lines the executor writes for some of the ways a row ends without an error. The first is
-// the line the production check reads (requirement R8).
+// The four lines the executor writes, one for each way a row ends without an error. The first
+// is the line the production check reads (requirement R8).
 const (
-	askPublishedLine  = "outbox update ask published to the role topic"
-	askNoHolderLine   = "outbox update ask finished undelivered: no live session holds the role"
-	askLeftLine       = "outbox update ask finished without a publish: the claim no longer records its round"
-	askNotRunningLine = "outbox update ask finished without a publish: the claim's agent is not running"
+	askPublishedLine = "outbox update ask published to the role topic"
+	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
+	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
+	askSuspendedLine = "outbox update ask finished without a publish: the daemon suspended the claim"
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
@@ -96,7 +96,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	}
 }
 
-// A role no live session holds — its session has not registered or not yet claimed its topic — is
+// A role no live session holds — its pod was released, or its session has not registered — is
 // not woken to be asked: the round ends at its bound whether or not the role answers. The row
 // finishes with one Info line and writes no published line. The claim here records no ask mark,
 // and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
@@ -197,16 +197,16 @@ func (w *wakeCountingTrees) taken() int {
 	return w.takes
 }
 
-// The ask wakes nothing (dispatch://INFRA-2981 R1), and it publishes nothing to a claim whose
-// agent is not running: the listener raises the role's wake for a publish to a holder that has
-// lapsed, so a publish to a role whose pod an idle release took would bring the pod back to be
-// asked. The row finishes with nothing published and nothing marked, so the sweep asks the claim
-// again once its agent is ready: no pod wake is taken, no process is resumed, and the claim stays
-// released. One line says why, with the claim's state and its suspension. The publisher here
-// would take the ask, as a listener that answers the publish does, so the control is the check
-// removed (supervise.Machine.PublishUpdateAsk): the ask is then published and the claim marked
-// asked. c-one-channel's control is the other half: an executor that called wakeForDelivery
-// first, as hookPrompt does, takes a wake and resumes the claim here.
+// The ask wakes nothing and publishes nothing to a role whose pod an idle release took
+// (dispatch://INFRA-2981 R1, dispatch://INFRA-4109 R1). The machine refuses the ask of a claim the
+// daemon suspended (supervise's Claim.PassedOverByRound), a released claim included, so it ends
+// the row at UpdateAskSuspended before any publish, and the row finishes with one Info line of its
+// own. No publish reaches the listener, which raises a role wake for every publish to a role with
+// no holder. No pod wake is taken, no process is resumed, and the claim stays released. The sweep
+// asks a claim only once its agent is ready (askRound reads supervise.SaidReady), and a released
+// claim is not ready, so this row stands for one that the sweep queued before the release. The
+// negative control is c-one-channel's: an executor that called wakeForDelivery first, as
+// hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -232,15 +232,13 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 		t.Fatalf("the ask to a released role = %v, want the row finished", err)
 	}
 
+	lines := loggedLines(t, logs.String(), `"msg":"`+askSuspendedLine+`"`)
+	if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) ||
+		lines[0]["round"] != askedRound || lines[0]["claim"] != string(rig.token) {
+		t.Errorf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round and the claim %s", askSuspendedLine, lines, logs.String(), row.ID, rig.token)
+	}
 	if published := publisher.publishes(); len(published) != 0 {
-		t.Errorf("the ask published %+v to the released role, want nothing: a publish raises the role's wake", published)
-	}
-	lines := loggedLines(t, logs.String(), `"msg":"`+askNotRunningLine+`"`)
-	if len(lines) != 1 || lines[0]["state"] != "suspended" || lines[0]["suspendedBy"] != "released" {
-		t.Errorf("lines %q = %v in\n%s\nwant one line naming the claim suspended by its release", askNotRunningLine, lines, logs.String())
-	}
-	if got := rig.machine.Claim(); got.UpdateTaskedAt != nil {
-		t.Errorf("the claim is marked asked at %v, want no mark: the ask reached nobody, and the sweep asks again once the agent is ready", got.UpdateTaskedAt)
+		t.Errorf("the ask published %+v, want no publish: a publish to a role with no holder raises a role wake", published)
 	}
 	if n := trees.taken(); n != 0 {
 		t.Errorf("the ask took %d pod wakes, want none: a released pod is not brought back to be asked", n)
@@ -248,8 +246,8 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	if n := len(rig.rt.CallsOf("Resume")) - resumes; n != 0 {
 		t.Errorf("the ask resumed %d processes, want none", n)
 	}
-	if got := rig.machine.Claim(); !got.Released() {
-		t.Errorf("the claim after the ask = %s by %s, want it still released", got.State, got.SuspendedBy)
+	if got := rig.machine.Claim(); !got.Released() || got.UpdateTaskedAt != nil {
+		t.Errorf("the claim after the ask = %s by %s, asked at %v; want it still released and not asked", got.State, got.SuspendedBy, got.UpdateTaskedAt)
 	}
 	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
 		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)

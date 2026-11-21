@@ -3029,7 +3029,7 @@ package api
 // #4175, #4553, #4592, #4596 and #4661, 204 by #3831, 205 by #3712 and #4573, 206 by #4540, 207
 // by #4030 and #4432, and nothing at 208, so 208 is the lowest number above main's 202 that no
 // open pull request declares. main held 202 at the forward merge that last read this number,
-// main's f3e26096; read main's own number and every open pull request's again at the next merge
+// main's 19674f67; read main's own number and every open pull request's again at the next merge
 // rather than from this line. A renumber moves `questionsForControllerContract` in shaping.go
 // with it, the last number of answers.go's SupportedContracts.)
 const DaemonAPIVersion = 208
