@@ -225,8 +225,13 @@ func ReadPlanGuidance(path string) ([]byte, error) {
 // WritePlanGuidance writes `# Plan guidance of this deployment (<legionID>)`, a blank line,
 // Legion's sentence that the guidance binds no plan, a blank line, and contents, which
 // ReadPlanGuidance answered, verbatim to `<stateDir>/plan-guidance.md`, returning that path. Boot
-// writes it once, before the first pane opens, so an owner's launch reads exactly what boot read
-// and never the operator's own path, which may change underneath a running daemon.
+// writes it once, before the first pane opens, so no launch reads the operator's own path, which
+// may change underneath a running daemon. Each owner launch reads this copy again when the daemon
+// composes its prompt (runtime.ComposePrompt). Under Kubernetes the copy is on the daemon's own
+// disk, which no pod reaches, and the composed prompt goes to the pod in its start command. Under
+// tmux every pane runs as the daemon's Unix user, so a pane can rewrite the copy, mode 0644, and
+// the next owner launch reads what it wrote, as every launch reads the deployment instructions'
+// copy.
 func WritePlanGuidance(contents []byte, stateDir, legionID string) (string, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)

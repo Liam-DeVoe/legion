@@ -2596,7 +2596,7 @@ While it stands open, the earlier release reads its agent as the agent of a runn
 
 #### Rolling back the release that gives each owner the deployment's plan guidance
 
-This release adds one top-level key to `legion.yaml`, `plan_guidance`: the path of a Markdown file that the daemon reads at boot and appends to the system prompt of each owner alone ([Configuration](#configuration)).
+This release adds one top-level key to `legion.yaml`, `plan_guidance`: the path of a Markdown file that the daemon reads at boot and appends to the system prompt of each owner alone ([Running Legion, `legion.yaml`](site/src/content/docs/legion/running-legion.md#legionyaml), the `plan_guidance` item).
 It adds no store migration, no column and no outbox kind, so there is no SQL to run and nothing to undo in the database.
 
 **`plan_guidance` must come out of `legion.yaml` before the earlier image is pinned.**
