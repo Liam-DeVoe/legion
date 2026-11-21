@@ -290,9 +290,11 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 // A pass records nothing for an answer that stays. A write of the same facts, a write that gives
 // the same issue from the title, and a write whose messages are not read but whose branch names the
 // issue each leave the answer. The pass after each appends nothing, and leaves no move queued. The
-// reconcile reads every open row every five minutes, so an event at each pass would bury the
-// timeline of each issue under the pass's own heartbeat. It fails where AppendAttributionEvents
-// appends an event for a move whose two keys are the same, or where a sync moves a stay.
+// reconcile re-reads every open row at every pass of one process, each starting at most five
+// minutes after the one before it ended, and as PullRequestHeadStaleAfter says with several, so an
+// event at each pass would bury the timeline of each issue under the pass's own heartbeat. It fails
+// where AppendAttributionEvents appends an event for a move whose two keys are the same, or where a
+// sync moves a stay.
 func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	broker := events.NewBroker()

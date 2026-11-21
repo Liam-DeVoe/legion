@@ -283,11 +283,10 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 }
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
-// the read's error, worded by gitHubErrorText: the error's text ends with GitHub's body as
-// githubapp.ShownBody shows it, its first 512 characters of a page of check runs that may take
-// 16 MiB, where GitHub refused or rate-limited the read, and that body gives way to GitHub's
-// `message`, read from the whole body, so the status stays. The sentence is then cut to
-// ciUnreadDetailRunes.
+// the read's error, worded by gitHubErrorText: where GitHub refused or rate-limited the read, the
+// error's text ends with GitHub's body as githubapp.ShownBody shows it, its first 512 characters
+// of a page of check runs that may take 16 MiB, and that gives way to GitHub's `message`, read
+// from the whole body, so the status stays. The sentence is then cut to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
 	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
 		head.Repo, head.HeadSHA, gitHubErrorText(err)), ciUnreadDetailRunes)
@@ -296,8 +295,8 @@ func ciUnreadDetail(head delivery.NewestHead, err error) string {
 // gitHubErrorText is the text of err, a GitHub read's error. Where GitHub refused the read
 // (githubapp.StatusError) or rate-limited it (githubapp.RateLimitError), the body the error's
 // text ends with, as githubapp.ShownBody shows it, is replaced by the `message` GitHub writes in
-// the JSON it refuses a request with, read from the whole body, and left out where it holds none
-// (withGitHubMessage). Any other error keeps its text.
+// the JSON it refuses a request with, read from the whole body, and left out where the body holds
+// none (withGitHubMessage). Any other error keeps its text.
 func gitHubErrorText(err error) string {
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
@@ -311,9 +310,11 @@ func gitHubErrorText(err error) string {
 
 // gitHubReason is err's text as a refusal sentence carries it: gitHubErrorText, cut to its first
 // gitHubReasonBytes at a whole character (text.HeadBytes) where it is longer, saying so. The cut
-// is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error
-// (getAppInstallation), since an error GitHub answered with a page that is no JSON carries the
-// shown part of that page, and an error of a token mint carries what githubapp read of it.
+// is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error (getAppInstallation)
+// on the whole reason: an error GitHub answered with a page that is no JSON carries the page as
+// githubapp.ShownBody shows it, its first 512 characters, which may take 2,048 bytes, and its
+// size, after the request's own text, and an error of any other package carries whatever text it
+// holds.
 func gitHubReason(err error) string {
 	reason := gitHubErrorText(err)
 	head, cut := text.HeadBytes(reason, gitHubReasonBytes)

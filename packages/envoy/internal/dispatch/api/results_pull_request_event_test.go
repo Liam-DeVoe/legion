@@ -104,7 +104,7 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 	ctx, cancel := context.WithCancel(t.Context())
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil)
+	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

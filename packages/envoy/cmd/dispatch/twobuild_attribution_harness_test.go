@@ -176,9 +176,12 @@ func wantPassCounts(t *testing.T, step string, line map[string]string, want map[
 	}
 }
 
-// previousReconcilePeriod is the period of the previous build's delivery reconcile: its
-// delivery.ReconcileInterval, as no test setting shortens it there.
-const previousReconcilePeriod = 5 * time.Minute
+// previousReconcilePeriod is the period of the previous build's delivery reconcile lease:
+// duty.LeasePeriod of its delivery.ReconcileInterval, 0.9 of 5 minutes, as no test setting shortens
+// the interval there. The previous build is the newest release in the history of this tree's merge
+// base with main (build-dispatch-build.sh --previous-release), and every release from
+// legion-envoy-v32.33.0 on leases a reconcile pass for that period, not for the whole interval.
+const previousReconcilePeriod = 4*time.Minute + 30*time.Second
 
 // holdThePreviousBuildsPasses records a pass of the previous build's period that ends in the year
 // 2999. Each tick of the previous build then finds its period served and runs no pass (duty's

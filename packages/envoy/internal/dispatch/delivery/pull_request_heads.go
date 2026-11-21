@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -40,12 +41,13 @@ import (
 // the read of an issue's results for each `before_merge` result's commit, at most once every
 // CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which reads the pull requests owed a read (pull_request_reads_owed.go), every failure before any
-// refusal, creating each one's row where none exists, then reads the open rows read longer than
-// five minutes ago (ListStalePullRequestHeads), and then reads the facts line
-// (Reconcile.readFactsLine): each open or merged results row whose texts do not describe its head
-// or whose commit messages are not read, and each timeline row with no results row. Those two
-// arms read GitHub by one batched GraphQL query (readFactsBatch). Every writer writes a row
-// through one function (upsertHeadUnderCanonicalName).
+// refusal, creating each one's row where none exists, then reads the open rows read longer ago
+// than PullRequestHeadStaleAfter (every open row at every pass of one process, as far as the batch
+// reaches, and as PullRequestHeadStaleAfter says with several; ListStalePullRequestHeads), and
+// then reads the facts line (Reconcile.readFactsLine): each open or merged results row whose texts
+// do not describe its head or whose commit messages are not read, and each timeline row with no
+// results row. Those two arms read GitHub by one batched GraphQL query (readFactsBatch). Every
+// writer writes a row through one function (upsertHeadUnderCanonicalName).
 //
 // A row a read of GitHub wrote is marked (github_read_at), and only a marked row's time stops a
 // read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow): a release
@@ -812,17 +814,35 @@ const baseBranchMergedInSelect = `
 	limit 1`
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
-// reconcile reads it again. PullRequestHeadBatch is the most such rows, and the most reads owed
-// for a failure, that one pass reads (Reconcile.readOpenHeads, Reconcile.readOwedPullRequests).
-const (
-	PullRequestHeadStaleAfter = 5 * time.Minute
-	PullRequestHeadBatch      = 200
-)
+// reconcile reads it again.
+//
+// The bound is duty.LeasePeriod(ReconcileInterval), ReconcileInterval less a tenth of it: the
+// shortest wait the reconcile leaves after a pass, whose waits are drawn in
+// (ReconcileInterval - ReconcileInterval/10, ReconcileInterval] (duty.RunJittered,
+// duty.JitteredWithin). A row a pass reads is stamped (checked_at) no later than that pass ends.
+// With one process the next pass starts more than this bound after that end, so every pass
+// re-reads every open row the pass before it read, as far as the batch reaches. With several
+// processes serving one database the next pass can be another process's, starting less than this
+// bound after the read, and it leaves the row as fresh. The first pass that starts more than this
+// bound after the read reads it, and the deployment's passes come at most ReconcileInterval
+// apart, so two reads of an open row are at most about this bound plus ReconcileInterval apart,
+// nine and a half minutes, plus the passes' own run time. A bound of the whole ReconcileInterval
+// would leave such a row not yet due at one process's next pass whenever that pass's wait, with
+// the time the pass before ran on after the read, came to five minutes or less, which a quick pass
+// almost always does, and the row would wait for the pass after: about ten minutes between two
+// reads of it rather than five.
+var PullRequestHeadStaleAfter = duty.LeasePeriod(ReconcileInterval)
+
+// PullRequestHeadBatch is the most open rows read again, and the most reads owed for a failure,
+// that one pass reads (Reconcile.readOpenHeads, Reconcile.readOwedPullRequests).
+const PullRequestHeadBatch = 200
 
 // ListStalePullRequestHeads is at most limit open rows for the reconcile to read again, the
 // longest unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter,
-// a row never read first. An open row comes round every five minutes, so a head that an event
-// never brought moves within one pass of its staleness, where fewer than limit open rows are due
+// a row never read first. An open row comes round at every pass of one process, each starting at
+// most five minutes after the one before it ended, and as PullRequestHeadStaleAfter says with
+// several, so a head that an event never brought moves within one pass of its staleness, where
+// fewer than limit open rows are due
 // before it. A merged row is read by the facts line while its texts do not describe its head or
 // its commit messages are not read (Reconcile.readFactsLine). After that the head pass reads it
 // again only where a read is owed for it (Reconcile.readOwedPullRequests): the statement gives

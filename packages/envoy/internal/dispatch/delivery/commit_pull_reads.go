@@ -30,9 +30,9 @@ import (
 // every refetch would spend those calls again for every result's commit — for ever, since the
 // read reads a commit that a stored pull request heads too, to learn a second pull request at
 // that head. Five minutes is the span every other answer about a commit is believed for
-// (BranchCommitStaleAfter) and the one the reconcile re-reads an open head on
-// (PullRequestHeadStaleAfter), so a pull request opened at a recorded commit is read as that
-// result's basis within it.
+// (BranchCommitStaleAfter) and the longest the reconcile waits between two passes
+// (ReconcileInterval), so a pull request opened at a recorded commit is read as that result's
+// basis within it.
 const CommitPullReadStaleAfter = 5 * time.Minute
 
 // CommitPullSettledFor is how long the answer "GitHub names a pull request for this commit whose

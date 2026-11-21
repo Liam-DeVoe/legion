@@ -10,7 +10,10 @@
 // reconcile's next pass makes, and the envelope is acknowledged once that record is written; an
 // envelope whose record the database cannot take now is handed back to NATS, since it is then
 // the only record of the change, and the stream keeps it 72 hours (ErrHeadNotStored,
-// Intake.deliver, owePullRequestRead).
+// Intake.deliver, owePullRequestRead). The intake also hands a push of a branch to the
+// architecture importer (PushImports), so a component source's branch is imported when it moves
+// rather than at the importer's next five-minute pass; a hand-off that fails is logged and the
+// message acked too, and that five-minute pass is its catch-up.
 package delivery
 
 import (
@@ -40,13 +43,17 @@ import (
 // LEGION-294's own collector reads).
 var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
 
-// Intake wires the NATS consumer to the database, the GitHub App client and the event broker the
-// issue.deployed events go through (RecordDeployedEvents). StartIntakes builds it, and only with
-// the App configured.
+// Intake wires the NATS consumer to the database, the GitHub App client, the event broker the
+// issue.deployed events go through (RecordDeployedEvents) and the importer a push of a branch is
+// handed to (PushImports). StartIntakes builds it, and only with the App configured.
 type Intake struct {
 	pool   *store.Pool
 	github *githubapp.Client
 	events *events.Broker
+	// pushes is what a push of a branch is handed to (handlePushEnvelope): the architecture
+	// importer in the server, which StartIntakes sets. nil hands pushes nowhere. A field, and not
+	// a parameter of newIntake, so a test that needs pushes sets it on the intake it builds.
+	pushes PushImports
 	// settings is the delivery settings every message is routed by, shared with the job intake
 	// (StartIntakes).
 	settings *SettingsCache
@@ -68,6 +75,21 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, gi
 	return in
 }
 
+// PushImports is what the intake hands a push of a branch to: the architecture importer
+// (architecture.Importer.Pushed), which imports every enabled component source on that repository
+// and branch. repo is the push's payload's, `owner/name` in GitHub's case, and branch is the ref
+// without `refs/heads/`. The delivery package declares it rather than importing the importer, so
+// that it depends on no architecture package.
+//
+// Pushed runs on the push's key's goroutine (intakeKey) under the message's deadline, and the
+// message holds one of the intake's in-flight slots (intakeMaxAckPending) until it returns, so it
+// returns without waiting for the import it starts. ctx holds no connection of the pool (deliver),
+// so Pushed may read through the pool. A failure it answers is logged at WARN (`process event`)
+// and the message acknowledged, as deliver does for a handler's error other than ErrHeadNotStored.
+type PushImports interface {
+	Pushed(ctx context.Context, repo, branch string) error
+}
+
 // Run delivers GitHub events from the durable consumer while this process holds the durable's
 // hold, and stands by for the hold while another process holds it, until ctx is cancelled; then
 // it stops delivering and releases the hold (heldDurable.stop) under intakeStopBudget from ctx's
@@ -80,7 +102,9 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, gi
 // the reconcile's head pass reads only the rows that exist, and a result's read-through asks
 // GitHub about one commit at most once every CommitPullReadStaleAfter. So the intake writes a head
 // row with no settings at all, and leaves the delivery timeline's own facts, a merge of the
-// population and a workflow run, to the settings (route, handlePullRequestEnvelope).
+// population and a workflow run, to the settings (route, handlePullRequestEnvelope). A push of a
+// branch is one more message it routes (handlePushEnvelope), and it reads no setting, so the
+// importer is handed a push with settings or without.
 //
 // The durable is created with JetStream's DeliverAll (deliveryConsumerConfig), so the first bind
 // in a deployment whose durable never existed is handed all the stream keeps (72 hours,
@@ -115,22 +139,26 @@ func (in *Intake) Run(ctx context.Context) {
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to
-// handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, any other kind nowhere. It is
-// the whole filter: the durable is handed every GitHub notification on the bus
-// (githubIntakeSubject), CI settlements and comments among them, and an envelope with no payload
-// that a caller of the listener's publish route can still put there. The payload is decoded once,
-// into its fields. An empty payload, or one of a kind route does not handle, is discarded before
-// any GitHub call or write, whatever its other fields hold (a CI
-// settlement's hold arrays, cistore.Summary); only a pull request's or a workflow run's string
-// fields are read, as the flat string map its handler takes (flatPayload), and every other member
-// is skipped. handled reports whether the kind is one route hands to a handler, whatever that
-// handler then decides, so deliver records the event's time for a pull request that was not
-// merged or another repository's run as well. A payload that is not a JSON object, and a kind that
-// is not a string, are errMalformedPayload.
+// handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, a push to
+// handlePushEnvelope, any other kind nowhere. It is the whole filter: the durable is handed every
+// GitHub notification on the bus (githubIntakeSubject), CI settlements and comments among them,
+// and an envelope with no payload that a caller of the listener's publish route can still put
+// there. The payload is decoded once, into its fields. An empty payload, or one of a kind route
+// does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
+// CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
+// push's string fields are read, as the flat string map its handler takes (flatPayload), and every
+// other member is skipped. handled reports whether the kind is one route hands to a handler of the
+// delivery timeline, whatever that handler then decides, so deliver records the event's time for a
+// pull request that was not merged or another repository's run as well. A push is no delivery
+// fact: route hands it to its handler and answers it not handled, with the handler's error, so it
+// records no issue.deployed and does not move the Delivery page's event freshness
+// (RecordEventAt). A payload that is not a JSON object, and a kind that is not a string, are
+// errMalformedPayload.
 //
 // settings is nil where delivery is not configured. A pull request is handled all the same, for
 // its head row, and a workflow run is not handled at all: a run is the delivery timeline's own
-// fact, read for the deploy repository alone.
+// fact, read for the deploy repository alone. A push is handed to its handler with or without
+// settings, since it reads none.
 //
 // An envelope whose handler stored a fact the issue.deployed rule reads (a pull request's row, a
 // run, its jobs) ends with recordDeployed, whether or not the handler then failed: a run written
@@ -159,6 +187,8 @@ func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw str
 			return false, nil
 		}
 		wrote, err = in.routeWorkflowEnvelope(ctx, *settings, flatPayload(fields))
+	case "push":
+		return false, in.handlePushEnvelope(ctx, flatPayload(fields))
 	default:
 		return false, nil
 	}
@@ -166,6 +196,25 @@ func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw str
 		in.recordDeployed(ctx, *settings)
 	}
 	return true, err
+}
+
+// handlePushEnvelope hands a push of a branch to the importer (PushImports): the payload's repo,
+// and its ref without `refs/heads/`. A push of any other ref, a tag's above all, is handed nowhere,
+// and so is every push where no importer is wired (in.pushes is nil). It reads no setting and
+// writes nothing of the delivery timeline, and the importer's failure is its answer, which deliver
+// logs before it acknowledges the envelope: the importer's five-minute pass imports the source
+// all the same.
+//
+// ctx is the message's own context (deliver), which derives from the delivery's handling context,
+// made from context.Background (heldDurable.subscribe), and nothing between holds a connection of
+// the pool on it, so the importer's read of its sources through the pool is not refused as a
+// second connection (store.ErrNestedAcquire).
+func (in *Intake) handlePushEnvelope(ctx context.Context, payload map[string]string) error {
+	branch, isBranch := strings.CutPrefix(payload["ref"], "refs/heads/")
+	if !isBranch || in.pushes == nil {
+		return nil
+	}
+	return in.pushes.Pushed(ctx, payload["repo"], branch)
 }
 
 // recordDeployed writes the issue.deployed of every pull request the envelope just handled may have
@@ -296,10 +345,10 @@ func recordRefused(err error) bool {
 	return errors.Is(err, errNoPullRequestNamed) || errors.Is(err, errMalformedPayload)
 }
 
-// flatPayload is a pull request's or workflow run's string fields as the flat string map its
-// handler reads. A field that is not a string is left out: payload members are additive, so a
-// newer publisher may add one, and no handler reads it. A handler reads a field left out as the
-// empty string, as it reads a field the payload does not carry.
+// flatPayload is a pull request's, a workflow run's or a push's string fields as the flat string
+// map its handler reads. A field that is not a string is left out: payload members are additive,
+// so a newer publisher may add one, and no handler reads it. A handler reads a field left out as
+// the empty string, as it reads a field the payload does not carry.
 func flatPayload(fields map[string]json.RawMessage) map[string]string {
 	payload := make(map[string]string, len(fields))
 	for name, field := range fields {
@@ -313,9 +362,9 @@ func flatPayload(fields map[string]json.RawMessage) map[string]string {
 
 // githubIntakeSubject is the durable's one filter subject: every GitHub event Envoy relays. The
 // subscription's callback reads each message's subject first (intakeKey) and acknowledges every
-// subject that is not a pull request's own or a workflow run's without decoding it; the handler
-// decides what to do with the rest (route), and fetches nothing for the ones this slice does not
-// want.
+// subject that is not a pull request's own, a workflow run's or a push of a branch's without
+// decoding it; the handler decides what to do with the rest (route), and fetches nothing for the
+// ones this slice does not want.
 //
 // One subject rather than the set this once carried -- the wildcard pull-request subject
 // notifications.github.*.*.pr.* beside one notifications.github.<owner>.<repo>.workflow.<file>.>
@@ -406,13 +455,14 @@ func consumerGenerationMetadata() map[string]string {
 // settings the cache holds, none where delivery is not configured (route), under
 // intakeMessageTimeout, and acks: a malformed envelope has nothing to retry, and a route error (a
 // failed GitHub call, or that deadline passing) is caught up by the next reconcile pass rather
-// than by NATS redelivery -- see the package doc comment. One route error is not, and is the
-// second case below. The deadline is what makes intakeAckWait a bound
-// rather than a hope: without it one stuck GitHub call could hold an in-flight slot past the ack
-// wait and have the message redelivered underneath it. An envelope route does not handle (an
-// empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no log
-// line and no freshness write. One it handles records the event's time, whatever its handler
-// decided.
+// than by NATS redelivery -- see the package doc comment -- as a push the importer failed to take
+// is by the importer's own five-minute pass. One route error is not, and is the second case
+// below. The deadline is what makes intakeAckWait a bound rather than a hope: without it one stuck
+// GitHub call could hold an in-flight slot past the ack wait and have the message redelivered
+// underneath it. An envelope route answers not handled (an empty payload, a kind route sends to no
+// handler, or a push, which is no delivery fact) is acknowledged with no freshness write, and with
+// no log line unless its handler failed. One it handles records the event's time, whatever its
+// handler decided.
 //
 // The one message it does not ack is one whose handling the stop gave up (handling cancelled,
 // StopDelivering): that is handed back, so the next holder of the durable redoes it at once
