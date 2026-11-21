@@ -92,3 +92,72 @@ func prepareRestoreRows(t *testing.T) {
 		}
 	})
 }
+
+// restoreLogRows are TestTheHoldJournal's rows of a restore judged by the log: the route judges
+// only by a latest log entry that verifies, each entry carrying the row the operator signed, and a
+// released restore after a held entry only once that hold's journal shows it ended.
+func restoreLogRows(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a forged released log entry mid-hold restores nothing, and the view does not read released", func(t *testing.T) {
+		// The reviewer's case: the hold is held at gen 3 with hold set done and a command's intent
+		// pending; a database writer deletes the row and adds a log entry, released at gen 10, which
+		// it cannot sign. Fails while the route judges by an entry it does not verify: Bootstrap
+		// names restore_gen 11, RestoreRow(released) stores released there, and the view reads it.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-forged-log"
+		hold(t, c, holdID, holdrecord.WorkflowCutover, nil)
+		if _, err := c.Admit(ctx, holdID, cmd("create-bucket"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `insert into nats_hold_log (gen, phase, hold_id, reason, written_at, written_by, signed_at, sig)
+			values (10, 'released', $1, 'forged', now(), 'writer', now(), 'forged')`, holdID); err != nil {
+			t.Fatal(err)
+		}
+		gen := uint64(11)
+		var mismatch *holdrecord.RestoreGenError
+		if err := c.Bootstrap(ctx); errors.As(err, &mismatch) {
+			gen = mismatch.RestoreGen
+		}
+		got, err := c.RestoreRow(ctx, gen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete")
+		var refusal *holdrecord.RouteError
+		if !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("RestoreRow of released at gen %d after the forged entry answered %+v, %v; want 409 below_floor, read as ErrUnknown", gen, got, err)
+		}
+		if phase, known := r.HoldView(false).State(ctx); known && phase == natsgrant.OperatorPhaseReleased {
+			t.Errorf("the hold view reads released, known: every client is admitted mid-hold")
+		}
+	})
+
+	t.Run("a row lost between hold release's done entry and the row's move restores released, by the journal", func(t *testing.T) {
+		// The log's latest entry is held, but the hold's journal, signed, shows hold release done:
+		// the hold has ended, and released frees no command. Fails without the journal's word: the
+		// restore is refused 400 bad_transition, as after any held entry.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-released-unmoved"
+		hold(t, c, holdID, holdrecord.WorkflowBucketsCreate, nil)
+		run(t, c, holdID, cmd("buckets create"), nil, nil)
+		if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandRelease), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, holdID, holdrecord.CommandRelease, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		var mismatch *holdrecord.RestoreGenError
+		if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+			t.Fatalf("Bootstrap answered %v, want a RestoreGenError", err)
+		}
+		restored, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after the release's done entry")
+		if err != nil || restored.Phase != natsgrant.OperatorPhaseReleased || restored.Gen != mismatch.RestoreGen {
+			t.Fatalf("RestoreRow of released at restore_gen %d = %+v, %v; want released at that gen", mismatch.RestoreGen, restored, err)
+		}
+	})
+}

@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // NATSHold is what the NATS writer hold's routes need: the tables they write
@@ -352,8 +354,9 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 type holdRestoreBody struct {
 	// The gen to restore at: one above every gen nats_hold_log holds, 1 for an empty log.
 	Gen int64 `json:"gen"`
-	// held, which only after a prepare or held log entry of its hold id, or released, unless the
-	// log's latest entry is held.
+	// held, which only after a verified prepare or held log entry of its hold id, or released,
+	// which only after a verified released or prepare entry, or a held one whose hold's journal
+	// shows it ended (restoreAdmitted).
 	Phase string `json:"phase"`
 	// The hold's id, which a held row names.
 	HoldID string `json:"hold_id"`
@@ -365,7 +368,14 @@ type holdRestoreBody struct {
 	Sig string `json:"sig"`
 }
 
-// restoreNATSHold writes the hold row while there is none, once its signature verifies.
+// errHoldLogUnknown is a restore refused because the log's latest entry cannot be judged by: it
+// does not verify.
+var errHoldLogUnknown = errors.New("the hold log's latest entry reads as unknown")
+
+// restoreNATSHold writes the hold row while there is none, once its signature verifies, judging
+// from the log's latest entry, which must verify (restoreTrusted), whether the row may be restored
+// after it (restoreAdmitted). A latest entry that does not verify is 409 below_floor and stores
+// nothing.
 func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdRestoreBody
 	if !readHoldBody(w, r, &body) {
@@ -382,10 +392,13 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 	}
 	row, err := s.holdStore().Restore(r.Context(), natshold.Row{
 		Gen: uint64(body.Gen), Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
-	})
+	}, natshold.RestoreJudge{Trust: s.restoreTrusted, Admit: s.restoreAdmitted})
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
+	case errors.Is(err, errHoldLogUnknown), errors.Is(err, signedrecord.ErrReplay), errors.Is(err, signedrecord.ErrFork), errors.Is(err, natshold.ErrGenLogged):
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the restore stores nothing: "+err.Error(), nil)
+		return
 	case !errors.As(err, &conflict):
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "restore the hold row", err)
 		return
@@ -402,10 +415,67 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeInternal(w, "restore the hold row", err)
 		return
 	}
-	// A restored row is above every logged gen; one below this broker's floor, after a database
-	// writer deleted log rows, leaves the floor where it is, and GET reads the row as unknown.
+	// The restored row raises the floor.
 	_ = s.holdRowFloor.Accept(row.Gen, holdRowLines(row))
 	writeJSON(w, http.StatusOK, holdRowAnswer(row))
+}
+
+// restoreTrusted is a restore's trust in the log's latest entry, before any gen is compared: the
+// entry must verify against BROKER_NATS_HOLD_SIGNING_KEYS, since a database writer can add or
+// change a log row but not one that verifies. An empty log, the first row's, is trusted.
+func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
+	if latest == nil {
+		return nil
+	}
+	lines := signedrecord.HoldRow(latest.Gen, latest.Phase, latest.HoldID, latest.SignedAt)
+	if err := signedrecord.Verify(s.deps.NATSHold.Keys, latest.Sig, lines); err != nil {
+		return fmt.Errorf("%w: the entry at gen %d: %w", errHoldLogUnknown, latest.Gen, err)
+	}
+	return nil
+}
+
+// restoreAdmitted is whether next may be restored after the log's latest entry, which verified
+// (restoreTrusted). An empty log takes only the first row's released. Released follows a released
+// or prepare entry, since a prepare row refuses no client, or a held one whose hold's journal, the
+// done record, verifies and shows the hold ended (a done hold release or hold abort), as when the
+// row was lost between that done entry and the row's move; after any other held entry it would
+// free every client mid-hold. Held follows only a prepare or held entry of its own hold id, so a
+// hold the log shows ended, by a release or by abort from prepare, which leaves no journal entry,
+// is not held again.
+func (s *server) restoreAdmitted(latest *natshold.LogEntry, journal *natshold.Record, next natshold.Row) error {
+	refuse := func(why string) error {
+		return &natshold.Conflict{Err: fmt.Errorf("%w: %s", natshold.ErrBadTransition, why)}
+	}
+	if latest == nil {
+		if next.Phase == string(natsgrant.OperatorPhaseHeld) {
+			return refuse("the log is empty, and a held row is restored only after a prepare or held entry of its own hold")
+		}
+		return nil
+	}
+	if next.Phase == string(natsgrant.OperatorPhaseHeld) {
+		if (latest.Phase == string(natsgrant.OperatorPhasePrepare) || latest.Phase == string(natsgrant.OperatorPhaseHeld)) && latest.HoldID == next.HoldID {
+			return nil
+		}
+		return refuse(fmt.Sprintf("the log's latest entry is %s with hold id %q, and a held row is restored only after a prepare or held entry of its own hold", latest.Phase, latest.HoldID))
+	}
+	if latest.Phase != string(natsgrant.OperatorPhaseHeld) || s.holdEnded(latest.HoldID, journal) {
+		return nil
+	}
+	return refuse("the log's latest entry is held, and its hold's journal shows no done hold release or hold abort, so a released row restored after it would free every client mid-hold; restore the row held with its hold id")
+}
+
+// holdEnded reports whether journal, holdID's done record, verifies and shows the hold ended. It
+// asks the journal's own Decide: it answers hold release ErrAlreadyDone only once the hold has
+// ended, its first refusal (EndIsFinal).
+func (s *server) holdEnded(holdID string, journal *natshold.Record) bool {
+	if journal == nil || signedrecord.Verify(s.deps.NATSHold.Keys, journal.Sig, signedrecord.Record(holdID, natshold.KindDone, journal.Key, journal.Gen, journal.Value)) != nil {
+		return false
+	}
+	var d holdrecord.Done
+	if json.Unmarshal(journal.Value, &d) != nil {
+		return false
+	}
+	return errors.Is(holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandRelease}), holdrecord.ErrAlreadyDone)
 }
 
 // holdRecordBody is PUT /v1/nats-hold/records' body.

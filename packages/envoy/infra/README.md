@@ -4124,22 +4124,24 @@ database, is the fix if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
-(`restore_gen`), which `Bootstrap` answers as a `RestoreGenError` once the log holds entries. A row
-lost mid-hold is restored `held` with its hold id (`RestoreRow`, which follows `restore_gen` for that
-shape on its own); `RestoreRow` reads the hold's journal first and refuses `held` for a hold whose
-`hold release` or `hold abort` is done, since no command is admitted after the end, and the route
-stores `held` only after a `prepare` or `held` log entry of the same hold id, so a hold that `hold
-abort` from `prepare` ended, which leaves no journal entry, is not held again. A row lost after a
-hold ended, or before the first, is restored `released`: take the gen the `RestoreGenError` names
-and run `RestoreRow` with it, `released` and no hold id (or the ended hold's), which reads no
+(`restore_gen`), which `Bootstrap` answers as a `RestoreGenError` once the log holds entries. Each
+log entry carries the row the operator signed, with its signing time and signature, and the route
+judges a restore only by a latest entry that verifies: one that does not is refused 409
+`below_floor`, and nothing is stored. A row lost mid-hold is restored `held` with its hold id
+(`RestoreRow`, which follows `restore_gen` for that shape on its own); `RestoreRow` reads the hold's
+journal first and refuses `held` for a hold whose `hold release` or `hold abort` is done, and the
+route stores `held` only after a verified `prepare` or `held` entry of the same hold id, so a hold
+that `hold abort` from `prepare` ended, which leaves no journal entry, is not held again. A row lost
+after a hold ended, or before the first, is restored `released`: take the gen the `RestoreGenError`
+names and run `RestoreRow` with it, `released` and no hold id (or the ended hold's), which reads no
 journal and sends the row once at that gen. A row lost while the hold is `prepare`, before its
 journal starts or after, is restored the same way, `released` with that hold's id, the row `hold
 abort` from `prepare` would have written; the next hold starts with `hold set` and a new hold id.
-The route stores a `released` row unless the log's latest entry is `held`, and refuses it
-`bad_transition` then, so no restore frees every client while a command of a hold may run; after a
-`prepare` entry it frees nobody, since a `prepare` row refuses no client. The route's checks read
-the log, which is the broker database's: a database writer who empties it lets `Bootstrap` write
-gen 1 again.
+The route stores `released` only after a verified `released` or `prepare` entry, since a `prepare`
+row refuses no client, or after a `held` one whose hold's signed journal shows `hold release` or
+`hold abort` done; after any other `held` entry it refuses `bad_transition`, so no restore frees
+every client while a command of a hold may run. The log is the broker database's: a database
+writer who empties it lets `Bootstrap` write gen 1 again.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

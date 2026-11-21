@@ -234,15 +234,17 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // the first as a RestoreGenError. Before it restores a `held` row it reads the hold's journal, and
 // refuses a hold that has ended, a done `hold release` or `hold abort` (ErrAlreadyDone): no command
 // is admitted after the end, so a held row restored for it would keep every client out with no
-// command left to release it. The route stores held only after a prepare or held log entry of the
-// same hold id, so a hold that `hold abort` from `prepare` ended, which leaves no journal entry, is
-// refused 400 `bad_transition` too. A `released` row, the one a completed hold left, the first
-// row's shape with no hold id, or a row lost while the hold was `prepare`, before its journal
-// starts or after (restored with that hold's id, as `hold abort` from `prepare` leaves it), reads
-// no journal and is sent once, at gen alone, the gen a RestoreGenError named: the route stores it
-// unless the log's latest entry is held, and refuses it 400 `bad_transition` after a held entry,
-// so a released row never lands mid-hold. After a prepare entry it frees nobody, since a prepare
-// row refuses no client.
+// command left to release it. The route judges every restore by the log's latest entry, which
+// carries the row the operator signed and must verify (409 `below_floor` otherwise, read as
+// ErrUnknown). It stores held only after a prepare or held entry of the same hold id, so a hold
+// that `hold abort` from `prepare` ended, which leaves no journal entry, is refused 400
+// `bad_transition` too. A `released` row, the one a completed hold left, the first row's shape
+// with no hold id, or a row lost while the hold was `prepare`, before its journal starts or after
+// (restored with that hold's id, as `hold abort` from `prepare` leaves it), reads no journal and
+// is sent once, at gen alone, the gen a RestoreGenError named: the route stores it after a
+// released or prepare entry, since a prepare row refuses no client, or after a held one whose
+// hold's signed journal shows it ended, and refuses it 400 `bad_transition` after any other held
+// entry, so a released row never lands mid-hold.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
@@ -272,7 +274,8 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 // first row's at a gen it did not name. That holds only as long as nats_hold_log keeps its
 // entries: the log is the broker database's, and a database writer who empties it lets Bootstrap
 // write gen 1 again. The operator restores a lost row with RestoreRow: held with its hold id
-// mid-hold, and released, at the RestoreGenError's gen, unless the log's latest entry is held.
+// mid-hold, and released, at the RestoreGenError's gen, after a released or prepare entry or a held
+// one whose hold has ended.
 func (c *Client) Bootstrap(ctx context.Context) error {
 	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
 	return err

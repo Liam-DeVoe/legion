@@ -29,9 +29,10 @@ var (
 	ErrBadTransition = errors.New("natshold: the hold row may not move to that phase with that hold id")
 	// ErrRowExists is a restore while the hold row is there.
 	ErrRowExists = errors.New("natshold: the hold row exists, so there is nothing to restore")
-	// ErrGenLogged is a move whose gen nats_hold_log already holds: the row it moves from is an
-	// older one a database writer put back, below the log.
-	ErrGenLogged = errors.New("natshold: the log already holds the gen the move would store, so the row it moves from is an older one put back")
+	// ErrGenLogged is a move or restore whose gen nats_hold_log already holds: the row a move
+	// starts from is an older one a database writer put back below the log, or a writer added a log
+	// row while the restore ran.
+	ErrGenLogged = errors.New("natshold: the log already holds the gen the write would store")
 )
 
 // Conflict is a write a store refused for what the tables held: Err is which refusal, Current the
@@ -249,8 +250,8 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 				where id = 1 and gen = $1
 				returning `+rowColumns+`
 			), logged as (
-				insert into `+s.table("nats_hold_log")+` (gen, phase, hold_id, reason, written_at, written_by)
-				select gen, phase, hold_id, reason, updated_at, updated_by from moved
+				insert into `+s.table("nats_hold_log")+` (gen, phase, hold_id, reason, written_at, written_by, signed_at, sig)
+				select gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig from moved
 			)
 			select `+rowColumns+` from moved`,
 			int64(expectedGen), next.Phase, next.HoldID, next.Reason, next.UpdatedBy, next.SignedAt, next.Sig))
@@ -266,18 +267,40 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 	return moved, err
 }
 
+// LogEntry is one nats_hold_log row: the row a write stored, as the operator signed it, with its
+// signing time and signature, which a reader verifies over signedrecord.HoldRow.
+type LogEntry struct {
+	Gen      uint64
+	Phase    string
+	HoldID   string
+	SignedAt time.Time
+	Sig      string
+}
+
+// RestoreJudge is what Restore's caller decides from the log, inside the restore's transaction,
+// each answering nil to go on and its refusal otherwise, which Restore answers as it is. Trust sees
+// the log's latest entry (nil for an empty log) before any gen is compared, and answers whether a
+// restore may judge by it at all: the route verifies its signature, since a database writer can
+// add or change a log row but not one that verifies. Admit sees it again once next's gen is the
+// one above it, with the done record of the hold it names (nil when there is none), and answers
+// whether next may be restored after it.
+type RestoreJudge struct {
+	Trust func(latest *LogEntry) error
+	Admit func(latest *LogEntry, journal *Record, next Row) error
+}
+
+// journalKey is the done record's one key, the hold's journal (internal/holdrecord's).
+const journalKey = "hold"
+
 // Restore writes the hold row when it is absent, the first row or one a database admin deleted,
 // at next.Gen, which must be one above the highest gen nats_hold_log holds (1 for an empty log),
-// so a restored row's gen exceeds every earlier one; the insert and its log row are one
-// statement. It restores released, with or without a hold id, unless the log's latest entry is
-// held: a released row restored after a held entry would free every client mid-hold, while a
-// command may run, but after a prepare entry it frees nobody, since a prepare row refuses no
-// client. It restores held only after a prepare or held entry of the same hold id: a hold the log
-// shows ended (a release, or abort from prepare, which leaves no journal entry for the operator's
-// client to read) is not held again. It refuses with a Conflict: ErrBadTransition for another
-// phase, for released after a held entry and for held after any other entry, ErrRowExists while
-// the row is there, and ErrGenMismatch naming the gen to carry (RestoreGen).
-func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
+// so a restored row's gen exceeds every earlier one; the insert and its log row are one statement.
+// It restores released, with or without a hold id, or held with one, and judge decides from the
+// log's latest entry whether the row may be restored after it (RestoreJudge). It refuses with a
+// Conflict: ErrBadTransition for another phase, ErrRowExists while the row is there, ErrGenMismatch
+// naming the gen to carry (RestoreGen), and ErrGenLogged when the log took that gen meanwhile; and
+// with judge's refusals as they are.
+func (s Store) Restore(ctx context.Context, next Row, judge RestoreJudge) (Row, error) {
 	switch next.Phase {
 	case string(natsgrant.OperatorPhaseReleased):
 	case string(natsgrant.OperatorPhaseHeld):
@@ -289,29 +312,6 @@ func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 	}
 	var restored Row
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
-		var err error
-		restored, err = scanRow(tx.QueryRow(ctx, `with latest as (
-				select phase, hold_id from `+s.table("nats_hold_log")+` order by gen desc limit 1
-			), next as (
-				select coalesce(max(gen), 0) + 1 as gen,
-					coalesce((select phase from latest), 'released') as latest,
-					coalesce((select hold_id from latest), '') as latest_hold
-				from `+s.table("nats_hold_log")+`
-			), restored as (
-				insert into `+s.table("nats_hold")+` (id, gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig)
-				select 1, next.gen, $2, $3, $4, now(), $5, $6, $7 from next where next.gen = $1 and
-					case when $2 = 'released' then next.latest <> 'held' else next.latest in ('prepare', 'held') and next.latest_hold = $3 end
-				on conflict (id) do nothing
-				returning `+rowColumns+`
-			), logged as (
-				insert into `+s.table("nats_hold_log")+` (gen, phase, hold_id, reason, written_at, written_by)
-				select gen, phase, hold_id, reason, updated_at, updated_by from restored
-			)
-			select `+rowColumns+` from restored`,
-			int64(next.Gen), next.Phase, next.HoldID, next.Reason, next.UpdatedBy, next.SignedAt, next.Sig))
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
 		current, found, err := s.currentRow(ctx, tx, "")
 		switch {
 		case err != nil:
@@ -319,24 +319,72 @@ func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 		case found:
 			return &Conflict{Err: ErrRowExists, Current: &current}
 		}
-		var want int64
-		var latest, latestHold string
-		if err := tx.QueryRow(ctx, `with latest as (
-				select phase, hold_id from `+s.table("nats_hold_log")+` order by gen desc limit 1
+		latest, err := s.latestLog(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := judge.Trust(latest); err != nil {
+			return err
+		}
+		want := uint64(1)
+		if latest != nil {
+			want = latest.Gen + 1
+		}
+		if want != next.Gen {
+			return &Conflict{Err: ErrGenMismatch, RestoreGen: want}
+		}
+		var journal *Record
+		if latest != nil {
+			rec, err := scanRecord(tx.QueryRow(ctx, `select `+recordColumns+` from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3`,
+				latest.HoldID, KindDone, journalKey), latest.HoldID, KindDone)
+			switch {
+			case err == nil:
+				journal = &rec
+			case !errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("natshold: read the journal of hold %s: %w", latest.HoldID, err)
+			}
+		}
+		if err := judge.Admit(latest, journal, next); err != nil {
+			return err
+		}
+		restored, err = scanRow(tx.QueryRow(ctx, `with restored as (
+				insert into `+s.table("nats_hold")+` (id, gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig)
+				values (1, $1, $2, $3, $4, now(), $5, $6, $7)
+				on conflict (id) do nothing
+				returning `+rowColumns+`
+			), logged as (
+				insert into `+s.table("nats_hold_log")+` (gen, phase, hold_id, reason, written_at, written_by, signed_at, sig)
+				select gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig from restored
 			)
-			select coalesce(max(gen), 0) + 1, coalesce((select phase from latest), 'released'), coalesce((select hold_id from latest), '')
-			from `+s.table("nats_hold_log")).Scan(&want, &latest, &latestHold); err != nil {
-			return fmt.Errorf("natshold: read the log's highest gen: %w", err)
+			select `+rowColumns+` from restored`,
+			int64(next.Gen), next.Phase, next.HoldID, next.Reason, next.UpdatedBy, next.SignedAt, next.Sig))
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return &Conflict{Err: ErrRowExists}
+		case store.IsUniqueViolation(err):
+			return &Conflict{Err: fmt.Errorf("%w: gen %d", ErrGenLogged, next.Gen)}
 		}
-		if want != int64(next.Gen) {
-			return &Conflict{Err: ErrGenMismatch, RestoreGen: uint64(want)}
-		}
-		if next.Phase == string(natsgrant.OperatorPhaseHeld) {
-			return &Conflict{Err: fmt.Errorf("%w: the log's latest entry is %s with hold id %q, and a held row is restored only after a prepare or held entry of its own hold", ErrBadTransition, latest, latestHold)}
-		}
-		return &Conflict{Err: fmt.Errorf("%w: the log's latest entry is %s, and a released row restored after it would free every client mid-hold; restore the row held with its hold id", ErrBadTransition, latest)}
+		return err
 	})
 	return restored, err
+}
+
+// latestLog reads the log's latest entry inside tx, nil for an empty log.
+func (s Store) latestLog(ctx context.Context, tx pgx.Tx) (*LogEntry, error) {
+	var e LogEntry
+	var gen int64
+	err := tx.QueryRow(ctx, `select gen, phase, hold_id, signed_at, sig from `+s.table("nats_hold_log")+` order by gen desc limit 1`).
+		Scan(&gen, &e.Phase, &e.HoldID, &e.SignedAt, &e.Sig)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("natshold: read the log's latest entry: %w", err)
+	case gen < 1:
+		return nil, fmt.Errorf("natshold: the log's latest entry is at gen %d", gen)
+	}
+	e.Gen = uint64(gen)
+	return &e, nil
 }
 
 // heldBy reads the hold row inside tx under a share lock, so no move commits until tx does, and

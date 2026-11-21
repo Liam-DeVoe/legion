@@ -313,9 +313,9 @@ func (h holdTable) write(t *testing.T, gen uint64, phase natsgrant.OperatorPhase
 			on conflict (id) do update set gen = excluded.gen, phase = excluded.phase, hold_id = excluded.hold_id,
 				reason = excluded.reason, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
 				signed_at = excluded.signed_at, sig = excluded.sig
-			returning gen, phase, hold_id, reason)
-		insert into nats_hold_log (gen, phase, hold_id, reason, written_at, written_by)
-		select gen, phase, hold_id, reason, now(), $4 from written`,
+			returning gen, phase, hold_id, reason, signed_at, sig)
+		insert into nats_hold_log (gen, phase, hold_id, reason, written_at, written_by, signed_at, sig)
+		select gen, phase, hold_id, reason, now(), $4, signed_at, sig from written`,
 		int64(row.Gen), row.Phase, row.HoldID, operatorAccount, row.SignedAt, row.Sig)
 	require.NoError(t, err, "write the hold row at gen %d", gen)
 	return row
