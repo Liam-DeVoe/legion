@@ -3954,13 +3954,18 @@ whose publish or subscribe list would end empty. It keeps the deny lists. Only a
 be held so: the listener's, Dispatch's and the measurement job's hold `notifications.>` or a
 bucket.
 The daemon's `ready` consumer reads the wake lane every daemon shares, where the listener also puts
-every project's role and agent wake reports, so a daemon is held to its projects only once it opens
-its consumers per project and every listener publishes each project's role and agent wakes on that
-project's own lane.
+every project's role and agent wake reports. So a daemon is held to its projects only once it opens
+its consumers per project, every listener publishes each project's role and agent wakes on that
+project's own lane, and each `legion-go-<project>-*` durable filters on its own kind's lane only
+(`-dispatch` and `-wake` on the project's own lane, `-ready` on the shared wake lane's
+`listener_ready`, `-github` on `notifications.github.>`): the held grant names its consumers, not
+their filters, so it reads a wider durable whole.
 `natsgrant/projects_live_test.go`, under the `natslive` tag, checks the held grant on the hub's
 image behind a stand-in auth callout: `DaemonPermissions` receives another project's pulls on
-`_INBOX.>`, the held grant receives none, and its GitHub consumer receives every repository's
-events, one only another project's issues resolve to among them.
+`_INBOX.>`, the held grant receives none through its own consumers, and its GitHub consumer
+receives every repository's events, one only another project's issues resolve to among them. A
+pre-existing wide `legion-go-PUB-dispatch` is read whole through the held grant, PRIV's events
+among them, until it is narrowed in place to PUB's lane.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
