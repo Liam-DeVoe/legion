@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -193,7 +194,7 @@ func (rig closingRig) makeDayOnePrivate(t *testing.T, key string) {
 // switch completes, records the full switch and ends the closing state, and the answer stays
 // closed. A broker that does not answer leaves the switch 503 DEVELOPER_BOX_TOKENS_UNAVAILABLE and
 // the closing state in place; the owner's switch to public ends it. A project private on its first
-// day, open to developer boxes with its key on DISPATCH_PRIVATE_PROJECTS, goes through the same
+// day, closed to developer boxes once its key is on DISPATCH_PRIVATE_PROJECTS, goes through the same
 // closing state at its owner's switch. A deployment with no secrets broker, which no developer-box
 // token reads, completes the switch at once.
 func TestAProjectBecomesPrivateOnlyWithNoDeveloperBoxTokenLive(t *testing.T) {
@@ -237,8 +238,8 @@ func TestAProjectBecomesPrivateOnlyWithNoDeveloperBoxTokenLive(t *testing.T) {
 		rig := newClosingRig(t, []string{"PRIV"}, true)
 		lowerSettle(t, 0)
 		rig.makeDayOnePrivate(t, "PRIV")
-		if rig.answer(t, "PRIV").ClosedToDeveloperBoxes {
-			t.Fatalf("PRIV, private on its first day with its key on DISPATCH_PRIVATE_PROJECTS, answered closed before its owner's switch")
+		if !rig.answer(t, "PRIV").ClosedToDeveloperBoxes {
+			t.Fatalf("PRIV, private on its first day with its key on DISPATCH_PRIVATE_PROJECTS, answered open before its owner's switch")
 		}
 		refusedWith(t, "the owner's switch of the day-one PRIV", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE", "PRIV is closing since")
 		if !rig.answer(t, "PRIV").ClosedToDeveloperBoxes {
@@ -259,26 +260,30 @@ func TestAProjectBecomesPrivateOnlyWithNoDeveloperBoxTokenLive(t *testing.T) {
 }
 
 // TestTheMembershipAnswerClosesAProjectToDeveloperBoxes: closed_to_developer_boxes is absent for a
-// public project, and for a project private on its first day, before its full switch, whether
-// DISPATCH_PRIVATE_PROJECTS names it (PRIV) or not (DAYONE); it is true for a project in its
-// closing state, and for a project private by its full switch.
+// public project, and for a project private on its first day whose key DISPATCH_PRIVATE_PROJECTS
+// does not name (DAYONE); it is true for a private project whose key the list names, before any
+// switch (PRIV), for a project private by its full switch whose key the list does not name
+// (DAYONE once its full switch is recorded), and for a project in its closing state (PUB).
 func TestTheMembershipAnswerClosesAProjectToDeveloperBoxes(t *testing.T) {
 	rig := newClosingRig(t, []string{"PRIV"}, true)
 	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DAYONE", "name": "DAYONE"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create DAYONE: %d %s", response.Code, response.Body.String())
 	}
 	rig.makeDayOnePrivate(t, "DAYONE")
-	rig.makeDayOnePrivate(t, "PRIV")
 	for _, key := range []string{"PUB", "PRIV", "DAYONE"} {
 		if raw := rig.answerBody(t, key); strings.Contains(raw, "closed_to_developer_boxes") {
-			t.Fatalf("the membership answer of %s = %s, want no closed_to_developer_boxes key: it is public, or private before its full switch", key, raw)
+			t.Fatalf("the membership answer of %s = %s, want no closed_to_developer_boxes key: it is public, or private with neither its full switch nor its key listed", key, raw)
 		}
 	}
-	if _, err := rig.database.Pool.Exec(context.Background(), `update projects set full_switch_at = now() where key = 'PRIV'`); err != nil {
-		t.Fatalf("record PRIV's full switch: %v", err)
-	}
+	rig.makeDayOnePrivate(t, "PRIV")
 	if raw := rig.answerBody(t, "PRIV"); !strings.Contains(raw, `"closed_to_developer_boxes":true`) {
-		t.Fatalf("the membership answer of PRIV, private by its full switch = %s, want closed_to_developer_boxes true", raw)
+		t.Fatalf("the membership answer of PRIV, private with its key on DISPATCH_PRIVATE_PROJECTS, before any switch = %s, want closed_to_developer_boxes true", raw)
+	}
+	if _, err := rig.database.Pool.Exec(context.Background(), `update projects set full_switch_at = now() where key = 'DAYONE'`); err != nil {
+		t.Fatalf("record DAYONE's full switch: %v", err)
+	}
+	if raw := rig.answerBody(t, "DAYONE"); !strings.Contains(raw, `"closed_to_developer_boxes":true`) {
+		t.Fatalf("the membership answer of DAYONE, private by its full switch with its key not listed = %s, want closed_to_developer_boxes true", raw)
 	}
 	if _, err := rig.database.Pool.Exec(context.Background(), `update projects set closing_since = now() where key = 'PUB'`); err != nil {
 		t.Fatalf("put PUB in its closing state: %v", err)
@@ -289,9 +294,10 @@ func TestTheMembershipAnswerClosesAProjectToDeveloperBoxes(t *testing.T) {
 }
 
 // TestNoPersonalTokenListsAPrivateProject: a personal token's mint and its edit are refused 403
-// PRIVATE_PROJECT_TOKEN, naming the project, for a project in its closing state and for one
-// private by its full switch, and the token is not made; a public project and one private on its
-// first day, before its full switch, are listed as before.
+// PRIVATE_PROJECT_TOKEN, naming the project, for a project in its closing state, for one private
+// by its full switch, and for one private on its first day whose key DISPATCH_PRIVATE_PROJECTS
+// names, and the token is not made; a public project, and one private on its first day whose key
+// the list does not name, are listed as before.
 func TestNoPersonalTokenListsAPrivateProject(t *testing.T) {
 	rig := newClosingRig(t, []string{"PRIV", "PUB"}, true)
 	lowerSettle(t, time.Hour)
@@ -326,42 +332,65 @@ func TestNoPersonalTokenListsAPrivateProject(t *testing.T) {
 		t.Fatalf("the edited token lists %v (%v), want PUB alone: the refused edit wrote nothing", listed, err)
 	}
 
-	dayOne := newClosingRig(t, []string{"PRIV"}, true)
+	dayOne := newClosingRig(t, []string{"PUB"}, true)
 	dayOne.makeDayOnePrivate(t, "PRIV")
 	if made := dayOne.mint(t, "on its first day", []string{"PRIV"}); made.Code != http.StatusCreated {
-		t.Fatalf("mint naming PRIV on its first day = %d %s, want 201: the rule holds from the full switch", made.Code, made.Body.String())
+		t.Fatalf("mint naming PRIV on its first day, its key not listed = %d %s, want 201", made.Code, made.Body.String())
+	}
+	listedDayOne := newClosingRig(t, []string{"PRIV"}, true)
+	listedDayOne.makeDayOnePrivate(t, "PRIV")
+	refusedWith(t, "a mint naming PRIV on its first day, its key listed", listedDayOne.mint(t, "listed", []string{"PRIV"}), http.StatusForbidden, "PRIVATE_PROJECT_TOKEN", "PRIV")
+}
+
+// TestTheClosingStateRevokesPersonalTokensOfTheProject: a personal token made while PRIV was public
+// and listing it reads as itself until PRIV's switch to private starts its closing state, and
+// answers 401 from then on; a token of another project reads on.
+func TestTheClosingStateRevokesPersonalTokensOfTheProject(t *testing.T) {
+	rig := newClosingRig(t, []string{"PRIV"}, true)
+	lowerSettle(t, time.Hour)
+	priv := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV", []string{"PRIV"}))
+	both := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV and PUB", []string{"PRIV", "PUB"}))
+	pub := decodeBody[agentTokenResponse](t, rig.mint(t, "of PUB", []string{"PUB"}))
+	for _, token := range []string{priv.Token, both.Token, pub.Token} {
+		if status := rig.whoami(t, token); status != http.StatusOK {
+			t.Fatalf("a token before the switch reads whoami %d, want 200", status)
+		}
+	}
+	refusedWith(t, "the switch of PRIV", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
+	for name, token := range map[string]string{"the token of PRIV": priv.Token, "the token of PRIV and PUB": both.Token} {
+		if status := rig.whoami(t, token); status != http.StatusUnauthorized {
+			t.Fatalf("%s reads whoami %d after PRIV's closing state began, want 401", name, status)
+		}
+	}
+	if status := rig.whoami(t, pub.Token); status != http.StatusOK {
+		t.Fatalf("the token of PUB reads whoami %d after PRIV's closing state began, want 200", status)
 	}
 }
 
-// TestTheClosingStateRevokesPersonalTokensOfTheProject: a personal token that lists PRIV, made while
-// PRIV was public or while it was private on its first day, reads as itself until PRIV's switch to
-// private starts its closing state, and answers 401 from then on; a token of another project reads
-// on.
-func TestTheClosingStateRevokesPersonalTokensOfTheProject(t *testing.T) {
-	for _, start := range []string{"public", "private on its first day"} {
-		t.Run(start, func(t *testing.T) {
-			rig := newClosingRig(t, []string{"PRIV"}, true)
-			lowerSettle(t, time.Hour)
-			if start != "public" {
-				rig.makeDayOnePrivate(t, "PRIV")
-			}
-			priv := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV", []string{"PRIV"}))
-			both := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV and PUB", []string{"PRIV", "PUB"}))
-			pub := decodeBody[agentTokenResponse](t, rig.mint(t, "of PUB", []string{"PUB"}))
-			for _, token := range []string{priv.Token, both.Token, pub.Token} {
-				if status := rig.whoami(t, token); status != http.StatusOK {
-					t.Fatalf("a token before the switch reads whoami %d, want 200", status)
-				}
-			}
-			refusedWith(t, "the switch of PRIV", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
-			for name, token := range map[string]string{"the token of PRIV": priv.Token, "the token of PRIV and PUB": both.Token} {
-				if status := rig.whoami(t, token); status != http.StatusUnauthorized {
-					t.Fatalf("%s reads whoami %d after PRIV's closing state began, want 401", name, status)
-				}
-			}
-			if status := rig.whoami(t, pub.Token); status != http.StatusOK {
-				t.Fatalf("the token of PUB reads whoami %d after PRIV's closing state began, want 200", status)
-			}
-		})
+// TestAKeyThatJoinsTheListRevokesThePersonalTokensOfAProjectAlreadyPrivate: a personal token made
+// while PRIV was private on its first day, its key not yet on DISPATCH_PRIVATE_PROJECTS, reads on
+// until the boot that names the key there runs access.RevokeClosedProjectTokens, as cmd/dispatch's
+// boot does, and answers 401 from then on, its owner's switch or not; a token of a public project
+// is left. The pass revokes nothing while the list does not name PRIV.
+func TestAKeyThatJoinsTheListRevokesThePersonalTokensOfAProjectAlreadyPrivate(t *testing.T) {
+	rig := newClosingRig(t, nil, false)
+	rig.makeDayOnePrivate(t, "PRIV")
+	priv := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV", []string{"PRIV"}))
+	pub := decodeBody[agentTokenResponse](t, rig.mint(t, "of PUB", []string{"PUB"}))
+	if keys, revoked, err := access.RevokeClosedProjectTokens(context.Background(), rig.database.Pool, nil); err != nil || revoked != 0 || len(keys) != 0 {
+		t.Fatalf("the boot pass with no key listed = %v, %d, %v; want nothing revoked", keys, revoked, err)
+	}
+	if status := rig.whoami(t, priv.Token); status != http.StatusOK {
+		t.Fatalf("PRIV's token on its first day reads whoami %d, want 200", status)
+	}
+	keys, revoked, err := access.RevokeClosedProjectTokens(context.Background(), rig.database.Pool, []string{"PRIV"})
+	if err != nil || revoked != 1 || len(keys) != 1 || keys[0] != "PRIV" {
+		t.Fatalf("the boot pass naming PRIV = %v, %d, %v; want PRIV's one token revoked", keys, revoked, err)
+	}
+	if status := rig.whoami(t, priv.Token); status != http.StatusUnauthorized {
+		t.Fatalf("PRIV's token after the boot that names PRIV reads whoami %d, want 401", status)
+	}
+	if status := rig.whoami(t, pub.Token); status != http.StatusOK {
+		t.Fatalf("PUB's token after that boot reads whoami %d, want 200", status)
 	}
 }

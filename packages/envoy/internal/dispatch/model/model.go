@@ -458,8 +458,9 @@ type AccessAnswer struct {
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 	// ClosedToDeveloperBoxes is true while no developer-box credential may list the project, and
 	// absent otherwise: while it is in its closing state, the start of an owner's switch to
-	// private, and while it is private by its full switch (the owner's switch to private that
-	// committed). The secrets broker then mints and renews no developer-box token that lists it.
+	// private, and while it is private by its full switch or with its key in
+	// DISPATCH_PRIVATE_PROJECTS. The secrets broker then mints and renews no developer-box token
+	// that lists it.
 	ClosedToDeveloperBoxes bool `json:"closed_to_developer_boxes,omitempty"`
 }
 

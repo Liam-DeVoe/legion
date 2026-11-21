@@ -368,7 +368,7 @@ const codePrivateProjectToken = "PRIVATE_PROJECT_TOKEN"
 // one made before (access.StartClosing). projects are the keys tokenProjects passed, every one a
 // key the caller sees, so the refusal names nothing the caller may not see.
 func (s *server) refuseClosedTokenProjects(w http.ResponseWriter, r *http.Request, tx pgx.Tx, projects []string) bool {
-	err := access.RefuseClosedTokenProjects(r.Context(), tx, projects)
+	err := access.RefuseClosedTokenProjects(r.Context(), tx, projects, s.deps.PrivateProjects)
 	switch {
 	case err == nil:
 		return true

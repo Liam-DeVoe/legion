@@ -7,8 +7,10 @@ body: |-
   it. With a secrets broker configured, the switch completes only once the broker counts no live
   developer-box token of the project and the closing state is 60 s old; until then it answers
   `409 DEVELOPER_BOX_TOKENS_LIVE`, or `503 DEVELOPER_BOX_TOKENS_UNAVAILABLE` while the broker does
-  not answer, and keeps the closing state. A personal token's mint or edit naming a project that is
-  closing, or private by its full switch, is `403 PRIVATE_PROJECT_TOKEN`.
+  not answer, and keeps the closing state. A project closing, or private by its full switch or
+  with its key in `DISPATCH_PRIVATE_PROJECTS`, is in no personal token: a mint or edit naming one
+  is `403 PRIVATE_PROJECT_TOKEN`, and the boot that first reads such a key revokes the live
+  personal tokens that list it.
 time: 2026-11-21T01:27:45Z
 custom:
     Issue: pr4711

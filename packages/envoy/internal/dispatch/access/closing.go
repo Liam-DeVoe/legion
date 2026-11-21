@@ -17,9 +17,10 @@ import (
 // credential to one of them. Two kinds of credential a box can hold list projects, a personal
 // `dsp_` token Dispatch makes and a token the secrets broker mints a machine login or a person's
 // sign-in on a machine. One rule says which projects neither may list, closedSQL: a project in its
-// closing state, and a project private by its full switch (full_switch_at, RecordFullSwitch). A
-// project private before its full switch, on its first day, is open to them until its owner's
-// switch to private starts its closing state.
+// closing state; a project private by its full switch (full_switch_at, RecordFullSwitch); and a
+// private project whose key the deployment names among the projects it provisioned as private
+// (DISPATCH_PRIVATE_PROJECTS). A project private on its first day, before its key is on that list,
+// is open to them; it closes the moment its key joins the list, before its owner's switch.
 //
 //   - The membership answer says whether a project is closed (Answer), and the broker mints and
 //     renews no developer-box token of a closed one.
@@ -28,19 +29,22 @@ import (
 //     token that lists the project, and the switch completes only once the broker counts no
 //     developer-box token of it still live (internal/dispatch/api's closeForDeveloperBoxes). The
 //     switch's own commit then records the full switch, which keeps the project closed.
+//   - RevokeClosedProjectTokens, which the boot runs, revokes every live personal token that lists
+//     a closed project, so a key that joins the list closes the project's personal tokens with the
+//     boot that reads it rather than at its owner's next switch.
 //
-// So every way into the rule runs through StartClosing's revocation. projects.closing_since holds
-// when the closing state began, on the database's clock, and is null otherwise; SetVisibility ends
-// the state either way, completing the switch or abandoning it.
+// projects.closing_since holds when the closing state began, on the database's clock, and is null
+// otherwise; SetVisibility ends the state either way, completing the switch or abandoning it.
 
 // ErrClosedTokenProject is a personal token that would list a project closed to developer boxes:
 // Dispatch makes none.
 var ErrClosedTokenProject = errors.New("no personal token lists a project that is private or turning private")
 
-// closedSQL is the rule above over the projects row p: true when no developer-box credential may
-// list p.
-func closedSQL(p string) string {
-	return `(` + p + `.closing_since is not null or (` + p + `.visibility = 'private' and ` + p + `.full_switch_at is not null))`
+// closedSQL is the rule above over the projects row p, with listed the bind parameter of the keys
+// the deployment provisioned as private: true when no developer-box credential may list p.
+func closedSQL(p, listed string) string {
+	return `(` + p + `.closing_since is not null or (` + p + `.visibility = 'private' and (` +
+		p + `.full_switch_at is not null or ` + p + `.key = any(` + listed + `::text[]))))`
 }
 
 // Closing is a project's closing state as a switch to private reads it, under the project's owner
@@ -97,22 +101,23 @@ func StartClosing(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string,
 
 // RefuseClosedTokenProjects is the check a personal token's mint and its edit make, in the
 // transaction that writes the token: it takes each of projects' rows FOR SHARE, in key order, and
-// answers ErrClosedTokenProject naming the first that is closed to developer boxes (closedSQL), nil
-// when none is. The shared row lock is what orders it against StartClosing, whose write of the row
-// waits for it, so no token that lists the project commits after the closing state's revocation
-// has run. projects are keys the caller sees, so the refusal names nothing the caller may not see.
-func RefuseClosedTokenProjects(ctx context.Context, tx pgx.Tx, projects []string) error {
+// answers ErrClosedTokenProject naming the first that is closed to developer boxes (closedSQL,
+// listed being the keys the deployment provisioned as private), nil when none is. The shared row
+// lock is what orders it against StartClosing, whose write of the row waits for it, so no token
+// that lists the project commits after the closing state's revocation has run. projects are keys
+// the caller sees, so the refusal names nothing the caller may not see.
+func RefuseClosedTokenProjects(ctx context.Context, tx pgx.Tx, projects, listed []string) error {
 	if len(projects) == 0 {
 		return nil
 	}
 	var closed string
 	err := tx.QueryRow(ctx, `
 		with listed as (
-			select p.key, `+closedSQL("p")+` as closed
+			select p.key, `+closedSQL("p", "$2")+` as closed
 			from projects p where p.key = any($1) order by p.key for share
 		)
 		select coalesce(min(key) filter (where closed), '') from listed
-	`, projects).Scan(&closed)
+	`, projects, listedKeys(listed)).Scan(&closed)
 	if err != nil {
 		return fmt.Errorf("read the projects a personal token lists: %w", err)
 	}
@@ -120,4 +125,39 @@ func RefuseClosedTokenProjects(ctx context.Context, tx pgx.Tx, projects []string
 		return fmt.Errorf("%w: %s is one", ErrClosedTokenProject, closed)
 	}
 	return nil
+}
+
+// RevokeClosedProjectTokens revokes every live personal token that lists a project closed to
+// developer boxes (closedSQL, listed being the keys the deployment provisioned as private), and
+// answers the keys of those projects whose tokens it revoked, sorted, with how many it revoked.
+// The boot runs it once it has read DISPATCH_PRIVATE_PROJECTS, so a project private on its first
+// day loses its personal tokens with the first boot that names its key there.
+func RevokeClosedProjectTokens(ctx context.Context, q Querier, listed []string) ([]string, int64, error) {
+	var keys []string
+	var revoked int64
+	err := q.QueryRow(ctx, `
+		with closed as (
+			select p.key from projects p where `+closedSQL("p", "$1")+`
+		), revoked as (
+			update agent_tokens t set revoked_at = now()
+			where t.revoked_at is null and t.projects && array(select key from closed)
+			returning t.projects
+		)
+		select coalesce(array(select distinct k from revoked, unnest(revoked.projects) k
+				where k in (select key from closed) order by k), '{}'),
+			(select count(*) from revoked)
+	`, listedKeys(listed)).Scan(&keys, &revoked)
+	if err != nil {
+		return nil, 0, fmt.Errorf("revoke the personal tokens of the projects closed to developer boxes: %w", err)
+	}
+	return keys, revoked, nil
+}
+
+// listedKeys is listed as a bind parameter: never nil, which pgx would send as SQL null and any()
+// would then answer null for, not false.
+func listedKeys(listed []string) []string {
+	if listed == nil {
+		return []string{}
+	}
+	return listed
 }
