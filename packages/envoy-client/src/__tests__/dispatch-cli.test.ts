@@ -682,18 +682,25 @@ function nextProcess(sessionId: string): void {
 /**
  * The test server behind Dispatch's keyed layer, which judged every answer to a write and names
  * its `Idempotency-Key` back on each: the first `failing` message posts fail in transport before
- * they reach it.
+ * they reach it. A `/healthz` read is recorded in `probes` and never answers within any bound, as
+ * under the load that stalls a write.
  */
 function keyedDispatch(failing: number): {
   readonly fetchImpl: typeof fetch;
   readonly keys: string[];
+  readonly probes: string[];
 } {
   const keys: string[] = [];
+  const probes: string[] = [];
   let left = failing;
   const fetchImpl = keyedLayer(
     async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       const { pathname } = new URL(request.url);
+      if (pathname === "/healthz") {
+        probes.push(pathname);
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }
       if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
         keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
         if (left-- > 0) throw new TypeError("fetch failed");
@@ -702,7 +709,7 @@ function keyedDispatch(failing: number): {
     },
     { judged: () => true }
   ) as typeof fetch;
-  return { fetchImpl, keys };
+  return { fetchImpl, keys, probes };
 }
 
 function ledger(sessionId: string): { tool: string; error?: string }[] {
@@ -1212,6 +1219,35 @@ describe("the dispatch CLI", () => {
       readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
     );
     expect(Object.keys(state).sort()).toEqual(["advice", "follows", "pictures"]);
+  });
+
+  // Every `dispatch` command is a process of its own and carries nothing of Dispatch's keyed layer
+  // from an earlier call. Every Dispatch that carries `b1c42d1d7d` runs that layer, so a later
+  // call's write whose attempt fails is asked again under its key with no /healthz read, which the
+  // load that stalled the write can keep from answering in time. The state.json here is one an
+  // earlier release wrote, whose `keyedLayer` remembered a sighting of the layer too old for that
+  // release to trust: it is not read, and the call's save writes no such member back.
+  test("a failed write is asked again under its key with no /healthz read, whatever an earlier call of the session saw", async () => {
+    const origin = `http://127.0.0.1:${server.port}`;
+    const file = join(stateDir, "sessions", "ses-1", "state.json");
+    mkdirSync(join(stateDir, "sessions", "ses-1"), { recursive: true });
+    const keyedLayer = { [origin]: new Date(Date.now() - 10 * 60_000).toISOString() };
+    writeFileSync(file, JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer }));
+    nextProcess("ses-1");
+    const stalled = keyedDispatch(1);
+
+    const { code } = await run(
+      ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
+      omp,
+      "",
+      stalled.fetchImpl
+    );
+
+    expect(code).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
+    expect(stalled.probes).toEqual([]);
+    expect(JSON.parse(readFileSync(file, "utf-8"))).not.toHaveProperty("keyedLayer");
   });
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {

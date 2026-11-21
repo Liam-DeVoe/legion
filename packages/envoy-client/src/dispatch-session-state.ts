@@ -26,8 +26,8 @@ import { hasErrnoCode, messageFor } from "./errors";
  * (`dispatch-session-directory.ts` names it): what a long-lived host kept in memory across calls
  * (the triage lines and pictures already shown, the asks whose follow notice was printed) in
  * `state.json`, a ledger of every call's result in `results.jsonl`, and the pictures and long
- * results the CLI wrote for the agent to open. The state names issue keys and picture addresses,
- * so every file is the owner's alone.
+ * results the CLI wrote for the agent to open. The state names issue keys and picture addresses, so
+ * every file is the owner's alone.
  *
  * Two calls racing in one session can lose a memory entry; that costs one repeated line.
  */

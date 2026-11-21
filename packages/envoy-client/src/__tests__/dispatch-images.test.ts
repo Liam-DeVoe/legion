@@ -123,8 +123,11 @@ function dispatch(
   return { requests, uploads, posted, fetchImpl: keyedLayer(fetchImpl) as typeof fetch };
 }
 
-/** The call as the host session `sessionId` makes it: the session reads and posts as itself. A
- *  write that gets no definitive answer is asked again under its key at once, with no wait. */
+/**
+ * The call as the host session `sessionId` makes it: the session reads and posts as itself. A
+ * write the test's Dispatch fails is asked again on the production schedule, with pauses that
+ * take no time.
+ */
 function run(
   tool: string,
   args: Record<string, unknown>,
@@ -499,8 +502,8 @@ describe("sending pictures", () => {
     expect(server.posted).toEqual([]);
   });
 
-  // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, after
-  // the last of the write's attempts.
+  // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, once the
+  // write's attempts are spent.
   test("an upload a gateway answered 502 is not said to have failed", async () => {
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST"

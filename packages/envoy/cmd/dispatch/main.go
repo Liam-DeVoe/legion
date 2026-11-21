@@ -2210,9 +2210,8 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // publishes at a time, so a healthy process may well report false, and it never decides `ok`.
 //
 // `idempotency_keys` is true on every build that judges a write's Idempotency-Key (INFRA-258,
-// api/request_keys.go): an operator's deploy check reads it (cmd/dispatch/README.md, "Checking a
-// deploy"), since an earlier Dispatch ignores the header and would run a retried write again. The
-// agents' client asks it nothing before it sends a write again under its key. It is a fact of the
+// api/request_keys.go): the deploy check reads it (scripts/e2e/lib/dispatch-keyed-comment.ts), since
+// an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string

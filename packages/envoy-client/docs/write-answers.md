@@ -110,9 +110,9 @@ A write carries one key across its no-route retries and its re-send after a dead
 The keyed layer wraps each route's handler, so it stores nothing under the key for those answers.
 Once an attempt may have reached a handler, the call ends as a `DispatchWriteUnsettledError`, unless its last answer is the keyed layer's verdict.
 That verdict is a definitive answer that names the key back and that the layer keeps as the key's outcome.
-It is the stored result, a replay, a landed answer, or the handler's refusal.
+It is the stored result, a replay, a landed answer, the handler's refusal, or `422 KEY_REUSED`.
+`KEY_REUSED` settles the call because every attempt of it sends the same bytes under its one key, and Dispatch's digest covers the method, the route, its path values, the query, the content type less its boundary and the body, so a key held for another request was claimed by no attempt of this call.
 An echoed 401 is no verdict, because it can come after the handler committed.
-`422 KEY_REUSED` is no verdict either, because it says only that this request did not run.
 A no-route answer, Dispatch's check of the token, a dead token or a credential that could not present proves nothing of the earlier attempt.
 Before any attempt may have reached a handler, the caller's cancellation remains its own error.
 After a possible landing it is the unsettled error's `last` and `cause`.
