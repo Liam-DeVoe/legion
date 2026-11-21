@@ -218,10 +218,11 @@ export function newestRun(page: Page): Locator {
   return page.getByTestId("going-run").last();
 }
 
-/** Approves the newest run's waiting plan from the bar's empty box, and waits for the run to
- *  end done. */
+/** Approves the newest run's waiting plan from the bar's empty box once the bar has read the plan,
+ *  and waits for the run to end done. */
 export async function approveAndFinish(page: Page): Promise<void> {
   await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", { timeout: RUN_STEPS_MS });
+  await expect(planCard(page).last()).toHaveAttribute("data-state", "waiting");
   await searchBox(page).focus();
   await searchBox(page).press("Enter");
   await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });

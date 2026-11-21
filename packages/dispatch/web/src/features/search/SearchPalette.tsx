@@ -751,8 +751,13 @@ function PaletteDialog({
       event.preventDefault();
       event.stopPropagation();
       asking.escape("");
-    } else if (event.key === "Enter" && searchText === "" && asking.planWaits) {
-      // Enter in the empty box approves the plan that waits, with the ticks and edits made.
+    } else if (
+      event.key === "Enter" &&
+      searchText === "" &&
+      (asking.planWaits || asking.runWaits)
+    ) {
+      // Enter in the empty box approves the plan that waits, with the ticks and edits made. Before
+      // the plan is read it does nothing, rather than open the row the list highlights.
       event.preventDefault();
       asking.enter("");
     } else if (scope.handleKey(event)) {

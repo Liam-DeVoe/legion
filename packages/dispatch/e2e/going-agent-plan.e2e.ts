@@ -209,6 +209,45 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
   });
 });
 
+// SLOW(>=2s): a waiting run whose plan the bar reads late, and the approval once it has.
+test("Enter in the empty box before the bar has read the waiting plan opens no row, and approves once it has", async ({
+  browser,
+}) => {
+  modelsLane();
+  test.setTimeout(120_000);
+  const split = await seedSplit();
+  const words = `split ${split.parent} before the plan is read`;
+  await scriptSplit(words, split);
+  await withAlice(browser, async (page) => {
+    // The bar's read of the plan (`GET /api/v1/going/runs/{id}/plan`) is held until released,
+    // so the run's frames say it waits while the bar has no plan to approve.
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    await page.route(/\/api\/v1\/going\/runs\/[^/]+\/plan(\?|$)/u, async (route) => {
+      if (route.request().method() === "GET") await held;
+      await route.continue();
+    });
+    await openBarOver(page, "/");
+    const opened = page.url();
+    await askTheAgent(page, words);
+    await planWaits(page);
+    await expect(planCard(page)).toHaveCount(0);
+    await searchBox(page).focus();
+    await searchBox(page).press("Enter");
+
+    release();
+    await expect(planCard(page)).toHaveAttribute("data-state", "waiting", {
+      timeout: RUN_STEPS_MS,
+    });
+    // The early Enter opened no row of the list: the bar is open on the page it opened over,
+    // and the run still waits.
+    await expect(bar(page)).toBeVisible();
+    expect(page.url()).toBe(opened);
+    await expect(newestRun(page)).toHaveAttribute("data-state", "waiting");
+    await searchBox(page).press("Enter");
+    await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
+  });
+});
+
 // SLOW(>=2s): a waiting plan, another person's change of one of its items, and the approval.
 test("a row whose item another person changes after the plan showed shows the new value and waits again", async ({
   browser,

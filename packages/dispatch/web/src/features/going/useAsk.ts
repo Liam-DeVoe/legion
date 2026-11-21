@@ -8,8 +8,10 @@ import {
   goingState,
   movePanel,
   newestRun,
+  shownState,
   startRun,
   stopRun,
+  useGoingValue,
 } from "./going-store";
 import { type PlanAnswering, useOpenPlan } from "./usePlan";
 
@@ -19,6 +21,9 @@ export interface Asking {
   readonly answering: PlanAnswering;
   /** Whether the open conversation's newest run waits on its plan: Enter then answers it. */
   readonly planWaits: boolean;
+  /** Whether the open conversation's newest run waits on its plan as its frames show it, which
+   *  can come before the plan is read: until then Enter answers nothing and starts no run. */
+  readonly runWaits: boolean;
   /** Enter with `words` in the box: approves the waiting plan from an empty box, revises it in
    *  words, or starts a run of the words, of `kind` where one is given (`new_issue` for the line
    *  File as a new issue); answers whether it did any. */
@@ -43,6 +48,10 @@ export function useAsk(context: GoingContextInput): Asking {
   const login = useQuery(whoAmIQuery()).data?.login;
   const answering = useOpenPlan();
   const planWaits = answering.plan?.state === "waiting";
+  const runWaits = useGoingValue((of) => {
+    const run = of.place === "closed" ? undefined : newestRun(of);
+    return run !== undefined && shownState(run) === "waiting";
+  });
   const listed = (start: Promise<boolean>) =>
     void start.then((started) => {
       if (started) {
@@ -58,7 +67,7 @@ export function useAsk(context: GoingContextInput): Asking {
         else answering.revise(said);
         return true;
       }
-      if (said === "" || goingState().starting) {
+      if (runWaits || said === "" || goingState().starting) {
         return false;
       }
       listed(startRun(said, context, login, undefined, kind));
@@ -72,6 +81,7 @@ export function useAsk(context: GoingContextInput): Asking {
     },
     onContinue: (run) => listed(continueRun(run, context, login)),
     planWaits,
+    runWaits,
     stop: () => {
       const run = newestRun();
       if (run !== undefined) stopRun(run.id, login);
