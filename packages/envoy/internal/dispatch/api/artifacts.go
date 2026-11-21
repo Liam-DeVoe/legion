@@ -1012,7 +1012,8 @@ func (s *server) storeArtifact(
 		// A new document of a child that is a view on its ancestor's spec takes no requirement of
 		// its own, as an edit and a replacement of one of its documents take none (docs'
 		// RefuseRequirementOnView): the document's row is still queued, so its issue is the
-		// upload's own.
+		// upload's own. One let through holding a requirement block on an issue that is no view
+		// marks the issue's spec its own on this write's ledger, so in this transaction.
 		if created && target.IssueKey != nil {
 			written := ledger.ReadBackOf(artifact.ID, documentMarkdown)
 			if written == nil {
@@ -1021,7 +1022,7 @@ func (s *server) storeArtifact(
 					return
 				}
 			}
-			if err := docs.RefuseRequirementOnView(r.Context(), tx, *target.IssueKey, nil, written); err != nil {
+			if err := docs.RefuseRequirementOnView(documentCtx, tx, *target.IssueKey, nil, written); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -2928,12 +2929,14 @@ const issueTreeName = "tree"
 // document is the issue's room, under slug, a slug of its own among the issue's documents
 // (nextArtifactSlug, read with the id in the create's read phase, planConvertedIssueRoom); its
 // node (graphstore.ArtifactNode) with its part_of to the issue (graphstore.ArtifactPartOf),
-// written before the row that names it; and the issue's issue_trees row, which holds the issue to
-// one tree. Its version 1, empty, with its version node, as an empty document's create writes its
-// version 1, so a settlement of the room always finds the tree's latest version, is queued in the
-// read phase (planConvertedIssueRoom) and runs at the commit, after this row. It queues all of it
-// on b, the create's write phase (createConvertedIssueRoom), with the node write written plans
-// (issueTreeWrite), whose statements the caller causes under the event it appends
+// written before the row that names it; the issue's issue_trees row, which holds the issue to one
+// tree; and beside it the issue's row of issue_views, which says the issue was born converted
+// (docs.QueueBornConverted): only the create's write phase calls this, and the conversion writes
+// its own row. Its version 1, empty, with its version node, as an empty document's create writes
+// its version 1, so a settlement of the room always finds the tree's latest version, is queued in
+// the read phase (planConvertedIssueRoom) and runs at the commit, after this row. It queues all
+// of it on b, the create's write phase (createConvertedIssueRoom), with the node write written
+// plans (issueTreeWrite), whose statements the caller causes under the event it appends
 // (graphstore.QueueCaused). The caller holds the issue's owner lock and creates the tree once: an
 // issue_trees row standing for the issue already is refused by that row's key, and the
 // transaction with it. Each document_rooms row naming the tree - the spec's, a document's joining
@@ -2953,6 +2956,7 @@ func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncause
 		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8)
 	`, id, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
 	b.Queue("record the issue's tree", `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id)
+	docs.QueueBornConverted(b, key)
 	return nil
 }
 

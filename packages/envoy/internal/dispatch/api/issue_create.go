@@ -446,24 +446,24 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An issue born converted under a parent is a view on the spec of the nearest issue of its
-	// parent's chain that holds requirements, while that issue is not done, and a view takes no
-	// requirement of its own, as a write to one of its documents takes none (docs'
-	// RefuseRequirementOnView): a requirement of its spec is refused with that issue's name. The
-	// new issue's row is not written yet, so the chain is read from its parent
-	// (docs.RefuseRequirementUnder). Nothing of the create is written: every write of it so far
-	// is queued or in this transaction, which the refusal rolls back.
-	if bornConverted && parentKey != "" {
-		spec := ledger.ReadBackOf(artifactID, markdown)
-		if spec == nil {
-			if spec, err = pmdoc.ParseRendering(markdown); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		}
-		if err := docs.RefuseRequirementUnder(r.Context(), tx, key, parentKey, spec); err != nil {
+	// parent's chain that holds requirements and is no view itself, while that issue is not done,
+	// and a view takes no requirement of its own, as a write to one of its documents takes none
+	// (docs' RefuseRequirementOnView): a requirement of its spec is refused with that issue's name.
+	// The new issue's row is not written yet, so the chain is read from its parent
+	// (docs.RefuseRequirementUnder). Nothing of the create is written: every write of it so far is
+	// queued or in this transaction, which the refusal rolls back. A spec let through holding a
+	// requirement block marks the new issue's spec its own on this create's ledger, so a create
+	// whose block index the reconciliation takes up later keeps the mark too.
+	spec := ledger.ReadBackOf(artifactID, markdown)
+	if spec == nil {
+		if spec, err = pmdoc.ParseRendering(markdown); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	if err := docs.RefuseRequirementUnder(documentCtx, tx, key, parentKey, bornConverted, spec); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	specVersion, err := ledger.QueueVersion(r.Context(), artifactID, markdown, []model.Actor{actor}, nil)
 	if err != nil {
@@ -1042,14 +1042,14 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 
 // createConvertedIssueRoom queues, at the head of ledger's write phase (docs.Ledger.QueueFirst),
 // the rows room planned beside the spec's row specID, which the caller has written by then: the
-// tree artifact's node and rows (createIssueTree); the spec's document_rooms row naming the tree,
-// ahead of every statement the read phase queued, which resolve the spec's room through it, and
-// announced in the read phase (planConvertedIssueRoom); and the decisions query's node and row
-// (createDecisionsQuery), each node before the row naming it. They steer nothing the route
-// answers, so they run in the write phase's batch and not inline inside the transaction's id
-// window. The caller holds the new issue's owner lock, which every writer of a document_rooms row
-// holds first. It answers what the node writes and the read phase's document work state, which the
-// caller causes under its event.
+// tree artifact's node and rows, and the issue's row of issue_views saying it was born converted
+// (createIssueTree); the spec's document_rooms row naming the tree, ahead of every statement the
+// read phase queued, which resolve the spec's room through it, and announced in the read phase
+// (planConvertedIssueRoom); and the decisions query's node and row (createDecisionsQuery), each
+// node before the row naming it. They steer nothing the route answers, so they run in the write
+// phase's batch and not inline inside the transaction's id window. The caller holds the new
+// issue's owner lock, which every writer of a document_rooms row holds first. It answers what the
+// node writes and the read phase's document work state, which the caller causes under its event.
 func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, specID string, room convertedIssueRoom, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
 	tree := issueTreeWrite(room.treeSlug, key, project, actor, at)
 	decisions := decisionsQueryWrite(room.decisionsSlug, key, project, actor, at)

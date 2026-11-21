@@ -46,10 +46,15 @@ type tupleCheck struct {
 // check holding no result, holding only a fail, or holding a pass recorded against a text sum it no
 // longer holds - and a retracted result counts as none; one a check proves is proved. A requirement
 // whose node or a node above it is overtaken is closed with its subtree: it lists no gap and
-// nothing under it. A proposed requirement is a question still open and raises no gap. A
-// requirement of an issue that is a view (docs.ViewOf) is a gap whatever its state and whatever
-// serves it, unless it is closed, as issueCoverage names it. A block the block index has not
-// reached has no node, so the read answers it once that index runs.
+// nothing under it. A proposed requirement is a question still open and raises no gap.
+//
+// On an issue that is a view (docs.ViewOf, read with the walk: IssueTree.ViewOf) the read lists,
+// as issueCoverage's viewCoverage does, the requirement nodes of the ancestor's tree, in that
+// tree's order, that a check of the view or of an issue under it serves, each read over what the
+// view and the issues under it hold; and it names each requirement node of the view's own tree,
+// unless it is closed, in the one line `<block id> is a requirement on a view` of the gaps, with
+// no entry among the requirements. A block the block index has not reached has no node, so the
+// read answers it once that index runs.
 func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	if err := q.QueryRow(ctx, `
@@ -62,12 +67,74 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	parents := make(map[refs.Target]refs.Target, len(tree.Nodes))
+	own, err := readTreeRequirements(ctx, q, who, tree)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	if tree.ViewOf == "" && len(own.visible) == 0 {
+		coverage.Gaps = []string{noRequirementsGap}
+		return coverage, nil
+	}
+	issues, err := coverageIssues(ctx, q, who, issueKey)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	if tree.ViewOf == "" {
+		requirements, wholes, err := coverTreeRequirements(ctx, q, who, issueKey, own, issues, coverage.HasPlan, false)
+		if err != nil {
+			return model.IssueCoverage{}, err
+		}
+		coverage.Requirements, coverage.Gaps = requirements, requirementGaps(requirements)
+		registerTreeTexts(trees, coverage.Requirements, wholes)
+		return coverage, nil
+	}
+	above, err := docs.WalkIssueTree(ctx, q, tree.ViewOf, refs.TreeCut{})
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	ancestor, err := readTreeRequirements(ctx, q, who, above)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	requirements, wholes, err := coverTreeRequirements(ctx, q, who, tree.ViewOf, ancestor, issues, coverage.HasPlan, true)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	coverage.Requirements = append(coverage.Requirements, requirements...)
+	coverage.Gaps = requirementGaps(coverage.Requirements)
+	for _, target := range own.visible {
+		if !own.closed(target) {
+			_, blockID, _ := strings.Cut(target.ID, "#")
+			coverage.Gaps = append(coverage.Gaps, blockID+" "+viewRequirementReason)
+		}
+	}
+	if len(coverage.Requirements) == 0 && len(own.visible) == 0 {
+		coverage.Gaps = []string{noRequirementsGap}
+	}
+	registerTreeTexts(trees, coverage.Requirements, wholes)
+	return coverage, nil
+}
+
+// treeRequirements is what the coverage read over the tuples reads of the requirement nodes of one
+// issue's tree: the tree's cut; each requirement node the reader may see, in the tree's own order,
+// with its id; and the walk's parent of each node and the node of each block of the tree as the
+// reader may see it (refs.Nodes), which tell whether a requirement is closed.
+type treeRequirements struct {
+	cut     refs.TreeCut
+	visible []refs.Target
+	ids     []string
+	parents map[refs.Target]refs.Target
+	nodes   map[refs.Target]model.GraphNode
+}
+
+// readTreeRequirements is the treeRequirements of tree for who.
+func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree docs.IssueTree) (treeRequirements, error) {
+	read := treeRequirements{cut: tree.Cut, parents: make(map[refs.Target]refs.Target, len(tree.Nodes))}
 	var chain []refs.Target
 	var requirements []refs.Target
 	for _, node := range tree.Nodes {
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
-		parents[target] = node.Parent
+		read.parents[target] = node.Parent
 		if node.Kind == refs.BlockNodeKind {
 			chain = append(chain, target)
 			if node.Type == requirementBlockType {
@@ -77,60 +144,66 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 	}
 	nodes, err := refs.Nodes(ctx, q, who, true, chain)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return treeRequirements{}, err
 	}
-	closed := func(target refs.Target) bool {
-		for at, steps := target, 0; at != (refs.Target{}) && steps <= len(parents); steps++ {
-			if nodes[at].State == graphstore.StateOvertaken {
-				return true
-			}
-			at = parents[at]
-		}
-		return false
-	}
-	var visible []refs.Target
-	var ids []string
+	read.nodes = nodes
 	for _, requirement := range requirements {
 		if _, seen := nodes[requirement]; seen {
-			visible = append(visible, requirement)
-			ids = append(ids, requirement.ID)
+			read.visible = append(read.visible, requirement)
+			read.ids = append(read.ids, requirement.ID)
 		}
 	}
-	if len(visible) == 0 {
-		coverage.Gaps = []string{noRequirementsGap}
-		return coverage, nil
+	return read, nil
+}
+
+// closed says whether the node target, or a node above it in the walk, is overtaken.
+func (read treeRequirements) closed(target refs.Target) bool {
+	for at, steps := target, 0; at != (refs.Target{}) && steps <= len(read.parents); steps++ {
+		if read.nodes[at].State == graphstore.StateOvertaken {
+			return true
+		}
+		at = read.parents[at]
 	}
-	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
+	return false
+}
+
+// coverTreeRequirements is the coverage over the tuples of each requirement of read, the
+// requirements of the issue issueKey's tree, for who: what of the nodes of issues serves it, its
+// proof, its state and its gaps, as issueCoverageOverTuples answers it, with the whole text each
+// one's text_tree is read from. With servedOnly, a requirement no check of issues serves is left
+// out, as a view lists only the requirements of its ancestor that its checks serve.
+func coverTreeRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, read treeRequirements, issues []string, hasPlan, servedOnly bool) ([]model.RequirementCoverage, []string, error) {
+	if len(read.visible) == 0 {
+		return nil, nil, nil
+	}
+	serving, err := servesInto(ctx, q, read.ids, read.cut)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return nil, nil, err
 	}
-	view, err := docs.ViewOf(ctx, q, issueKey)
+	checks, proof, err := readServingChecks(ctx, q, who, serving, issues, read.cut)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return nil, nil, err
 	}
-	issues := append([]string{issueKey}, descendants...)
-	serving, err := servesInto(ctx, q, ids, tree.Cut)
+	facts, err := refs.TreeFactsOf(ctx, q, read.visible, read.cut)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return nil, nil, err
 	}
-	checks, proof, err := readServingChecks(ctx, q, who, serving, issues, tree.Cut)
+	documents, err := blockDocuments(ctx, q, read.ids)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return nil, nil, err
 	}
-	facts, err := refs.TreeFactsOf(ctx, q, visible, tree.Cut)
-	if err != nil {
-		return model.IssueCoverage{}, err
-	}
-	documents, err := blockDocuments(ctx, q, ids)
-	if err != nil {
-		return model.IssueCoverage{}, err
-	}
-	coverage.Requirements = make([]model.RequirementCoverage, 0, len(visible))
-	for _, target := range visible {
+	requirements := make([]model.RequirementCoverage, 0, len(read.visible))
+	wholes := make([]string, 0, len(read.visible))
+	for _, target := range read.visible {
+		if servedOnly && !slices.ContainsFunc(serving[target.ID], func(from refs.Target) bool {
+			return checks[from].typ == graphstore.BlockTypeCheck
+		}) {
+			continue
+		}
 		whole := facts[target].Values[graphstore.AttributeText]
 		_, blockID, _ := strings.Cut(target.ID, "#")
 		requirement := model.RequirementCoverage{
-			BlockID: blockID, State: cmp.Or(nodes[target].State, graphstore.StateLive), Gaps: []string{}, Proof: []model.RequirementProof{},
+			BlockID: blockID, State: cmp.Or(read.nodes[target].State, graphstore.StateLive), Gaps: []string{}, Proof: []model.RequirementProof{},
 		}
 		requirement.Ref, _ = text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: issueKey, ID: cmp.Or(documents[target.ID], "spec"), Block: blockID})
 		if parsed, err := pmdoc.ParseRendering(whole); err == nil {
@@ -142,7 +215,7 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 			})
 		}
 		switch {
-		case closed(target):
+		case read.closed(target):
 			requirement.Coverage = "closed"
 		default:
 			proved := false
@@ -170,27 +243,28 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 			default:
 				requirement.Coverage = "unproven"
 			}
-			if view != "" {
-				requirement.Gaps = append(requirement.Gaps, viewRequirementReason)
-			}
 			if requirement.State != graphstore.StateProposed {
 				if requirement.Checks == 0 {
 					requirement.Gaps = append(requirement.Gaps, noCheckReason)
 				}
-				if coverage.HasPlan && requirement.PlanTasks == 0 {
+				if hasPlan && requirement.PlanTasks == 0 {
 					requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
 				}
 			}
 		}
-		for _, reason := range requirement.Gaps {
-			coverage.Gaps = append(coverage.Gaps, blockID+" "+reason)
-		}
-		coverage.Requirements = append(coverage.Requirements, requirement)
+		requirements = append(requirements, requirement)
+		wholes = append(wholes, whole)
 	}
-	for index, target := range visible {
-		trees.text(&coverage.Requirements[index].TextTree, blockTextContent(facts[target].Values[graphstore.AttributeText], true))
+	return requirements, wholes, nil
+}
+
+// registerTreeTexts registers with trees, the request's own reader, nil for a caller that asked
+// for no tree, the text_tree of each of requirements, the rows the answer carries, from the whole
+// text at its index of wholes, once the rows have stopped growing.
+func registerTreeTexts(trees *displayTreeReader, requirements []model.RequirementCoverage, wholes []string) {
+	for index, whole := range wholes {
+		trees.text(&requirements[index].TextTree, blockTextContent(whole, true))
 	}
-	return coverage, nil
 }
 
 // planTaskBlockType is the typed block a plan node is.

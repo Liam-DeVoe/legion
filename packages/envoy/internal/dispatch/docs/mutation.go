@@ -838,7 +838,8 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		if err != nil {
 			return err
 		}
-		// A child that is a view on its ancestor's spec takes no requirement of its own (R23).
+		// A child that is a view on its ancestor's spec takes no requirement of its own, and a
+		// replacement let through holding one marks its issue's spec its own (R23).
 		if err := refuseRequirementOnViewOf(ctx, s.queryFrom(ctx), artifactID, current, target); err != nil {
 			return err
 		}
@@ -2173,7 +2174,8 @@ func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdo
 			return EditOutcome{}, pmdoc.ValidDocument{}, err
 		}
 	}
-	// A child that is a view on its ancestor's spec takes no requirement of its own (R23).
+	// A child that is a view on its ancestor's spec takes no requirement of its own, and an edit
+	// let through holding one marks its issue's spec its own (R23).
 	if err := refuseRequirementOnViewOf(ctx, s.queryFrom(ctx), artifactID, batch.beforeTree, next); err != nil {
 		return EditOutcome{}, pmdoc.ValidDocument{}, err
 	}

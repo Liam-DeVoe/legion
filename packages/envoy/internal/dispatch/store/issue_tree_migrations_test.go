@@ -50,10 +50,12 @@ var keepsItsShape = []string{
 
 // createdNew are the tables this child creates: document_rooms and version_renders (R19),
 // issue_trees, which holds each issue's one tree, issue_room_blocks, the projection of an issue
-// room's block's in_document, and node_search, the search rows of a node. Each is created new, by
-// a create table of its own that is the first statement of the set to name it, and no statement of
-// the set fills it from a stored row. A table no migration of the set names is no finding.
-var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search"}
+// room's block's in_document, node_search, the search rows of a node, and issue_views, the
+// per-issue record of how an issue was converted and whether its spec is its own (R23). Each is
+// created new, by a create table of its own that is the first statement of the set to name it,
+// and no statement of the set fills it from a stored row. A table no migration of the set names is
+// no finding.
+var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_views"}
 
 // columnAdd is the one statement a table of columnAdds takes from this child: an alter table of it
 // that adds the columns named, each of the type Postgres's parser names (its typeName's names) and
@@ -812,9 +814,8 @@ func requireTheIssueTreeMigrationsKeepToTheLimit(t *testing.T, fsys fs.FS) {
 // R19 keeps whole; the one statement on issue_links is the add of the nullable node column pair
 // with no default, and the one statement on document_block_versions the add of the nullable
 // integer columns stated_version and stated_rule with no default, each made once; and
-// document_rooms, version_renders and issue_trees, where the set names them,
-// are created new and filled from no stored row. It reads no pull request, so it runs with no
-// token.
+// each table of createdNew, where the set names it, is created new and filled from no stored row.
+// It reads no pull request, so it runs with no token.
 func TestThisChildsMigrationsTouchNoTableAboveTheCensusLimit(t *testing.T) {
 	requireTheIssueTreeMigrationsKeepToTheLimit(t, migrationFiles)
 }

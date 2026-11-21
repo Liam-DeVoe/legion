@@ -29,20 +29,23 @@ import (
 // approval request's answer names none for it; one at settled or live is counted as every
 // requirement is, and cybermonklabs/legion#4180 gives overtaken its meaning. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
-// requirement is counted without it (queueServingBlockCounts). A requirement of an issue that is
-// a view on its ancestor's spec (docs.ViewOf) is a gap whatever its state and whatever serves it:
-// a view holds no requirement of its own, every write route refuses one, and one that reached it
-// through its room, as a block a person pasted in the browser, is named so it is moved into the
-// ancestor's spec. Nothing is ever refused
+// requirement is counted without it (queueServingBlockCounts). An issue that is a view on its
+// ancestor's spec (docs.ViewOf) holds no requirement of its own: its coverage lists the
+// requirements of that ancestor's spec that a check of the view, or of an issue under it, serves,
+// each counted over what the view and the issues under it hold (viewCoverage). A requirement block
+// of the view's own spec - one that reached it through its room, as a block a person pasted in the
+// browser, since every write route refuses one - is listed as no requirement of the view and
+// raises no missing check or plan task: it is named in the gaps alone, as a requirement on a view,
+// so it is moved into the ancestor's spec. Nothing is ever refused
 // for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
 // which prints each gap after `Coverage: `, and an approval request's answer, which names the
 // missing checks alone.
 
 // noRequirementsGap is the one gap line a spec that marks no requirement answers, in place of a
-// line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, and
-// viewRequirementReason what a requirement of a view is, as RequirementCoverage.Gaps carries it; a
-// document-level gap line is the requirement's block id and one of these, which is what noCheckGap
-// builds.
+// line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, as
+// RequirementCoverage.Gaps carries it, and viewRequirementReason what a requirement block of a
+// view is; a document-level gap line is the requirement's block id and one of these, which is
+// what noCheckGap builds.
 const (
 	noRequirementsGap     = "the spec marks no requirements"
 	noCheckReason         = "has no check"
@@ -85,30 +88,33 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // and nodes keyed by the room's tree artifact (refs.DocumentRoomSQL), so they are read there.
 // Both statements start from the requirements the live spec marks, each through a primary key,
 // so the plan Postgres makes without their values costs little and a connection soon keeps it
-// rather than planning each read again (queueServingBlockCounts).
+// rather than planning each read again (queueServingBlockCounts). An issue that is a view
+// (docs.ViewOf) answers the coverage viewCoverage reads.
 //
 // trees is the reader of a request that answers the requirements' trees, nil for every other
-// caller: each requirement registers with it (requirementBlocksIn), in the row the answer
-// carries, the markdown typedBlocksIn reads the block's tree from, which is the rule GET
-// /api/v1/reference-targets reads the same block's tree by, and the caller resolves it. The rows
-// are filled in place, so each registered pointer is into the answer itself.
+// caller: each requirement the answer lists registers with it (registerRequirementTrees), in the
+// row the answer carries, the markdown typedBlocksIn reads the block's tree from, which is the
+// rule GET /api/v1/reference-targets reads the same block's tree by, and the caller resolves it.
+// The rows are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	var specNodeKey string
-	err := q.QueryRow(ctx, `
-		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
-		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = `+refs.DocumentRoomSQL("a.id")+`
-		                 where a.issue_key = $1 and a.is_primary), ''),
-		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&coverage.SpecArtifactID, &specNodeKey, &coverage.HasPlan)
+	spec, err := readCoverageSpec(ctx, q, issueKey)
 	if err != nil {
-		return model.IssueCoverage{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
+		return model.IssueCoverage{}, err
 	}
-	if coverage.SpecArtifactID == "" {
+	coverage.SpecArtifactID, coverage.HasPlan = spec.artifactID, spec.hasPlan
+	if spec.artifactID == "" {
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees)
+	view, err := docs.ViewOf(ctx, q, issueKey)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	if view != "" {
+		return s.viewCoverage(ctx, q, who, coverage, view, trees)
+	}
+	requirements, contents, err := s.requirementBlocksIn(ctx, spec.artifactID, trees != nil)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -116,21 +122,116 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
+	issues, err := coverageIssues(ctx, q, who, issueKey)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	if err := coverRequirements(ctx, q, who, issueKey, spec, requirements, issues, coverage.HasPlan); err != nil {
+		return model.IssueCoverage{}, err
+	}
+	coverage.Requirements = requirements
+	coverage.Gaps = requirementGaps(requirements)
+	registerRequirementTrees(trees, coverage.Requirements, contents)
+	return coverage, nil
+}
+
+// viewCoverage is the coverage of the view coverage.Issue on the spec of ancestor (docs.ViewOf),
+// read for who, coverage holding the view's spec and whether it has a plan: the requirements of
+// the ancestor's spec, in that spec's order, that a check of the view or of an issue under it
+// serves, each counted over what the view and the issues under it hold, as issueCoverage counts
+// the requirements of an issue that is no view; then, for each requirement block of the view's own
+// spec, the one line `<block id> is a requirement on a view` in the gaps and nothing else: such a
+// block is listed as no requirement of the view and lacks no check and no plan task. A view that
+// lists no requirement and holds none answers the single gap line.
+func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, coverage model.IssueCoverage, ancestor string, trees *displayTreeReader) (model.IssueCoverage, error) {
+	above, err := readCoverageSpec(ctx, q, ancestor)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	var contents []string
+	if above.artifactID != "" {
+		requirements, texts, err := s.requirementBlocksIn(ctx, above.artifactID, trees != nil)
+		if err != nil {
+			return model.IssueCoverage{}, err
+		}
+		issues, err := coverageIssues(ctx, q, who, coverage.Issue)
+		if err != nil {
+			return model.IssueCoverage{}, err
+		}
+		if err := coverRequirements(ctx, q, who, ancestor, above, requirements, issues, coverage.HasPlan); err != nil {
+			return model.IssueCoverage{}, err
+		}
+		for index, requirement := range requirements {
+			if requirement.Checks == 0 {
+				continue
+			}
+			coverage.Requirements = append(coverage.Requirements, requirement)
+			if texts != nil {
+				contents = append(contents, texts[index])
+			}
+		}
+	}
+	pasted, _, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, false)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	coverage.Gaps = requirementGaps(coverage.Requirements)
+	for _, requirement := range pasted {
+		coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+viewRequirementReason)
+	}
+	if len(coverage.Requirements) == 0 && len(pasted) == 0 {
+		coverage.Gaps = []string{noRequirementsGap}
+	}
+	registerRequirementTrees(trees, coverage.Requirements, contents)
+	return coverage, nil
+}
+
+// coverageSpec is what the coverage read reads of one issue's documents: its spec's id, the
+// ref_key its blocks' nodes are keyed under - the spec's own, or its room's where it is edited in
+// its issue's room (refs.DocumentRoomSQL) - and whether the issue has a plan document. An issue
+// with no spec holds "" in both.
+type coverageSpec struct {
+	artifactID, nodeKey string
+	hasPlan             bool
+}
+
+// readCoverageSpec is the coverageSpec of the issue issueKey, read through q.
+func readCoverageSpec(ctx context.Context, q queryer, issueKey string) (coverageSpec, error) {
+	var spec coverageSpec
+	if err := q.QueryRow(ctx, `
+		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
+		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = `+refs.DocumentRoomSQL("a.id")+`
+		                 where a.issue_key = $1 and a.is_primary), ''),
+		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
+	`, issueKey).Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
+		return coverageSpec{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
+	}
+	return spec, nil
+}
+
+// coverageIssues is the issue issueKey and every issue below it that who may see
+// (refs.IssueDescendants): the issues whose checks and plan tasks serve its coverage.
+func coverageIssues(ctx context.Context, q queryer, who model.Actor, issueKey string) ([]string, error) {
 	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
 	if err != nil {
-		return model.IssueCoverage{}, err
+		return nil, err
 	}
-	view, err := docs.ViewOf(ctx, q, issueKey)
-	if err != nil {
-		return model.IssueCoverage{}, err
-	}
+	return append([]string{issueKey}, descendants...), nil
+}
+
+// coverRequirements fills in each of requirements, the requirement blocks of the spec of the issue
+// issueKey, for who: its reference, its node's state (queueRequirementStates), how many checks and
+// plan tasks of the documents of issues serve it (queueServingBlockCounts), both read in one batch,
+// and its gaps. A proposed requirement is a question still open and lacks nothing; any other lacks
+// a check where none serves it, and a plan task where hasPlan and none serves it.
+func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, spec coverageSpec, requirements []model.RequirementCoverage, issues []string, hasPlan bool) error {
 	batch := &pgx.Batch{}
 	states := make(map[string]string, len(requirements))
 	served := map[string]servingCounts{}
-	queueRequirementStates(batch, who, specNodeKey, requirements, states)
-	queueServingBlockCounts(batch, who, coverage.SpecArtifactID, requirements, append([]string{issueKey}, descendants...), served)
+	queueRequirementStates(batch, who, spec.nodeKey, requirements, states)
+	queueServingBlockCounts(batch, who, spec.artifactID, requirements, issues, served)
 	if err := q.SendBatch(ctx, batch).Close(); err != nil {
-		return model.IssueCoverage{}, err
+		return err
 	}
 	for index := range requirements {
 		requirement := &requirements[index]
@@ -141,24 +242,29 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 		requirement.Checks, requirement.PlanTasks = counts.checks, counts.planTasks
 		requirement.State = cmp.Or(states[requirement.BlockID], graphstore.StateLive)
 		requirement.Gaps = []string{}
-		if view != "" {
-			requirement.Gaps = append(requirement.Gaps, viewRequirementReason)
-		}
 		// A proposed requirement is a question still open, never work left undone.
 		if requirement.State != graphstore.StateProposed {
 			if requirement.Checks == 0 {
 				requirement.Gaps = append(requirement.Gaps, noCheckReason)
 			}
-			if coverage.HasPlan && requirement.PlanTasks == 0 {
+			if hasPlan && requirement.PlanTasks == 0 {
 				requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
 			}
 		}
+	}
+	return nil
+}
+
+// requirementGaps is the gap line of each gap of each of requirements, in their order: the
+// requirement's block id and the reason.
+func requirementGaps(requirements []model.RequirementCoverage) []string {
+	gaps := []string{}
+	for _, requirement := range requirements {
 		for _, reason := range requirement.Gaps {
-			coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+reason)
+			gaps = append(gaps, requirement.BlockID+" "+reason)
 		}
 	}
-	coverage.Requirements = requirements
-	return coverage, nil
+	return gaps
 }
 
 // requirementStatesQuery reads, for a reader ($2), the node state the store holds of each
@@ -227,28 +333,36 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 }
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
-// words, read live out of the document's markdown (typedBlocksIn). trees is the request's own
-// reader, nil for a caller that asked for no tree: each requirement registers with it, as its
-// text_tree, the markdown typedBlocksIn hands over from the block's stored text, so a requirement
-// answers here the tree the batched reference read answers for it. It registers once the slice
-// has stopped growing, since what is registered is a pointer into the row, and the caller fills
-// in the rest of each row in place.
-func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
+// words, read live out of the document's markdown (typedBlocksIn), and, where withContents is set,
+// each one's content beside it: the markdown typedBlocksIn hands over from the block's stored text,
+// which registerRequirementTrees registers as the requirement's text_tree, so a requirement answers
+// the tree the batched reference read answers for it.
+func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, withContents bool) ([]model.RequirementCoverage, []string, error) {
 	var requirements []model.RequirementCoverage
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", withContents, func(node *pmdoc.Node, id, content string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
-		if trees != nil {
+		if withContents {
 			contents = append(contents, content)
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	return requirements, contents, nil
+}
+
+// registerRequirementTrees registers with trees, the request's own reader, nil for a caller that
+// asked for no tree, each of contents as the text_tree of the requirement at its index of
+// requirements, the rows the answer carries. It registers once the rows have stopped growing,
+// since what is registered is a pointer into the row.
+func registerRequirementTrees(trees *displayTreeReader, requirements []model.RequirementCoverage, contents []string) {
+	if trees == nil {
+		return
 	}
 	for index, content := range contents {
 		trees.text(&requirements[index].TextTree, content)
 	}
-	return requirements, nil
 }
 
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.

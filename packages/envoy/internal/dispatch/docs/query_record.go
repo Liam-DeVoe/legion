@@ -35,12 +35,18 @@ const (
 // nodes it takes, at their index in the walk. Each takes nodes of the types graphstore.QueryTakes
 // lists for it (the takes value its query node carries), by the rule it adds. The spec takes the
 // memo - the issue's first child in the tree's order, when that child is a callout; no other
-// callout is the memo, and none enters the query - and the criteria and the requirements. The
-// verification takes the checks and the results under them. The plan takes the plan nodes. The
-// decisions query takes asks, decisions and readings by rules of its own, and holds no entry until
-// its record is built: a record of a query with no entry is refused.
+// callout is the memo, and none enters the query - and the criteria and the requirements; on an
+// issue that is a view (IssueTree.ViewOf) it takes the memo alone, so a requirement a client
+// brought into a view through its room is no node of the view's spec and no part of the record an
+// approval of it covers (R23). The verification takes the checks and the results under them. The
+// plan takes the plan nodes. The decisions query takes asks, decisions and readings by rules of
+// its own, and holds no entry until its record is built: a record of a query with no entry is
+// refused.
 var queryDefinitions = map[string]func(tree IssueTree, index int) bool{
 	graphstore.QuerySpec: func(tree IssueTree, index int) bool {
+		if tree.ViewOf != "" {
+			return index == tree.Memo
+		}
 		typ := tree.Nodes[index].Type
 		return slices.Contains(queryTakes[graphstore.QuerySpec], typ) && (typ != memoType || index == tree.Memo)
 	},
@@ -90,14 +96,15 @@ func (node TreeNode) Address() string { return node.Kind + ":" + node.ID }
 func (node TreeNode) target() refs.Target { return refs.Target{Kind: node.Kind, ID: node.ID} }
 
 // IssueTree is the walk of one issue's tree at one cut: the issue's key, the cut, every node in
-// the walk's order - the issue's own node first - and the index of the memo among them, -1 where
-// the issue's first child is no callout.
+// the walk's order - the issue's own node first - the index of the memo among them, -1 where the
+// issue's first child is no callout, and the issue it is a view of (ViewOf), "" where it is none.
 type IssueTree struct {
-	Issue string
-	Cut   refs.TreeCut
-	Nodes []TreeNode
-	Memo  int
-	index map[refs.Target]int
+	Issue  string
+	Cut    refs.TreeCut
+	Nodes  []TreeNode
+	Memo   int
+	ViewOf string
+	index  map[refs.Target]int
 }
 
 // WalkIssueTree walks the tree of the issue issueKey at cut, the head's where cut is zero
@@ -177,6 +184,11 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	}
 
 	tree := IssueTree{Issue: issueKey, Cut: cut, Memo: -1, index: map[refs.Target]int{}}
+	// Whether the issue is a view is no fact of the tree: it is read from the issue's record as it
+	// stands (ViewOf), as every reader of it reads it, whatever the cut.
+	if tree.ViewOf, err = ViewOf(ctx, q, issueKey); err != nil {
+		return IssueTree{}, err
+	}
 	walk.nodes[walk.issue] = TreeNode{Kind: walk.issue.Kind, ID: walk.issue.ID, Type: graphstore.SupertagIssue}
 	walk.take(&tree, walk.issue)
 	if first := walk.ordered(walk.issue); len(first) > 0 && walk.nodes[first[0]].Type == memoType {

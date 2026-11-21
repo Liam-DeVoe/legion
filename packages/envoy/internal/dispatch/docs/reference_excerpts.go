@@ -473,6 +473,11 @@ func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []mo
 // missingVersionNodesBound of them: where more are missing it writes none, and owes each document
 // the pass covers its block index again in this transaction (oweVersionsIndex), so the
 // reconciliation's next tick indexes them again and writes those nodes.
+//
+// A pass that wins the fence and states a requirement node of the issue the documents belong to
+// marks that issue's spec its own, in this transaction, where ViewOf answers here that the issue
+// is no view (markOwnSpecIndexed): the writer's pass, a settlement's room pass and the
+// reconciliation's alike.
 func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	own := ownVersion(artifactID, versions)
 	located := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL).Mentions(markdown)
@@ -497,6 +502,14 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	stated := indexing.Stated()
+	// A pass that states a requirement node of the issue marks the issue's spec its own where the
+	// issue is no view (markOwnSpecIndexed), whatever wrote the requirement. A plan that lost the
+	// revision fence states nothing, so it marks nothing.
+	if indexing.Won() {
+		if err := markOwnSpecIndexed(ctx, tx, record.Issue, blocks); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+	}
 	if tick && indexing.Won() || indexing.Marked() {
 		bound := missingVersionNodesBound
 		if tick {
