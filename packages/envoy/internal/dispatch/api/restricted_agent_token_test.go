@@ -338,11 +338,12 @@ func (r restrictedTokenRig) sessionToken(t *testing.T, machine machineLogin, dev
 
 // TestADelistedMembersTokenIsNotRenewed: once ACC's owner takes erin, a restricted member, off
 // ACC's access list, Dispatch owes the broker the revocation of every machine login she approved,
-// recorded in the removal's transaction, and the broker revocation loop's next pass pays it. Then
-// her agent's session token introspects not active, the broker refuses her device login's refresh
-// and every further trade of its token, the login is revoked in the broker's own rows, and the
-// debt is settled. A device login is not per project, so the removal from one project's list ends
-// all of hers, and she approves again for a project that still lists her.
+// recorded in the removal's transaction, and a pass of the broker revocation loop a minute on
+// (machineLoginSettleAfter) pays it. Then her agent's session token introspects not active, the
+// broker refuses her device login's refresh and every further trade of its token, the login is
+// revoked in the broker's own rows, and the debt is settled. A device login is not per project, so
+// the removal from one project's list ends all of hers, and she approves again for a project that
+// still lists her.
 //
 // The control runs on the same rig: carol, a full member, is put on ACC's list and taken off it
 // again, owes nothing, and her token stays active and her refresh is answered, so each refusal
@@ -377,6 +378,7 @@ func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
 			t.Fatalf("the revocation of %s's machine logins is owed %t (%v) after the removal, want %t", person, owed, err, want)
 		}
 	}
+	removalAged(t, r.database, machineLoginSettleAfter)
 	r.server.revokeBrokerDebts(ctx)
 	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || owed {
 		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after a pass, want it settled", owed, err)
@@ -482,9 +484,9 @@ func TestAnotherOwnersRemovalRevokesTheMembersLogins(t *testing.T) {
 // finds was approved before the removal, and one approved after the pass survives. alice takes erin
 // off ACC's list and puts her back before any pass of the broker revocation loop; erin's browser
 // approve of a new machine login is 409 MACHINE_LOGIN_REVOCATION_OWED and its login stays pending;
-// the pass revokes her login from before the removal, its session token introspecting not active,
-// and settles; her approve then is 200, and that login's token stays active and its refresh is
-// answered.
+// the pass a minute on (machineLoginSettleAfter) revokes her login from before the removal, its
+// session token introspecting not active, and settles; her approve then is 200, and that login's
+// token stays active and its refresh is answered.
 //
 // Control: relay a restricted member's approval while a revocation is owed (the owed read dropped
 // from relayMachineLoginApproval), and her first approve answers 200, named.
@@ -510,6 +512,7 @@ func TestAnApprovalWaitsForTheOwedRevocationAndItsLoginSurvives(t *testing.T) {
 		t.Errorf("erin's machine login whose approve was refused is %q, want pending", state)
 	}
 
+	removalAged(t, r.database, machineLoginSettleAfter)
 	r.server.revokeBrokerDebts(ctx)
 	if r.introspect(t, beforeToken).Active {
 		t.Errorf("erin's token from the login she approved before her removal introspects active after the pass, want it ended")

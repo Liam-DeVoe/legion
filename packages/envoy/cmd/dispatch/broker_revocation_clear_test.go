@@ -122,7 +122,8 @@ func TestTheMachineLoginRevocationMetricsCountTheOwedAndAgeTheOldest(t *testing.
 	if err != nil || len(claimed) != 1 || claimed[0].Email != erin {
 		t.Fatalf("Claim = %+v, %v; want erin's, the oldest", claimed, err)
 	}
-	if settled, err := revocations.Settle(ctx, claimed[0]); err != nil || !settled {
+	// The scrape is what this row reads, so the settlement needs no claim past the broker's bound.
+	if settled, err := revocations.Settle(ctx, claimed[0], 0); err != nil || !settled {
 		t.Fatalf("Settle(erin) = %t, %v; want it settled", settled, err)
 	}
 	scrape = scrapeMetrics(t, registry)
