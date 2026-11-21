@@ -365,6 +365,11 @@ const CLOSING_MARK = /[)\]"'\u201d\u2019]/u;
  *  the text stops. */
 const NUMBERED_LABEL = /^(\d+)\.(?=\s|$)/u;
 
+/** The second item of a list somewhere after its first: a full stop, any closing quote or
+ *  bracket after it, whitespace, then the numbered label `2.` before a space or where the text
+ *  stops. */
+const SECOND_ITEM = new RegExp(`\\.${CLOSING_MARK.source}*\\s+2\\.(?=\\s|$)`, "u");
+
 /**
  * How many characters of `text` its first sentence takes, its leading label included, or
  * undefined where `text` holds no sentence end. Every place that splits words into sentences
@@ -380,21 +385,26 @@ const NUMBERED_LABEL = /^(\d+)\.(?=\s|$)/u;
  * or exclamation mark before a word ends the sentence whatever the word is, in lower case too. A
  * full stop before a word in lower case ends an abbreviation (`e.g. in`), not the sentence, and
  * so does a full stop before a number (`see p. 4`), unless the number is a numbered label that
- * continues a list: digits and one full stop before whitespace or the end of the text, numbered
- * 1 or one more than the text's own leading label, where that label is digits and a full stop
- * (`2.`). Such a label starts the next sentence, so the full stop before it ends this one. Any
- * other number after a full stop is part of the sentence and the scan goes on past it, so
- * `as on p. 4. Then` ends at `4.`. A full stop before any other word, one in upper case or one
- * that opens with a symbol, ends the sentence.
+ * opens the next sentence. A numbered label (`NUMBERED_LABEL`) is digits and one full stop
+ * before whitespace or the end of the text, and after a full stop it opens a sentence in two
+ * cases: where its number is one more than the text's own leading label, where that label is
+ * digits and a full stop (a text that opens `1.` goes on at `2.`), and where its number is 1 and
+ * the same text, after this `1.`, holds a `2.` after a full stop, any closing quote or bracket
+ * and whitespace (`SECOND_ITEM`), since a list has two items. The full stop before such a label
+ * ends this sentence. Any other number after a full stop is part of the sentence and the scan
+ * goes on past it, so `as on p. 4. Then` ends at `4.` and `see fig. 1. It` ends at `1.`. A full
+ * stop before any other word, one in upper case or one that opens with a symbol, ends the
+ * sentence.
  *
- * The list rule misses a list that starts above 1 with no `1.` before it: `Do it now. 2. Then`
- * ends at `2.`, not at `now.`. Such a list is rarer than the page and figure numbers after a
- * full stop that the rule reads right.
+ * The list rule misses two lists. One starts above 1 with no `1.` before it: `Do it now. 2. Then`
+ * ends at `2.`, not at `now.`. The other is a list of one item after a sentence:
+ * `Two steps follow. 1. Open it.` ends at `1.`, not at `follow.`. Both are rarer than the page
+ * and figure numbers after a full stop that the rule reads right.
  */
 export function firstSentenceLength(text: string): number | undefined {
   const label = LEADING_LABEL.exec(text)?.[0] ?? "";
   const listed = NUMBERED_LABEL.exec(label);
-  const nextInList = listed === null ? 1 : Number(listed[1]) + 1;
+  const nextInList = listed === null ? undefined : Number(listed[1]) + 1;
   for (let at = label.length; at < text.length; at += 1) {
     const mark = text.charAt(at);
     if (mark !== "." && mark !== "?" && mark !== "!") continue;
@@ -409,8 +419,10 @@ export function firstSentenceLength(text: string): number | undefined {
     if (/^\p{Ll}/u.test(next)) continue;
     if (!/^\d/u.test(next)) return end;
     const numbered = NUMBERED_LABEL.exec(next);
-    const number = numbered === null ? undefined : Number(numbered[1]);
-    if (number === 1 || number === nextInList) return end;
+    if (numbered === null) continue;
+    const number = Number(numbered[1]);
+    if (number === nextInList) return end;
+    if (number === 1 && SECOND_ITEM.test(next.slice(numbered[0].length))) return end;
   }
   return undefined;
 }
@@ -421,7 +433,7 @@ export function firstSentenceLength(text: string): number | undefined {
  * near one. A sentence ends at a mark with any closing quote or bracket after it, where the words
  * stop or a word follows that the mark ends a sentence before: a question or exclamation mark
  * ends one before any word, and a full stop before a word in lower case (`e.g. in`), or before a
- * number that is no numbered label continuing a list (`see p. 4`), ends an abbreviation, not the
+ * number that is no list's numbered label (`see p. 4`), ends an abbreviation, not the
  * sentence. A leading label - a first word of at most five characters that ends in `.` and
  * holds a digit, as `R1.`, `12.` or `1.2.` - is part of the line and no sentence end, so a
  * statement's line runs on to the first sentence end after its label. A line held to the limit

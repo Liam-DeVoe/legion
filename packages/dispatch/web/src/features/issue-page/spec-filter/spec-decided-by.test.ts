@@ -684,16 +684,17 @@ test("a first sentence that opens with a numbered label holds the sentence after
 });
 
 // A number after a full stop starts the next sentence only where it continues a list.
-test("a numbered label continues a list from 1, and any other number after a full stop is part of the sentence", () => {
+test("a numbered label continues a list, and any other number after a full stop is part of the sentence", () => {
   expect(firstSentenceOf("Draw it whole, as on p. 4. Then more words follow.")).toBe(
     "Draw it whole, as on p. 4."
   );
   expect(firstSentenceOf("See fig. 3. It shows the cut.")).toBe("See fig. 3.");
   expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
-  expect(firstSentenceOf("Two steps follow. 1. Open it.")).toBe("Two steps follow.");
-  // The rule's known miss: a list that starts above 1 with no `1.` before it reads its first
-  // label as part of the sentence before it.
+  // The rule's two known misses, each reading a list's first label as part of the sentence
+  // before it: a list that starts above 1 with no `1.` before it, and a list of one item after a
+  // sentence, whose `1.` no `2.` follows.
   expect(firstSentenceOf("Do it now. 2. Then go.")).toBe("Do it now. 2.");
+  expect(firstSentenceOf("Two steps follow. 1. Open it.")).toBe("Two steps follow. 1.");
 });
 
 // R5: a person's first sentence ends where the issue's three sentences end one. A full stop

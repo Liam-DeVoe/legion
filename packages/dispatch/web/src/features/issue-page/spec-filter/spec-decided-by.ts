@@ -301,12 +301,13 @@ export function specDecidedBy({
  * ends a sentence before - and the whole text where it holds none, with no limit of characters
  * (R5). A question or exclamation mark ends the sentence before any word. A full stop before a
  * word in lower case (`e.g. in`), or before a number (`see p. 4`), ends an abbreviation, not the
- * sentence, unless the number is a numbered label that continues a list from 1 or from the
- * text's own leading label. Line breaks inside it are spaces, because the line it is drawn on is
- * one line. A leading label is no sentence end (`LEADING_LABEL`): a first word of at most five
- * characters that ends in `.` and holds a digit (`R1.`, `12.`) opens the sentence, as
- * `firstLineOf` reads one. The issue's three sentences and `firstLineOf` read the same sentence
- * end (`firstSentenceLength`), so the page splits the same words one way.
+ * sentence, unless the number is a list's numbered label: one more than the text's own leading
+ * label, or a 1 that a `2.` after a full stop follows in the same text, since a list has two
+ * items (`firstSentenceLength` states the rule). Line breaks inside it are spaces, because the
+ * line it is drawn on is one line. A leading label is no sentence end (`LEADING_LABEL`): a
+ * first word of at most five characters that ends in `.` and holds a digit (`R1.`, `12.`) opens
+ * the sentence, as `firstLineOf` reads one. The issue's three sentences and `firstLineOf` read
+ * the same sentence end (`firstSentenceLength`), so the page splits the same words one way.
  *
  * It is not `firstLineOf`, which cuts a row's first line at 100 characters (R1): a person's
  * answer is quoted word for word, and a sentence of theirs is as long as they wrote it.

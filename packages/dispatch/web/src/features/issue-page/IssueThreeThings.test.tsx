@@ -407,6 +407,23 @@ test("a sentence is not ended at an abbreviation that a number follows", () => {
   }
 });
 
+// The issue's three sentences read the same sentence end as a person's quote, so a full stop
+// that a page 1 follows ends an abbreviation, not a sentence, where no "2." follows it.
+test("a sentence is not ended at an abbreviation that 1 follows", () => {
+  const { lines, unmount } = bullets(
+    summaryNode("Draw it whole, as on p. 1. It fits a phone. Done when it ships.")
+  );
+  try {
+    expect(lines).toEqual([
+      "Draw it whole, as on p. 1.",
+      "It fits a phone.",
+      "Done when it ships.",
+    ]);
+  } finally {
+    unmount();
+  }
+});
+
 // R1: a leading label and the words after it with no end hold no sentence end, so the summary's
 // first line is its one sentence, with the label in it and not the label alone.
 test("a summary of a leading label and words with no end draws its first line", () => {
