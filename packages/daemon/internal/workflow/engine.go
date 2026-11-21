@@ -301,6 +301,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.signOff(ctx, tx, fact)
 	case intake.CloseRoot:
 		return e.closeRoot(ctx, tx, fact)
+	case intake.CloseChild:
+		return e.closeChild(ctx, tx, fact)
+	case intake.CloseRefused:
+		return e.closeRefused(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
 	case intake.CutoverMergerRepair:
@@ -470,6 +474,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		// backlog on Dispatch and write over that.
 		if err := e.store.DropStatusWrites(ctx, tx, issue.Key); err != nil {
 			return intake.Result{}, err
+		}
+		// A done on an issue whose close the daemon queued ends its run there (closeLanded):
+		// the close's echo, or a person's done that came first.
+		if fact.Status == "done" && issue.PendingClose != nil {
+			return intake.Result{}, e.closeLanded(ctx, tx, *issue)
 		}
 		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
 	}
@@ -2196,7 +2205,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
 	// An issue the daemon moves into retro or merging is accepted (record.Accepted), so it leaves
 	// R1's first condition, and every step of another root that waits on it as an ancestor ends
-	// its wait (dispatch://INFRA-3320). A step that stands open on it stays open (R3).
+	// its wait (dispatch://INFRA-3320). A step standing open on its approval of a root still in
+	// Legion's work ends too, unregistered, so that root's architect registers it again (endOpenOn).
 	if record.Accepted(issue) {
 		if err := e.endPendingOn(ctx, tx, issue.Key, fmt.Sprintf("The daemon moved %s into %s, so %s is accepted.", issue.Key, row.To, issue.Key)); err != nil {
 			return err

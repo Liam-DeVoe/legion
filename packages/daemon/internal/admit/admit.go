@@ -1374,6 +1374,27 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	return wrote, nil
 }
 
+// dueCloses asks the engine, of every issue of this project that carries a close the daemon
+// queued or awaits its merge (workflow.ClosePassCandidate), whether its close is due on this
+// pass's copy (workflow.Engine.WriteDueClose, R24 of dispatch://INFRA-3320), and answers whether
+// it queued one. A close it queues is a status write and moves no issue into or out of any slot
+// or line, but it marks the issue's record (record.Issue.PendingClose), so the pass reads the
+// records again before any later step writes one.
+func (a *Admission) dueCloses(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) (bool, error) {
+	wrote := false
+	for _, issue := range issues {
+		if issue.Project != a.project || !workflow.ClosePassCandidate(issue) {
+			continue
+		}
+		queued, err := a.engine.WriteDueClose(ctx, tx, issue, facts.Chains)
+		if err != nil {
+			return wrote, fmt.Errorf("queue the close %s owes: %w", issue.Key, err)
+		}
+		wrote = wrote || queued
+	}
+	return wrote, nil
+}
+
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
 // holds after the change, and the cap.
 func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int) {
@@ -1470,6 +1491,18 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, nil, err
 	}
 	if waited {
+		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
+			return 0, nil, err
+		}
+	}
+	// A close the daemon owes once each Dispatch child of its issue is done is queued on the first
+	// pass whose copy shows them so (dueCloses): a close Dispatch refused, and a merged issue that
+	// waits in merging for a child the daemon records nothing of, whose done no departure reads.
+	closed, err := a.dueCloses(ctx, tx, issues, facts)
+	if err != nil {
+		return 0, nil, err
+	}
+	if closed {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, nil, err
 		}

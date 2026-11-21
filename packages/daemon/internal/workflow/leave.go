@@ -45,11 +45,10 @@ import (
 // (tellRestingLeft).
 //
 // The departure may be the last one a merged issue above it waited for: an issue whose pull
-// request merged stands in merging while any issue under it is in the workflow (closeMerged), and
-// closes once the last of them leaves (closeAwaitingMerge), so the leave reads again the wait of
-// every merged issue above it on the Dispatch chain. Each such record is read again rather than
-// taken from a snapshot, because closing the nearest one leaves (transition's own leave) and may
-// close the ones above it on the way.
+// request merged stands in merging while a Dispatch child of it is not done (closeMerged), and
+// queues its close once the last of them is done (closeAwaitingMerge), so a done reads again the
+// wait of every merged issue above it on the Dispatch chain. The close queued is a status write
+// alone, which moves no record (closeLanded waits for Dispatch's done).
 //
 // An issue whose own lifecycle the operator holds (record.OperatorHolds) has claims, a pod and a
 // cleanup that are the operator's, which share the issue's tokens and names, so nothing of them is
@@ -201,13 +200,12 @@ func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.
 	return e.openCheck(ctx, tx, issue, *pr, wake)
 }
 
-// closeAwaitingMerge closes merged when its own merge was waiting on the issues beneath it: an
-// issue whose pull request merged stands in merging (or held from it) while any issue
-// beneath it is in the workflow (closeMerged), and closes, as its merge would have, once the
-// last of them leaves. Which issues still hold it is closeMerged's to judge, so this runs on
-// every merged ancestor of an issue that leaves the workflow and changes nothing for any other.
-// It tells nobody: the architect heard the wait when the close entered it (merged), and this
-// path is walked at every departure.
+// closeAwaitingMerge queues the close of merged when its own merge was waiting on its children: an
+// issue whose pull request merged stands in merging (or held from it) while a Dispatch child of it
+// is not done (closeMerged), and queues its close once the last of them is done. Which children
+// still hold it is closeMerged's to judge, so this runs on every merged ancestor of an issue that
+// leaves the workflow and changes nothing for any other. It tells nobody: the architect heard the
+// wait when the close entered it (merged), and this path is walked at every departure.
 func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged record.Issue) error {
 	if !awaitsMerge(merged) {
 		return nil
@@ -220,7 +218,7 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 	if err != nil || len(waiting) > 0 {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a merged issue closes once the last issue beneath it left the workflow", "issue", merged.Key, "pullRequest", pr.Number)
+	e.logOnCommit(ctx, "workflow: a merged issue's close is queued once its last child not done is done", "issue", merged.Key, "pullRequest", pr.Number)
 	return nil
 }
 

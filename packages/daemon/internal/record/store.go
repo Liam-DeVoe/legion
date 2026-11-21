@@ -2131,6 +2131,14 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	return nil
 }
 
+// DeleteGate removes issue's gate row of step (Store.DeleteGate).
+func (s *Postgres) DeleteGate(ctx context.Context, tx pgx.Tx, issue string, step DesignStep) error {
+	if _, err := tx.Exec(ctx, "delete from design_gates where issue = $1 and step = $2", issue, string(step.OrSpec())); err != nil {
+		return fmt.Errorf("delete the %s gate of %s: %w", step.OrSpec(), issue, err)
+	}
+	return nil
+}
+
 // A row keeps a decline as three columns and Go as one optional value (RootAsk.Decline): declined
 // is the column that says there is one, and the note and the words are its two parts, each null
 // where Dispatch recorded none. The scan below builds the value from the three, and the write

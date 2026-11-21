@@ -334,10 +334,11 @@ type Issue struct {
 	// the `todo` that puts it back in work then opens a new run of it rather than resuming the one
 	// the park stopped. False for every other record.
 	ParkedByArchitect bool
-	// PendingClose is a close of the issue Dispatch refused because a child of it was not done
-	// (R24 of dispatch://INFRA-3320): the decision pass writes the close again once Dispatch's
-	// copy shows each child the issue then has done. Nil for every other record; the close that
-	// lands clears it.
+	// PendingClose is a close of the issue the daemon queued and Dispatch has not yet shown done
+	// (R24 of dispatch://INFRA-3320): the close paths write it with the close row, Dispatch's
+	// refusal of that row because a child of the issue was not done marks it refused, and the
+	// decision pass writes a refused close again once Dispatch's copy shows each child the issue
+	// then has done. Nil for every other record; the close that lands clears it.
 	PendingClose *PendingClose
 	// SeenSeq is the newest Dispatch sequence of the issue whose event the daemon's consumer has
 	// handled or dropped, whatever its kind: a message moves it as an update does, where
@@ -348,15 +349,17 @@ type Issue struct {
 	SeenSeq int64
 }
 
-// PendingClose is one close of an issue Dispatch refused while a child of it was not done: the
-// run (Generation) and the phase entry (Entry) the close was decided at, which path decided it
-// (Kind: the merge's close, close_root or close_child) and the reason the close writes with
-// it. A pass that writes it again acts only at that same run and entry.
+// PendingClose is one close of an issue the daemon queued: the run (Generation) and the phase
+// entry (Entry) the close was decided at, which path decided it (Kind: the merge's close or
+// close_root), the reason the close writes with it, and whether Dispatch refused the row because
+// a child of the issue was not done (Refused). A pass that writes it again acts only at that same
+// run and entry.
 type PendingClose struct {
 	Generation uint64 `json:"generation"`
 	Entry      int64  `json:"entry"`
 	Kind       string `json:"kind"`
 	Reason     string `json:"reason"`
+	Refused    bool   `json:"refused,omitempty"`
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -2322,6 +2325,10 @@ type Store interface {
 	// ancestor's document and version and the daemon's time of the registration, and a pending
 	// one its request, or the write is refused.
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// DeleteGate removes issue's gate row of step, which leaves that step unregistered: what an
+	// open basis ends in once its ancestor is done or accepted (workflow's endOpenBasis). It
+	// publishes nothing; the caller does (PublishChangedGates).
+	DeleteGate(ctx context.Context, tx pgx.Tx, issue string, step DesignStep) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,

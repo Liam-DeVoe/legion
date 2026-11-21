@@ -807,15 +807,14 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // personHandoverQueues says whether fact is a person's approval that queues its root as the
 // person's handover: an approval (not a changes request or a version) that Dispatch names a
 // person as having made (Actor.Person()), of the primary document of a root — no parent — that
-// carries the legion label and is parked (backlog or icebox), whose tree is not live. The approval
-// is the person's newer act than the park: a person who approves a parked labelled root's spec
-// wants it run, whoever parked it and whether or not it ran before. An unrecorded root is queued
-// by the write; a recorded root whose tree finished is re-admitted by it as a new generation, as a
-// person's own todo re-admits one today, and its tree lingering or long closed makes no
-// difference. A root whose tree is live — its lifecycle stands open under the workflow, or it
-// waits in the line for its tree to be opened, or it waits on a person —
-// is not queued, whatever Dispatch shows: its gate takes the approval as today, and the park's own
-// event, when the daemon applies it, takes the tree out (leave).
+// carries the legion label and is parked (backlog or icebox), and that is not in Legion's work
+// (record.InLegionsWork). The approval is the person's newer act than the park: a person who
+// approves a parked labelled root's spec wants it run, whoever parked it and whether or not it ran
+// before. An unrecorded root is queued by the write; a recorded one returns to work by the todo
+// the write makes, as a person's own todo returns it (ReturnToWork, NewRun's three cases). A root
+// still in Legion's work — its record not yet out of work, whatever Dispatch shows — is not
+// queued: its gate takes the approval as today, and the park's own event, when the daemon applies
+// it, takes it out (leave).
 //
 // The decision reads Dispatch's view of the issue (fact.Issue), which the daemon's prepare stage
 // sets for a person's non-carried approval and nothing else: a nil view — the gate seed's or the
@@ -850,11 +849,7 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 	if stored == nil {
 		return true, nil
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *stored)
-	if err != nil {
-		return false, err
-	}
-	return !live, nil
+	return !record.InLegionsWork(*stored), nil
 }
 
 // copyTakes says whether a carried copy of another root's gate takes an event of that root's

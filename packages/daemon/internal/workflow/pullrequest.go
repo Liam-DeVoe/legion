@@ -432,10 +432,10 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 }
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
-// request finds issues beneath it still in the workflow (for a root, the rest of its tree): the
-// close is waiting, and for whom.
+// request finds a Dispatch child of the issue not done: the close is waiting, and for which
+// children, each with its status (childrenNotDone).
 func waitingForTree(issue string, number int, waiting []string) string {
-	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow; %s closes once the last of them leaves. Park one with park_child "+parkRule+", and say in a comment which of those it is",
+	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for these children of it, which are not done: %s. Dispatch closes an issue only once each of its children is done, so %s stays in merging and closes once each of them is done. Run each one to done, or close or park one with close_child or park_child "+parkRule+", and say in a comment which of those it is",
 		number, issue, strings.Join(waiting, ", "), issue)
 }
 
@@ -455,39 +455,41 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 		Reason: waitingForTree(issue.Key, pr.Number, waiting)})
 }
 
-// closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
-// upgrade's data move left, which the close clears), on its merged pull request pr, and reports
-// the issues it waited for instead, empty when it closed. The close is the table's row to done
-// (transition), which leaves: the close retires five of its claims and opens its production check
-// in the live session of the role the project's `production_check` names, and retires all six and
-// opens no check where that setting is off (leave). An issue out of Legion's work moves no phase
-// (transition): its merge stays recorded, and its return to work closes it (ReturnToWork). The
-// boot's sweep closes a migrated issue the same way (booted).
+// closeMerged queues the close of issue, which awaits its merge in merging (or is held from
+// merging, a hold the upgrade's data move left, which the close clears), on its merged pull
+// request pr, and reports the Dispatch children it waited for instead, each with its status, empty
+// when it queued the close. The close is a status write alone (writeClose): the issue stays in
+// merging until Dispatch shows it done, then moves to done and leaves (closeLanded), which retires
+// five of its claims and opens its production check in the live session of the role the
+// project's `production_check` names, and retires all six and opens no check where that setting is
+// off (leave). An issue out of Legion's work queues nothing: its merge stays recorded, and its
+// return to work closes it (ReturnToWork). The boot's sweep closes a migrated issue the same way
+// (booted).
 //
-// A merged issue's close waits for the issues beneath it, on the one set both acceptance rules
-// read (OpenBeneath): the issues whose chain reaches it, whose merges its own head is meant to
-// carry. The set leaves out an issue the daemon itself holds at admitted beneath this one —
-// without that the two would wait on each other for ever, as OpenBeneath's own comment sets out.
-// The departure of any of them re-reads this wait (leave's closeAwaitingMerge), so the close
-// happens as soon as the last one leaves.
+// A merged issue's close waits for each Dispatch child of it that the copy shows not done (R24 of
+// dispatch://INFRA-3320, childrenNotDone), in icebox or the backlog included, since Dispatch
+// refuses the close of a parent over any such child. The departure of a child the daemon records
+// reads this wait again (leave's closeAwaitingMerge), and so does every decision pass
+// (WriteDueClose), which sees a child the daemon records nothing of reach done, so the close is
+// queued as soon as the last child is done.
 func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) ([]string, error) {
 	// An issue held from merging is awaiting its merge still (awaitsMerge, the one
 	// predicate written over that wait), and the close goes on from the phase itself, so every
 	// row below reads one shape.
-	if !awaitsMerge(issue) {
+	if !awaitsMerge(issue) || !record.InLegionsWork(issue) {
 		return nil, nil
 	}
 	issue.Phase, issue.Hold = phase.Merging, nil
-	waiting, err := e.openBeneath(ctx, tx, issue)
+	waiting, err := e.childrenNotDoneOf(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
 	if len(waiting) > 0 {
-		e.logOnCommit(ctx, "workflow: a merged issue's close waits for the issues beneath it", "issue", issue.Key,
+		e.logOnCommit(ctx, "workflow: a merged issue's close waits for its children that are not done", "issue", issue.Key,
 			"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 		return waiting, nil
 	}
-	return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+	return nil, e.writeClose(ctx, tx, issue, closeKindMerge, "")
 }
 
 // closed records the pull request closed unmerged, which a re-admitted generation drops, and tells

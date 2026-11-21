@@ -132,8 +132,10 @@ func projectChains(t *testing.T, pool *pgxpool.Pool, keys ...string) *record.Cha
 	return chains
 }
 
-// A6. close_root is refused the same way and with the same code: the close lingers the whole
-// tree, which would stop every issue beneath mid-turn.
+// A6. close_root is refused the same way and with the same code while an issue beneath is in the
+// workflow, and after R8's codes while a Dispatch child of it is not done (R24 of
+// dispatch://INFRA-3320: CHILDREN_NOT_DONE), a child on the backlog included; once the child is
+// done the close is queued, and the root keeps its phase until Dispatch shows it done.
 func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -156,10 +158,18 @@ func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	assertPhase(t, pool, phase.Admitted)
 
 	leave(t, pool, "LEGION-209", phase.Admitted, "backlog")
-	if result := closeNow("close-accepted"); result.Refusal != nil {
-		t.Fatalf("close_root once the issue beneath left = %+v, want it accepted", result.Refusal)
+	result = closeNow("close-backlog")
+	if result.Refusal == nil || result.Refusal.Code != "CHILDREN_NOT_DONE" || !strings.Contains(result.Refusal.Message, "LEGION-209 (backlog)") {
+		t.Fatalf("close_root with a child on the backlog = %+v, want 409 CHILDREN_NOT_DONE naming LEGION-209 (backlog)", result.Refusal)
 	}
-	assertPhase(t, pool, phase.Done)
+	assertOutboxCount(t, pool, "dispatch_status", 0)
+
+	leave(t, pool, "LEGION-209", phase.Done, "done")
+	if result := closeNow("close-accepted"); result.Refusal != nil {
+		t.Fatalf("close_root once the child is done = %+v, want it accepted", result.Refusal)
+	}
+	assertPhase(t, pool, phase.Admitted)
+	assertOutboxCount(t, pool, "dispatch_status", 1)
 }
 
 // A6. A person's move of an issue to todo beneath an ancestor the daemon has already accepted is

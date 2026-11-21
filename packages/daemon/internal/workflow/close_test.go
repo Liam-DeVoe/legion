@@ -19,7 +19,8 @@ import (
 
 // A child leaving Legion's work ends only the child (R20 of dispatch://INFRA-3320): here the root is
 // mid-implementation when its child's pull request merges, or a human moves the child out of work.
-// The merge closes the child into phase done; a human's move keeps its phase. The root keeps its
+// The merge queues the child's close, and Dispatch's done on it closes the child into phase done;
+// a human's move keeps its phase. The root keeps its
 // phase, no deadline is armed, none of its claims is stopped, and the architect above is told which
 // child left and how. What the child's claims get is the status's: a child closed as done by a
 // human has every claim closed (issue_close); one closed at its merge has five claims closed and
@@ -57,6 +58,9 @@ func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
 			result, err := intake.ApplyFact(context.Background(), pool, "api", "child-leaves", tc.fact, engine, admissionStub{})
 			if err != nil || result.Refusal != nil {
 				t.Fatalf("ApplyFact = %#v, %v", result, err)
+			}
+			if tc.check {
+				landClose(t, pool, engine, "LEGION-209")
 			}
 			var rootPhase phase.Phase
 			var lingering bool
@@ -345,7 +349,8 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 }
 
 // The record keeps whether its pull request merged or closed, whatever phase the issue is in, so a
-// re-admitted generation drops a finished pull request and keeps an open one.
+// re-admitted generation drops a finished pull request and keeps an open one. A merge in merging
+// queues the close and leaves the issue in merging until Dispatch shows it done (closeMerged).
 func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -354,7 +359,7 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 		want  record.PullRequestState
 		phase phase.Phase
 	}{
-		{name: "merged when merging", at: phase.Merging, fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, want: record.PullRequestMerged, phase: phase.Done},
+		{name: "merged when merging", at: phase.Merging, fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, want: record.PullRequestMerged, phase: phase.Merging},
 		{name: "merged early", at: phase.Reviewing, fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, want: record.PullRequestMerged, phase: phase.Reviewing},
 		{name: "closed unmerged", at: phase.Reviewing, fact: intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42}, want: record.PullRequestClosed, phase: phase.Reviewing},
 	} {

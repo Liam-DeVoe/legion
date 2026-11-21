@@ -14,9 +14,11 @@ import (
 // closeRoot ends a tree its root architect closes before the tree's first phase starts: a human
 // decided no change at the design gate, or the issue is moot. sign_off
 // needs the production check and a backward move a phase worker, so without this only a human's
-// status write could end such a tree. The close writes done to Dispatch with the architect's
-// reason, which the write posts on the issue first, and leaves as any close does (leave); the
-// admission slot is released in the same fact.
+// status write could end such a tree. The close queues done to Dispatch with the architect's
+// reason, which the write posts on the issue first (writeClose), and the root keeps its phase, its
+// claims and its slot until Dispatch shows it done: it then moves to phase done and leaves as any
+// close does (closeLanded). A close Dispatch refuses changes nothing and is written again once
+// each child the root then has is done (closeRefused, WriteDueClose).
 //
 // It is refused, as the sign-off is and with the same code, while any issue beneath the root is
 // still in the workflow (OpenBeneath): the close would close their parent under those issues
@@ -25,9 +27,10 @@ import (
 // creates, so this is the common case rather than a corner of it. Past that, it is refused as the
 // sign-off is, in the same order (acceptanceHeld, dispatch://INFRA-3320 R8), while a root whose
 // step rests on the root's approval is still in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW),
-// and then while a Dispatch child of the root is open (SIGNOFF_CHILD_OPEN). A child filed and never
-// released is open, so a root at admitted with only such children closes once each of them is
-// closed or in icebox, which the refusal says.
+// and then while a Dispatch child of the root is open (SIGNOFF_CHILD_OPEN). After R8's codes it is
+// refused while a Dispatch child of the root is not done (CHILDREN_NOT_DONE, R24): Dispatch closes
+// an issue only once each of its children is done, so a child in icebox or the backlog holds the
+// close as an open one does.
 //
 // A root waiting on a person (phase.AwaitingPerson) closes the same way, because it has started
 // no phase either: a root reaches that phase only from admitted, and it is where the answer
@@ -63,11 +66,14 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		return refused(held.code, fmt.Sprintf("%s is not closed while these Dispatch children of it are open: %s. A parent closes after its children. Close or icebox each child that was never released "+parkRule+", say in a comment which of those it is, and close the tree again. A child that runs as a tree of its own is moved by its own architect or a person. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer",
 			root.Key, held.names)), nil
 	}
-	if err := e.enqueue(ctx, tx, root.Key, record.CloseStatusWrite("done", root.Status, fact.Message(), root.Generation)); err != nil {
+	open, err := e.childrenNotDoneOf(ctx, tx, *root)
+	if err != nil {
 		return intake.Result{}, err
 	}
-	root.Status = "done"
-	return intake.Result{}, e.leave(ctx, tx, *root, "done")
+	if len(open) > 0 {
+		return childrenNotDoneRefusal("close_root", root.Key, open), nil
+	}
+	return intake.Result{}, e.writeClose(ctx, tx, *root, closeKindRoot, fact.Message())
 }
 
 // closableAtPhase says whether a root at this phase has started no phase of its tree, which is

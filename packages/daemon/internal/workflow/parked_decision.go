@@ -71,9 +71,9 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // the outbox's parkDecision): each decision's ref, kind and author, newest first, so the architect
 // reads what brought it back, as ResumeAwaitedRoot names an answered root's answer. Admission's
 // start carries it as its task; every later launch's ready (claimReady: a relaunch, `legion claims
-// retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
-// approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
-// person approved a version the spec has since moved past), it also names both versions, so the
+// retry`) adds what was kept since to its catch-up. When the new run found the root's spec
+// approved at a version below its latest (Store.KeepReadmittedApproval: a person approved a
+// version the spec has since moved past), it also names both versions, so the
 // architect requests approval of the latest; never under gates.design off, which asks no person.
 //
 // What it may name is what root's tree is owed now: every row whose issue stands in that tree and

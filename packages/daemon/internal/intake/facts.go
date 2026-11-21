@@ -1214,6 +1214,39 @@ func (f CloseRoot) Message() string {
 	return "Closed by its architect before its first phase: " + f.Reason
 }
 
+// CloseChild is an architect closing, with the reason it gives, an issue under its own on the
+// Dispatch chain that the daemon holds no record of: one filed and never released, which no
+// phase of Legion's ran (R24 and R26 of dispatch://INFRA-3320). Architect is the caller's
+// architect claim token (workflow's closeChild).
+type CloseChild struct {
+	Issue     string
+	Reason    string
+	Architect claim.Token
+}
+
+func (f CloseChild) namedIssue() (string, bool) { return f.Issue, true }
+
+// Message is what the close posts on the issue: that the architect above it closed it, and the
+// reason it gave.
+func (f CloseChild) Message() string {
+	return "Closed by the architect above it: " + f.Reason
+}
+
+// CloseRefused is Dispatch's refusal of a close the daemon queued (record.Issue.PendingClose)
+// because a child of the issue is not done (PARENT_STATUS_CONFLICT, R24 of
+// dispatch://INFRA-3320): the run (Generation) and the phase entry (Entry) the close row was
+// queued at, and the issues Dispatch's refusal named, each with the status Dispatch gave it
+// ("KEY (status)"), or the bare key where it gave none. Its one sender is the outbox's status
+// executor, which reads the refusal off a close row (the daemon's (*outbox).status).
+type CloseRefused struct {
+	Issue      string
+	Generation uint64
+	Entry      int64
+	Children   []string
+}
+
+func (f CloseRefused) namedIssue() (string, bool) { return f.Issue, true }
+
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
 // the supervisor has one, so workflow notices can say what failed after a daemon restart. Death is
 // why the claim's process was last found gone and StartFailure why its last start did not produce

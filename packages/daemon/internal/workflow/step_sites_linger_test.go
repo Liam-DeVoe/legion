@@ -12,13 +12,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A merge event closes a held merging phase too, both in a live tree and after its root parks.
-// Calling closeMerged directly would miss the event handler's choice of which phases it closes.
+// A merge event closes a held merging phase too, both in a live tree and under a root a person
+// moved out of work, once Dispatch shows the close done. Calling closeMerged directly would miss
+// the event handler's choice of which phases it closes.
 func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 	for _, lingering := range []bool{false, true} {
 		name := "live tree"
 		if lingering {
-			name = "lingering tree"
+			name = "root out of work"
 		}
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -32,6 +33,7 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 					Status: "backlog", Title: "root", Rank: "U"})
 			}
 			apply("merge-held", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
+			landClose(t, pool, engine, "LEGION-209")
 			writes := stepWrites(t, pool, "LEGION-209")
 			if len(writes) != 3 || !isStart(writes[1]) || writes[1].Kind != "merge" || writes[2].ID != writes[1].ID {
 				t.Fatalf("held merge writes = %+v, want the retro's end, the merge's start and its matching end", writes)

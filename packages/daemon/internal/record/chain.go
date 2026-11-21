@@ -173,6 +173,16 @@ func (c *Chains) inWork(key string) bool {
 	return recorded && InLegionsWork(*issue)
 }
 
+// Status is the Dispatch status of key as the copy holds it, and whether the read holds a present
+// row of key: a key on a chain it walked or a key it started from.
+func (c *Chains) Status(key string) (string, bool) {
+	row, read := c.rows[key]
+	if !read || !row.Present {
+		return "", false
+	}
+	return row.Status, true
+}
+
 // Chain is key's links from its parent up as the copy holds them, and whether the chain is known:
 // it is unknown where the copy holds no row of one of its issues, where a key repeats, or where it
 // is longer than MaxChainLinks, and an unknown chain names its cause and the link it stopped at.
