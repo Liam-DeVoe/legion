@@ -11,14 +11,16 @@ body: |-
   text no longer hashes to sha256.
   Every version write stores the tree its markdown was rendered from when that tree holds an insert
   suggestion's mark, in the new nullable column artifact_versions.insert_tree (migration
-  20261120213507), which the read masks by the mark's id. The end of a kept related-item check
-  that listed the document while the insert stood, and the record of the comments whose words an
-  answer run read, read insert_tree too (docs.InsertMarkPath, docs.InsertMarkIDsPath), so the
-  insert's delete ends that answer and withdraws that run. The delete of a comment whose pending
-  insert it rejects also writes the document's next version, without the words, in its own
-  transaction (docs.SettleVersion), so no store built from the latest version - search, the
-  related-item check, a block's latest text and name - gives them once the delete commits. A
-  version stored before this release holds no such tree and is read as stored.
+  20261120213507), which the read masks by the mark's id; the version an upload that changes
+  nothing stores keeps the live tree the upload found. The end of a kept related-item check that
+  listed the document under a key claimed once the insert's comment was made, whenever the delete
+  came, and the record of the comments whose words an answer run read, read insert_tree too
+  (docs.InsertMarkPath, docs.InsertMarkIDsPath), so the insert's delete ends that answer and
+  withdraws that run. The delete of a comment whose pending insert it rejects also writes the
+  document's next version, without the words, in its own transaction (docs.SettleVersion), so no
+  store built from the latest version - search, the related-item check, a block's latest text and
+  name - gives them once the delete commits. A version stored before this release holds no such
+  tree and is read as stored.
 time: 2026-11-20T21:35:07Z
 custom:
     Issue: pr3512

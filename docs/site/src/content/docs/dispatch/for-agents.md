@@ -403,11 +403,13 @@ the command never makes a write twice. A repeat of a comment's or an issue messa
 broadcast or a message to a session is answered with what the write made, read now; a repeat of a
 comment's edit, resolve, reopen, accept, reject or reply, or of an issue message's edit or reply,
 with that post as it stands now. Any other repeat gets the first answer, or, where Dispatch gives
-no copy (a first answer over 1 MiB, or a success holding a comment or an issue message deleted
-since, or a document version a delete renamed), the first answer's status and the code
-`ANSWER_NOT_KEPT`. When the write landed but Dispatch has no answer to give for it
-(`409 KEY_COMMITTED`, or a replayed answer reading `ANSWER_NOT_KEPT`), the command exits 0 and says
-it was made: read it back to see it. A call that writes nothing (`dispatch related`, the check an
+no copy (a first answer over 1 MiB, a success holding a comment or an issue message deleted since
+or a document version a delete renamed, or one naming a document in which a comment's insert
+suggestion, deleted since, stood when the answer was stored or before, so it may hold that
+suggestion's words), the first answer's status and the code `ANSWER_NOT_KEPT`. When the write
+landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed answer
+reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
+call that writes nothing (`dispatch related`, the check an
 upload runs first) is asked once more under a new key, and exits 1 if Dispatch keeps no answer
 again. When an attempt may have reached Dispatch and the command got no answer Dispatch's keyed
 layer gave (no attempt answered, a page something in Dispatch's place wrote, a 2xx that is empty,

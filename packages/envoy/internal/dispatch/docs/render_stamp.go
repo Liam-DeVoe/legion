@@ -19,9 +19,9 @@ import (
 // insert itself (RenderStampHead, RenderStampValues), so it is the head that insert's own appends
 // left.
 //
-// Token and Renderer are nil together: for a write holding no tree of the markdown it stores - an
-// upload whose replacement changed nothing writes no tree - and for a tree holding a value no
-// token encodes. The row then carries no token and no renderer version, and every read of it
+// Token and Renderer are nil together: for a write holding no tree of the markdown it stores, for
+// an upload whose replacement changed nothing (unchangedStampOf), and for a tree holding a value
+// no token encodes. The row then carries no token and no renderer version, and every read of it
 // renders the document, as a read of a version written before the stamp existed does.
 //
 // InsertTree is that same tree as pmdoc's JSON when it holds an insert suggestion's mark, and nil
@@ -71,6 +71,13 @@ func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 		renderer := pmdoc.RendererVersion
 		stamp.Token, stamp.Renderer = &token, &renderer
 	}
+	stamp.InsertTree = insertTreeOf(artifactID, tree)
+	return stamp
+}
+
+// insertTreeOf is tree's insert tree (InsertTree), the value a version write of tree stores in
+// artifact_versions.insert_tree.
+func insertTreeOf(artifactID string, tree *pmdoc.Node) []byte {
 	insertTree, err := InsertTree(tree)
 	if err != nil {
 		// The tree rendered, so its JSON fails only on a value encoding/json refuses, as the
@@ -79,8 +86,23 @@ func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 		slog.Warn("dispatch: a document version holding an insert suggestion stored no insert tree",
 			"artifact", artifactID, "error", err)
 	}
-	stamp.InsertTree = insertTree
-	return stamp
+	return insertTree
+}
+
+// unchangedStampOf is the render stamp of a version storing the markdown tree renders as, where
+// tree is the live tree a write that changed nothing read: an upload of the text the document
+// already holds (ReplaceText). That write records no operation, so this transaction holds no tree
+// it wrote (writtenRendering), and its version's markdown is tree's rendering all the same, words
+// of a pending insert included, so the version stores tree's insert tree (InsertTree), by which
+// every read of it masks them (MaskedVersionText).
+//
+// It stores no token and no renderer version. The write appended nothing, so it stored none of the
+// room's updates its read holds ahead of the store (Ledger.flushThrough), and the head the insert
+// reads (RenderStampValues) need not be the state tree is of: a token beside that head would vouch
+// to a text read (storedText) for a state the store may never hold, should the room fail before it
+// stores them. The insert tree is the version's own markdown's, whatever the head.
+func unchangedStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
+	return RenderStamp{InsertTree: insertTreeOf(artifactID, tree)}
 }
 
 // RenderStampOf is the render stamp of a version row storing markdown, for a caller that writes
@@ -88,10 +110,15 @@ func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 // spec (api/artifacts.go, api/issue_create.go). It stamps the tree this transaction's write of
 // artifactID left, and only where that tree is what markdown was rendered from, as
 // IndexDocumentReferences shares the write's rendering only where it is the version's markdown.
-// Any other markdown takes the empty stamp.
+// An upload that changed nothing left no tree, and takes the stamp its write kept of the live tree
+// it found rendering as markdown (unchangedStampOf, Ledger.wroteUnchanged). Any other markdown
+// takes the empty stamp.
 func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 	rendered := l.writtenRendering(artifactID)
 	if rendered.tree == nil || rendered.markdown != markdown {
+		if kept, held := l.unchanged[artifactID]; held && kept.markdown == markdown {
+			return kept.stamp
+		}
 		return RenderStamp{}
 	}
 	return renderStampOf(artifactID, rendered.tree)

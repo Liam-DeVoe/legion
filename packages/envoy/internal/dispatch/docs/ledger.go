@@ -86,6 +86,11 @@ type Ledger struct {
 	// of the same request that reads that markdown again shares the parse (ReadBackOf). Discard
 	// drops them when the request ends: each is a whole parsed tree of its document.
 	readBacks map[string]pmdoc.WrittenReadBack
+	// unchanged holds, per document this transaction replaced whole with the text it already held
+	// (ReplaceText), the markdown that write found the live tree rendering as, which its version
+	// stores, with the stamp of that tree (unchangedStampOf): the write recorded no operation, so
+	// writtenRendering holds no tree of it, and RenderStampOf answers this stamp instead.
+	unchanged map[string]unchangedWrite
 	// copies are the documents showing a copy of an ask this transaction answered or resolved,
 	// whose settlement it marked owed (SettleCopiesOf); Commit arms each once it has committed.
 	copies []string
@@ -484,7 +489,9 @@ func (l *Ledger) queuedAskAuthors(artifactID string, authors map[string]model.Ac
 // The row records what its markdown was rendered from (RenderStampOf), the tree this
 // transaction's own write of the document left where that tree is what markdown came from, so a
 // text read of a document still standing there serves the stored markdown rather than rendering
-// the document again.
+// the document again. An upload that changed nothing left no tree, and the row records the insert
+// tree of the live tree it found (unchangedStampOf), so every read of it masks a deleted pending
+// insert's words.
 func (l *Ledger) QueueVersion(ctx context.Context, artifactID, markdown string, authors []model.Actor, summary *string) (model.Version, error) {
 	if l.writer == nil {
 		return model.Version{}, errUnjoined
@@ -1522,6 +1529,27 @@ func (l *Ledger) wroteReadBack(artifactID string, read pmdoc.WrittenReadBack) {
 		l.readBacks = make(map[string]pmdoc.WrittenReadBack)
 	}
 	l.readBacks[artifactID] = read
+}
+
+// unchangedWrite is what a write of a document's whole text that changed nothing kept for the
+// version it stores (Ledger.wroteUnchanged): the markdown the live tree it read renders as, and
+// the render stamp of that tree (unchangedStampOf).
+type unchangedWrite struct {
+	markdown string
+	stamp    RenderStamp
+}
+
+// wroteUnchanged records that this transaction's write of artifactID's whole text changed nothing
+// (ReplaceText): the live tree it read renders as markdown, and stamp is that tree's
+// (unchangedStampOf), which RenderStampOf answers for a version storing markdown.
+func (l *Ledger) wroteUnchanged(artifactID, markdown string, stamp RenderStamp) {
+	if l == nil {
+		return
+	}
+	if l.unchanged == nil {
+		l.unchanged = make(map[string]unchangedWrite)
+	}
+	l.unchanged[artifactID] = unchangedWrite{markdown: markdown, stamp: stamp}
 }
 
 // ReadBackOf is markdown's tree, read back by this transaction's own write of artifactID while it

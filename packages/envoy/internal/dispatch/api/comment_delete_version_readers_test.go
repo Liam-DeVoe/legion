@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -204,6 +205,66 @@ func TestAKeptRelatedCheckFromWhileAnInsertStoodIsNotReplayedAfterItsDelete(t *t
 	if kept.Code != before.Code || !replayed(kept) || kept.Body.String() != before.Body.String() {
 		t.Errorf("the repeat of the check kept before the insert: status=%d replayed=%t body=%s, want it replayed as kept: %d %s",
 			kept.Code, replayed(kept), kept.Body.String(), before.Code, before.Body.String())
+	}
+}
+
+// V.22's window: the delete's deleted_at is when its transaction began (api/comment_delete.go,
+// ledger.Now), before it waited for the owner's lock, so a related-item check that claimed its key
+// after that and read the document before the delete committed holds the insert's words under a
+// key newer than deleted_at, and stores its answer after it. The delete has no pause between its
+// transaction's start and its commit but that lock wait, so the row leaves the state the race
+// leaves rather than running it, as TestADeleteEndsAKeptAnswerWhateverTimeItBegan does for the
+// other arms: the check is kept while the insert stands, the comment is deleted, and its
+// deleted_at is moved between the comment's created_at and the key's. A repeat of the key is told
+// the answer is not kept, and gives none of the words (answerEndedByDelete).
+func TestAKeptRelatedCheckClaimedAfterTheInsertsDeleteBeganIsNotReplayed(t *testing.T) {
+	documentService, handler, database := browserDocumentService(t)
+	createTestProject(t, handler, "CORE")
+	notes := createProjectDocument(t, handler, "CORE", "Design notes", "The "+insertedWords+" brown fox jumps\n")
+	insert := suggestProjectInsert(t, handler, database, documentService, notes, "m-insert")
+	nameVersion(t, handler, notes.ID, "With the insert pending")
+	refreshTermStats(t, database, "CORE")
+	const key = "claimed-after-the-delete-began"
+	check := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return keyedRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/related",
+			map[string]any{"title": "brown fox jumps", "keywords_only": true}, "alice", key)
+	}
+	// The positive control: the check, read before the delete commits, lists the document with
+	// the insert's words in its snippet, so its repeat can fail.
+	during := check()
+	if body := during.Body.String(); during.Code != http.StatusOK || !strings.Contains(body, `"kind":"document"`) ||
+		!strings.Contains(body, notes.ID) || !strings.Contains(body, insertedWords) {
+		t.Fatalf("the check while the insert stood: status=%d body=%s, want 200 listing the document %s with %q",
+			during.Code, body, notes.ID, insertedWords)
+	}
+
+	deleteThreadComment(t, handler, insert.ID, "alice")
+	ctx := context.Background()
+	moved, err := database.Pool.Exec(ctx, `
+		update comments c set deleted_at = c.created_at + (k.created_at - c.created_at) / 2
+		from request_keys k where c.id = $1 and k.idempotency_key = $2
+	`, insert.ID, key)
+	if err != nil || moved.RowsAffected() != 1 {
+		t.Fatalf("move the deleted_at of comment %s between its creation and the key's: %v (%d rows)", insert.ID, err, moved.RowsAffected())
+	}
+	// The control: the delete now reads as one that began after the comment was made and before
+	// the key was claimed, which is the race this row stands for.
+	var raced bool
+	if err := database.Pool.QueryRow(ctx, `
+		select c.created_at < c.deleted_at and c.deleted_at < k.created_at
+		from comments c, request_keys k where c.id = $1 and k.idempotency_key = $2
+	`, insert.ID, key).Scan(&raced); err != nil || !raced {
+		t.Fatalf("the deleted_at of comment %s is between its created_at and the key's: %t (%v), want true", insert.ID, raced, err)
+	}
+
+	again := check()
+	if code, _ := refusalOf(t, again); again.Code != during.Code || !replayed(again) || code != contracts.IdempotencyAnswerNotKept {
+		t.Errorf("the repeat of the check claimed after the delete began: status=%d replayed=%t body=%s, want %d %s, replayed",
+			again.Code, replayed(again), again.Body.String(), during.Code, contracts.IdempotencyAnswerNotKept)
+	}
+	if strings.Contains(again.Body.String(), insertedWords) {
+		t.Errorf("the repeat of the check claimed after the delete began gives the insert's words %q: %s", insertedWords, again.Body.String())
 	}
 }
 
