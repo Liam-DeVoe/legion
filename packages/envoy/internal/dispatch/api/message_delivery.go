@@ -1126,15 +1126,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A message the writer does not see is one no row holds
-	// (access.MessageClause), so the read finds nothing and asks nothing for it, as for a missing
-	// one. A read that finds nothing asks nothing: the transaction below answers that message or
-	// attempt as it always has. A read that fails is the route's 500.
-	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
-		select coalesce(m.target, ''), d.session_id
-		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
-		where m.id = $1 and `+access.MessageClause("m", "$3")+`
-	`, input.Attempt, refs.VisibilityArg(who))
+	// (lookUpRoleHolderReply). The target is read as the writer reads it
+	// (messageReplyRoleHolderOf): one it does not see asks nothing, as no target asks nothing. A
+	// read that fails is the route's 500.
+	roleReply, err := s.messageReplyRoleHolderOf(r.Context(), actor, who, r.PathValue("id"), input.Attempt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1179,6 +1174,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	// The target is read as the writer reads it in every read of the message
+	// (leaveOutHiddenMessageSessions): a credential that does not see the session it names, or
+	// the private project of the role it names, answers for no attempt of it, and is answered as
+	// for a message with no target, which no attempt has. That read is made whatever the message
+	// targets, so a hidden target costs what none costs; a reader that sees every object reads
+	// nothing more (R9).
+	if err := leaveOutHiddenMessageSessions(r.Context(), tx, who, []*model.Message{&message}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if message.Target == nil {
+		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		return
 	}
 	attempt, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
 		select `+messageDeliveryColumns+`

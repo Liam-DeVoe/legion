@@ -519,3 +519,85 @@ func TestWithNoPrivateProjectAReplyAnswersAsBefore(t *testing.T) {
 		}
 	}
 }
+
+// writeRepliedMessages writes, as carol on PUB's issue nobody claimed, a message with no target,
+// one to a role of PRIV (role:legion-priv-architect, whose attempt 1 reaches session-pub), one to
+// session-priv and one to session-pub, by name, and waits for each send.
+func writeRepliedMessages(t *testing.T, seed hiddenHolderSeed) map[string]string {
+	t.Helper()
+	ids := map[string]string{}
+	for name, target := range map[string]string{
+		noTarget:           "",
+		privateRoleMention: "role:" + privateProjectRole,
+		hiddenSession:      "session:" + sessionOfPrivate,
+		visibleOnly:        "session:" + sessionOfPublic,
+	} {
+		body := map[string]any{"body": "A note carol sends."}
+		if target != "" {
+			body["target"], body["delivery"] = target, "btw"
+		}
+		ids[name] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.unclaimed+"/messages", body))
+	}
+	awaitBackgroundWrites(t, seed.server)
+	return ids
+}
+
+// replyToMessageAs is caller's reply, as session, to attempt 1 of message id.
+func replyToMessageAs(t *testing.T, seed hiddenHolderSeed, caller privateCaller, session, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	answer := seed.request(t, caller, http.MethodPost, "/api/v1/messages/"+id+"/reply",
+		map[string]any{"actor": map[string]string{"kind": "session", "id": session}, "attempt": 1, "body": "Done."})
+	awaitBackgroundWrites(t, seed.server)
+	return answer
+}
+
+// TestAReplyToAMessageWhoseTargetItsCallerDoesNotReadAnswersAsNoTarget: the shared token sees PUB
+// alone, so it reads carol's messages on PUB's issue to a role of PRIV and to session-priv with no
+// target (leaveOutHiddenMessageSessions), and it may not act for them. Its reply as
+// legion-priv-architect's holder, session-pub, which attempt 1 of that message reached, and as
+// session-priv, each answers byte for byte as the same reply to carol's message with no target does,
+// and posts no reply. The same token's reply as session-pub to carol's message to session-pub, which
+// it reads, is posted.
+//
+// Control: replyMessage reading the target as the server's reader (the unfiltered reads restored);
+// the shared token's replies are then posted, 201, and the row fails naming the target.
+func TestAReplyToAMessageWhoseTargetItsCallerDoesNotReadAnswersAsNoTarget(t *testing.T) {
+	seed := seedHiddenHolders(t, testServerOptions{})
+	ids := writeRepliedMessages(t, seed)
+	for name, session := range map[string]string{privateRoleMention: sessionOfPublic, hiddenSession: sessionOfPrivate} {
+		got := replyToMessageAs(t, seed, callerSharedToken, session, ids[name])
+		want := replyToMessageAs(t, seed, callerSharedToken, session, ids[noTarget])
+		if got.Code != want.Code || got.Body.String() != want.Body.String() {
+			t.Errorf("the shared token's reply as %s to carol's message to %s answers %d %s; to her message with no target, %d %s: want one answer",
+				session, name, got.Code, strings.TrimSpace(got.Body.String()), want.Code, strings.TrimSpace(want.Body.String()))
+		}
+		if got.Code < http.StatusBadRequest {
+			t.Errorf("the shared token's reply as %s to carol's message to %s was taken: %d %s", session, name, got.Code, strings.TrimSpace(got.Body.String()))
+		}
+	}
+	if taken := replyToMessageAs(t, seed, callerSharedToken, sessionOfPublic, ids[visibleOnly]); taken.Code != http.StatusCreated {
+		t.Errorf("the shared token's reply as session-pub to carol's message to session-pub answers %d %s, want it posted", taken.Code, strings.TrimSpace(taken.Body.String()))
+	}
+}
+
+// TestWithNoPrivateProjectAReplyToAMessageAnswersAsBefore (R9): once PRIV is public again the
+// shared token sees every object, so its replies as session-pub and session-priv to carol's messages
+// to the role of PRIV and to session-priv are posted as the base posted them. Each answer is logged
+// with its times and ids blanked, beside the sha256 of what it logs, so a run at the base and a run
+// at the head compare byte for byte.
+//
+// Control: replyMessage reading every target as none; the replies then answer 404 and the row fails.
+func TestWithNoPrivateProjectAReplyToAMessageAnswersAsBefore(t *testing.T) {
+	seed := seedHiddenHolders(t, testServerOptions{})
+	ids := writeRepliedMessages(t, seed)
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	for _, reply := range []struct{ name, session string }{{privateRoleMention, sessionOfPublic}, {hiddenSession, sessionOfPrivate}} {
+		answer := replyToMessageAs(t, seed, callerSharedToken, reply.session, ids[reply.name])
+		blanked := timestampsAndIDs.ReplaceAllString(answer.Body.String(), "<varies>")
+		t.Logf("R9 message reply as %s to %s: %d sha256 %x: %s", reply.session, reply.name, answer.Code, sha256.Sum256([]byte(blanked)), strings.TrimSpace(blanked))
+		if answer.Code != http.StatusCreated {
+			t.Errorf("PRIV public: the shared token's reply as %s to carol's message to %s answers %d %s, want 201, as before",
+				reply.session, reply.name, answer.Code, strings.TrimSpace(answer.Body.String()))
+		}
+	}
+}
