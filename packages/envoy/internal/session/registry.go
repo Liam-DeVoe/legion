@@ -900,12 +900,15 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		entry.RepositoryGap = replaced.entry.RepositoryGap
 	}
 	r.mu.RUnlock()
-	for {
+	for retry := false; ; retry = true {
 		if !known {
-			stored, at, err := readEntry(ctx, kv, sessionID)
+			stored, at, err := readEntry(ctx, kv, sessionID, retry)
 			switch {
 			case errors.Is(err, errUndecodableEntry):
 				// A value no read decodes owes no mark anyone could read, and is written over.
+				// On a retry the leader's read reports a message the server wrote, or a marker, at
+				// the sequence it is stored at, so the write replaces it there rather than fencing
+				// for good on the sequence a direct get read from another stream's header.
 				revision, entry.RepositoryGap = at, ""
 			case err != nil:
 				return fmt.Errorf("read session %s from the bucket before writing it: %w", sessionID, err)
@@ -931,7 +934,37 @@ var errUndecodableEntry = errors.New("the stored value is no session entry")
 // (bus.Bounded), with the revision it was read at: revision 0 and no error for a key the bucket
 // holds no entry under, a delete or purge marker among them, and the revision with
 // errUndecodableEntry for a value no read decodes. Any other error is the read's.
-func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, error) {
+//
+// fromLeader reads the key's newest message from the stream's leader instead of by a direct get
+// (bus.KeyValue.NewestFromLeader), which is the read a write makes again after the bucket refused
+// it at the revision a direct get reported. A direct get reports the first Nats-Sequence header of
+// the message it answers, and a record the server stored as its answer to a direct get of another
+// key, or a RePublish of another stream naming the key's subject, carries that stream's header
+// ahead of its own: a write fenced on a direct get's revision is then refused at every attempt. The
+// leader's read reports the sequence the message is stored at, so the write replaces it there. On
+// that read a message the server wrote on its own (bus.WrittenByServer), a delete or purge marker,
+// and a value no read decodes are each errUndecodableEntry at the sequence they are stored at, which
+// the write replaces by an update with the caller's own entry; only a key the stream holds no
+// message for is revision 0, which the write creates.
+func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (SessionEntry, uint64, error) {
+	if fromLeader {
+		newest, err := kv.NewestFromLeader(ctx, sessionID)
+		switch {
+		case errors.Is(err, nats.ErrKeyNotFound):
+			return SessionEntry{}, 0, nil
+		case err != nil:
+			return SessionEntry{}, 0, err
+		case newest.Operation() != nats.KeyValuePut:
+			return SessionEntry{}, newest.Revision(), fmt.Errorf("%w: stored under %s, its newest message is a delete or purge marker", errUndecodableEntry, sessionID)
+		case bus.WrittenByServer(newest):
+			return SessionEntry{}, newest.Revision(), fmt.Errorf("%w: stored under %s, it is a message the server wrote", errUndecodableEntry, sessionID)
+		}
+		var entry SessionEntry
+		if err := json.Unmarshal(newest.Value(), &entry); err != nil {
+			return SessionEntry{}, newest.Revision(), fmt.Errorf("%w: %w", errUndecodableEntry, err)
+		}
+		return entry, newest.Revision(), nil
+	}
 	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return SessionEntry{}, 0, nil
@@ -992,8 +1025,8 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 // each error.
 func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
 	kv, epoch := r.watcher.Handle()
-	for {
-		entry, revision, err := readEntry(ctx, kv, sessionID)
+	for retry := false; ; retry = true {
+		entry, revision, err := readEntry(ctx, kv, sessionID, retry)
 		if err != nil {
 			return fmt.Errorf("read session %s to %s: %w", sessionID, what, err)
 		}

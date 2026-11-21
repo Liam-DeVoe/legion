@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -66,5 +67,53 @@ func TestADeleteOverARepublishedRecordDeletesItAtItsTrueSequence(t *testing.T) {
 		if _, err := kv.Get(tc.victim); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Fatalf("Get(%s) after the delete = %v, want %v", tc.victim, err, nats.ErrKeyNotFound)
 		}
+	}
+}
+
+// A RePublish of another stream stores, at a session's key, a record that names another session,
+// with that stream's headers, so a direct get reports it at that stream's sequence (the control)
+// and DecodeEntry refuses it, which the registry's copy evicts. PutWithin's compare-and-swap loop
+// reads the key back: a direct get fences the write on the copied sequence and the bucket refuses
+// it at every attempt, so before the fix every registration of the key times out and answers 503
+// for good. After the first refusal the loop reads the key from the stream's leader, finds a
+// message the server wrote, and replaces it at the sequence it is stored at, so the registration
+// heals.
+func TestARegistrationOverARepublishedRecordHealsAtItsTrueSequence(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	kv, err := client.JS().KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open %s: %v", bus.SessionBucket, err)
+	}
+	const victim = "ses_republished_registration"
+	// The victim registers first, so the bucket's stream holds a message of its own before the
+	// copy and stores the copy at a sequence past the one the copy's headers name.
+	if err := r.Put(victim, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s: %v", victim, err)
+	}
+	body, err := json.Marshal(map[string]any{"session_id": "ses_other", "machine_id": "edge-x",
+		"updated_at": time.Now().UnixMilli(), "projects": []string{"PUB"}})
+	if err != nil {
+		t.Fatalf("encode the republished record: %v", err)
+	}
+	stored := testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, victim, body)
+	awaitApplied(t, r, victim, stored)
+	if entry, err := kv.Get(victim); err != nil || entry.Revision() == stored {
+		t.Fatalf("a direct get of %s answers revision %v (%v), stored at %d: want another stream's sequence, or the control shows nothing to correct", victim, entry, err, stored)
+	}
+	if own, err := r.StoredByWriter(context.Background(), victim); err != nil || own {
+		t.Fatalf("StoredByWriter(%s) over the republished record = %t, %v; want false", victim, own, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.PutWithin(ctx, victim, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s over the record republished at %d: %v", victim, stored, err)
+	}
+	if own, err := r.StoredByWriter(context.Background(), victim); err != nil || !own {
+		t.Fatalf("StoredByWriter(%s) after the registration = %t, %v; want true", victim, own, err)
+	}
+	entry, err := r.Refresh(context.Background(), victim)
+	if err != nil || entry.MachineID != "edge-a" || entry.SessionID != victim || !slices.Equal(entry.Projects, []string{"PRIV"}) {
+		t.Fatalf("Refresh(%s) after the registration = %+v, %v; want the victim's own registration", victim, entry, err)
 	}
 }
