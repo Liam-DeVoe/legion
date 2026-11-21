@@ -278,7 +278,9 @@ type ClusteredHubListenerArgs struct {
 	// the listener's own account it introspects and reads privacy with, the broker's
 	// BROKER_K8S_OIDC_AUDIENCE, mounted at /var/run/secrets/envoy-broker/token
 	// (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE) and never natsAudience's. privacySourceUrl is the
-	// broker's GET /v1/project-privacy (ENVOY_PROJECT_PRIVACY_URL), and allProjectsAccounts the
+	// secrets broker's base URL (ENVOY_PROJECT_PRIVACY_URL), the same value as agentSecretsUrl, to
+	// which the listener appends GET /v1/project-privacy itself, so it names no path; and
+	// allProjectsAccounts the
 	// callers the listener serves every project's sessions to (ENVOY_ALL_PROJECTS_ACCOUNTS), each
 	// a subject oidcAccounts lists, Dispatch's among them: their namespaces reach the listener's
 	// port, and its replicas at the headless Service <name>-listener-instances.

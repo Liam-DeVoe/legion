@@ -40,7 +40,15 @@
           },
           {
             "name": "ENVOY_PUBLIC_URL",
-            "value": "http://envoy-nats-listener.envoy.svc.cluster.local:9020"
+            "value": "http://envoy-hub.example-tailnet.ts.net:9020"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND",
+            "value": "50"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST",
+            "value": "200"
           },
           {
             "name": "NATS_SERVICE_TOKEN_FILE",
@@ -48,7 +56,7 @@
           },
           {
             "name": "ENVOY_PROJECT_PRIVACY_URL",
-            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443/v1/project-privacy"
+            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443"
           },
           {
             "name": "ENVOY_PROJECT_PRIVACY_REQUIRED",
@@ -71,7 +79,7 @@
             "value": "system:serviceaccount:legion:legion-worker,system:serviceaccount:example-dispatch:example-dispatch"
           }
         ],
-        "image": "example.invalid/envoy@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "image": "example.invalid/envoy:v99.0.0@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
         "lifecycle": {
           "preStop": {
             "exec": {

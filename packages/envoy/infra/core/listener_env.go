@@ -83,9 +83,10 @@ type ListenerConfig struct {
 	ServiceGoogleAudience string
 	// PrivacySourceURL, PrivacyRequired and AllProjectsAccounts are the listener's privacy
 	// settings, which a listener of a hub that may make a Dispatch project private carries and every
-	// other listener renders none of: the route the listener reads each decision's private
-	// projects from, with its broker credential, ENVOY_PROJECT_PRIVACY_URL (the secrets broker's
-	// GET /v1/project-privacy); its required mode, ENVOY_PROJECT_PRIVACY_REQUIRED=true, in which a
+	// other listener renders none of: the secrets broker's base URL, ENVOY_PROJECT_PRIVACY_URL, to
+	// which the listener appends the privacy route (GET /v1/project-privacy) and reads each
+	// decision's private projects there with its broker credential, so it names no path, the
+	// route's included; its required mode, ENVOY_PROJECT_PRIVACY_REQUIRED=true, in which a
 	// decision whose privacy cannot be read is refused; and the callers it serves every project's
 	// sessions to, ENVOY_ALL_PROJECTS_ACCOUNTS, each a ServiceAccount's subject. PlanC's #t-c-8
 	// makes the listener read them; a component sets PrivacyRequired from its own hub's
@@ -95,7 +96,33 @@ type ListenerConfig struct {
 	PrivacySourceURL    string
 	PrivacyRequired     bool
 	AllProjectsAccounts []string
+	// IntrospectionsPerSecond and IntrospectionBurst are the bucket each source address's
+	// introspections of a broker token are bounded by in the listener,
+	// ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND (1 to 1000) and
+	// ENVOY_AGENT_SECRETS_INTROSPECTION_BURST (1 to 100000), each only with the broker check, and
+	// 0 renders none, which the listener reads as its default (five a second, a burst of 20). A
+	// component raises them where every caller reaches the listener through a forwarder whose
+	// address they then share.
+	IntrospectionsPerSecond int
+	IntrospectionBurst      int
+	// V1OpenWithTokenChecks keeps /v1 open to a caller that presents no credential beside a token
+	// check, ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true (cmd/listener/apiauth.go): a presented token is
+	// verified and refused when it does not verify, and a request with none is served as the open
+	// listener serves it. A private hub's tailnet-only session listener renders it, so the private
+	// mode narrows no caller before the open /v1 itself is removed; a listener of an all-public hub
+	// renders none (CheckPrivacySource).
+	V1OpenWithTokenChecks bool
 }
+
+// The listener's own names and bounds of the two introspection-limit settings and the open
+// setting, written here for brokerVars's reason.
+const (
+	introspectionsPerSecondVar = "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND"
+	introspectionBurstVar      = "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST"
+	maxIntrospectionsPerSecond = 1000
+	maxIntrospectionBurst      = 100000
+	v1OpenWithTokenChecksVar   = "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS"
+)
 
 // privacyVars are the names of the three privacy settings, in the order Env renders them, each
 // with the input a refusal names it by. core may not import the listener's packages, for the
@@ -270,8 +297,11 @@ func CheckBroker(prefix, brokerURL, audience, tokenFile, origin string) error {
 // in required mode, and its every privacy decision is a read of the secrets broker's privacy
 // route with the projected token of its own account, so it needs the privacy URL, the flag, the
 // all-projects callers and the broker check in its token-file form: the broker URL, the token file
-// and the origin, and no Google audience beside the file. A listener of any other hub renders no
-// privacy setting (R9). Each refusal is an InputError naming listener and the variable.
+// and the origin, and no Google audience beside the file. The privacy URL is the broker's base
+// URL, to which the listener appends the route itself, so one naming a path other than "/" is
+// refused: the listener would read the route under the route, and the source it reports would
+// match no source Dispatch's inventory names. A listener of any other hub renders no privacy
+// setting (R9). Each refusal is an InputError naming listener and the variable.
 //
 // It runs on what the component renders, after the component's own input rules, so a render that
 // drops a piece its inputs gave is refused before anything registers rather than deploying a
@@ -282,6 +312,9 @@ func CheckPrivacySource(listener string, c ListenerConfig, hubPrivate bool) erro
 			if set {
 				return InputErrorf(listener, "%s renders %s on a hub that makes no project private, which renders no privacy setting", listener, privacyVars[i].variable)
 			}
+		}
+		if c.V1OpenWithTokenChecks {
+			return InputErrorf(listener, "%s renders %s on a hub that makes no project private, where an open listener needs no token check to stay open", listener, v1OpenWithTokenChecksVar)
 		}
 		return nil
 	}
@@ -300,6 +333,17 @@ func CheckPrivacySource(listener string, c ListenerConfig, hubPrivate bool) erro
 			return InputErrorf(listener, "%s renders no %s, which a listener of a hub that may make a project private needs: it reads each decision's privacy from the secrets broker, as the projected token of its own account",
 				listener, missing.variable)
 		}
+	}
+	source, err := url.Parse(c.PrivacySourceURL)
+	if err == nil && source.Path != "" && source.Path != "/" {
+		return InputErrorf(listener, "%s renders %s %q with the path %q: it is the secrets broker's base URL, to which the listener appends /v1/project-privacy itself",
+			listener, privacyVars[0].variable, c.PrivacySourceURL, source.Path)
+	}
+	// The listener presents its broker token at the privacy URL, so it is the broker's own origin
+	// and no other.
+	if broker, berr := url.Parse(c.AgentSecretsURL); err != nil || berr != nil || source.Scheme != broker.Scheme || source.Host != broker.Host {
+		return InputErrorf(listener, "%s renders %s %q at an origin other than %s %q: the listener presents its broker token there, so it is the secrets broker's own origin",
+			listener, privacyVars[0].variable, c.PrivacySourceURL, brokerVars[0].variable, c.AgentSecretsURL)
 	}
 	if c.AgentSecretsAudience != "" {
 		return InputErrorf(listener, "%s renders %s beside %s: in a pod the listener presents its own projected token to the broker, and refuses a second identity",
@@ -414,6 +458,21 @@ func (c ListenerConfig) Check() error {
 			"%s and %s are both set: the listener connects to NATS as one identity, and its bus refuses %s beside %s when it starts",
 			serviceVars[0].input, serviceVars[1].input, serviceVars[0].variable, serviceVars[1].variable)
 	}
+	for _, limit := range []struct {
+		input, variable string
+		value, most     int
+	}{
+		{"introspectionsPerSecond", introspectionsPerSecondVar, c.IntrospectionsPerSecond, maxIntrospectionsPerSecond},
+		{"introspectionBurst", introspectionBurstVar, c.IntrospectionBurst, maxIntrospectionBurst},
+	} {
+		if limit.value < 0 || limit.value > limit.most {
+			return InputErrorf(limit.input, "%s %d must be from 1 to %d, or 0 for the listener's default", limit.input, limit.value, limit.most)
+		}
+		if limit.value > 0 && c.AgentSecretsURL == "" {
+			return InputErrorf(limit.input, "%s is set without agentSecretsUrl: %s bounds the listener's introspections of broker tokens, which it takes only with %s, and the listener refuses it alone when it boots",
+				limit.input, limit.variable, brokerVars[0].variable)
+		}
+	}
 	return c.checkPrivacy()
 }
 
@@ -436,8 +495,9 @@ func (c ListenerConfig) checkPrivacy() error {
 		return InputErrorf(urlInput, "%s is required with %s: the listener's required mode reads each decision's privacy from it",
 			urlInput, flagInput)
 	case c.PrivacySourceURL != "":
-		if source, err := url.Parse(c.PrivacySourceURL); err != nil || (source.Scheme != "http" && source.Scheme != "https") || source.Host == "" {
-			return InputErrorf(urlInput, "%s %q must be an http or https URL with a host", urlInput, c.PrivacySourceURL)
+		// https alone: the listener presents its broker-audience token at this URL.
+		if source, err := url.Parse(c.PrivacySourceURL); err != nil || source.Scheme != "https" || source.Host == "" {
+			return InputErrorf(urlInput, "%s %q must be an https URL with a host: the listener presents its own broker token there", urlInput, c.PrivacySourceURL)
 		}
 	}
 	seen := make(map[string]int, len(c.AllProjectsAccounts))
@@ -487,10 +547,12 @@ func ServiceAccountSubject(subject string) (namespace, name string, ok bool) {
 // is above 0 too. aws/rendering's ListenerEnv sets no NATSReplicas here and writes its own
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
 // follows, in brokerVars's order — ENVOY_AGENT_SECRETS_URL, ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE or
-// ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, ENVOY_PUBLIC_URL — then the service identity's one
-// variable, then the privacy settings last, in privacyVars's order — ENVOY_PROJECT_PRIVACY_URL,
-// ENVOY_PROJECT_PRIVACY_REQUIRED=true, ENVOY_ALL_PROJECTS_ACCOUNTS comma-joined — each only on a
-// config that sets it, so a listener without them renders what it always rendered, byte for byte.
+// ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, ENVOY_PUBLIC_URL — then its introspection limit,
+// ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND then ENVOY_AGENT_SECRETS_INTROSPECTION_BURST, then
+// the service identity's one variable, then the privacy settings, in privacyVars's order —
+// ENVOY_PROJECT_PRIVACY_URL, ENVOY_PROJECT_PRIVACY_REQUIRED=true, ENVOY_ALL_PROJECTS_ACCOUNTS
+// comma-joined — and ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true last, each only on a config that sets
+// it, so a listener without them renders what it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -553,6 +615,12 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
 	}
+	if c.IntrospectionsPerSecond > 0 {
+		env = append(env, introspectionsPerSecondVar+"="+strconv.Itoa(c.IntrospectionsPerSecond))
+	}
+	if c.IntrospectionBurst > 0 {
+		env = append(env, introspectionBurstVar+"="+strconv.Itoa(c.IntrospectionBurst))
+	}
 	for i, value := range [2]string{c.ServiceTokenFile, c.ServiceGoogleAudience} {
 		if value != "" {
 			env = append(env, serviceVars[i].variable+"="+value)
@@ -566,6 +634,9 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	}
 	if len(c.AllProjectsAccounts) > 0 {
 		env = append(env, privacyVars[2].variable+"="+strings.Join(c.AllProjectsAccounts, ","))
+	}
+	if c.V1OpenWithTokenChecks {
+		env = append(env, v1OpenWithTokenChecksVar+"=true")
 	}
 	return env, nil
 }

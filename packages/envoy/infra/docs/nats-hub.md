@@ -54,7 +54,7 @@ and `instanceGroup`, the group's name.
 | `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; its NATS identity, which follows `authCallout`: without it, `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed, and `nkey`, that seed's public key, and with it `natsAudience`, the audience of the VM's Google identity token the listener presents to the auth service instead; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends. See [The hub's listener](#the-hubs-listener), [The listener's broker check](#the-listeners-broker-check) and [The listener's sender limit](#the-listeners-sender-limit). |
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. Refused beside `listener` too: the VM hub is never private, and a private hub's listener reads each decision's privacy from the secrets broker as the projected token of its own account, which `gcp:ClusteredNatsHub`'s session listener does. See [The auth service](#the-auth-service). |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private (the private-projects work's R12). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. Refused beside `listener` too: the VM hub is never private, and a private hub's listener reads each decision's privacy from the secrets broker as the projected token of its own account, which `gcp:ClusteredNatsHub`'s session listener does. See [The auth service](#the-auth-service). |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -334,14 +334,19 @@ exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-ch
 rule), from which its group's health check reads `/healthz`; no input widens that, so it has
 nothing to refuse.
 
-`privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
+`privateProjects` is checked when the hub is planned. On `gcp:NatsHub` it renders nothing itself;
+on `gcp:ClusteredNatsHub` it also renders the session listener's broker check and privacy settings
+([README](../README.md#the-private-hubs-session-listener)), and only for a listener image at or
+after the release that enforces the listener's required mode (`privateModeListenerFloor`, which
+that release sets; until then the hub refuses a private session listener). What it demands
 (the callout, no session user, no client user beside the auth service's) reaches a running server
 only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes it as the pod roll
 restarts that pod (below), and until then it keeps its old `no_auth_user` and seeded users. On
 `gcp:NatsHub` the VM takes it when the group replaces the VM. So the order holds both ways. Turn
 on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
-every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
-`privateProjects` off only after no project is private.
+every pod of the clustered hub has restarted, or the VM hub's new VM is up, and the clustered hub's
+session listener, if it runs one, has rolled to its new image. Turn the hub's `privateProjects` off
+only after no project is private.
 
 ## The hub's listener
 

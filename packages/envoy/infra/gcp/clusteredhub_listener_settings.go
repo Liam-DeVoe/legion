@@ -3,12 +3,67 @@ package gcp
 import (
 	"errors"
 	"net/url"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/sjawhar/envoy/infra/core"
 )
+
+// privateModeListenerFloor is the first listener release, as major.minor.patch, that enforces the
+// required mode: whose listener reads ENVOY_PROJECT_PRIVACY_REQUIRED and the privacy route, and so
+// holds each broker-token caller to the projects it may see (plan C's t-c-8). A private hub's
+// session listener renders the broker check, which turns broker tokens on in the listener; a
+// listener of an earlier release admits every live broker token under DPoP and limits none of
+// them by project, so with privateProjects the listener's image must name a release at or after
+// this one (checkPrivateModeListenerImage). It is empty until t-c-8's release ships, which sets
+// it, and empty refuses every image: no private hub runs a session listener before then. A
+// package-level variable, so the tests set it to render the private listener (export_test.go).
+var privateModeListenerFloor = ""
+
+// imageReleaseTag is the release a listener image's tag names, <name>:<tag>@sha256:<digest>, the
+// tag ending in v<major>.<minor>.<patch> (a release's version, or its name, legion-envoy-v…).
+var imageReleaseTag = regexp.MustCompile(`:(?:[A-Za-z0-9._-]*-)?v([0-9]+)\.([0-9]+)\.([0-9]+)@sha256:[0-9a-f]{64}$`)
+
+// checkPrivateModeListenerImage refuses image, the session listener's of a hub with
+// privateProjects, unless it names a release at or after privateModeListenerFloor. With no floor
+// named it refuses every image, naming privateProjects; an image whose tag names no release, or an
+// earlier one, is refused naming <path>.image, since its digest alone says nothing the component
+// could compare.
+func checkPrivateModeListenerImage(path, image string) error {
+	if privateModeListenerFloor == "" {
+		return core.InputErrorf("privateProjects", "privateProjects needs a session listener release that enforces the required mode; none is named yet (privateModeListenerFloor): a %s of an earlier release admits every live broker token under DPoP and holds none of its callers to the projects they may see", path)
+	}
+	floor, ok := releaseVersion(":v" + privateModeListenerFloor + "@sha256:" + strings.Repeat("0", 64))
+	if !ok {
+		return errors.New("privateModeListenerFloor " + strconv.Quote(privateModeListenerFloor) + " is no major.minor.patch")
+	}
+	release, ok := releaseVersion(image)
+	if !ok || slices.Compare(release, floor) < 0 {
+		return core.InputErrorf(path+".image", "%s.image %q must name, as its tag, a listener release at or after v%s, the first that enforces the required mode, as <name>:v%s@sha256:<digest>: privateProjects turns broker tokens on in the listener, and an earlier one holds none of their callers to the projects they may see",
+			path, image, privateModeListenerFloor, privateModeListenerFloor)
+	}
+	return nil
+}
+
+// releaseVersion is the major, minor and patch numbers image's tag names, and whether it names any.
+func releaseVersion(image string) ([]int, bool) {
+	parts := imageReleaseTag.FindStringSubmatch(image)
+	if parts == nil {
+		return nil, false
+	}
+	version := make([]int, 3)
+	for i, part := range parts[1:] {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, false
+		}
+		version[i] = n
+	}
+	return version, true
+}
 
 // clusteredHubListener is the resolved session listener the hub runs as a workload of its own,
 // nil without one: the tailnet hosts forward the Tailscale Service's port 9020 to it, and the
@@ -29,22 +84,48 @@ type clusteredHubListener struct {
 	privacy                       *clusteredHubListenerPrivacy
 }
 
-// clusteredHubListenerPrivacy is the part of a private hub's listener its environment does not
-// say: the audience of the projected token of its own account it presents to the secrets broker,
-// mounted at clusteredHubListenerBrokerTokenFile, and the namespaces of its all-projects callers,
-// which the listener's NetworkPolicy admits at its port and which reach its replicas at the
-// headless Service clusteredHubListenerInstancesName names.
+// clusteredHubListenerPrivacy is what a private hub's listener reads privacy and proofs with that
+// its inputs do not say as they are: the audience of the projected token of its own account it
+// presents to the secrets broker, mounted at clusteredHubListenerBrokerTokenFile; the one origin
+// it checks every caller's DPoP proof against (ENVOY_PUBLIC_URL); and the namespaces of its
+// all-projects callers, which the listener's NetworkPolicy admits at its port and which reach its
+// replicas at the headless Service clusteredHubListenerInstancesName names.
 type clusteredHubListenerPrivacy struct {
 	brokerAudience string
+	origin         string
 	namespaces     []string
 }
 
-// clusteredHubListenerCredential is the token check a listener requires: the issuer and audience
-// of the projected ServiceAccount tokens it verifies, and the subjects it admits.
+// clusteredHubListenerCredential is the token check a listener has: the issuer and audience of
+// the projected ServiceAccount tokens it verifies, and the subjects it admits. open is a private
+// hub's tailnet-only listener's, which checks a token that is presented and keeps /v1 open to a
+// caller that presents none (core.ListenerConfig.V1OpenWithTokenChecks); every other listener with
+// a token check requires one of every caller.
 type clusteredHubListenerCredential struct {
 	issuer, audience string
 	accounts         []string
+	open             bool
 }
+
+// The per-source-address introspection limit a private hub's session listener renders with tailnet
+// (core.ListenerConfig.IntrospectionsPerSecond, IntrospectionBurst). Every tailnet session reaches
+// the listener through the tailnet hosts, so every one of them shares a host's address, and the
+// listener's default bucket (five a second, a burst of 20, keyed on the source address) is then one
+// bucket per host for the whole tailnet: a session spends one introspection per 5 s answer cache
+// while it calls and at least one per 90 s registration heartbeat, so two hosts at the default
+// saturate near 2 × 5 × 90 = 900 sessions, and a restart that registers every session again passes
+// 40 at once. The limit here is the secrets broker's own bound on the listener: the broker spends
+// one request of its per-source-address bucket on each POST /v1/oauth/introspect
+// (internal/cipher/api's DefaultAccountLimit, fifty a second and a burst of 200, per broker pod),
+// and the listener pod is that one source address. A host's bucket the size of the broker's own
+// never refuses a session the broker would have admitted, and the broker's bucket stays the bound
+// on a flood. So one host carries 50 × 90 = 4,500 idle sessions, as many after the other host is
+// drained, and a restart storm passes 200 at once per host and then fifty a second.
+// cmd/listener's TestTheRenderedIntrospectionLimitIsTheBrokers holds the two to each other.
+const (
+	clusteredHubListenerIntrospectionsPerSecond = 50
+	clusteredHubListenerIntrospectionBurst      = 200
+)
 
 // clusteredHubListenerArgs is the session listener the hub runs, wherever it is declared, and the
 // path its refusals name: listener, the hub's own input, or tailnet.listener, the same listener
@@ -86,8 +167,8 @@ func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListener
 // Its NATS identity follows authCallout (listenerIdentity): without it, the user the hub renders
 // for the listener's seed, from the Secret the pod mounts; with it, the projected token of the
 // listener's own ServiceAccount for natsAudience, which the pod reads at
-// clusteredHubListenerTokenFile, while the hub renders no user for it. ENVOY_PRIVATE_PROJECTS=1 is
-// in its environment exactly when privateProjects is.
+// clusteredHubListenerTokenFile, while the hub renders no user for it. With privateProjects it also
+// renders the broker check and the privacy settings (newClusteredHubListenerPrivacy).
 func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, s clusteredHubSettings) (*clusteredHubListener, *listenerUser, error) {
 	if l == nil {
 		if args.Tailnet != nil {
@@ -146,7 +227,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
-	privacy, err := newClusteredHubListenerPrivacy(args, l, path, credential)
+	privacy, err := newClusteredHubListenerPrivacy(args, l, path, credential, s.tailnet)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -171,13 +252,14 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	}); err != nil {
 		return nil, nil, err
 	}
-	// The names a client reaches a listener that requires no credential by, in a fixed order: the
-	// tailnet name the Tailscale Service answers at, then the operator's own. Such a listener is a
-	// tailnet.listener with no clientNamespaces, so the list always holds the tailnet name. One
-	// that requires a credential serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS
+	// The names a client reaches /v1 by with no credential, in a fixed order: the tailnet name the
+	// Tailscale Service answers at, then the operator's own. Such a listener is a tailnet.listener
+	// with no clientNamespaces, so the list always holds the tailnet name: one with no token check,
+	// or a private hub's, which keeps its open /v1 beside the check. One that requires a credential
+	// of every caller serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS
 	// (cmd/listener/apiauth.go), so it renders none.
 	var hosts []string
-	if credential == nil {
+	if credential == nil || credential.open {
 		hosts = append([]string{core.TailnetHostName(s.tailnet.serviceName, s.tailnet.tailnetDNSName)}, l.AllowedHosts...)
 	}
 	// The listener serves on every address of its own pod: the tailnet hosts and the pods of
@@ -203,8 +285,12 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	// for the flag, from the hub's privateProjects alone. Any other hub's listener renders none of
 	// them, whatever the inputs hold (R9).
 	if privacy != nil {
-		config.AgentSecretsURL, config.BrokerTokenFile, config.PublicURL = l.AgentSecretsUrl, clusteredHubListenerBrokerTokenFile, l.PublicUrl
+		config.AgentSecretsURL, config.BrokerTokenFile, config.PublicURL = l.AgentSecretsUrl, clusteredHubListenerBrokerTokenFile, privacy.origin
 		config.PrivacySourceURL, config.PrivacyRequired, config.AllProjectsAccounts = l.PrivacySourceUrl, args.PrivateProjects, l.AllProjectsAccounts
+		config.V1OpenWithTokenChecks = credential.open
+		if s.tailnet != nil {
+			config.IntrospectionsPerSecond, config.IntrospectionBurst = clusteredHubListenerIntrospectionsPerSecond, clusteredHubListenerIntrospectionBurst
+		}
 	}
 	// What is about to be rendered is held to the hub's privacy mode before anything registers, so a
 	// render that drops a piece is refused here, naming the listener and the piece.
@@ -214,7 +300,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if listener.env, err = config.Env([]string{s.serviceURL}); err != nil {
 		return nil, nil, prefixedInput(path, err)
 	}
-	return listener, &listenerUser{machineID: machineID, nkey: l.NKey, service: service}, nil
+	return listener, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
 }
 
 // prefixedInput is err, core's refusal of a listener config, with the input it names prefixed by
@@ -235,35 +321,51 @@ func prefixedInput(path string, err error) error {
 
 // newClusteredHubListenerPrivacy resolves what the listener l, declared at path, of a hub with
 // privateProjects reads privacy with: nil on a hub without it, where the privacy inputs are read
-// nowhere. Such a listener requires a token of every caller (credential), since its readiness
-// route answers Dispatch's account by its projected token and a listener with no token check
-// serves every caller the same; a listener that requires none is refused, naming privateProjects
-// and path. agentSecretsUrl, publicUrl, brokerAudience, privacySourceUrl and allProjectsAccounts
-// are each required, by its path. brokerAudience is refused when it is natsAudience's: that token
-// is the auth service's, which the broker's routes do not accept. Each all-projects caller is a
-// subject the token check admits, since the listener verifies a caller before it serves it every
-// project's sessions, and its namespace is admitted at the listener's port. The values' shapes are
-// core's rules (core.ListenerConfig.Check, core.CheckBroker), named by path.
-func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, credential *clusteredHubListenerCredential) (*clusteredHubListenerPrivacy, error) {
+// nowhere. Such a listener has a token check (credential, which clusteredHubListenerCredentialFor
+// requires of it), since its readiness route knows Dispatch's account by its projected token. A
+// tailnet-only one keeps its open /v1 beside the check (credential.open), so the private mode
+// narrows no caller before the open /v1 is removed. agentSecretsUrl, brokerAudience,
+// privacySourceUrl and allProjectsAccounts are each required, by its path. brokerAudience is
+// refused when it is natsAudience's: that token is the auth service's, which the broker's routes
+// do not accept. Each all-projects caller is a subject the token check admits, since the listener
+// verifies a caller before it serves it every project's sessions, and its namespace is admitted at
+// the listener's port. The values' shapes are core's rules (core.ListenerConfig.Check,
+// core.CheckBroker), named by path.
+//
+// The listener checks every DPoP proof against one origin, ENVOY_PUBLIC_URL, and the callers that
+// present a broker token to it are the tailnet's sessions, which reach it at the Tailscale
+// Service's name. So with tailnet its origin is that name's, http://<serviceName>.<tailnetDnsName>
+// :9020 (the hub's tailnetEnvoyUrl), whatever publicUrl says: an unset publicUrl takes it, and any
+// other value is refused, naming publicUrl, since a proof a caller signs for the tailnet name would
+// then be refused. Without tailnet, publicUrl is required, the one origin its callers reach it at.
+func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, credential *clusteredHubListenerCredential, tailnet *clusteredHubTailnet) (*clusteredHubListenerPrivacy, error) {
 	if !args.PrivateProjects {
 		return nil, nil
 	}
-	if credential == nil {
-		return nil, core.InputErrorf("privateProjects", "privateProjects and %s: a listener of a hub that may make a project private requires a token of every caller (oidcIssuer, oidcAudience, oidcAccounts), since its readiness route answers Dispatch's account by its projected token; declare the listener as listener, or give it clientNamespaces", path)
+	if err := checkPrivateModeListenerImage(path, l.Image); err != nil {
+		return nil, err
 	}
 	for _, in := range []struct {
 		name string
 		set  bool
 	}{
 		{"agentSecretsUrl", l.AgentSecretsUrl != ""},
-		{"publicUrl", l.PublicUrl != ""},
+		{"publicUrl", l.PublicUrl != "" || tailnet != nil},
 		{"brokerAudience", l.BrokerAudience != ""},
 		{"privacySourceUrl", l.PrivacySourceUrl != ""},
 		{"allProjectsAccounts", len(l.AllProjectsAccounts) > 0},
 	} {
 		if !in.set {
-			return nil, core.InputErrorf(path+"."+in.name, "%s.%s is required with privateProjects: the listener of a hub that may make a project private reads each decision's privacy from the secrets broker (agentSecretsUrl, publicUrl, brokerAudience, privacySourceUrl) and serves every project's sessions to the callers allProjectsAccounts names", path, in.name)
+			return nil, core.InputErrorf(path+"."+in.name, "%s.%s is required with privateProjects: the listener of a hub that may make a project private reads each decision's privacy from the secrets broker (agentSecretsUrl, brokerAudience, privacySourceUrl), checks each caller's proof against its own origin (publicUrl, the tailnet's name with tailnet) and serves every project's sessions to the callers allProjectsAccounts names", path, in.name)
 		}
+	}
+	origin := l.PublicUrl
+	if tailnet != nil {
+		if l.PublicUrl != "" && strings.TrimSuffix(l.PublicUrl, "/") != tailnet.envoyURL {
+			return nil, core.InputErrorf(path+".publicUrl", "%s.publicUrl %q is not %s, the origin the tailnet's sessions reach the listener at: the listener checks every caller's DPoP proof against one origin, so a proof signed for the tailnet's name would be refused; leave publicUrl unset with tailnet",
+				path, l.PublicUrl, tailnet.envoyURL)
+		}
+		origin = tailnet.envoyURL
 	}
 	if err := core.CheckEnvValue(path+".brokerAudience", "the broker token's audience", l.BrokerAudience); err != nil {
 		return nil, err
@@ -276,7 +378,7 @@ func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubL
 	for _, account := range credential.accounts {
 		admitted[account] = true
 	}
-	privacy := &clusteredHubListenerPrivacy{brokerAudience: l.BrokerAudience}
+	privacy := &clusteredHubListenerPrivacy{brokerAudience: l.BrokerAudience, origin: origin}
 	for i, account := range l.AllProjectsAccounts {
 		namespace, _, ok := core.ServiceAccountSubject(account)
 		if !ok || !dnsLabel(namespace) {
@@ -293,17 +395,21 @@ func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubL
 }
 
 // clusteredHubListenerCredentialFor resolves the token check the listener l, declared at path,
-// requires of every caller: nil where it requires none, which is a tailnet.listener with no
-// clientNamespaces, reached through the tailnet hosts alone, as it always has been. A listener
-// declared as the hub's own listener input, or one with clientNamespaces, requires one, since its
-// NetworkPolicy alone would let every pod it admits send as any session: a projected
-// ServiceAccount token oidcIssuer signed for oidcAudience, whose subject is one oidcAccounts
-// lists. Each of the three is then required, by its path, and allowedHosts is refused, since a
-// listener that requires a bearer serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS. Where
-// the listener requires none, each of the three is refused by its path rather than dropped.
-// Which of the two it is follows from the input args selected, the hub's own listener or the
-// tailnet entry's, and from clientNamespaces: path names the inputs a refusal is about and decides
-// nothing.
+// has: nil where it has none, which is a tailnet.listener with no clientNamespaces on a hub
+// without privateProjects, reached through the tailnet hosts alone, as it always has been. A
+// listener declared as the hub's own listener input, or one with clientNamespaces, requires a
+// token of every caller, since its NetworkPolicy alone would let every pod it admits send as any
+// session: a projected ServiceAccount token oidcIssuer signed for oidcAudience, whose subject is
+// one oidcAccounts lists. Each of the three is then required, by its path, and allowedHosts is
+// refused, since a listener that requires a bearer serves /v1 to any Host and reads no
+// ENVOY_ALLOWED_HOSTS. A tailnet.listener with no clientNamespaces on a hub with privateProjects
+// needs the three too, for Dispatch's principal, which its readiness route knows by the projected
+// token, but keeps its open /v1 beside the check (open): a token that is presented is verified,
+// and a caller that presents none is served at the tailnet name and allowedHosts as before, until
+// the open /v1 is removed. Where the listener has no check, each of the three is refused by its
+// path rather than dropped. Which it is follows from the input args selected, the hub's own
+// listener or the tailnet entry's, from clientNamespaces and from privateProjects: path names the
+// inputs a refusal is about and decides nothing.
 //
 // The listener refuses at boot half the issuer and audience pair and a subject of any other
 // shape (cmd/listener/apiauth.go, resolveListenerOIDCAccounts), so those are refused here first;
@@ -323,7 +429,8 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 	// clusteredHubListenerArgs selects args.Listener when it is set, and the tailnet entry's
 	// listener otherwise, so l is the tailnet entry's exactly when it is not args.Listener.
 	inTailnet := l != args.Listener
-	if inTailnet && len(l.ClientNamespaces) == 0 {
+	open := inTailnet && len(l.ClientNamespaces) == 0
+	if open && !args.PrivateProjects {
 		for _, in := range inputs {
 			if in.set {
 				return nil, core.InputErrorf(in.name, "%s is given on a tailnet.listener with no clientNamespaces, which serves the tailnet hosts with no credential, so it would check nothing; declare the listener as listener, or give it clientNamespaces, to require a token of its callers", in.name)
@@ -331,16 +438,20 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 		}
 		return nil, nil
 	}
-	why := "the listener is the hub's own listener input"
-	if inTailnet {
-		why = "tailnet.listener has clientNamespaces"
-	}
 	for _, in := range inputs {
-		if !in.set {
-			return nil, core.InputErrorf(in.name, "%s is required because %s: the listener then requires every caller's projected ServiceAccount token, issued by %s.oidcIssuer for %s.oidcAudience to a subject %s.oidcAccounts lists, since its NetworkPolicy alone would let every pod it admits send as any session", in.name, why, path, path, path)
+		if in.set {
+			continue
 		}
+		if open {
+			return nil, core.InputErrorf(in.name, "%s is required because privateProjects is set: the tailnet.listener keeps its open /v1 for a caller that presents no credential, and checks a projected ServiceAccount token that is presented, issued by %s.oidcIssuer for %s.oidcAudience to a subject %s.oidcAccounts lists, which is how its readiness route knows Dispatch's own account", in.name, path, path, path)
+		}
+		why := "the listener is the hub's own listener input"
+		if inTailnet {
+			why = "tailnet.listener has clientNamespaces"
+		}
+		return nil, core.InputErrorf(in.name, "%s is required because %s: the listener then requires every caller's projected ServiceAccount token, issued by %s.oidcIssuer for %s.oidcAudience to a subject %s.oidcAccounts lists, since its NetworkPolicy alone would let every pod it admits send as any session", in.name, why, path, path, path)
 	}
-	if len(l.AllowedHosts) > 0 {
+	if len(l.AllowedHosts) > 0 && !open {
 		return nil, core.InputErrorf(path+".allowedHosts", "%s.allowedHosts is given on a listener that requires a credential, which serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it would do nothing; unset it", path)
 	}
 	blank := func(value string) bool {
@@ -364,7 +475,7 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 		}
 		seen[account] = i
 	}
-	return &clusteredHubListenerCredential{issuer: l.OidcIssuer, audience: l.OidcAudience, accounts: l.OidcAccounts}, nil
+	return &clusteredHubListenerCredential{issuer: l.OidcIssuer, audience: l.OidcAudience, accounts: l.OidcAccounts, open: open}, nil
 }
 
 // issuerURL is whether raw is an OIDC issuer a verifier can discover: an https URL with a host and
