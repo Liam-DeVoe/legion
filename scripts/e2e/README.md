@@ -5123,6 +5123,7 @@ Each bound of 10 s is measured from the operation that triggers the answer, neve
 
 - after the broker comes back, from the `SIGCONT`.
 
+The answer's own time is the time of the daemon's record of it, never the time a read saw it: `workflow: a check state is held` for a state, `workflow: phase changed` for a move, and `supervise: launched` for the reviewer's start; the read only confirms the phase or the launch, and a record that is missing is `UNKNOWN`.
 A case reads on for a minute past its bound, so an answer that comes late fails at `<assertion>-within` and says how late it came, apart from an answer that never comes.
 A case reads three things:
 

@@ -1010,10 +1010,20 @@ func (r *statesProof) phaseOf(issue *statesIssue, assertion string) phase.Phase 
 	return held.Phase
 }
 
-// movesWithin holds that GET /legion/v1/state shows issue in want within statesWithin of from, the
-// moment of trigger, the operation that moves it. It fails at assertion at once when the issue
-// leaves testing for another phase, and when it is still in testing statesLate after from. An
-// issue that reaches want later than the bound fails at `<assertion>-within`, naming how late.
+// statesPhaseChanged and statesLaunched are the daemon's records of a move (workflow's transition)
+// and of a worker's start (supervise's launch, written once the runtime started its process).
+const (
+	statesPhaseChanged = "workflow: phase changed"
+	statesLaunched     = "supervise: launched"
+)
+
+// movesWithin holds that GET /legion/v1/state shows issue in want, and that the daemon's own
+// record of that move was written within statesWithin of from, the moment of trigger, the
+// operation that moves it. The bound is judged on the record's time, not on when the read saw the
+// phase, so a read that comes late neither passes a late move nor fails a timely one. It fails at
+// assertion at once when the issue leaves testing for another phase, and when it is still in
+// testing statesLate after from; a move recorded before from, or later than the bound, fails at
+// `<assertion>-within`; a move the daemon's log holds no record of is UNKNOWN.
 func (r *statesProof) movesWithin(issue *statesIssue, want phase.Phase, assertion string, from time.Time, trigger string) {
 	r.t.Helper()
 	got := r.phaseOf(issue, assertion)
@@ -1025,10 +1035,20 @@ func (r *statesProof) movesWithin(issue *statesIssue, want phase.Phase, assertio
 	if got != want {
 		r.fail(assertion, "GET /legion/v1/state shows %s in %s %s after %s, want %s", issue.key, got, seen, trigger, want)
 	}
-	if seen > statesWithin {
-		r.fail(assertion+"-within", "GET /legion/v1/state shows %s in %s only %s after %s, past the bound of %s", issue.key, want, seen, trigger, statesWithin)
+	moved := r.recordAfterRead(func(l loggedRecord) bool {
+		return l.Message == statesPhaseChanged && l.Attrs["issue"] == issue.key && l.Attrs["to"] == string(want)
+	})
+	if moved == nil {
+		r.fail(assertion, "UNKNOWN: GET /legion/v1/state shows %s in %s, and the daemon's log holds no %q record of that move %s later, so when it moved cannot be read",
+			issue.key, want, statesPhaseChanged, statesRecordWait)
 	}
-	r.note("read back: GET /legion/v1/state shows %s in %s %s after %s (bound %s)", issue.key, got, seen, trigger, statesWithin)
+	took := moved.at.Sub(from)
+	if took < 0 || took > statesWithin {
+		r.fail(assertion+"-within", "the daemon recorded the move of %s to %s at %s, %s after %s, outside the bound of %s",
+			issue.key, want, moved.at.UTC().Format(time.RFC3339Nano), took.Round(time.Millisecond), trigger, statesWithin)
+	}
+	r.note("read back: GET /legion/v1/state shows %s in %s (read %s after %s); the daemon recorded the move %s after %s (bound %s)",
+		issue.key, got, seen, trigger, took.Round(time.Millisecond), trigger, statesWithin)
 	for _, state := range r.publishedStates(issue) {
 		r.note("  Dispatch's published state: %s", state)
 	}
@@ -1036,8 +1056,9 @@ func (r *statesProof) movesWithin(issue *statesIssue, want phase.Phase, assertio
 
 // reviewerLaunched waits, until statesLate has passed from from, the moment of trigger, for the
 // daemon to start issue's reviewer: to hold its claim and to have asked the runtime to launch its
-// pane. It answers how long after from it saw both, and fails the case at assertion when the
-// reviewer has not started by then.
+// pane, and fails the case at assertion when the reviewer has not started by then. It answers how
+// long after from the daemon recorded the launch (statesLaunched), the record's own time, and a
+// launch the daemon's log holds no record of is UNKNOWN.
 func (r *statesProof) reviewerLaunched(issue *statesIssue, assertion string, from time.Time, trigger string) time.Duration {
 	r.t.Helper()
 	reviewer := r.token(issue.key, claim.RoleReviewer)
@@ -1054,18 +1075,44 @@ func (r *statesProof) reviewerLaunched(issue *statesIssue, assertion string, fro
 	if !held {
 		r.fail(assertion, "the daemon did not start %s within %s of %s: %d launches of its pane", reviewer, statesLate, trigger, len(launches))
 	}
-	r.note("read back: the daemon started the reviewer %s %s after %s (%d launches of its pane, generation %d)",
-		reviewer, seen, trigger, len(launches), launches[len(launches)-1].Generation)
-	return seen
+	launched := r.recordAfterRead(func(l loggedRecord) bool {
+		return l.Message == statesLaunched && l.Attrs["claim"] == string(reviewer)
+	})
+	if launched == nil {
+		r.fail(assertion, "UNKNOWN: the runtime launched %s, and the daemon's log holds no %q record of it %s later, so when it started cannot be read",
+			reviewer, statesLaunched, statesRecordWait)
+	}
+	took := launched.at.Sub(from)
+	r.note("read back: the daemon started the reviewer %s (%d launches of its pane, generation %d; read %s after %s); the daemon recorded the launch %s after %s",
+		reviewer, len(launches), launches[len(launches)-1].Generation, seen, trigger, took.Round(time.Millisecond), trigger)
+	return took
 }
 
-// reviewerStarted holds that the daemon starts issue's reviewer within statesWithin of from, the
-// moment of trigger; a reviewer that starts later fails at reviewer-started-within.
+// statesRecordWait is how long recordAfterRead waits for a record of what a read already saw: the
+// daemon writes a move's record once its transaction commits and a launch's once the runtime's
+// start returns, so a read can see either a moment before its record exists.
+const statesRecordWait = 5 * time.Second
+
+// recordAfterRead is the newest record of the daemon's log that want matches, read until one
+// exists or statesRecordWait has passed; nil when none came.
+func (r *statesProof) recordAfterRead(want func(loggedRecord) bool) *loggedRecord {
+	deadline := time.Now().Add(statesRecordWait)
+	for {
+		if found := r.lastLog(want); found != nil || time.Now().After(deadline) {
+			return found
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// reviewerStarted holds that the daemon recorded the start of issue's reviewer within
+// statesWithin of from, the moment of trigger; a start recorded before from or later than the
+// bound fails at reviewer-started-within.
 func (r *statesProof) reviewerStarted(issue *statesIssue, from time.Time, trigger string) {
 	r.t.Helper()
-	if seen := r.reviewerLaunched(issue, "reviewer-started", from, trigger); seen > statesWithin {
-		r.fail("reviewer-started-within", "the daemon started %s only %s after %s, past the bound of %s",
-			r.token(issue.key, claim.RoleReviewer), seen, trigger, statesWithin)
+	if took := r.reviewerLaunched(issue, "reviewer-started", from, trigger); took < 0 || took > statesWithin {
+		r.fail("reviewer-started-within", "the daemon recorded the start of %s %s after %s, outside the bound of %s",
+			r.token(issue.key, claim.RoleReviewer), took.Round(time.Millisecond), trigger, statesWithin)
 	}
 }
 
