@@ -146,11 +146,12 @@ func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]st
 // derivation refused, how many read as the base, how many read another state with no state moved
 // toward true or with a state moved by the input's right, how many of those moved a state toward
 // true by a right, with what each of them changed; and judged, the key of the base's line, the bytes
-// that the reader's process read of the base (readerLine), then each judged input's key and kind, in
-// the order of the inputs: 'r' read, 'x' refused. An input that fails the comparison fails the test
-// and is counted nowhere. So the floors (atFloor), which count the inputs judged and hold the
-// digest of judged, fail by name where the sweep skips an input that it built, drops one that it
-// judged, writes an input's bytes otherwise, or reads a base of other bytes. known is how many
+// that the reader's process read of the base (readerLine), then each judged input's key, kind ('r'
+// read, 'x' refused), right and allowed places (counted), in the order of the inputs. An input that
+// fails the comparison fails the test and is counted nowhere. So the floors (atFloor), which count
+// the inputs judged and hold the digest of judged, fail by name where the sweep skips an input that
+// it built, drops one that it judged, writes an input's bytes otherwise, reads a base of other bytes,
+// or judges an input by another right. known is how many
 // times the sweep reported its known positive (knownPositive), which no floor counts: a sweep whose
 // judgment no longer reports an input that moves a state toward true with no right, whether it
 // skips that judgment, counts such an input as read or computes it blind, fails by name there
@@ -162,12 +163,26 @@ type sweepCount struct {
 }
 
 // counted counts the judged input in, whose key is key, as of the kind kind, and is whether it
-// counted it: it counts no known positive, which the floors do not hold.
+// counted it: it counts no known positive, which the floors do not hold. It appends to judged the
+// key, the kind, the input's right, and each place that the right allows with the state that it
+// allows there, in the order of the places (nil, a right that covers each place, written apart from
+// a right that allows no place), so that a right that any code gives an input, takes from it, widens
+// or narrows moves the digest of its base, and fails by name (atFloor).
 func (n *sweepCount) counted(in sweepInput, key [sha256.Size]byte, kind byte) bool {
 	if in.known {
 		return false
 	}
 	n.judged = append(append(n.judged, key[:]...), kind)
+	n.judged = fmt.Appendf(n.judged, "right %q", in.right)
+	if in.allowed == nil {
+		n.judged = append(n.judged, " allows each place;"...)
+		return true
+	}
+	n.judged = fmt.Appendf(n.judged, " allows %d places:", len(in.allowed))
+	for _, at := range slices.Sorted(maps.Keys(in.allowed)) {
+		n.judged = fmt.Appendf(n.judged, " %q %q", at, in.allowed[at])
+	}
+	n.judged = append(n.judged, ';')
 	return true
 }
 
