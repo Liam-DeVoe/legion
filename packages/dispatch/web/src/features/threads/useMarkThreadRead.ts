@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { threadReadRequest } from "../../api/client";
 import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
-import type { WhoAmIReadOptions } from "../../hooks/useIsHuman";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
@@ -40,7 +40,7 @@ export interface MarkThreadReadOptions {
    *  thread is still loading, and none at all from a surface that wants no set. */
   readonly writes?: readonly { readonly id: string; readonly created_at: string }[];
   /** How long the sign-in read and unread set stay fresh, and whether a focus reads them again. */
-  readonly freshness?: WhoAmIReadOptions;
+  readonly freshness?: EventFreshness;
 }
 
 /** What a thread's read mark answers: where the watch goes, and what the thread still holds

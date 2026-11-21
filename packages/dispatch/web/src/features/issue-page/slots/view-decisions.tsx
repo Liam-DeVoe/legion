@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -15,6 +15,7 @@ import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import { waitingPressOf } from "../waiting";
+import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part Q, "The Decisions view". */
@@ -39,25 +40,17 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // person's write-up of an answered question (below); the entry it names takes the focus, once
   // per address (R6).
   const { named, reveal } = useAddressTarget(root, address);
-  // Whether the list draws the node the address names, which the stage is told once every read
-  // the tree is built from has settled (`ViewSlotProps.onAddressDrawn`, by the rule `StageSlot`
-  // gives). The body says whether it does (`onRevealDrawn`): only the body knows the rows it
-  // draws, and which decisions are a person's write-up of an answered question, which is no row
-  // here, so that an address naming one lands on the row of a question it answers where the list
-  // draws one. The body is handed the call once no read stands refused. The list draws a line of
-  // its own for the decisions read and the asks read (`DecisionsFilterBody`), and none for any
-  // other read rows come from: where one of those stands refused - the coverage, the results, the
-  // comments, the messages, a document's blocks - the view says it draws no node, whatever the
-  // body draws; where only its own stand refused, it says nothing and keeps its line. Where the
-  // list draws none of the node - the tree holds none, the words filter matched none of the
-  // questions a write-up answers, or its read stands refused - the stage draws the outline in the
-  // view's place, which lands on the node or says that the issue holds none of it or that its
-  // read failed.
-  const refused = failed.filter(({ placesRows }) => placesRows);
-  const foreign = refused.some(({ key }) => key !== "decisions" && key !== "asks");
-  useLayoutEffect(() => {
-    if (readsSettled && foreign) onAddressDrawn(false);
-  }, [foreign, onAddressDrawn, readsSettled]);
+  // Whether the list draws the node the address names, which the stage is told by the rule for
+  // refused reads (`useTellsAddressDrawn`). The list draws a line of its own for the decisions
+  // read and the asks read (`DecisionsFilterBody`). Where the view may tell, the body says
+  // whether it draws the node (`onRevealDrawn`): only the body knows the rows it draws, and which
+  // decisions are a person's write-up of an answered question, which is no row here, so that an
+  // address naming one lands on the row of a question it answers where the list draws one. Where
+  // the list draws none of the node - the tree holds none, the words filter matched none of the
+  // questions a write-up answers, or a read the list draws no line for stands refused - the stage
+  // draws the outline in the view's place, which lands on the node or says that the issue holds
+  // none of it or that its read failed.
+  const tells = useTellsAddressDrawn(failed, readsSettled, ["decisions", "asks"], onAddressDrawn);
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),
     [address.filter, named, root]
@@ -76,7 +69,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         holdsEscape
         isClosed={issue.closed_at !== null}
         issue={issue}
-        {...(readsSettled && refused.length === 0 ? { onRevealDrawn: onAddressDrawn } : {})}
+        {...(tells ? { onRevealDrawn: onAddressDrawn } : {})}
         reader={viewer}
         request={request}
         reveal={reveal?.at(-1)?.id}

@@ -2,15 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import {
-  createPath,
-  MemoryRouter,
-  type NavigateFunction,
-  type Navigator,
-  Router,
-  useLocation,
-  useNavigate,
-} from "react-router-dom";
+import { MemoryRouter, type NavigateFunction } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
 import {
@@ -22,20 +14,20 @@ import {
   whoAmIQuery,
 } from "../../../api/queries";
 import type { ArtifactBlock, Comment, IssueAskRow, IssueDetails } from "../../../api/types";
-import { useIsHuman, type WhoAmIReadOptions } from "../../../hooks/useIsHuman";
+import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
 import { EVENT_FRESH } from "../../refs/reference-target";
-import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
+import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { presetPath } from "../issue-address";
-import { TWO_THREADS, waitInAct } from "../outline-fixtures";
+import { framesByHand, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { EMPTY_STATE_LINES, type Preset, STATE_LINES } from "../page-words";
-import { ProvidersSlot } from "../slots/providers";
-import { StageSlot } from "../slots/stage";
+import { FAILED_READ_RETRY } from "../slots/failed-read-line";
+import { AddressedStage, drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { issueAsksQuery } from "../useIssueTree";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
@@ -122,27 +114,6 @@ function drawStage(
   );
 }
 
-/** The page's stage at the address the router holds, under the page's own providers, as the
- *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
- *  render. `held.navigate` moves the router, as a press of a view's control does. */
-function AddressedStage({
-  held,
-  issue,
-}: {
-  held: { navigate?: NavigateFunction };
-  issue: IssueDetails;
-}): ReactNode {
-  const { pathname, search } = useLocation();
-  held.navigate = useNavigate();
-  const route = parseIssuePath(pathname, search);
-  if (route === undefined) throw new Error(`${pathname} names no route`);
-  return (
-    <ProvidersSlot issue={issue} route={route}>
-      <StageSlot issue={issue} route={route} />
-    </ProvidersSlot>
-  );
-}
-
 /** The line the body draws once the reads that say which entries there are have answered. */
 async function emptyLineOf(view: RenderResult): Promise<string | null | undefined> {
   await waitFor(() =>
@@ -154,18 +125,6 @@ async function emptyLineOf(view: RenderResult): Promise<string | null | undefine
 /** The node id of the row that holds the focus, or undefined where no row does. */
 function focusedRow(): string | undefined {
   return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
-}
-
-/** Which slot the stage drew, by each slot's own mark: a view's body, the Decisions view's, the
- *  Plan view's or the Verification view's, or the body that draws the outline or a line in its
- *  place. */
-function drawnSlot(view: RenderResult): string {
-  const { container } = view;
-  if (container.querySelector("[data-issue-body]") !== null) return "the body";
-  const drawn = container.querySelector(
-    "[data-decisions-body], [data-plan-body], [data-verification-body]"
-  );
-  return drawn === null ? "nothing" : "the view";
 }
 
 /** Waits for the row `selector` finds in `view` to hold the focus, saying what `what` drew
@@ -373,35 +332,6 @@ test("a write-up's address under words its question does not hold draws the outl
   }
 });
 
-/** Holds every frame asked for from here on until `run` runs the ones asked so far, as the next
- *  frame would; a frame cancelled first is not run. `restore` gives the frames back to happy-dom. */
-function framesByHand(): { readonly restore: () => void; readonly run: () => Promise<void> } {
-  const asked = new Map<number, FrameRequestCallback>();
-  let last = 0;
-  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-    last += 1;
-    asked.set(last, callback);
-    return last;
-  });
-  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
-    asked.delete(frame);
-  });
-  return {
-    restore: () => {
-      request.mockRestore();
-      cancel.mockRestore();
-    },
-    run: () =>
-      act(async () => {
-        for (const frame of [...asked.keys()]) {
-          const callback = asked.get(frame);
-          asked.delete(frame);
-          callback?.(performance.now());
-        }
-      }),
-  };
-}
-
 /** The outline's row of the write-up, drawn in the Decisions view's place at the write-up's
  *  address under words its question does not hold: the decisions read is held until the view is
  *  drawn, `press` is done then where it is given, and once the outline draws the row every frame
@@ -561,7 +491,7 @@ async function requestsOf(
 }
 
 /** Who is reading as a surface that calls `useIsHuman` with `options` reads it: the hook alone. */
-function ReadsWhoIsReading({ options }: { options?: WhoAmIReadOptions }): ReactNode {
+function ReadsWhoIsReading({ options }: { options?: EventFreshness }): ReactNode {
   useIsHuman(options);
   return null;
 }
@@ -795,38 +725,6 @@ test("a comment of the issue, named on the Plan view's address, draws the outlin
   ).toBeNull();
 });
 
-/** A navigator that goes nowhere, for a router whose location the case sets itself. */
-const NO_NAVIGATION: Navigator = {
-  createHref: (to) => (typeof to === "string" ? to : createPath(to)),
-  go: () => {},
-  push: () => {},
-  replace: () => {},
-};
-
-/** The page's stage at `address` under the location the browser makes for it, as a load does or
- *  a fragment typed in the address bar: its key is "default", the one key the router gives every
- *  entry it did not make itself. `follow` draws the stage at another address under that same key,
- *  as the browser changes the fragment alone, with no load. */
-function drawAtBrowserEntry(
-  address: string,
-  issue: IssueDetails
-): RenderResult & { readonly follow: (to: string) => void } {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const draw = (at: string): ReactNode => (
-    <Router location={at} navigator={NO_NAVIGATION}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage held={{}} issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </Router>
-  );
-  const view = render(draw(address));
-  return { ...view, follow: (to) => view.rerender(draw(to)) };
-}
-
 // Every entry the browser makes has the key "default", so each fragment it changes under the Plan
 // view's address is a following of its own though the key stays one. The task keeps the view;
 // the statement draws the outline in the view's place, which lands on the statement's row; and
@@ -984,7 +882,7 @@ async function retryTakesFocus(view: RenderResult, message: string, what: string
       `${what} drew no line "${message}"; the stage drew ${drawnSlot(view)}`
     ).toBeDefined();
     expect(
-      line?.querySelector("button"),
+      line?.querySelector(FAILED_READ_RETRY),
       `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}`
     ).toHaveFocus();
   });
@@ -1005,10 +903,10 @@ test("the comments read refused, a comment named beside the Decisions view draws
   ).toBeNull();
 });
 
-// The Verification view draws a line for the coverage read, the results read and its own
-// document's blocks alone, so with the plan's blocks refused a plan task named on its address
-// lands on nothing there: the stage draws the outline in the view's place, which says the plan
-// could not be loaded, with the focus on its Retry.
+// The Verification view draws a line for the coverage read, the results read and, where the
+// results read holds a check, its own document's blocks alone, so with the plan's blocks refused
+// a plan task named on its address lands on nothing there: the stage draws the outline in the
+// view's place, which says the plan could not be loaded, with the focus on its Retry.
 test("the plan's blocks refused, a plan task named on the Verification view's address draws the outline in its place, with the plan's line and the focus on its Retry", async () => {
   answerVerificationReads();
   spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => {
@@ -1017,6 +915,29 @@ test("the plan's blocks refused, a plan task named on the Verification view's ad
   });
   const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
   await retryTakesFocus(view, STATE_LINES.plan_unreadable, "the plan task's address");
+  expect(
+    view.container.querySelector("[data-verification-body]"),
+    "the Verification view was drawn beside the outline"
+  ).toBeNull();
+});
+
+// Where the results read holds no check the Verification view needs no blocks read, and draws no
+// line for its document's blocks (`useVerificationReads`), so with those blocks refused a check
+// named on its address lands on nothing there: the stage draws the outline in the view's place,
+// which says the Verification document could not be loaded, with the focus on its Retry.
+test("the results read holding no check and the Verification document's blocks refused, a check named on the Verification view's address draws the outline in its place, with the blocks' line and the focus on its Retry", async () => {
+  answerVerificationReads();
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [],
+    issue: KEY,
+    verification_artifact_id: VERIFICATION_DOCUMENT.id,
+  });
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => {
+    if (id === VERIFICATION_DOCUMENT.id) throw REFUSED;
+    return [...(BLOCKS[id] ?? [])];
+  });
+  const view = drawStage(`#b-${CHECK}`, { issue: verifiedIssue(), preset: "verification" });
+  await retryTakesFocus(view, STATE_LINES.verification_unreadable, "the check's address");
   expect(
     view.container.querySelector("[data-verification-body]"),
     "the Verification view was drawn beside the outline"

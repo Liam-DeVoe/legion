@@ -2100,10 +2100,10 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   expect(noQuestion.container.querySelectorAll("[data-row-report]").length).toBe(1);
 });
 
-// The list has one level, so Left on a row has no level above it to go to, and it says so at the
-// row in the list's own words: the outline's report for that key speaks of the whole issue,
-// which the list is not. The focus stays on the row.
-test("Left on a row says the list has no level above it", async () => {
+// The parts of the list stand at one level, so Left on a row of the parts has no level above it
+// to go to, and it says so at the row in the list's own words: the outline's report for that key
+// speaks of the whole issue, which the list is not. The focus stays on the row.
+test("Left on a row of the parts says the list has no level above it", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue());
   await act(async () => rowOf(view, D("first")).focus());
@@ -2117,7 +2117,8 @@ test("Left on a row says the list has no level above it", async () => {
 
 // A row of the foot is drawn a level down, under the foot's control, so Left on one goes up to
 // that control, as Left goes to a row's parent in the outline, and says nothing, whatever foot
-// row stands above it. A row of the parts still has no level above it.
+// row stands above it. The last steps pin that the foot's handler never reaches a row of the
+// parts: with the foot open, Left on one still says the list has no level above it.
 test("Left on a row of the foot goes up to the foot's control", async () => {
   const view = renderBody(wholeIssue());
   const left = (on: HTMLElement) =>

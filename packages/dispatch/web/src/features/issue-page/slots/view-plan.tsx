@@ -10,12 +10,13 @@ import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
-import { useOutlineReads } from "../outline-reads";
+import { blocksKey, useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
 /**
@@ -122,23 +123,19 @@ export function ViewPlanSlot({
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
-  // Whether the view draws a row of the node the address names, which the stage is told once
-  // every read the tree is built from has settled (`ViewSlotProps.onAddressDrawn`, by the rule
-  // `StageSlot` gives). The view draws a row for a task alone - a step of the chart or of the
-  // steps, or the row of the cycle that holds it - and none for a statement, a comment or any
-  // other node, so it draws the node where the address names a task it keeps (`reveal`). It draws
-  // a line of its own for the plan's blocks and the spec's (`watched`), and none for any other
-  // read rows come from: where one of those stands refused it says it draws no row, and where only
-  // its own stand refused it says nothing and keeps its line. It is said before the browser
-  // paints, so where the reads were held as the view was drawn, as on Back to its address, no
-  // chart is painted in the outline's place. Drawn outside the stage, the slot is handed no call
-  // and tells no one.
-  const refused = refusedLines.filter(({ placesRows }) => placesRows);
-  const foreign = refused.some(({ key }) => !watched.some(({ id }) => key === `blocks:${id}`));
+  // Whether the view draws a row of the node the address names, which the stage is told by the
+  // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
+  // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the
+  // chart or of the steps, or the row of the cycle that holds it - and none for a statement, a
+  // comment or any other node, so where the view may tell, it says it draws the node where the
+  // address names a task it keeps (`reveal`). It says so before the browser paints, so where the
+  // reads were held as the view was drawn, as on Back to its address, no chart is painted in the
+  // outline's place. Drawn outside the stage, the slot is handed no call and tells no one.
+  const own = watched.flatMap(({ id }) => (id === undefined ? [] : [blocksKey(id)]));
+  const tells = useTellsAddressDrawn(refusedLines, readsSettled, own, onAddressDrawn);
   useLayoutEffect(() => {
-    if (!readsSettled || (!foreign && refused.length > 0)) return;
-    onAddressDrawn?.(!foreign && view.root.children.some(({ id }) => named.has(id)));
-  }, [foreign, named, onAddressDrawn, readsSettled, refused.length, view.root]);
+    if (tells) onAddressDrawn?.(view.root.children.some(({ id }) => named.has(id)));
+  }, [named, onAddressDrawn, tells, view.root]);
   const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
