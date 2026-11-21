@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -479,16 +480,31 @@ func TestTheBarrierIsAStream(t *testing.T) {
 	barrier := map[string]any{"name": natsgrant.HoldBarrierStream, "subjects": []string{"_ENVOY_HOLD_BARRIER.hold-1"},
 		"storage": "memory", "num_replicas": 1, "max_msgs": 1}
 	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream, barrier)
-	var names struct {
-		Streams []string `json:"streams"`
-	}
-	require.NoError(t, json.Unmarshal(succeeds(t, operator.Conn, "$JS.API.STREAM.NAMES", nil).raw, &names))
-	require.Contains(t, names.Streams, natsgrant.HoldBarrierStream)
+	requireStreamListed(t, operator.Conn, natsgrant.HoldBarrierStream)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+natsgrant.HoldBarrierStream, nil)
 	requireStreamGone(t, js, natsgrant.HoldBarrierStream)
 
 	other := map[string]any{"name": "ENVOY_HOLD_OTHER", "subjects": []string{"_ENVOY_HOLD_OTHER.hold-1"}, "storage": "memory", "num_replicas": 1}
 	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_HOLD_OTHER", other)
+}
+
+// requireStreamListed requires conn's STREAM.NAMES to list stream, asking again until it does,
+// within streamGoneWait. Right after a meta-leader election on a loaded 3-member cluster, a member
+// can answer STREAM.NAMES from an assignment list that does not yet hold a stream made a moment
+// before (one run listed only three of the buckets), so one answer is not the fact; each ask waits
+// 5 s, and a timeout, an error answer or a list without the stream is asked again.
+func requireStreamListed(t *testing.T, conn *nats.Conn, stream string) {
+	t.Helper()
+	testwait.WithinPolling(t, streamGoneWait, 200*time.Millisecond, stream+" listed by STREAM.NAMES", func() bool {
+		msg, err := conn.Request("$JS.API.STREAM.NAMES", nil, 5*time.Second)
+		if err != nil {
+			return false
+		}
+		var names struct {
+			Streams []string `json:"streams"`
+		}
+		return json.Unmarshal(msg.Data, &names) == nil && slices.Contains(names.Streams, stream)
+	})
 }
 
 // streamGoneWait bounds requireStreamGone: long enough for a loaded box, where a 3-member cluster
