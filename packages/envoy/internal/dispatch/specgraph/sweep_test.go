@@ -229,7 +229,10 @@ func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCou
 // not hold, by its name. Two inputs of one base hold the same files, byte for byte, exactly where
 // their keys are the same. Each JSON file that a sweep writes is as encodeTree writes it, with the
 // members of each object in the order of their names, so two inputs that write one tree have the
-// same key.
+// same key. Inputs that differ in bytes and that the reader reads the same are, by design, the
+// sweep's forms of one meaning (a member left out, "" and " ", each read as nothing), so the key
+// does not compare readings; a change of those forms is a change of the sweep's own text, which no
+// writer can make, and the digest of the kinds of the inputs fails it (sweepFloors).
 func inputKey(base, fsys fstest.MapFS) [sha256.Size]byte {
 	h := sha256.New()
 	for _, name := range slices.Sorted(maps.Keys(fsys)) {
