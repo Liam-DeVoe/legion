@@ -210,11 +210,11 @@ const MaskedPrefixWord = 8
 // PrefixMasked is text, the output of a launch that ran with prefix, a line at a time by
 // redact.Withheld's rule, the rule the `secrets` and private_key_command outputs are printed by:
 // every copy of each of the prefix's words, its program included, and of the value of each
-// NAME=value word (the part after its first "="), of MaskedPrefixWord characters or more, is
-// replaced by `<prefix word N>`, N the word's place in prefix (0 the program), wherever it stands;
-// and a line that still holds redact.HeldRun characters in a row of a word, or of such a value,
-// compared without case, is not printed, its length printed instead. A NAME=value word whole is
-// taken out only as an exact copy, so a line that names the variable is kept. A prefix such as
+// NAME=value word (assignment), of MaskedPrefixWord characters or more, is replaced by
+// `<prefix word N>`, N the word's place in prefix (0 the program), wherever it stands; and a line
+// that still holds redact.HeldRun characters in a row of a word, or of such a value, compared
+// without case, is not printed, its length printed instead. A NAME=value word whole is taken out
+// only as an exact copy, so a line that names the variable is kept. A prefix such as
 // `env NAME=<token>`, a proxy wrapper handed a URL with a password, or a credential pasted where
 // the program goes carries a credential in its words, and a launch that refuses or fails can echo
 // it, whole, as the value alone, folded or cut, in the output a refusal quotes.
@@ -222,7 +222,7 @@ func PrefixMasked(text string, prefix []string) string {
 	var words []redact.Word
 	for place, word := range prefix {
 		shown := fmt.Sprintf("<prefix word %d>", place)
-		_, value, assigns := strings.Cut(word, "=")
+		value, assigns := assignment(word)
 		if len(word) >= MaskedPrefixWord {
 			words = append(words, redact.Word{Text: word, Shown: shown, Exact: assigns})
 		}
@@ -242,4 +242,17 @@ func PrefixMasked(text string, prefix []string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// variableName is the NAME of a NAME=value word: a shell variable's name.
+var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// assignment is the value of word when word sets a variable, as a shell reads a NAME=value word,
+// and ok false otherwise: its part before the first "=" is a variable's name, and its value is
+// more than "=" signs, which end a base64 token (`<token>==`) rather than set a variable to them.
+// Any other word holding "=" (`--key=<token>`, a base64 token) is a word whole, whose runs a line
+// may not hold.
+func assignment(word string) (value string, ok bool) {
+	name, value, found := strings.Cut(word, "=")
+	return value, found && variableName.MatchString(name) && strings.Trim(value, "=") != ""
 }

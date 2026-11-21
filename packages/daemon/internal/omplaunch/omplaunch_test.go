@@ -271,6 +271,29 @@ func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
 	}
 }
 
+// A prefix word holding "=" that sets no variable is a word whole, whose runs a line may not hold:
+// a key handed to a wrapper with its base64 padding (`<token>==`), and a `--key=<token>` flag. The
+// wrapper echoes each token without what surrounded it. The tokens are made up.
+func TestPrefixMaskedReadsOnlyAVariableAsANameValueWord(t *testing.T) {
+	for _, tc := range []struct{ name, word, token string }{
+		{"a base64 key and its padding", "madeUpKeyToken0123456789==", "madeUpKeyToken0123456789"},
+		{"a base64 key holding a / and a +", "madeUp+Key/Token0123456789=", "madeUp+Key/Token0123456789"},
+		{"a flag with its value", "--key=madeUpFlagToken0123456789", "madeUpFlagToken0123456789"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PrefixMasked("keywrap: key "+tc.token+" rejected", []string{"keywrap", "--key", tc.word})
+			if strings.Contains(got, tc.token[:10]) {
+				t.Fatalf("PrefixMasked = %q, which holds part of the key", got)
+			}
+		})
+	}
+	// A variable set to a value is still read as one: the line naming the variable is kept.
+	const value = "madeUpEnvValue0123456"
+	if got := PrefixMasked("OMP_TOKEN is set", []string{"env", "OMP_TOKEN=" + value}); got != "OMP_TOKEN is set" {
+		t.Fatalf("PrefixMasked = %q, want the line naming the variable kept", got)
+	}
+}
+
 // PrefixShown names the prefix's program, without its directory, and how many arguments follow,
 // never an argument: a made-up token set with env, and a made-up proxy URL with a password, are
 // the arguments here. A first word that is a NAME=value word shows as one. WithPrefixShown puts
