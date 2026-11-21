@@ -233,7 +233,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go-race.yaml", "Test the wall-clock measurements alone"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),

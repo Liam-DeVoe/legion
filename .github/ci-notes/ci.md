@@ -918,9 +918,9 @@ start it too, though the row leaves them out: this filter takes no `!` pattern.
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch
-store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
-and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every
-.md file under packages/envoy, which internal/dispatch/store's
+store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
+the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
+packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
 search_text_test.go:84-111 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
@@ -1786,8 +1786,10 @@ applies, natscred, whose service keeper probes with the connection's options whi
 internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race
 build compiles, so this lane is its one run), the NATS auth service
 (internal/cipher/natscallout), which starts a goroutine per request from nats.go's delivery
-callback, counts those waiting for a decision slot and waits them out at Close, and the
-Dispatch API and the document service - all under the race detector. A read
+callback, counts those waiting for a decision slot and waits them out at Close, the sign-in
+code flow (internal/oidc), whose sign-ins and refreshes use one shared x/oauth2 config at the
+same time (TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace checks that use for a data
+race), the Dispatch API and the document service - all under the race detector. A read
 that walks a live document without its lock races the room's peers, which no ordinary run
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
@@ -1801,8 +1803,9 @@ ones run alone, each in the first test step of a job: delivery's xid window test
 auth service's restart storm in envoy-go-race, the API's xid window tests in envoy-go-checks.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred and the NATS auth service),
-envoy-go-race-api and envoy-go-race-docs, whose notes, .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
+the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
+code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
 api sits apart because isolation is what made it fast: sharing a runner, the race binaries
@@ -1830,14 +1833,15 @@ runs in the test process (internal/testnats), so no job here needs a container r
 own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
-kvwatch, natscred and the NATS auth service share this runner. The Dispatch store's tests read
+kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
+Dispatch store's tests read
 DISPATCH_TEST_DATABASE_URL and skip without it (internal/dispatch/store/store_test.go,
 testDatabaseURL), cloning their databases through a harness of their own (store_test.go,
 templates), and delivery's take theirs from storetest.Open
 (internal/dispatch/store/storetest/storetest.go, serverURL), which does the same;
 cmd/listener/dispatch_resolution_test.go's migratedDispatchDatabase gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
-natscred's and the auth service's tests open no store, so they need none.
+natscred's, the auth service's and the code flow's tests open no store, so they need none.
 
 ## The mention sender's claim model alone, on a runner of its own
 
