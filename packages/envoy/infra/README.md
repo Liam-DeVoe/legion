@@ -4083,10 +4083,13 @@ the operator's Google service account's token, make a guarded namespace on anoth
 project or of the workload pool's fleet, register a cluster to that fleet, set IAM policy over any
 of these, or write the writer hold's tables beside the broker's routes, and each principal that can
 become one of those: through IAM impersonation, reported as the chain, or in Kubernetes by running,
-entering or minting the token of a ServiceAccount that holds such a right. On each cluster it
-reviews every ServiceAccount outside the system namespaces, each Google identity the cluster's
-bindings name, and anyone unauthenticated; a Group other than Kubernetes' system groups is never a
-finding while GKE's Google Groups for RBAC is off. It reads code first (`--rbac-render`,
+entering or minting the token of a ServiceAccount that holds such a right. On each cluster of the
+project, of the pool project and of the pool's fleet it reviews every ServiceAccount outside the
+system namespaces, Kubernetes' own groups, each binding subject that is not a person (a person is
+an email outside `gserviceaccount.com`), and anyone
+unauthenticated, and reports every binding of `system:masters` but the bootstrap one. Any other
+Group is no finding while GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or
+on a fleet member that is no GKE cluster. It reads code first (`--rbac-render`,
 `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
 right, or 2 naming each step it could not read, a run that stopped mid-way included.
 `--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that
