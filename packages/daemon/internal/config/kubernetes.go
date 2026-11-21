@@ -20,6 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/sjawhar/envoy/natsurl"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -474,7 +476,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 		// that does not parse) are where a credential would be.
 		return nil, fmt.Errorf("%s.url must be an absolute URL with no path, query, fragment or user (not echoed)", agentSecretsKey)
 	}
-	if err := refuseNonASCIIHost(agentSecretsKey+".url host", u.Hostname()); err != nil {
+	if err := refuseNonASCIIHost(agentSecretsKey+".url host", u); err != nil {
 		return nil, err
 	}
 	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
@@ -628,19 +630,25 @@ func isASCII(s string) bool {
 	return true
 }
 
-// refuseNonASCIIHost refuses a host with any rune above unicode.MaxASCII. It runs before a host is
-// lower-cased for validation.IsDNS1123Subdomain or compared against loopback: strings.ToLower folds
-// `İ` (U+0130) to `i` and the Kelvin sign (U+212A) to `k`, so the lower-cased name would pass while
-// the value kept, as written, is one no node's resolver resolves; and an HTTP client maps `ſ`
-// (U+017F) or a full-width `ｌｏｃａｌｈｏｓｔ` to localhost (UTS-46) where no ASCII comparison does.
-// It quotes host, a URL's parsed host, which holds no userinfo (validURL refuses an "@" after the
-// host first); refuseNonASCIIValue is the same rule for a value written whole, which it never
-// quotes.
-func refuseNonASCIIHost(key, host string) error {
-	if !isASCII(host) {
-		return fmt.Errorf("%s must be an IP address or an ASCII DNS name; got %+q", key, host)
+// refuseNonASCIIHost refuses u, a parsed URL, whose host has any rune above unicode.MaxASCII. It
+// runs before a host is lower-cased for validation.IsDNS1123Subdomain or compared against loopback:
+// strings.ToLower folds `İ` (U+0130) to `i` and the Kelvin sign (U+212A) to `k`, so the lower-cased
+// name would pass while the value kept, as written, is one no node's resolver resolves; and an
+// HTTP client maps `ſ` (U+017F) or a full-width `ｌｏｃａｌｈｏｓｔ` to localhost (UTS-46) where no
+// ASCII comparison does. It quotes the host only when u holds no user name or password and no "@"
+// past its host: url.Parse splits the userinfo at the authority's last "@", so a password holding
+// a bare "@" (`http://user:p@ssword`) leaves its tail as the host, and a credential holding a "/",
+// "?" or "#" written as the user leaves its head there. Such a URL is named by key alone, as
+// refuseNonASCIIValue names a value written whole.
+func refuseNonASCIIHost(key string, u *url.URL) error {
+	host := u.Hostname()
+	if isASCII(host) {
+		return nil
 	}
-	return nil
+	if u.User != nil || natsurl.UserinfoPastHost(u) {
+		return fmt.Errorf("%s must be an IP address or an ASCII DNS name; it holds a character that is not ASCII", key)
+	}
+	return fmt.Errorf("%s must be an IP address or an ASCII DNS name; got %+q", key, host)
 }
 
 // refuseNonASCIIValue is refuseNonASCIIHost for value, a host as the operator wrote it whole
@@ -2390,7 +2398,7 @@ func checkPodReachable(cfg Config) error {
 			return fmt.Errorf("%s must be a valid URL", address.key)
 		}
 		host := parsed.Hostname()
-		if err := refuseNonASCIIHost(address.key+" host", host); err != nil {
+		if err := refuseNonASCIIHost(address.key+" host", parsed); err != nil {
 			return err
 		}
 		var why string

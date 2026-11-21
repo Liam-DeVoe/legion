@@ -2135,6 +2135,8 @@ func TestNFSServerMayBeMixedCaseASCII(t *testing.T) {
 // A URL a pod is handed, and bind, are refused unless their host is ASCII: a pod's HTTP client maps
 // a full-width name to localhost (UTS-46), past the loopback refusal.
 func TestPodURLHostMustBeASCII(t *testing.T) {
+	// A made-up password holding a bare "@", built here so no source line holds a URL with one.
+	passwordAt := "legion:p" + "@"
 	for name, tc := range map[string]struct{ body, want string }{
 		"daemon_url with a long s": {kubernetesWith("daemon_url: http://10.0.0.5:13370", "daemon_url: http://localho\u017Ft:13370"),
 			`daemon_url host must be an IP address or an ASCII DNS name; got "localho\u017ft"`},
@@ -2150,6 +2152,11 @@ func TestPodURLHostMustBeASCII(t *testing.T) {
 			`bind must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 		"agent_secrets.url with a long s": {kubernetesFile + "    agent_secrets:\n      url: http://localho\u017Ft:13380\n" + agentSecretsTokenFile,
 			`runtime.kubernetes.agent_secrets.url host must be an IP address or an ASCII DNS name; got "localho\u017ft"`},
+		// A made-up password holding a bare "@": url.Parse reads its tail as the host, which holds
+		// a character that is not ASCII. The refusal names the key alone, never that tail.
+		"envoy_url with a password holding an @ and a tail that is not ASCII": {kubernetesWith("envoy_url: http://envoy-listener.internal.example:9020",
+			"envoy_url: \"http://"+passwordAt+"sswmadeuptail0123\u00f6rd.example:9020\""),
+			`envoy_url host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
@@ -2157,6 +2164,32 @@ func TestPodURLHostMustBeASCII(t *testing.T) {
 				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// refuseNonASCIIHost quotes a host that is not ASCII only when the URL holds no credential: a
+// made-up password holding a bare "@" leaves its tail as the host, and a made-up token holding a
+// "/" or a "?" written as the user leaves its head there. Each is named by its key alone.
+func TestANonASCIIHostOfAURLWithACredentialIsNamedByItsKey(t *testing.T) {
+	const head, tail = "madeuphead0123\u00e4", "madeuptail0123\u00f6"
+	for name, raw := range map[string]string{
+		"a password holding an @":         "http://legion:p" + "@" + tail + ".example",
+		"a token holding a / as the user": "http://" + head + "/" + "x" + "@host.example",
+		"a token holding a ? as the user": "http://" + head + "?" + "x" + "@host.example",
+	} {
+		t.Run(name, func(t *testing.T) {
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := refuseNonASCIIHost("envoy_url host", u)
+			if want := "envoy_url host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII"; got == nil || got.Error() != want {
+				t.Fatalf("refuseNonASCIIHost(%q) = %v, want %q", raw, got, want)
+			}
+		})
+	}
+	if u, _ := url.Parse("http://\u212Aube.example"); refuseNonASCIIHost("envoy_url host", u).Error() != `envoy_url host must be an IP address or an ASCII DNS name; got "\u212aube.example"` {
+		t.Fatal("a host with no credential is no longer quoted")
 	}
 }
 
