@@ -349,8 +349,10 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			client := fake.newTestClient()
 			restore := refuseOwedReads(t, ctx, pool)
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+			intake.redeliverAfter = testRedeliverAfter
+			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -417,11 +419,14 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	const number = 4217
 	fake := newFakeGitHub(t)
 	serveGitHubPulls(t, fake, "acme/widgets")
+	shrinkOwedReadWriteTimeout(t)
 	release := lockOwedReads(t, ctx, pool)
 	owes := &oweWaitTracer{}
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
-		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake.redeliverAfter = testRedeliverAfter
+	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 	published := time.Now()
@@ -559,15 +564,17 @@ func TestAnOwedRecordRefusedForAnyCauseLosesNoHead(t *testing.T) {
 			restore := refuseOwedReadsWith(t, ctx, pool, sqlstate)
 
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+			intake.redeliverAfter = testRedeliverAfter
+			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 			publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
 				prEnvelope("acme/widgets", number, "opened", head, branch, body, at))
 
-			// The second delivery is the first hand-back's; it comes headWriteRedeliverAfter after
-			// the first. An envelope ended at its first delivery is never delivered again.
+			// The second delivery is the first hand-back's; it comes the intake's redeliverAfter
+			// after the first. An envelope ended at its first delivery is never delivered again.
 			faulted := uint64(0)
 			for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 				if faulted = deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; faulted >= 2 {

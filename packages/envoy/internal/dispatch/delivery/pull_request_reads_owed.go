@@ -143,8 +143,11 @@ const RefusedReadsPerPass = 50
 // pull_request_reads_owed or of its revision sequence (owedTableBound), so a lock of that table,
 // as a migration of it holds one, holds a delivery, and one of the intakeMaxAckPending slots its
 // repository shares, for seconds and not for the message's whole deadline (acceptance of
-// cybermonklabs/legion#4209 at 3a21edb2c9; its reviews at ac562e9837 and 5ea6b2ffb2, N1).
-const owedReadWriteTimeout = 5 * time.Second
+// cybermonklabs/legion#4209 at 3a21edb2c9; its reviews at ac562e9837 and 5ea6b2ffb2, N1). Its
+// value is 5 s in every build: seconds, against the message's deadline of a minute. A var, as
+// intakeMessageTimeout is, so a test of a lock shrinks it (shrinkOwedReadWriteTimeout) and waits
+// out a bound of a second rather than of five at each statement the lock holds.
+var owedReadWriteTimeout = 5 * time.Second
 
 // owedTableBound is ctx bounded by owedReadWriteTimeout, for one statement of the intake that can
 // wait on a lock of pull_request_reads_owed or of its revision sequence: the owe of a read

@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1324,10 +1322,10 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // that writes a merge's head row and its branch seed together rolls back at every delivery and
 // no attempt can ever store the row.
 //
-// The measure is the consumer's delivery count, read once the envelope is acknowledged and
-// again after two whole redelivery delays, which is when a second delivery would have arrived
-// had the envelope been handed back. An acknowledged message is delivered no more, and the count
-// is the one number no other test's leftovers move for this envelope.
+// The measure is the consumer's delivery count, read once the durable's ack floor has passed the
+// envelope (awaitAcknowledged): an acknowledged message is delivered no more, so the count is
+// final then, and an envelope handed back first was delivered twice or more by the time its ack
+// came. The count is the one number no other test's leftovers move for this envelope.
 func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -1350,19 +1348,10 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 		"merge_commit_sha": "4444444444444444444444444444444444444444",
 	})
 
-	var info *natsgo.ConsumerInfo
-	waitFor(t, 45*time.Second, func() bool {
-		info = deliveryConsumerInfo(t, natsClient)
-		return info.Delivered.Consumer-before >= 1 && info.NumAckPending == 0
-	}, func() string {
-		return fmt.Sprintf("the envelope was delivered %d time(s) and is not acknowledged: %+v",
-			info.Delivered.Consumer-before, info)
-	})
-
-	time.Sleep(2 * headWriteRedeliverAfter)
+	awaitAcknowledged(t, natsClient)
 	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 1 {
-		t.Fatalf("deliveries of an envelope whose head row never stores, %s after it was acknowledged = %d, want 1: it is being handed back",
-			2*headWriteRedeliverAfter, delivered)
+		t.Fatalf("deliveries of an envelope whose head row never stores, once it was acknowledged = %d, want 1: it was handed back",
+			delivered)
 	}
 	if owed := owedCount(t, ctx, pool, "acme/widgets", 9102); owed != 1 {
 		t.Fatalf("#9102 is owed %d read(s) after its envelope was acknowledged, want 1: the record is what lets the intake let go", owed)

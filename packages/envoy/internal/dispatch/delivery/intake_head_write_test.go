@@ -47,8 +47,10 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	natsClient := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	serveMergedPullRequest(t, fake, 9101)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake.redeliverAfter = testRedeliverAfter
+	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 

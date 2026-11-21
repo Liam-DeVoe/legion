@@ -50,11 +50,18 @@ func TestAFailedReadHoldsNoSlotThatOtherRepositoriesShare(t *testing.T) {
 			natsClient := intakeTestClient(t)
 			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 			awaitBoundDurable(t, natsClient)
+			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 			for n := 1; n <= intakeMaxAckPending; n++ {
 				publishPullRequestEnvelope(t, natsClient, "acme", "widgets", n,
 					prEnvelope("acme/widgets", n, "opened", fakeSHA("a", n), fmt.Sprintf("feature/%d", n), "", at))
 			}
-			time.Sleep(2 * time.Second)
+			// Each acme envelope has been handed to a handler, so each holds its slot for as long as
+			// its handling holds it: other/tools#5 comes after them.
+			waitFor(t, 30*time.Second, func() bool {
+				return deliveryConsumerInfo(t, natsClient).Delivered.Consumer-before >= uint64(intakeMaxAckPending)
+			}, func() string {
+				return fmt.Sprintf("the %d envelopes of acme/widgets were not all delivered: %+v", intakeMaxAckPending, deliveryConsumerInfo(t, natsClient))
+			})
 			published := time.Now()
 			publishPullRequestEnvelope(t, natsClient, "other", "tools", 5,
 				prEnvelope("other/tools", 5, "opened", fakeSHA("b", 5), "feature/5", "", at))
@@ -87,8 +94,9 @@ func TestAFailedReadHoldsNoSlotThatOtherRepositoriesShare(t *testing.T) {
 // is handed back for as long as that lasts, with no count of deliveries that ends it; once the
 // database takes the record, the envelope is acknowledged, and the head is written once GitHub
 // answers, with no new event. GitHub answers 500 for the whole run, and another session holds
-// pull_request_reads_owed locked over the first two deliveries, so each of their records waits out
-// owedReadWriteTimeout and fails. At ff73c7358d the shipped cap of 30 kept handing the envelope
+// pull_request_reads_owed locked over the first two deliveries and until the third has begun, so
+// each of the first two records waits out owedReadWriteTimeout (shrunk to a second, with the
+// intake's hand-back delay) and fails. At ff73c7358d the shipped cap of 30 kept handing the envelope
 // back after the third delivery recorded its read; with a cap of 2, the second delivery
 // acknowledged it with nothing recorded, and the head was never written.
 func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T) {
@@ -125,18 +133,21 @@ func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T)
 	}
 	t.Cleanup(release)
 
+	shrinkOwedReadWriteTimeout(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake.redeliverAfter = testRedeliverAfter
+	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
 		prEnvelope("acme/widgets", number, "opened", head, branch, body, at))
 
-	// The second delivery has been made; its record waits owedReadWriteTimeout and fails.
-	waitFor(t, 60*time.Second, func() bool { return deliveryConsumerInfo(t, natsClient).Delivered.Consumer-before >= 2 }, func() string {
-		return fmt.Sprintf("the envelope was not delivered a second time: %+v", deliveryConsumerInfo(t, natsClient))
+	// The third delivery has begun, so the second's record waited out owedReadWriteTimeout, failed,
+	// and handed the envelope back, as the first's did.
+	waitFor(t, 60*time.Second, func() bool { return deliveryConsumerInfo(t, natsClient).Delivered.Consumer-before >= 3 }, func() string {
+		return fmt.Sprintf("the envelope was not delivered a third time: %+v", deliveryConsumerInfo(t, natsClient))
 	})
-	time.Sleep(owedReadWriteTimeout + 3*time.Second)
 	release()
 	t.Logf("pull_request_reads_owed was locked over %d deliveries", deliveryConsumerInfo(t, natsClient).Delivered.Consumer-before)
 

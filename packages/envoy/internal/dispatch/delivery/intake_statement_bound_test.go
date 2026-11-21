@@ -34,6 +34,7 @@ import (
 func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
+	shrinkOwedReadWriteTimeout(t)
 	messageTimeout := intakeMessageTimeout
 	intakeMessageTimeout = 20 * time.Second
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
@@ -102,6 +103,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			fastPageRetries(t)
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
+			shrinkOwedReadWriteTimeout(t)
 			messageTimeout := intakeMessageTimeout
 			intakeMessageTimeout = 10 * time.Minute
 			t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
@@ -124,7 +126,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			natsClient := intakeTestClient(t)
 			writes := &statementWaitTracer{match: "insert into pull_request_heads"}
 			intake := newIntake(natsClient, storetest.Traced(t, pool, writes, nil), deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-			intake.redeliverAfter = time.Second
+			intake.redeliverAfter = testRedeliverAfter
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			published := time.Now()
@@ -191,6 +193,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			fastPageRetries(t)
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
+			shrinkOwedReadWriteTimeout(t)
 			messageTimeout := intakeMessageTimeout
 			intakeMessageTimeout = 10 * time.Minute
 			t.Cleanup(func() { intakeMessageTimeout = messageTimeout })

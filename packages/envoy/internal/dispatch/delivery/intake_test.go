@@ -299,6 +299,26 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
 }
 
+// testRedeliverAfter is the hand-back delay a test sets on the one intake it builds
+// (Intake.redeliverAfter) where it waits for a delivery after a hand-back: the envelope comes
+// back a fifth of a second after it was handed back, rather than headWriteRedeliverAfter, 10 s,
+// later. What the test holds is that it comes back, and in which order; no such test reads the
+// length of the delay.
+const testRedeliverAfter = 200 * time.Millisecond
+
+// shrinkOwedReadWriteTimeout sets owedReadWriteTimeout to a second for the test, and puts the
+// production value back at its end: a test that holds pull_request_reads_owed locked waits out
+// that bound at each statement the lock holds, and holds the statement to the bound by its name,
+// so its checks keep their meaning at the shorter bound. A statement no lock holds answers in
+// milliseconds, far inside a second. Call it before startIntake: the cleanups run in reverse, so
+// the bound is put back only once the intake has stopped.
+func shrinkOwedReadWriteTimeout(t *testing.T) {
+	t.Helper()
+	bound := owedReadWriteTimeout
+	owedReadWriteTimeout = time.Second
+	t.Cleanup(func() { owedReadWriteTimeout = bound })
+}
+
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
 // never again: what an intake under test routes by when nothing changes its settings meanwhile.
 // With no row it holds nothing, as a server's cache does before the settings are first written.
