@@ -137,12 +137,18 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 	jwtShaped := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." +
 		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"made-up-subject","exp":4070908800}`)) + "." +
 		base64.RawURLEncoding.EncodeToString(jwtHash[:])
+	// The head of a password holding a comma after a run of digits, which a caller that splits the
+	// list on its commas hands Connect as a URL whose port is those digits, and a piece of a server
+	// URL's path, which a person writes and nats.go keeps in the URL it reports reaching.
+	digitsHead := "8472915603918274"
+	pathPiece := "madeUpServerPathPiece" + tail[:12]
 	credentials := []printedCredential{
 		{"the made-up seed", seed}, {"the made-up seed no server admits", stranger}, {"the made-up account seed", account},
 		{"the mistyped seed", mistyped}, {"the made-up NATS token", token}, {"the made-up JWT-shaped token", jwtShaped},
 		{"the made-up password holding a /", slashedPassword}, {"the made-up password holding a ?", queryPassword},
 		{"the made-up password holding a #", fragmentPassword}, {"the made-up password holding a space", spacedPassword},
 		{"the made-up password holding a comma", commaPassword}, {"the made-up token holding a /", slashedToken},
+		{"the made-up password's digits before its comma", digitsHead}, {"the made-up piece of a server URL's path", pathPiece},
 	}
 
 	dir := t.TempDir()
@@ -247,6 +253,18 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 				}
 				return err
 			}, names: []string{"the NATS nkey seed", "does not hold a valid nkey seed"}},
+			// A caller that split its list on commas hands Connect the head of a password holding
+			// a comma, a URL whose port is the password's digits: nats.go dials it, last (in order,
+			// DontRandomize), and net's error quotes the port. Connect returns the failure by its
+			// class.
+			{name: "Connect handed a list whose last server's port is a password's digits", printed: func() error {
+				conn, err := natsauth.Connect([]string{"nats://127.0.0.1:1", "nats://127.0.0.1:" + digitsHead}, "", t.Name(),
+					nats.DontRandomize(), nats.Timeout(time.Second))
+				if err == nil {
+					conn.Close()
+				}
+				return err
+			}, names: []string{"the server's address is no host and port the system can dial"}},
 			{name: "Connect handed a server URL naming the token as its user that does not parse",
 				printed: connectTo("nats://" + token + "%zz@127.0.0.1:1"), names: unparsed},
 			{name: "Connect handed a server URL whose password holds a /",
@@ -364,12 +382,13 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 			return logged("NATS refused the daemon a permission: its NATS user lacks that grant") >= 2 && logged("NATS reported an asynchronous error") >= 1
 		})
 
-		// The token as the server URL's user name, which nats.go presents as the CONNECT's token:
+		// The token as the server URL's user name, which nats.go presents as the CONNECT's token,
+		// and a made-up piece of the URL's path, which nats.go keeps in the URL it reports reaching:
 		// one connection lost and restored, one lost and closed.
 		upstream := strings.TrimPrefix(testnats.URL(t), "nats://")
 		restoring, closing := dropProxy(t, upstream), dropProxy(t, upstream)
 		lost, restored, closed := channel(), channel(), channel()
-		reconnecting, err := natsauth.Connect([]string{"nats://" + token + "@" + restoring.addr}, "", t.Name()+" restored", nats.Timeout(5*time.Second),
+		reconnecting, err := natsauth.Connect([]string{"nats://" + token + "@" + restoring.addr + "/" + pathPiece}, "", t.Name()+" restored", nats.Timeout(5*time.Second),
 			nats.ReconnectWait(10*time.Millisecond), nats.ReconnectJitter(0, 0),
 			natsauth.LogEvents(log), signalled(channel(), lost, restored, channel()))
 		if err != nil {
@@ -396,7 +415,7 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 		}{
 			{"the refused seed's close, with the server's refusal", strings.Contains(logs, `msg="NATS connection closed" error="nats: Authorization Violation"`)},
 			{"the lost connection", logged("NATS connection lost") >= 1},
-			{"the restored connection, naming its server", strings.Contains(logs, `msg="NATS connection restored" server=`) && strings.Contains(logs, restoring.addr)},
+			{"the restored connection, naming its server by its position", strings.Contains(logs, `msg="NATS connection restored" server="1 of 1"`)},
 			{"two closes", logged("NATS connection closed") >= 2},
 		} {
 			if !want.ok {

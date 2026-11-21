@@ -709,10 +709,12 @@ func namesKey(value *yaml.Node, name string) bool {
 // joined with commas is refused too, with natsurl's reason (natsurl.EntryRefusal: a comma, an "@"
 // after its host, a websocket path that stops parsing once decoded), and so are:
 //
-//   - an entry whose host and port are no address the NATS client can dial (dialableAuthority):
-//     one net.SplitHostPort refuses, as an IPv6 address written with a port and no brackets is,
-//     or one with a port outside 1 to 65535. The client dials the entry's host and port as
-//     written, so such a list loaded and failed at boot;
+//   - an entry whose host and port are not written as an address the NATS client dials
+//     (dialableAuthority): one net.SplitHostPort refuses, as an IPv6 address written with a port
+//     and no brackets is, or one with a port outside 1 to 65535. Such a list loaded and failed at
+//     boot, but for an IPv6 address with a zone written that way, which the client's lookup
+//     returns as it is and the client brackets and dials; it is refused too, so it is written in
+//     brackets;
 //   - an unquoted item of a flow list, `[...]`, plain or tagged (`!!str`), that carries a user name
 //     or password: YAML splits an unquoted flow item at every comma, so a credential holding a
 //     comma, `,nats://` among them, reaches here as two entries that each parse, and the daemon
@@ -782,12 +784,15 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	return urls, nil
 }
 
-// dialableAuthority reports whether parsed, a nats_urls entry endpointURL read, names a host and
-// port the NATS client can dial, reading the URL alone: nothing is looked up. The client dials the
-// URL's host and port as written (a host that is an IP address, or one whose lookup finds nothing)
-// or each address the host resolves to beside the port, adding the scheme's default port where the
-// URL names none (nats.go v1.55.0 addURLToPool and createConn), so the authority must split as
-// net.SplitHostPort splits one, an IPv6 host in brackets, and a port it names must be 1 to 65535.
+// dialableAuthority reports whether parsed, a nats_urls entry endpointURL read, names its host and
+// port as the NATS client dials them, reading the URL alone: nothing is looked up. The client dials
+// the URL's host and port as written (a host that is an IP address, or one whose lookup finds
+// nothing) or each address the host's lookup answers, joined with the port, adding the scheme's
+// default port where the URL names none (nats.go v1.55.0 addURLToPool and createConn), so the
+// authority must split as net.SplitHostPort splits one, an IPv6 host in brackets, and a port it
+// names must be 1 to 65535. The one form refused that the client would dial is an IPv6 address
+// with a zone, a port and no brackets: its lookup answers the address as it is, and the join
+// brackets it.
 func dialableAuthority(parsed *url.URL) bool {
 	authority, port := strings.TrimSuffix(parsed.Host, ":"), parsed.Port()
 	if port == "" {

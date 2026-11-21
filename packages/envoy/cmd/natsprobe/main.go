@@ -126,7 +126,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: --no-credential, --service-token-file or --service-google-audience\n", err)
 			return exitFailed
 		}
-		fmt.Fprintf(stderr, "natsprobe: connect: %v\n", err)
+		// The failure by its class and the count of the servers tried, never nats.Connect's text:
+		// a dial's error names the server by the host and port its URL spells, and where a comma
+		// in a credential split --servers, that host or port is a piece of the credential, which
+		// natsurl.Check lets through when the part after the comma names a NATS scheme.
+		fmt.Fprintf(stderr, "natsprobe: connect: %s (tried the %d servers --servers names)\n", natsurl.ConnectionClass(err), len(urls))
 		return exitFailed
 	}
 	defer nc.Close()
@@ -143,7 +147,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		err = nc.Flush()
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "natsprobe: %v\n", err)
+		fmt.Fprintf(stderr, "natsprobe: %s\n", natsurl.ConnectionClass(err))
 		return exitFailed
 	}
 	select {
