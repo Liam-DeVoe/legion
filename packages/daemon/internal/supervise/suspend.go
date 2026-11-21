@@ -13,18 +13,18 @@ import (
 // ready (holdSuspendUntilReady), or the copy of the issue's workspace that the claim's last turn's
 // end started, while that copy is still being taken (suspend, waitForTurnCopy). It is not a
 // refusal. A caller that keeps the request durably asks again, and the claim answers nil once it
-// is suspended. Each hold answers it in the words of what that hold waits for (suspendHeld), so
+// is suspended. Each hold answers it in the words of what that hold waits for (heldAnswer), so
 // errors.Is(err, ErrSuspendHeld) reads every hold and the error's text says which.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn, its launch's ready, or the copy of its last turn's end")
 
-// suspendHeld is ErrSuspendHeld in the words of what one hold waits for (heldFor.answer).
-type suspendHeld struct{ waits string }
+// heldAnswer is ErrSuspendHeld in the words of what one hold waits for (heldFor.answer).
+type heldAnswer struct{ waits string }
 
-func (h *suspendHeld) Error() string { return "the suspension is held for " + h.waits }
+func (h *heldAnswer) Error() string { return "the suspension is held for " + h.waits }
 
 // Unwrap is ErrSuspendHeld, which a caller reads every hold by, and through it a wait
 // (wait.ErrWaiting), as the hold always was.
-func (h *suspendHeld) Unwrap() error { return ErrSuspendHeld }
+func (h *heldAnswer) Unwrap() error { return ErrSuspendHeld }
 
 // heldFor is what a suspension holdRequest holds waits for, in the words of the two lines it
 // writes and of its answer: the agent's turn (holdSuspension), or the copy the claim's last turn's
@@ -42,15 +42,15 @@ var (
 	heldForTurn = heldFor{
 		held:     "supervise: the suspension is held for the agent's turn to end",
 		deadline: "supervise: the held suspension stops the agent at its deadline if its turn has not ended",
-		answer:   &suspendHeld{waits: "the agent's turn to end"},
+		answer:   &heldAnswer{waits: "the agent's turn to end"},
 	}
 	heldForTurnCopy = heldFor{
 		held:     "supervise: the suspension is held for the copy of the issue's workspace that the claim's last turn's end started",
 		deadline: "supervise: the held suspension stops the agent at its deadline if the copy of its last turn's end has not ended",
-		answer:   &suspendHeld{waits: "the copy of the issue's workspace that the claim's last turn's end started"},
+		answer:   &heldAnswer{waits: "the copy of the issue's workspace that the claim's last turn's end started"},
 	}
 	// errHeldForLaunch is holdSuspendUntilReady's answer; that row writes lines of its own.
-	errHeldForLaunch error = &suspendHeld{waits: "the agent's launch to say it is ready"}
+	errHeldForLaunch error = &heldAnswer{waits: "the agent's launch to say it is ready"}
 )
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once

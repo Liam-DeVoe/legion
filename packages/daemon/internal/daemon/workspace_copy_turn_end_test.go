@@ -8,68 +8,12 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
-
-// liveArchitect records an architect of the rig's issue as the store holds a live role: idle, on
-// a process of its own. Its token sorts before the implementer's, so a copy that chooses its role
-// from the claims (runningCopyClaim) asks it, and nothing of it waits for any copy.
-func (r *copyRig) liveArchitect(t *testing.T) {
-	t.Helper()
-	ctx := context.Background()
-	token := mustClaimToken(t, r.issue.Key, claim.RoleArchitect)
-	loc, err := r.rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: claim.RoleArchitect})
-	if err != nil {
-		t.Fatalf("mint the architect's locator: %v", err)
-	}
-	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
-		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
-		State: supervise.StateIdle, Locator: &loc, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl",
-		PluginContract: api.DaemonAPIVersion}
-	if err := r.st.PutClaim(ctx, stored); err != nil {
-		t.Fatalf("seed the live architect: %v", err)
-	}
-}
-
-// holdStop holds a daemon's suspension of the implementer for the end of the turn it is in.
-func (r *copyRig) holdStop(t *testing.T) {
-	t.Helper()
-	if err := r.machine.Handle(context.Background(), supervise.RequestSuspend{Claim: r.token, By: supervise.SuspendedByDaemon,
-		Reason: "LEGION-208 left implementing"}); !errors.Is(err, supervise.ErrSuspendHeld) {
-		t.Fatalf("the suspension of the implementer in a turn = %v, want it held for the turn's end", err)
-	}
-}
-
-// waitsForTheCopy fails unless the implementer is idle, holding its stop, with its process not
-// stopped: its held stop is waiting for a copy.
-func (r *copyRig) waitsForTheCopy(t *testing.T) {
-	t.Helper()
-	if testwait.Holds(time.Second, testwait.Poll, func() bool { return len(r.rt.CallsOf("Suspend")) > 0 }) {
-		t.Fatalf("the implementer's process was stopped while the copy of its turn's end was still being built; the daemon logged:\n%s", r.logs.String())
-	}
-	if c := r.machine.Claim(); c.State != supervise.StateIdle || !c.SuspensionHeld {
-		t.Fatalf("the implementer is %s (held %v) while the copy of its turn's end is built, want idle holding its stop", c.State, c.SuspensionHeld)
-	}
-}
-
-// stopsOnceCopied waits for the implementer's held stop to land, and fails unless it landed once.
-func (r *copyRig) stopsOnceCopied(t *testing.T) {
-	t.Helper()
-	testwait.Eventually(t, "the implementer's held stop to land once the copy of its turn's end has ended", func() bool {
-		return r.machine.Claim().State == supervise.StateSuspended
-	})
-	if stops := r.rt.CallsOf("Suspend"); len(stops) != 1 {
-		t.Fatalf("the implementer's process was stopped %d times, want once", len(stops))
-	}
-}
 
 // The copy a turn's end takes asks the role whose turn ended, as the machine handed it the claim
 // at that end, and reads no claims for a role of its own. The issue's other live role, first by
@@ -129,13 +73,7 @@ func TestTheCopyOwedToATurnsEndAsksTheRoleWhoseTurnEndedAndItsHeldStopWaitsForIt
 
 	rig.turnEnd(t)
 
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		rig.w.copies.mu.Lock()
-		defer rig.w.copies.mu.Unlock()
-		return rig.w.copies.issues[rig.issue.Key].owed != nil
-	}) {
-		t.Fatalf("the turn's end was never owed behind the copy in flight; the daemon logged:\n%s", rig.logs.String())
-	}
+	rig.awaitOwed(t, "the turn's end", "the copy in flight")
 	rig.waitsForTheCopy(t)
 
 	release()

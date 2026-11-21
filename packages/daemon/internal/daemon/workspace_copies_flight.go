@@ -43,7 +43,9 @@ import (
 // already closed and log a failed save for a copy nobody could have stored. A copy asked for
 // before the run has started — the turn's end of a claim the boot restored, which can come before
 // the daemon's run begins, or a push recorded then — is kept until the run starts and started
-// under it then (startUnderRun), so it is neither lost nor run under no run.
+// under it then (startUnderRun), with its budget counted from that start, so a boot that reaches
+// its run loses no such copy and runs none under no run. A boot that stops before its run never
+// starts them, as a daemon's stop ends every copy in flight.
 //
 // It holds nothing of how a copy is logged. A copy has the role it asks before it takes the
 // issue's place (takeRunningCopy, takeRunningCopyOf), so one with no role to ask never takes the
@@ -91,15 +93,34 @@ func (c *runningCopies) startsOwedWith(start func(owed copyAsk)) {
 	c.startOwed = start
 }
 
-// running is the daemon's run's context, and false before the run has started or once it has
+// runPhase is where the daemon's run stands for its copies (runningCopies.phase).
+type runPhase int
+
+const (
+	runNotStarted runPhase = iota
+	runRunning
+	runEnded
+)
+
+// phase is where the daemon's run stands: not started until runUnder has made a context the
+// run, running while that context lasts, and ended once it has ended. It is the one statement of
+// that rule, which running and startUnderRun both read. The caller holds c.mu.
+func (c *runningCopies) phase() runPhase {
+	switch {
+	case c.run == nil:
+		return runNotStarted
+	case c.run.Err() != nil:
+		return runEnded
+	}
+	return runRunning
+}
+
+// running is whether the daemon's run runs (phase): false before it has started and once it has
 // ended.
-func (c *runningCopies) running() (context.Context, bool) {
+func (c *runningCopies) running() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.run == nil || c.run.Err() != nil {
-		return nil, false
-	}
-	return c.run, true
+	return c.phase() == runRunning
 }
 
 // startUnderRun hands start the daemon's run's context: at once while the run runs, or as the run
@@ -108,16 +129,16 @@ func (c *runningCopies) running() (context.Context, bool) {
 // stopping, and the next daemon takes the issue's copies again.
 func (c *runningCopies) startUnderRun(start func(run context.Context)) bool {
 	c.mu.Lock()
-	run := c.run
-	switch {
-	case run == nil:
+	switch c.phase() {
+	case runNotStarted:
 		c.beforeRun = append(c.beforeRun, start)
 		c.mu.Unlock()
 		return true
-	case run.Err() != nil:
+	case runEnded:
 		c.mu.Unlock()
 		return false
 	}
+	run := c.run
 	c.mu.Unlock()
 	start(run)
 	return true

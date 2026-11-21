@@ -185,13 +185,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 		// The push lands while the save holds the issue's place, and its copy is refused the
 		// place and owed behind it.
 		apply("c0", "c2")
-		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-			rig.w.copies.mu.Lock()
-			defer rig.w.copies.mu.Unlock()
-			return rig.w.copies.issues[rig.issue.Key].owed != nil
-		}) {
-			t.Fatalf("the push's copy was never owed behind the save; the daemon logged:\n%s", rig.logs.String())
-		}
+		rig.awaitOwed(t, "the push's copy", "the save")
 	}
 
 	rig.w.releaseIdlePods(ctx)
@@ -220,13 +214,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresIts
 		// push lands while the save holds the issue's place: its copy is owed behind the save.
 		rig.setLocatorPod(t, releasedPodUID)
 		apply("c0", "c2")
-		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-			rig.w.copies.mu.Lock()
-			defer rig.w.copies.mu.Unlock()
-			return rig.w.copies.issues[rig.issue.Key].owed != nil
-		}) {
-			t.Fatalf("the push's copy was never owed behind the save; the daemon logged:\n%s", rig.logs.String())
-		}
+		rig.awaitOwed(t, "the push's copy", "the save")
 	}
 
 	rig.saveRelease(t)

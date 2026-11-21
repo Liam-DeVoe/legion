@@ -123,13 +123,7 @@ func TestACopyOwedToATurnsEndBehindAReleaseSaveAsksThatRoleAndTellsItsEnd(t *tes
 	if _, started := rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), func() { told <- struct{}{} }); !started {
 		t.Fatal("the turn's end started no copy")
 	}
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		rig.w.copies.mu.Lock()
-		defer rig.w.copies.mu.Unlock()
-		return rig.w.copies.issues[rig.issue.Key].owed != nil
-	}) {
-		t.Fatalf("the turn's end was never owed behind the save; the daemon logged:\n%s", rig.logs.String())
-	}
+	rig.awaitOwed(t, "the turn's end", "the save")
 	rig.asksStay(t, 0)
 	giveBack()
 

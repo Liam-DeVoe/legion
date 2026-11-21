@@ -7142,7 +7142,10 @@ That stop is one asked while the turn ran, such as an operator's suspend, a proj
 A turn with no stop held goes idle at once and takes its next task while its copy is built.
 The budget runs from the turn's end, and the stop's own deadline is the operator's stop timeout or a deadline the daemon names, such as the linger expiry of a carried child's old tree; a pause's stop names none.
 A suspension asked of a role whose turn-end copy is still being taken waits for that copy the same way, though nothing held it for the turn's end, and under the same two bounds: a pause's stop waits until the copy ends or 4 minutes have passed since the turn's end, and an operator's suspend no longer than its stop timeout from its arrival, 10 s by default.
-A copy still building at the bound, and a copy owed behind another copy of the issue that has not started by then, ask a role the stop has taken; such a copy fails `bundler_failed`, the issue keeps the copy it had, and the copy owes a retry.
+At an operator's stop timeout, a copy still building asks a role the stop has taken and fails `bundler_failed`.
+A copy that starts later, owed behind another copy of the issue or kept until the daemon's run starts, and has not finished by the stop's bound fails the same way.
+A copy still building at its own budget of 4 minutes is abandoned and logged `budget_spent`.
+In each case the issue keeps the copy it had, and the copy owes a retry.
 While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it in that time is held with that stop, except the suspend a fresh session makes (`legion claims retry --fresh-session`), which stops the role at once.
 A stop that waits for the result of the turn's prompt, as a pause's does, waits for the copy once that result has come.
 

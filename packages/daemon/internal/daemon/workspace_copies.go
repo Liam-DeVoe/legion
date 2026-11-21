@@ -271,9 +271,12 @@ func (w *workflowRuntime) copyWorkingWorkspaces(ctx context.Context) {
 // copy's own goroutine, never from this call; nil tells nobody, and the ask is a turn's end all
 // the same. The daemon's supervisor makes it of the machine's own event (supervisor.copyTurnEnd).
 // The copy owed behind one in flight that stands for this one calls it in its place (copyAsk). It
-// answers the copy's budget, which bounds the stop's wait, and false where it starts no copy: a
-// controller's claim, a claim of no issue, a daemon that bundles no workspace or keeps no store,
-// and a daemon whose run has ended (startRunningCopyOf).
+// answers the copy's budget, which the machine counts from the turn's end as the bound of the
+// stop's wait, and false where it starts no copy: a controller's claim, a claim of no issue, a
+// daemon that bundles no workspace or keeps no store, and a daemon whose run has ended
+// (startRunningCopyOf). The copy's own budget runs from its start, which is the turn's end for a
+// copy started at once and later for one owed behind another copy or kept until the daemon's run
+// starts (goCopy); such a copy can outlast the wait, and then asks a role the stop has taken.
 //
 // It runs on the machine's own goroutine, inside the decision, so it hands the copy to a
 // goroutine of its own and returns at once, exactly as podResume does. Nothing of the turn waits
@@ -631,7 +634,7 @@ func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, ro
 // (runningCopyUnsavedLine), or the daemon's stop at Debug where that is what ended it
 // (runningCopyStoppedLine).
 func (w *workflowRuntime) unsavedCopy(issue string, args ...any) {
-	if _, running := w.copies.running(); !running {
+	if !w.copies.running() {
 		w.log.Debug(runningCopyStoppedLine, "issue", issue)
 		return
 	}
