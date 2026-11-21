@@ -65,11 +65,11 @@ const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
 
 /** How each column renders and sorts, for the reader `userState` describes, with each title
- *  whole where the table wraps its titles (`wrapTitles`) and in two lines that end in '…'
- *  otherwise, and each claim whole there too, its holder's name wrapping rather than cut
- *  (`ClaimChip`'s `wraps`). Keyed by the registry's own ids, so a typo or a column with no
- *  rendering fails to compile. Everything else about a column — whether it filters, what a row
- *  files under, what
+ *  in eight lines at most where the table wraps its titles (`wrapTitles`), ending in '…' with the
+ *  whole of it in its tooltip where it runs longer, and in two lines that end in '…' otherwise,
+ *  and each claim whole there too, its holder's name wrapping rather than cut (`ClaimChip`'s
+ *  `wraps`). Keyed by the registry's own ids, so a typo or a column with no rendering fails to
+ *  compile. Everything else about a column — whether it filters, what a row files under, what
  *  it groups by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the
  *  model, so the two never disagree. */
 const renderings = (
@@ -160,7 +160,8 @@ const renderings = (
           {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
         >
           <span
-            className={`${wrapTitles ? "" : "line-clamp-2 "}min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}
+            className={`${wrapTitles ? "line-clamp-8" : "line-clamp-2"} min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}
+            title={wrapTitles ? row.original.issue.title : undefined}
           >
             {row.original.issue.title}
           </span>
@@ -412,11 +413,16 @@ const LISTING_COLUMNS: readonly {
 export type IssueTableColumnId = ColumnId | ListingColumnId;
 
 /** A column's width where a table's layout names one: where it starts, and the narrowest the
- *  reader may drag it. */
-export interface IssueTableColumnWidth {
-  readonly size: number;
-  readonly min: number;
-}
+ *  reader may drag it (`size`, `min`); or what it holds (`fit`): as wide as its header or its
+ *  widest cell on the page needs on one line, measured as the table draws them, and where `most`
+ *  is given no wider than that, past which its cells wrap (`LayoutColumns.fits`) - until it is
+ *  measured it stands at `most`, else its own width. Either, given `leaves`, gives Title, the
+ *  column that fills the box, room in a desktop's box: where the others would leave Title less
+ *  than that, it narrows - toward `min`, or toward the narrowest what it holds needs - to leave
+ *  it that much (`LayoutColumns.yields`). */
+export type IssueTableColumnWidth =
+  | { readonly size: number; readonly min: number; readonly leaves?: number }
+  | { readonly fit: true; readonly most?: number; readonly leaves?: number };
 
 /** The widths a table's layout names, by column: each over the registry's or the listing
  *  column's own. */
@@ -446,11 +452,12 @@ const layouts = new Map<string, LayoutColumns>();
  * fills a desktop box (`fills`, `useTableLayout`): it takes the width the other shown columns
  * and the row's actions (`actions`, none where the table draws none) leave.
  * `widths` puts a column's starting width and minimum in place of the registry's or the listing
- * column's, and `pins` the columns pinned at the left of a desktop's box in place of the
- * registry's (`LayoutPins.wide`), where the registry's would count a column the table opens
- * hidden. A project's table names none of them; each fault list of the priorities page and a
- * priority's work table name their own. Built once for each set and kept, since the stored
- * layout is read again whenever this object changes (`useTableLayout`).
+ * column's, with the room it leaves Title where it names one (`yields`), or makes the column as
+ * wide as what it holds (`fits`); and `pins` the columns pinned at the left of a desktop's box in
+ * place of the registry's (`LayoutPins.wide`), where the registry's would count a column the
+ * table opens hidden. A project's table names none of them; each fault list of the priorities
+ * page and a priority's work table name their own. Built once for each set and kept, since the
+ * stored layout is read again whenever this object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
@@ -468,6 +475,11 @@ export function issueTableLayout(
   const named = Object.entries(widths).flatMap(([id, width]) =>
     width === undefined ? [] : [[id, width] as const]
   );
+  const set = named.flatMap(([id, width]) => ("fit" in width ? [] : [[id, width] as const]));
+  const fitted = named.flatMap(([id, width]) => ("fit" in width ? [[id, width] as const] : []));
+  const yielding = named.flatMap(([id, { leaves }]) =>
+    leaves === undefined ? [] : [[id, leaves] as const]
+  );
   const registryPins = ISSUE_TABLE_COLUMNS.pins;
   const layout: LayoutColumns = {
     ...ISSUE_TABLE_COLUMNS,
@@ -484,13 +496,27 @@ export function issueTableLayout(
     sizes: {
       ...ISSUE_TABLE_COLUMNS.sizes,
       ...Object.fromEntries(listing.map(({ id, size }) => [id, size])),
-      ...Object.fromEntries(named.map(([id, { size }]) => [id, size])),
+      ...Object.fromEntries(set.map(([id, { size }]) => [id, size])),
+      ...Object.fromEntries(
+        fitted.flatMap(([id, { most }]) => (most === undefined ? [] : [[id, most]]))
+      ),
     },
+    // A column as wide as what it holds is never narrower than that (`useTableLayout`), and no
+    // minimum of its own holds it wider.
     minimums: {
       ...ISSUE_TABLE_COLUMNS.minimums,
       ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
-      ...Object.fromEntries(named.map(([id, { min }]) => [id, min])),
+      ...Object.fromEntries(set.map(([id, { min }]) => [id, min])),
+      ...Object.fromEntries(fitted.map(([id]) => [id, 0])),
     },
+    ...(fitted.length === 0
+      ? {}
+      : {
+          fits: Object.fromEntries(
+            fitted.map(([id, { most }]) => [id, most === undefined ? {} : { most }])
+          ),
+        }),
+    ...(yielding.length === 0 ? {} : { yields: Object.fromEntries(yielding) }),
     ...(pins === undefined || registryPins === undefined
       ? {}
       : { pins: { ...registryPins, wide: { ...registryPins.wide, columns: pins } } }),
@@ -515,8 +541,8 @@ export function useIssueTableColumns(
      *  with its title. One this map does not hold, a priority deleted since it was read, is
      *  named by its id. */
     readonly priorityTitles?: ReadonlyMap<string, string>;
-    /** Whether each title is drawn whole rather than in two lines (`IssuesTable`'s
-     *  `wrapTitles`). */
+    /** Whether each title wraps onto up to eight lines, with the whole of it in its tooltip,
+     *  rather than two (`IssuesTable`'s `wrapTitles`). */
     readonly wrapTitles?: boolean;
   }
 ): ColumnDef<Item>[] {

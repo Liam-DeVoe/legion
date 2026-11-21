@@ -240,7 +240,16 @@ export function useDataTable<Row>({
     }),
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
-  // neither the rows this page holds nor a notice above the table is measured from here.
+  // neither the rows this page holds nor a notice above the table is measured from here. What it
+  // is told is which rows the page holds, whose cells count toward the widths of the columns
+  // that fit what they hold (`LayoutColumns.fits`) whether the box has drawn them or not.
+  const pageRowIds = displayRows
+    .flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]))
+    .join("\n");
+  const { setPageRows } = layout;
+  useLayoutEffect(() => {
+    setPageRows(pageRowIds === "" ? [] : pageRowIds.split("\n"));
+  }, [pageRowIds, setPageRows]);
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => layout.scrollRef.current,
@@ -318,8 +327,9 @@ export interface DataTableProps<Row> {
    *  than a count. Kept apart from the column definitions: a new definition is a new component
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
-  /** Draws one row: a `<tr>` carrying `data-issue-row`, which the keys and the box's height
-   *  read, `data-index` and `ref={measure}`. */
+  /** Draws one row: a `<tr>` carrying `data-issue-row`, the row's id, which the keys, the box's
+   *  height and the columns that fit what they hold read (`LayoutColumns.fits`), with one cell
+   *  under each header in the headers' order, `data-index` and `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
@@ -521,6 +531,7 @@ function TableHeaderCell<TData>({
     <th
       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
       className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${divider ? "border-r" : ""}`}
+      data-column={column.id}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}

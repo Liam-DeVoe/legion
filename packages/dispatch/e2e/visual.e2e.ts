@@ -87,7 +87,7 @@ import {
 } from "./review-routes";
 import { withAlice } from "./users";
 import { inVisualOrder, visualOrder } from "./visual-order";
-import { workspaceSessions } from "./workspace";
+import { reviewSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
  *  paid once rather than twice, and each shot names its scheme. */
@@ -108,14 +108,15 @@ const SKIP_REASON =
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
 // runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
-// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace` wrote are gone by the
-// time the first row opens a page: the Agents page then draws "No agents are connected." and
-// every shot of it would be a baseline of an empty registry. The database half of the corpus is
-// untouched by that reset, which is why only this half is written again here. `./agents` and
-// `./workspace` reach no module that spawns `psql`.
+// fake Envoy when its sentinel check ends, so the sessions `seedReviewRoutes` wrote are gone by
+// the time the first row opens a page: the Agents page then draws "No agents are connected."
+// and every shot of it would be a baseline of an empty registry, and every claim the corpus's
+// two claim holders hold would read as free. The database half of the corpus is untouched by
+// that reset, which is why only this half is written again here. `./agents` and `./workspace`
+// reach no module that spawns `psql`.
 test.beforeAll(async () => {
   if (seedPath === undefined) return;
-  await setLiveSessions(workspaceSessions);
+  await setLiveSessions(reviewSessions);
 });
 
 /** The host's seed, with the moment it was written. A file without `seededAt` fails the row

@@ -255,9 +255,21 @@ export function Action({
   );
 }
 
-/** What sets a status segment's width, which the bar's hidden copy of its segments draws them
- *  with too (`IssueTableStatus`), so the copy is as wide as the segments it stands for. */
+/** What sets a status segment's width with its name, which the bar's hidden copy of its segments
+ *  draws them with too (`IssueTableStatus`), so the copy is as wide as the segments it stands
+ *  for. */
 const SEGMENT = "px-3 text-xs font-medium whitespace-nowrap";
+
+/** The padding and type of a segment that draws its count alone (`IssueTableStatus`'s
+ *  `legend`): on a phone the padding its count needs, and from `md` up a named segment's. */
+const COUNT_SEGMENT = "px-2 text-xs font-medium whitespace-nowrap md:px-3";
+
+/** How narrow a segment that draws its count alone may be: 24 px, WCAG 2.5.8's least target
+ *  width, in place of the 44 px floor `styles.css` gives every button below 1280 px, so the eight
+ *  segments of a priority's work fit its 316 px bar at 390 px and none scrolls past its edge. Its
+ *  height keeps that floor. Set as an inline style, since the floor stands in no cascade layer
+ *  and outranks every utility class; from `md` up each count with its padding is wider anyway. */
+const COUNT_SEGMENT_MIN = 24;
 
 export function IssueTableStatus({
   table,
@@ -351,7 +363,7 @@ export function IssueTableStatus({
             <button
               // A count alone is named by its status, as its segment is with the name drawn.
               aria-label={countsOnly ? `${statusLabel(status)} ${count}` : undefined}
-              className={`min-h-11 shrink-0 py-2 text-left md:min-h-7 md:py-1 ${SEGMENT} ${countsOnly ? "min-w-11 md:min-w-0" : ""} ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
+              className={`min-h-11 shrink-0 py-2 text-left md:min-h-7 md:py-1 ${countsOnly ? COUNT_SEGMENT : SEGMENT} ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
               key={status}
               onClick={() =>
                 statusColumn?.setFilterValue(
@@ -361,8 +373,11 @@ export function IssueTableStatus({
               title={`${statusLabel(status)}: ${count}`}
               // Each status takes width in proportion to its count, so the bar spans the box
               // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead,
-              // unless the table draws the counts alone with their names in a legend (`legend`).
-              style={{ flexGrow: count }}
+              // unless the table draws the counts alone with their names in a legend (`legend`),
+              // each segment as narrow as its count and 24 px (`COUNT_SEGMENT_MIN`).
+              style={
+                countsOnly ? { flexGrow: count, minWidth: COUNT_SEGMENT_MIN } : { flexGrow: count }
+              }
               type="button"
             >
               {countsOnly ? (

@@ -8,9 +8,11 @@
  *  the four documents the issue tabs need, the priorities the two priority pages are read
  *  against - `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
  *  row for a deployment that has written no priority - the work under them and beside them,
- *  shaped as production's (`WORK`), and the issue header of a working issue: its whose-turn
- *  chip, two labels and a message route someone receives. */
+ *  shaped as production's (`WORK`), two sessions that hold some of it, named as production's
+ *  claim holders often are (`claimHolderSessions`), and the issue header of a working issue: its
+ *  whose-turn chip, two labels and a message route someone receives. */
 import type { IssueStatus } from "@legion/contracts/dispatch-tools";
+import { setLiveSessions } from "./agents";
 import {
   claimIssue,
   createIssue,
@@ -35,7 +37,7 @@ import { blockId } from "./editor";
 import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { sessionIds } from "./session-ids";
-import { asWorkspaceSession, seedWorkspace, workspaceSessions } from "./workspace";
+import { asWorkspaceSession, reviewSessions, seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
  *  and the Spec tab draws beside the block it shaped. */
@@ -71,11 +73,13 @@ function firstMachine(): string {
   return machine;
 }
 
-/** A session of the corpus's registry (`workspaceSessions`) that holds work here: three of the
- *  four that stay live however long a run takes. The Observer holds none, so the Agents page
- *  keeps one session under Idle, which a claim would move under Active; nor does the Archivist,
- *  since its claim, as it goes quiet, would read as free on a later run. */
-type Holder = "planner" | "tester" | "reviewer";
+/** A session of the corpus's registry (`reviewSessions`) that holds work here: three of the four
+ *  workspace sessions that stay live however long a run takes, and the two claim holders beside
+ *  them (`claimHolderSessions`), one named by a title led by an emoji and one by its bare id. The
+ *  Observer holds none, so the Agents page keeps one session under Idle, which a claim would move
+ *  under Active; nor does the Archivist, since its claim, as it goes quiet, would read as free on
+ *  a later run. */
+type Holder = "planner" | "tester" | "reviewer" | "cacheWarm" | "untitled";
 
 /** One issue this corpus adds to `seedWorkspace`'s: its project and title, the status it stands
  *  in, the priority whose work it is by that priority's place in `priorities` (from 0), or none,
@@ -90,19 +94,25 @@ interface Work {
 
 /** The work this corpus adds beside `seedWorkspace`'s issues, in the order it is created, shaped
  *  as production's is: issue titles there run from 67 to 194 characters, about 120 at the
- *  median, and much of the work in flight is held by a session. The text is invented and names
- *  no one real.
+ *  median, with a few of up to 1,000, and most of the work in flight is held by a session (38 of
+ *  the 59 issues active under no priority). The text is invented and names no one real.
  *
- *  - In flight under no priority: four, beside the broadcast issue `seedWorkspace` writes (whose
+ *  - In flight under no priority: five, beside the broadcast issue `seedWorkspace` writes (whose
  *    row the `priorities-in-flight` route waits for), with titles of 120 to 190 characters and
- *    three of them held by sessions, so that tab lists five rows.
- *  - The first priority's work: ten, beside the workflow issue, its child and the parked folds
- *    issue `seedWorkspace` writes, with titles of 85 to 190 characters in every open status and
- *    three held by sessions, so its own page lists thirteen rows. One of the ten stands in the
- *    icebox.
+ *    one of 756, each held by a session: one by each of the three workspace sessions that hold
+ *    work and one by each claim holder (`Holder`), so that tab lists six rows, five of them
+ *    claimed.
+ *  - The first priority's work: eleven, beside the workflow issue, its child and the parked folds
+ *    issue `seedWorkspace` writes, with titles of 85 to 190 characters and one of 736, in every
+ *    open status, and three held by sessions, so its own page lists fourteen rows. One of the
+ *    eleven stands in the icebox.
  *  - The rest of the order's work: one or two under each of the other priorities, so every row
  *    of the Priorities tab counts some, and several count two or more of a kind. One stands in
- *    the backlog, so the Parked tab lists three rows with the folds issue and the icebox one. */
+ *    the backlog, held by the claim holder whose title is led by an emoji, so the Parked tab
+ *    lists three rows with the folds issue and the icebox one, one of them claimed.
+ *
+ *  The two longest are created last, so every issue before them keeps the key it had before
+ *  them, which the priorities' descriptions name. */
 const WORK = {
   composerOrder: {
     holder: "planner",
@@ -133,6 +143,7 @@ const WORK = {
     under: null,
   },
   heartbeats: {
+    holder: "untitled",
     project: "OPS",
     status: "retro",
     title:
@@ -271,6 +282,7 @@ const WORK = {
     under: 5,
   },
   foldReports: {
+    holder: "cacheWarm",
     project: "CORE",
     status: "backlog",
     title:
@@ -338,6 +350,37 @@ const WORK = {
       "A load run opens each page the way a reader does at ten times today's traffic and lists " +
       "the pages slower than a second",
     under: 12,
+  },
+  handOver: {
+    holder: "cacheWarm",
+    project: "OPS",
+    status: "in_progress",
+    title:
+      "A build host drained for replacement while a verification run still holds it waits for " +
+      "the run to write the last check it finished, then hands the run to the next host with its " +
+      "record, its cache key and the list of checks it has still to run, and the next host picks " +
+      "the run up from that list rather than from the first check; the run's own page says which " +
+      "host read which checks, how long the hand-over took and whether any check was read twice, " +
+      "a run that could not be handed over says why in one line at the top of that page, beside a " +
+      "link to the drained host's own log, and the fleet's dashboard counts the runs handed over " +
+      "each day beside the runs that started again from nothing, so the people who replace hosts " +
+      "can see what a replacement still costs",
+    under: null,
+  },
+  runSummary: {
+    project: "OPS",
+    status: "testing",
+    title:
+      "A change opened for review shows, above its first line, one summary of every check its " +
+      "verification run made: which checks passed, which failed and on which line of the change, " +
+      "which were read past and the reason a person gave for each, which were read from a commit " +
+      "that is no longer the head of the change, and how long the whole run took against the " +
+      "median of the last week's runs; a reviewer who opens the summary reaches each check's own " +
+      "record in one click, a reviewer who does not still sees in its first line whether the " +
+      "change is ready to read, and a change whose run is still going says which check it is on " +
+      "and how many are left, rather than drawing an empty box that a reviewer could take for a " +
+      "run that found nothing to say",
+    under: 0,
   },
 } satisfies Record<string, Work>;
 
@@ -622,6 +665,9 @@ export async function seedReviewRoutes({
   readonly boundMs: number;
 }): Promise<ReviewSeed> {
   const workspace = await seedWorkspace({ boundMs });
+  // The registry with the two claim holders beside the workspace's sessions, written before any
+  // of them claims an issue, so the Agents page lists them and each claim reads as held.
+  await setLiveSessions(reviewSessions);
   const issue = workspace.issues.workflow;
 
   // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and

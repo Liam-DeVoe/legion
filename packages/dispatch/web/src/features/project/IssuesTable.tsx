@@ -74,20 +74,21 @@ export function IssuesTable({
   /** The layout this table keeps, under its own key, where it is not its listing's: the whole
    *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
    *  other one opening hidden for the reader to show, the widths it gives any column in place
-   *  of its own (`widths`), and the columns it pins at the left of a desktop's box in place of
-   *  the registry's (`pins`, `issueTableLayout`). Given one, Title fills a desktop box: it
-   *  takes what the other shown columns and the row's actions leave (`fills`). `rowActions:
-   *  false` draws no row's actions after the columns, no cell for a row's Start next, and keeps
-   *  no width for them, as on a listing that holds no issue in Legion's queue (`listsQueued`):
-   *  Title takes that width too, and the selection's bar keeps Start next. `wrapTitles: true`
-   *  draws each row's title whole, however many lines it takes, where a project's table clamps
-   *  it to two lines that end in '…': a table read by its titles, as each fault list of the
-   *  priorities page and a priority's work table are. `statusLegend: true` draws each segment of
-   *  the status bar as its count alone where the segments with their names are wider than the
-   *  bar, and the names in a legend under it (`IssueTableStatus`), so no name is cut at the
-   *  bar's edge: each of those tables stands in a box narrower than a project's, whose bar keeps
-   *  its names and scrolls sideways on a phone. Each of those gives its own; unset, the table
-   *  opens as a project's table does. */
+   *  of its own, or the columns it makes as wide as what they hold (`widths`), and the columns it
+   *  pins at the left of a desktop's box in place of the registry's (`pins`,
+   *  `issueTableLayout`). Given one, Title fills a desktop box: it takes what the other shown
+   *  columns and the row's actions leave (`fills`). `rowActions: false` draws no row's actions
+   *  after the columns, no cell for a row's Start next, and keeps no width for them, as on a
+   *  listing that holds no issue in Legion's queue (`listsQueued`): Title takes that width too,
+   *  and the selection's bar keeps Start next. `wrapTitles: true` wraps each row's title onto as
+   *  many as eight lines, ending in '…' with the whole title in its tooltip where it runs
+   *  longer, where a project's table clamps it to two lines that end in '…': a table read by its
+   *  titles, as each fault list of the priorities page and a priority's work table are.
+   *  `statusLegend: true` draws each segment of the status bar as its count alone where the
+   *  segments with their names are wider than the bar, and the names in a legend under it
+   *  (`IssueTableStatus`), so no name is cut at the bar's edge: each of those tables stands in a
+   *  box narrower than a project's, whose bar keeps its names and scrolls sideways on a phone.
+   *  Each of those gives its own; unset, the table opens as a project's table does. */
   layout?: {
     readonly key: string;
     readonly opens: readonly IssueTableColumnId[];
