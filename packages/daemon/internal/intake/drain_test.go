@@ -55,6 +55,10 @@ const (
 	drainRoundTrip = 3 * time.Millisecond
 	// drainBound is how long the backlog may take to drain when the drain is measured.
 	drainBound = 60 * time.Second
+	// lagLine is the message of lagWatch's warn line (consume.go): a consumer reached a message
+	// more than consumerLagWarn after its publish. Should the line's words change, the row fails on
+	// that line rather than leaving out any other.
+	lagLine = "intake: a durable consumer is behind its stream"
 )
 
 func drainRoot(i int) string  { return fmt.Sprintf("LEGION-%d", 1000+i) }
@@ -197,17 +201,18 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		t.Errorf("the backlog drained in %s, want under %s", drained.Round(time.Millisecond), drainBound)
 	}
 
-	// Every message was delivered once, so none was nacked or redelivered, and nothing was logged at
-	// warn or above, so none was poison or failed. The window the ConsumerSpec above takes is what
-	// makes this exact count sound: a handling here is a decode, for a review or a checks
-	// settlement the store read of whether its pull request is recorded, and for a Legion event
-	// one transaction against a Postgres drainRoundTrip - 3 ms - away, and a redelivery the count
-	// would see needs the whole window to pass before that handling's acknowledgement reaches the
-	// server. A fixed window let the machine decide that count: a store read of 61 s was cut at
-	// the 30 s this row used to set, and its message naked and delivered again. The window is what
-	// is left of the test binary's deadline less 30 s (testwait.Remaining), so a read however
-	// slow is waited out. This consumer is intake.OpenConsumers' own (the delivery mechanism:
-	// ConsumerSpec.HandlerLimit's comment in consume.go).
+	// Every message was delivered once, so none was nacked or redelivered, and every one through the
+	// last was acknowledged, so none was left waiting for its acknowledgement. The window the
+	// ConsumerSpec above takes is what makes this exact count sound: a handling here is a decode,
+	// for a review or a checks settlement the store read of whether its pull request is recorded,
+	// and for a Legion event one transaction against a Postgres drainRoundTrip - 3 ms - away, and a
+	// redelivery the count would see needs the whole window to pass before that handling's
+	// acknowledgement reaches the server. A fixed window let the machine decide that count: a store
+	// read of 61 s was cut at the 30 s this row used to set, and its message naked and delivered
+	// again. The window is what is left of the test binary's deadline less 30 s
+	// (testwait.Remaining), so a read however slow is waited out. This consumer is
+	// intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
+	// consume.go).
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)
@@ -220,8 +225,26 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		t.Errorf("the GitHub consumer delivered %d messages and acknowledged through stream sequence %d, want each of the %d delivered once and every one through %d acknowledged",
 			info.Delivered.Consumer, info.AckFloor.Stream, len(backlog), last)
 	}
-	if logged := logs.String(); logged != "" {
-		t.Errorf("the consumer and the handlers logged, want nothing at warn or above:\n%s", logged)
+	// Nothing was logged at warn or above, so no message was poison, dropped, refused, read with a
+	// field taken as absent, cut or failed: a dropped settlement, a committed refusal and a field
+	// taken as absent are each acknowledged, so the count above cannot see them. One line is left
+	// out: lagWatch's (consume.go), which says the consumer reached a message more than
+	// consumerLagWarn, five minutes, after its publish. It tells how long the drain took, not
+	// whether it drained, and here that time follows from how long the handlers' store reads take:
+	// one read held 300 s writes it while every count of this row holds. The drain's time is judged
+	// only when it is asked for (LEGION_TEST_DRAIN_MEASURE, against drainBound, a minute, well
+	// inside the line's five), so the row's verdict does not depend on how long a store read takes.
+	// The lines left out are logged.
+	var others strings.Builder
+	for _, line := range strings.SplitAfter(logs.String(), "\n") {
+		if strings.Contains(line, lagLine) {
+			t.Logf("left out of the warn lines, the drain's time: %s", strings.TrimSuffix(line, "\n"))
+			continue
+		}
+		others.WriteString(line)
+	}
+	if others.Len() != 0 {
+		t.Errorf("the consumer and the handlers logged, want nothing at warn or above but lagWatch's line:\n%s", others.String())
 	}
 
 	// Only the Legion events took a transaction, and each was applied.
