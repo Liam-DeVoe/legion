@@ -57,10 +57,14 @@ func startEditNoticeHub(t *testing.T, database *store.Store) (wake <-chan struct
 		defer close(done)
 		hub.Run(ctx)
 	}()
-	stop = sync.OnceFunc(func() {
-		cancel()
+	// The cancel runs once; the wait runs on every call, outside the once, so a give-up ends the
+	// test as any wait's does rather than panicking the binary from inside sync.OnceFunc. done is
+	// closed, so a second call's wait returns at once.
+	var stopping sync.Once
+	stop = func() {
+		stopping.Do(cancel)
 		testwait.Receive(t, "the edit-notice hub's Run to return once its context ended", done)
-	})
+	}
 	t.Cleanup(stop)
 	testwait.Receive(t, "the hub to connect", connected)
 	return wake, stop

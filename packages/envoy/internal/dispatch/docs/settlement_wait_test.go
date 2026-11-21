@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,19 +22,21 @@ import (
 // polls costs the database a statement every millisecond. (A timer's settlement waits for no
 // append: it stores the room's unstored updates itself, Ledger.flushThrough.)
 
-// A room's append held for half a second while Shutdown drains the room: the drain waits for it
+// A room's append held while Shutdown drains the room: the drain waits for it
 // (waitForDurableAppends) and settles the document once it lands. Its wait wakes when the append
-// lands, not every millisecond of the half second, and the drain's settlement starts on the wake
-// the landing gives it. That is read off the order of the events, in process: the append's commit
-// (afterAppendCommit), each wake of the drain's wait (settlementWoke) and the settlement's start
-// (beforeSettleStart), each numbered from one counter as it happens, with exactly one wake between
-// the commit and the start. The service's clock is held, so no timer of the service's - a poll, a
-// pause before settling - can wake the drain or start its settlement: what starts it is the
-// landing's wake. A wait the service took off its clock, on the wall clock, which the order alone
-// would not show, is refused by name where it is written
+// lands and on nothing else, and the drain's settlement starts on the wake the landing gives it.
+// The service's clock is a fake, held, so no timer of the service's - a poll, a pause before
+// settling - fires by itself; what the drain arms on it is read instead: once the drain is parked
+// in its wait (the room's appendWaiters), the clock holds nothing beyond what it held before
+// Shutdown but the drain's budget (ShutdownDrainBudget), so the wait arms no poll, and once
+// Shutdown has returned nothing beyond it at all, so no wait left a timer behind. The wakes are
+// read off the order of the events, in process: the append's commit (afterAppendCommit), each
+// wake of the drain's wait (settlementWoke) and the settlement's start (beforeSettleStart), each
+// numbered from one counter as it happens, with exactly one wake between the commit and the
+// start: the landing's. A wait the service took off its clock, on the wall clock, which neither
+// would show, is refused by name where it is written
 // (TestTheDocumentServiceWaitsOffItsClockOnlyWhereItSaysWhy).
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
-	const held = 500 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	persist := NewPgVersioned(database)
@@ -48,7 +51,8 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(appends.let)
-	service := newShutdownTestServiceOn(t, database, appends, clocktest.Held())
+	serviceClock := clocktest.Held()
+	service := newShutdownTestServiceOn(t, database, appends, serviceClock)
 	service.settlementWoke = func(room string) {
 		if room == artifactID && counting.Load() {
 			order.Add(1)
@@ -72,19 +76,30 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	appends.armed.Store(true)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	testwait.Receive(t, "the room's append to reach the store", appends.entered)
+	before := serviceClock.Armed()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
-	// The claim is the drain's wakes over the span the append is held for: a drain that polls
-	// wakes inside it, one woken by the append's landing does not.
-	testwait.Span(t, held, "the drain's wakes over a held append's span are what is counted: a poll that has not happened leaves no state to read, no later action shows it, and synctest does not reach the real database connections")
+	testwait.Until(t, "Shutdown's drain budget armed on the service's clock", func() ([]time.Time, bool) {
+		armed := serviceClock.Armed()
+		return armed, len(armedBeyond(before, armed)) > 0
+	})
+	testwait.Eventually(t, "the drain parked in its wait for the room's held append", func() bool {
+		return appendWaiters(service, artifactID) == 1
+	})
+	if extra := armedBeyond(before, serviceClock.Armed()); len(extra) != 1 {
+		t.Errorf("with the drain parked in its wait the service's clock holds %v beyond what it held before Shutdown, want the drain's budget alone: a wait that polls arms a timer for each poll", extra)
+	}
 	appends.let()
 	if err := testwait.Receive(t, "Shutdown to return once the room's append was let go", shutdown); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 	counting.Store(false)
+	if extra := armedBeyond(before, serviceClock.Armed()); len(extra) != 0 {
+		t.Errorf("once Shutdown returned the service's clock holds %v beyond what it held before Shutdown, want nothing: a wait of the drain left a timer armed", extra)
+	}
 
 	if got := wakes.Load(); got > 3 {
-		t.Errorf("the drain woke %d times while its room's append was held for %s, want at most 3", got, held)
+		t.Errorf("the drain woke %d times while its room's append was held, want at most 3", got)
 	}
 	switch {
 	case committed.Load() == 0:
@@ -168,4 +183,31 @@ func (t *statementTracer) lockWaitsUnder(room, timeout string, since int) bool {
 		}
 	}
 	return false
+}
+
+// armedBeyond is the deadlines of armed that before does not hold, each as often as armed holds
+// it more times than before does: what a fake's timers gained since before was read, whatever
+// it lost meanwhile.
+func armedBeyond(before, armed []time.Time) []time.Time {
+	left := slices.Clone(before)
+	var gained []time.Time
+	for _, at := range armed {
+		if index := slices.IndexFunc(left, at.Equal); index >= 0 {
+			left = slices.Delete(left, index, index+1)
+			continue
+		}
+		gained = append(gained, at)
+	}
+	return gained
+}
+
+// appendWaiters is how many waits for room's appends its record counts (waitForRoomIdle,
+// askRoomAppends), read under the record's lock; none when the room has no record.
+func appendWaiters(service *Service, room string) int {
+	state := service.lockExistingState(room)
+	if state == nil {
+		return 0
+	}
+	defer service.unlockState(room, state)
+	return state.appendWaiters
 }

@@ -245,9 +245,19 @@ func TestShutdownJoinsATimersSettlementUnderWay(t *testing.T) {
 		return slices.Contains(drainClock.Armed(), budget)
 	})
 	drainClock.Advance(ShutdownDrainBudget)
-	testwait.Quiet(t, "Shutdown returning while the timer's settlement is held", shutdown, 2*time.Second,
-		"no state shows Shutdown waiting in its join; a Shutdown that skips it has only its evictions, "+
-			"one database read and ygo's stop left once the budget ends, which take milliseconds")
+	// Its budget over, Shutdown still has to join the timer's settlement, and the budget's end
+	// readies no join that does. The test lets the settlement go only once Shutdown is blocked in a
+	// join with no settlement of its drain's own under way (shutdownWaitsPastItsDrain), a state it
+	// reads rather than a window of real time: a Shutdown that skips the join returns instead, and
+	// fails here, by name, whenever it does.
+	testwait.Eventually(t, "Shutdown, its drain budget over, to wait in its join for the timer's settlement", func() bool {
+		select {
+		case err := <-shutdown:
+			t.Fatalf("Shutdown returned (%v) once its drain budget was over, while the timer's settlement was still under way", err)
+		default:
+		}
+		return shutdownWaitsPastItsDrain("TestShutdownJoinsATimersSettlementUnderWay")
+	})
 	released.Store(true)
 	hold.let()
 	if err := testwait.Receive(t, "Shutdown to return once the timer's settlement has returned", shutdown); err != nil {

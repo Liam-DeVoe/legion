@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,13 +23,16 @@ import (
 // test moves it, so a parked lane tries again only once the test moves the fake to its park's
 // deadline. Its timers are the sender's own (an AfterFunc on that fake), counted: pending is how
 // many parks' timers have been started and not run, which the sender starts only once no goroutine
-// serves the parked lane (serve), and fired how many have run.
+// serves the parked lane (serve), and fired how many have run. Its claim refreshes tick every
+// mentionClaimRefresh on refreshes, a fake of their own (newMentionSender), so a refresh comes only
+// where the test moves refreshes to it, and clock holds the parks alone.
 type parkRig struct {
-	sender  *mentionSender
-	clock   *clocktest.Fake
-	open    atomic.Bool
-	pending atomic.Int32
-	fired   atomic.Int64
+	sender    *mentionSender
+	clock     *clocktest.Fake
+	refreshes *clocktest.Fake
+	open      atomic.Bool
+	pending   atomic.Int32
+	fired     atomic.Int64
 	// release closes gate, at which every send to a recipient other than session:parked waits.
 	release func()
 	mu      sync.Mutex
@@ -45,8 +49,9 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 	lifetime, stop := context.WithCancel(context.Background())
 	gate := make(chan struct{})
 	rig := &parkRig{written: map[mentionKey]int{}, clock: clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
-		release: sync.OnceFunc(func() { close(gate) })}
-	rig.sender = newMentionSender(lifetime, 100*time.Millisecond, nil,
+		refreshes: clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		release:   sync.OnceFunc(func() { close(gate) })}
+	rig.sender = newMentionSender(lifetime, mentionClaimRefresh, rig.refreshes,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.mention.Target == "session:parked" && !rig.open.Load() {
 				rig.mu.Lock()
@@ -222,12 +227,22 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 		serving, _, _, queued := rig.state()
 		return sent == 10 && queued == 2 && serving == 0
 	})
-	// The sender writes the claims it holds again on its own ticker (keepClaims).
-	testwait.Eventually(t, "the parked sends' claims written again", func() bool {
-		rig.mu.Lock()
-		defer rig.mu.Unlock()
-		return rig.written[first.key()] > 0 && rig.written[second.key()] > 0
+	// The sender writes the claims it holds again on its own ticker (keepClaims), whose tick the row
+	// brings by moving refreshes to it; the ticker arms the next tick once the refresh has returned,
+	// so the next tick armed says the refresh is done, and the claims it wrote are read then.
+	refresh := rig.refreshes.AwaitArmed(t, "the sender's first claim refresh", 1)[0]
+	rig.refreshes.Set(refresh)
+	testwait.Until(t, "the sender's claim refresh after the one the row ran", func() ([]time.Time, bool) {
+		armed := rig.refreshes.Armed()
+		return armed, slices.ContainsFunc(armed, refresh.Add(mentionClaimRefresh).Equal)
 	})
+	rig.mu.Lock()
+	firstWritten, secondWritten := rig.written[first.key()], rig.written[second.key()]
+	rig.mu.Unlock()
+	if firstWritten != 1 || secondWritten != 1 {
+		t.Fatalf("the claim refresh wrote the parked sends' claims %d and %d times, want once each: a refresh writes again every claim the sender holds",
+			firstWritten, secondWritten)
+	}
 
 	// Eight more tries of the parked lane, each as the fake reaches its park's deadline; before
 	// each the lane is parked with no goroutine on it and both sends on it.
@@ -350,7 +365,7 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	// lane parked while one park's timer is still to be armed; a move made then arms that timer from
 	// the moved fake, and its lane is tried a park later than its waits say. Every timer on the fake
 	// is a lane's park: the sender reads the fake for its parks alone (newParkRig), and its claim
-	// refreshes tick on the real clock (newMentionSender's refreshes, nil here).
+	// refreshes tick on a fake of their own that this row never moves (parkRig.refreshes).
 	allParked := func(what string, tried int, at time.Time) {
 		t.Helper()
 		testwait.Until(t, what, func() (string, bool) {

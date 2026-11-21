@@ -118,7 +118,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	// (githubapp.Client.RepositoryTokenWithStatuses). A grant taken away while a token lives is
 	// still refused, and that costs a head its statuses alone (refusedPulls, readStatuses).
 	token, statuses, err := r.GitHub.RepositoryTokenWithStatuses(ctx, owner, name)
-	if at := stopAt(err, githubapp.AppScope); at != nil {
+	if at := r.stopAt(err, githubapp.AppScope); at != nil {
 		return reconciled{}, at
 	}
 	if err != nil {
@@ -339,7 +339,7 @@ func (r *Reconciler) identify(ctx context.Context, row, owner, name, token, scop
 	r.pace(ctx, c)
 	c.restRequests++
 	answer, err := r.GitHub.RepositoryIdentity(ctx, token, owner, name, kept.etag)
-	if at := stopAt(err, scope); at != nil {
+	if at := r.stopAt(err, scope); at != nil {
 		return rowState{}, at, nil
 	}
 	if err != nil {
@@ -369,7 +369,7 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 		answer, err := r.GitHub.OpenPullRequests(ctx, token, owner, name, page, etag)
 		return pullRequestPage(answer), err
 	})
-	if at := stopAt(err, scope); at != nil {
+	if at := r.stopAt(err, scope); at != nil {
 		return nil, at, nil
 	}
 	if err != nil {

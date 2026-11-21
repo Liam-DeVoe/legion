@@ -168,8 +168,10 @@ type Reconciler struct {
 	// requests (Pace), the wait each query earns (graphQLPace) and the hold of an answer that
 	// the App is not installed (AbsentAppRecheck) run on: clock.Real when nil, and a test's
 	// clocktest.Fake, which ends the pass's bound, a wait or a hold only when the test moves it.
-	// A rate limit's end stays on the wall clock, since it is GitHub's own reset, which the
-	// ledger every process shares holds.
+	// It is also what the end of a limit GitHub answered is placed from (stopAt): GitHub's wait,
+	// which the GitHub client read against its own clock (githubapp.WithRateLimitClock), added to
+	// this clock's reading. A limit held in the ledger every process shares ends where the ledger
+	// says, on the database's clock.
 	Clock clock.Clock
 	// Instance answers this process's row in the registry of live server processes, the id
 	// processes.Register gave it, and "" while the process holds none yet. It is what each pass
@@ -288,13 +290,15 @@ func (r *Reconciler) limited(ctx context.Context, under ...string) *stop {
 // stopAt is the stop a GitHub error ends the pass at, and nil for every other error.
 // githubapp.Client.request records GitHub's own limit in the shared ledger itself, so the pass
 // records nothing here; scope is what the request was budgeted under, which a limit GitHub
-// answered with rather than one already held does not carry.
-func stopAt(err error, scope string) *stop {
+// answered with rather than one already held does not carry. The stop's end is the wait GitHub
+// named from the reconciler's clock (Clock), the clock its GitHub client read that wait against
+// (githubapp.WithRateLimitClock): both are the real clock in a deployment.
+func (r *Reconciler) stopAt(err error, scope string) *stop {
 	limited, ok := githubapp.AsRateLimit(err)
 	if !ok {
 		return nil
 	}
-	at := &stop{scope: limited.Scope, until: time.Now().Add(limited.Wait)}
+	at := &stop{scope: limited.Scope, until: r.clock().Now().Add(limited.Wait)}
 	if at.scope == "" {
 		at.scope = scope
 	}

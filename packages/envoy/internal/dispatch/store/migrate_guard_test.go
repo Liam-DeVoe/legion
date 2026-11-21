@@ -161,7 +161,7 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	}
 	// The line's time is the runner's own record of when it gave up on an attempt, written to the
 	// millisecond, so a gap may read up to a millisecond short of what passed.
-	attempts := attemptTimes(t, logs.String(), "0001_widen_held.up.sql")
+	attempts := attemptTimes(t, logs.String(), "migration=0001_widen_held.up.sql")
 	for i := 1; i < len(attempts); i++ {
 		if gap := attempts[i].Sub(attempts[i-1]); gap < pgmigrate.LockTimeoutRetryPause+pgmigrate.LockTimeout-time.Millisecond {
 			t.Errorf("attempt %d gave up %s after attempt %d; want at least the %s pause before it and its own %s lock timeout",
@@ -189,13 +189,14 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	}
 }
 
-// attemptTimes reads, in order, the time of each line of logs that names migration: the moments
-// RetryLockTimeouts logged its timed-out attempts.
-func attemptTimes(t *testing.T, logs, migration string) []time.Time {
+// attemptTimes reads, in order, the time of each line of logs that carries field, a key=value pair
+// followed by the line's next attribute ("migration=<name>", "table=<name>"): the moments
+// RetryLockTimeouts and RetryVersionTableLockTimeouts logged their timed-out attempts.
+func attemptTimes(t *testing.T, logs, field string) []time.Time {
 	t.Helper()
 	var at []time.Time
 	for _, line := range strings.Split(logs, "\n") {
-		if !strings.Contains(line, "migration="+migration) {
+		if !strings.Contains(line, field+" ") {
 			continue
 		}
 		stamp, ok := strings.CutPrefix(strings.Fields(line)[0], "time=")

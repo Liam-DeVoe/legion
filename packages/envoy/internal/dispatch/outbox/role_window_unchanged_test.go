@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingDepsJudgedBy is countingDeps with the role-route holders judged by windows
@@ -37,22 +36,14 @@ func (r *roleRig) countingDepsJudgedBy(windows roles.Windows) (Deps, *metrics.Re
 // (bus.DeliverSubject), as a connection probe asks it: a core request carrying
 // bus.ConnectionProbeHeader and no body. A subscriber's answer is nil, and nats.ErrNoResponders
 // says nothing subscribes the subject. The request waits for its answer under the test's own
-// context (testnats.Context), with no bound of its own.
+// context (testnats.Context), with no bound of its own: it is sent only where the row knows its
+// answer comes, while the subscriber holds the subject, or once the server lists no subscription
+// on it (testnats.AwaitNoSubscription), so the server answers it no responders itself.
 func probeRelaySubject(t *testing.T, conn *natsgo.Conn, sessionID string) error {
 	msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
 	msg.Header.Set(bus.ConnectionProbeHeader, "1")
 	_, err := conn.RequestMsgWithContext(testnats.Context(t), msg)
 	return err
-}
-
-// awaitNoRelayResponder waits until a probe of sessionID's relay subject meets no responder: a
-// closed connection leaves its subscriptions for the moment the server reads the close.
-func awaitNoRelayResponder(t *testing.T, conn *natsgo.Conn, sessionID string) {
-	t.Helper()
-	testwait.Until(t, fmt.Sprintf("a probe of %s's relay subject to meet no responder", sessionID), func() (error, bool) {
-		err := probeRelaySubject(t, conn, sessionID)
-		return err, errors.Is(err, natsgo.ErrNoResponders)
-	})
 }
 
 // Dispatch's outbox judges a role route's holder by the age of its last registration alone, as
@@ -90,8 +81,13 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	if err := probeRelaySubject(t, rig.conn, holder); err != nil {
 		t.Fatalf("a probe of %s's relay subject while its subscriber holds it answered %v, want the subscriber's answer", holder, err)
 	}
+	// The subscriber's connection closes; once the server has dropped its subscription, a probe of
+	// the relay subject meets no responder, as a connection probe of the stopped holder would.
 	relay.Close()
-	awaitNoRelayResponder(t, rig.conn, holder)
+	testnats.AwaitNoSubscription(t, rig.conn, bus.DeliverSubject(holder))
+	if err := probeRelaySubject(t, rig.conn, holder); !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("a probe of %s's relay subject once the server held no subscription on it answered %v, want %v", holder, err, natsgo.ErrNoResponders)
+	}
 	record, err := rig.sessions.Refresh(context.Background(), holder)
 	if err != nil {
 		t.Fatalf("read the holder's record: %v", err)

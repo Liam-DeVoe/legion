@@ -1989,11 +1989,13 @@ const restartedPublishesWithin = 10 * time.Second
 // same issue written behind it. Restarted on the same database and NATS, the process publishes
 // both, comment 1 first: on the issue's topic family the stream holds comment 1 at a lower sequence
 // than comment 2, a session following the issue takes comment 1 before comment 2, and neither is
-// marked published before the restart and both are after the restarted process registered, by
-// that process's own records on the database's clock; in the timing lane, within 10 s of its
-// registration. What the killed process had in flight is dropped with its connection, as a dead
-// host's sends that never reached the server are, so nothing of comment 1 reaches the stream but
-// what the restarted process publishes.
+// marked published before the restart and both are after the kill, on the database's clock: its
+// now() read once the killed process had exited, and the published_at the restart stamps; in the
+// timing lane, within 10 s of the restarted process's registration. The product does not promise
+// that the restart publishes after it registers: its outbox starts before its registration does.
+// What the killed process had in flight is dropped with its connection, as a dead host's sends
+// that never reached the server are, so nothing of comment 1 reaches the stream but what the
+// restarted process publishes.
 func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t *testing.T) {
 	aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t, everyRun)
 }
@@ -2057,6 +2059,12 @@ func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin
 	secondEvent := commentEventID(t, pair.database, second.commentID)
 	killed.signal(t, syscall.SIGKILL)
 	killed.WaitExit(t, "SIGKILL")
+	// The database's clock once the killed process has exited: nothing of that process stamps a
+	// row after it, so a publication stamped later is the restart's.
+	var killedBy time.Time
+	if err := pair.database.Pool.QueryRow(context.Background(), `select now()`).Scan(&killedBy); err != nil {
+		t.Fatalf("read the database's clock once the killed process had exited: %v", err)
+	}
 	proxy.Cut()
 	proxy.Restore()
 	// Nothing the killed process sent reached the stream, so neither comment is marked published
@@ -2109,18 +2117,19 @@ func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin
 	}
 	watcher.requireInOrder(t)
 
-	// Each comment is marked published by the restarted process, after it registered: both on the
-	// database's clock, the restarted process's own records of when it started and when it
-	// published. How soon after its start it publishes is the reading the row's twin in the timing
-	// lane holds (onTheClock), on those records.
+	// Each comment is marked published by the restarted process, after the kill: both on the
+	// database's clock, its now() once the killed process had exited and the stamp the restart's
+	// publication wrote. How soon after its registration the restart publishes is the reading the
+	// row's twin in the timing lane holds (onTheClock), on its records on that clock; the product
+	// does not promise it publishes after it registers, since its outbox starts first.
 	for _, comment := range []struct {
 		name, event string
 	}{{"comment 1", firstEvent}, {"comment 2", secondEvent}} {
 		after := published[comment.event].Sub(started)
 		t.Logf("%s (%s) was marked published %v after the restarted process registered", comment.name, comment.event, after.Round(time.Millisecond))
-		if published[comment.event].Before(started) {
-			t.Errorf("%s (%s) was marked published at %s, before the restarted process registered at %s",
-				comment.name, comment.event, published[comment.event].Format(time.RFC3339Nano), started.Format(time.RFC3339Nano))
+		if published[comment.event].Before(killedBy) {
+			t.Errorf("%s (%s) was marked published at %s, before the killed process had exited at %s",
+				comment.name, comment.event, published[comment.event].Format(time.RFC3339Nano), killedBy.Format(time.RFC3339Nano))
 		}
 		if lane == onTheClock && after > restartedPublishesWithin {
 			t.Errorf("%s (%s) was marked published %v after the restarted process registered, past the %v bound",
@@ -3930,19 +3939,19 @@ func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 }
 
 // Rendering is not an acknowledgement of a browser update's durable append. A tab the rig takes
-// as synced has had its own update stored (openMarkedEditor), so a row that opens a tab here and
-// then writes on the other process is not racing that tab's own append; this row is what says
-// the rig keeps that promise. A transaction of the test's own holds doc_updates, so no append of
-// the document can commit: the editor's setup waits, and the append it waits for is the one
-// queued on the table lock. Once the lock goes, the setup finishes and the marker leaves the
-// document it opened as it was.
+// as synced has had its own update stored (markEditor), so a row that opens a tab and marks it
+// and then writes on the other process is not racing that tab's own append; this row is what
+// says the rig keeps that promise. A transaction of the test's own holds doc_updates, so no
+// append of the document can commit: the marker's wait holds, and the append it waits for is the
+// one queued on the table lock. Once the lock goes, the wait ends and the marker leaves the
+// document the tab opened as it was.
 //
-// The setup runs on the test goroutine, where a failure of its own may stop the test. The gate
-// is let go beside it once the setup's append is queued on the lock: that goroutine waits through
-// the shared wait's form for a caller with no t (testwait.InHelper), reports what it finds wrong
-// with t.Errorf, which any goroutine may call, and lets the gate go whatever it found, so the
-// setup always gets to finish. A setup that returns before the gate is let go did not wait for
-// its own append.
+// The tab opens on the test goroutine; a sync that changes nothing stores nothing, so the lock
+// does not hold it. The marker's wait runs on a goroutine of its own and answers an error rather
+// than failing the test, and the row keeps the order the promise needs: the append queued on the
+// lock, then the wait still holding while the gate stays shut, then the gate let go, then the
+// wait's end. A wait that ended on the room's own acknowledgement of the marker, before the
+// append that stores it committed, ends while the gate is shut, and fails the row by name.
 func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SYNC")
@@ -3956,76 +3965,73 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	if _, err := gate.Exec(context.Background(), `lock table doc_updates in share mode`); err != nil {
 		t.Fatal(err)
 	}
-	stop, released, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := testwait.InHelper(t.Name(), "the held editor setup's append to be waiting on the lock", func() bool {
-			select {
-			case <-stop:
-				return true
-			default:
-			}
-			waiting, err := storetest.CountLockWaits(context.Background(), pair.database, "%insert into doc_updates%")
-			if err != nil {
-				t.Errorf("count the waits on doc_updates' lock: %v", err)
-				return true
-			}
-			return waiting > 0
-		}); err != nil {
-			t.Error(err)
+	editor := pair.openSyncedEditor(t, pair.a, dispatchTestLogin, artifactID, "before\n")
+	marked := make(chan error, 1)
+	go func() { marked <- pair.markEditor(t.Name(), pair.a, dispatchTestLogin, artifactID, editor) }()
+	testwait.Until(t, "the marker's append to be waiting on the lock", func() (int, bool) {
+		select {
+		case err := <-marked:
+			t.Fatalf("the marker's wait returned (%v) while its append was held", err)
+		default:
 		}
-		close(released)
-		if err := gate.Commit(context.Background()); err != nil {
-			t.Errorf("let the gate on doc_updates go: %v", err)
+		waiting, err := storetest.CountLockWaits(context.Background(), pair.database, "%insert into doc_updates%")
+		if err != nil {
+			t.Fatalf("count the waits on doc_updates' lock: %v", err)
 		}
-	}()
-	t.Cleanup(func() {
-		close(stop)
-		testwait.Receive(t, "the gate on doc_updates to be let go", done)
+		return waiting, waiting > 0
 	})
-	editor := pair.openMarkedEditor(t, pair.a, dispatchTestLogin, artifactID, "before\n")
-	select {
-	case <-released:
-	default:
-		t.Fatal("editor setup returned while its append was held")
+	testwait.Quiet(t, "the marker's wait while its append is still held", marked, 100*time.Millisecond,
+		"what must not happen is a wait that answers before its own append committed: the append is parked in "+
+			"PostgreSQL holding no state of the product's to read, the tab runs in this process over a real socket "+
+			"so synctest does not reach it, and the only later action there is - committing the gate - is the thing "+
+			"that releases it")
+	if err := gate.Commit(context.Background()); err != nil {
+		t.Fatalf("let the gate on doc_updates go: %v", err)
+	}
+	if err := testwait.Receive(t, "the marker's wait to end once its append was released", marked); err != nil {
+		t.Fatal(err)
 	}
 	if markdown(editor) != "before\n" {
 		t.Fatalf("sync marker changed the document to %q", markdown(editor))
 	}
 }
 
-// openMarkedEditor is openSyncedEditor and, after it, a metadata marker the tab sends once it
-// holds the document: it returns only once that very update is stored, so every sync frame ahead
-// of it on the socket has been taken by the room and stored too. A row that opens a tab this way
-// knows the tab's own writing is durable, so only a later write somewhere else can leave the
-// tab's room behind the durable head. The marker changes no text, so what the tab renders is
-// what it opened.
-func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, login, artifactID, want string) *docstest.Peer {
-	t.Helper()
-	editor := p.openSyncedEditor(t, process, login, artifactID, want)
+// markEditor sends a metadata marker from editor, login's tab on process holding the document,
+// and returns once that very update is stored, so every sync frame ahead of it on the socket has
+// been taken by the room and stored too. A row that marks a tab this way knows the tab's own
+// writing is durable, so only a later write somewhere else can leave the tab's room behind the
+// durable head. The marker changes no text, so what the tab renders is what it opened. It takes
+// no t, so a goroutine of a test's can run it: its wait is the shared wait's form for a caller
+// with no t (testwait.InHelper, naming test), and it answers what went wrong as an error.
+func (p *dispatchPair) markEditor(test string, process *dispatchProcess, login, artifactID string, editor *docstest.Peer) error {
 	markers := editor.Doc.GetMap("test-sync")
 	marker := strconv.FormatUint(uint64(editor.Doc.ClientID()), 10)
 	update, err := editor.Send(func(txn *crdt.Transaction) { markers.Set(txn, marker, true) })
 	if err != nil {
-		t.Fatalf("send %s's sync marker: %v", login, err)
+		return fmt.Errorf("send %s's sync marker: %w", login, err)
 	}
-	testwait.Until(t, login+"'s sync marker to be stored", func() (fmt.Stringer, bool) {
+	var failed error
+	if err := testwait.InHelper(test, login+"'s sync marker to be stored", func() bool {
 		var stored bool
 		if err := p.database.Pool.QueryRow(context.Background(),
 			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, artifactID, update).Scan(&stored); err != nil {
-			t.Fatalf("read %s's stored sync marker: %v", login, err)
+			failed = fmt.Errorf("read %s's stored sync marker: %w", login, err)
+			return true
 		}
 		if stored {
-			return nil, true
+			return true
 		}
 		select {
 		case <-editor.Ended:
-			t.Fatalf("%s's tab closed before its sync marker was stored:\n%s", login, process.Output.String())
+			failed = fmt.Errorf("%s's tab closed before its sync marker was stored:\n%s", login, process.Output.String())
+			return true
 		default:
+			return false
 		}
-		return process.Output, false
-	})
-	return editor
+	}); err != nil {
+		return err
+	}
+	return failed
 }
 
 // ───── the leased maintenance loops ────────────────────────────────────────
@@ -5813,8 +5819,9 @@ func announceAwarenessClients(socket *gws.Conn, artifactID string, first, count,
 }
 
 // Spec item 1: two people on one document, each connected to a different process, see each
-// other's typing and cursors within a second, and nobody is disconnected. Each subtest has a
-// document of its own, so one behaviour failing does not decide another's.
+// other's typing and cursors live, and nobody is disconnected; that each arrives within a second
+// is held in the timing lane (the OnTheClock twin below). Each subtest has a document of its own,
+// so one behaviour failing does not decide another's.
 func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) {
 	twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t, everyRun)
 }
@@ -5837,7 +5844,7 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 	project := uniqueProjectKey(t, "LIVE")
 	pair.a.createProject(t, project, "Live across processes")
 
-	t.Run("each keystroke reaches the editor on the other process within a second", func(t *testing.T) {
+	t.Run("each keystroke reaches the editor on the other process", func(t *testing.T) {
 		_, artifactID := pair.a.createIssueIn(t, project, "Typed on both", "x")
 		alice := pair.a.openEditorAs(t, "alice", artifactID, "x\n")
 		bob := pair.b.openEditorAs(t, "bob", artifactID, "x\n")
@@ -5850,7 +5857,7 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		pair.requireNoRoomCloses(t, artifactID)
 	})
 
-	t.Run("cursors and presence cross processes within a second", func(t *testing.T) {
+	t.Run("cursors and presence cross processes", func(t *testing.T) {
 		_, artifactID := pair.a.createIssueIn(t, project, "Cursors on both", "x")
 		alice := pair.a.openEditorAs(t, "alice", artifactID, "x\n")
 		if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
@@ -5896,7 +5903,7 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 		pair.requireNoRoomCloses(t, artifactID)
 	})
 
-	t.Run("an edit through B's API reaches an editor on A within a second", func(t *testing.T) {
+	t.Run("an edit through B's API reaches an editor on A", func(t *testing.T) {
 		_, artifactID := pair.a.createIssueIn(t, project, "Written through the other API", "x")
 		alice := pair.a.openEditorAs(t, "alice", artifactID, "x\n")
 		if answer := pair.b.send(t, http.MethodPost, editPath(artifactID), editBody(t, "x", "y", "", false), asUser("bob")); answer.status != http.StatusOK {
@@ -6709,10 +6716,14 @@ func anAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T, lane clockLane
 			pair.b.holdPersistence(t, artifactID, 300*time.Millisecond)
 			roomOpen := !peerEnded(bob) && !peerEnded(bobsOtherTab)
 			if roomOpen {
+				deleted := time.Now()
 				if err := removeParagraph(bob, "pear"); err != nil && !peerEnded(bob) {
 					t.Fatalf("delete the paragraph holding %q: %v", "pear", err)
 				}
-				if err := bobsOtherTab.WaitForText(t, markdown, "Intro, first.\n\nOutro.\n"); err != nil && !peerEnded(bobsOtherTab) {
+				switch err := bobsOtherTab.WaitForText(t, markdown, "Intro, first.\n\nOutro.\n"); {
+				case err == nil:
+					withinLive(t, lane, deleted, "bob's delete of P reaching his other tab on B")
+				case !peerEnded(bobsOtherTab):
 					t.Fatalf("B's room never showed bob's delete of P to his other tab: %v; %s", err, pair.roomCloses(t, artifactID))
 				}
 				// The state the case needs, read as the write is released to be judged: B's room
@@ -6985,11 +6996,21 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 			})
 		end := first.Add(period)
 		t.Logf("counting the resumptions of the document in the period from %s to %s", first.Format(time.TimeOnly), end.Format(time.TimeOnly))
-		testwait.Span(t, time.Until(end)+2*time.Second, "a second resumption inside the period is what must not "+
-			"come, and the other process's tick in it leaves no record that says so for certain: it logs a skip "+
-			"naming the period when it finds the period served, but one naming none when it finds the lease held, "+
-			"both are child processes so synctest does not reach them, and an action of the test's would arm a "+
-			"settlement rather than end the period. The span is the rest of the period and two seconds")
+		// A second resumption inside the period could come only from a tick of either process due
+		// in it, and each tick writes one line, ran or skipped (duty.Exclusive), whether it found
+		// the period served or the lease held. Each process ticks once a period from its own start,
+		// so two more of its lines than it had written when the first resumption was found take it
+		// past its tick in that period, whether that tick had begun, ended or not yet come: its line
+		// for a tick due in the next period is written by then.
+		ticks := func(process *dispatchProcess) int {
+			return len(process.wholeLogLines(leaseRan, "lease=settlement-resumption")) +
+				len(process.wholeLogLines(leaseSkipped, "lease=settlement-resumption"))
+		}
+		fromA, fromB := ticks(pair.a), ticks(pair.b)
+		testwait.Until(t, "each process's settlement-resumption tick past the period of the first resumption", func() ([2]int, bool) {
+			a, b := ticks(pair.a), ticks(pair.b)
+			return [2]int{a - fromA, b - fromB}, a >= fromA+2 && b >= fromB+2
+		})
 		byPeriod := testwait.Until(t, "every arming of the document's owed settlement to be placed in the period of its pass",
 			func() (map[time.Time][]string, bool) {
 				byPeriod, unplaced := pair.resumptionsByPeriod(t, artifactID)

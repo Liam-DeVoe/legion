@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // readRepositoryJSON performs one GET of path (an API path under the API origin) with an
@@ -32,7 +33,7 @@ func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull s
 	if err != nil {
 		return nil, status, err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
+	if err := c.checkRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
 		return nil, status, err
 	}
 	return body, status, nil
@@ -63,7 +64,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 	if err != nil {
 		return nil, status, "", err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
+	if err := c.checkRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
 		return nil, status, "", err
 	}
 	// GitHub repeats the ETag on a 304; when it does not, the empty value travels to the caller,
@@ -76,18 +77,31 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // installation may not read this resource, or cannot see the repository at all — which the
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
-// makes, named by the target. repoFull is the `owner/repo` the error names.
+// makes, named by the target. repoFull is the `owner/repo` the error names. A rate limit's wait is
+// read against time.Now; the client's own reads take it against its clock
+// (checkRepositoryResponse, WithRateLimitClock).
 func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
+	return checkRepositoryResponseAt(status, header, body, repoFull, target, time.Now(), handled...)
+}
+
+// checkRepositoryResponse is CheckRepositoryResponse with a rate limit's wait read against the
+// client's limitClock.
+func (c *Client) checkRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
+	return checkRepositoryResponseAt(status, header, body, repoFull, target, c.limitNow(), handled...)
+}
+
+// checkRepositoryResponseAt is CheckRepositoryResponse with a rate limit's wait read against now.
+func checkRepositoryResponseAt(status int, header http.Header, body []byte, repoFull, target string, now time.Time, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
 	}
 	if status == http.StatusForbidden || status == http.StatusNotFound {
-		if limited := RateLimit(status, header, body); limited != nil {
+		if limited := rateLimitAt(status, header, body, now); limited != nil {
 			return limited
 		}
 		return fmt.Errorf("%w: %s", ErrRepositoryUnreadable, repoFull)
 	}
-	if err := CheckResponse(status, header, body); err != nil {
+	if err := checkResponseAt(status, header, body, now); err != nil {
 		return fmt.Errorf("GET %s: %w", target, err)
 	}
 	return nil
@@ -162,7 +176,7 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 	if status == http.StatusUnprocessableEntity && noCommitForSHA(body) {
 		return false, nil
 	}
-	if err := CheckRepositoryResponse(status, header, body, owner+"/"+repo, target); err != nil {
+	if err := c.checkRepositoryResponse(status, header, body, owner+"/"+repo, target); err != nil {
 		return false, err
 	}
 	return true, nil

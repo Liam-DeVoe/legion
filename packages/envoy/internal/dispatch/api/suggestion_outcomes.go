@@ -27,22 +27,21 @@ const suggestionOutcomePage = 1000
 // faster, or with a smaller page. settledOn is the clock a pass judges that age against: nil, as
 // the server's schedule leaves it, is the database's own now(), so a deployment judges every
 // stamp against the clock that wrote it; a test sets a fake it moves, and the pass hands its
-// reading to the statements in place of now() (judgedAt).
+// reading, to the database's microsecond, to the statements in place of now() (judgedAt).
+// waiting, nil in the server's schedule, is the loop's duty.WokenLoop.Waiting: a test reads
+// through it where the loop's one timer stands once a pass has returned, and when it rests.
 type suggestionSchedule struct {
 	minGap    time.Duration
 	settle    time.Duration
 	page      int
 	settledOn clock.Clock
+	waiting   func(at time.Time, ok bool)
 }
 
 // judgedAt is the moment a pass judges settle against: settledOn's reading, or nil, the
-// database's now().
+// database's now() (store.MomentOn).
 func (s suggestionSchedule) judgedAt() *time.Time {
-	if s.settledOn == nil {
-		return nil
-	}
-	at := s.settledOn.Now()
-	return &at
+	return store.MomentOn(s.settledOn)
 }
 
 // suggestionOutcomeSchedule is the server's pace: a minute between passes, the period of the timer
@@ -492,13 +491,15 @@ func RunSuggestionOutcomeSweep(ctx context.Context, pool *store.Pool, horizon *e
 }
 
 // runSuggestionOutcomeSweep is RunSuggestionOutcomeSweep at schedule, its gaps and due times on
-// clk; settle stays the database's own (judgeSuggestionPage).
+// clk, settle judged at schedule's settledOn (judgedAt), the database's own now() where that is
+// nil, and the loop's waits reported to schedule's waiting where that is set.
 func runSuggestionOutcomeSweep(ctx context.Context, clk clock.Clock, pool *store.Pool, horizon *events.Horizon, wake <-chan struct{}, schedule suggestionSchedule) {
 	ctx = store.WithTransactionTracking(ctx)
 	duty.RunWoken(ctx, duty.WokenLoop{
-		Wake:   wake,
-		MinGap: schedule.minGap,
-		Clock:  clk,
+		Wake:    wake,
+		MinGap:  schedule.minGap,
+		Clock:   clk,
+		Waiting: schedule.waiting,
 		Pass: func(ctx context.Context) time.Time {
 			next, err := suggestionOutcomePass(ctx, clk, pool, horizon, schedule)
 			if err != nil && ctx.Err() == nil {

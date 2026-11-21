@@ -400,7 +400,7 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 	queried, held := githubreads.Hold(ctx)
 	defer held.Keep()
 	page, err := r.query(queried, w.repository, w.here.after, c)
-	if at := stopAt(err, githubapp.GraphQLScope); at != nil {
+	if at := r.stopAt(err, githubapp.GraphQLScope); at != nil {
 		// A rate limit is the pass ending, never a page to read another way: reading this
 		// page's heads over REST would be exactly the requests GitHub has just asked this
 		// App to stop sending.

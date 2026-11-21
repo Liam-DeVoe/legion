@@ -36,10 +36,11 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // topic family is captured again the send lands, the gauges read none and no second WARN comes.
 // The controls are the scrape before the comment and the one after the send landed.
 //
-// The sender's parks, and the moments it stamps and judges a held send with, run on a fake that
-// reads the wall clock plus what the test adds, as the server stamps a send's first wait on the
-// wall clock (sendCommentMention); a park's timer fires only when the test moves the fake to it,
-// so the test drives each try of the parked lane itself and counts what each one sends.
+// The sender's parks, and the moments it stamps and judges a held send with (sendClock), run on a
+// fake that stands at its start until the test moves it: a park's timer fires only when the test
+// moves the fake to it, so the test drives each try of the parked lane itself and counts what
+// each one sends, and the send has waited only what those moves added, so no wall time passes
+// its threshold before the test moves it there.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -51,7 +52,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		envoyURL: listener.URL, outboxPublishes: true, metrics: registry,
 		store: storetest.TracedStore(t, database, recorder),
 	})
-	parks := clocktest.Held()
+	parks := clocktest.New(time.Now())
 	served.mentions.mu.Lock()
 	served.mentions.heldWarnAfter = time.Second
 	served.mentions.clock = parks
@@ -103,11 +104,12 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	for try := 1; try <= tries; try++ {
 		parks.Set(deadline)
 		next := parks.AwaitArmed(t, fmt.Sprintf("the held lane's park after try %d", try), 1)[0]
-		// The park is armed at its try's end, a moment the fake reads past deadline, so its wait
-		// is at least the gap; a park shorter than its mentionOrderRetry would read the rule more
-		// often than the cost bound says. The first park's arming is no deadline the test saw.
-		if want := mentionOrderRetry(try + 1); next.Sub(deadline) < want {
-			t.Errorf("park %d of the held lane waits %v, want at least mentionOrderRetry (%v)", try+1, next.Sub(deadline), want)
+		// The park is armed at its try's end, on the fake standing at the deadline the test moved it
+		// to, so its wait is that try's mentionOrderRetry from there exactly: a park shorter than
+		// its mentionOrderRetry would read the rule more often than the cost bound says, a longer
+		// one would hold the send past it. The first park's arming is no deadline the test saw.
+		if want := mentionOrderRetry(try + 1); next.Sub(deadline) != want {
+			t.Errorf("park %d of the held lane waits %v, want mentionOrderRetry (%v)", try+1, next.Sub(deadline), want)
 		}
 		deadline = next
 	}

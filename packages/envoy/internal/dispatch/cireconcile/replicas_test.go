@@ -119,9 +119,7 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	)
 	h.github.rateLimitNext(checkRunsPath)
 
-	passStart := time.Now()
 	h.pass()
-	passTook := time.Since(passStart)
 
 	lines := h.lines("ci reconcile pass")
 	if len(lines) != 1 {
@@ -144,14 +142,12 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pass line's rate_limit_until is not RFC3339: %v", err)
 	}
-	// The stand-in's own answer resets at a whole second it records, and GitHub's wait is that
-	// reset less the moment githubapp read the answer, which the pass adds back to its own later
-	// reading (stopAt): the line says the reset, moved on by the gap between those two readings of
-	// the wall clock and cut to the second. Both readings fall inside the pass, so the line's
-	// moment is the reset or later by no more than the pass took, however long that was.
+	// The stand-in's own answer resets at a whole second it records, on the passes' clock, which
+	// githubapp reads GitHub's wait against (githubapp.WithRateLimitClock) and the pass adds back
+	// to (stopAt): that clock does not move between the two, so the line's moment is the reset.
 	reset := h.github.lastReset()
-	if until.Before(reset) || until.After(reset.Add(passTook)) {
-		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s, or later by no more than the pass took, %s", until, reset, passTook)
+	if !until.Equal(reset) {
+		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s", until, reset)
 	}
 }
 

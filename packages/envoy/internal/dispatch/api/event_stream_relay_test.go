@@ -435,7 +435,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
-	relay, _ := newCountedRelay(t, deps)
+	relay, reads := newCountedRelay(t, deps)
 	var down atomic.Bool
 	down.Store(true)
 	// The relay's own connections, so the test terminates the one it listens on by its backend's
@@ -450,15 +450,17 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	relay.backoff = func(int) time.Duration { return 5 * time.Millisecond }
 	subscription, _, opened := subscribeRelay(t, relay)
 
-	// Committed while the relay has no connection: its notification reaches nobody. The relay
-	// publishes from a goroutine of its own, woken by a notification this commit's never sent,
-	// so no state of this test and no later action of it stands for the frame that must not
-	// come; only the span does.
+	// Committed while the relay has no connection: its notification reaches nobody, and the
+	// redial's catch-up is what sends it. The relay sends a frame only from a read of the log,
+	// which the counted relay reports as it runs (newCountedRelay's reads), and it reads only on a
+	// notification, a LISTEN's catch-up or a gap's re-read, none of which comes while it has no
+	// connection: so the span holds the reads quiet, not the subscription.
 	committed := seedEvents(t, database, issue, 1, 0)
-	testwait.Quiet(t, "the relay's subscription while it has no listening connection", subscription,
-		100*time.Millisecond, "the relay publishes from a goroutine of its own that only a notification wakes, and this "+
-			"commit's notification was sent while it had no connection, so no state says a read ran and found nothing; "+
-			"the socket and the database are real I/O (no synctest), and the redial that ends the span is the next action")
+	testwait.Quiet(t, "a read of the event log while the relay has no listening connection", reads,
+		100*time.Millisecond, "a read a timer of the relay's own made, a poll, is what must not come, and nothing "+
+			"reports it before it runs: the reads report each read only as it runs, no notification or catch-up is "+
+			"there to order against, the socket and the database are real I/O (no synctest), and the redial that ends "+
+			"the span is the next action")
 	down.Store(false)
 	receiveRelayedThrough(t, subscription, database, opened, committed)
 

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -1099,21 +1100,26 @@ func highestMigrationFile(t *testing.T) int {
 // they commit - and a probe that queues behind them is read as a dead process: the ALB fails
 // it at five seconds, ECS replaces the task, and every in-flight request of every other client
 // is cancelled. The probe therefore takes its connection from a pool of its own. Here the
-// shared pool's connections are held until the test ends, so a probe that queued behind them
-// would answer 503 with db false once its own bound (store.healthProbeTimeout) ran out, which
-// the status check below fails; the request itself waits under the shared wait's context
-// (healthzWithin), so a slow answer on a loaded machine is no failure. The shared pool here
-// holds four connections: the property holds at any size, and holding all of production's
-// sixty-four while the other packages' tests share the server would push a default Postgres
-// past its hundred.
+// shared pool's connections are held until the test ends, and the probe's bound
+// (store.healthProbeTimeout) is armed on a fake the row never moves (healthzHandlerOn), so the
+// bound never decides the answer: a probe that takes its connection from its own pool answers 200
+// however loaded the machine is, and one that asks the shared pool for a connection queues
+// behind the held ones, which the shared pool's own record of the acquires it was asked for
+// (sharedAcquires) shows by name while the row waits for the answer. The shared pool here holds
+// four connections: the property holds at any size, and holding all of production's sixty-four
+// while the other packages' tests share the server would push a default Postgres past its
+// hundred.
 func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 	ctx := context.Background()
 	config := storetest.Open(t).Pool.Config().Copy()
 	config.MaxConns = 4
+	acquires := &sharedAcquires{QueryTracer: config.ConnConfig.Tracer}
+	config.ConnConfig.Tracer = acquires
 	shared, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("open a four-connection shared pool: %v", err)
 	}
+	acquires.pool.Store(shared)
 	database := &store.Store{Pool: store.NewPool(shared)}
 	t.Cleanup(database.Pool.Close)
 	for held := int32(0); held < database.Pool.Config().MaxConns; held++ {
@@ -1123,21 +1129,82 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		}
 		defer connection.Release()
 	}
+	held := acquires.started.Load()
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(healthzHandlerOn(clocktest.New(time.Date(2026, time.November, 21, 9, 0, 0, 0, time.UTC)), database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
-	response, err := healthzWithin(t, server.URL)
+	// The probe's own context ends before the server closes (defers run last first), so a probe
+	// queued on the held pool is let go and the close does not wait on it.
+	probe, cancelProbe := context.WithCancel(testwait.Context(t))
+	defer cancelProbe()
+	request, err := http.NewRequestWithContext(probe, http.MethodGet, server.URL+"/healthz", nil)
 	if err != nil {
-		t.Fatalf("health probe with every pooled connection held: %v", err)
+		t.Fatalf("build the health probe: %v", err)
 	}
-	defer response.Body.Close()
+	type probeAnswer struct {
+		response *http.Response
+		err      error
+	}
+	answered := make(chan probeAnswer, 1)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		answered <- probeAnswer{response, err}
+	}()
+	answer := testwait.Until(t, "the health probe's answer with every pooled connection held", func() (probeAnswer, bool) {
+		if asked := acquires.started.Load() - held; asked != 0 {
+			t.Fatalf("the health probe asked the shared pool for %d connections while each of its connections was held: it queues behind writers, not on a pool of its own", asked)
+		}
+		select {
+		case answer := <-answered:
+			return answer, true
+		default:
+			return probeAnswer{}, false
+		}
+	})
+	if answer.err != nil {
+		t.Fatalf("health probe with every pooled connection held: %v", answer.err)
+	}
+	defer answer.response.Body.Close()
 	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+	if err := json.NewDecoder(answer.response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
-	if response.StatusCode != http.StatusOK || health["ok"] != true || health["db"] != true {
-		t.Fatalf("health probe = %d %#v, want 200 with ok and db true", response.StatusCode, health)
+	if answer.response.StatusCode != http.StatusOK || health["ok"] != true || health["db"] != true {
+		t.Fatalf("health probe = %d %#v, want 200 with ok and db true", answer.response.StatusCode, health)
 	}
+}
+
+// sharedAcquires counts the acquires one pgxpool.Pool is asked for (pgxpool.AcquireTracer), each
+// as it starts, so a test sees a caller queue on that pool however long the caller then waits. A
+// pool built from the same configuration carries the same tracer, and its acquires are not
+// counted. It passes each query on to the tracer the configuration held before, if any.
+type sharedAcquires struct {
+	pgx.QueryTracer
+	pool    atomic.Pointer[pgxpool.Pool]
+	started atomic.Int64
+}
+
+func (a *sharedAcquires) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if a.QueryTracer == nil {
+		return ctx
+	}
+	return a.QueryTracer.TraceQueryStart(ctx, conn, data)
+}
+
+func (a *sharedAcquires) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	if a.QueryTracer != nil {
+		a.QueryTracer.TraceQueryEnd(ctx, conn, data)
+	}
+}
+
+func (a *sharedAcquires) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+	if pool == a.pool.Load() {
+		a.started.Add(1)
+	}
+	return ctx
+}
+
+func (a *sharedAcquires) TraceAcquireEnd(context.Context, *pgxpool.Pool, pgxpool.TraceAcquireEndData) {
 }
 
 // /healthz answers inside the load balancer's timeout when Postgres stops answering at all:

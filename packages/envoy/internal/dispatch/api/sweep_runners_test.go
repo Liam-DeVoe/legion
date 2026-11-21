@@ -163,17 +163,22 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 // one before at the soonest, and no wake earns more than one. A pass is counted by the cursor row
 // it holds, one read per pass, since the loop takes no lease and logs nothing of its own. The loop
 // runs on a fake clock: it holds each pass a wake earns to its gap there, and the row moves the
-// clock to it. Once the last pass has ended - its transaction's COMMIT has returned, after which
-// the pass makes no statement and the loop decides what to arm next - with no wake pending, the
-// loop holds no timer on its clock, its own record that nothing it holds can start another pass.
+// clock to it. Once the last pass has returned, the loop decides what to arm next and reports that
+// wait (suggestionSchedule.waiting, duty.WokenLoop.Waiting) before it waits: with no wake pending,
+// the report is a rest, and the loop holds no timer on its clock, its own record that nothing it
+// holds can start another pass.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 	database := storetest.Open(t)
-	tracer := &sweepPassTracer{held: map[uint32]bool{}}
+	tracer := &sweepPassTracer{}
 	pool := storetest.Traced(t, database.Pool, tracer, nil)
 	wake := make(chan struct{}, 1)
 	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	schedule, waits := sweepRunnerSchedule, &testwait.Stream[sweepWait]{}
+	schedule.waiting = func(at time.Time, ok bool) {
+		waits.Add(sweepWait{at: at, armed: ok, passes: tracer.passes()})
+	}
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, fake, pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, fake, pool, sweepHorizon(pool), wake, schedule)
 	})
 
 	const wakes = 5
@@ -192,55 +197,49 @@ func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 			wake <- struct{}{}
 		}
 	}
-	testwait.Eventually(t, "the last wake's pass to commit", func() bool { return tracer.ended() == wakes+1 })
+	// The loop reports a wait only between passes, so the first report that counts every pass is
+	// the one the last pass's return led to.
+	last := testwait.Next(t, "the loop's report of its wait after its last pass", waits, func(w sweepWait) bool {
+		return w.passes == wakes+1
+	})
+	if last.armed {
+		t.Fatalf("a lone runner armed its timer for %s once its last pass had returned, with no wake pending; want a rest", last.at)
+	}
 	if armed, ran := fake.Armed(), tracer.passes(); ran != wakes+1 || len(armed) != 0 {
-		t.Fatalf("a lone runner made %d passes for its start and %d wakes and holds timers for %v once the last had ended; want %d and none",
+		t.Fatalf("a lone runner made %d passes for its start and %d wakes and holds timers for %v once it rested; want %d and none",
 			ran, wakes, armed, wakes+1)
 	}
 }
 
-// sweepPassTracer counts a suggestion sweep's passes on the pool it traces (storetest.Traced): one
-// begun for each statement that holds the cursor row (cursorHeld), and one ended for each COMMIT
-// or ROLLBACK that returns on a connection whose transaction held it.
-type sweepPassTracer struct {
-	mu              sync.Mutex
-	held            map[uint32]bool
-	begun, finished int
+// sweepWait is one wait a suggestion sweep's loop reported (suggestionSchedule.waiting): the moment
+// its timer is armed for, false for armed when it rests, and the passes its tracer had counted.
+type sweepWait struct {
+	at     time.Time
+	armed  bool
+	passes int
 }
 
-type sweepPassSQL struct{}
+// sweepPassTracer counts a suggestion sweep's passes on the pool it traces (storetest.Traced): one
+// begun for each statement that holds the cursor row (cursorHeld). That a pass has ended is the
+// loop's own report of the wait after it (suggestionSchedule.waiting).
+type sweepPassTracer struct {
+	mu    sync.Mutex
+	begun int
+}
 
-func (p *sweepPassTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+func (p *sweepPassTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	if strings.Contains(data.SQL, cursorHeld) {
 		p.mu.Lock()
-		p.held[conn.PgConn().PID()] = true
 		p.begun++
 		p.mu.Unlock()
 	}
-	return context.WithValue(ctx, sweepPassSQL{}, data.SQL)
+	return ctx
 }
 
-func (p *sweepPassTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, _ pgx.TraceQueryEndData) {
-	sql, _ := ctx.Value(sweepPassSQL{}).(string)
-	if verb := strings.ToLower(strings.TrimSpace(sql)); verb != "commit" && verb != "rollback" {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if pid := conn.PgConn().PID(); p.held[pid] {
-		delete(p.held, pid)
-		p.finished++
-	}
-}
+func (p *sweepPassTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func (p *sweepPassTracer) passes() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.begun
-}
-
-func (p *sweepPassTracer) ended() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.finished
 }

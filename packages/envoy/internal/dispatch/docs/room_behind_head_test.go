@@ -633,20 +633,31 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	live := pair.taskA.srv.GetDoc(pair.artifactID)
 	inside, leave := make(chan struct{}), make(chan struct{})
-	applied := make(chan error, 1)
+	// The Apply's answer is kept and its return closes returned, so the wait for it can be asked
+	// again: leaveRoom runs from the row and from its cleanup.
+	var appliedErr error
+	returned := make(chan struct{})
 	go func() {
-		applied <- pair.taskA.srv.Apply(withOwnerVerified(context.Background()), pair.artifactID, func(*crdt.Doc, func(func(*crdt.Transaction))) {
+		defer close(returned)
+		appliedErr = pair.taskA.srv.Apply(withOwnerVerified(context.Background()), pair.artifactID, func(*crdt.Doc, func(func(*crdt.Transaction))) {
 			close(inside)
 			<-leave
 		})
 	}()
 	testwait.Receive(t, "the product's Apply to run its body", inside)
-	leaveRoom := sync.OnceFunc(func() {
-		close(leave)
-		if err := testwait.Receive(t, "srv.Apply to return once the test left the room", applied); err != nil && !errors.Is(err, websocket.ErrNoChanges) {
-			t.Errorf("the Apply inside the room: %v", err)
-		}
-	})
+	// The leave and the report of the Apply's answer run once; the wait runs on every call,
+	// outside the once, so a give-up ends the test as any wait's does rather than panicking the
+	// binary from inside sync.OnceFunc.
+	var leaving, reported sync.Once
+	leaveRoom := func() {
+		leaving.Do(func() { close(leave) })
+		testwait.Receive(t, "srv.Apply to return once the test left the room", returned)
+		reported.Do(func() {
+			if appliedErr != nil && !errors.Is(appliedErr, websocket.ErrNoChanges) {
+				t.Errorf("the Apply inside the room: %v", appliedErr)
+			}
+		})
+	}
 	t.Cleanup(leaveRoom)
 
 	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)

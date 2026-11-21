@@ -17,8 +17,8 @@ import (
 )
 
 // servers maps the relay address of every Server start made, the host and port its URL names, to
-// that Server, from start until the cleanup start registers removes it, so AwaitConsumerStored can
-// find the store of the server a connection reaches.
+// that Server, from start until the cleanup start registers removes it, so AwaitConsumerStored and
+// AwaitNoSubscription can find the server a connection reaches.
 var (
 	serversMu sync.Mutex
 	servers   = map[string]*Server{}
@@ -118,6 +118,44 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 // the account conn belongs to (AwaitConsumerStored).
 func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string) string {
 	t.Helper()
+	server, _, account := connectedServer(t, conn)
+	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
+}
+
+// AwaitNoSubscription waits until the server conn is connected to holds no subscription that a
+// message published on subject reaches, in the account conn belongs to: the server's own list of
+// subscriptions (Subsz, tested against subject), which is what it routes a publish by. A
+// connection that closed keeps its subscriptions in that list until the server has read the
+// close: nats-server v2.15.1 drops the connection from its open connections (Connz) first and
+// its subscriptions after (client.closeConnection, server/client.go:6335-6343, removeClient then
+// clearAccountSubs), so a request routed between the two reaches the closed subscriber and gets
+// neither an answer nor the no-responders status. Once this returns, a request on subject that
+// conn sends reaches no subscriber that was gone by then.
+//
+// It fails the test when conn reaches no server this package started, or that server holds no
+// connection by conn's client id, and when a subscription on subject stays by the time the shared
+// wait gives up (testwait.Until), whose failure prints the subscriptions last listed.
+func AwaitNoSubscription(t testing.TB, conn *natsgo.Conn, subject string) {
+	t.Helper()
+	_, srv, account := connectedServer(t, conn)
+	testwait.Until(t, fmt.Sprintf("the server to hold no subscription on %s in account %s", subject, account), func() (string, bool) {
+		listed, err := srv.Subsz(&natsserver.SubszOptions{Subscriptions: true, Account: account, Test: subject})
+		if err != nil {
+			t.Fatalf("testnats: list the subscriptions on %s: %v", subject, err)
+		}
+		held := make([]string, 0, len(listed.Subs))
+		for _, sub := range listed.Subs {
+			held = append(held, fmt.Sprintf("%s (connection %d)", sub.Subject, sub.Cid))
+		}
+		return fmt.Sprintf("%d subscriptions: %v", len(held), held), len(held) == 0
+	})
+}
+
+// connectedServer is the Server this package started that conn is connected to, its running
+// nats-server, and the account conn belongs to, as that server's Connz names it for conn's client
+// id ($G when it names none). It fails the test when there is none of them.
+func connectedServer(t testing.TB, conn *natsgo.Conn) (*Server, *natsserver.Server, string) {
+	t.Helper()
 	connected := conn.ConnectedUrlRedacted()
 	parsed, err := url.Parse(connected)
 	if err != nil || parsed.Host == "" {
@@ -149,7 +187,7 @@ func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string)
 	if account == "" {
 		account = "$G"
 	}
-	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
+	return server, srv, account
 }
 
 // readStoredConsumer reads the position in the consumer state file at path (AwaitConsumerStored).

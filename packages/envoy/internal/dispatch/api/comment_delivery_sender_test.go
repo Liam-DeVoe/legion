@@ -458,22 +458,29 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 	if !claimedPending(t, database, second.ID, "session:s1") {
 		t.Fatal("the second comment's attempt is not held while the first's send to the same session is still held")
 	}
-	// The second comment's send waits behind the first on their one lane: the sender holds it
-	// there, not started (mentionSender.lanes), while the first is held. A send that jumped the
-	// lane would have started and left it, so it is read there, and the count after it is the
-	// first alone.
-	testwait.Until(t, "the second comment's send queued behind the first on s1's lane", func() (string, bool) {
+	// The second comment's send waits behind the first on their one lane, session:s1's: the sender
+	// holds it there, not started (mentionSender.lanes), while the first is held. A send that jumped
+	// the lane would have started and reached the listener, which records it as it arrives, so the
+	// wait fails at once on a second send there, and a send queued on any other lane fails naming it.
+	s1 := laneKey{recipient: "session:s1"}
+	lane := testwait.Until(t, "the second comment's send queued behind the first on s1's lane", func() (laneKey, bool) {
+		if sent := state.sent(); len(sent) > 1 {
+			t.Fatalf("sends while the first was still held = %#v, want the first alone: the second started beside it", sent)
+		}
 		served.mentions.mu.Lock()
 		defer served.mentions.mu.Unlock()
 		for lane, sends := range served.mentions.lanes {
 			for _, send := range sends {
 				if send.comment.ID == second.ID {
-					return fmt.Sprintf("queued on lane %+v", lane), true
+					return lane, true
 				}
 			}
 		}
-		return "on no lane: started, or never queued", false
+		return laneKey{}, false
 	})
+	if lane != s1 {
+		t.Fatalf("the second comment's send is queued on lane %+v, want %+v, the lane that holds the first", lane, s1)
+	}
 	if sent := state.sent(); len(sent) != 1 {
 		t.Fatalf("sends while the first was still held = %#v, want the first alone", sent)
 	}

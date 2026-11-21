@@ -465,11 +465,13 @@ func eventsTuplesRead(t *testing.T, database *store.Store) int64 {
 // pod, against 0.015 s before this change). The start may read the newest events and the ones still
 // open, not the log's whole history: here it may read at most a tenth of a log of 200,000
 // committed, published events, measured by the rows of events Postgres counts as read, by a
-// sequential scan or through the primary key, while the first cold subscription starts.
+// sequential scan or through the primary key, while the first cold subscription starts and the
+// relay's first read from the start's cursor runs: the read that sends the subscription the
+// first event committed after it started.
 func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 	const logSize = 200_000
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat, liveSocketClock: clocktest.Held()}, nil)
-	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
+	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	if _, err := rig.database.Pool.Exec(t.Context(), `
 		insert into events (seq, type, actor, payload, notify, published_at)
 		select 0, 'test.filler', '{"kind":"system","id":"test"}', '{}', false, now()
@@ -485,11 +487,17 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 	testwait.Receive(t, "the server's boot mark", rig.served.bootMark)
 	before := eventsTuplesRead(t, rig.database)
 	// subscribeEvents returns with the start's events_start, which the start sends once its reads
-	// of the log have returned, and eventsTuplesRead ends every other connection so that each
-	// flushes the statistics its reads left.
-	subscribeEvents(t, rig.dial(t, withBearer("agent-token")), "events", nil)
+	// of the log have returned; the event committed after it reaches the subscription through the
+	// relay's first read from the start's cursor, next in order; and eventsTuplesRead ends every
+	// other connection so that each flushes the statistics its reads left.
+	client := rig.dial(t, withBearer("agent-token"))
+	subscribeEvents(t, client, "events", nil)
+	renameIssue(t, rig.handler, issue.Key, "Renamed after the start")
+	if id, live := nextEventID(t, client, "events"), eventHead(t, rig.database); id != live {
+		t.Fatalf("the first cold subscription's first event after its start is %d, want %d, the one committed after it started", id, live)
+	}
 	if read := eventsTuplesRead(t, rig.database) - before; read > logSize/10 {
-		t.Fatalf("the relay's first start read %d rows of events on a log of %d events, want at most %d: its cost grows with the whole log", read, logSize, logSize/10)
+		t.Fatalf("the relay's first start and its first read after it read %d rows of events on a log of %d events, want at most %d: its cost grows with the whole log", read, logSize, logSize/10)
 	}
 }
 
@@ -519,7 +527,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 			return false
 		}
 	})
-	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
+	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	if _, err := rig.database.Pool.Exec(t.Context(), `
 		insert into events (seq, type, actor, payload, notify, published_at)
 		select 0, 'test.filler', '{"kind":"system","id":"test"}', '{}', false, now()
@@ -541,9 +549,15 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 		"got, the database is real I/O (no synctest), and no later action is ordered inside the write's life")
 	release()
 	eventsStartID(t, client, "events")
-	// The start's reads of the log have returned once its events_start has come.
+	// The start's reads of the log have returned once its events_start has come, and the relay's
+	// first read from the start's cursor once the event committed after it has reached the
+	// subscription, next in order.
+	renameIssue(t, rig.handler, issue.Key, "Renamed after the start")
+	if id, live := nextEventID(t, client, "events"), eventHead(t, rig.database); id != live {
+		t.Fatalf("the first cold subscription's first event after its start is %d, want %d, the one committed after it started", id, live)
+	}
 	if read := eventsTuplesRead(t, rig.database) - before; read > logSize/10 {
-		t.Fatalf("the relay's first start read %d rows of events on a log of %d events while a writer from before the boot mark was open, want at most %d: it read the whole log", read, logSize, logSize/10)
+		t.Fatalf("the relay's first start and its first read after it read %d rows of events on a log of %d events while a writer from before the boot mark was open, want at most %d: it read the whole log", read, logSize, logSize/10)
 	}
 }
 

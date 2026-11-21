@@ -827,7 +827,9 @@ func ygoWalks(blocks int) uint64 {
 // item those walks and alternatingAllowance a block allow, and must see at least alternatingFloor
 // of them. The bytes the write allocates grow no faster than linearSlack times the blocks: a list
 // of the fragment's children made again for each replaced block - ygo's Children copies them all -
-// grows with the square of the blocks there.
+// grows with the square of the blocks there. The two rules that keep a coverage counter from
+// wrapping hold here as in countedVerdict: no block counted countedBlockLimit times or more at
+// either size, and no less work at the larger size than at the smaller.
 func alternatingWorkIsBounded(t *testing.T, row string) {
 	shape := alternatingShape()
 	var runs [2]counted
@@ -837,8 +839,8 @@ func alternatingWorkIsBounded(t *testing.T, row string) {
 		allowed := walks + alternatingAllowance*uint64(blocks)
 		perAllowed := float64(runs[step].work) / float64(allowed)
 		reading := fmt.Sprintf("replacing every other block of %d: %d items reached, %d of them ygo's walks (at most %d); work %d (%s), "+
-			"%.2f a reached item allowed (at least %.2f, at most %.2f); %d bytes allocated", blocks, runs[step].stage, walks, allowed,
-			runs[step].work, byModuleText(runs[step].byModule), perAllowed, alternatingFloor, alternatingCeiling, runs[step].bytes)
+			"%.2f a reached item allowed (at least %.2f, at most %.2f); %d bytes allocated; busiest block %d", blocks, runs[step].stage, walks, allowed,
+			runs[step].work, byModuleText(runs[step].byModule), perAllowed, alternatingFloor, alternatingCeiling, runs[step].bytes, runs[step].busiest)
 		if runs[step].stage > allowed {
 			t.Errorf("replacing every other block of %d reached %d items, past the %d allowed: the %d ygo's own Delete and Insert at "+
 				"those indexes reach and %d a block beside them (%s)", blocks, runs[step].stage, allowed, walks, alternatingAllowance, reading)
@@ -847,7 +849,16 @@ func alternatingWorkIsBounded(t *testing.T, row string) {
 			t.Errorf("replacing every other block of %d counted %.2f statements a reached item allowed, outside %.2f to %.2f (%s)",
 				blocks, perAllowed, alternatingFloor, alternatingCeiling, reading)
 		}
+		if runs[step].busiest >= countedBlockLimit {
+			t.Errorf("replacing every other block of %d: the block %s ran %d times, at or past %d: its counter is 32 bits wide, so "+
+				"the next size can wrap it, and the work summed from it is no longer a count (%s)", blocks, runs[step].busiestBlock,
+				runs[step].busiest, int64(countedBlockLimit), reading)
+		}
 		t.Log(reading)
+	}
+	if runs[1].work < runs[0].work {
+		t.Errorf("replacing every other block: the work falls from %d at %d blocks to %d at %d: work that shrinks as the input grows "+
+			"is a coverage counter that wrapped, not a reading", runs[0].work, shape.sizes[0], runs[1].work, shape.sizes[1])
 	}
 	growth := shape.sizes[1] / shape.sizes[0]
 	if most := uint64(linearSlack*growth) * runs[0].bytes; runs[0].bytes == 0 || runs[1].bytes > most {

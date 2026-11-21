@@ -12,12 +12,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -81,45 +85,136 @@ func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) 
 	t.Logf("%s\n%s", window.Summary(), window.Detail())
 }
 
-// The control on the document-work check, in INFRA-636's own shape: a document call inside the
-// window. The call is the parse every write route does on the text it writes (parseInput), on a
-// document the size of the load harness's large specs, made after the transaction's first write
-// and before its commit, and the sleep it replaces is gone: nothing here waits. The parse runs no
-// statement of its own and calls no collaborator, so the window's shape is the same with it as
-// without it; what sees it in every run is the tracer's document-work check (docwork), which must
-// name the parse and parseInput, and nothing else may fail. The pool reports to a recorder rather
-// than to t, so the check firing is what this test asserts.
+// The control on the document-work check, in INFRA-636's own shape: document work inside the
+// window, once for each entry point that announces its work (docwork.Enter), each in a transaction
+// of its own, made after that transaction's first write and before its commit, and the sleep it
+// replaces is gone: nothing here waits. No entry point runs a statement of its own or calls a
+// collaborator, so the window's shape is the same with it as without it; what sees it in every run
+// is the tracer's document-work check (docwork), which must name the work's kind and, as the frame
+// that announced it, the entry point itself: one whose Enter were deleted would be seen, if at all,
+// through another entry point of its kind beneath it, and its case fails by name. The parse is the
+// one every write route does on the text it writes (parseInput), on a document the size of the load
+// harness's large specs; the rest run on a small document read and written outside the window.
+// Nothing else may fail. The pool reports to a recorder rather than to t, so the check firing is
+// what this test asserts.
 func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
-	tracer := storetest.NewXidTracer()
-	caught := &recordedFailures{TB: t}
-	database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
 	spec, _ := storetest.XidSpec("DOC", 1)
-	report := tracer.Measure(t, database.Pool, func() {
-		runRigTransactionDoing(t, database, func() {
-			if _, err := parseInput(spec); err != nil {
-				t.Errorf("parse the %d-byte spec: %v", len(spec), err)
+	tree, err := pmdoc.Parse("Intro with a quote to find.\n\nOutro.\n")
+	if err != nil {
+		t.Fatalf("parse the small document: %v", err)
+	}
+	markdown, _, layout, err := pmdoc.RenderWithLayout(tree)
+	if err != nil {
+		t.Fatalf("render the small document: %v", err)
+	}
+	stored := crdt.New()
+	storedFragment := stored.GetXmlFragment(fragmentName)
+	var stores error
+	stored.Transact(func(txn *crdt.Transaction) { stores = pmdoc.Update(txn, storedFragment, tree) }, nil)
+	if stores != nil {
+		t.Fatalf("write the small document into a fragment: %v", stores)
+	}
+	for _, entry := range []struct {
+		// kind is the work the entry point announces, and enteredBy the frame that calls
+		// docwork.Enter for it: the entry point, as the stack names it.
+		name, kind, enteredBy string
+		work                  func() error
+	}{
+		{"a parse of the large spec", docwork.Parse, "pmdoc.readContext(", func() error {
+			_, err := parseInput(spec)
+			return err
+		}},
+		{"a render", docwork.Render, "pmdoc.renderDocument(", func() error {
+			_, err := pmdoc.Render(tree)
+			return err
+		}},
+		{"a layout's splice", docwork.Render, "pmdoc.(*Layout).Splice(", func() error {
+			if _, _, ok := layout.Splice(markdown, []int{0}, func(index int) (*pmdoc.Node, error) { return tree.Children[index], nil }); !ok {
+				return fmt.Errorf("the splice of block 0 was refused")
+			}
+			return nil
+		}},
+		{"a read of a fragment", docwork.Read, "pmdoc.readDocument(", func() error {
+			_, err := pmdoc.Read(storedFragment)
+			return err
+		}},
+		{"a write into a fragment", docwork.Encode, "pmdoc.updateShape(", func() error {
+			written := crdt.New()
+			fragment := written.GetXmlFragment(fragmentName)
+			var err error
+			written.Transact(func(txn *crdt.Transaction) { err = pmdoc.Update(txn, fragment, tree) }, nil)
+			return err
+		}},
+		{"a quote's walk", docwork.AnchorWalk, "pmdoc.(*QuoteFinder).matches(", func() error {
+			_, err := pmdoc.NewQuoteFinder(tree).Find("a quote to find", nil, nil)
+			return err
+		}},
+		{"a walk for marks", docwork.AnchorWalk, "pmdoc.FindMarks(", func() error {
+			pmdoc.FindMarks(tree, []pmdoc.MarkRef{{Type: string(MarkComment), ID: "c1"}})
+			return nil
+		}},
+		{"a reference extraction", docwork.References, "text.ExtractAt(", func() error {
+			text.ExtractAt("See dispatch://DOC-1 for it.", "https://dispatch.example")
+			return nil
+		}},
+		{"the mentions of a text", docwork.References, "text.Mentions(", func() error {
+			_, err := text.Mentions("See DOC-1 for it.", "https://dispatch.example", noReferences{})
+			return err
+		}},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			tracer := storetest.NewXidTracer()
+			caught := &recordedFailures{TB: t}
+			database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
+			report := tracer.Measure(t, database.Pool, func() {
+				runRigTransactionDoing(t, database, func() {
+					if err := entry.work(); err != nil {
+						t.Errorf("%s: %v", entry.name, err)
+					}
+				})
+			})
+			failures := caught.reported()
+			prefix := "document work (" + entry.kind + ") ran inside a transaction's xid window"
+			named := slices.IndexFunc(failures, func(failure string) bool { return strings.HasPrefix(failure, prefix) })
+			switch {
+			case named < 0:
+				t.Fatalf("%s after the write: the document-work check reported %q, want its work, %s, named", entry.name, failures, entry.kind)
+			case !strings.Contains(enteredBy(failures[named]), entry.enteredBy):
+				t.Fatalf("%s after the write: the document-work check named its %s as entered by %q, want %s, the entry point itself:\n%s",
+					entry.name, entry.kind, enteredBy(failures[named]), entry.enteredBy, failures[named])
+			}
+			for _, failure := range failures {
+				if !strings.HasPrefix(failure, "document work (") {
+					t.Errorf("the rig reported a failure that is not the document work it was shown:\n%s", failure)
+				}
+			}
+			t.Logf("the document-work check on %s after the write:\n%s", entry.name, failures[named])
+			if err := report.Err(); err != nil {
+				t.Fatalf("the rig could not judge the transaction: %v", err)
 			}
 		})
-	})
-	failures := caught.reported()
-	named := slices.IndexFunc(failures, func(failure string) bool {
-		return strings.HasPrefix(failure, "document work (parse) ran inside a transaction's xid window") &&
-			strings.Contains(failure, "docs.parseInput(")
-	})
-	if named < 0 {
-		t.Fatalf("a parse of the %d-byte spec after the write: the document-work check reported %q, want the parse in parseInput named",
-			len(spec), failures)
-	}
-	for _, failure := range failures {
-		if !strings.HasPrefix(failure, "document work (") {
-			t.Errorf("the rig reported a failure that is not the document work it was shown:\n%s", failure)
-		}
-	}
-	t.Logf("the document-work check on a parse of the %d-byte spec after the write:\n%s", len(spec), failures[named])
-	if err := report.Err(); err != nil {
-		t.Fatalf("the rig could not judge the transaction: %v", err)
 	}
 }
+
+// enteredBy is the frame below docwork.Enter in a document-work failure's stack: the function that
+// announced the work. A stack names each frame's function on one line and its file on the next.
+func enteredBy(failure string) string {
+	lines := strings.Split(failure, "\n")
+	for index, line := range lines {
+		if strings.Contains(line, "/docwork.Enter(") && index+2 < len(lines) {
+			return lines[index+2]
+		}
+	}
+	return ""
+}
+
+// noReferences is a text.Resolver that resolves nothing: no issue exists, the text belongs to no
+// document, and no short id names an item.
+type noReferences struct{}
+
+func (noReferences) Issues([]string) (map[string]bool, error)    { return nil, nil }
+func (noReferences) Questions() (map[string]text.Ref, error)     { return nil, nil }
+func (noReferences) Items([]text.Prefix) (map[int]string, error) { return nil, nil }
 
 // The collaborator check's control through this package's rig, in every run: the tracer opens a
 // transaction's xid window at its first write (store.OpenXidWindow), and a call to a collaborator

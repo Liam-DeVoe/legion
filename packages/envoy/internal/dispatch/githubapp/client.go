@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -314,6 +315,14 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) { c.http = httpClient }
 }
 
+// WithRateLimitClock sets the clock the client reads a rate-limited answer's wait against
+// (rateLimitAt): the moment GitHub names, a Retry-After date or x-ratelimit-reset, less the
+// clock's reading. Without it the client reads time.Now, which is what a deployment does; a test
+// passes the fake its stand-in for GitHub stamps those moments from, so the wait is exact.
+func WithRateLimitClock(c clock.Clock) Option {
+	return func(client *Client) { client.limitClock = c }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -324,6 +333,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// limitClock is the clock a rate-limited answer's wait is read against (rateLimit); nil is
+	// time.Now (WithRateLimitClock).
+	limitClock clock.Clock
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -475,7 +487,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if status == http.StatusNotFound {
 		return Installation{}, fmt.Errorf("%w on %s/%s", ErrNoInstallation, owner, repo)
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := c.rateLimit(status, header, body); limited != nil {
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
@@ -531,7 +543,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 			if err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
-			if err := CheckResponse(status, header, body); err != nil {
+			if err := c.checkResponse(status, header, body); err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
 			var payload []installationPayload
@@ -642,7 +654,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 		if err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
-		if err := CheckResponse(status, header, body); err != nil {
+		if err := c.checkResponse(status, header, body); err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
 		var payload struct {
@@ -751,12 +763,12 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		return body, status, header, err
 	}
 	if c.limits == nil {
-		if limited := RateLimit(status, header, body); limited != nil {
+		if limited := c.rateLimit(status, header, body); limited != nil {
 			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 		}
 		return body, status, header, nil
 	}
-	limited, secondary := GraphQLRateLimit(status, header, body)
+	limited, secondary := c.graphQLRateLimit(status, header, body)
 	if limited == nil {
 		return body, status, header, nil
 	}
@@ -834,7 +846,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 	if err != nil {
 		return cachedToken{}, err
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := c.rateLimit(status, header, body); limited != nil {
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
@@ -929,7 +941,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	if err != nil {
 		return responseBody, status, header, err
 	}
-	limited := RateLimit(status, header, responseBody)
+	limited := c.rateLimit(status, header, responseBody)
 	if limited == nil {
 		return responseBody, status, header, nil
 	}

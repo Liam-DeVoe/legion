@@ -479,8 +479,8 @@ func (s *Service) markStaleExcerpts(ctx context.Context) bool {
 // earliest due time of a document it deferred, else never. A pass whose own read failed asks again
 // after schedule.retryBase. The due time is the wait to that retry on the clock that stamped it
 // (refs.NextExcerptRetry), from the moment the pass judges at: the database's now(), added to this
-// process's own clock, where the service runs on the real clock, so skew between the two does not
-// move the timer; a test's fake's reading where it runs on one (excerptMoment).
+// process's own clock, where Deps.Clock is nil, as in production, so skew between the two does not
+// move the timer; the reading of the clock a test set (excerptMoment) where it set one.
 func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSchedule) time.Time {
 	documents, full, err := s.reconcileReferenceExcerpts(ctx, schedule.retryBase)
 	if documents > 0 {
@@ -515,16 +515,12 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 
 // excerptMoment is the moment the reconciliation writes and judges a document's retry at, handed
 // to the statements in place of the database's now() (refs.DeferExcerpts, DriftedExcerpts,
-// NextExcerptRetry): nil where the service runs on the real clock, as it does in production, so
-// Postgres's clock alone stamps and judges every retry and no process's clock, however far it is off
-// the database's, moves one; a test's fake's reading, to the microsecond the database keeps, where
-// it runs on one.
+// NextExcerptRetry), read off excerptClock (store.MomentOn): nil where Deps.Clock is nil, as it is
+// in production, so Postgres's clock alone stamps and judges every retry and no process's clock,
+// however far it is off the database's, moves one; a test's fake's reading, to the microsecond the
+// database keeps, where it runs on one.
 func (s *Service) excerptMoment() *time.Time {
-	if s.onRealClock {
-		return nil
-	}
-	at := s.clock.Now().Truncate(time.Microsecond)
-	return &at
+	return store.MomentOn(s.excerptClock)
 }
 
 // ReconcileReferenceExcerpts runs one batch of the reconciliation at the server's pace

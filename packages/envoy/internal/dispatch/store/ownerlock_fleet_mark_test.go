@@ -152,18 +152,19 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 // The earlier build's mark expires while writers of this build are in flight in both modes:
 // those whose fleet read found the mark take the owners' rows beside their advisory locks, and
 // those that start once it has expired take the advisory locks alone, behind the gate, while
-// the first are still committing. The earlier build's own writers, the rows first, run only while
-// the mark is young, as an earlier build that has stopped writes nothing more: an earlier build
-// that still writes past the mark is in the fleet only by its registration, and "What the fleet
-// does not see" (cmd/dispatch/README.md) names the three cases where it is not. No update is
-// lost, nothing deadlocks and nothing else fails, and this build's writers commit in both modes.
-// The test expires the mark itself, as the passing of its window would (ageLegacyMark), once a
-// writer of this build has committed beside the earlier build, so the expiry falls inside the run
+// the first are still committing. The earlier build's own writers, the rows first, write only
+// while the mark is young, as an earlier build that has stopped writes nothing more: an earlier
+// build that still writes past the mark is in the fleet only by its registration, and "What the
+// fleet does not see" (cmd/dispatch/README.md) names the three cases where it is not. No update
+// is lost, nothing deadlocks and nothing else fails, and this build's writers commit in both
+// modes. The test expires the mark itself, as the passing of its window would (ageLegacyMark),
+// once a writer of this build has committed beside the earlier build and the earlier build's
+// writers have stopped, each write of theirs in flight ended, so the expiry falls inside the run
 // at a point the run has reached, however slow the machine: a window of real time could close
-// before any writer committed beside the earlier build. The mark's age is read by the database's
-// clock, the clock the fleet read judges it by, and this build's writers run until one of them
-// has committed in the advisory mode, which only a fleet read that no longer counts the mark
-// answers.
+// before any writer committed beside the earlier build, or while an earlier build's write was
+// still in flight. The mark's age is read by the database's clock, the clock the fleet read
+// judges it by, and this build's writers run until one of them has committed in the advisory
+// mode, which only a fleet read that no longer counts the mark answers.
 func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
@@ -171,17 +172,15 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()
 	publishAsAnEarlierBuild(t, s)
-	// markYoung reports whether the database reads the mark as younger than half its window; a
-	// read that fails ends the earlier build's writers, and the failure is the test's.
-	markYoung := func() bool {
-		var young bool
-		if err := s.Pool.QueryRow(ctx, `select pg_catalog.now() - seen_at < make_interval(secs => $1) from owner_lock_legacy_mark`,
-			(OwnerLockMarkWindow / 2).Seconds()).Scan(&young); err != nil {
-			t.Errorf("read the earlier build's mark's age: %v", err)
-			return false
-		}
-		return young
-	}
+	// The earlier build's writers have a stop and a join of their own, apart from this build's: the
+	// row stops them, and waits for their writes in flight to end, before it ages the mark.
+	earlierStop := make(chan struct{})
+	var earlier sync.WaitGroup
+	stopEarlier := sync.OnceFunc(func() {
+		close(earlierStop)
+		earlier.Wait()
+	})
+	t.Cleanup(stopEarlier)
 	committed := func(besideAnEarlierBuild bool) bool {
 		ledger.mu.Lock()
 		defer ledger.mu.Unlock()
@@ -212,8 +211,13 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 		})
 	}
 	for range 2 {
-		writers.Go(func() {
-			for !stopped() && markYoung() {
+		earlier.Go(func() {
+			for {
+				select {
+				case <-earlierStop:
+					return
+				default:
+				}
 				ledger.write(ctx, t, s, rowFirstWriter, all)
 			}
 		})
@@ -221,6 +225,7 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	testwait.Eventually(t, "a writer of this build to commit beside the earlier build while its mark is young", func() bool {
 		return committed(true)
 	})
+	stopEarlier()
 	ageLegacyMark(t, s, OwnerLockMarkWindow+time.Second)
 	testwait.Eventually(t, "a writer of this build to commit in the advisory mode once the mark expired", func() bool {
 		return committed(false)

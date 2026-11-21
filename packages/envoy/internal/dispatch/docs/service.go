@@ -95,7 +95,11 @@ type Deps struct {
 	// VerifyMark's wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
 	// edit notice sweep's gaps and due times (RunEditNotices), the settlement resumption's ticks
 	// (RunSettlementResumption) and Shutdown's drain budget (ShutdownDrainBudget); nil means the
-	// real clock. A test hands a clocktest fake and moves it past the wait.
+	// real clock. A test hands a clocktest fake and moves it past the wait. It is also, when set,
+	// the clock the reference excerpt reconciliation reads the moment it stamps and judges a
+	// document's retry at (excerptMoment): nil, as production leaves it, hands those statements no
+	// moment, so the database's own now() does both; a Clock that is set, clock.Real() included,
+	// puts them on that clock.
 	Clock clock.Clock
 	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
 	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
@@ -167,10 +171,10 @@ type Service struct {
 	// queue's waits (compactionQueue) and the edit notice sweep's gaps and due times
 	// (RunEditNotices).
 	clock clock.Clock
-	// onRealClock is whether clock is the real clock, Deps.Clock being nil, as in production: the
-	// reference excerpt reconciliation then hands its statements no moment of its own, and the
-	// database's now() alone stamps and judges its retries (excerptMoment).
-	onRealClock bool
+	// excerptClock is Deps.Clock as the caller set it, nil in production: the clock the reference
+	// excerpt reconciliation reads the moment it hands its statements off (excerptMoment), where
+	// nil hands them none and the database's now() alone stamps and judges its retries.
+	excerptClock clock.Clock
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -910,7 +914,7 @@ func New(deps Deps) *Service {
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		clock:             serviceClock,
-		onRealClock:       deps.Clock == nil,
+		excerptClock:      deps.Clock,
 		editNoticeQuiet:   editNoticeQuiet,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,

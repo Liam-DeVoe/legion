@@ -69,8 +69,13 @@ import (
 //   - a write whose command tag is SELECT - a writing CTE that ends in a select (refs/blocks.go's
 //     writeWindows), a writing function called through select - opens no window for the
 //     collaborator and document-work checks (xidAssigned reads the tag), so a call or document
-//     work after it, before the transaction's next tagged write, is not reported. Every such write
-//     today is the last statement before its COMMIT, so nothing runs in that span.
+//     work after it, before the transaction's next tagged write or its COMMIT, is not reported.
+//     Such a write is not always its transaction's last statement: api/ask_snooze.go's snooze, a
+//     writing CTE that ends in a select, reads the ask and appends the snooze's event after it,
+//     and docs/conditional_edit_queue.go's admission, a deleting CTE that ends in a count, writes
+//     its own row after it. What runs in those spans today is their statements and the Go that
+//     builds them, no collaborator call and no document work, so no report is missed there; a
+//     call or document work a later change put into such a span would go unreported.
 //
 // The window's statement time and its gaps are still measured, and every report logs them
 // (XidWindow.Summary, Detail), so a reader can see where the time with the xid went; no verdict

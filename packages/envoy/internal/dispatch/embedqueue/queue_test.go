@@ -1562,19 +1562,66 @@ func (w *scanWaits) all() []scanWait {
 	return slices.Clone(w.waits)
 }
 
+// moveToArmed fires the timer the scan loop's latest wait armed, while that timer is still pending
+// on fake and reached, nil for always, says its moment may be reached: the loop's gaps and due
+// times run on the queue's clock (Deps.Clock), whose timers fire only where the test moves it. A
+// due time that is a row's next_attempt_at is a moment of the database's clock, which a row
+// reaches by waiting for that clock to pass it (databasePassed). The loop arms its timer for the
+// wait it reports less its reading of the clock, which the fake adds to its own reading as it
+// arms it: on a held fake, whose present follows the wall clock, the two readings differ, so the
+// timer is the pending one within armDrift of the moment reported. The move is to that timer, or
+// to the fake's present where that is later: a held fake's present can pass a timer it has not
+// fired, and a move to its present fires it.
+func (w *scanWaits) moveToArmed(fake *clocktest.Fake, reached func(time.Time) bool) {
+	waits := w.all()
+	if len(waits) == 0 {
+		return
+	}
+	latest := waits[len(waits)-1]
+	if !latest.armed || (reached != nil && !reached(latest.at)) {
+		return
+	}
+	armed := fake.Armed()
+	pending := slices.IndexFunc(armed, func(at time.Time) bool {
+		return at.Sub(latest.at).Abs() <= armDrift
+	})
+	if pending < 0 {
+		return
+	}
+	target := armed[pending]
+	if now := fake.Now(); now.After(target) {
+		target = now
+	}
+	fake.Set(target)
+}
+
+// armDrift is how far a timer the scan loop arms on a held fake can stand from the moment the
+// loop reported: the time between the loop's reading of the clock and the fake's, microseconds,
+// or longer when a loaded machine stops the loop's goroutine between the two; and well below the
+// seconds between the loop's timer and any other the queue arms on the fake (retryInterval,
+// identityRecheckInterval).
+const armDrift = time.Second
+
+// databasePassed reports whether the database's clock has passed at.
+func databasePassed(t *testing.T, database *store.Store) func(time.Time) bool {
+	return func(at time.Time) bool { return !databaseNow(t, database).Before(at) }
+}
+
 // awaitIdle waits until Run, on fake from start, has gone idle: its coverage loop waits for its
 // next identity recheck, armed identityRecheckInterval or more past start, so its pass has ended
 // (no other wait of the queue's is armed that far); and its scan loop's latest wait is a rest,
-// reported once the traced pool had counted more than after statements. The loop takes a wake
-// already waiting before it reports a rest (duty.WokenLoop.Waiting), and in the rows that call
-// this nothing else is left to wake it once the coverage pass has ended: that pass changes no
-// row there, so it signals no scan (Deps.signalEnqueued), and the queue's other wake is the row's
-// own hub. So such a rest lasts until the row acts. Its count is not the pool's latest: the
-// coverage pass may still be making statements when the scan loop rests.
+// reported once the traced pool had counted more than after statements. A scan the loop holds to
+// its gap meanwhile is run by moving fake to it (moveToArmed), as the passing of the gap would run
+// it. The loop takes a wake already waiting before it reports a rest (duty.WokenLoop.Waiting), and
+// in the rows that call this nothing else is left to wake it once the coverage pass has ended:
+// that pass changes no row there, so it signals no scan (Deps.signalEnqueued), and the queue's
+// other wake is the row's own hub. So such a rest lasts until the row acts. Its count is not the
+// pool's latest: the coverage pass may still be making statements when the scan loop rests.
 func (w *scanWaits) awaitIdle(t *testing.T, what string, fake *clocktest.Fake, start time.Time, after int64) {
 	t.Helper()
 	recheck := start.Add(identityRecheckInterval)
 	testwait.Until(t, what, func() (string, bool) {
+		w.moveToArmed(fake, nil)
 		armed := fake.Armed()
 		ended := slices.ContainsFunc(armed, func(at time.Time) bool { return !at.Before(recheck) })
 		var latest scanWait
@@ -1663,21 +1710,29 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	if got := pendingCount(t, database); got != 1 {
 		t.Fatalf("pending after the comment = %d, want 1", got)
 	}
-	eventually(t, "the comment embedded after its notification", func() bool { return pendingCount(t, database) == 0 })
+	// The notification's scan is held to its gap after the last scan on the queue's clock, and the
+	// row moves the clock to it once the loop has armed it, as the gap's passing would run it.
+	eventually(t, "the comment embedded after its notification", func() bool {
+		waits.moveToArmed(fake, nil)
+		return pendingCount(t, database) == 0
+	})
 }
 
 // A claim another process left on a row - it crashed before embedding it - is taken once the
 // claim lapses, by the scan the due time the queue read after its last scan arms: no write, no
 // wake and no ticker brings it. Nothing else can bring it here: the queue has no Wake, nothing
-// writes the row once Run has started, and the coverage loop's identity recheck waits on a clock
-// the row never moves, so a pass that finds the claim lapsed is one scanPass's due time armed,
-// and a loop that dropped that due time leaves the row pending until the binary's deadline. That
-// the pass comes at the lapse rather than later is the two halves' own rows: scanPass answers the
-// claim's lapse exactly (TestScanPassReturnsWhenThePendingRowsFallDue), and RunWoken fires one
-// pass at the due time a pass answered (duty's TestADueTimeAPassReturnsFiresOnce). Here the embed
-// must come no sooner than the lapse, on the database's clock that both stamps are read on, and
-// every timer the scan loop arms (Deps.scanWaiting) no later than Run's bound, read on the queue's
-// clock: so a due time delayed between scanPass and the loop fails the row.
+// writes the row once Run has started, and the coverage loop's identity recheck waits on the
+// queue's clock past anything the row moves it to, so a pass that finds the claim lapsed is one
+// scanPass's due time armed, and a loop that dropped that due time leaves the row pending until
+// the binary's deadline. The scan loop runs on the queue's clock (Deps.Clock), a fake that starts
+// at the database's clock and moves only to the timers the loop reports it armed
+// (Deps.scanWaiting), each once the database's clock has passed it, as the real clock would reach
+// it. That the pass comes at the lapse rather than later is the two halves' own rows: scanPass
+// answers the claim's lapse exactly (TestScanPassReturnsWhenThePendingRowsFallDue), and RunWoken
+// fires one pass at the due time a pass answered (duty's TestADueTimeAPassReturnsFiresOnce). Here
+// the embed must come no sooner than the lapse, on the database's clock that both stamps are read
+// on, and every timer the scan loop arms no later than Run's bound, read on the queue's fake: so
+// a due time delayed between scanPass and the loop fails the row.
 func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -1706,15 +1761,17 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 		returning next_attempt_at`).Scan(&lapses); err != nil {
 		t.Fatalf("move the claim's lapse: %v", err)
 	}
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	waits := &scanWaits{clock: fake}
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
+	reached := databasePassed(t, database)
 	embeddedAt := testwait.Until(t, "CLAM-1 embedded", func() (time.Time, bool) {
 		var at *time.Time
 		if err := database.Pool.QueryRow(ctx, `select embedded_at from embeddings where id = 'CLAM-1'`).Scan(&at); err != nil {
 			t.Fatalf("read embedded_at: %v", err)
 		}
 		if at == nil {
+			waits.moveToArmed(fake, reached)
 			return time.Time{}, false
 		}
 		return *at, true

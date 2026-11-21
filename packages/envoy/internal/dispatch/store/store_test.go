@@ -824,15 +824,17 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 // such a table in an open transaction, so the alter must wait for it. A holder that stays gives
 // every attempt up at the server's lock_timeout, and the boot fails with a lock-timeout error
 // (SQLSTATE 55P03, which only the server's lock_timeout produces) after LockTimeoutAttempts of
-// them, each logged as it gives up, rather than waiting without limit; a holder that ends once the
-// first attempt has given up, as a pg_dump does, lets the next attempt through, and the boot goes
-// on. The first two rows are tables an earlier runner left: an integer version from before the
-// timestamps, under a set that holds one, which the alter widens and gives the columns; and a
-// bigint version, which it gives the columns alone.
+// them, each logged as it gives up, at least LockTimeoutRetryPause and its own LockTimeout after
+// the one before it by the runner's own stamps, rather than waiting without limit; a holder that
+// ends once the first attempt has given up, as a pg_dump does, lets the next attempt through, and
+// the boot goes on. The first two rows are tables an earlier runner left: an integer version from
+// before the timestamps, under a set that holds one, which the alter widens and gives the columns;
+// and a bigint version, which it gives the columns alone.
 //
 // Control: remove the pgmigrate.Pin call from prepareVersionTable's callback and the alter waits
 // without limit; the shared wait's context ends it and the error is not a lock timeout. Remove the
-// retry, and the third row gives up waiting for the first attempt's retry.
+// retry, and the third row gives up waiting for the first attempt's retry. Set a shorter
+// lock_timeout in the attempt, or drop the pause, and the attempts' gaps fall short.
 func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 	for name, tc := range map[string]struct {
 		versionType string
@@ -891,6 +893,21 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 			for attempt := 1; attempt < pgmigrate.LockTimeoutAttempts; attempt++ {
 				if !slices.ContainsFunc(strings.Split(logged.String(), "\n"), retried(attempt)) {
 					t.Errorf("the log holds no retry of attempt %d of %d on the version table:\n%s", attempt, pgmigrate.LockTimeoutAttempts, logged.String())
+				}
+			}
+			// Each attempt waited out its own lock timeout, and the runner paused before the next:
+			// its WARN lines, the last attempt's among them, are its own record of when each attempt
+			// gave up, written to the millisecond, so each comes at least the pause and the next
+			// attempt's LockTimeout, less that millisecond, after the one before it. An attempt under
+			// a lock_timeout shorter than LockTimeout, or a retry with no pause, comes sooner.
+			attempts := attemptTimes(t, logged.String(), "table="+versionTable)
+			if len(attempts) != pgmigrate.LockTimeoutAttempts {
+				t.Errorf("the log holds %d timed-out attempts on the version table, want %d:\n%s", len(attempts), pgmigrate.LockTimeoutAttempts, logged.String())
+			}
+			for i := 1; i < len(attempts); i++ {
+				if gap := attempts[i].Sub(attempts[i-1]); gap < pgmigrate.LockTimeoutRetryPause+pgmigrate.LockTimeout-time.Millisecond {
+					t.Errorf("attempt %d on the version table gave up %s after attempt %d; want at least the %s pause before it and its own %s lock timeout",
+						i+1, gap, i, pgmigrate.LockTimeoutRetryPause, pgmigrate.LockTimeout)
 				}
 			}
 		})

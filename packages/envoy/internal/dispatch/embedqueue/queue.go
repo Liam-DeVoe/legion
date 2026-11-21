@@ -83,11 +83,12 @@ type Deps struct {
 	Wake <-chan struct{}
 	// Clock is what the queue's own waits and ages run on: the coverage loop's wait for the next
 	// identity recheck, the pauses between batches and after a throttle, a reservation's wait on
-	// the shared token budget, a claim renewal's age, and the floor a scan pass holds its due time
-	// to (scanPass). clock.Real when nil, and a test's clocktest.Fake, whose timers fire only where
-	// the test moves it. The queue's other times - a row's next_attempt_at, pending_since,
-	// embedded_at - are the database's own clock, which no fake reaches, and so the scan loop's
-	// own timer, which waits for them, runs on the real clock.
+	// the shared token budget, a claim renewal's age, the floor a scan pass holds its due time to
+	// (scanPass), and Run's scan loop's one timer and its gap (duty.WokenLoop.Clock). clock.Real
+	// when nil, and a test's clocktest.Fake, whose timers fire only where the test moves it. The
+	// queue's other times - a row's next_attempt_at, pending_since, embedded_at - are the
+	// database's own clock, which no fake reaches: the scan loop arms its timer for such a moment
+	// on this clock, so a test on a fake moves it there once the database's clock has passed it.
 	Clock clock.Clock
 	// proven records that an Embed call this process's queue made has succeeded (embedDocuments
 	// records it), which is what lets Cover act on rows another identity left with no canary of
@@ -216,6 +217,7 @@ func Run(ctx context.Context, deps Deps) {
 	duty.RunWoken(scanCtx, duty.WokenLoop{
 		Wake:    wake,
 		MinGap:  retryInterval,
+		Clock:   deps.Clock,
 		Waiting: deps.scanWaiting,
 		Pass:    func(ctx context.Context) time.Time { return scanPass(ctx, deps) },
 	})

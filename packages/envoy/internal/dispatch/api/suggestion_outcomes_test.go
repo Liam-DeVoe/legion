@@ -124,7 +124,7 @@ func awaitDatabaseClockPastSuggestions(t *testing.T, pool *store.Pool) {
 // wake on EventsChannel, at the server's own gap - with its gaps and due times on clock, a fake
 // the test moves, and the settle it is given, which the database's clock judges; on a counted
 // pool, once its boot pass and the pass the hub's signal after its LISTEN earned have both run
-// and it has gone quiet.
+// and its loop has reported the wait it chose after them (settled, suggestionSchedule.waiting).
 type idleSweep struct {
 	handler        http.Handler
 	server         *server
@@ -133,6 +133,9 @@ type idleSweep struct {
 	clock          *clocktest.Fake
 	schedule       suggestionSchedule
 	target, source string
+	// settled is the wait the loop reported once the hub's pass had returned: a rest, with no
+	// event written since, holds no timer.
+	settled sweepWait
 }
 
 // idleSweepSettle is the settle of the rows that judge an event as soon as it may be: the
@@ -152,7 +155,8 @@ func startIdleSweepOn(t *testing.T, project string, schedule suggestionSchedule)
 }
 
 // startIdleSweepOnClock starts an idle sweep on schedule whose gaps and due times run on fake,
-// which a row whose schedule judges settle on it too (settledOn) passes in.
+// which a row whose schedule judges settle on it too (settledOn) passes in. The sweep's loop
+// reports each wait it chooses (schedule.waiting), which it does once a pass has returned.
 func startIdleSweepOnClock(t *testing.T, project string, schedule suggestionSchedule, fake *clocktest.Fake) idleSweep {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -176,8 +180,12 @@ func startIdleSweepOnClock(t *testing.T, project string, schedule suggestionSche
 	})
 
 	srv := directServer(deps)
-	tracer := &idleSweepTracer{passes: sweepPassTracer{held: map[uint32]bool{}}}
+	tracer := &idleSweepTracer{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
+	waits := &testwait.Stream[sweepWait]{}
+	schedule.waiting = func(at time.Time, ok bool) {
+		waits.Add(sweepWait{at: at, armed: ok, passes: tracer.passes.passes()})
+	}
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
 	runSweep(t, func(ctx context.Context) {
@@ -190,19 +198,19 @@ func startIdleSweepOnClock(t *testing.T, project string, schedule suggestionSche
 	// which fails at once, naming the holder, on a hold in this test's own database.
 	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, held to the gap after the boot pass
-	// began on the sweep's clock; after it the loop is idle, and it is so once that pass's
-	// transaction has ended: a pass makes no statement after its COMMIT returns.
+	// began on the sweep's clock. The loop reports its next wait only once that pass has returned,
+	// its transaction ended, so the first report that counts both passes is what the loop holds
+	// after them, read where the loop itself records it rather than off the fake while it may not
+	// have decided yet.
 	sweep.pass(t, "the pass the hub's signal after its LISTEN earned")
-	testwait.Until(t, "the boot pass and the hub's pass to have ended", func() ([2]int, bool) {
-		begun, ended := tracer.passes.passes(), tracer.passes.ended()
-		return [2]int{begun, ended}, begun >= 2 && ended == begun
+	sweep.settled = testwait.Next(t, "the loop's report of its wait once the boot pass and the hub's pass had returned", waits, func(w sweepWait) bool {
+		return w.passes >= 2
 	})
 	return sweep
 }
 
 // idleSweepTracer counts every statement an idle sweep makes (StatementCounter) and its passes,
-// each begun at its hold of the cursor row and ended when its transaction's COMMIT or ROLLBACK
-// returns (sweepPassTracer).
+// each begun at its hold of the cursor row (sweepPassTracer).
 type idleSweepTracer struct {
 	storetest.StatementCounter
 	passes sweepPassTracer
@@ -213,9 +221,7 @@ func (t *idleSweepTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, d
 	return t.passes.TraceQueryStart(ctx, conn, data)
 }
 
-func (t *idleSweepTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	t.passes.TraceQueryEnd(ctx, conn, data)
-}
+func (t *idleSweepTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // pass moves the sweep's clock to the one timer its loop holds - the pass a wake earned, held to
 // the gap, or a due time - and so runs the pass the loop was waiting for.
@@ -268,19 +274,25 @@ type horizonProof struct {
 	err  error
 }
 
-// idleSweepWhy is why a test of the idle sweep holds a span: a pass runs on the loop's own
-// goroutine once its timer fires, and nothing the loop keeps says that pass has ended.
-const idleSweepWhy = "the sweep's woken loop passes on its own goroutine and keeps no state that says a pass " +
-	"has ended, the database is real I/O (no synctest), and no later action of the test is ordered after a " +
-	"pass that does not come"
+// idleSweepWhy is why a test of the idle sweep holds a span to show the sweep makes no statement:
+// the loop's rest report (idleSweep.settled) and its fake's empty timers say no pass is due on
+// its clock, but a statement made without a pass leaves nothing to read.
+const idleSweepWhy = "the loop's report of a rest and its fake holding no timer show no pass is due, but a " +
+	"statement the sweep made without a pass - off its loop, or a lease attempt - leaves no state to read, the " +
+	"database is real I/O (no synctest), and no later action of the test is ordered after a statement that does " +
+	"not come"
 
 // With no event written, the sweep holds no timer, so no pass is due on any clock however far
 // its own moves, and it makes no statement at all - no pass, no lease attempt - though a
-// suggestion is pending.
+// suggestion is pending. The loop's own report of its wait after the setup's passes says it
+// rests (idleSweep.settled).
 func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 	sweep := startIdleSweep(t, "OIDLE", idleSweepSettle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
+	if sweep.settled.armed {
+		t.Fatalf("the idle sweep armed its timer for %s once its boot pass and the hub's had returned, with no event written; want a rest", sweep.settled.at)
+	}
 	if armed := sweep.clock.Armed(); len(armed) != 0 {
 		t.Fatalf("the idle sweep holds timers for %v with no event written; want none", armed)
 	}
@@ -318,10 +330,13 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // the suggestion overridden at that first pass.
 //
 // Settle is judged on the sweep's own clock here (suggestionSchedule.settledOn), a fake the row
-// moves, against the stamps the database wrote, so no stall of the machine ages a write: the
-// first pass is inside settle however long the comment took, and the row then judges a page at
-// the suggestion's own stamp plus settle less a microsecond, the database's precision, and at that
-// stamp plus settle, with no real wait. The first moment judges nothing, and the second judges the
+// moves, against the stamps the database wrote, so no stall of the machine ages a write: after the
+// comment the row moves the fake no further than the suggestion's own stamp, so the suggestion's
+// age on it is what the row's own moves gave it, however long the comment took, and the first
+// pass is inside settle. The pass held for settle arms its next pass no later than the
+// suggestion's stamp plus settle, the earliest write it held back. The row then judges a page at
+// that stamp plus settle less a microsecond, the database's precision, and at that stamp plus
+// settle, with no real wait. The first moment judges nothing, and the second judges the
 // suggestion acted_on, with both writes in.
 //
 // A pass that finds the horizon behind the comment's commit judges nothing either, and asks again
@@ -343,9 +358,9 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	fake := clocktest.New(time.Now().Truncate(time.Microsecond))
 	sweep := startIdleSweepOnClock(t, "OTOGETHER", suggestionSchedule{minGap: time.Second, settle: settle, page: suggestionOutcomePage, settledOn: fake}, fake)
 	// The fake stands still while the database stamps the row's writes: the row moves it up to the
-	// database's clock after the setup and again after the comment, so every write the passes judge
-	// is stamped at or before the moment the fake reads. A move this short stays inside the loop's
-	// gap, so it runs no pass of its own.
+	// database's clock after the setup, and after the comment up to the suggestion's own stamp, so
+	// the suggestion is stamped at or before the moment the fake reads and no real time ages it. A
+	// move this short stays inside the loop's gap, so it runs no pass of its own.
 	toDatabaseClock := func() {
 		t.Helper()
 		var databaseNow time.Time
@@ -382,7 +397,9 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	}
 
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-	toDatabaseClock()
+	if suggested.After(fake.Now()) {
+		fake.Set(suggested)
+	}
 	held := testwait.Until(t, "a pass held for the comment's settle", func() (time.Time, bool) {
 		if row := outcome(); row.Outcome != "ignored" {
 			t.Fatalf("outcome = %+v after a pass while the comment was younger than settle; want ignored, nothing judged yet", row)
@@ -401,19 +418,11 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 		sweep.clock.Set(armed[0])
 		return armed[0], false
 	})
-	// What the held pass waits for is a write it held back, stamped at or before the database's
-	// clock now, so its due time is at most settle past that clock - the comment's request may
-	// record a suggestion after it answers, stamped after the fake's reading.
-	var stampedBy time.Time
-	if err := pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&stampedBy); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	limit := sweep.clock.Now()
-	if stampedBy.After(limit) {
-		limit = stampedBy
-	}
-	if limit = limit.Add(settle); held.After(limit) {
-		t.Fatalf("the pass held for the comment's settle armed its next pass at %s, past settle at %s", held, limit)
+	// What the held pass waits for is the earliest write it held back, the seeded suggestion, settle
+	// old at its stamp plus settle on the fake: a write the comment's request recorded after it
+	// answered is stamped later, and so falls due later.
+	if limit := suggested.Add(settle + time.Microsecond); held.After(limit) {
+		t.Fatalf("the pass held for the comment's settle armed its next pass at %s, past the seeded suggestion's settle at %s", held, limit)
 	}
 	if row := outcome(); row.Outcome != "ignored" {
 		t.Fatalf("outcome = %+v after a pass held for the comment's settle; want ignored, nothing judged yet", row)

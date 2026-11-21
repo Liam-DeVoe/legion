@@ -333,7 +333,8 @@ func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 }
 
 // recorded is one call of a test's Recorder; bounded is whether the write's one bound, armed on
-// the row's fake, is recordTimeout past the fake's moment.
+// the row's fake, is recordTimeout past the fake's moment and is the bound of the context the
+// write was handed (boundedAt).
 type recorded struct {
 	read      Read
 	succeeded bool
@@ -341,11 +342,19 @@ type recorded struct {
 	bounded   bool
 }
 
-// boundedAt reports whether the one deadline armed on c is d past its moment: a call's own bound,
-// read on the fake it runs on, which a deadline context of a fake does not report (clocktest).
-func boundedAt(c *clocktest.Fake, d time.Duration) bool {
+// boundedAt reports whether ctx, the context a call was handed, ends at the call's own bound: the
+// one deadline armed on c is d past its moment, and moving c there ends ctx with
+// context.DeadlineExceeded. A deadline context of a fake reports no deadline of its own
+// (clocktest), so the move is what shows the bound is ctx's: a call handed a context the bound
+// does not derive from - its caller's, or one cut off from it - is still running once the fake
+// reaches the deadline. It leaves c at that deadline.
+func boundedAt(ctx context.Context, c *clocktest.Fake, d time.Duration) bool {
 	armed := c.Armed()
-	return len(armed) == 1 && armed[0].Equal(c.Now().Add(d))
+	if len(armed) != 1 || !armed[0].Equal(c.Now().Add(d)) {
+		return false
+	}
+	c.Set(armed[0])
+	return errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 // Finish records nothing without a recorder, for a caller that ended, or for an attempt that
@@ -403,8 +412,8 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 			fake := clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
 			if tc.record {
 				record = func(ctx context.Context, read Read, succeeded bool, cause string) error {
-					calls = append(calls, recorded{read: read, succeeded: succeeded, cause: cause, bounded: boundedAt(fake, recordTimeout)})
-					return ctx.Err()
+					calls = append(calls, recorded{read: read, succeeded: succeeded, cause: cause, bounded: boundedAt(ctx, fake, recordTimeout)})
+					return nil
 				}
 			}
 			finishOn(fake, caller, CIReconcile, attempt, record, nil)
@@ -460,7 +469,7 @@ func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T)
 	calls := make(chan bool)
 	answers := make(chan loadAnswer)
 	load := func(ctx context.Context) ([]Recorded, error) {
-		calls <- boundedAt(fake, loadTimeout)
+		calls <- boundedAt(ctx, fake, loadTimeout)
 		answer := <-answers
 		return answer.rows, answer.err
 	}

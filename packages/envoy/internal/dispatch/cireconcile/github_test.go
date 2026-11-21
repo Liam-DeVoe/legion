@@ -324,9 +324,10 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.failOnce[r.URL.Path] = left - 1
 		failed = true
 	}
-	// A limit's reset is GitHub's own moment on the wall clock, which githubapp reads the wait
-	// from, to the second the header carries.
-	reset := time.Unix(time.Now().Add(90*time.Second).Unix(), 0)
+	// A limit's reset is GitHub's own moment, to the second the header carries, stamped here on
+	// the passes' own clock, which the client reads the wait against (githubapp.WithRateLimitClock,
+	// client): the wait is the reset less that clock's moment, exactly.
+	reset := time.Unix(f.clock.Now().Add(90*time.Second).Unix(), 0)
 	if limited {
 		f.reset = reset
 	}
@@ -426,7 +427,7 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	_, text := githubapptest.Key(f.t)
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits))
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits), githubapp.WithRateLimitClock(f.clock))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
 	}

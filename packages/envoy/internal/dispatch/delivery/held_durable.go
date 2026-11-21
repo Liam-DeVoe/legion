@@ -696,11 +696,12 @@ var createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConf
 // deliver subject, so it stops delivering (check).
 const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering"
 
-// DurableChecked is the line an intake writes at Debug for each check of its durable (check), so a
-// test can count a process's checks from its log; production's handler, at Info, leaves it out. Its
-// fields are name, the durable; pass, the check's number in this intake's run, from 1; and found,
-// what the check found: checkNotDelivering, checkDeliversHere, checkDeliversElsewhere,
-// checkDeleted or checkUnread.
+// DurableChecked is the line an intake writes at Debug at the end of each check of its durable
+// (check), after the give-up the check logged and the stop it made, so a test can count a process's
+// checks from its log and read, once it has seen a check's line, everything that check did;
+// production's handler, at Info, leaves it out. Its fields are name, the durable; pass, the check's
+// number in this intake's run, from 1; and found, what the check found: checkNotDelivering,
+// checkDeliversHere, checkDeliversElsewhere, checkDeleted or checkUnread.
 const DurableChecked = "dispatch delivery: the intake checked its NATS consumer"
 
 // What a check of the durable found (DurableChecked's found).
@@ -720,34 +721,34 @@ const (
 // check stops delivering when the durable no longer delivers to this intake's deliver subject:
 // something deleted it, or replaced it with one on another subject. The intake keeps its hold, and
 // its next attempt takes the durable over again, or waits for a process that binds without a
-// hold. A lookup that fails says nothing, and changes nothing. Each check writes DurableChecked.
+// hold. A lookup that fails says nothing, and changes nothing. Each check writes DurableChecked
+// last. Whether it stops is decided in the arm that found it; found is the line's label alone.
 func (d *heldDurable) check(ctx context.Context) {
 	d.checkPasses++
-	found := checkNotDelivering
+	found, stop := checkNotDelivering, false
 	if d.subject != "" {
 		info, err := d.lookupDurable(ctx)
 		switch {
 		case errors.Is(err, natsgo.ErrConsumerNotFound):
-			found = checkDeleted
+			found, stop = checkDeleted, true
 		case err != nil:
 			found = checkUnread
 		case info.Config.DeliverSubject == d.subject:
 			found = checkDeliversHere
 		default:
-			found = checkDeliversElsewhere
+			found, stop = checkDeliversElsewhere, true
 		}
+	}
+	if stop {
+		slog.Warn(durableDeliversElsewhere, "name", d.name)
+		// The durable's messages are the next holder's from here, so a handler still running after
+		// the renewal interval is given up rather than left to write what that holder writes too.
+		d.stopDeliveringWithin(intakeHoldRenew)
+		d.subject = ""
 	}
 	if slog.Default().Enabled(ctx, slog.LevelDebug) {
 		slog.Debug(DurableChecked, "name", d.name, "pass", d.checkPasses, "found", found)
 	}
-	if found != checkDeleted && found != checkDeliversElsewhere {
-		return
-	}
-	slog.Warn(durableDeliversElsewhere, "name", d.name)
-	// The durable's messages are the next holder's from here, so a handler still running after
-	// the renewal interval is given up rather than left to write what that holder writes too.
-	d.stopDeliveringWithin(intakeHoldRenew)
-	d.subject = ""
 }
 
 // stop is the end of run: it stops delivering under ctx, the run's stop deadline, and releases the
