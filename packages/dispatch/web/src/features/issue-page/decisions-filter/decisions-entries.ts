@@ -12,6 +12,7 @@ import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
+import { EVENT_FRESH, issueAsksQuery, standsFailed } from "../useIssueTree";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
@@ -21,13 +22,17 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * entries, that model's read replaces this module and leaves the view as it is.
  *
  * The reads are the ones the page's tree is built from: the three reads the tree reads, under
- * the keys `useIssueTree.ts` reads them by, and the decisions document's blocks under the tree's
- * own key for them (`artifactBlocksQuery`, for the document `roleDocument` names), so the view
- * adds no request of its own. The blocks are why a Change stands under the decision whose
- * section holds its anchor (`decision-review.ts`): the quote alone cannot say which, since two
- * decisions can hold the same words. Until the blocks answer, a Change stands under the first
- * decision whose words hold its quote. A read that holds no decisions, or that has not answered
- * yet, gives no decision and no error: the view draws the questions alone.
+ * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
+ * (`issueAsksQuery`), and the decisions document's blocks under the tree's own key for them
+ * (`artifactBlocksQuery`, for the document `roleDocument` names), so the view adds no request of
+ * its own. Each takes the tree's freshness too (`EVENT_FRESH`): events refresh it, never its age.
+ * Staleness is per observer and the stage mounts the view again on every press of Decisions, so
+ * under the app's 30 s `staleTime` (`main.tsx`) a press more than 30 s after the page loaded
+ * would otherwise read all four again. The blocks are why a Change stands under the decision
+ * whose section holds its anchor (`decision-review.ts`): the quote alone cannot say which, since
+ * two decisions can hold the same words. Until the blocks answer, a Change stands under the
+ * first decision whose words hold its quote. A read that holds no decisions, or that has not
+ * answered yet, gives no decision and no error: the view draws the questions alone.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -43,10 +48,14 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * whether a decision stands in the review list or in the reader's own, so a failed read of
  * either still lets an issue that holds nothing say so.
  *
- * The seam says too which of those two reads was refused before it first answered
- * (`unreadable`), which of them is being read now (`retrying`), and asks one of them alone again
- * (`retry`). The body draws a line with a Retry for each refused read, in place of
- * the entries that read would give, and a Retry pressed while its read runs again asks nothing
+ * The seam says too which of those two reads stands refused (`unreadable`), which of them is
+ * being read now (`retrying`), and asks one of them alone again (`retry`). A read stands
+ * refused by the page's one rule for a failed read (`standsFailed`): it holds no answer, and a
+ * fetch of it failed since it last held one. Its status is not the rule: TanStack Query sets a
+ * read that holds no answer back to pending, its error cleared, the moment it runs again, and
+ * the read stays refused until it answers. The body draws a line with a Retry for each refused
+ * read, in place of the entries that read would give; while the read runs again the line stays,
+ * with the focus its Retry holds, the Retry reads busy, and a Retry pressed then asks nothing
  * more. How a read stands and how it is asked again belong to the read, and only this module
  * names one, so they are read here and the body knows a read only by the word its line is drawn
  * for. A read whose refetch fails over an answer it already holds keeps that answer, which the
@@ -58,12 +67,12 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  */
 
 /** The two reads that say which entries there are, in the order the body says which of them
- *  was refused. */
+ *  stands refused. */
 type DecisionsRead = "decisions" | "asks";
 
 /** The seam's answer: the view's parts, and beside them whether the reads that say which
- *  entries there are hold their answers, which of them was refused and which runs now, and how
- *  to ask one again. */
+ *  entries there are hold their answers, which of them stands refused and which runs now, and
+ *  how to ask one again. */
 interface DecisionsEntries {
   /** Which entry stands in which part, each part in the order it is drawn. Another person's
    *  decisions stand in `yours`, so `others` is empty. */
@@ -76,10 +85,12 @@ interface DecisionsEntries {
   /** Asks `read` alone again, by its own query's refetch. */
   readonly retry: (read: DecisionsRead) => void;
   /** Each of the decisions read and the asks, in that order, that is being read now, a first
-   *  read, a Retry's or any other (TanStack Query's `isFetching`). */
+   *  read, a Retry's or any other (TanStack Query's `isFetching`). A refused read stays refused
+   *  while it runs again, so its line stays drawn, its Retry busy. */
   readonly retrying: readonly DecisionsRead[];
-  /** Each of the decisions read and the asks, in that order, that was refused before it first
-   *  answered: it holds no answer and is in error. */
+  /** Each of the decisions read and the asks, in that order, that stands refused
+   *  (`standsFailed`): it holds no answer, and a fetch of it failed since it last held one. A read
+   *  stays here while it runs again, until it answers. */
   readonly unreadable: readonly DecisionsRead[];
 }
 
@@ -99,18 +110,18 @@ export function useDecisionsEntries({
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
 }): DecisionsEntries {
-  const decisionsRead = useQuery(issueDecisionsQuery(issue.key, true));
+  // Each read takes the tree's freshness (`EVENT_FRESH`): events refresh it, and a view mounted
+  // again reads nothing.
+  const decisionsRead = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const decisions = decisionsRead.data;
-  const asksRead = useQuery({
-    queryFn: () => api.listIssueAsks(issue.key, "all"),
-    queryKey: ["asks", issue.key],
-  });
+  const asksRead = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
   const asks = asksRead.data;
   // The issue's comments, which hold the changes a person asked of a decision
   // (`decision-review.ts`), under the key the tree reads them by.
   const comments = useQuery({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
+    ...EVENT_FRESH,
   }).data;
   // The blocks of the decisions document, which name the section each Change's anchor stands
   // in and so the decision it changes, under the key the tree reads them by. An issue with no
@@ -118,15 +129,18 @@ export function useDecisionsEntries({
   const documentId = roleDocument(issue, "decisions")?.id;
   const blocks = useQuery({
     ...artifactBlocksQuery(documentId ?? ""),
+    ...EVENT_FRESH,
     enabled: documentId !== undefined,
   }).data;
   // The comments and the blocks only move a decision between parts, so they are not waited for.
   const readsHeld = decisions !== undefined && asks !== undefined;
-  // A read was refused before it first answered where it holds no answer and is in error. A
-  // refetch that fails sets the error over the answer the read last gave and keeps that answer,
-  // so a read is told by the data it holds and not by its status alone.
-  const decisionsRefused = decisionsRead.isError && decisions === undefined;
-  const asksRefused = asksRead.isError && asks === undefined;
+  // A read stands refused by the page's one rule (`standsFailed`): it holds no answer, and a
+  // fetch of it failed since it last held one. Not by its status: a refetch that fails over the
+  // answer the read last gave sets the error and keeps that answer, which the view draws from,
+  // and a read that holds no answer reads pending again, its error cleared, the moment it runs
+  // again, though it stays refused until it answers.
+  const decisionsRefused = standsFailed(decisionsRead);
+  const asksRefused = standsFailed(asksRead);
   const unreadable = useMemo<readonly DecisionsRead[]>(
     () => [
       ...(decisionsRefused ? (["decisions"] as const) : []),

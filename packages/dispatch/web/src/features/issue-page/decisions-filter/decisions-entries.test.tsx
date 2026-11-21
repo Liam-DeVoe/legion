@@ -40,23 +40,30 @@ const BOB: Actor = { id: "bob", kind: "user" };
 
 /** The seam mounted over the issue whose tree holds `children`, with `decisions`, `asks`,
  *  `comments` and the decisions document's `blocks` as the cache holds them, until the case
- *  unmounts it. A read given as null is left out of the cache, as before it answers. */
+ *  unmounts it. A read given as null is left out of the cache, as before it answers. By default
+ *  no answer ever goes stale; `staleTime` gives the client the app's own default instead, and
+ *  `answeredAt` the moment the cache's answers were given, now where it is left out. */
 async function mountEntries(
   children: readonly TreeNode[],
   decisions: IssueDecisions | null,
   asks: readonly DecisionsAsk[] | null = [],
   comments: readonly Comment[] | null = [],
-  blocks: readonly ArtifactBlock[] | null = []
+  blocks: readonly ArtifactBlock[] | null = [],
+  {
+    answeredAt,
+    staleTime = Number.POSITIVE_INFINITY,
+  }: { answeredAt?: number; staleTime?: number } = {}
 ) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  if (decisions !== null) client.setQueryData(["decisions", KEY], decisions);
-  if (asks !== null) client.setQueryData(["asks", KEY], asks);
-  if (comments !== null) client.setQueryData(["comments", KEY], comments);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime } } });
+  const given = { updatedAt: answeredAt };
+  if (decisions !== null) client.setQueryData(["decisions", KEY], decisions, given);
+  if (asks !== null) client.setQueryData(["asks", KEY], asks, given);
+  if (comments !== null) client.setQueryData(["comments", KEY], comments, given);
   // The issue names its decisions document by its role (`issueDetails`), so the seam reads that
   // document's blocks, as the tree does.
-  if (blocks !== null) client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], blocks);
+  if (blocks !== null) {
+    client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], blocks, given);
+  }
   const issue = issueDetails();
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
@@ -240,6 +247,50 @@ test("the seam gives four parts from today's reads and makes no request", async 
   }
 });
 
+// R8: each read the seam makes takes the page's freshness (`EVENT_FRESH`): events refresh it,
+// never its age. The stage mounts the view again on every press of Decisions, so under the app's
+// own defaults, whose `staleTime` is 30 s (`main.tsx`), a press more than 30 s after the page
+// loaded would otherwise read all four again. Here the four answers were given 31 s ago.
+test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
+  const made = [decision("minor")];
+  const names = [
+    "getIssueDecisions",
+    "listIssueAsks",
+    "listComments",
+    "getArtifactBlocks",
+  ] as const;
+  // Each of the four reads, held, so a read the mount started reaches no server.
+  const reads = names.map((read) =>
+    spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
+  );
+  // Any request at all, past those four.
+  const request = spyOn(globalThis, "fetch");
+  try {
+    const { hook } = await mountEntries(
+      [statement("s1"), openAsk("q-open"), decisionNode("minor")],
+      decisionsRead(made),
+      [],
+      [],
+      documentBlocks(made),
+      { answeredAt: Date.now() - 31_000, staleTime: 30_000 }
+    );
+    expect(hook.result.current.readsHeld).toBe(true);
+    expect(
+      Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls]))
+    ).toEqual({
+      getArtifactBlocks: [],
+      getIssueDecisions: [],
+      listComments: [],
+      listIssueAsks: [],
+    });
+    expect(request).not.toHaveBeenCalled();
+    hook.unmount();
+  } finally {
+    for (const read of reads) read.mockRestore();
+    request.mockRestore();
+  }
+});
+
 // R8: a decisions read that holds no decision, or none of its `decisions` member, gives no
 // decision and no error, and the view draws the questions alone. The tree is the one the page
 // builds from that same read, which holds no decision node (`tree-drafts.ts`'s `addDecisions`).
@@ -333,9 +384,9 @@ test("an empty decisions member gives the questions alone and no error", async (
   // Each of the two reads that say which entries there are is refused in turn before it first
   // answers, with the other read in the cache. The refused read holds no answer, so the seam
   // says it is unreadable and the reads do not hold; its retry asks that read again, which is
-  // refused again, and asks the other read nothing. The read stops being refused while the
-  // retry runs and is refused once more, and no entry moves, so the parts are the very object
-  // they were before the retry.
+  // refused again, and asks the other read nothing. The read stays refused while the retry runs,
+  // and once that run is refused too; no entry moves, so the parts are the very object they were
+  // before the retry.
   const refused = [
     {
       mount: () => mountEntries(children, null),

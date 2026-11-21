@@ -1,13 +1,20 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { ApiError, api } from "../../../api/client";
-import type { Actor, ArtifactText, Comment, Decision, DecisionKeep } from "../../../api/types";
+import type {
+  Actor,
+  ArtifactText,
+  Comment,
+  Decision,
+  DecisionKeep,
+  IssueDecisions,
+} from "../../../api/types";
 import {
   pageFocusedRow,
   pageInkText,
@@ -346,6 +353,36 @@ function retryOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): HT
   return failedLine(drawn, read)?.querySelector<HTMLElement>("button") ?? null;
 }
 
+/**
+ * Presses Enter on the Retry of `read`'s line, which holds the focus, and holds the run that
+ * press starts until it refuses it: `hold` makes that read's request return the promise it is
+ * handed. The read stands refused all the while, so its line stays drawn with the same Retry,
+ * which holds the focus: busy while the run is out, and no longer once the run is refused.
+ */
+async function retryRefusedAgain(
+  drawn: RenderResult,
+  read: keyof typeof REFUSED_READ_WORDS,
+  hold: (run: Promise<never>) => void,
+  user: UserEvent
+): Promise<void> {
+  const retry = retryOf(drawn, read);
+  expect(retry).not.toBeNull();
+  expect(document.activeElement).toBe(retry);
+  const run = Promise.withResolvers<never>();
+  hold(run.promise);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
+  expect(retryOf(drawn, read)).toBe(retry);
+  expect(document.activeElement).toBe(retry);
+  await act(async () => {
+    run.reject(new Error("refused"));
+    await run.promise.catch(() => undefined);
+  });
+  await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBeNull());
+  expect(retryOf(drawn, read)).toBe(retry);
+  expect(document.activeElement).toBe(retry);
+}
+
 function rowOf(view: RenderResult, id: string): HTMLElement {
   const row = view.container.querySelector<HTMLElement>(`[data-node-row][data-node-id="${id}"]`);
   if (row === null) throw new Error(`the body draws no row for ${id}`);
@@ -588,8 +625,10 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // give, its line says so over the list with a Retry that asks that read alone again, and no
   // line says the issue holds nothing. The body is drawn in the stage, as the page draws a
   // view: the tree's own focus, which `t d` gives it from outside the view, goes to that Retry.
-  // Enter on it asks again; the read answers this time, and its decision is drawn with the
-  // focus on its row: at no point is the focus left on the page's body.
+  // Enter on it asks again, and while that run is out the read stands refused: its line stays,
+  // its Retry busy and still holding the focus, and once the run is refused too that same Retry
+  // holds it. Enter asks once more; the read answers this time, and its decision is drawn with
+  // the focus on its row: at no point is the focus left on the page's body.
   const made = [decision("first", { links: [shaped(specRef("s1"))] })];
   const refused = spyOn(api, "getIssueDecisions").mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
@@ -606,14 +645,15 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await act(async () => chordFocus(tree));
     expect(document.activeElement).toBe(retryOf(failed, "decisions"));
 
+    await retryRefusedAgain(failed, "decisions", (run) => refused.mockReturnValue(run), user);
     refused.mockResolvedValue(decisionsRead(made));
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(failed.client.getQueryData(["decisions", KEY])).toBeDefined());
-    expect(refused).toHaveBeenCalledTimes(2);
-    expect(failedLine(failed, "decisions")).toBeNull();
+    await waitFor(() => expect(failedLine(failed, "decisions")).toBeNull());
+    expect(failed.client.getQueryData(["decisions", KEY])).toBeDefined();
+    expect(refused).toHaveBeenCalledTimes(3);
     // The line is gone and the tree the page builds from that read does not hold its decision
     // yet: the tree holds the focus, in the list.
-    expect(document.activeElement).toBe(tree);
+    await waitFor(() => expect(document.activeElement).toBe(tree));
     failed.again({ children: [statement("s1"), decisionNode("first")] });
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
     expect(document.activeElement).not.toBe(document.body);
@@ -670,13 +710,14 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // question or the asks' Retry may yet come, so the foot's control takes no focus until that
   // read has answered: the tree's focus, which `t d` gives it from outside the view before the
   // refusal comes back, goes to the Retry once its line is drawn, and a page opened on the list
-  // puts it there too. Enter on the Retry with the read refused again leaves the focus on the
-  // tree while the read runs, then on the Retry that comes back. Enter with the read answering
-  // no question leaves a list that holds only the foot with both reads held, so the focus goes
-  // on from the tree to the foot's control; a later read that adds a question takes it from
-  // there to the question's row, as the foot hands it on. Where the read's answer brings the
-  // question with it, drawn in the one render, the focus goes to the question's row, and the
-  // foot's control takes it at no point on the way.
+  // puts it there too. Enter on the Retry with the read refused again leaves its line drawn
+  // while the read runs, its Retry busy and still holding the focus, and that same Retry holds
+  // it once the run is refused. Enter with the read answering no question takes the line off
+  // the page with the focus on its Retry and leaves a list that holds only the foot with both
+  // reads held, so the focus goes on from the tree to the foot's control; a later read that adds
+  // a question takes it from there to the question's row, as the foot hands it on. Where the
+  // read's answer brings the question with it, drawn in the one render, the focus goes from the
+  // busy Retry to the question's row, and the foot's control takes it at no point on the way.
   const footOnly = { asks: null, children: [decisionNode("minor")], made: [decision("minor")] };
   const footControl = (drawn: RenderResult) =>
     drawn.container.querySelector('[data-decisions-part="agents"] button');
@@ -698,17 +739,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     asksRead.mockRejectedValue(new Error("refused"));
     const opened = renderBody(footOnly, {}, { stage: true });
     await waitFor(() => expect(document.activeElement).toBe(retryOf(opened, "asks")));
-    const runsAgain = Promise.withResolvers<never>();
-    asksRead.mockReturnValue(runsAgain.promise);
-    await user.keyboard("{Enter}");
-    await waitFor(() =>
-      expect(document.activeElement).toBe(opened.getByRole("tree", { name: CONTROL_LABELS.tree }))
-    );
-    await act(async () => {
-      runsAgain.reject(new Error("refused"));
-      await runsAgain.promise.catch(() => undefined);
-    });
-    await waitFor(() => expect(document.activeElement).toBe(retryOf(opened, "asks")));
+    await retryRefusedAgain(opened, "asks", (run) => asksRead.mockReturnValue(run), user);
 
     asksRead.mockResolvedValue([]);
     await user.keyboard("{Enter}");
@@ -726,9 +757,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     const answer = Promise.withResolvers<never[]>();
     asksRead.mockReturnValue(answer.promise);
     await user.keyboard("{Enter}");
-    await waitFor(() =>
-      expect(document.activeElement).toBe(answered.getByRole("tree", { name: CONTROL_LABELS.tree }))
-    );
+    await waitFor(() => expect(retryOf(answered, "asks")?.getAttribute("aria-busy")).toBe("true"));
+    expect(document.activeElement).toBe(retryOf(answered, "asks"));
     // The question's row is the one element that takes the focus while the tree grows and the
     // read answers, so the foot's control never takes it on the way.
     const tookFocus: (EventTarget | null)[] = [];
@@ -765,13 +795,13 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     asksRead.mockRestore();
   }
 
-  // A refused read asked again by no Retry, as by a refetch the page makes of its own, is out
-  // again too, and its line leaves with the focus on its Retry: the focus goes to the next
-  // refused read's Retry, and from the last one to the tree, never to the page's body.
-  const bothRefused = [
-    spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused")),
-    spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused")),
-  ];
+  // A refused read asked again by no Retry, as by a refetch the page makes of its own, stands
+  // refused while it runs, as under a Retry: its line stays, the Retry busy and still holding
+  // the focus. The line leaves with the focus on its Retry once the read answers: the focus goes
+  // to the next refused read's Retry, and from the last one to the tree, never to the page's
+  // body.
+  const decisionsRefused = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"));
+  const asksRefused = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
   try {
     const both = renderBody(
       { asks: null, children: [statement("s1")], made: null },
@@ -780,14 +810,21 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     );
     await waitFor(() => expect(retryOf(both, "decisions")).not.toBeNull());
     await waitFor(() => expect(retryOf(both, "asks")).not.toBeNull());
-    await act(async () => retryOf(both, "decisions")?.focus());
-    expect(document.activeElement).toBe(retryOf(both, "decisions"));
-    for (const spy of bothRefused) spy.mockReturnValue(Promise.withResolvers<never>().promise);
+    const retry = retryOf(both, "decisions");
+    await act(async () => retry?.focus());
+    expect(document.activeElement).toBe(retry);
+    const decisionsAnswer = Promise.withResolvers<IssueDecisions>();
+    decisionsRefused.mockReturnValue(decisionsAnswer.promise);
     await act(async () => {
       void both.client.refetchQueries({ queryKey: ["decisions", KEY] });
     });
+    await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
+    expect(retryOf(both, "decisions")).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    await act(async () => decisionsAnswer.resolve(decisionsRead([])));
     await waitFor(() => expect(failedLine(both, "decisions")).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(retryOf(both, "asks")));
+    asksRefused.mockResolvedValue([]);
     await act(async () => {
       void both.client.refetchQueries({ queryKey: ["asks", KEY] });
     });
@@ -797,7 +834,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     );
     both.unmount();
   } finally {
-    for (const spy of bothRefused) spy.mockRestore();
+    decisionsRefused.mockRestore();
+    asksRefused.mockRestore();
   }
 });
 

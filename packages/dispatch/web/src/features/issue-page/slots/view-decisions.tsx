@@ -13,7 +13,7 @@ import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
+import { EVENT_FRESH, useIssueTree } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
 
 /** Filled by INFRA-1196 part Q, "The Decisions view". */
@@ -26,8 +26,10 @@ export function ViewDecisionsSlot({ issue, route }: SlotProps): ReactNode {
   const address = issueAddress(route, search, hash, specSlug);
   const { root } = useIssueTree(issue);
   // Who is reading, whose own answers carry the ink rule and whose decisions stand under "Your
-  // decisions": the shell's one read of who is signed in, so it costs no request of its own.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
+  // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
+  // time.
+  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it; the
   // entry it names takes the focus, once per address (R6).
