@@ -25,7 +25,7 @@ const rows: RefPickerRow[] = [
   row("component", "The relay", "dispatch://CORE/component/relay"),
   row("agent", "Planner", "dispatch://agent/planner-session"),
   row("role", "reviewer", "dispatch://role/reviewer"),
-  row("person", "alice@theorem.dev", "dispatch://person/alice@theorem.dev"),
+  row("person", "alice@example.com", "dispatch://person/alice@example.com"),
 ];
 
 test("the three doors rank one set of rows three ways, and each reaches every kind", () => {
@@ -87,7 +87,7 @@ test("a trigger opens only at a word boundary", () => {
   expect(readTrigger("see [[go")).toEqual({ chars: "[[", door: "all", query: "go", start: 4 });
 
   // Mid-word: an email's `@`, an anchor's `#`, and a `[[` glued to a word open nothing.
-  expect(readTrigger("alice@theorem.dev")).toBeUndefined();
+  expect(readTrigger("alice@example.com")).toBeUndefined();
   expect(readTrigger("issue#5")).toBeUndefined();
   expect(readTrigger("note[[")).toBeUndefined();
 });
@@ -125,8 +125,8 @@ test("a party pick inserts a worded link and every other pick the bare address",
     "[reviewer](dispatch://role/reviewer)"
   );
   expect(
-    insertionText(row("person", "alice@theorem.dev", "dispatch://person/alice@theorem.dev"))
-  ).toBe("[alice@theorem.dev](dispatch://person/alice@theorem.dev)");
+    insertionText(row("person", "alice@example.com", "dispatch://person/alice@example.com"))
+  ).toBe("[alice@example.com](dispatch://person/alice@example.com)");
   // A name holding a bracket cannot break out of the link's words.
   expect(insertionText(row("agent", "Planner [2]", "dispatch://agent/two"))).toBe(
     "[Planner \\[2\\]](dispatch://agent/two)"

@@ -61,7 +61,7 @@ const collaborators: IssueCollaborators = {
   ],
   issue_key: "CORE-1",
   legion_registry: "ok",
-  people: [{ kind: "user", last_at: null, login: "alice@theorem.dev", reasons: ["assignee"] }],
+  people: [{ kind: "user", last_at: null, login: "alice@example.com", reasons: ["assignee"] }],
 };
 
 const architecture = {
@@ -202,7 +202,7 @@ function renderHost({
   const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
     collaborators
   );
-  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "bob@theorem.dev" }]);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "bob@example.com" }]);
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(blocks);
   const search = spyOn(api, "search").mockImplementation(searchAnswer);
@@ -264,7 +264,7 @@ test("every door lists the parties and the components before a character is type
   // The `@` door: people, agents, roles, then the kinds that need no query either.
   await waitFor(() =>
     expect(drawnRows()).toEqual([
-      "People: alice@theorem.dev",
+      "People: alice@example.com",
       "Agents: Planner",
       "Agents: Worker",
       "Roles: planner",
@@ -425,7 +425,7 @@ test("a trigger that is not at a word boundary opens nothing", async () => {
 
   const comment = await field();
   await user.click(comment);
-  await user.keyboard("mail alice@theorem.dev");
+  await user.keyboard("mail alice@example.com");
 
   expect(screen.queryByRole("listbox", { name: "References" })).not.toBeInTheDocument();
 });
@@ -462,7 +462,7 @@ test("a box with no issue offers everyone who has signed in", async () => {
   await user.click(comment);
   await user.keyboard("@");
 
-  await waitFor(() => expect(drawnRows()).toContain("People: bob@theorem.dev"));
+  await waitFor(() => expect(drawnRows()).toContain("People: bob@example.com"));
   expect(page.getIssueCollaborators).not.toHaveBeenCalled();
   expect(page.listUsers).toHaveBeenCalledTimes(1);
 });
