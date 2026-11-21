@@ -280,23 +280,9 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// An edge listener reads its caller's address from Google's load balancer before anything
-		// else of the request, and refuses a request from the balancer's proxies that names none
-		// (edgeCallerAddress): that address is what the broker token's introspection bucket keys
-		// on (listenerSourceAddress), so it is read once, here.
-		if len(auth.edgeProjects) > 0 {
-			address, forwarded, err := edgeCallerAddress(r)
-			if err != nil {
-				auth.logger.Warn("listener: edge request without the address Google's load balancer forwards",
-					slog.String("reason", err.Error()),
-					slog.String("path", r.URL.Path),
-					slog.String("remote", r.RemoteAddr))
-				writeJSONError(w, http.StatusBadRequest, edgeForwardedRefusal)
-				return
-			}
-			if forwarded {
-				r = r.WithContext(withCallerAddress(r.Context(), address))
-			}
+		r, read := auth.readEdgeCaller(w, r)
+		if !read {
+			return
 		}
 		if open && !servesHost(r.Host, auth.allowedHosts) {
 			auth.logger.Warn("listener: request for a host it does not serve",
@@ -314,8 +300,13 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			}
 		}
 		if _, presented := brokertoken.Presented(r); auth.brokers != nil && presented {
-			spend := &proofSpend{}
-			r = r.WithContext(withProofSpend(r.Context(), spend))
+			// A body-less request gets its proof back on a 503 (proofReleasingWriter), so the one
+			// retry Google's load balancer sends of it is not refused as a replay.
+			var spend *proofSpend
+			if r.ContentLength == 0 {
+				spend = &proofSpend{}
+				r = r.WithContext(withProofSpend(r.Context(), spend))
+			}
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
@@ -333,9 +324,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				}
 				ctx = withEdgeHold(ctx)
 			}
-			// A body-less request gets its proof back on a 503 (proofReleasingWriter), so the one
-			// retry Google's load balancer sends of it is not refused as a replay.
-			if r.ContentLength == 0 {
+			if spend != nil {
 				w = &proofReleasingWriter{ResponseWriter: w, r: r, spend: spend, logger: auth.logger}
 			}
 			admit(w, r.WithContext(ctx), credentialBroker)
@@ -378,6 +367,31 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	})
+}
+
+// readEdgeCaller is r as an edge listener reads it before anything else of it: carrying the
+// address Google's load balancer forwarded for its caller (withCallerAddress), which the broker
+// token's introspection bucket keys on (listenerSourceAddress), so the address is read once,
+// here. It reports false when it refused r, a request from the balancer's proxies that names no
+// such address (edgeCallerAddress), with the 400 and the log line that says why. Every other
+// listener's r is answered as it is.
+func (a listenerAPIAuth) readEdgeCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+	if len(a.edgeProjects) == 0 {
+		return r, true
+	}
+	address, forwarded, err := edgeCallerAddress(r)
+	if err != nil {
+		a.logger.Warn("listener: edge request without the address Google's load balancer forwards",
+			slog.String("reason", err.Error()),
+			slog.String("path", r.URL.Path),
+			slog.String("remote", r.RemoteAddr))
+		writeJSONError(w, http.StatusBadRequest, edgeForwardedRefusal)
+		return nil, false
+	}
+	if forwarded {
+		r = r.WithContext(withCallerAddress(r.Context(), address))
+	}
+	return r, true
 }
 
 // refuseBrokerToken answers a DPoP presentation this listener did not admit, and logs the one

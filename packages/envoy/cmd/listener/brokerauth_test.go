@@ -73,21 +73,26 @@ func listenerBrokerTokens(t *testing.T, broker *brokertokentest.StubBroker) *bro
 }
 
 // listenerBrokerTokensOver is the same credential over the broker at brokerURL and the spent-proof
-// store named, which is how the outcomes of that store reach apiAuth.
-func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
+// store named, which is how the outcomes of that store reach apiAuth. Each of adjust changes the
+// verifier's options before it is built, as a row that needs its own clock or bucket sets them.
+func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage, adjust ...func(*brokertoken.Options)) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        brokerURL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	verifier, err := brokertoken.New(brokertoken.Options{
+	options := brokertoken.Options{
 		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    replay,
 		Address:   listenerSourceAddress,
-	})
+	}
+	for _, change := range adjust {
+		change(&options)
+	}
+	verifier, err := brokertoken.New(options)
 	if err != nil {
 		t.Fatalf("build the broker-token verifier: %v", err)
 	}

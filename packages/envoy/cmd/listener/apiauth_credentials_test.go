@@ -606,14 +606,14 @@ func TestDescribeListenerAPIHostsCountsEveryBearer(t *testing.T) {
 }
 
 // The path label is a route's pattern and never the path a caller wrote, so the series stay
-// bounded whatever a caller sends: through the outer mux as main mounts it, a request before the
-// gate opens is counted under the pattern that routed it to the gate, one after under the route
-// that serves it, and a path no route matches under the gate's pattern again.
+// bounded whatever a caller sends: through the outer mux as main mounts it (v1API), a request
+// before the gate opens is refused before admission and counted nowhere, one after is counted
+// under the route that serves it, and a path no route matches under the gate's pattern.
 func TestTheRouteLabelIsAPatternNeverAPath(t *testing.T) {
 	met := metrics.New()
 	logger := logging.NewWithWriter("test-machine", io.Discard)
 	gate := newStartingGate("v1", logger)
-	handler := apiAuth(listenerAPIAuth{logger: logger, requests: newListenerRequests(met), route: gate.route}, gate)
+	handler := v1API(listenerAPIAuth{logger: logger, requests: newListenerRequests(met), route: gate.route}, gate)
 	outer := http.NewServeMux()
 	outer.Handle("/v1", handler)
 	outer.Handle("/v1/", handler)
@@ -631,7 +631,7 @@ func TestTheRouteLabelIsAPatternNeverAPath(t *testing.T) {
 	call("/v1/no-route/of/any/kind")
 
 	want := map[[2]string]int64{
-		{credentialNone, "/v1/"}:          2,
+		{credentialNone, "/v1/"}:          1,
 		{credentialNone, "/v1/registry/"}: 2,
 	}
 	if got := requestSeries(t, met); fmt.Sprint(got) != fmt.Sprint(want) {

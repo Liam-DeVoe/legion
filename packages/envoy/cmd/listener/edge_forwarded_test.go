@@ -76,32 +76,17 @@ func edgeLBBroker(t *testing.T, caller *brokertokentest.Caller) *brokertokentest
 	return broker
 }
 
-// edgeLBTokens is the broker-token credential over the broker at brokerURL and replay, keyed by
-// the address the listener reads its caller by (listenerSourceAddress), with two introspections
-// an address and a clock that does not move: no bucket refills between two requests however
-// slowly the box runs them, so which request a bucket refuses is decided by the requests alone.
+// edgeLBTokens is the broker-token credential over the broker at brokerURL and replay
+// (listenerBrokerTokensOver), with two introspections an address and a clock that does not move:
+// no bucket refills between two requests however slowly the box runs them, so which request a
+// bucket refuses is decided by the requests alone.
 func edgeLBTokens(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
 	t.Helper()
-	tokens := newBrokerTokens(listenerBrokerConfig{
-		BrokerURL:        brokerURL,
-		AccountTokenFile: "/var/run/secrets/broker/token",
-		Origin:           listenerBrokerOrigin,
-	})
 	frozen := time.Now()
-	verifier, err := brokertoken.New(brokertoken.Options{
-		BrokerURL:    brokerURL,
-		Account:      listenerBrokerAccount("listener-account-token"),
-		Origin:       listenerBrokerOrigin,
-		Replay:       replay,
-		Address:      listenerSourceAddress,
-		AddressLimit: ratelimit.Limit{Every: time.Hour, Burst: 2},
-		Now:          func() time.Time { return frozen },
+	return listenerBrokerTokensOver(t, brokerURL, replay, func(options *brokertoken.Options) {
+		options.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 2}
+		options.Now = func() time.Time { return frozen }
 	})
-	if err != nil {
-		t.Fatalf("build the broker-token verifier: %v", err)
-	}
-	tokens.verifier.Store(verifier)
-	return tokens
 }
 
 // edgeLBAuth is the edge's admission of edgeLBProject over tokens.
@@ -112,6 +97,43 @@ func edgeLBAuth(tokens *brokerTokens, logger *logging.Logger) listenerAPIAuth {
 // noContent is a route that serves every request it is handed.
 var noContent = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
+// edgeLBSender sends GET /v1/sessions as caller through handler, the edge's admission over a
+// stub broker that knows edgeLBToken alone.
+type edgeLBSender struct {
+	t       *testing.T
+	caller  *brokertokentest.Caller
+	broker  *brokertokentest.StubBroker
+	handler http.Handler
+	junk    int
+}
+
+// newEdgeLBSender is an edge over edgeLBTokens and an in-memory spent-proof store, logging to
+// logged (nil discards the log).
+func newEdgeLBSender(t *testing.T, logged io.Writer) *edgeLBSender {
+	t.Helper()
+	if logged == nil {
+		logged = io.Discard
+	}
+	caller := brokertokentest.NewCaller(t)
+	broker := edgeLBBroker(t, caller)
+	handler := apiAuth(edgeLBAuth(edgeLBTokens(t, broker.Server.URL, &spentProofsInMemory{}), logging.NewWithWriter("test-machine", logged)), noContent)
+	return &edgeLBSender{t: t, caller: caller, broker: broker, handler: handler}
+}
+
+// send is one request under token, or under a token the broker never issued, a fresh one each
+// call, when token is empty, from peer with each of forwarded as one X-Forwarded-For line. It
+// answers the response.
+func (s *edgeLBSender) send(token, peer string, forwarded ...string) *httptest.ResponseRecorder {
+	s.t.Helper()
+	if token == "" {
+		s.junk++
+		token = fmt.Sprintf("junk-token-%d", s.junk)
+	}
+	recorder := httptest.NewRecorder()
+	s.handler.ServeHTTP(recorder, presentEdgeLB(s.t, s.caller, http.MethodGet, "/v1/sessions", token, "").through(peer, forwarded...))
+	return recorder
+}
+
 // A stranger behind Google's proxies spends the introspection bucket of its own address, the
 // second-to-last X-Forwarded-For entry, and no other caller's: tokens the broker never issued,
 // sent through one proxy, leave the collaborator behind the same proxy its own bucket, and the
@@ -120,19 +142,7 @@ var noContent = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { 
 // addresses, and an IPv4 address written as IPv6 is that IPv4 address, the proxy's and the
 // caller's alike.
 func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
-	caller := brokertokentest.NewCaller(t)
-	broker := edgeLBBroker(t, caller)
-	handler := apiAuth(edgeLBAuth(edgeLBTokens(t, broker.Server.URL, &spentProofsInMemory{}), logging.NewWithWriter("test-machine", io.Discard)), noContent)
-	junk := 0
-	send := func(token, peer string, forwarded ...string) int {
-		if token == "" {
-			junk++
-			token = fmt.Sprintf("junk-token-%d", junk)
-		}
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, presentEdgeLB(t, caller, http.MethodGet, "/v1/sessions", token, "").through(peer, forwarded...))
-		return recorder.Code
-	}
+	sender := newEdgeLBSender(t, nil)
 	for _, step := range []struct {
 		what        string
 		token, peer string
@@ -150,7 +160,7 @@ func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
 		{what: "a caller of the next /64 through the same proxy", peer: "35.191.7.8:40009", forwarded: "2001:db8:1:3::1", want: http.StatusUnauthorized},
 		{what: "the first stranger written as IPv6, through a proxy written as IPv6", peer: "[::ffff:35.191.7.9]:40010", forwarded: "::ffff:198.51.100.1", want: http.StatusTooManyRequests},
 	} {
-		if got := send(step.token, step.peer, forwardedFor(step.forwarded)); got != step.want {
+		if got := sender.send(step.token, step.peer, forwardedFor(step.forwarded)).Code; got != step.want {
 			t.Errorf("%s (peer %s, forwarded for %s): status %d, want %d", step.what, step.peer, step.forwarded, got, step.want)
 		}
 	}
@@ -162,19 +172,7 @@ func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
 // address does not give it a fresh one, and two lines or one entry are not refused, since nothing
 // is read from them.
 func TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing(t *testing.T) {
-	caller := brokertokentest.NewCaller(t)
-	broker := edgeLBBroker(t, caller)
-	handler := apiAuth(edgeLBAuth(edgeLBTokens(t, broker.Server.URL, &spentProofsInMemory{}), logging.NewWithWriter("test-machine", io.Discard)), noContent)
-	junk := 0
-	send := func(token, peer string, forwarded ...string) int {
-		if token == "" {
-			junk++
-			token = fmt.Sprintf("junk-token-%d", junk)
-		}
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, presentEdgeLB(t, caller, http.MethodGet, "/v1/sessions", token, "").through(peer, forwarded...))
-		return recorder.Code
-	}
+	sender := newEdgeLBSender(t, nil)
 	for _, step := range []struct {
 		what        string
 		token, peer string
@@ -188,7 +186,7 @@ func TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing(t *testing.T) {
 		{what: "another peer's two lines", token: edgeLBToken, peer: "192.0.2.11:40005", forwarded: []string{"203.0.113.50", forwardedFor("203.0.113.51")}, want: http.StatusNoContent},
 		{what: "another peer's line of one entry", token: edgeLBToken, peer: "192.0.2.12:40006", forwarded: []string{"203.0.113.52"}, want: http.StatusNoContent},
 	} {
-		if got := send(step.token, step.peer, step.forwarded...); got != step.want {
+		if got := sender.send(step.token, step.peer, step.forwarded...).Code; got != step.want {
 			t.Errorf("%s (peer %s, X-Forwarded-For %q): status %d, want %d", step.what, step.peer, step.forwarded, got, step.want)
 		}
 	}
@@ -199,10 +197,8 @@ func TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing(t *testing.T) {
 // it is judged: the broker is asked nothing and no bucket is spent, since such a request names no
 // caller to charge, and reading the wrong entry would hand the choice of a bucket to the caller.
 func TestEdgeForwardedAddressRefusesWhatGoogleDidNotForward(t *testing.T) {
-	caller := brokertokentest.NewCaller(t)
-	broker := edgeLBBroker(t, caller)
 	var logged bytes.Buffer
-	handler := apiAuth(edgeLBAuth(edgeLBTokens(t, broker.Server.URL, &spentProofsInMemory{}), logging.NewWithWriter("test-machine", &logged)), noContent)
+	sender := newEdgeLBSender(t, &logged)
 	for _, tc := range []struct {
 		name      string
 		forwarded []string
@@ -213,26 +209,21 @@ func TestEdgeForwardedAddressRefusesWhatGoogleDidNotForward(t *testing.T) {
 		{name: "an empty entry", forwarded: []string{" , " + edgeLBAddress}},
 		{name: "an entry that is no address", forwarded: []string{"unknown, " + edgeLBAddress}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			logged.Reset()
-			asked := broker.Count()
-			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, presentEdgeLB(t, caller, http.MethodGet, "/v1/sessions", edgeLBToken, "").through("35.191.7.7:40001", tc.forwarded...))
-			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "X-Forwarded-For") {
-				t.Errorf("status %d body %s, want 400 naming X-Forwarded-For", recorder.Code, recorder.Body.String())
-			}
-			if got := broker.Count(); got != asked {
-				t.Errorf("the broker was asked %d times about a request the edge refused", got-asked)
-			}
-			if !strings.Contains(logged.String(), "listener: edge request without the address Google's load balancer forwards") {
-				t.Errorf("the refusal logged no line saying why: %s", logged.String())
-			}
-		})
+		logged.Reset()
+		asked := sender.broker.Count()
+		recorder := sender.send(edgeLBToken, "35.191.7.7:40001", tc.forwarded...)
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "X-Forwarded-For") {
+			t.Errorf("%s: status %d body %s, want 400 naming X-Forwarded-For", tc.name, recorder.Code, recorder.Body.String())
+		}
+		if got := sender.broker.Count(); got != asked {
+			t.Errorf("%s: the broker was asked %d times about a request the edge refused", tc.name, got-asked)
+		}
+		if !strings.Contains(logged.String(), "listener: edge request without the address Google's load balancer forwards") {
+			t.Errorf("%s: the refusal logged no line saying why: %s", tc.name, logged.String())
+		}
 	}
 	// The control: the same request with Google's one line is served.
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, presentEdgeLB(t, caller, http.MethodGet, "/v1/sessions", edgeLBToken, "").through("35.191.7.7:40002", forwardedFor("203.0.113.9")))
-	if recorder.Code != http.StatusNoContent {
+	if recorder := sender.send(edgeLBToken, "35.191.7.7:40002", forwardedFor("203.0.113.9")); recorder.Code != http.StatusNoContent {
 		t.Errorf("Google's own line: status %d body %s, want 204", recorder.Code, recorder.Body.String())
 	}
 }

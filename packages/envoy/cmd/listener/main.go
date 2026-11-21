@@ -830,11 +830,12 @@ func newStartingGate(name string, logger *logging.Logger) *startingGate {
 
 func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
 
-// route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
-// is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
-// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
-// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
-// a session id, or any other text a caller writes into a path, never becomes a series of its own.
+// route names the /v1 route r reaches, envoy_listener_requests_total's path label: the pattern of
+// the route that serves it ((*http.ServeMux).Handler, which routes as ServeHTTP does and changes
+// nothing on r), and for a path no route matches, the pattern that routed it to the gate (/v1 or
+// /v1/). It is always a pattern and never the path, so a session id, or any other text a caller
+// writes into a path, never becomes a series of its own. Before the gate opens, v1API refuses a
+// request before apiAuth counts it.
 func (g *startingGate) route(r *http.Request) string {
 	if mux := g.mux.Load(); mux != nil {
 		if _, pattern := mux.Handler(r); pattern != "" {
@@ -906,14 +907,11 @@ func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
 // service, and its bus checks answer for delivery rather than for /v1.
 func readyzHandler(gate *startingGate) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		if gate.mux.Load() == nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "starting"})
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "serving"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "serving"})
 	}
 }
 
