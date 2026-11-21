@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useMemo, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -15,7 +15,6 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import { EVENT_FRESH } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
-import { useFollowing } from "./following";
 import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part Q, "The Decisions view". */
@@ -24,13 +23,12 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // from the issue's one tree as the Decisions view leaves it. The stage draws this slot only
   // where the address opens Decisions (`slots/stage.tsx`).
   const { hash, search, state } = useLocation();
-  const following = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
-  // each under the key and with the freshness the tree reads it by, so they cost no request of
-  // their own.
-  const { readsHeld, root } = useOutlineReads(issue);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own.
+  const { failed, readsSettled, root } = useOutlineReads(issue);
   // Who is reading, whose own answers carry the ink rule and whose decisions stand under "Your
   // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
   // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
@@ -41,27 +39,25 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // person's write-up of an answered question (below); the entry it names takes the focus, once
   // per address (R6).
   const { named, reveal } = useAddressTarget(root, address);
-  // Whether the list draws the node an address beside the view names, said to the stage once
-  // for each following of the address, once every read the tree is built from holds its
-  // answer (`ViewSlotProps.onAddressDrawn`): before that the node may not have arrived. The body
-  // says whether it does (`onRevealDrawn`): only the body knows the rows it draws, and which
-  // decisions are a person's write-up of an answered question, which is no row here, so that an
-  // address naming one lands on the row of a question it answers where the list draws one. The
-  // body is handed the call only while the address is beside the view and those reads are held,
-  // and what it first says for a following is what the stage is told. Where the list draws none
-  // of the node - the tree holds none, or the words filter matched none of the questions a
-  // write-up answers - the stage draws the outline in the view's place, which lands on the node
-  // or says that the issue holds none of it.
-  const beside = address.target !== undefined && address.document === undefined;
-  const told = useRef<string | undefined>(undefined);
-  const tell = useCallback(
-    (drawn: boolean) => {
-      if (told.current === following) return;
-      told.current = following;
-      onAddressDrawn(drawn);
-    },
-    [following, onAddressDrawn]
-  );
+  // Whether the list draws the node the address names, which the stage is told once every read
+  // the tree is built from has settled (`ViewSlotProps.onAddressDrawn`, by the rule `StageSlot`
+  // gives). The body says whether it does (`onRevealDrawn`): only the body knows the rows it
+  // draws, and which decisions are a person's write-up of an answered question, which is no row
+  // here, so that an address naming one lands on the row of a question it answers where the list
+  // draws one. The body is handed the call once no read stands refused. The list draws a line of
+  // its own for the decisions read and the asks read (`DecisionsFilterBody`), and none for any
+  // other read rows come from: where one of those stands refused - the coverage, the results, the
+  // comments, the messages, a document's blocks - the view says it draws no node, whatever the
+  // body draws; where only its own stand refused, it says nothing and keeps its line. Where the
+  // list draws none of the node - the tree holds none, the words filter matched none of the
+  // questions a write-up answers, or its read stands refused - the stage draws the outline in the
+  // view's place, which lands on the node or says that the issue holds none of it or that its
+  // read failed.
+  const refused = failed.filter(({ placesRows }) => placesRows);
+  const foreign = refused.some(({ key }) => key !== "decisions" && key !== "asks");
+  useLayoutEffect(() => {
+    if (readsSettled && foreign) onAddressDrawn(false);
+  }, [foreign, onAddressDrawn, readsSettled]);
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),
     [address.filter, named, root]
@@ -80,7 +76,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         holdsEscape
         isClosed={issue.closed_at !== null}
         issue={issue}
-        {...(beside && readsHeld ? { onRevealDrawn: tell } : {})}
+        {...(readsSettled && refused.length === 0 ? { onRevealDrawn: onAddressDrawn } : {})}
         reader={viewer}
         request={request}
         reveal={reveal?.at(-1)?.id}

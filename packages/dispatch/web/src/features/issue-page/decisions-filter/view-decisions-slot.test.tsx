@@ -32,7 +32,7 @@ import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { presetPath } from "../issue-address";
 import { TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
-import { EMPTY_STATE_LINES, type Preset } from "../page-words";
+import { EMPTY_STATE_LINES, type Preset, STATE_LINES } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { blockNodeId } from "../tree-drafts";
@@ -875,4 +875,116 @@ test("under the Decisions view and words, a fragment the browser changes under o
     view.container.querySelector("[data-decisions-body]"),
     "the write-up's fragment drew the Decisions view beside the outline"
   ).toBeNull();
+});
+
+/** A refusal of a read, as Dispatch answers one it cannot serve now. */
+const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
+
+/** Waits for the outline, drawn in a view's place, to draw the failed read's line that says
+ *  `message` with the focus on its Retry, saying what `what` drew where it does not. */
+async function retryTakesFocus(view: RenderResult, message: string, what: string): Promise<void> {
+  await waitFor(() => {
+    const line = [...view.container.querySelectorAll("[data-issue-body] [data-failed-read]")].find(
+      (each) => each.textContent?.includes(message)
+    );
+    expect(
+      line,
+      `${what} drew no line "${message}"; the stage drew ${drawnSlot(view)}`
+    ).toBeDefined();
+    expect(
+      line?.querySelector("button"),
+      `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toHaveFocus();
+  });
+}
+
+// A read the view draws no line of its own for, refused, is no row of the view. The Decisions
+// view draws a line for the decisions read and the asks alone, so with the comments read refused
+// a comment named beside it lands on nothing there: the stage draws the outline in the view's
+// place, which says the comments could not be loaded, with the focus on its Retry, as it did
+// before the view was filled.
+test("the comments read refused, a comment named beside the Decisions view draws the outline in its place, with the comments' line and the focus on its Retry", async () => {
+  spyOn(api, "listComments").mockRejectedValue(REFUSED);
+  const view = drawStage("?comment=reply-b");
+  await retryTakesFocus(view, STATE_LINES.comments_unreadable, "the comment's address");
+  expect(
+    view.container.querySelector("[data-decisions-body]"),
+    "the Decisions view was drawn beside the outline"
+  ).toBeNull();
+});
+
+// The Verification view draws a line for the coverage read, the results read and its own
+// document's blocks alone, so with the plan's blocks refused a plan task named on its address
+// lands on nothing there: the stage draws the outline in the view's place, which says the plan
+// could not be loaded, with the focus on its Retry.
+test("the plan's blocks refused, a plan task named on the Verification view's address draws the outline in its place, with the plan's line and the focus on its Retry", async () => {
+  answerVerificationReads();
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => {
+    if (id === PLAN_DOCUMENT.id) throw REFUSED;
+    return [...(BLOCKS[id] ?? [])];
+  });
+  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
+  await retryTakesFocus(view, STATE_LINES.plan_unreadable, "the plan task's address");
+  expect(
+    view.container.querySelector("[data-verification-body]"),
+    "the Verification view was drawn beside the outline"
+  ).toBeNull();
+});
+
+// The Plan view draws a line for the plan's blocks and the spec's alone, so with the comments
+// read refused a comment named on its address lands on nothing there: the stage draws the outline
+// in the view's place, which says the comments could not be loaded, with the focus on its Retry.
+test("the comments read refused, a comment named on the Plan view's address draws the outline in its place, with the comments' line and the focus on its Retry", async () => {
+  answerVerificationReads();
+  spyOn(api, "listComments").mockRejectedValue(REFUSED);
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "plan" });
+  await retryTakesFocus(view, STATE_LINES.comments_unreadable, "the comment's address");
+  expect(
+    view.container.querySelector("[data-plan-body]"),
+    "the Plan view was drawn beside the outline"
+  ).toBeNull();
+});
+
+/** A check of the Verification document that serves no statement. */
+const LOOSE_CHECK = "c2";
+
+// A chip the reader pressed draws that state's statements alone, with their checks, and no check
+// that serves none (`VerificationFilterBody`), and no following clears it. The statement reads
+// Unknown, its check holding no result, so Met draws no statement and no check. Followed under the
+// same view with Met pressed, an address naming the check that serves none, or the statement's
+// check, names no row the view draws: the stage draws the outline in the view's place, which
+// lands on the check's row.
+test("with a chip pressed, a check the chip leaves out, named on a new address under the Verification view, draws the outline in its place, with the focus on the check's row", async () => {
+  answerVerificationReads();
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [
+    ...(BLOCKS[id] ?? []),
+    ...(id === VERIFICATION_DOCUMENT.id ? [typedBlock(LOOSE_CHECK, "check")] : []),
+  ]);
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [check({ block_id: CHECK }), check({ block_id: LOOSE_CHECK })],
+    issue: KEY,
+    verification_artifact_id: VERIFICATION_DOCUMENT.id,
+  });
+  const verification = presetPath(KEY, "verification");
+  for (const id of [LOOSE_CHECK, CHECK]) {
+    const held: { navigate?: NavigateFunction } = {};
+    const view = drawStage("", { held, issue: verifiedIssue(), preset: "verification" });
+    const row = `[data-node-row][data-node-id="${blockNodeId(VERIFICATION_SLUG, id)}"]`;
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(`[data-verification-body] ${row}`),
+        `the Verification view drew no row of ${id}; the stage drew ${drawnSlot(view)}`
+      ).not.toBeNull()
+    );
+    const met = view.container.querySelector<HTMLElement>('[data-verification-chip="met"]');
+    act(() => met?.click());
+    expect(met, "the Met chip was not pressed").toHaveAttribute("aria-pressed", "true");
+    await act(async () => held.navigate?.(`${verification}#b-${id}`));
+    await rowTakesFocus(view, `[data-issue-body] ${row}`, `the address of ${id} with Met pressed`);
+    expect(
+      view.container.querySelector("[data-verification-body]"),
+      `the address of ${id} with Met pressed drew the Verification view beside the outline`
+    ).toBeNull();
+    cleanup();
+  }
 });

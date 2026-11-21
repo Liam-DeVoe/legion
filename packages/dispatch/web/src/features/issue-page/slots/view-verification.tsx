@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -11,7 +11,6 @@ import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
 import { EVENT_FRESH, standsFailed } from "../useIssueTree";
-import { verificationReading } from "../verification-filter/statement-state";
 import {
   type FailedRead,
   queryTyped,
@@ -19,7 +18,6 @@ import {
   type VerificationRead,
   type VerificationReads,
 } from "../verification-filter/VerificationFilterBody";
-import { useFollowing } from "./following";
 import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
@@ -27,12 +25,11 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
-  const following = useFollowing();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
-  // each under the key and with the freshness the tree reads it by, so they cost no request of
-  // their own.
-  const { readsHeld, root } = useOutlineReads(issue);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own.
+  const { failed, readsSettled, root } = useOutlineReads(issue);
   const { checks, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -50,31 +47,32 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
     () => (typed ? presetView(root, "verification", "", named).root : undefined),
     [named, root, typed]
   );
-  // Whether the view draws a row of the node an address beside it names, said to the stage once
-  // for each following of the address, once every read the tree is built from holds its answer
-  // (`ViewSlotProps.onAddressDrawn`): before that the node may not have arrived. The view keeps
-  // the node whatever its filter draws, and draws it as a row at the view's top, as a statement,
-  // a check or a row of its own, and under a statement as one of its checks. Under a statement
-  // the view draws that statement's checks alone (`verificationReading`), so a node the tree
-  // places there that is no check, such as a plan task that serves the statement, is no row of
-  // the view. Where the view draws no row of the node - the tree holds none of it, or holds it
-  // there - the stage draws the outline in the view's place, which lands on the node or says
-  // that the issue holds none of it. It is said before the browser paints, so where the reads
-  // were held as the view was drawn, as on Back to its address, the table is never painted.
-  const beside = address.target !== undefined && address.document === undefined;
-  const told = useRef<string | undefined>(undefined);
+  // Whether the view draws a row of the node the address names, which the stage is told once
+  // every read the tree is built from has settled (`ViewSlotProps.onAddressDrawn`, by the rule
+  // `StageSlot` gives). The body says whether it does, with the reader's chip applied
+  // (`addressed`): a statement, a check under a statement it draws, a check that serves none or a
+  // row of its own, but under a chip only that state's statements and their checks, and under a
+  // statement no node that is no check, such as a plan task that serves it. The body is handed
+  // the call once no read stands refused, and tells it before the browser paints, so where the
+  // reads were held as the view was drawn, as on Back to its address, the table is never painted
+  // in the outline's place. The view draws a line of its own for the coverage read, the results
+  // read and its document's blocks (`useVerificationReads`), and none for any other read rows come
+  // from: where one of those stands refused, the view says it draws no row; where only its own
+  // stand refused, it says nothing and keeps its line.
+  const own = ["coverage", "results", `blocks:${issue.verification_artifact_id}`];
+  const refused = failed.filter(({ placesRows }) => placesRows);
+  const foreign = refused.some(({ key }) => !own.includes(key));
   useLayoutEffect(() => {
-    if (!beside || !readsHeld || told.current === following) return;
-    told.current = following;
-    const { loose, others, statements } = verificationReading({ checks, view: view.root });
-    const rows = [...statements, ...statements.flatMap((statement) => statement.checks), ...loose];
-    onAddressDrawn([...rows.map(({ node }) => node), ...others].some(({ id }) => named.has(id)));
-  }, [beside, checks, following, named, onAddressDrawn, readsHeld, view.root]);
+    if (readsSettled && foreign) onAddressDrawn(false);
+  }, [foreign, onAddressDrawn, readsSettled]);
   return (
     <NoTooltips>
       {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
+          {...(readsSettled && refused.length === 0
+            ? { addressed: { named, tell: onAddressDrawn } }
+            : {})}
           checks={checks}
           context={view.context}
           reads={reads}

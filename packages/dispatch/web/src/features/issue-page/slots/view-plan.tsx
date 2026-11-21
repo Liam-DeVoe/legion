@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
@@ -16,7 +16,6 @@ import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-fil
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { standsFailed } from "../useIssueTree";
-import { useFollowing } from "./following";
 import type { ViewSlotProps } from "./stage";
 
 /**
@@ -34,13 +33,12 @@ export function ViewPlanSlot({
   route,
 }: SlotProps & Partial<Pick<ViewSlotProps, "onAddressDrawn">>): ReactNode {
   const { hash, search } = useLocation();
-  const following = useFollowing();
   const spec = primarySpec(issue);
   const address = issueAddress(route, search, hash, spec?.slug);
-  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
-  // each under the key and with the freshness the tree reads it by, so they cost no request of
-  // their own.
-  const { readsHeld, root } = useOutlineReads(issue);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own.
+  const { failed: refusedLines, readsSettled, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. It is
   // these two reads and not `useIssueTree`'s `blocksHeld`, which counts the Verification and
@@ -124,23 +122,23 @@ export function ViewPlanSlot({
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
-  // Whether the view draws a row of the node an address beside it names, said to the stage once
-  // for each following of the address, once every read the tree is built from holds its answer
-  // (`ViewSlotProps.onAddressDrawn`): before that the node may not have arrived. The view draws a
-  // row for a task alone - a step of the chart or of the steps, or the row of the cycle that holds
-  // it - and none for a statement, a comment or any other node, so it draws the node where the
-  // address names a task it keeps (`reveal`). Where it draws none, the stage draws the outline in
-  // the view's place, which lands on the node or says that the issue holds none of it. It is said
-  // before the browser paints, so where the reads were held as the view was drawn, as on Back to
-  // its address, no chart is painted in the outline's place. Drawn outside the stage, the slot is
-  // handed no call and tells no one.
-  const beside = address.target !== undefined && address.document === undefined;
-  const told = useRef<string | undefined>(undefined);
+  // Whether the view draws a row of the node the address names, which the stage is told once
+  // every read the tree is built from has settled (`ViewSlotProps.onAddressDrawn`, by the rule
+  // `StageSlot` gives). The view draws a row for a task alone - a step of the chart or of the
+  // steps, or the row of the cycle that holds it - and none for a statement, a comment or any
+  // other node, so it draws the node where the address names a task it keeps (`reveal`). It draws
+  // a line of its own for the plan's blocks and the spec's (`watched`), and none for any other
+  // read rows come from: where one of those stands refused it says it draws no row, and where only
+  // its own stand refused it says nothing and keeps its line. It is said before the browser
+  // paints, so where the reads were held as the view was drawn, as on Back to its address, no
+  // chart is painted in the outline's place. Drawn outside the stage, the slot is handed no call
+  // and tells no one.
+  const refused = refusedLines.filter(({ placesRows }) => placesRows);
+  const foreign = refused.some(({ key }) => !watched.some(({ id }) => key === `blocks:${id}`));
   useLayoutEffect(() => {
-    if (!beside || !readsHeld || told.current === following) return;
-    told.current = following;
-    onAddressDrawn?.(view.root.children.some(({ id }) => named.has(id)));
-  }, [beside, following, named, onAddressDrawn, readsHeld, view.root]);
+    if (!readsSettled || (!foreign && refused.length > 0)) return;
+    onAddressDrawn?.(!foreign && view.root.children.some(({ id }) => named.has(id)));
+  }, [foreign, named, onAddressDrawn, readsSettled, refused.length, view.root]);
   const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();

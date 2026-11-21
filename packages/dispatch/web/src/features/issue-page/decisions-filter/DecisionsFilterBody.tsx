@@ -148,9 +148,9 @@ export function DecisionsFilterBody({
   issue: IssueDetails;
   /** Told whether the list draws the node the address names (`reveal`), where the page draws
    *  the outline in the view's place if it does not (`slots/view-decisions.tsx`): given only
-   *  while the address names a node beside the view and every read the tree is built from holds
-   *  its answer. The body tells it as soon as it can say, and again each time what it draws
-   *  changes; the caller acts on the first of these for each following of the address. */
+   *  while every read the tree is built from holds its answer. The body tells it as soon as it
+   *  can say, and again each time what it draws changes; the stage acts on the first of these
+   *  for each following of an address that names a node beside the view (`slots/stage.tsx`). */
   onRevealDrawn?: (drawn: boolean) => void;
   /** Who is reading, whose own answer carries the ink rule (R34). Another person's decision
    *  stands under "Your decisions" too, with that person's name on its row. */
