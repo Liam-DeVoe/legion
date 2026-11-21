@@ -34,14 +34,15 @@ import (
 // (recordPathologicalParserInput). A call that names one of those functions by its bare name, and
 // resolves it through the connection's search_path when it is planned, passes the recorder first:
 // every save must hand the recorder exactly parserCallsPerSave texts, at least as many characters
-// as the text it saved, and no run of more than searchTextSegments segments. Beside that, the
-// catalogs assertParserReachedByBareName scans must keep no call of the parser. Those two are what
-// the row holds of the parser's input, and all it holds. With search_text answering its input
-// unchanged, the 1 KiB document of `a_` hands it a run of 507; a trigger that parses the text once
-// more, or once for every so many characters of it, makes more calls. A run joined again after
-// search_text, as the ask-block removal of the documents trigger can join one, is held by the row
-// of the change that moves that removal ahead of search_text, not by this one: no document here
-// holds an ask block.
+// as the text it saved and at most parserCharactersAllowed of that, and no run of more than
+// searchTextSegments segments. Beside that, the catalogs assertParserReachedByBareName scans must
+// keep no call of the parser. Those two are what the row holds of the parser's input, and all it
+// holds. With search_text answering its input unchanged, the 1 KiB document of `a_` hands it a run
+// of 507; a trigger that parses the text once more, or once for every so many characters of it,
+// makes more calls; one that hands search_vector the text repeated once for every so many of its
+// characters hands it more characters. A run joined again after search_text, as the ask-block
+// removal of the documents trigger can join one, is held by the row of the change that moves that
+// removal ahead of search_text, not by this one: no document here holds an ask block.
 //
 // pmdoc's Update wrote each new block with its own insert, and ygo walks a fragment from its first
 // child to the index each insert or delete names, so replacing a quote of n headings with a quote
@@ -71,9 +72,9 @@ import (
 // at run time (set_config, SET LOCAL), or as an operator's function - or that is stored in a
 // catalog the check does not scan; a parser entry point parserFunctionNames does not name, such as
 // the text @@ operators, whose C functions call the parser directly; and a save that costs more CPU
-// without making another call or handing the parser another text or a longer run, in Go or in
-// Postgres. The count that load cannot move for that last is the instructions the save executes,
-// and this box gives a test no hardware counter (kernel.perf_event_paranoid is 4).
+// without making another call or handing the parser another text, more characters or a longer
+// run, in Go or in Postgres. The count that load cannot move for that last is the instructions the
+// save executes, and this box gives a test no hardware counter (kernel.perf_event_paranoid is 4).
 //
 // Settlement is held off, so no settlement writes a document while a save is read; the test
 // server's shutdown settles each document still loaded, after every count is read. A related-terms
@@ -105,6 +106,9 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 		case input.characters < saved:
 			t.Fatalf("%s handed the parser %d characters, fewer than the %d it saved: the text was parsed by a route this row does not read",
 				what, input.characters, saved)
+		case input.characters > parserCharactersAllowed(saved):
+			t.Fatalf("%s handed the parser %d characters, more than the %d allowed for the %d it saved: the parser reads its text once for each time it is handed it",
+				what, input.characters, parserCharactersAllowed(saved), saved)
 		case input.longest > searchTextSegments:
 			t.Fatalf("%s handed the parser a run of %d underscore-joined segments, want at most %d: the text-search parser rescans a run to its end from every segment",
 				what, input.longest, searchTextSegments)
@@ -326,6 +330,16 @@ const searchTextSegments = 16
 // hands the parser another number of texts for these saves must change it, with the number
 // measured.
 const parserCallsPerSave = 2
+
+// parserCharactersAllowed is the most characters a save of saved characters may hand the parser:
+// 17/16 of what it saved, and 64 more. search_text adds a space after each sixteenth
+// underscore-joined segment, and search_vector hands the parser the vector's head, empty here,
+// and the body once each, so every save of this row hands it at most 33/32 of what it saved (1,054
+// characters for the 1,023-character `a_` document, 33,000 for the 32,000-character comment,
+// 2026-11-21). A trigger that hands search_vector the text repeated once for every so many of its
+// characters hands it a count that grows with the square of the text, and fails this at the
+// ladders' larger sizes; one that adds a fixed text passes it, within the 64.
+func parserCharactersAllowed(saved int64) int64 { return saved*17/16 + 64 }
 
 // parserInput is what Postgres's text-search parser was handed during one save, as
 // recordPathologicalParserInput reads it: how many texts, how many characters in all, and the most
