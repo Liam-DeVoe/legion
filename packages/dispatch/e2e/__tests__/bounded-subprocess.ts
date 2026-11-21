@@ -81,6 +81,13 @@
  *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
  *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
  *   an input it refuses, stays under `short`.
+ * - `stoppedLeg`, against 28.24 s: the slowest of 35 drivers of the stop rows of
+ *   `unit-repeat.test.ts`, each a copy of the repeat tool over a package of one or two files with
+ *   its Bun, the stop, the kill or the cancel the row sends, its names runs and its count of what
+ *   was left: the seven rows that run such a driver, 5 runs each, on 3 CPUs (`taskset`) with 9
+ *   busy loops on them, on a dev box of 288 CPUs at a 1-minute load of 1,233 to 1,466 on
+ *   2026-11-21. The others took 6.15 s to 15.92 s. Three times 28.24 s, rounded up to the next
+ *   half minute, is 90 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
@@ -122,6 +129,9 @@ export const bounds = Object.freeze({
   twoStackBuild: 1_800_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
+  /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
+   *  stop or kill the row sends, and its names runs. */
+  stoppedLeg: 90_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

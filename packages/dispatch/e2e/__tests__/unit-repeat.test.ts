@@ -855,7 +855,7 @@ async function stoppedLeg(
       "--out",
       out,
     ],
-    bound: "short",
+    bound: "stoppedLeg",
     cwd: directory,
     env: {
       HOME: directory,
@@ -952,7 +952,7 @@ test(
       '"event":"start"'
     );
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
 
 test(
@@ -992,7 +992,7 @@ test(
     expect(report.stop?.bunEnd?.killed).toBe(false);
     expect(leftBehind).toBe(0);
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
 
 test(
@@ -1029,7 +1029,7 @@ test(
     );
     expect(leftBehind).toBe(0);
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
 
 /** A preload of the tool's own process that holds it between Bun's end and its report: at the
@@ -1104,7 +1104,7 @@ test(
     );
     expect(leftBehind).toBe(0);
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
 
 /** A test file of one row that writes the pid `of` gives into `pidFile`, whole, and then spins
@@ -1166,7 +1166,7 @@ test(
     );
     expect(leftBehind).toBe(0);
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
 
 test(
@@ -1203,13 +1203,13 @@ test(
     );
     expect(leftBehind).toBe(0);
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
 
 /** The deadline the cancelled step runs under. It only ends a leg whose SIGINT never reached the
  *  tool: the row sends that SIGINT once its row has begun, which took under 1 s on the dev box at
  *  a load of about 1,500 (2026-11-21), so 40 s is far past it, and the deadline plus the stop's
- *  own work stays inside the short bound of 60 s that the step's driver runs under. */
+ *  own work stays inside the 90 s `stoppedLeg` bound that the step's driver runs under. */
 const CANCELLED_DEADLINE_SECONDS = 40;
 
 test(
@@ -1267,7 +1267,7 @@ test(
       '[ "$left" = 0 ] && break; sleep 0.05; done; echo "left behind: $left"; exit "$code"';
     const { code, stdout } = await runBounded({
       argv: ["bash", "-c", driver],
-      bound: "short",
+      bound: "stoppedLeg",
       cwd: directory,
       env: {
         HOME: directory,
@@ -1298,5 +1298,5 @@ test(
     expect(code).toBe(1);
     expect(/^left behind: 0$/m.test(stdout)).toBe(true);
   },
-  rowLimit("short")
+  rowLimit("stoppedLeg")
 );
