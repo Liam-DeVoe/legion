@@ -8194,9 +8194,11 @@ each issue's pod (every role of it alike) and the image probe's.
   An issue pod has drifted (`driftedInPod`), as for a change of the secrets broker's enrollment:
   at the restart each role running in it is re-adopted alive where it runs, the pod's drift names the file and the volume it lacks (`role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name> items [...]`), and a role launched into it meanwhile keeps the pod and is told only the overlays the pod holds, so it runs as before, on its old model among the rest.
   The pod's update round replaces it, once every role in it has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound ([The disk dies with its pod](#the-disk-dies-with-its-pod));
-  the next launch makes a pod that mounts the volume, and each role resumes its session there with the file in its `PI_CONFIG_FILES`.
-  So adding the mount and the key ends no running turn, and a role's new overlay, a new model with it, reaches the role only once its issue's round has replaced the pod.
-  The controller's pod, which no round covers (`roundCovers`), holds the same lack as a moved address: at the restart its running controller is reported `StaleAddress` with that detail and relaunched at once, uncharged, so its running turn is lost and it resumes its session in a new pod that mounts the volume.
+  the next launch makes a pod that mounts the volume, each role resumes its session there, and the role the key names has the file in its `PI_CONFIG_FILES`.
+  So adding the mount and the key ends no turn at once: the round waits for the turns running in the pod up to its bound, and a turn still running at the bound ends with the pod; a role's new overlay, a new model with it, reaches the role only once its issue's round has replaced the pod.
+  The controller's pod, which no round covers (`roundCovers`), is replaced at its next launch.
+  Where `role_config_files.controller` names the file, the pod lacks it as a moved address: at the restart its running controller is reported `StaleAddress` with that detail and relaunched at once, uncharged, so its running turn is lost and it resumes its session in a new pod that mounts the volume.
+  Where the file is an issue role's, the controller's pod lacks no file of its own, and its next launch replaces it for the new volume and mount in its shape.
   **Who can read the files:** only loading is per role.
   Every role of a pod mounts every operator volume, so each role can read every role's overlay file;
   never put a secret in one (a credential travels in `provider_keys` or a mounted Secret the operator means every role to hold).
@@ -8342,7 +8344,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
   the daemon opens an update round on each drifted pod, which asks each role of that issue, on the role's own Envoy topic, to push its work, let its subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and replaces the pod once every role has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn, a subagent or a background job still running at the bound ends with the pod;
   a pod no round covers is replaced by the first launch into it.
-  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.
+  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)); until its round replaces it, a role running in it keeps running there, and a role launched into it keeps the pod and is told only the overlays the pod holds, so a unit drawn into an arm that names files runs in neither arm (the kept-pod degrade, below).
   So turn an experiment on knowing the cost:
   declare an arm that names files when no role of an affected issue is mid-turn and every role has pushed.
   An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.
