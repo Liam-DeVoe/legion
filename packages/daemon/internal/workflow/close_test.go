@@ -392,19 +392,21 @@ func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), "select phase, status from issues where key = 'LEGION-209'").Scan(&childPhase, &childStatus); err != nil || childPhase != phase.Done || childStatus != record.DoneStatus {
 		t.Fatalf("the child after the merge = %s/%s, %v; want done/done as the done left it", childPhase, childStatus, err)
 	}
-	rows, err := pool.Query(context.Background(), "select kind, coalesce(payload->>'kind', ''), coalesce(payload->>'reason', '') from outbox where id > $1 order by id", last)
+	rows, err := pool.Query(context.Background(), "select kind, coalesce(payload->>'kind', ''), coalesce(payload->>'pull_request', ''), coalesce(payload->>'phase', ''), coalesce(payload->>'waiting_for', '') from outbox where id > $1 order by id", last)
 	if err != nil {
 		t.Fatalf("read the rows the merge added: %v", err)
 	}
-	type added struct{ kind, notice, reason string }
+	type added struct{ kind, notice, pullRequest, phase, waitingFor string }
 	got, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (added, error) {
 		var a added
-		return a, row.Scan(&a.kind, &a.notice, &a.reason)
+		return a, row.Scan(&a.kind, &a.notice, &a.pullRequest, &a.phase, &a.waitingFor)
 	})
 	if err != nil {
 		t.Fatalf("collect the rows the merge added: %v", err)
 	}
-	want := []added{{kind: "notice", notice: "pr-merged", reason: "pull request #43 merged while LEGION-209 was in done, not merging"}}
+	// The pr-merged notice names the merged pull request and the phase the child stood in, done,
+	// and no issue its close waits for, since the child's done already took it out of the workflow.
+	want := []added{{kind: "notice", notice: "pr-merged", pullRequest: texts.PullRequestRef("sjawhar/legion", 43), phase: string(phase.Done)}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the rows the merge added = %+v, want the pr-merged notice alone, %+v", got, want)
 	}
