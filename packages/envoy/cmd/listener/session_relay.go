@@ -1082,10 +1082,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// with no frame sent after them, which the frame clears once it is published
 	// (repositoryGapSent), "" for none: the events are acknowledged, so the stream's start says
 	// nothing of them. It is the mark this run noted for an event it withheld, and before each
-	// frame that owes none, the mark the session's entry carries (owedRepositoryGap): one an
-	// earlier run of the session wrote and sent no frame after, or one another relay of the
-	// session wrote while this run is live, as two relays of one session run while it moves.
-	streamID, gap, gapReason, owed := start.StreamID, start.Gap, "", ""
+	// frame that owes none, the mark this listener's copy of the session's entry carries
+	// (owedRepositoryGap): one an earlier run of the session wrote and sent no frame after, or one
+	// another relay of the session wrote while this run is live, as two relays of one session run
+	// while it moves, which rides the first frame after the copy shows it. carried is the last
+	// mark a frame of this run carried, which the run does not take from the copy again: the copy
+	// can trail the clear, and the session would be sent the same gap notice twice.
+	streamID, gap, gapReason, owed, carried := start.StreamID, start.Gap, "", "", ""
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1139,8 +1142,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			continue
 		}
 		if owed == "" {
-			if owed = m.owedRepositoryGap(sessionID); owed != "" && !gap {
-				gap, gapReason = true, relayGapRepositoryWithheld
+			if mark := m.owedRepositoryGap(sessionID); mark != "" && mark != carried {
+				owed = mark
+				if !gap {
+					gap, gapReason = true, relayGapRepositoryWithheld
+				}
 			}
 		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason); err != nil {
@@ -1153,6 +1159,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		if gap {
 			m.repositoryGapSent(ctx, sessionID, owed)
 		}
+		if owed != "" {
+			carried = owed
+		}
 		gap, gapReason, owed = false, "", ""
 	}
 }
@@ -1164,9 +1173,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // (session.SessionEntry.RepositoryGap), then in this process. The mark is a new id for
 // every withheld event, so the clear after a frame removes the mark that frame carried alone: a
 // mark written since, by this relay or by another relay of the session, as two relays of one
-// session run while it moves, stays for the next frame. A relay that adopted the entry's mark
-// (owedRepositoryGap) and clears it after its frame therefore never clears the mark of an event
-// another relay withheld later. The entry is read from the bucket for the write, within
+// session run while it moves, stays on the entry for a later frame. A relay that adopted the
+// entry's mark (owedRepositoryGap) and clears it after its frame therefore never clears the mark
+// of an event another relay withheld later. The entry is read from the bucket for the write, within
 // repositoryGapWriteTimeout of ctx (session.SessionRegistry.SetRepositoryGap), not judged from
 // this listener's copy, which can trail a clear another listener made. A write that
 // failed or did not answer in time, and an entry the bucket does not hold, are the error, and

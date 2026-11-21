@@ -27,8 +27,9 @@ body: |-
   published, and the relay writes it on the entry before it acknowledges the withheld event,
   giving the event back for redelivery when that write fails or the entry is gone; each withheld
   event's mark is a new id, the clear after a frame removes only the mark that frame carried, and
-  a relay run reads the entry's mark before each frame, so a mark another relay writes while the
-  run is live rides its next frame.
+  a relay run reads its listener's copy of the entry's mark before each frame, so a mark another
+  relay writes while the run is live rides the run's first frame after that copy shows it, and a
+  mark the run carried is not sent again while the copy trails its clear.
   A session at the edge publishes only a role subject of its project, sends and publishes only
   as itself (`source` `agent` and `source_session` the token's session, else
   `403 sender_not_session`), claims and reads only
