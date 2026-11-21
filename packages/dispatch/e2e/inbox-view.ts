@@ -145,7 +145,11 @@ export async function seedEveryField(): Promise<{
     title: "Rollout order",
   });
   await patchIssue(decisionIssue.key, { priority: 1 });
-  const decision = await indexedRow((row) => row.block_id === DECISION_BLOCK);
+  // The Inbox read is every open question of the stack, which can hold an open block of this id
+  // an earlier row of the worker seeded, so the row is found by this issue as well as its block.
+  const decision = await indexedRow(
+    (row) => row.block_id === DECISION_BLOCK && row.issue_key === decisionIssue.key
+  );
   rows.push({
     assignee: "alice",
     id: decision.id,

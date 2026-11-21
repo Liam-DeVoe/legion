@@ -124,7 +124,11 @@ const RUNBOOK_HEADING = "Mirror runbook";
  *  after the row was already there, and every row of this file pays the seed. */
 const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** The Inbox row `match` names, once the server has indexed the block that carries it. */
+/** The Inbox row `match` names, once the server has indexed the block that carries it. Every
+ *  match names the document the row seeded (a project document's question belongs to the
+ *  document and carries no issue key) as well as the block: a block id is no key of its own,
+ *  since every row of this file writes the same ids and `replay-window` is threads-order.ts's
+ *  block too, so the row is this document's whatever else the reader's list comes to hold. */
 async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
   let found: InboxRow | undefined;
   await expect
@@ -313,7 +317,9 @@ export async function seedQuestionColumn(run: QuestionRun): Promise<QuestionColu
     name: underHeading ? "mirror-runbook.md" : "lease-runbook.md",
   });
   const blockId = underHeading ? QUESTION_BLOCK : PLAIN_BLOCK;
-  const row = await indexedRow((indexed) => indexed.block_id === blockId);
+  const row = await indexedRow(
+    (indexed) => indexed.block_id === blockId && indexed.artifact_id === created.artifact.id
+  );
   return {
     artifactId: created.artifact.id,
     blockId,
@@ -362,14 +368,16 @@ export interface QuestionsSeed {
 
 export async function seedQuestions(): Promise<QuestionsSeed> {
   await createProject(scrollProject(), asReader());
-  await createProjectDocument(scrollProject().key, {
+  const created = await createProjectDocument(scrollProject().key, {
     content: questionsDocument,
     name: "mirror-runbook.md",
   });
+  const ofThisDocument = (blockId: string) => (row: InboxRow) =>
+    row.block_id === blockId && row.artifact_id === created.artifact.id;
   const [first, plain, second] = await Promise.all([
-    indexedRow((row) => row.block_id === QUESTION_BLOCK),
-    indexedRow((row) => row.block_id === PLAIN_BLOCK),
-    indexedRow((row) => row.block_id === SECOND_BLOCK),
+    indexedRow(ofThisDocument(QUESTION_BLOCK)),
+    indexedRow(ofThisDocument(PLAIN_BLOCK)),
+    indexedRow(ofThisDocument(SECOND_BLOCK)),
   ]);
   return { firstAskId: first.id, plainAskId: plain.id, secondAskId: second.id };
 }

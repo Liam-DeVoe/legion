@@ -452,8 +452,18 @@ export async function seedTwelve(project: RowKey, login = "alice"): Promise<Twel
     const issue = await createIssue({ project, title }, { login });
     await createAsk(issue.key, { question: `${title}: what is the rule?` }, asSession());
   }
-  await createIssue({ project, spec: decisionSpec, title: "Rollout order" }, { login });
-  await indexedRow(login, (row) => row.block_id === DECISION_BLOCK);
+  const decisionIssue = await createIssue(
+    { project, spec: decisionSpec, title: "Rollout order" },
+    { login }
+  );
+  // Waits for this issue's block to be indexed. A block id is no key of its own: `login` is alice
+  // when the stubbed rows record, and her list can hold an open block of this id an earlier row
+  // of the worker seeded, which would end the wait before this one stands. So the row is found
+  // by its issue as well as by its block.
+  await indexedRow(
+    login,
+    (row) => row.block_id === DECISION_BLOCK && row.issue_key === decisionIssue.key
+  );
 
   for (const title of ["Mirror runbook", "Clock drift"]) {
     const issue = await createIssue(

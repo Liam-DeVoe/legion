@@ -111,7 +111,14 @@ export async function seedThreads(
     spec: decisionSpec,
     title: "Replay window",
   });
-  const block = await indexedRow((row) => row.block_id === DECISION_BLOCK);
+  // The Inbox read is every open question of the stack, and a block id is no key of its own
+  // there: it lists every open `replay-window` block an earlier row of the worker seeded
+  // (inbox-pane-scroll.ts's documents hold one, as does any earlier run of this seed that stopped
+  // before answering its own), and a comment naming another owner's ask is refused. So the row
+  // is found by this issue's key as well as by its block.
+  const block = await indexedRow(
+    (row) => row.block_id === DECISION_BLOCK && row.issue_key === blockIssue.key
+  );
   await answerAsk(block.id, { expected_edited_at: null, selected: ["The last hour"] });
   for (const body of replies) {
     await createComment(blockIssue.key, { ask_id: block.id, body }, asSession());

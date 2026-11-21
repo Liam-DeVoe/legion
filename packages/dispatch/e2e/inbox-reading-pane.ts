@@ -159,7 +159,10 @@ export interface Seed {
 const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 /** The row `match` names in `login`'s own Inbox, once the server has indexed the block or opened
- *  the question. */
+ *  the question. Every match names the row's owner (the issue or the document the seed made) as
+ *  well as its block, since a block id is no key of its own: a real-stack row's reader is its own
+ *  person, but `login` is alice when the stubbed rows record, and her list can hold an open block
+ *  of that id an earlier row of the worker seeded. */
 async function indexedRow(login: string, match: (row: InboxRow) => boolean): Promise<InboxRow> {
   let found: InboxRow | undefined;
   await expect
@@ -200,7 +203,10 @@ export async function seedInbox(project: RowKey, login = "alice"): Promise<Seed>
           { login }
         );
         await patchIssue(issue.key, { priority: 0 });
-        const row = await indexedRow(login, (indexed) => indexed.block_id === DECISION_BLOCK);
+        const row = await indexedRow(
+          login,
+          (indexed) => indexed.block_id === DECISION_BLOCK && indexed.issue_key === issue.key
+        );
         return { issueKey: issue.key, row };
       })(),
       (async () => {
@@ -296,11 +302,16 @@ export async function seedInbox(project: RowKey, login = "alice"): Promise<Seed>
         return { anchored, plain };
       })(),
       (async () => {
-        await createProjectDocument(project, {
+        const created = await createProjectDocument(project, {
           content: documentContent,
           name: "mirror-runbook.md",
         });
-        return indexedRow(login, (indexed) => indexed.block_id === DOCUMENT_BLOCK);
+        // A project document's question belongs to the document, so it carries no issue key.
+        return indexedRow(
+          login,
+          (indexed) =>
+            indexed.block_id === DOCUMENT_BLOCK && indexed.artifact_id === created.artifact.id
+        );
       })(),
     ]);
   expect(firstApproval.version).toBe(1);
