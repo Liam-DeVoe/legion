@@ -82,16 +82,21 @@ func lookupOf(values map[string]string) func(string) (string, bool) {
 // credential.go makes - both identities set, a variable set but empty, a file missing, unreadable
 // or empty, a value that is not an nkey seed, a seed that is not a user's - holds no run of
 // printedRun or more characters of any of them, and names the variable, and the file where there
-// is one. A seed's public key may print. The same holds for a server URL that names the token as
-// its user and does not parse, on a run that may reach remote NATS (ENVOY_ALLOW_REMOTE_NATS=1, as
-// deployments set it): nats.go would refuse it with url.Parse's error, which quotes the URL whole,
-// so the bus refuses it first. Then every line the bus logs through slog while test servers refuse
-// the connection holds none of them: a seed's user the restarted server no longer admits, a
-// service token the server refuses from the first connect, and a token written as the server
-// URL's user name - refused; admitted by a server that then reports a slow consumer, stops and
-// starts again; and dialled where nothing answers. Each flow's lines are required, so a run that
-// logged nothing cannot pass, and every client is closed and its close logged before the lines
-// are read. The rows that read an unreadable file skip under root, which reads a 0000 file.
+// is one. A seed's public key may print. The same holds for a server URL whose userinfo url.Parse
+// cannot read as userinfo, on a run that may reach remote NATS (ENVOY_ALLOW_REMOTE_NATS=1, as
+// deployments set it), each refused naming the URL by its position alone: one naming the token as
+// its user that does not parse, one with the token in its query, ones whose password holds a "/",
+// "?", "#", space or comma (which url.Parse reads as a port it quotes, as userinfo it cannot read,
+// or, split on the comma as every caller splits its list, as a URL with no "@" left), and one
+// naming a token that holds a "/" as its user (which parses, the token's head its host); a URL
+// with spaces around it is read trimmed, as nats.go reads it. Then every line the bus logs through
+// slog while test servers refuse the connection holds none of them: a
+// seed's user the restarted server no longer admits, a service token the server refuses from the
+// first connect, and a token written as the server URL's user name - refused; admitted by a
+// server that then reports a slow consumer, stops and starts again; and dialled where nothing
+// answers. Each flow's lines are required, so a run that logged nothing cannot pass, and every
+// client is closed and its close logged before the lines are read. The rows that read an
+// unreadable file skip under root, which reads a 0000 file.
 func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	seed, public := madeUpSeed(t, nkeys.PrefixByteUser, "a made-up user seed")
 	account, _ := madeUpSeed(t, nkeys.PrefixByteAccount, "a made-up account seed")
@@ -101,9 +106,25 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	}
 	mistyped := seed[:20] + string(letter) + seed[21:]
 	token := madeUpServiceToken()
+	// Passwords that hold a "/", "?", "#", space or comma, which end url.Parse's authority or its
+	// URL early or split the URL in a caller's list (about four in ten base64 credentials hold a
+	// "/"), and a token holding a "/".
+	slashed := sha256.Sum256([]byte("a made-up NATS credential holding a slash"))
+	tail := base64.RawURLEncoding.EncodeToString(slashed[:12])
+	slashedPassword, queryPassword := "madeUpNatsPassword/"+tail, "madeUpNatsPassword?"+tail
+	fragmentPassword, spacedPassword := "madeUpNatsPassword#"+tail, "madeUpNatsPassword "+tail
+	commaPassword := "madeUpNatsPassword," + tail
+	slashedToken := "madeUpNatsToken/" + base64.RawURLEncoding.EncodeToString(slashed[12:24])
 	credentials := []printedCredential{
 		{"the made-up seed", seed}, {"the made-up account seed", account}, {"the mistyped seed", mistyped}, {"the made-up service token", token},
+		{"the made-up password holding a /", slashedPassword}, {"the made-up password holding a ?", queryPassword},
+		{"the made-up password holding a #", fragmentPassword}, {"the made-up password holding a space", spacedPassword},
+		{"the made-up password holding a comma", commaPassword}, {"the made-up token holding a /", slashedToken},
 	}
+	unparsed := []string{"NATS server URL 1 of 1 cannot be read", "does not parse as a URL"}
+	remote := map[string]string{AllowRemoteEnvVar: "1"}
+	// withPassword is a server URL whose user legion has password.
+	withPassword := func(password string) string { return "nats://legion:" + password + "@127.0.0.1:1" }
 
 	dir := t.TempDir()
 	write := func(name, contents string) string {
@@ -169,7 +190,21 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 			{name: "a seed file holding an account's seed", env: map[string]string{nkeySeedFileVariable: accountFile},
 				names: []string{nkeySeedFileVariable, accountFile, "not a user's"}},
 			{name: "a server URL naming the token as its user that does not parse", urls: []string{"nats://" + token + "%zz@127.0.0.1:1"},
-				env: map[string]string{AllowRemoteEnvVar: "1"}, names: []string{"the NATS server URL 127.0.0.1:1", "cannot be read", "invalid URL escape"}},
+				env: remote, names: unparsed},
+			{name: "a server URL whose password holds a /", urls: []string{"nats://legion:" + slashedPassword + "@127.0.0.1:1"},
+				env: remote, names: unparsed},
+			{name: "a server URL whose password holds a ?", urls: []string{"nats://legion:" + queryPassword + "@127.0.0.1:1"},
+				env: remote, names: unparsed},
+			{name: "a server URL whose password holds a #", urls: []string{"nats://legion:" + fragmentPassword + "@127.0.0.1:1"},
+				env: remote, names: unparsed},
+			{name: "a server URL whose password holds a space", urls: []string{"nats://legion:" + spacedPassword + "@127.0.0.1:1"},
+				env: remote, names: unparsed},
+			{name: "a server URL whose password holds a comma, split as every caller splits its list", urls: strings.Split(withPassword(commaPassword), ","),
+				env: remote, names: []string{"NATS server URL 1 of 2 cannot be read", "does not parse as a URL"}},
+			{name: "a server URL naming a token that holds a / as its user", urls: []string{"nats://" + slashedToken + "@127.0.0.1:1"},
+				env: remote, names: []string{"NATS server URL 1 of 1 cannot be read", `an "@" stands after its host`}},
+			{name: "a server URL that does not parse with the token in its query", urls: []string{"nats://127.0.0.1:1/%zz?token=" + token},
+				names: unparsed},
 		} {
 			t.Run(row.name, func(t *testing.T) {
 				if row.unreadable && os.Geteuid() == 0 {
@@ -191,6 +226,8 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 				}
 			})
 		}
+		// A URL with spaces around it is read as nats.go reads it, trimmed, and is no refusal.
+		require.NoError(t, refuseUnreadableNATSURL([]string{" nats://127.0.0.1:4222 ", "\t127.0.0.1:4223\n"}))
 	})
 
 	t.Run("every line logged while a server refuses the connection", func(t *testing.T) {

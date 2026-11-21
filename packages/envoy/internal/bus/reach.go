@@ -50,27 +50,41 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 	return nil
 }
 
-// refuseUnreadableNATSURL refuses the first of urls that does not parse as nats.go parses a server
-// URL (a scheme added where it has none), naming it without its userinfo (natsURLWithoutUserinfo)
-// and with url.Parse's reason alone. nats.go refuses such a URL with url.Parse's own error, which
-// quotes the URL whole, a token or a password in its userinfo included, and only once each of the
-// connect's ten attempts has failed (connectWithContext); refuseRemoteNATS reads no URL of a run
-// that may reach remote NATS, so this reads them for every run, before any dial.
+// refuseUnreadableNATSURL refuses the first of urls whose userinfo url.Parse cannot read as the
+// URL's userinfo, read as nats.go reads a server URL (trimmed, a scheme added where it has none),
+// before any dial: refuseRemoteNATS reads no URL of a run that may reach remote NATS, so this
+// reads them for every run. That is a URL that does not parse, and one that parses with an "@"
+// after its host, in its path, query or fragment. A credential that holds a "/", "?", "#", space
+// or comma ends url.Parse's authority early, is no userinfo it reads, or is split from the rest of
+// the URL by a caller that splits its list on commas. A password whose head is followed by a "/"
+// makes url.Parse read that head as the port, which does not parse; a password holding a comma
+// reaches here as two URLs, the first ending in the password's head with no "@"; and a token
+// holding a "/" written as the URL's user parses, the token's head as the host. nats.go would
+// refuse the first two with url.Parse's error, which quotes the URL whole, after the connect's ten
+// attempts, and dial the third, looking the token's head up as a host name and naming it as the
+// host it could not reach.
+//
+// The refusal names the URL by its position in urls alone, as the auth service's hubURLRefusal
+// does, and gives a reason of fixed words: any text of such a URL can be a part of the credential,
+// with no "@" left to cut it at after a comma split, and url.Parse's reason quotes the part it
+// could not read (`invalid port ":<the password's head>" after host`). A path, a query or a
+// fragment with no "@" is kept: nats.go sends a websocket URL's path and query in its handshake
+// (ws.go).
 func refuseUnreadableNATSURL(urls []string) error {
-	for _, raw := range urls {
-		server := raw
+	for index, raw := range urls {
+		server := strings.TrimSpace(raw)
 		if !strings.Contains(server, "://") {
 			server = "nats://" + server
 		}
-		_, err := url.Parse(server)
-		if err == nil {
-			continue
+		parsed, err := url.Parse(server)
+		switch {
+		case err != nil:
+			return fmt.Errorf("bus: NATS server URL %d of %d cannot be read: it does not parse as a URL; "+
+				"write a credential in it percent-encoded", index+1, len(urls))
+		case strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@"):
+			return fmt.Errorf("bus: NATS server URL %d of %d cannot be read: an \"@\" stands after its host, as it does where a "+
+				"credential in its userinfo holds a \"/\", \"?\" or \"#\"; write such a credential percent-encoded", index+1, len(urls))
 		}
-		var unread *url.Error
-		if errors.As(err, &unread) {
-			err = unread.Err
-		}
-		return fmt.Errorf("bus: the NATS server URL %s cannot be read: %w", natsURLWithoutUserinfo(raw), err)
 	}
 	return nil
 }
@@ -98,27 +112,37 @@ func LocalNATSURL(raw string) bool {
 }
 
 // natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
-// that is logged, with no userinfo at all. nats.go authenticates with the URL's userinfo
-// (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
+// that is logged, with no userinfo, query or fragment at all. nats.go authenticates with the URL's
+// userinfo (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
 // user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
-// the user name, would log a token whole. raw is read as LocalNATSURL reads it. A URL with no "@"
-// carries no userinfo and comes back as written. Any other comes back as nothing that preceded an
-// "@" in it: parsed and rendered without its userinfo when that leaves no "@", and otherwise -
-// a URL that does not parse, or one with an "@" past its authority - as what follows its last "@".
+// the user name, would log a token whole; a query can hold a token a person put there. raw is read
+// as LocalNATSURL reads it. A URL with no "@" carries no userinfo and comes back as written, up to
+// its first "?" or "#". Any other comes back as nothing that preceded an "@" in it: parsed and
+// rendered without its userinfo, query and fragment when that leaves no "@", and otherwise - a URL
+// that does not parse, or one with an "@" past its authority - as what follows its last "@", up to
+// its first "?" or "#".
 func natsURLWithoutUserinfo(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "@") {
-		return trimmed
+		return beforeQuery(trimmed)
 	}
 	withScheme := trimmed
 	if !strings.Contains(withScheme, "://") {
 		withScheme = "nats://" + withScheme
 	}
 	if parsed, err := url.Parse(withScheme); err == nil {
-		parsed.User = nil
+		parsed.User, parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = nil, "", false, "", ""
 		if rendered := parsed.String(); !strings.Contains(rendered, "@") {
 			return rendered
 		}
 	}
-	return trimmed[strings.LastIndex(trimmed, "@")+1:]
+	return beforeQuery(trimmed[strings.LastIndex(trimmed, "@")+1:])
+}
+
+// beforeQuery is text up to its first "?" or "#": a URL without its query and fragment.
+func beforeQuery(text string) string {
+	if end := strings.IndexAny(text, "?#"); end >= 0 {
+		return text[:end]
+	}
+	return text
 }
