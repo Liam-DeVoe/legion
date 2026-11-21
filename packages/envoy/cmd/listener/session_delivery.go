@@ -256,6 +256,21 @@ type sessionDelivery struct {
 	noGrantLogged bool
 }
 
+// admitHeld records the projects of r's broker token as sessionID's latest admission at the edge
+// (edgeAdmissions.admit), so its relay holds its frames to those projects and relays nothing to a
+// session it admitted none of. It does nothing for a request no edge listener admitted
+// (heldProjects), which every listener but an edge one is, nor for a nil delivery (a listener built
+// without one). A registration and a role-claim refresh each record the admission of their own
+// token so the relay they start here has it before the session's next registration.
+func (d *sessionDelivery) admitHeld(r *http.Request, sessionID string) {
+	if d == nil {
+		return
+	}
+	if projects, held := heldProjects(r); held {
+		d.admissions.admit(sessionID, projects)
+	}
+}
+
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
 // here, at the connection, because the threshold must be in hand before the first consumer is

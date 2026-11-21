@@ -1504,14 +1504,10 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 		// leader did not answer is this route's bus-unavailable 503 inside that bound, never a
 		// session silently dropped from the list.
 		scope := edgeScopeOf(r, repositories)
-		ctx := r.Context()
-		if scope != nil {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, roleHolderReadTimeout)
-			defer cancel()
-		}
+		ctx, cancel := context.WithTimeout(r.Context(), roleHolderReadTimeout)
+		defer cancel()
 		for _, entry := range entries {
-			if !strings.Contains(entry.Dir, dirFilter) || !strings.Contains(entry.Title, titleFilter) || !scope.shows(entry.SessionEntry) {
+			if !strings.Contains(entry.Dir, dirFilter) || !strings.Contains(entry.Title, titleFilter) {
 				continue
 			}
 			shown, err := scope.showsConfirmed(ctx, sessions, entry.SessionID, entry.SessionEntry)
@@ -1591,6 +1587,61 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *htt
 			ClientInstanceID: entry.ClientInstanceID,
 		})
 	}
+}
+
+// writeUnshownSession answers sessionID as a session no listener has heard of when the scope does
+// not show it, confirmed by the record the stream's leader holds for its key
+// (edgeScope.showsConfirmed): a record the server wrote, or one a cached entry still shows under
+// projects a newer write dropped, is a session the edge never heard of. A confirmation read that
+// did not answer is the bus-unavailable 503, never that 404. It reports whether it wrote the
+// answer, so a read route calls it unconditionally and returns when it did; a nil scope shows every
+// session, writes nothing and costs no read. entry is the cached entry sessionID names.
+func writeUnshownSession(ctx context.Context, w http.ResponseWriter, scope *edgeScope, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry) (written bool) {
+	shown, err := scope.showsConfirmed(ctx, sessions, sessionID, entry)
+	if err != nil {
+		writeBusUnavailable(w, err)
+		return true
+	}
+	if !shown {
+		writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
+		return true
+	}
+	return false
+}
+
+// claimRefreshProjects is the projects a role claim's refresh writes on the claimant's session
+// entry (session.SessionEntry.Projects, through PutWithin), keeping the stored record's projects
+// only where that record is the session's own registration, and taking the claim token's projects
+// otherwise, so a forged record's projects are never written back as this session's own:
+//   - the stored record names sessionID (entry.SessionID, a cheap pre-check on the cached entry),
+//     and the stream's leader confirms its newest message is a writer's that names sessionID
+//     (session.SessionRegistry.StoredByWriter), not a RePublish of another stream the server stored
+//     at the key, which session.DecodeEntry can read as a record of this very key naming any
+//     projects. Both "names its key" and "is a writer's" are judged on the one record the leader
+//     returns, never on the direct get the pre-check reads, so a writer's write landing between the
+//     two reads cannot leave a RePublished record's projects standing. Every listener confirms, not
+//     the edge alone: once an in-house listener writes a RePublished record's projects back as a
+//     registration, the edge can no longer tell it from one (edgeScope.showsConfirmed).
+//   - otherwise - a record that names another key, one an earlier build wrote naming no key, one the
+//     server wrote, and a claim with no broker token - the projects of the token this claim was made
+//     with (registeringProjects), [] for a claim that presented none, which the edge shows no
+//     project on.
+//
+// The error is the confirmation read that did not answer, which the caller answers as the
+// bus-unavailable 503, so a hiccup never wipes a session's projects.
+func claimRefreshProjects(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) ([]string, error) {
+	if entry.SessionID == sessionID {
+		readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+		confirmed, ok, err := sessions.StoredByWriter(readCtx, sessionID)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("confirm role claimant registration: %w", err)
+		}
+		if ok && confirmed.SessionID == sessionID {
+			return confirmed.Projects, nil
+		}
+	}
+	return registeringProjects(r), nil
 }
 
 // sessionEntryHandler answers GET /v1/registry/<session_id>, the one question a caller holding a
@@ -1686,20 +1737,8 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 					return
 				}
 			}
-			if scope != nil {
-				// A not-live entry the token's list names is answered as a stopped session only
-				// when its stored record confirms it (edgeScope.showsConfirmed); a record the
-				// server wrote is a session the edge never heard of, and a read that did not answer
-				// is a 503.
-				shown, confErr := scope.showsConfirmed(ctx, d.sessions, sessionID, entry)
-				if confErr != nil {
-					writeBusUnavailable(w, confErr)
-					return
-				}
-				if !shown {
-					writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
-					return
-				}
+			if writeUnshownSession(ctx, w, scope, d.sessions, sessionID, entry) {
+				return
 			}
 			writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, state))
 		case err != nil:
@@ -1712,16 +1751,8 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			// At the edge a session of none of the token's projects is answered as one no listener
 			// has heard of, and a shown session's roles and topics are those projects' alone. A
 			// confirmation read that did not answer is the bus-unavailable 503, never that 404.
-			if scope != nil {
-				shown, confErr := scope.showsConfirmed(ctx, d.sessions, sessionID, entry)
-				if confErr != nil {
-					writeBusUnavailable(w, confErr)
-					return
-				}
-				if !shown {
-					writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
-					return
-				}
+			if writeUnshownSession(ctx, w, scope, d.sessions, sessionID, entry) {
+				return
 			}
 			info, err := sessionInfoFor(ctx, d.registry, session.ListEntry{SessionID: sessionID, SessionEntry: entry, State: state})
 			info.Roles = scope.roles(info.Roles)
@@ -2101,48 +2132,17 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// (listenerwire.SessionInfo.Port) for as long as the claims keep refreshing the entry,
 		// where writing it out lets it lapse with the entry it came on.
 		entry.Port = 0
-		// The refresh names the key it writes (session.SessionRegistry.PutWithin), so it keeps the
-		// stored record's projects only where that record is this session's own registration: it
-		// names this key, and the stream's leader confirms its newest message is a writer's
-		// (session.SessionRegistry.StoredByWriter), not one the server wrote at the key. A RePublish
-		// of another stream naming the key's subject can read as a record of this session
-		// (session.DecodeEntry) naming this very key and any projects it likes, so the binding alone
-		// does not tell it from a registration; only the leader read does. Every listener confirms,
-		// not the edge alone: this refresh writes the entry as the session's own registration, and
-		// once an in-house session's own listener writes a RePublished record's projects back as one,
-		// the edge can no longer tell it from a registration (edgeScope.showsConfirmed reads a
-		// writer's put). A record that names another key, one an earlier build wrote naming no key,
-		// and one the server wrote are refreshed with the projects of the token this claim was made
-		// with (registeringProjects): a forged record's projects are never written back as this
-		// session's own, and a claim with no broker token leaves the entry unbound, which the edge
-		// shows no project on. A confirmation read that did not answer is the bus-unavailable 503, as
-		// every other read that did not answer is, so a hiccup never wipes a session's projects.
-		// The direct get above is a cheap pre-check: a record that does not name this key takes
-		// registeringProjects with no leader read. Where it does, the kept decision rests on the
-		// record the stream's leader returns, never on that direct get.
-		keepProjects := entry.SessionID == body.SessionID
-		if keepProjects {
-			readCtx, readCancel := context.WithTimeout(ctx, roleHolderReadTimeout)
-			confirmed, ok, storedErr := d.sessions.StoredByWriter(readCtx, body.SessionID)
-			readCancel()
-			if storedErr != nil {
-				writeStoreError(ctx, w, fmt.Errorf("confirm role claimant registration: %w", storedErr), http.StatusServiceUnavailable)
-				return
-			}
-			// Both "names its key" and "is a writer's" are judged on the one record the leader
-			// returns, and its projects are the ones kept: the earlier bucket read (a direct get
-			// through bucketSessionEntry) is a separate message, so a writer's write landing
-			// between the two reads would otherwise let that read's RePublished projects stand
-			// while the leader confirms a different record - one that names no key, which
-			// session.DecodeEntry reads with an empty SessionID, among them.
-			keepProjects = ok && confirmed.SessionID == body.SessionID
-			if keepProjects {
-				entry.Projects = confirmed.Projects
-			}
+		// claimRefreshProjects keeps the stored record's projects only where the stream's leader
+		// confirms that record is this session's own registration, and takes the claim token's
+		// projects (registeringProjects) otherwise, so a forged record's projects are never written
+		// back as this session's own. A confirmation read that did not answer is the bus-unavailable
+		// 503, so a hiccup never wipes a session's projects.
+		projects, projectsErr := claimRefreshProjects(ctx, d.sessions, r, body.SessionID, entry)
+		if projectsErr != nil {
+			writeStoreError(ctx, w, projectsErr, http.StatusServiceUnavailable)
+			return
 		}
-		if !keepProjects {
-			entry.Projects = registeringProjects(r)
-		}
+		entry.Projects = projects
 		// The refresh names this machine as the session's relay, so a claim made through
 		// another edge replica than the one the session registered through moves the relay
 		// here. An edge relay holds the session's frames to the projects of the token this
@@ -2150,9 +2150,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// none of, so the claim records the admission of its own token first, as a registration
 		// does (subscribeHandler): the relay the refresh starts here has it, and the session's
 		// messages keep reaching it before its next registration.
-		if projects, held := heldProjects(r); held && d.consumers != nil {
-			d.consumers.admissions.admit(body.SessionID, projects)
-		}
+		d.consumers.admitHeld(r, body.SessionID)
 		// Whether the claimant was live before this refresh is read before it, from this
 		// listener's cache with no bucket call, as a registration reads it (registerPass): a
 		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.
@@ -2372,7 +2370,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					slog.String("client_instance_id", claimantInstanceID))
 			}
 			// At the edge a 409 names no holder the scope does not show, as its role read names
-			// none (edgeScope.namesHolder); the revision stays, so the caller can claim against the
+			// none (edgeScope.namesHolderConfirmed); the revision stays, so the caller can claim against the
 			// record that stands.
 			scope := edgeScopeOf(r, nil)
 			if mismatch {
@@ -2492,7 +2490,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			return
 		}
 		// At the edge a holder the scope does not show, live or lapsed, is no holder the answer
-		// names: the role reads as one no claim holds (edgeScope.holder).
+		// names: the role reads as one no claim holds (edgeScope.holderConfirmed).
 		confirmed, confErr := edgeScopeOf(r, nil).holderConfirmed(ctx, d.sessions, result)
 		if confErr != nil {
 			writeBusUnavailable(w, confErr)
@@ -3166,9 +3164,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// admitted on, which it keeps in memory and never reads back from a stored record
 		// (edge_frames.go). It is recorded before the registration writes the session's entry, so
 		// the relay the entry's write starts already has it.
-		if projects, held := heldProjects(r); held && d.consumers != nil {
-			d.consumers.admissions.admit(body.SessionID, projects)
-		}
+		d.consumers.admitHeld(r, body.SessionID)
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
 		// claim of the controller role behind a project's notice lane
@@ -3485,7 +3481,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	}, logger))
 	v1.Handle("/v1/sessions", sessionsHandler(d.registry, d.sessions, d.repositories))
 	v1.Handle("/v1/sessions/", deleteSessionHandler(d, logger))
-	v1.Handle(relaySocketPattern, relaySocketRoute(d.relaySockets, d.repositories))
+	v1.Handle(relaySocketPattern, relaySocketRoute(d.relaySockets))
 	v1.HandleFunc("/v1/messages/send", sendHandler(d, logger))
 	v1.HandleFunc("/v1/messages/publish", publishHandler(d, logger))
 	v1.HandleFunc("/v1", func(w http.ResponseWriter, r *http.Request) {
