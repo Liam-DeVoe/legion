@@ -5,9 +5,37 @@
 # --- Principals. ---
 
 system_namespace() { case "$1" in kube-system | gke-* | gmp-*) return 0 ;; *) return 1 ;; esac; }
-# service_agent: a Google-managed service agent, which no principal of the project can act as.
+# KNOWN_NUMBERS: the project numbers of the projects this check reads (--project, the pool project
+# and each fleet member's project), each read from its project by know_project, to the project.
+declare -A KNOWN_NUMBERS=() KNOWN_PROJECTS=()
+# know_project PROJECT: adds PROJECT's number (`gcloud projects describe`) to KNOWN_NUMBERS, once. A
+# describe that is refused adds none, so that project's service agents are judged as any account is.
+know_project() {
+  local number
+  [ -n "$1" ] && [ -z "${KNOWN_PROJECTS[$1]:-}" ] || return 0
+  KNOWN_PROJECTS[$1]=1
+  number="$(gcloud projects describe "$1" --format=json --quiet 2>/dev/null | jq -r '.projectNumber // ""' 2>/dev/null)" || true
+  [ -z "$number" ] || KNOWN_NUMBERS[$number]="$1"
+}
+# service_agent MEMBER: a Google-managed service agent the deployment needs, which no principal of
+# the project can act as: GKE's (service-<number>@container-engine-robot), GKE Hub's
+# (service-<number>@gcp-sa-gkehub) and Compute Engine's (service-<number>@compute-system) of a
+# project in KNOWN_NUMBERS, and each --service-agent. Such an agent of any other project acts for
+# whoever owns that project (its GKE robot granted rights here, as in a Shared VPC), and any other
+# service-<number>@gcp-sa-* account acts for whoever uses that product: each is judged as any
+# account is. Sets AGENT_NOTE, for a finding, when MEMBER is one of the three kinds of an unknown
+# project.
 service_agent() {
-  [[ "$1" =~ ^serviceAccount:service-[0-9]+@(gcp-sa-[a-z0-9-]+|container-engine-robot|compute-system)\.iam\.gserviceaccount\.com$ ]]
+  local named
+  AGENT_NOTE=""
+  if [[ "$1" =~ ^serviceAccount:service-([0-9]+)@(container-engine-robot|gcp-sa-gkehub|compute-system)\.iam\.gserviceaccount\.com$ ]]; then
+    [ -z "${KNOWN_NUMBERS[${BASH_REMATCH[1]}]:-}" ] || return 0
+    AGENT_NOTE=" (the service agent of project number ${BASH_REMATCH[1]}, none of the projects this check reads)"
+  fi
+  for named in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
+    [ "serviceAccount:$named" != "$1" ] || return 0
+  done
+  return 1
 }
 # account_project EMAIL sets ACCOUNT_PROJECT to the project a Google service account's email
 # names, or --project.
@@ -75,3 +103,7 @@ k8s_subject() {
 # not: every review of it is allowed by the bootstrap cluster-admin binding, so its other bindings
 # are read instead).
 own_group() { case "$1" in system:serviceaccounts | system:serviceaccounts:* | system:authenticated | system:unauthenticated) return 0 ;; *) return 1 ;; esac; }
+# --project's and the pool project's numbers, before any step judges a principal; each fleet
+# member's project is added as the Workload Identity step reaches it (member_project_iam).
+know_project "$PROJECT"
+know_project "$POOL_PROJECT"

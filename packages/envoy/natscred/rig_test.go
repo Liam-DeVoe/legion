@@ -86,7 +86,7 @@ func newOperatorRig(t *testing.T, serviceToken func(context.Context, string) (st
 	read := func(context.Context) (natshold.Reading, bool, error) { return row, true, nil }
 	return startRig(t, "operator/-/*="+operatorAccount, natscallout.Deps{
 		ServiceToken: serviceToken,
-		Hold:         natscallout.NewHoldView(read, []ed25519.PublicKey{public}, nil),
+		Hold:         natscallout.NewHoldView(read, []ed25519.PublicKey{public}, nil, nil),
 	})
 }
 

@@ -600,37 +600,43 @@ func routes() []apiRoute {
 		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
 		// with the same hold id, which the row keeps. The body is signed by a key of
 		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
-		// A move from a row the floor reads so is 409 gen_mismatch with no row; a gen the row no
-		// longer holds is 409 gen_mismatch and a hold id not the row's 409 hold_mismatch, each with
-		// the row, and any other move 400 bad_transition. The move commits before it answers, so
-		// every decision of the auth service that starts after the answer reads the new phase.
+		// A move from an older row put back is 409 gen_mismatch with no row, and one from another
+		// row at the gen the floor took (a fork), or whose gen the log already holds (a row put back
+		// below the log), 409 below_floor with no row; a gen the row no longer holds is 409
+		// gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row, and any
+		// other move 400 bad_transition. The move commits before it answers, so every decision of
+		// the auth service that starts after the answer reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
-		// deleted: held with a hold id, or released, which only while the log is empty or its
-		// latest entry is released (400 bad_transition otherwise, so no restore frees the clients
-		// mid-hold), at one above the highest gen nats_hold_log holds (1 for an empty log), signed
-		// over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
-		// afresh, since the operator's commands cannot read the log; a row that is there is 409
-		// row_exists.
+		// deleted, judged by the log's latest entry, which must verify (409 below_floor otherwise,
+		// storing nothing): held with a hold id, only after a prepare or held entry of that hold
+		// id, or released, only after a released or prepare entry, or a held one whose hold's
+		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
+		// clients mid-hold, and a hold the log shows ended is not held again), at one above the
+		// highest gen nats_hold_log holds (1 for an empty log), signed over that gen. Another gen is
+		// 409 gen_mismatch naming restore_gen, the gen to sign afresh, since the operator's
+		// commands cannot read the log; a row that is there is 409 row_exists.
 		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
 		// Write one record of the hold the row names, whatever its phase: its cohort, its
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
 		// gen it will store. expected_gen 0 inserts a record that is not there, and any other gen
 		// updates the record that holds it, one above; a record moved since is 409 gen_mismatch,
-		// and so is a write storing a gen at or below the record's floor (recordFloors), and a hold
-		// id other than the row's 409 hold_mismatch.
+		// and so is a write storing a gen at or below the record's floor (recordFloors), an insert
+		// of a key the routes deleted while its signed delete verifies, and a hold id other than
+		// the row's 409 hold_mismatch.
 		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
 		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
 		// was stored and its signature; a record below its floor, or one the floor has seen that
 		// is now absent with no signed delete of it that verifies, is 409 below_floor.
 		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
 		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
-		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released:
-		// signed over the record's current gen (400 bad_signature otherwise), only while the row
-		// is prepare with that hold id (409 hold_mismatch otherwise), and only at that gen (409
-		// gen_mismatch otherwise). The same statement keeps the signed delete beside the records,
-		// so every replica reads the cohort as deleted. No other kind is deleted, so the journal
-		// outlives an abort.
+		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released,
+		// and for hold abort on a row lost in prepare and restored released: signed over the
+		// record's current gen (400 bad_signature otherwise), only while the row is prepare with
+		// that hold id, or released with it while that hold's done record verifies and shows
+		// prepare (409 hold_mismatch otherwise), and only at that gen (409 gen_mismatch otherwise).
+		// The same statement keeps the signed delete beside the records, so every replica reads the
+		// cohort as deleted. No other kind is deleted, so the journal outlives an abort.
 		{http.MethodDelete, "/v1/nats-hold/records", operatorAuth((*server).deleteNATSHoldCohort)},
 		// Write one family's cutover row, done by the hold's conversion or rolled_back by its
 		// rollback, with hold_gen the hold row's current gen, only while the row is held with the

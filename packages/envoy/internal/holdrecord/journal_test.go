@@ -962,4 +962,8 @@ func TestTheHoldJournal(t *testing.T) {
 	answerRows(t)
 	replicaRows(t)
 	rowFloorRows(t)
+	prepareRestoreRows(t)
+	restoreLogRows(t)
+	readerRows(t)
+	prepareAbortRows(t)
 }

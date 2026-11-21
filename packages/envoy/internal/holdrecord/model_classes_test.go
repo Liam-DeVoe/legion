@@ -10,11 +10,13 @@ import (
 // ---------------------------------------------------------------- invariants and classes
 
 // pendingAtCompletion lists the intents that may not be pending at completion: all but hold
-// release's own lock, and hold abort's after a done prove while the row is held.
+// release's own lock, hold abort's after a done prove while the row is held, and hold set's on a
+// row lost in prepare whose hold abort on the released row completed the record (PrepLost 'E'):
+// hold set can no longer move that row from prepare.
 func pendingAtCompletion(s modelState) []string {
 	var out []string
 	for _, c := range list(s.Intent) {
-		if c == CommandRelease || (c == CommandAbort && s.Proved && s.Row == 'H') {
+		if c == CommandRelease || (c == CommandAbort && s.Proved && s.Row == 'H') || (c == cmdSet && s.PrepLost == 'E') {
 			continue
 		}
 		out = append(out, c)
@@ -169,6 +171,11 @@ func classifyR28(r modelRules, sc modelScenario, kind string, s modelState, trac
 }
 
 func classify(r modelRules, sc modelScenario, kind string, s modelState, trace []string) string {
+	// A row lost in prepare and restored released left the hold's cohort and journal, and no
+	// command ends them: the class ReleasedPrepareAbort fixes, whichever command failed before.
+	if kind == "liveness" && s.PrepLost == 'O' {
+		return classOrphan
+	}
 	// A command failed for good after its intent, and no command the table admits ends the hold:
 	// the class WayOut and EveryCommandStoppable fix. Only the profiles that model the failure
 	// (Fail) reach it.
@@ -321,7 +328,7 @@ func disagreement(sc modelScenario, s modelState) string {
 		}
 		since := ""
 		for _, o := range ents {
-			if o.State == stateDone {
+			if o.State == StateDone {
 				since = addSet(since, o.Command)
 			}
 		}

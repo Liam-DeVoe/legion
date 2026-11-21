@@ -2,6 +2,7 @@ package streams_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,8 +22,8 @@ import (
 // convert form, a session consumer the records name, and the barrier stream standing.
 type census struct {
 	*hub
-	barrierAt, recordsAt atomic.Int64
-	calls                atomic.Int64
+	barrierAt, recordsAt, freshAt atomic.Int64
+	calls                         atomic.Int64
 	// listenerFresh is the listener's durable in its fresh form, which the selection records name.
 	listenerFresh string
 }
@@ -54,9 +55,9 @@ func startCensus(t *testing.T, grant natsgrant.Permissions) *census {
 	return c
 }
 
-// input is the census's input on c: held, every family converted, the barrier and the records'
-// read each counted in the order they came, the listener machine ids hub and x, and the listener's
-// fresh durable recorded under the session family.
+// input is the census's input on c: held, every family converted, the barrier and the records' and
+// fresh names' reads each counted in the order they came, the listener machine ids hub and x, and
+// the listener's fresh durable recorded under the session family.
 func (c *census) input() streams.CensusInput {
 	return streams.CensusInput{
 		Phase:    phase(natsgrant.OperatorPhaseHeld),
@@ -70,8 +71,11 @@ func (c *census) input() streams.CensusInput {
 			}
 			return nil
 		},
-		Consumers:          streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: []string{"hub", "x"}}),
-		RecordedFreshNames: map[string][]string{"session": {c.listenerFresh}},
+		Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: []string{"hub", "x"}}),
+		RecordedFreshNames: func(context.Context) (map[string][]string, map[string]string, error) {
+			c.freshAt.Store(c.calls.Add(1))
+			return map[string][]string{"session": {c.listenerFresh}}, nil, nil
+		},
 		RecordedSessionConsumers: func(context.Context) ([]streams.ConsumerShape, error) {
 			c.recordsAt.Store(c.calls.Add(1))
 			return []streams.ConsumerShape{{
@@ -129,6 +133,7 @@ func TestStreamsCensusRemovesWhatIsNotDeclared(t *testing.T) {
 	requireConsumerFailure(t, report, bus.Stream, bus.ListenerDurable("x"), "filter subjects")
 	requireFailureNaming(t, report, interests, "republish")
 	require.Less(t, c.barrierAt.Load(), c.recordsAt.Load(), "the census read the records before its barrier")
+	require.Less(t, c.barrierAt.Load(), c.freshAt.Load(), "the census read the fresh names before its barrier")
 
 	_, err = c.js.StreamInfo("PLANT")
 	require.ErrorIs(t, err, natsgo.ErrStreamNotFound, "the census left PLANT")
@@ -234,6 +239,8 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 	}
 	bases := map[string]string{"session": bus.ListenerDurable("hub"), "dispatch": bus.DispatchDeliveryDurable, "daemon/PUB": daemon.Name}
 	in := c.input()
+	freshNames := map[string][]string{"session": {c.listenerFresh}}
+	in.RecordedFreshNames = func(context.Context) (map[string][]string, map[string]string, error) { return freshNames, nil, nil }
 	in.Consumers = streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: []string{"hub", "x"}, Daemons: []streams.ConsumerShape{daemon}})
 	unrecorded := map[string]string{}
 	var recorded []string
@@ -244,7 +251,7 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 		} else {
 			_, err := c.js.AddConsumer(bus.Stream, create[family](kept))
 			require.NoError(t, err)
-			in.RecordedFreshNames[family] = append(in.RecordedFreshNames[family], kept)
+			freshNames[family] = append(freshNames[family], kept)
 		}
 		_, err := c.js.AddConsumer(bus.Stream, create[family](orphan))
 		require.NoError(t, err)
@@ -265,11 +272,11 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 	}
 }
 
-// A consumer of a family whose store is gone (CensusInput.GoneNames) is left as it is and named,
-// whatever its configuration, in its own name or its fresh form: the records that alone tell an
-// orphan from a selected name went with the store, which is no evidence to delete anything. Each is
-// printed LEFT with why, and counted as neither a change nor a failure, so a census that finds only
-// those is clean.
+// A consumer of a family whose store is gone (the gone names CensusInput.RecordedFreshNames
+// reads) is left as it is and named, whatever its configuration, in its own name or its fresh form:
+// the records that alone tell an orphan from a selected name went with the store, which is no
+// evidence to delete anything. Each is printed LEFT with why, and counted as neither a change nor a
+// failure, so a census that finds only those is clean.
 func TestStreamsCensusLeavesAGoneStoresConsumers(t *testing.T) {
 	c := startCensus(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
 	const gone, why = "legion-go-GONE-github", "the project's store is gone"
@@ -281,7 +288,9 @@ func TestStreamsCensusLeavesAGoneStoresConsumers(t *testing.T) {
 		require.NoError(t, err)
 	}
 	in := c.input()
-	in.GoneNames = map[string]string{gone: why}
+	in.RecordedFreshNames = func(context.Context) (map[string][]string, map[string]string, error) {
+		return map[string][]string{"session": {c.listenerFresh}}, map[string]string{gone: why}, nil
+	}
 
 	report, err := streams.Census(t.Context(), c.connect(t, operatorInbox, nil), in)
 	require.NoError(t, err)
@@ -292,4 +301,35 @@ func TestStreamsCensusLeavesAGoneStoresConsumers(t *testing.T) {
 		require.Contains(t, left, name, "the census removed a gone store's consumer")
 		require.Contains(t, report.Lines(), "LEFT "+bus.Stream+" consumer "+name+": "+why)
 	}
+}
+
+// The census reads the recorded fresh names after its barrier on their bucket: a record committed
+// just before the barrier, as one the leader had not yet applied after the hold's restart, is read,
+// and its durable kept. The probe writes the listener's second fresh name into the records from the
+// barrier callback itself, so a census that read the names before its barrier would miss it and
+// remove that durable as an unrecorded fresh name.
+func TestStreamsCensusReadsFreshNamesAfterItsBarrier(t *testing.T) {
+	c := startCensus(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
+	late := bus.ListenerDurable("hub") + "~" + nuid.Next()
+	_, err := c.js.AddConsumer(bus.Stream, listenerConsumer(late))
+	require.NoError(t, err)
+	records := map[string][]string{"session": {c.listenerFresh}}
+	in := c.input()
+	barrier := in.Barrier
+	in.Barrier = func(ctx context.Context, bucket string) error {
+		if bucket == streams.SessionConsumerRecordsBucket {
+			records["session"] = append(records["session"], late)
+		}
+		return barrier(ctx, bucket)
+	}
+	in.RecordedFreshNames = func(context.Context) (map[string][]string, map[string]string, error) {
+		c.freshAt.Store(c.calls.Add(1))
+		return map[string][]string{"session": slices.Clone(records["session"])}, nil, nil
+	}
+
+	report, err := streams.Census(t.Context(), c.connect(t, operatorInbox, nil), in)
+	require.NoError(t, err)
+	require.Equal(t, 0, report.ExitCode(), "%v", report.Lines())
+	require.Contains(t, c.consumers(t, bus.Stream), late, "the census removed a durable whose record was written before its barrier")
+	require.Less(t, c.barrierAt.Load(), c.freshAt.Load(), "the census read the fresh names before its barrier")
 }

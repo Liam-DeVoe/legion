@@ -20,7 +20,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -47,7 +50,9 @@ type Broker struct {
 
 	deps         api.Deps
 	routes       atomic.Pointer[http.ServeMux]
+	floor        atomic.Pointer[signedrecord.Floor]
 	replica      *http.ServeMux
+	replicaFloor *signedrecord.Floor
 	onReplica    atomic.Bool
 	hook         atomic.Pointer[func(http.ResponseWriter, *http.Request) bool]
 	recordWrites atomic.Int64
@@ -85,8 +90,9 @@ func Start(t testing.TB) *Broker {
 		},
 	}}
 	b.Restart()
+	b.replicaFloor = &signedrecord.Floor{}
 	b.replica = http.NewServeMux()
-	api.Register(b.replica, b.deps)
+	api.Register(b.replica, b.depsWith(b.replicaFloor))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/nats-hold/records" {
 			b.recordWrites.Add(1)
@@ -106,19 +112,42 @@ func Start(t testing.TB) *Broker {
 }
 
 // Restart mounts the hold's routes afresh on the same tables, as a broker process that starts
-// again does: what the routes kept in memory, each record's floor among it, is gone, and every
-// later request is served by the new routes at the same URL.
+// again does: what the routes kept in memory, each record's floor and the row's floor among it, is
+// gone, and every later request is served by the new routes at the same URL.
 func (b *Broker) Restart() {
+	floor := &signedrecord.Floor{}
 	mux := http.NewServeMux()
-	api.Register(mux, b.deps)
+	api.Register(mux, b.depsWith(floor))
+	b.floor.Store(floor)
 	b.routes.Store(mux)
+}
+
+// depsWith is b's routes' Deps with floor the process's floor of the hold row.
+func (b *Broker) depsWith(floor *signedrecord.Floor) api.Deps {
+	deps := b.deps
+	deps.NATSHold.RowFloor = floor
+	return deps
 }
 
 // UseReplica sends every later request to b's second replica when on, and to the first when not.
 // Start mounts both on the same tables, as production runs two broker processes on one database:
-// each keeps what it keeps in memory, each record's floor among it, so what one replica learns only
-// from the database, the other's writes and deletes, is tested there. Restart restarts the first.
+// each keeps what it keeps in memory, each record's floor and its row's floor among it, so what one
+// replica learns only from the database, the other's writes and deletes, is tested there. Restart
+// restarts the first.
 func (b *Broker) UseReplica(on bool) { b.onReplica.Store(on) }
+
+// HoldView is the auth service's hold view of the first replica's process, or of the second's
+// when second is true: it reads the hold row from b's tables and shares that process's floor of
+// the row with its routes, as cmd/cipherd wires one process.
+func (b *Broker) HoldView(second bool) *natscallout.HoldView {
+	floor := b.floor.Load()
+	if second {
+		floor = b.replicaFloor
+	}
+	pool, schema := b.Pool, b.deps.NATSHold.Schema
+	read := func(ctx context.Context) (natshold.Reading, bool, error) { return natshold.Read(ctx, pool, schema) }
+	return natscallout.NewHoldView(read, []ed25519.PublicKey{b.VerifyKey}, floor, nil)
+}
 
 // verifyOperatorToken is the routes' platform-token verifier: OperatorToken is the operator
 // entry's account, issued now and living ten minutes, and any other token is refused.
