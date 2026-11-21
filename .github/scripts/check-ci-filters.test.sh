@@ -1800,7 +1800,7 @@ printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_pl
 mkdir -p "$root/mod/dep"
 printf 'package dep\n' > "$root/mod/dep/dep.go"
 printf 'package lib\n\nimport _ "example.com/m/dep"\n' > "$root/mod/lib/dep.go"
-replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" $'              - \'mod/lib/*\'\n              - \'mod/dep/*\''
+replace "$root/.github/ci-filters.yaml" "  - 'mod/lib/*'" $'  - \'mod/lib/*\'\n  - \'mod/dep/*\''
 go_bin="$(cd "$work" && go env GOROOT)/bin"
 python=$(python3 -c 'import sys; print(sys.executable)')
 standin="$work/standin-goroot"
