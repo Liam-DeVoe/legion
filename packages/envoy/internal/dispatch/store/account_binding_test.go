@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -515,6 +516,24 @@ func TestAReplacementMadeWhileTheBindingIsOffIsCaughtUpOnceItHolds(t *testing.T)
 	}
 	if got := readGenerations(); got != generations {
 		t.Errorf("a second catch-up moved the broker revocations from %q to %q; want them as they were", generations, got)
+	}
+}
+
+// The trigger that keeps an account change made while the binding is off reads the fleet itself
+// (keep_account_binding_replacement, migration 20261121121717), with the windows spelled in SQL,
+// since no caller passes them: they must be the ones AccountBindingHolds passes
+// (AccountBindingWindows), or a change would be kept, or not, on a fleet the binding reads the
+// other way. The row reads the function's source and holds its call to the two windows' seconds.
+func TestTheReplacementTriggerReadsTheFleetOverTheBindingsWindows(t *testing.T) {
+	database := migratedEmptyStore(t)
+	var source string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select pg_get_functiondef('public.keep_account_binding_replacement()'::regprocedure)`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	legacy, mark := AccountBindingWindows()
+	if want := fmt.Sprintf("public.account_binding_fleet_read(%d, %d)", int(legacy), int(mark)); !strings.Contains(source, want) {
+		t.Errorf("keep_account_binding_replacement reads the fleet otherwise than %s, the windows AccountBindingHolds passes:\n%s", want, source)
 	}
 }
 

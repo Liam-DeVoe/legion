@@ -73,54 +73,72 @@ func AccountBindingHolds(ctx context.Context, tx pgx.Tx) (bool, error) {
 }
 
 // AccountBindingCatchUp is what one catch-up of an address did (CatchUpAccountBinding): the
-// accounts its kept replacements replaced, in the order they were replaced; how many of its
-// personal tokens it revoked; the accounts it recorded a broker revocation of; and the account
-// that holds the address, which each revocation names as the holder.
+// accounts its kept changes replaced, in the order they were replaced; whether one of them was the
+// address's first recording, which replaced none; how many of its personal tokens it revoked; the
+// accounts it recorded a broker revocation of; and the account that holds the address, which each
+// revocation names as the holder.
 type AccountBindingCatchUp struct {
-	Replaced      []string
-	TokensRevoked int64
-	Owed          []string
-	Holder        string
+	Replaced       []string
+	FirstRecording bool
+	TokensRevoked  int64
+	Owed           []string
+	Holder         string
 }
 
-// CatchUpAccountBinding catches up, in tx, the replacements of email's Google account the
-// database kept while the account binding was off (account_binding_replacements, migration
-// 20261121121717): for a caller that holds email's lock (addressLockSQL) and read the binding as
-// holding in tx (AccountBindingHolds). email is the address as people.email holds it. It revokes
-// every personal token of email that records no account and was made at or after the earliest
-// kept replacement, whichever build minted it and whichever account's credential did, the new
-// holder's own included: none of them can be told from one the replaced account minted. When
-// issuer is set (WithBrokerRevocations: a broker is configured), it records a broker revocation
-// (recordBrokerRevocationSQL) of each replaced account that does not hold email now, naming the
-// holder, after it settles what is still owed for the holder (settleReclaimedBrokerRevocationsSQL),
-// as a sign-in that replaces an account does; an account that took the address back holds it, and
-// is owed nothing. It deletes the address's rows, so a second catch-up finds none and does nothing.
-// A token that records an account is left as it is: the binding refuses it once the account it
-// records no longer holds the address (api.tokenAccountReplaced).
+// Found reports whether the catch-up found a kept change to catch up.
+func (c AccountBindingCatchUp) Found() bool {
+	return len(c.Replaced) > 0 || c.FirstRecording
+}
+
+// CatchUpAccountBinding catches up, in tx, the changes of email's Google account the database kept
+// while the account binding was off (account_binding_replacements, migration 20261121121717),
+// doing what the sign-ins that made them would have done with the binding on: for a caller that
+// holds email's lock (addressLockSQL) and read the binding as holding in tx (AccountBindingHolds).
+// email is the address as people.email holds it.
+//
+// It revokes every personal token of email that records no account and was made at or after the
+// earliest kept change, whichever build minted it and whichever account's credential did, the
+// holder's own included: none of them can be told from one a credential from before the change
+// minted. For a kept first recording it also revokes every token that records an account other
+// than the holder's or none, as a first recording does (revokeOtherAccountsTokens). When issuer is
+// set (WithBrokerRevocations: a broker is configured), it records a broker revocation
+// (recordBrokerRevocationSQL) of each account replaced, or recorded by a token it revoked, that
+// does not hold email now, naming the holder, after it settles what is still owed for the holder
+// (settleReclaimedBrokerRevocationsSQL), as a sign-in does; an account that took the address back
+// holds it, and is owed nothing. It deletes the address's rows, so a second catch-up finds none and
+// does nothing. A token that records the holder's account is left as it is, and so, outside a first
+// recording, is one that records another: the binding refuses it once the account it records no
+// longer holds the address (api.tokenAccountReplaced).
 func CatchUpAccountBinding(ctx context.Context, tx pgx.Tx, email, issuer string) (AccountBindingCatchUp, error) {
 	var caught AccountBindingCatchUp
 	rows, err := tx.Query(ctx, `
 		select replaced_subject, replaced_at from account_binding_replacements where email = $1 order by replaced_at`, email)
 	if err != nil {
-		return caught, fmt.Errorf("read the replacements of %q kept while the account binding was off: %w", email, err)
+		return caught, fmt.Errorf("read the account changes of %q kept while the account binding was off: %w", email, err)
 	}
 	var earliest time.Time
+	kept := 0
 	for rows.Next() {
-		var subject string
+		var subject *string
 		var at time.Time
 		if err := rows.Scan(&subject, &at); err != nil {
 			rows.Close()
-			return caught, fmt.Errorf("read the replacements of %q kept while the account binding was off: %w", email, err)
+			return caught, fmt.Errorf("read the account changes of %q kept while the account binding was off: %w", email, err)
 		}
-		if earliest.IsZero() {
+		if kept == 0 {
 			earliest = at
 		}
-		caught.Replaced = append(caught.Replaced, subject)
+		kept++
+		if subject == nil {
+			caught.FirstRecording = true
+		} else {
+			caught.Replaced = append(caught.Replaced, *subject)
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return caught, fmt.Errorf("read the replacements of %q kept while the account binding was off: %w", email, err)
+		return caught, fmt.Errorf("read the account changes of %q kept while the account binding was off: %w", email, err)
 	}
-	if len(caught.Replaced) == 0 {
+	if kept == 0 {
 		return caught, nil
 	}
 	if err := tx.QueryRow(ctx, `select coalesce(sub, '') from people where email = $1`, email).Scan(&caught.Holder); err != nil {
@@ -130,10 +148,19 @@ func CatchUpAccountBinding(ctx context.Context, tx pgx.Tx, email, issuer string)
 		update agent_tokens set revoked_at = now()
 		where canonical_login(owner) = $1 and revoked_at is null and subject is null and created_at >= $2`, email, earliest)
 	if err != nil {
-		return caught, fmt.Errorf("revoke the personal tokens of %q made since a replacement kept while the account binding was off: %w", email, err)
+		return caught, fmt.Errorf("revoke the personal tokens of %q made since an account change kept while the account binding was off: %w", email, err)
 	}
 	caught.TokensRevoked = revoked.RowsAffected()
-	for _, subject := range caught.Replaced {
+	owed := caught.Replaced
+	if caught.FirstRecording && caught.Holder != "" {
+		others, accounts, err := revokeOtherAccountsTokens(ctx, tx, email, caught.Holder)
+		if err != nil {
+			return caught, err
+		}
+		caught.TokensRevoked += others
+		owed = append(slices.Clone(owed), accounts...)
+	}
+	for _, subject := range owed {
 		if subject != caught.Holder && !slices.Contains(caught.Owed, subject) {
 			caught.Owed = append(caught.Owed, subject)
 		}
@@ -144,14 +171,14 @@ func CatchUpAccountBinding(ctx context.Context, tx pgx.Tx, email, issuer string)
 		}
 		for _, account := range caught.Owed {
 			if _, err := tx.Exec(ctx, recordBrokerRevocationSQL, email, issuer, account, caught.Holder); err != nil {
-				return caught, fmt.Errorf("record the broker revocation of %q owed for a replacement kept while the account binding was off: %w", email, err)
+				return caught, fmt.Errorf("record the broker revocation of %q owed for an account change kept while the account binding was off: %w", email, err)
 			}
 		}
 	} else {
 		caught.Owed = nil
 	}
 	if _, err := tx.Exec(ctx, `delete from account_binding_replacements where email = $1`, email); err != nil {
-		return caught, fmt.Errorf("delete the replacements of %q kept while the account binding was off: %w", email, err)
+		return caught, fmt.Errorf("delete the account changes of %q kept while the account binding was off: %w", email, err)
 	}
 	return caught, nil
 }

@@ -315,7 +315,7 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
-	if len(caught.Replaced) > 0 {
+	if caught.Found() {
 		LogAccountBindingCatchUp(email, caught)
 	}
 	switch {
@@ -335,13 +335,13 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	return nil
 }
 
-// LogAccountBindingCatchUp logs, at WARN, a catch-up of email's replacements kept while the
+// LogAccountBindingCatchUp logs, at WARN, a catch-up of email's account changes kept while the
 // account binding was off (CatchUpAccountBinding), by a sign-in or by the revocation loop: the
-// accounts they replaced, how many personal tokens it revoked, the accounts it owes the broker a
-// revocation of, and the holder.
+// accounts they replaced, whether one was the address's first recording, how many personal tokens
+// it revoked, the accounts it owes the broker a revocation of, and the holder.
 func LogAccountBindingCatchUp(email string, caught AccountBindingCatchUp) {
-	slog.Warn("dispatch: the account binding holds and caught up the replacements of the address made while it was off: it revoked every personal token of the address that records no account made since, and owes the broker a revocation of each replaced account",
-		"email", email, "replaced_subjects", caught.Replaced, "tokens_revoked", caught.TokensRevoked, "owed", caught.Owed, "holder", caught.Holder)
+	slog.Warn("dispatch: the account binding holds and caught up the account changes of the address made while it was off: it revoked the personal tokens of the address a sign-in with the binding on would have, and owes the broker a revocation of each account they replaced",
+		"email", email, "replaced_subjects", caught.Replaced, "first_recording", caught.FirstRecording, "tokens_revoked", caught.TokensRevoked, "owed", caught.Owed, "holder", caught.Holder)
 }
 
 // addressLockSQL takes the advisory lock on $1, an address, in the form people.email holds it

@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +188,72 @@ func clearUnboundFleet(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(ctx, `update account_binding_legacy_mark set seen_at = now() - make_interval(secs => $1)`,
 		(store.OwnerLockMarkWindow + time.Minute).Seconds()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A first recording made while the binding is off is kept too, and caught up as a first recording
+// with the binding on would have been: carol's address records no account and holds a token that
+// records none and one that records account-z, an account that never signed in. While a build
+// without the binding is in the fleet, account-a is recorded as carol's first account (this build's
+// update of sub, as a build without the binding writes it too), which revokes nothing, and the
+// token from before it mints one more that records no account. That minted token acts while the
+// binding is off and answers 401 TOKEN_REVOKED once it holds, before any catch-up. The catch-up
+// then revokes all three tokens, owes the broker account-z's revocation, naming account-a, and
+// keeps nothing.
+//
+// Control, run by hand: with the trigger keeping no first recording (the insert's and the
+// update-from-none arm of keep_account_binding_replacement returning at once), the minted token
+// acts once the binding holds, and the row fails.
+func TestATokenMintedAfterAFirstRecordingTheBindingMissedIsRefusedAndRevokedOnceItHolds(t *testing.T) {
+	const google = "https://accounts.google.com"
+	handler, database, _ := newTestServer(t, testServerOptions{signInIssuer: google})
+	ctx := context.Background()
+	const carol = "carol@example.com"
+	seedPeople(t, database, carol)
+	before, beforeID := storeTokenOf(t, database, carol, "from before any account", "")
+	_, otherID := storeTokenOf(t, database, carol, "of an account that never signed in", "account-z")
+	registerUnboundProcess(t, database)
+	if _, err := database.Pool.Exec(ctx, `update people set sub = 'account-a' where email = $1`, carol); err != nil {
+		t.Fatal(err)
+	}
+	minted := agentRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "minted after the recording"}, before)
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("beside a build without the binding, the token from before any account minted %d %s; want 201", minted.Code, minted.Body.String())
+	}
+	var made struct {
+		Token string `json:"token"`
+		ID    string `json:"id"`
+	}
+	if err := json.Unmarshal(minted.Body.Bytes(), &made); err != nil || made.Token == "" {
+		t.Fatalf("read the minted token: %v: %s", err, minted.Body.String())
+	}
+	whoami := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, made.Token)
+	}
+	if response := whoami(); response.Code != http.StatusOK {
+		t.Fatalf("beside a build without the binding, the minted token answers %d %s; want 200", response.Code, response.Body.String())
+	}
+	clearUnboundFleet(t, database)
+	if response := whoami(); response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "TOKEN_REVOKED") {
+		t.Errorf("once the binding holds, the token minted after the kept first recording answers %d %s; want 401 TOKEN_REVOKED", response.Code, response.Body.String())
+	}
+	held, caught, err := store.CatchUpAccountBindingOf(ctx, database.Pool, carol, google)
+	if err != nil || !held {
+		t.Fatalf("the catch-up answered held %t, %v", held, err)
+	}
+	if !caught.FirstRecording || len(caught.Replaced) != 0 || caught.TokensRevoked != 3 || caught.Holder != "account-a" || !slices.Equal(caught.Owed, []string{"account-z"}) {
+		t.Errorf("the catch-up did %+v; want the first recording caught up: 3 tokens revoked, account-z owed, account-a holding", caught)
+	}
+	for name, id := range map[string]string{"from before any account": beforeID, "of account-z": otherID, "minted after the recording": made.ID} {
+		var revoked bool
+		if err := database.Pool.QueryRow(ctx, `select revoked_at is not null from agent_tokens where id = $1::uuid`, id).Scan(&revoked); err != nil || !revoked {
+			t.Errorf("after the catch-up the token %s is revoked %t, %v; want it revoked", name, revoked, err)
+		}
+	}
+	var kept int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from account_binding_replacements`).Scan(&kept); err != nil || kept != 0 {
+		t.Errorf("after the catch-up %d account changes are kept, %v; want none", kept, err)
 	}
 }
 

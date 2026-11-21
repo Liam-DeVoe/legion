@@ -165,7 +165,7 @@ func (s *server) catchUpAccountBindings(ctx context.Context) (pending bool) {
 		if !held {
 			return true
 		}
-		if len(caught.Replaced) > 0 {
+		if caught.Found() {
 			store.LogAccountBindingCatchUp(email, caught)
 		}
 	}
