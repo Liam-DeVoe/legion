@@ -48,7 +48,7 @@ func readOutageGroups(t *testing.T, rig *privacyRig, holder, token string, stand
 	readErr, isRead := errors.AsType[*roles.ReadError](err)
 	reading.fallbackHeld = isRead && readErr.Step == roles.PrivacyRead
 	request := httptest.NewRequest(http.MethodGet, "/v1/privacy-readiness", nil)
-	request = request.WithContext(context.WithValue(request.Context(), serviceAccountKey{}, outageDispatchAccount))
+	request = request.WithContext(withVerifiedPrincipal(request.Context(), outageDispatchAccount))
 	recorder := httptest.NewRecorder()
 	privacyReadinessHandler(rig.privacy).ServeHTTP(recorder, request)
 	reading.ready = recorder.Code

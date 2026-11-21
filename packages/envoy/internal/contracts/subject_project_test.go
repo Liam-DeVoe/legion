@@ -85,7 +85,7 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 		"builders":       {len(fixture.Builders), 7},
 		"issueProject":   {len(fixture.IssueProject), 8},
 		"roleProject":    {len(fixture.RoleProject), 10},
-		"subjectProject": {len(fixture.SubjectProject), 44},
+		"subjectProject": {len(fixture.SubjectProject), 46},
 		"canonicalTopic": {len(fixture.CanonicalTopic), 23},
 		"legacyTwin":     {len(fixture.LegacyTwin), 20},
 		"canonicalRole":  {len(fixture.CanonicalRole), 8},

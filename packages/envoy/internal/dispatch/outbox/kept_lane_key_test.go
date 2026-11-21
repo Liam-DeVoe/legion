@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -16,7 +17,7 @@ import (
 func TestAPRIVAndAPUBCopyOfOneRoleKeepSeparateLanes(t *testing.T) {
 	unclaimed := roles.Resolution{State: roles.Unclaimed}
 	keptFor := func(role string) string {
-		return forwardOf(role, contracts.Envelope{}, unclaimed, nil).keptFor
+		return forwardOf(role, contracts.Envelope{}, unclaimed, nil, time.Time{}).keptFor
 	}
 	priv := keptFor(contracts.RoleClaimKey("PRIV", "reviewer"))
 	pub := keptFor(contracts.RoleClaimKey("PUB", "reviewer"))
@@ -29,7 +30,7 @@ func TestAPRIVAndAPUBCopyOfOneRoleKeepSeparateLanes(t *testing.T) {
 	if legion := keptFor("legion-infra-infra-12-architect"); legion != "legion-infra-infra-12-architect" {
 		t.Errorf("a Legion role's copy keeps lane %q, want its own key", legion)
 	}
-	if skipped := forwardOf("Not A Role", contracts.Envelope{}, unclaimed, nil); skipped.keptFor != "" || skipped.skip == "" {
+	if skipped := forwardOf("Not A Role", contracts.Envelope{}, unclaimed, nil, time.Time{}); skipped.keptFor != "" || skipped.skip == "" {
 		t.Errorf("a role no claim can name was kept for %q, want it skipped", skipped.keptFor)
 	}
 	// Control: the role's name alone is one lane for both copies.

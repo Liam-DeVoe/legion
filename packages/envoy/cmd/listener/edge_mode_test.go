@@ -1,8 +1,10 @@
 package main
 
-// edge_mode_test.go holds the edge listener's rules on a real bus: the admission, the topics a
-// session follows with the GitHub rows, the stored topics a plan brings in, the roles, the sends,
-// the reads, the start, and the record of the registering token's projects on each session.
+// edge_mode_test.go holds the edge listener's request rules on a real bus: the admission, the
+// topics a session follows and the stored topics a plan brings in, the roles and the claims a
+// session brings, the sends and publishes, the reads, the start, and the record of the
+// registering token's projects on each session. The GitHub rows are in
+// edge_repositories_test.go, and the rig both files run on is in edge_rig_test.go.
 //
 // Every row reads the projects its listener serves from ENVOY_EDGE_PROJECTS when the test's own
 // environment sets it, and serves PRIV otherwise (edgeTestProjects). So the control every row is
@@ -11,32 +13,26 @@ package main
 // refused.
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -44,330 +40,13 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// edgeTestProjects is the projects the rows' edge listener serves: PRIV, unless the test's own
-// environment sets ENVOY_EDGE_PROJECTS, read then as the listener reads it. Set empty, it is the
-// edge-off control: a listener that serves no project is in no edge mode.
-func edgeTestProjects(t *testing.T) []string {
-	t.Helper()
-	raw, set := os.LookupEnv("ENVOY_EDGE_PROJECTS")
-	if !set {
-		return []string{"PRIV"}
-	}
-	projects, err := oauthwire.ParseProjects(strings.ReplaceAll(raw, ",", " "))
-	if err != nil {
-		t.Fatalf("ENVOY_EDGE_PROJECTS=%q: %v", raw, err)
-	}
-	t.Logf("ENVOY_EDGE_PROJECTS=%q: the listener serves %v (edge mode %t)", raw, projects, len(projects) > 0)
-	return projects
-}
-
-// The repository answer every GitHub row starts from, as the broker's route relays Dispatch's:
-// PRIV-1 names acme/pub, PRIV-3 names none and is a child of PRIV-2, which names acme/two, so
-// PRIV's issues resolve to acme/pub and acme/two; INFRA-1 names acme/priv, which is INFRA's and
-// no repository of PRIV's. Which issue resolves where is Dispatch's one rule; the stand-in
-// answers its result.
-func edgeRepositoryFixture() map[string][]string {
-	return map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "INFRA": {"acme/priv"}}
-}
-
-// edgeAccountToken is the stand-in broker account the rig's repository reader asks with.
-const edgeAccountToken = "listener-account-token"
-
-// repositoryStandIn is the broker's GET /v1/project-repositories as the edge listener reads it:
-// the answer of each project it serves, 403 PROJECT_NOT_LISTED for any other, and the status the
-// test sets in place of every answer while it sets one.
-type repositoryStandIn struct {
-	server  *httptest.Server
-	serves  []string
-	mu      sync.Mutex
-	answers map[string][]string
-	status  int
-	calls   atomic.Int64
-	bearers []string
-}
-
-func newRepositoryStandIn(t *testing.T, serves []string, answers map[string][]string) *repositoryStandIn {
-	t.Helper()
-	stand := &repositoryStandIn{serves: serves, answers: answers}
-	stand.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != edgeRepositoriesPath {
-			http.NotFound(w, r)
-			return
-		}
-		stand.calls.Add(1)
-		stand.mu.Lock()
-		stand.bearers = append(stand.bearers, r.Header.Get("Authorization"))
-		status, answers := stand.status, stand.answers
-		stand.mu.Unlock()
-		project := r.URL.Query().Get("project")
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case status != 0:
-			w.WriteHeader(status)
-			_, _ = fmt.Fprintf(w, `{"code":"REPOSITORIES_UNKNOWN","error":"the stand-in answers %d"}`, status)
-		case !slices.Contains(stand.serves, project):
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"code":"PROJECT_NOT_LISTED","error":"the caller's edge-listener entry does not list this project"}`))
-		default:
-			repositories := answers[project]
-			if repositories == nil {
-				repositories = []string{}
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"project": project, "repositories": repositories})
-		}
-	}))
-	t.Cleanup(stand.server.Close)
-	return stand
-}
-
-// answer makes project's answer repositories from the next call on.
-func (s *repositoryStandIn) answer(project string, repositories ...string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	answers := make(map[string][]string, len(s.answers))
-	for key, value := range s.answers {
-		answers[key] = value
-	}
-	answers[project] = repositories
-	s.answers = answers
-}
-
-// failWith makes every later call answer status, 0 for the answers again.
-func (s *repositoryStandIn) failWith(status int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.status = status
-}
-
-func (s *repositoryStandIn) lastBearer() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.bearers) == 0 {
-		return ""
-	}
-	return s.bearers[len(s.bearers)-1]
-}
-
-// edgeClock is the clock the rows' repository reader dates its answers by: the real one, moved
-// on by what a row adds, so a row ages an answer past its life without waiting it out.
-type edgeClock struct{ ahead atomic.Int64 }
-
-func (c *edgeClock) now() time.Time { return time.Now().Add(time.Duration(c.ahead.Load())) }
-
-func (c *edgeClock) advance(d time.Duration) { c.ahead.Add(int64(d)) }
-
-// edgeRig is a listener's /v1 as an edge deployment runs it, every piece real but the broker: the
-// routes and session relays over the in-process server (relayRig), the broker-token credential
-// behind apiAuth with this listener's edge projects, the broker's introspection stub, and the
-// stand-in of its repository route, read through the listener's own reader. Its refresh loop runs
-// on ticks the row sends (tick), so a row orders a refresh against its own publishes.
-type edgeRig struct {
-	*relayRig
-	projects     []string
-	handler      http.Handler
-	broker       *brokertokentest.StubBroker
-	caller       *brokertokentest.Caller
-	repositories *repositoryStandIn
-	reader       *edgeRepositories
-	clock        *edgeClock
-	met          *metrics.Registry
-	agents       *legionagents.Store
-	ticks        chan time.Time
-}
-
-func newEdgeRig(t *testing.T) *edgeRig {
-	t.Helper()
-	return newEdgeRigServing(t, edgeTestProjects(t))
-}
-
-// newEdgeRigServing is the rig of a listener serving projects, whatever the test's environment
-// says: none is a listener in no edge mode, which the rows that hold every listener use.
-func newEdgeRigServing(t *testing.T, projects []string) *edgeRig {
-	t.Helper()
-	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
-	// The publish route forwards a role message to its holder through the delivery config main
-	// wires and records each confirmation, so the rows that publish to a held role need both.
-	withPublishRoute(t, rig.deps)
-	met := metrics.New()
-	stand := newRepositoryStandIn(t, []string{"PRIV"}, edgeRepositoryFixture())
-	clock := &edgeClock{}
-	logger := rig.harness.config.logger
-	reader := newEdgeRepositories(stand.server.URL, listenerBrokerAccount(edgeAccountToken), projects, newEdgeWithheldCounter(met), logger)
-	reader.now = clock.now
-	agents, err := legionagents.Open(t.Context(), rig.harness.client.Conn, legionagents.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the legion agent registry: %v", err)
-	}
-	rig.deps.legionAgents = newLegionAgentRegistry(agents)
-	edge := &edgeRig{relayRig: rig, projects: projects, met: met, repositories: stand, reader: reader, clock: clock,
-		agents: agents, ticks: make(chan time.Time)}
-	if len(projects) > 0 {
-		rig.deps.repositories = reader
-		rig.relays.repositories = reader
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			runEdgeRepositories(ctx, rig.deps, "test-machine", edge.ticks)
-		}()
-		t.Cleanup(func() {
-			cancel()
-			<-done
-		})
-	}
-	rig.relays.setOwned(true)
-	edge.broker = brokertokentest.NewStubBroker(t)
-	edge.caller = brokertokentest.NewCaller(t)
-	edge.handler = apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, edge.broker), edgeProjects: projects, logger: logger}, rig.mux)
-	return edge
-}
-
-// edgeOn reports whether the rig's listener is in edge mode: false under the control.
-func (r *edgeRig) edgeOn() bool { return len(r.projects) > 0 }
-
-// tick runs one pass of the listener's repository refresh and waits for it to finish.
-func (r *edgeRig) tick(t *testing.T) {
-	t.Helper()
-	if !r.edgeOn() {
-		return
-	}
-	before := r.reader.passes.Load()
-	select {
-	case r.ticks <- time.Now():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the repository refresh loop took no tick within 10 s")
-	}
-	testwait.Eventually(t, "the repository refresh pass to finish", func() bool { return r.reader.passes.Load() > before })
-}
-
-// personToken is a token the broker answers as session's, acting for a person, of project scope
-// person and listing projects: the token an agent's own trade makes.
-func (r *edgeRig) personToken(session string, projects ...string) string {
-	token := "access-token-of-" + session
-	answer := sessionAnswer(session, "outside@example.com", r.caller.JKT())
-	answer.Projects = slices.Sorted(slices.Values(projects))
-	r.broker.Says(token, answer)
-	return token
-}
-
-// namedToken is a named project's token for session: an operator's entry's, its one project.
-func (r *edgeRig) namedToken(session, project string) string {
-	token := "named-token-of-" + session
-	answer := sessionAnswer(session, "outside@example.com", r.caller.JKT())
-	answer.ProjectScope = brokertoken.ProjectScopeNamed
-	answer.Projects = []string{project}
-	r.broker.Says(token, answer)
-	return token
-}
-
-// call sends one request through the whole stack: the credential, then the route.
-func (r *edgeRig) call(t *testing.T, method, token, path, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	recorder := httptest.NewRecorder()
-	r.handler.ServeHTTP(recorder, brokerTokenRequest(t, r.caller, method, path, token, body))
-	return recorder
-}
-
-// subscribe registers session under token for consumer delivery, following topics.
-func (r *edgeRig) subscribe(t *testing.T, token, session string, topics ...string) *httptest.ResponseRecorder {
-	t.Helper()
-	return r.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(session, "epoch-1", topics...))
-}
-
-// placeElsewhere writes session's entry as another listener's registration under a token listing
-// projects would, and its interest row, so the edge's reads find a session it did not register.
-func (r *edgeRig) placeElsewhere(t *testing.T, sessionID string, projects ...string) {
-	t.Helper()
-	if projects == nil {
-		projects = []string{}
-	}
-	if err := r.deps.sessions.Put(sessionID, session.SessionEntry{MachineID: "shared-listener", SelfSubscribed: true, Title: sessionID, Projects: projects}); err != nil {
-		t.Fatalf("register %s elsewhere: %v", sessionID, err)
-	}
-	if _, err := r.deps.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "shared-listener"}, []string{contracts.LegacyAgentSubject(sessionID)}); err != nil {
-		t.Fatalf("write %s's interest row: %v", sessionID, err)
-	}
-}
-
-// placeElsewhereFollowing is placeElsewhere of a session whose interest row another listener
-// stored with topics beside its agent subject.
-func (r *edgeRig) placeElsewhereFollowing(t *testing.T, sessionID string, projects []string, topics ...string) {
-	t.Helper()
-	r.placeElsewhere(t, sessionID, projects...)
-	if _, err := r.deps.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "shared-listener"}, topics); err != nil {
-		t.Fatalf("write %s's interest row with %v: %v", sessionID, topics, err)
-	}
-}
-
-// storeGithubEvent stores a GitHub event of repository, owner/name as GitHub writes it, on the
-// subject the intake publishes it on with kind after the repository, its payload naming the
-// repository as every GitHub event's payload does (contracts' githubPayload), and returns it.
-func (r *edgeRig) storeGithubEvent(t *testing.T, repository, kind string) contracts.Envelope {
-	t.Helper()
-	owner, name, _ := strings.Cut(repository, "/")
-	subject := contracts.GithubRepositoryPrefix(owner, name) + "." + kind
-	item := listenerTestEnvelope(subject, "edge-github-"+id.New())
-	item.Source = "github"
-	item.Payload = fmt.Sprintf(`{"kind":"pr","action":"opened","repo":%q}`, repository)
-	if _, err := r.harness.client.JS().Publish(subject, marshalListenerEnvelope(t, item)); err != nil {
-		t.Fatalf("store a GitHub event of %s on %s: %v", repository, subject, err)
-	}
-	return item
-}
-
-// withheld is envoy_edge_github_withheld_total{reason=...} as the listener's /metrics renders it,
-// -1 for no series.
-func (r *edgeRig) withheld(t *testing.T, reason string) int64 {
-	t.Helper()
-	recorder := httptest.NewRecorder()
-	r.met.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	return counterValue(t, recorder.Body.String(), `envoy_edge_github_withheld_total{reason="`+reason+`"}`)
-}
-
-// edgeAnswer is what a row reads of an edge refusal (listenerwire.EdgeRefusal).
-type edgeAnswer struct {
-	Reason  string   `json:"reason"`
-	Error   string   `json:"error"`
-	Refused []string `json:"refused"`
-}
-
-// requireEdgeRefusal fails the test unless recorder is status with reason, naming what was asked,
-// and returns the refusal.
-func requireEdgeRefusal(t *testing.T, recorder *httptest.ResponseRecorder, status int, reason, asked string) edgeAnswer {
-	t.Helper()
-	var answer edgeAnswer
-	_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
-	if recorder.Code != status || answer.Reason != reason {
-		t.Errorf("%s: status %d reason %q (%s), want %d %s", asked, recorder.Code, answer.Reason, strings.TrimSpace(recorder.Body.String()), status, reason)
-	}
-	return answer
-}
-
-// requireTopicRefusal is requireEdgeRefusal of a registration, whose refusal names exactly the
-// refused topics.
-func requireTopicRefusal(t *testing.T, recorder *httptest.ResponseRecorder, reason string, refused ...string) {
-	t.Helper()
-	answer := requireEdgeRefusal(t, recorder, http.StatusForbidden, reason, fmt.Sprintf("a registration refused for %v", refused))
-	if recorder.Code == http.StatusForbidden && !slices.Equal(answer.Refused, refused) {
-		t.Errorf("the refusal names refused %v (%s), want exactly %v", answer.Refused, strings.TrimSpace(recorder.Body.String()), refused)
-	}
-}
-
-// requireStatus fails the test unless recorder is status, naming what was asked.
-func requireStatus(t *testing.T, recorder *httptest.ResponseRecorder, status int, asked string) {
-	t.Helper()
-	if recorder.Code != status {
-		t.Fatalf("%s: status %d (%s), want %d", asked, recorder.Code, strings.TrimSpace(recorder.Body.String()), status)
-	}
-}
-
 // The admission: an edge listener admits a broker token alone, and only one whose projects are
 // all among the ones it serves, of project scope named or person; every other caller is refused
 // before any handler runs. The exported admission (EdgeAdmits) is the very rule apiAuth asks.
 func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	projects := edgeTestProjects(t)
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	reached := 0
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached++
@@ -375,7 +54,7 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	})
 	logger := logging.NewWithWriter("test-machine", io.Discard)
 	handler := apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, broker), edgeProjects: projects, logger: logger}, next)
-	answer := func(session, scope string, projects ...string) brokertoken.Introspection {
+	answer := func(session, scope string, projects ...string) ciphertoken.Introspection {
 		got := sessionAnswer(session, "outside@example.com", caller.JKT())
 		got.ProjectScope, got.Projects = scope, projects
 		return got
@@ -383,16 +62,16 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	service := serviceAnswer("ses_service", "example-fleet", caller.JKT())
 	for _, tc := range []struct {
 		name   string
-		answer *brokertoken.Introspection
+		answer *ciphertoken.Introspection
 		header string
 		admit  bool
 		status int
 	}{
-		{name: "a named token of the project it serves", answer: new(answer("ses_named", brokertoken.ProjectScopeNamed, "PRIV")), admit: true},
-		{name: "a person token listing only that project", answer: new(answer("ses_person", brokertoken.ProjectScopePerson, "PRIV")), admit: true},
-		{name: "a person token listing a project it does not serve beside it", answer: new(answer("ses_two", brokertoken.ProjectScopePerson, "INFRA", "PRIV")), status: http.StatusForbidden},
-		{name: "a named token of another project", answer: new(answer("ses_other", brokertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
-		{name: "a person token listing no project", answer: new(answer("ses_none", brokertoken.ProjectScopePerson)), status: http.StatusForbidden},
+		{name: "a named token of the project it serves", answer: new(answer("ses_named", ciphertoken.ProjectScopeNamed, "PRIV")), admit: true},
+		{name: "a person token listing only that project", answer: new(answer("ses_person", ciphertoken.ProjectScopePerson, "PRIV")), admit: true},
+		{name: "a person token listing a project it does not serve beside it", answer: new(answer("ses_two", ciphertoken.ProjectScopePerson, "INFRA", "PRIV")), status: http.StatusForbidden},
+		{name: "a named token of another project", answer: new(answer("ses_other", ciphertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
+		{name: "a person token listing no project", answer: new(answer("ses_none", ciphertoken.ProjectScopePerson)), status: http.StatusForbidden},
 		{name: "a service's token, which lists none", answer: &service, status: http.StatusForbidden},
 		{name: "a read-only token", answer: new(readOnlyAnswer("ses_reader", "example-reader", caller.JKT())), status: http.StatusUnauthorized},
 		{name: "no credential at all", status: http.StatusUnauthorized},
@@ -428,14 +107,14 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	}
 	// The exported rule, as the relay socket calls it on each live answer.
 	for _, tc := range []struct {
-		caller brokertoken.Caller
+		caller ciphertoken.Caller
 		admit  bool
 	}{
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"PRIV"}}, true},
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: brokertoken.ProjectScopePerson, Projects: []string{"INFRA", "PRIV"}}, false},
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: brokertoken.ProjectScopePerson}, false},
-		{brokertoken.Caller{Session: "s", Service: "f", ProjectScope: brokertoken.ProjectScopeNone, ReadOnly: true}, false},
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: "elsewhere", Projects: []string{"PRIV"}}, false},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"PRIV"}}, true},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: ciphertoken.ProjectScopePerson, Projects: []string{"INFRA", "PRIV"}}, false},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: ciphertoken.ProjectScopePerson}, false},
+		{ciphertoken.Caller{Session: "s", Service: "f", ProjectScope: ciphertoken.ProjectScopeNone, ReadOnly: true}, false},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: "elsewhere", Projects: []string{"PRIV"}}, false},
 	} {
 		err := EdgeAdmits(projects, tc.caller)
 		if tc.admit != (err == nil) {
@@ -445,51 +124,6 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 			t.Errorf("EdgeAdmits(%v, %+v) = %v, which is not ErrEdgeNotAdmitted", projects, tc.caller, err)
 		}
 	}
-}
-
-// An edge session may follow the GitHub events of each repository its project's issues
-// resolve to, read fresh through the broker at the registration with the listener's own account,
-// and an event of each reaches it.
-func TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories(t *testing.T) {
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_github"
-	token := rig.personToken(sessionID, "PRIV")
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	before := rig.repositories.calls.Load()
-	topics := []string{"notifications.github.acme.pub.>", "notifications.github.acme.two.>"}
-	answer := rig.subscribe(t, token, sessionID, topics...)
-	requireStatus(t, answer, http.StatusOK, fmt.Sprintf("a registration following %v", topics))
-	if rig.repositories.calls.Load() == before {
-		t.Fatalf("the registration naming %v read no repository answer; the answer is read fresh at each one", topics)
-	}
-	if got := rig.repositories.lastBearer(); got != "Bearer "+edgeAccountToken {
-		t.Fatalf("the repository read presented %q, want the listener's own account", got)
-	}
-	pub := rig.storeGithubEvent(t, "acme/pub", "pr.1")
-	two := rig.storeGithubEvent(t, "acme/two", "issue.2")
-	requireFrames(t, standIn.collect(t, 2, 10*time.Second), pub, two)
-}
-
-// A GitHub interest in a repository no issue of the project resolves to, or in no single
-// repository, is refused 403 repository_not_in_project, and such a repository's event never
-// reaches the session.
-func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_other_repository"
-	token := rig.personToken(sessionID, "PRIV")
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	for _, topic := range []string{"notifications.github.acme.priv.>", "notifications.github.acme.>", "notifications.github.>"} {
-		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "repository_not_in_project", topic)
-	}
-	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "an interest in acme/pub")
-	rig.storeGithubEvent(t, "acme/priv", "pr.3")
-	pub := rig.storeGithubEvent(t, "acme/pub", "pr.4")
-	frames := standIn.collect(t, 1, 10*time.Second)
-	if frames[0].item.Topic != pub.Topic {
-		t.Fatalf("the session's first frame is %s, want acme/pub's: the event of acme/priv reached it", frames[0].item.Topic)
-	}
-	requireFrames(t, frames, pub)
-	standIn.none(t, time.Second)
 }
 
 // Every subject of no project but GitHub's is refused 403 topic_not_in_project: the
@@ -508,104 +142,6 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 	} {
 		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "topic_not_in_project", topic)
 	}
-}
-
-// A repository that leaves the project's answer stops reaching the session at the first
-// refresh that reads the new answer, its event acknowledged undelivered and counted, and the
-// session's interest in it is gone at the refresh after. The production refresh runs every 30 s
-// and an answer lives 60 s, so both happen within 60 s of the change.
-func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
-	if edgeRepositoryRefresh != 30*time.Second || edgeRepositoryAnswerLife != 60*time.Second {
-		t.Fatalf("the refresh runs every %s and an answer lives %s, want 30 s and 60 s", edgeRepositoryRefresh, edgeRepositoryAnswerLife)
-	}
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_leaving"
-	token := rig.personToken(sessionID, "PRIV")
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>", "notifications.github.acme.two.>"), http.StatusOK, "the registration")
-	first := rig.storeGithubEvent(t, "acme/two", "pr.1")
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
-
-	rig.repositories.answer("PRIV", "acme/pub")
-	rig.tick(t)
-	left := rig.storeGithubEvent(t, "acme/two", "pr.2")
-	stays := rig.storeGithubEvent(t, "acme/pub", "pr.3")
-	// The frames go in stream order, so the event after it arriving first is the proof the one
-	// before it was not relayed.
-	frames := standIn.collect(t, 1, 10*time.Second)
-	if frames[0].item.EventID == left.EventID {
-		t.Fatalf("the acme/two event %s stored after acme/two left the answer reached the session", left.EventID)
-	}
-	requireFrames(t, frames, stays)
-	if got := rig.withheld(t, "not_in_project"); got != 1 {
-		t.Fatalf(`envoy_edge_github_withheld_total{reason="not_in_project"} = %d, want 1: the acme/two event withheld`, got)
-	}
-
-	rig.tick(t)
-	recorder := rig.call(t, http.MethodGet, token, "/v1/registry/"+sessionID, "")
-	requireStatus(t, recorder, http.StatusOK, "GET /v1/registry/"+sessionID)
-	var info listenerwire.SessionInfo
-	if err := json.Unmarshal(recorder.Body.Bytes(), &info); err != nil {
-		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
-	}
-	for _, topic := range info.Topics {
-		if strings.HasPrefix(topic, "notifications.github.acme.two") {
-			t.Fatalf("the session still follows %s after acme/two left the answer: %v", topic, info.Topics)
-		}
-	}
-	if !slices.Contains(info.Topics, "notifications.github.acme.pub.>") {
-		t.Fatalf("the session no longer follows acme/pub, which stayed: %v", info.Topics)
-	}
-}
-
-// While no repository answer younger than 60 s stands, a registration naming a GitHub topic
-// is 503 repositories_unknown, every GitHub frame is acknowledged undelivered with the gap mark
-// on the next frame, named Envoy-Gap-Reason: repository_withheld so a client does not read it as
-// the stream's retention gap, and every frame that is not GitHub's flows as before.
-func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_unknown"
-	token := rig.personToken(sessionID, "PRIV")
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
-
-	rig.repositories.failWith(http.StatusServiceUnavailable)
-	requireEdgeRefusal(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusServiceUnavailable, "repositories_unknown",
-		"a registration naming acme/pub while the answer is 503")
-	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
-	rig.storeGithubEvent(t, "acme/pub", "pr.5")
-	agent, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	frames := standIn.collect(t, 1, 10*time.Second)
-	if frames[0].item.EventID != agent.EventID {
-		t.Fatalf("the session's next frame is %s on %s, want the agent message: the acme/pub event was delivered with an answer %s old",
-			frames[0].item.EventID, frames[0].item.Topic, edgeRepositoryAnswerLife+time.Second)
-	}
-	if got := frames[0].msg.Header.Get(relayHeaderGap); got != "true" {
-		t.Fatalf("the frame after the withheld GitHub event carries %s %q, want true", relayHeaderGap, got)
-	}
-	if got := frames[0].msg.Header.Get("Envoy-Gap-Reason"); got != "repository_withheld" {
-		t.Fatalf("the frame after the withheld GitHub event carries Envoy-Gap-Reason %q, want repository_withheld: a gap with no reason reads as the stream's retention gap", got)
-	}
-	if got := rig.withheld(t, "answer_unknown"); got != 1 {
-		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want 1`, got)
-	}
-}
-
-// Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
-// edge compares owner and name ignoring case: an interest in Acme/Pub is admitted through an
-// answer of acme/pub, and the event the intake publishes for Acme/Pub reaches the session.
-func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_case"
-	token := rig.personToken(sessionID, "PRIV")
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	before := rig.repositories.calls.Load()
-	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.Acme.Pub.>"), http.StatusOK, "an interest in Acme/Pub")
-	if rig.repositories.calls.Load() == before {
-		t.Fatal("the registration naming Acme/Pub read no repository answer; the answer is read fresh at each one")
-	}
-	event := rig.storeGithubEvent(t, "Acme/Pub", "pr.9")
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), event)
 }
 
 // The publish rule: an edge session publishes only a role subject of its project in the form
@@ -876,6 +412,29 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	}
 	if out := listener.Output.String(); listener.Cmd.ProcessState.Success() || !strings.Contains(out, "ENVOY_API_TOKEN") || !strings.Contains(out, "ENVOY_EDGE_PROJECTS") {
 		t.Fatalf("the listener with ENVOY_EDGE_PROJECTS beside ENVOY_API_TOKEN exited %v, want a refusal naming both:\n%s", listener.Cmd.ProcessState, out)
+	}
+}
+
+// An edge listener refuses to start beside ENVOY_DISPATCH_PRINCIPAL, in either of its shapes,
+// naming the variable: Dispatch sends its role-marked messages through a shared listener, and no
+// session of the edge sends as Dispatch, so the edge names no principal whose send may carry a
+// role mark. A value of white space alone names no principal, and the edge starts.
+func TestAnEdgeRefusesToStartBesideDispatchsPrincipal(t *testing.T) {
+	projects := edgeTestProjects(t)
+	broker := []string{
+		"ENVOY_AGENT_SECRETS_URL=http://broker.example",
+		"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/var/run/secrets/broker/token",
+		"ENVOY_PUBLIC_URL=https://edge.example",
+	}
+	for _, principal := range []string{"system:serviceaccount:dispatch:example-dispatch", "dispatch@example.iam.gserviceaccount.com"} {
+		env := append(slices.Clone(broker), "ENVOY_DISPATCH_PRINCIPAL="+principal)
+		err := validateEdgeMode(projects, env)
+		if err == nil || !strings.Contains(err.Error(), "ENVOY_DISPATCH_PRINCIPAL") || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("an edge listener of %v with ENVOY_DISPATCH_PRINCIPAL=%s: %v, want a refusal naming ENVOY_DISPATCH_PRINCIPAL and ENVOY_EDGE_PROJECTS", projects, principal, err)
+		}
+	}
+	if err := validateEdgeMode(projects, append(slices.Clone(broker), "ENVOY_DISPATCH_PRINCIPAL= ")); err != nil {
+		t.Fatalf("an edge listener whose ENVOY_DISPATCH_PRINCIPAL is white space alone: %v, want it to start", err)
 	}
 }
 
@@ -1273,63 +832,11 @@ func requireTopicsHidden(t *testing.T, rig *edgeRig, token, sessionID string, hi
 	return info.Topics
 }
 
-// A registration the edge refuses 503 repositories_unknown is told the listener's own sentence:
-// nothing of what the broker answered reaches the client, its error code and its text among it.
-// It holds both for a GitHub topic the registration names and for one the session's row holds,
-// which the edge reads the answer for as well.
-func TestAnEdgeRepositoriesRefusalCopiesNoBrokerText(t *testing.T) {
-	rig := newEdgeRig(t)
-	const named, stored = "ses_edge_unknown_named", "ses_edge_unknown_stored"
-	rig.placeElsewhereFollowing(t, stored, []string{}, "notifications.github.acme.pub.>")
-	rig.repositories.failWith(http.StatusServiceUnavailable)
-	for _, call := range []struct {
-		session string
-		topics  []string
-	}{
-		{named, []string{"notifications.github.acme.pub.>"}},
-		{stored, nil},
-	} {
-		recorder := rig.subscribe(t, rig.personToken(call.session, "PRIV"), call.session, call.topics...)
-		requireEdgeRefusal(t, recorder, http.StatusServiceUnavailable, "repositories_unknown", fmt.Sprintf("%s's registration naming %v while the broker answers 503", call.session, call.topics))
-		for _, broker := range []string{"REPOSITORIES_UNKNOWN", "the stand-in answers"} {
-			if strings.Contains(recorder.Body.String(), broker) {
-				t.Errorf("%s's 503 copies the broker's answer (%q): %s", call.session, broker, recorder.Body.String())
-			}
-		}
-	}
-}
-
-// A subject writes a dot in a repository's name as an underscore, so acme/a.b and acme/a_b
-// publish on one subject (notifications.github.acme.a_b): the session follows it through an
-// answer that names acme/a.b, and the event of acme/a_b on that subject is withheld
-// not_in_project, while the event of acme/a.b reaches it. The relay holds each event to the
-// repository its own payload names.
-func TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames(t *testing.T) {
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_dotted"
-	rig.repositories.answer("PRIV", "acme/a.b")
-	token := rig.personToken(sessionID, "PRIV")
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.a_b.>"), http.StatusOK, "an interest in acme/a.b, which its subject writes acme.a_b")
-	other := rig.storeGithubEvent(t, "acme/a_b", "pr.1")
-	own := rig.storeGithubEvent(t, "acme/a.b", "pr.2")
-	if otherPrefix, ownPrefix := contracts.GithubRepositoryPrefix("acme", "a_b"), contracts.GithubRepositoryPrefix("acme", "a.b"); otherPrefix != ownPrefix {
-		t.Fatalf("UNKNOWN: acme/a_b's events are under %s and acme/a.b's under %s, not one subject", otherPrefix, ownPrefix)
-	}
-	frames := standIn.collect(t, 1, 10*time.Second)
-	if frames[0].item.EventID == other.EventID {
-		t.Fatalf("the event of acme/a_b reached a session whose answer names acme/a.b alone")
-	}
-	requireFrames(t, frames, own)
-	if got := rig.withheld(t, "not_in_project"); got != 1 {
-		t.Fatalf(`envoy_edge_github_withheld_total{reason="not_in_project"} = %d, want 1: the acme/a_b event withheld`, got)
-	}
-}
-
 // A role read at the edge names a holder whose registering token listed none of the reader's
-// projects without its place: a PRIV role held by a session another listener registered with no
-// broker token is answered with its holder and claim, and with no directory, machine, host or
-// title and no capabilities. A holder of the reader's project is answered whole.
+// projects without its place or process: a PRIV role held by a session another listener
+// registered with no broker token, under a claim naming its client instance, is answered with its
+// holder and claim, and with no directory, machine, host, title or client instance and no
+// capabilities. A holder of the reader's project is answered whole.
 func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const reader, internal, peer = "ses_edge_role_reader", "ses_edge_role_internal", "ses_edge_role_peer"
@@ -1341,10 +848,13 @@ func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 		Title: "an internal agent", Dir: "/home/agent/internal-checkout", Capabilities: []string{"tmux"}, Projects: []string{}}); err != nil {
 		t.Fatalf("register %s elsewhere: %v", internal, err)
 	}
-	for role, holder := range map[string]string{internalRole: internal, peerRole: peer} {
-		if _, err := rig.deps.registry.SetRole(holder, "test-machine", role, false); err != nil {
-			t.Fatalf("claim %s for %s: %v", role, holder, err)
-		}
+	if _, err := rig.deps.registry.SetRoleWithPrevious(t.Context(), store.RoleClaimRequest{
+		SessionID: internal, MachineID: "test-machine", ClientInstanceID: "internal-process", Role: internalRole,
+	}); err != nil {
+		t.Fatalf("claim %s for %s: %v", internalRole, internal, err)
+	}
+	if _, err := rig.deps.registry.SetRole(peer, "test-machine", peerRole, false); err != nil {
+		t.Fatalf("claim %s for %s: %v", peerRole, peer, err)
 	}
 	read := func(role string) listenerwire.RoleHolder {
 		t.Helper()
@@ -1357,77 +867,187 @@ func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 		return answer
 	}
 	held := read(internalRole)
-	if held.Holder != internal || held.Dir != "" || held.Host != "" || held.MachineID != "" || held.Title != "" || len(held.Capabilities) != 0 {
-		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with no directory, host, machine, title or capabilities", internalRole, held, internal)
+	if held.Holder != internal || held.Dir != "" || held.Host != "" || held.MachineID != "" || held.Title != "" || held.ClientInstanceID != "" || len(held.Capabilities) != 0 {
+		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with no directory, host, machine, title, client instance or capabilities", internalRole, held, internal)
 	}
 	if whole := read(peerRole); whole.Holder != peer || whole.MachineID == "" || whole.Host == "" {
 		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with its machine and host: it is a session of PRIV", peerRole, whole, peer)
 	}
 }
 
-// edgeBrokerTransport answers each request the edge's repository reader sends with answer, on the
-// reader's own goroutine, as the broker would over the network.
-type edgeBrokerTransport func(*http.Request) (*http.Response, error)
+// A session that holds a role of another project when it registers at the edge, which another
+// listener claimed for it, loses that role at the registration: the claim is released rather than
+// renewed, and the answer's warnings name it, as a claim of that role at the edge is refused. A
+// message on that role's lane after the registration then reaches no holder, and the session's
+// role of the token's project stays and is renewed. A role message the lane forwarded to the
+// session's agent subject before the registration, or after a later claim another writer makes,
+// is not this row's: the relay's check of each frame's topic holds those frames. Controls: with
+// edge mode off, and with the edge's hold of the renewal off, the other project's claim is renewed
+// and the row fails.
+func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, privIssues = "ses_edge_role_moved", "notifications.dispatch.issue.PRIV.>"
+	const infraRole, privRole = "legion-infra-infra-9-reviewer", "legion-priv-priv-9-tester"
+	rig.placeElsewhere(t, moved)
+	for _, role := range []string{infraRole, privRole} {
+		if _, err := rig.deps.registry.SetRole(moved, "shared-listener", role, false); err != nil {
+			t.Fatalf("claim %s for %s on the other listener: %v", role, moved, err)
+		}
+	}
+	testwait.Eventually(t, "the role claim copy to name both claims", func() bool {
+		held, err := rig.deps.registry.RolesHeldBy(moved)
+		return err == nil && len(held) == 2
+	})
+	ctx := t.Context()
+	before, err := rig.deps.registry.RoleClaim(ctx, privRole)
+	if err != nil || before.HolderSessionID != moved {
+		t.Fatalf("UNKNOWN: %s's claim before the registration reads %+v (%v), not %s's", privRole, before, err, moved)
+	}
 
-func (f edgeBrokerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
+	standIn := startSessionStandIn(t, rig.url, moved, answerDone)
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved, privIssues)
+	requireStatus(t, answer, http.StatusOK, "the moved session's registration at the edge")
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answer.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode the registration's answer %s: %v", answer.Body.String(), err)
+	}
+	if !slices.ContainsFunc(registered.Warnings, func(warning string) bool { return strings.HasPrefix(warning, "role "+infraRole+" was released") }) {
+		t.Errorf("the registration's warnings %q name no release of %s", registered.Warnings, infraRole)
+	}
+	if slices.ContainsFunc(registered.Warnings, func(warning string) bool { return strings.Contains(warning, privRole) }) {
+		t.Errorf("the registration's warnings %q name %s, a role of PRIV", registered.Warnings, privRole)
+	}
+	if infra, err := rig.deps.registry.RoleClaim(ctx, infraRole); err != nil || (infra.Revision != 0 && infra.HolderSessionID == moved) {
+		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): %s still holds a role of INFRA", infraRole, infra, err, moved)
+	}
+	if priv, err := rig.deps.registry.RoleClaim(ctx, privRole); err != nil || priv.HolderSessionID != moved || priv.Revision <= before.Revision {
+		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v), want %s's, renewed past revision %d", privRole, priv, err, moved, before.Revision)
+	}
+
+	// A message on the INFRA role's lane reaches no holder now: the lane records a forward before
+	// it hands it on, in the call that took the message, and the PRIV event stored after it is
+	// the session's first frame, since the relay sends in stream order.
+	cfg := wireTestRoleForwarder(t, rig.harness.config)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+infraRole, "edge-infra-role-"+id.New())
+	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
+	if cfg.attemptCache.Seen(item.DedupeKey, moved) || cfg.dedupeCache.Seen(item.DedupeKey, moved) {
+		t.Fatalf("the role lane forwarded INFRA's %s message to %s, a session whose token lists only PRIV", infraRole, moved)
+	}
+	sentinel, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID != sentinel.EventID {
+		t.Fatalf("the moved session's first frame is %s on %s, want PRIV's event: a message of INFRA's role reached it", frames[0].item.EventID, frames[0].item.Topic)
+	}
 }
 
-// One project whose broker read hangs holds back no other project's read: a refresh reads each
-// served project on its own, so PRIV's answer is read while SLOW's read is still waiting, and
-// PRIV's answer is fresh when the pass ends. Read one after the other, PRIV's would wait for
-// SLOW's to time out, and with enough slow projects ahead of it would age past its life.
-func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
-	var slowWaiting atomic.Int32
-	slowEntered := make(chan struct{})
-	release := make(chan struct{})
-	var readWhileSlowWaited atomic.Bool
-	privRead := make(chan struct{})
-	transport := edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
-		project := request.URL.Query().Get("project")
-		if project == "SLOW" {
-			slowWaiting.Add(1)
-			close(slowEntered)
-			defer slowWaiting.Add(-1)
-			select {
-			case <-release:
-			case <-request.Context().Done():
-				return nil, request.Context().Err()
-			}
-			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
-		}
-		// This read waits for SLOW's to have begun, whichever order the reads start in, and then
-		// sees whether that one is still waiting. A read that ends before SLOW's begins, its
-		// time spent while the refresh runs one read at a time, saw no read beside it.
-		defer close(privRead)
-		select {
-		case <-slowEntered:
-			readWhileSlowWaited.Store(slowWaiting.Load() == 1)
-		case <-request.Context().Done():
-			return nil, request.Context().Err()
-		}
-		body := fmt.Sprintf(`{"project":%q,"repositories":["acme/pub"]}`, project)
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+// A registration at the edge releases a claim of another project's role also while the role claim
+// copy is refilling and names no role (store.Registry.RolesHeldBy refuses): the role's lane topic,
+// which the hold took out of the session's row, names the role then. Control: with the lane topics
+// the hold dropped left out of the renewal's weighing, the claim is neither released nor renewed,
+// and the row fails.
+func TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, infraRole = "ses_edge_role_refill", "legion-infra-infra-7-reviewer"
+	rig.placeElsewhere(t, moved)
+	if _, err := rig.deps.registry.SetRole(moved, "shared-listener", infraRole, false); err != nil {
+		t.Fatalf("claim %s for %s on the other listener: %v", infraRole, moved, err)
+	}
+	testwait.Eventually(t, "the role claim copy to name the claim", func() bool {
+		held, err := rig.deps.registry.RolesHeldBy(moved)
+		return err == nil && len(held) == 1
 	})
-	reader := newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), []string{"SLOW", "PRIV"},
-		newEdgeWithheldCounter(metrics.New()), logging.New("test"))
-	reader.client = &http.Client{Transport: transport}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		reader.refresh(context.Background())
-	}()
-	select {
-	case <-privRead:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the refresh read no answer of PRIV within 30 s")
+	refilled := refuseRoleClaimView(t, rig.deps.registry)
+	defer refilled()
+	if _, err := rig.deps.registry.RolesHeldBy(moved); err == nil {
+		t.Fatal("UNKNOWN: the role claim copy still answers, so the registration would read the claim from it")
 	}
-	close(release)
-	<-done
-	if !readWhileSlowWaited.Load() {
-		t.Fatal("the refresh read PRIV's answer only once SLOW's read had ended: a project whose read hangs holds back every project after it")
+
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved)
+	requireStatus(t, answer, http.StatusOK, "the moved session's registration at the edge while the claim copy refills")
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answer.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode the registration's answer %s: %v", answer.Body.String(), err)
 	}
-	if repositories, complete := reader.standing([]string{"PRIV"}); !complete || !slices.Equal(repositories, []string{"acme/pub"}) {
-		t.Fatalf("after the refresh PRIV stands %v (complete %t), want [acme/pub]", repositories, complete)
+	if !slices.ContainsFunc(registered.Warnings, func(warning string) bool { return strings.HasPrefix(warning, "role "+infraRole+" was released") }) {
+		t.Errorf("the registration's warnings %q name no release of %s", registered.Warnings, infraRole)
+	}
+	if claim, err := rig.deps.registry.RoleClaim(t.Context(), infraRole); err != nil || (claim.Revision != 0 && claim.HolderSessionID == moved) {
+		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): %s still holds a role of INFRA", infraRole, claim, err, moved)
+	}
+}
+
+// A claim of another project's role that the edge cannot release refuses the registration with
+// the retryable 503, and nothing of the registration is stored: the claim stands, and nothing else
+// frees it while the session lives. Here the claim's record cannot be read, so the release cannot
+// tell that it is not the session's. Control: with edge mode off the registration is taken.
+func TestAnEdgeRegistrationWhoseRoleReleaseFailsIsRefused(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, infraRole = "ses_edge_release_fails", "legion-infra-infra-6-reviewer"
+	rig.placeElsewhereFollowing(t, moved, []string{}, contracts.RoleTopicPrefix+infraRole)
+	// JSON that is not a claim is a record no read can decode (store.ErrMalformedRoleClaim); a
+	// string that is not JSON would read as an earlier build's bare holder id.
+	if _, err := registryRoleKV(t, rig.deps.registry).Put(infraRole, []byte(`{"holder_session_id":7}`)); err != nil {
+		t.Fatalf("store an unreadable claim of %s: %v", infraRole, err)
+	}
+	before := storedEdgeSessionEntry(t, rig, moved)
+
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved)
+	if answer.Code != http.StatusServiceUnavailable || answer.Header().Get("Retry-After") == "" {
+		t.Fatalf("the registration whose release of %s fails: status %d, Retry-After %q (%s), want the retryable 503",
+			infraRole, answer.Code, answer.Header().Get("Retry-After"), strings.TrimSpace(answer.Body.String()))
+	}
+	if after := storedEdgeSessionEntry(t, rig, moved); after.MachineID != before.MachineID || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("the refused registration wrote %s's entry: %+v, want it left at %+v", moved, after, before)
+	}
+}
+
+// A send at the edge is the session's own: one under another source (dispatch, human), and one
+// that names no source session, is refused 403 sender_not_session, and the peer receives none of
+// them; a send as agent naming the token's session reaches the peer with that session as its
+// sender. Control: with edge mode off, the first refused send is taken.
+func TestAnEdgeSendNamesItsOwnSession(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sender, peer = "ses_edge_send_sender", "ses_edge_send_peer"
+	senderToken := rig.personToken(sender, "PRIV")
+	requireStatus(t, rig.subscribe(t, senderToken, sender), http.StatusOK, "the sender's registration")
+	standIn := startSessionStandIn(t, rig.url, peer, answerDone)
+	requireStatus(t, rig.subscribe(t, rig.namedToken(peer, "PRIV"), peer), http.StatusOK, "the peer's registration")
+	payload := `{"event":{"type":"comment.created","actor":{"kind":"person","id":"owner@example.com"},"issue":"PRIV-1"}}`
+	for _, refused := range []struct{ source, sourceSession string }{
+		{"dispatch", ""}, {"human", ""}, {"dispatch", sender}, {"agent", ""}, {"", ""},
+	} {
+		body := fmt.Sprintf(`{"target_session":%q,"source_session":%q,"source":%q,"message":"approved, go ahead","payload":%q}`,
+			peer, refused.sourceSession, refused.source, payload)
+		requireEdgeRefusal(t, rig.call(t, http.MethodPost, senderToken, "/v1/messages/send", body), http.StatusForbidden, "sender_not_session",
+			fmt.Sprintf("a send as source %q with source_session %q", refused.source, refused.sourceSession))
+	}
+	body := fmt.Sprintf(`{"target_session":%q,"source_session":%q,"source":"agent","message":"from the sender"}`, peer, sender)
+	requireStatus(t, rig.call(t, http.MethodPost, senderToken, "/v1/messages/send", body), http.StatusOK, "a send as agent from "+sender)
+	got := standIn.collect(t, 1, 10*time.Second)[0].item
+	if got.Source != "agent" || got.SourceSession != sender {
+		t.Fatalf("the peer's first frame is from source %q, source_session %q, want agent and %s: a refused send reached it", got.Source, got.SourceSession, sender)
+	}
+}
+
+// A publish at the edge is the session's own, as a send is: a publish to a role subject of PRIV
+// under another source, or naming no source session, is refused 403 sender_not_session, and one as
+// agent naming the token's session is taken. Control: with edge mode off, the first refused
+// publish is taken.
+func TestAnEdgePublishNamesItsOwnSession(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sender = "ses_edge_publish_sender"
+	token := rig.personToken(sender, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, sender), http.StatusOK, "the sender's registration")
+	topic := contracts.RoleSubject("PRIV", "legion-priv-priv-1-tester")
+	for _, refused := range []struct{ source, sourceSession string }{
+		{"dispatch", ""}, {"human", sender}, {"agent", ""},
+	} {
+		body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":%q,"source_session":%q}`, topic, refused.source, refused.sourceSession)
+		requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "sender_not_session",
+			fmt.Sprintf("a publish as source %q with source_session %q", refused.source, refused.sourceSession))
+	}
+	body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, topic, sender)
+	if recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body); recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+		t.Fatalf("a publish as agent from %s: status %d (%s), want it taken", sender, recorder.Code, strings.TrimSpace(recorder.Body.String()))
 	}
 }

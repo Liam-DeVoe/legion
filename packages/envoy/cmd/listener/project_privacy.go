@@ -32,8 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -204,7 +204,7 @@ type k7Result struct {
 type k7Reader struct {
 	url     string
 	source  string
-	account brokertoken.Account
+	account ciphertoken.Account
 	client  *http.Client
 	timeout time.Duration
 	unknown *metrics.Counter
@@ -221,7 +221,7 @@ type k7Reader struct {
 
 // newK7Reader is the reader of the privacy source at source (ENVOY_PROJECT_PRIVACY_URL, the
 // broker's base URL), asking as account.
-func newK7Reader(source string, account brokertoken.Account, unknown *metrics.Counter, logger *logging.Logger) *k7Reader {
+func newK7Reader(source string, account ciphertoken.Account, unknown *metrics.Counter, logger *logging.Logger) *k7Reader {
 	return &k7Reader{
 		url:     strings.TrimSuffix(source, "/") + k7Path,
 		source:  source,
@@ -473,7 +473,7 @@ func resolveAllProjectsAccounts(getenv func(string) string) ([]string, error) {
 }
 
 // projectScope is what one request's caller sees: a broker caller its token's list and whether its
-// person is a restricted member (brokertoken.Caller.Restricted), an ENVOY_ALL_PROJECTS_ACCOUNTS
+// person is a restricted member (ciphertoken.Caller.Restricted), an ENVOY_ALL_PROJECTS_ACCOUNTS
 // caller every project, and every other caller (the shared bearer, no bearer, any other service
 // account) no list and no member list holding it, which sees the public projects.
 type projectScope struct {
@@ -487,7 +487,7 @@ func scopeOf(r *http.Request, privacy *listenerPrivacy) projectScope {
 	if caller, ok := brokerCaller(r); ok {
 		return projectScope{listed: caller.Projects, restricted: caller.Restricted}
 	}
-	if subject, ok := serviceAccountCaller(r); ok && privacy != nil && slices.Contains(privacy.allProjects, subject) {
+	if subject := verifiedPrincipal(r); subject != "" && privacy != nil && slices.Contains(privacy.allProjects, subject) {
 		return projectScope{allProjects: true}
 	}
 	return projectScope{}
@@ -690,7 +690,7 @@ const privacyRequiredSuffix = " privacy-required"
 // cfg.PrivacyURL asking as the listener's platform identity, account; in the all-public mode
 // none. allProjects is ENVOY_ALL_PROJECTS_ACCOUNTS. Its counters are registered on met in both
 // modes, each at 0.
-func newListenerPrivacy(cfg config.Service, account brokertoken.Account, allProjects []string, met *metrics.Registry, logger *logging.Logger) *listenerPrivacy {
+func newListenerPrivacy(cfg config.Service, account ciphertoken.Account, allProjects []string, met *metrics.Registry, logger *logging.Logger) *listenerPrivacy {
 	privacy := &listenerPrivacy{required: cfg.PrivacyRequired, allProjects: allProjects, counters: newPrivacyCounters(met), logger: logger}
 	if cfg.PrivacyRequired {
 		privacy.k7 = newK7Reader(cfg.PrivacyURL, account, privacy.counters.unknown, logger)

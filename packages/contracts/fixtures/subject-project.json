@@ -14,7 +14,8 @@
     "notifications.team.>",
     "notifications.envoy.exceptions.>",
     "notifications.envoy.kept.>",
-    "notifications.envoy.resume.>"
+    "notifications.envoy.resume.>",
+    "notifications.envoy.takeover.>"
   ],
   "builders": [
     {
@@ -173,6 +174,12 @@
     },
     { "subject": "notifications.envoy.kept.cursor.lead-reviewer", "project": "_", "ok": true },
     { "subject": "notifications.envoy.resume.ses_a", "project": "_", "ok": true },
+    {
+      "subject": "notifications.envoy.takeover.legion-priv-priv-1-architect.ses_a.0123",
+      "project": "PRIV",
+      "ok": true
+    },
+    { "subject": "notifications.envoy.takeover.lead-reviewer.ses_a.0123", "project": "_", "ok": true },
     { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "ok": true },
     { "subject": "notifications.somethingnew.PRIV.x", "project": "_", "ok": true },
     { "subject": "agent.stream.ses_a.frames", "project": "", "ok": false },

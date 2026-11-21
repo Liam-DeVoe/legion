@@ -266,7 +266,7 @@ func TestTheReadinessRouteReadsAfresh(t *testing.T) {
 	call := func(subject string) (int, privacyReadiness, string) {
 		request := httptest.NewRequest(http.MethodGet, "/v1/privacy-readiness", nil)
 		if subject != "" {
-			request = request.WithContext(context.WithValue(request.Context(), serviceAccountKey{}, subject))
+			request = request.WithContext(withVerifiedPrincipal(request.Context(), subject))
 		}
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
@@ -318,7 +318,7 @@ func TestTheReadinessRouteReadsAfresh(t *testing.T) {
 	}
 	public := privacyReadinessHandler(&listenerPrivacy{allProjects: []string{dispatchAccount}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/privacy-readiness", nil)
-	request = request.WithContext(context.WithValue(request.Context(), serviceAccountKey{}, dispatchAccount))
+	request = request.WithContext(withVerifiedPrincipal(request.Context(), dispatchAccount))
 	recorder := httptest.NewRecorder()
 	public.ServeHTTP(recorder, request)
 	var answer privacyReadiness
