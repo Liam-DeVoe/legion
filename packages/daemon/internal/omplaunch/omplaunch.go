@@ -209,21 +209,31 @@ const MaskedPrefixWord = 8
 
 // PrefixMasked is text, the output of a launch that ran with prefix, a line at a time by
 // redact.Withheld's rule, the rule the `secrets` and private_key_command outputs are printed by:
-// every copy of each of the prefix's words, its program included, and of the value of each
-// NAME=value word (assignment), of MaskedPrefixWord characters or more, is replaced by
-// `<prefix word N>`, N the word's place in prefix (0 the program), wherever it stands; and a line
-// that still holds redact.HeldRun characters in a row of a word, or of such a value, compared
-// without case, is not printed, its length printed instead. A NAME=value word whole is taken out
-// only as an exact copy, so a line that names the variable is kept. A prefix such as
-// `env NAME=<token>`, a proxy wrapper handed a URL with a password, or a credential pasted where
-// the program goes carries a credential in its words, and a launch that refuses or fails can echo
-// it, whole, as the value alone, folded or cut, in the output a refusal quotes.
+// every copy of each of the prefix's words, and of the value of each NAME=value word
+// (assignment), of MaskedPrefixWord characters or more, is replaced by `<prefix word N>`, N the
+// word's place in prefix (0 the program), wherever it stands; and a line that still holds
+// redact.HeldRun characters in a row of an argument, or of such a value, compared without case, is
+// not printed, its length printed instead. A NAME=value word whole is taken out only as an exact
+// copy, so a line that names the variable is kept. The program is taken out as an exact copy and
+// by its base name, which a shell's refusal names (`sh: 1: <name>: not found`), and by no run: a
+// line that shares a directory with it (`/usr/local/lib/…` beside `/usr/local/bin/<wrapper>`, a
+// check's JSON naming one) is kept. A prefix such as `env NAME=<token>`, a proxy wrapper handed a
+// URL with a password, or a credential pasted where the program goes carries a credential in its
+// words, and a launch that refuses or fails can echo it, whole, as the value alone, folded or
+// cut, in the output a refusal quotes.
 func PrefixMasked(text string, prefix []string) string {
 	var words []redact.Word
 	for place, word := range prefix {
 		shown := fmt.Sprintf("<prefix word %d>", place)
 		value, assigns := assignment(word)
-		if len(word) >= MaskedPrefixWord {
+		switch {
+		case place == 0 && !assigns:
+			for _, named := range []string{word, filepath.Base(word)} {
+				if len(named) >= MaskedPrefixWord {
+					words = append(words, redact.Word{Text: named, Shown: shown, Exact: true})
+				}
+			}
+		case len(word) >= MaskedPrefixWord:
 			words = append(words, redact.Word{Text: word, Shown: shown, Exact: assigns})
 		}
 		if assigns && len(value) >= MaskedPrefixWord {

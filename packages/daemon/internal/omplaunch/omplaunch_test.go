@@ -248,9 +248,10 @@ func TestWithPrefix(t *testing.T) {
 // PrefixMasked takes every word of the prefix of MaskedPrefixWord characters or more out of a
 // launch's output a line at a time, the program included, and the value alone of a NAME=value
 // word, wherever each stands; a shorter word stays, a line that names the variable with another
-// value stays, and a line that still holds a 10-character run of a word, folded or cut, is not
-// printed. The credentials are made up: a token pasted as the program, a token an env word sets,
-// and a proxy URL's password.
+// value stays, and a line that still holds a 10-character run of an argument or a value, folded or
+// cut, is not printed. The program is taken out as an exact copy alone, so its cut copy stays. The
+// credentials are made up: a token pasted as the program, a token an env word sets, and a proxy
+// URL's password.
 func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
 	const program, value = "madeUpProgramToken0123", "madeUpEnvValue0123456"
 	proxy := "https://legion:madeUpProxyPass0123" + "@proxy.example"
@@ -262,7 +263,7 @@ func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
 	want := "sh: 1: <prefix word 0>: not found; <prefix word 1> (<prefix word 1>x); -- kept; <prefix word 3>\n" +
 		"OMP_TOKEN=other is set\n" +
 		"(a line of 42 bytes that holds part of the launch prefix, not printed)\n" +
-		"(a line of 23 bytes that holds part of the launch prefix, not printed)"
+		"cut: madeUpProgramTo…"
 	if got := PrefixMasked(text, prefix); got != want {
 		t.Fatalf("PrefixMasked = %q, want %q", got, want)
 	}
@@ -291,6 +292,28 @@ func TestPrefixMaskedReadsOnlyAVariableAsANameValueWord(t *testing.T) {
 	const value = "madeUpEnvValue0123456"
 	if got := PrefixMasked("OMP_TOKEN is set", []string{"env", "OMP_TOKEN=" + value}); got != "OMP_TOKEN is set" {
 		t.Fatalf("PrefixMasked = %q, want the line naming the variable kept", got)
+	}
+}
+
+// The program is taken out as an exact copy and by its base name, never by a run: a line that
+// shares a directory with it is kept, a check's JSON among them, while a shell's refusal naming it
+// either way is masked.
+func TestPrefixMaskedKeepsALineSharingTheProgramsDirectory(t *testing.T) {
+	for _, tc := range []struct{ name, program, text, want string }{
+		{"a library beside the wrapper", "/usr/local/bin/proxywrap",
+			"error: cannot read /usr/local/lib/libproxy.so.1", "error: cannot read /usr/local/lib/libproxy.so.1"},
+		{"a check's JSON", "/usr/local/bin/omp-proxy-wrapper",
+			`{"python":"/usr/local/lib/python3.12"}`, `{"python":"/usr/local/lib/python3.12"}`},
+		{"the program by its path", "/usr/local/bin/proxywrap",
+			"sh: 1: /usr/local/bin/proxywrap: not found", "sh: 1: <prefix word 0>: not found"},
+		{"the program by its base name", "/usr/local/bin/proxywrap",
+			"proxywrap: cannot reach the proxy", "<prefix word 0>: cannot reach the proxy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PrefixMasked(tc.text, []string{tc.program, "--"}); got != tc.want {
+				t.Fatalf("PrefixMasked = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
