@@ -1076,9 +1076,9 @@ variables renders, and Dispatch keeps its default identity.
 `directoryAccount` and `directoryAdmin`, both unset by default, are required with `iapAudience`
 and refused without it, each by its own name. Behind the IAP door Dispatch keeps no Google refresh
 token, so it checks each full member's Google Workspace account through the Directory API once an
-hour instead, and holds a person whose account is suspended or gone. `directoryAccount` is the
-email of the service account those reads sign as: one with no key and no project role, on which
-the app's Workload Identity principal (the form of the `principal` output, below) holds
+hour instead, and holds a person whose account is suspended, archived or gone. `directoryAccount`
+is the email of the service account those reads sign as: one with no key and no project role, on
+which the app's Workload Identity principal (the form of the `principal` output, below) holds
 `roles/iam.serviceAccountTokenCreator`, so Dispatch calls IAM `signJwt` on it and no key leaves
 Google. `directoryAdmin` is the email of the Workspace user the reads act as, through that
 account's Domain-wide Delegation. Either may come from another resource or stack, such as the

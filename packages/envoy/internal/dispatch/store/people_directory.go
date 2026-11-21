@@ -50,8 +50,8 @@ const recordDirectoryReboundSQL = `
 `
 
 // RecordDirectoryActive records an Active outcome of email's Directory check: the person's own
-// account answered as not suspended. readAt is the database time of the check's own read of the
-// row (auth.PersonMembership.ReadAt), which came before its Directory read. It sets
+// account answered as neither suspended nor archived. readAt is the database time of the check's
+// own read of the row (auth.PersonMembership.ReadAt), which came before its Directory read. It sets
 // directory_confirmed_at and directory_checked_at to now, not_held_until to now plus 24 hours,
 // after which a not-held answer is no longer served, and held_since to null, which releases a
 // recorded hold; it stores userID, the answer's Directory user id, in directory_user_id when that
@@ -72,12 +72,12 @@ func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID
 }
 
 // RecordDirectoryHeld records a Held outcome of email's Directory check: the account is suspended,
-// missing, or another person's. It sets directory_checked_at to now and records a hold at that
-// time, held_since set to now on every Held outcome, so the row holds the time of its latest Held
-// outcome. An Active write guards on that time (RecordDirectoryActive): one resting on a read made
-// before this outcome writes nothing, whether or not the row was already held when that read was
-// made. Every reader of held_since compares it with signed_in_at or directory_confirmed_at, which a
-// later time keeps true. It leaves directory_confirmed_at and not_held_until as they are.
+// archived, missing, or another person's. It sets directory_checked_at to now and records a hold at
+// that time, held_since set to now on every Held outcome, so the row holds the time of its latest
+// Held outcome. An Active write guards on that time (RecordDirectoryActive): one resting on a read
+// made before this outcome writes nothing, whether or not the row was already held when that read
+// was made. Every reader of held_since compares it with signed_in_at or directory_confirmed_at,
+// which a later time keeps true. It leaves directory_confirmed_at and not_held_until as they are.
 func (s *PgPeopleStore) RecordDirectoryHeld(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, recordDirectoryHeldSQL, email); err != nil {
 		return fmt.Errorf("record a Held Directory answer for %q: %w", email, err)

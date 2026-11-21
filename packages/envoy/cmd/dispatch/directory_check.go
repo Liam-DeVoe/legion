@@ -41,7 +41,7 @@ func directoryCheck(ctx context.Context, args []string, env settingValues, stdou
 	flags := flag.NewFlagSet("directory-check", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	active := flags.String("active", "", "a login whose Workspace account is active, by its primary address: it must check Active")
-	held := flags.String("held", "", "a login whose Workspace account is suspended or deleted: it must check Held")
+	held := flags.String("held", "", "a login whose Workspace account is suspended, archived or deleted: it must check Held")
 	probe := flags.String("scope-probe", "", "a scope the Domain-wide Delegation grant must not give: Google must refuse it with "+directoryCheckRefusal)
 	if err := flags.Parse(args); err != nil {
 		return 2

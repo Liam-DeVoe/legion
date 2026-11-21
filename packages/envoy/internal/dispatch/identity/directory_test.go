@@ -82,10 +82,10 @@ func failedReason(t *testing.T, result checked) string {
 }
 
 // TestIAPDirectoryOutcomes holds each answer Google can give a Directory check to its outcome: an
-// active answer for the person's own account is Active, a suspended or missing user and an active
-// answer for another account at another address (an alias of a colleague's account) are Held, an
-// active answer for the asked address itself under another account than the stored one (the
-// address deleted and created again) is Recreated, and everything else is Failed with an error
+// active answer for the person's own account is Active, a suspended, archived or missing user and
+// an active answer for another account at another address (an alias of a colleague's account) are
+// Held, an active answer for the asked address itself under another account than the stored one
+// (the address deleted and created again) is Recreated, and everything else is Failed with an error
 // that names its class and HTTP status only. Each step of the check - IAM's signJwt, the token
 // exchange and the Directory read - ends when the check's context ends, the two the impersonate
 // package sends included.
@@ -109,6 +109,9 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 		}},
 		{name: "suspended", knownID: "u-ada", outcome: DirectoryHeld, userID: "u-ada", answer: func(g *directorytest.Google) {
 			g.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda, Suspended: true})
+		}},
+		{name: "archived, not suspended", knownID: "u-ada", outcome: DirectoryHeld, userID: "u-ada", answer: func(g *directorytest.Google) {
+			g.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda, Archived: true})
 		}},
 		{name: "404, a deleted or missing user", knownID: "u-ada", outcome: DirectoryHeld, answer: func(*directorytest.Google) {}},
 		{name: "the address made an alias of a colleague's active account", knownID: "u-ada", outcome: DirectoryHeld, userID: "u-bob", answer: func(g *directorytest.Google) {
@@ -134,6 +137,12 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 		}},
 		{name: "a 200 whose suspended is null", reason: "the Directory read's answer has no suspended (HTTP 200)", answer: func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":null}`})
+		}},
+		{name: "a 200 with no archived, not suspended", outcome: DirectoryActive, userID: "u-ada", answer: func(g *directorytest.Google) {
+			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":false,"etag":"` + directorytest.Planted + `"}`})
+		}},
+		{name: "a 200 with no archived, suspended", knownID: "u-ada", outcome: DirectoryHeld, userID: "u-ada", answer: func(g *directorytest.Google) {
+			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","suspended":true}`})
 		}},
 		{name: "a 200 with no id", reason: "the Directory read's answer has no id (HTTP 200)", answer: func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"primaryEmail":"ada@example.com","suspended":false,"etag":"` + directorytest.Planted + `"}`})
@@ -431,7 +440,7 @@ func directoryRefusal(status int) func(*directorytest.Google) {
 
 // holdRequestsToTheGrant checks every request the reader sent: each signJwt names the signer, the
 // delegated user and the Directory scope alone, for Google's token endpoint; each Directory read
-// asks for ada with the three fields, under a token for the delegated user and that scope.
+// asks for ada with the four fields, under a token for the delegated user and that scope.
 func holdRequestsToTheGrant(t *testing.T, google *directorytest.Google) {
 	t.Helper()
 	want := directorytest.Sign{Principal: directorySigner, Issuer: directorySigner, Subject: directoryAdmin,
@@ -442,8 +451,8 @@ func holdRequestsToTheGrant(t *testing.T, google *directorytest.Google) {
 		}
 	}
 	for _, read := range google.Reads() {
-		if read.UserKey != directoryAda || read.Fields != "id,suspended,primaryEmail" {
-			t.Errorf("users.get %+v, want ada with fields id,suspended,primaryEmail", read)
+		if read.UserKey != directoryAda || read.Fields != "id,suspended,archived,primaryEmail" {
+			t.Errorf("users.get %+v, want ada with fields id,suspended,archived,primaryEmail", read)
 		}
 		if read.Scope != "" && (read.Subject != directoryAdmin || read.Scope != directorytest.DirectoryScope) {
 			t.Errorf("users.get under a token for %q with %q, want the delegated user and the Directory scope", read.Subject, read.Scope)

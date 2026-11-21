@@ -570,14 +570,14 @@ IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispat
 Dispatch reads each of your people's Workspace accounts through the Directory API (`users.get` for
 the person's address) about once an hour, held and idle people included. An answer that the
 person's own account is active confirms them, releases a hold with no sign-in, and keeps them
-served for 24 hours. An answer that the account is suspended, a `404`, or an answer for another
-address's account (the address made an alias of a colleague's account) holds them: their agent
-tokens and broker tokens are refused `401 MEMBERSHIP_HELD`, and the secrets broker refuses their
-credentials. Any other result changes nothing. A valid IAP assertion releases nothing. After 24
-hours with no active answer, a person's agent tokens answer `503 IDENTITY_UNAVAILABLE`, and their
-broker tokens `503 BROKER_UNAVAILABLE`, until the Directory answers again, so an outage of the
-Directory longer than a day stops everyone's tokens; a person IAP admits for the first time is in
-that state until their first check.
+served for 24 hours. An answer that the account is suspended or archived, a `404`, or an answer
+for another address's account (the address made an alias of a colleague's account) holds them:
+their agent tokens and broker tokens are refused `401 MEMBERSHIP_HELD`, and the secrets broker
+refuses their credentials. Any other result changes nothing. A valid IAP assertion releases
+nothing. After 24 hours with no active answer, a person's agent tokens answer
+`503 IDENTITY_UNAVAILABLE`, and their broker tokens `503 BROKER_UNAVAILABLE`, until the Directory
+answers again, so an outage of the Directory longer than a day stops everyone's tokens; a person
+IAP admits for the first time is in that state until their first check.
 
 An address the Workspace deleted and created again for someone else answers with the new
 account. Dispatch's row for the address still belongs to the earlier person, and so does every
@@ -608,10 +608,10 @@ console under Security, Access and data control, API controls, Manage Domain Wid
 authorize the service account's numeric client ID for exactly
 `https://www.googleapis.com/auth/admin.directory.user.readonly`. Google states that the grant can
 take up to 24 hours to take effect. Then run, with the two settings, an active account and a
-suspended or deleted one:
+suspended, archived or deleted one:
 
 ```sh
-envoy-dispatch directory-check --active '<an active login>' --held '<a suspended or deleted login>' --scope-probe https://www.googleapis.com/auth/admin.directory.user
+envoy-dispatch directory-check --active '<an active login>' --held '<a suspended, archived or deleted login>' --scope-probe https://www.googleapis.com/auth/admin.directory.user
 ```
 
 It exits 0 only when the first login is `Active`, the second `Held`, and Google refuses the probe

@@ -265,17 +265,17 @@ type DispatchArgs struct {
 	// Directory through behind the IAP door, rendered as DISPATCH_DIRECTORY_ACCOUNT beside
 	// DISPATCH_IDENTITY=iap. Behind that door Dispatch keeps no Google refresh token, so it checks
 	// each full member's Workspace account through the Directory API once an hour instead, and holds
-	// a person whose account is suspended or gone. The account has no key and no project role: the
-	// app's own workload principal holds roles/iam.serviceAccountTokenCreator on it and calls IAM
-	// signJwt on it, so no key leaves Google. The person steps come before IAP admits anyone: a
-	// Workspace super administrator gives directoryAdmin an administrator role whose only privilege
-	// is Users > Read, and authorizes this account's numeric client ID for Domain-wide Delegation
-	// with exactly the scope https://www.googleapis.com/auth/admin.directory.user.readonly, which
-	// Google states can take up to 24 hours to take effect. It may be another resource's or stack's
-	// output, such as the export of the program that declares the account, and is judged once it
-	// resolves: a blank value, which Dispatch reads as unset, or one holding an nkey seed is refused
-	// naming directoryAccount. iapAudience requires it, since Dispatch refuses to boot behind the IAP
-	// door without it, and it is refused without iapAudience.
+	// a person whose account is suspended, archived or gone. The account has no key and no project
+	// role: the app's own workload principal holds roles/iam.serviceAccountTokenCreator on it and
+	// calls IAM signJwt on it, so no key leaves Google. The person steps come before IAP admits
+	// anyone: a Workspace super administrator gives directoryAdmin an administrator role whose only
+	// privilege is Users > Read, and authorizes this account's numeric client ID for Domain-wide
+	// Delegation with exactly the scope https://www.googleapis.com/auth/admin.directory.user.readonly,
+	// which Google states can take up to 24 hours to take effect. It may be another resource's or
+	// stack's output, such as the export of the program that declares the account, and is judged
+	// once it resolves: a blank value, which Dispatch reads as unset, or one holding an nkey seed is
+	// refused naming directoryAccount. iapAudience requires it, since Dispatch refuses to boot behind
+	// the IAP door without it, and it is refused without iapAudience.
 	DirectoryAccount pulumi.StringInput `pulumi:"directoryAccount,optional"`
 	// DirectoryAdmin is the email of the Workspace user Dispatch's Directory reads act as, through
 	// directoryAccount's Domain-wide Delegation, rendered as DISPATCH_DIRECTORY_ADMIN beside
