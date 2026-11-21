@@ -1,5 +1,5 @@
 import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
-import { DISPATCH_KEY_PATTERN } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, isLegionProjectToken } from "./legion-roles";
 import {
   AGENT_TOPIC_PREFIX,
   DISPATCH_ISSUE_TOPIC_PREFIX,
@@ -41,14 +41,12 @@ export function issueProject(key: string): string | undefined {
 // non-empty rest is (subject_project.go RoleProject): `.` matches no line terminator.
 const LEGION_ROLE_TOKEN = /^legion-([a-z0-9]+)-[\s\S]/;
 
-const LEGION_TOKEN = /^[a-z0-9]+$/;
-
 /** The project of a Legion deployment's token: its upper case when the token is one (lower-case
  * letters and digits, as `claim.ProjectToken` writes it) and that is a project key. The token is
  * checked before it is upper-cased, so a name whose upper case only a Unicode table makes a key
  * (`ßk`) reads as it does in the Go twin. */
 function legionTokenProject(token: string | undefined): string {
-  return token !== undefined && LEGION_TOKEN.test(token)
+  return token !== undefined && isLegionProjectToken(token)
     ? projectOfToken(token.toUpperCase())
     : NO_PROJECT;
 }
@@ -155,6 +153,11 @@ const SUBJECT_PROJECT_ROWS: readonly SubjectProjectRow[] = [
   },
   // Where a deleted session consumer stopped, which names a session and no project.
   { family: "notifications.envoy.resume.>", read: none },
+  // A role a session took from another: the role's own project, as its kept lane reads it.
+  {
+    family: "notifications.envoy.takeover.>",
+    read: (rest) => ({ project: roleProject(rest[0] ?? "") }),
+  },
 ];
 
 /** The families `subjectProject` has a row for, each as the pattern naming all of it. */
@@ -284,12 +287,10 @@ export function legacyTwin(canonical: string): string | undefined {
  * (`legacyTwin`). A topic of a family the rename does not move is its one form.
  */
 export function topicForms(topic: string): string[] {
-  const forms = [topic];
   const { canonical, legacy } = canonicalTopic(topic);
-  if (legacy) forms.push(canonical);
-  const twin = legacyTwin(canonical);
-  if (twin !== undefined && !forms.includes(twin)) forms.push(twin);
-  return forms;
+  if (legacy) return [topic, canonical];
+  const twin = legacyTwin(topic);
+  return twin === undefined ? [topic] : [topic, twin];
 }
 
 /**
@@ -350,8 +351,11 @@ export function roleClaimKey(project: string, role: string): string {
 
 /**
  * The project a claim of `role` works for, given the project the claim requested (`undefined` or
- * `""` for none), or an `Error` for a request the rule refuses. It is the one place a claim's
- * project is decided, so the listener's route and Dispatch's reader cannot answer it two ways.
+ * `""` for none), or an `Error` for a request the rule refuses, once a claim keys on its project.
+ * Nothing calls it in this slice: while every claim keys on its bare role name, the listener's
+ * `POST /v1/roles/set` refuses any new-form role whose project is not `roleProject(role)`, so for a
+ * free-form role under a project (`PRIV.lead-reviewer`) the route answers 400 where this answers
+ * `PRIV`. Plan C's t-c-8 wires it into the route, and t-c-6 reads Dispatch's claims through it.
  *
  * A Legion role token (`legion-<token>-…`) works for the project its own name gives
  * (`roleProject`), whatever the claim asks for, and a request naming another project is refused

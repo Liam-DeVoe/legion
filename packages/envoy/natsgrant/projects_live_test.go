@@ -24,68 +24,48 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// The live half of WithinProjects' tests: measurement M5 of dispatch://INFRA-3884's plan, rebuilt on
+// The live half of WithinProjects' tests: the measurement that found the leak, rebuilt on
 // the image the hub runs (testnats.HubImage) behind an auth callout, each daemon's grant arriving
 // in the user JWT of the callout's answer as the auth service sends it (natscallout's
 // encodeAnswer). A PUB daemon on today's grant (natsgrant.Daemon) is the control: it subscribes
 // _INBOX.> and must receive what a PRIV daemon pulls from its consumer, or the measurement cannot
-// see a leak at all. A PUB daemon on WithinProjects(Daemon(), PUB) then makes the calls the Legion
-// daemon makes under it (t-c-10): its consumers created with one filter each, their info, their
+// see a leak at all. A PUB daemon on WithinProjects(Daemon(), PUB) then makes the calls a Legion
+// daemon held to its projects makes: its consumers created with one filter each, their info, their
 // pull with Consume and Fetch, and the acknowledgements; it receives none of PRIV's messages, and
-// the server refuses each call that would reach PRIV.
+// the server refuses each call that would reach PRIV. Its one GitHub consumer receives every
+// repository's GitHub events, a repository only PRIV's issues resolve to among them: a GitHub
+// event is a message of no project, which every daemon is granted.
 
 const (
 	livePUBIdentity  = "legion-daemon-PUB"
 	livePRIVIdentity = "legion-daemon-PRIV"
-	liveWait         = 10 * time.Second
+	// liveNoGitHubIdentity is the account of the GitHub row's control, PUB's held grant without
+	// its GitHub consumer.
+	liveNoGitHubIdentity = "legion-daemon-PUB-no-github"
+	liveWait             = 10 * time.Second
 	// liveRefusalWait bounds a call the server refuses: nats.go's request waits for an answer
 	// the server never sends after a publish violation, so the call ends at this deadline.
 	liveRefusalWait = 3 * time.Second
-	// largestRepositories is more than twice the repositories Dispatch maps to its largest
-	// project: INFRA, 14 repositories, one of them renamed, so 15 names in its scope, read
-	// from GET /api/v1/settings/repo-projects at 2026-11-16T04:08:48Z.
-	largestRepositories = 32
 )
 
 func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
-	// acme/gadgets.js holds a dot, which its subjects spell "_": the daemon's create and the grant
-	// must name one filter for it (natsgrant.GitHubFilter), or the server refuses the create.
-	// acme/one and acme/two are two repositories whose filters differ, for the refusals of one's
-	// consumer on the other's filter. acme/mixedcase is how Dispatch spells a repository GitHub
-	// spells Acme/MixedCase: t-c-10's daemon is to name its consumer from GitHub's spelling, and
-	// GitHubConsumerName lower-cases it, so the name is the one the grant holds.
-	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js", "acme/one", "acme/two", "acme/mixedcase"}, Identity: livePUBIdentity}
-	privScope := natsgrant.Scope{Projects: []string{"PRIV"}, Repositories: []string{"acme/secret"}, Identity: livePRIVIdentity}
-	largest := natsgrant.Scope{Projects: []string{"INFRA"}, Identity: "legion-daemon-INFRA"}
-	for i := range largestRepositories {
-		largest.Repositories = append(largest.Repositories, fmt.Sprintf("example-owner/repository-%02d", i))
-	}
+	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Identity: livePUBIdentity}
+	privScope := natsgrant.Scope{Projects: []string{"PRIV"}, Identity: livePRIVIdentity}
 	grants := map[string]natsgrant.Permissions{
 		"today-pub":     natsgrant.Daemon(),
 		"today-priv":    natsgrant.Daemon(),
 		"narrowed-pub":  within(t, pubScope),
 		"narrowed-priv": within(t, privScope),
-		"largest":       within(t, largest),
+		"no-github-pub": withoutConsumer(t, within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: liveNoGitHubIdentity}), githubConsumer("PUB")),
 		// What WithinProjects never answers: a grant with no publish entry, which the server
 		// reads as a user who may publish to every subject.
 		"empty-publish": {Subscribe: []string{natsgrant.InboxPrefix("empty-publish") + ".>"}},
 	}
 
-	keys := testnats.NewCalloutKeys(t)
-	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: the sealing is t-e-3's to test
-	adminSeed, adminPublic := testnats.User(t)
-	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	answers := serveCallout(t, url, keys, grants)
-
-	admin, err := testnats.ConnectSeed(t, url, adminSeed)
-	require.NoError(t, err)
-	t.Cleanup(admin.Close)
-	adminJS, err := jetstream.New(admin)
-	require.NoError(t, err)
+	hub := startLiveHub(t, grants)
+	url, admin, adminJS, answers := hub.url, hub.admin, hub.js, hub.answers
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	_, err = adminJS.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
-	require.NoError(t, err)
 	publish := func(subject string, bodies ...string) {
 		t.Helper()
 		for _, body := range bodies {
@@ -95,10 +75,12 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	}
 	privIssue := "notifications.dispatch.issue.PRIV.PRIV-1.comment.created"
 	publish("notifications.dispatch.issue.PUB.PUB-1.comment.created", "PUB-1", "PUB-2", "PUB-3", "PUB-4", "PUB-5")
-	publish(contracts.GithubSubject("acme", "widgets", "pr.1"), "PUB-repository")
-	publish(contracts.GithubSubject("acme", "gadgets.js", "pr.1"), "PUB-dotted-repository")
-	publish(contracts.GithubSubject("acme", "mixedcase", "pr.1"), "PUB-mixed-case-repository")
-	publish("notifications.github.acme.secret.pr.1", "PRIV-repository")
+	// acme/pub is a repository PUB's issues resolve to, acme/priv one only PRIV's do. A GitHub
+	// event is a message of no project, so neither body names a project key, and the observers
+	// below, which count each body naming PRIV, count neither.
+	githubEvents := []string{"github acme/pub pr.1", "github acme/priv pr.1"}
+	publish(contracts.GithubSubject("acme", "pub", "pr.1"), githubEvents[0])
+	publish(contracts.GithubSubject("acme", "priv", "pr.1"), githubEvents[1])
 	publish(privIssue, "PRIV-secret-1", "PRIV-secret-2", "PRIV-secret-3", "PRIV-secret-4", "PRIV-secret-5")
 
 	// The control: today's grant receives every reply on the server.
@@ -141,7 +123,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	require.Eventually(t, func() bool { return controlSeen.count() >= 10 }, liveWait, 50*time.Millisecond,
 		"the control saw %d PRIV messages after today's PRIV pulled 10", controlSeen.count())
 
-	// The narrowed PUB daemon's own work: each consumer t-c-10 opens, created with its one filter,
+	// The narrowed PUB daemon's own work: each consumer it opens, created with its one filter,
 	// read and pulled; the Dispatch consumer through Consume, as the daemon pulls, every message
 	// acknowledged.
 	pubJS, err := jetstream.New(narrowedPub.conn)
@@ -173,9 +155,8 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	require.Zero(t, info.NumPending+uint64(info.NumAckPending), "the narrowed PUB daemon's Dispatch consumer has nothing left")
 
 	for name, filter := range map[string]string{
-		"legion-go-PUB-mapping": "notifications.dispatch.project.PUB.settings.repo_project.updated",
-		"legion-go-PUB-wake":    "notifications.legion.pub.wake",
-		"legion-go-PUB-ready":   bus.LegionWakeTopic,
+		"legion-go-PUB-wake":  "notifications.legion.pub.wake",
+		"legion-go-PUB-ready": bus.LegionWakeTopic,
 	} {
 		consumer := openConsumer(ctx, t, pubJS, name, filter)
 		batch, err := consumer.FetchNoWait(1)
@@ -185,29 +166,33 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		}
 		require.NoError(t, batch.Error(), name)
 	}
-	for repository, want := range map[string]string{"acme/widgets": "PUB-repository", "acme/gadgets.js": "PUB-dotted-repository"} {
-		github := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", repository), natsgrant.GitHubFilter(repository))
-		batch, err := github.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
-		require.NoError(t, err, repository)
-		var bodies []string
-		for msg := range batch.Messages() {
-			bodies = append(bodies, string(msg.Data()))
-			require.NoError(t, msg.DoubleAck(ctx))
-		}
-		require.Equal(t, []string{want}, bodies, repository)
-	}
-	// The daemon names the mixed-case repository's consumer from GitHub's spelling and opens it
-	// on the lane the grant holds, Dispatch's lower case, which is the listener's spelling once
-	// t-c-21 lower-cases every GitHub subject at its source.
-	mixed := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", "Acme/MixedCase"), natsgrant.GitHubFilter("acme/mixedcase"))
-	mixedBatch, err := mixed.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
-	require.NoError(t, err, "Acme/MixedCase")
-	var mixedBodies []string
-	for msg := range mixedBatch.Messages() {
-		mixedBodies = append(mixedBodies, string(msg.Data()))
-		require.NoError(t, msg.DoubleAck(ctx))
-	}
-	require.Equal(t, []string{"PUB-mixed-case-repository"}, mixedBodies)
+
+	// PUB's one GitHub consumer, opened as the daemon opens it on every repository's events,
+	// receives each repository's event, acme/priv's among them.
+	pubGitHub, err := githubBodies(ctx, narrowedPub, "PUB")
+	require.NoError(t, err, "the narrowed PUB daemon's GitHub consumer; the server reported %v", narrowedPub.reported())
+	require.Equal(t, githubEvents, pubGitHub, "the narrowed PUB daemon's GitHub consumer")
+	// The control: PUB's held grant without its GitHub consumer. The server refuses the
+	// consumer's create, naming its subject, and the daemon receives no GitHub event, so the row
+	// above is one that can fail.
+	noGitHub := connectAs(t, url, "no-github-pub", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(liveNoGitHubIdentity)))
+	noGitHubBodies, err := githubBodies(ctx, noGitHub, "PUB")
+	require.Error(t, err, "the control, PUB's held grant without its GitHub consumer, received %v", noGitHubBodies)
+	require.Empty(t, noGitHubBodies, "the control received GitHub events")
+	noGitHub.requireRefused(t, "publish", githubCreate("PUB", githubFamily))
+	t.Logf("GitHub: PUB's held grant pulled %d GitHub events, acme/priv's among them; without its GitHub consumer it pulled none: %v", len(pubGitHub), err)
+
+	// The create subject's last token is the family's wildcard, so the server admits PUB's GitHub
+	// consumer on one repository's lane too, a repository only PRIV's issues resolve to: its
+	// filter is inside the family the grant holds. The consumer is updated in place, as the
+	// daemon updates its consumers.
+	const privLane = "notifications.github.acme.priv.>"
+	onePrivLane, err := pubJS.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{
+		Durable: githubConsumer("PUB"), FilterSubject: privLane, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err, "create %s", githubCreate("PUB", privLane))
+	require.Equal(t, privLane, onePrivLane.CachedInfo().Config.FilterSubject)
+	narrowedPub.requireNotRefused(t, githubCreate("PUB", privLane))
 
 	// What the server refuses the narrowed PUB daemon: each call fails at the client, and the
 	// server reports a publish violation naming the call's subject.
@@ -230,19 +215,14 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubject: "notifications.dispatch.issue.PRIV.>", AckPolicy: jetstream.AckExplicitPolicy})
 	refusedCreate(create+"legion-go-PUB-dispatch",
 		jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubjects: []string{"notifications.dispatch.issue.PUB.>", "notifications.dispatch.issue.PRIV.>"}, AckPolicy: jetstream.AckExplicitPolicy})
-	widgets := natsgrant.GitHubConsumerName("PUB", "acme/widgets")
-	refusedCreate(create+widgets+".notifications.github.acme.secret.>",
-		jetstream.ConsumerConfig{Durable: widgets, FilterSubject: "notifications.github.acme.secret.>", AckPolicy: jetstream.AckExplicitPolicy})
-	// One repository's consumer on the other's filter, both repositories of the scope.
-	for _, pair := range [][2]string{{"acme/one", "acme/two"}, {"acme/two", "acme/one"}} {
-		name, filter := natsgrant.GitHubConsumerName("PUB", pair[0]), natsgrant.GitHubFilter(pair[1])
-		refusedCreate(create+name+"."+filter,
-			jetstream.ConsumerConfig{Durable: name, FilterSubject: filter, AckPolicy: jetstream.AckExplicitPolicy})
-	}
-	// The control for the lower case: a consumer named from GitHub's spelling without it is no
-	// consumer of the grant, and the server refuses its create.
-	refusedCreate(create+"legion-go-PUB-github-Acme_2fMixedCase."+natsgrant.GitHubFilter("acme/mixedcase"),
-		jetstream.ConsumerConfig{Durable: "legion-go-PUB-github-Acme_2fMixedCase", FilterSubject: natsgrant.GitHubFilter("acme/mixedcase"), AckPolicy: jetstream.AckExplicitPolicy})
+	// Another project's GitHub consumer, PUB's GitHub consumer on a lane outside the family, and a
+	// consumer named for one repository, which no grant holds.
+	refusedCreate(githubCreate("PRIV", githubFamily),
+		jetstream.ConsumerConfig{Durable: githubConsumer("PRIV"), FilterSubject: githubFamily, AckPolicy: jetstream.AckExplicitPolicy})
+	refusedCreate(githubCreate("PUB", "notifications.dispatch.issue.PRIV.>"),
+		jetstream.ConsumerConfig{Durable: githubConsumer("PUB"), FilterSubject: "notifications.dispatch.issue.PRIV.>", AckPolicy: jetstream.AckExplicitPolicy})
+	refusedCreate(create+"legion-go-PUB-github-acme_2fpriv."+privLane,
+		jetstream.ConsumerConfig{Durable: "legion-go-PUB-github-acme_2fpriv", FilterSubject: privLane, AckPolicy: jetstream.AckExplicitPolicy})
 	refused("$JS.API.STREAM.INFO."+bus.Stream, func(ctx context.Context) error {
 		_, err := pubJS.Stream(ctx, bus.Stream)
 		return err
@@ -295,15 +275,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	require.ElementsMatch(t, observerControls, narrowedSeen.bodies(), "the narrowed PUB daemon received PRIV's messages")
 	narrowedPub.requireNotRefused(t, "notifications.envoy.exceptions.notifications.role.PUB.*")
 	t.Logf("narrowed: a PUB daemon on WithinProjects(Daemon(), PUB) received 0 of 10 PRIV messages pulled while it observed; the control received %d", controlSeen.count())
-
-	// The largest project's grant fits in the answer the server takes: the connection is admitted
-	// and the GitHub consumer of its last repository opens on that repository's lane.
-	largestConn := connectAs(t, url, "largest", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(largest.Identity)))
-	largestJS, err := jetstream.New(largestConn.conn)
-	require.NoError(t, err)
-	last := fmt.Sprintf("repository-%02d", largestRepositories-1)
-	openConsumer(ctx, t, largestJS, natsgrant.GitHubConsumerName("INFRA", "example-owner/"+last), "notifications.github.example-owner."+last+".>")
-	for _, name := range []string{"today-pub", "narrowed-pub", "largest"} {
+	for _, name := range []string{"today-pub", "narrowed-pub"} {
 		grant := grants[name]
 		t.Logf("auth response for %s: %d bytes, %d publish and %d subscribe entries", name, answers.size(name), len(grant.Publish), len(grant.Subscribe))
 	}
@@ -320,12 +292,158 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	t.Logf("a user JWT with no publish allow list read the stream's info: %d messages stored", stream.CachedInfo().State.Msgs)
 }
 
+// The boundary of WithinProjects, which its doc names: the grant holds a daemon to its consumers
+// by name, not by what they filter. A legion-go-PUB-dispatch durable that already exists on every
+// project's issue events, as today's daemon opens it (packages/daemon/internal/intake/consume.go),
+// is read whole through PUB's held grant: the held PUB daemon reads the consumer's info and pulls
+// PRIV's issue event through its own consumer, whose info, pull and acknowledgements name the
+// consumer only. Once the held daemon updates that durable in place to PUB's own lane, as the
+// daemon that opens its consumers per project does at boot, it pulls PUB's events alone. This row
+// pins the boundary rather than a protection: a read that refuses to hold a daemon while any of
+// its consumers is wider than its own lane belongs to the step that lists daemon entries held to
+// projects.
+func TestWithinProjectsReadsAWideConsumerWhole(t *testing.T) {
+	const identity = "legion-daemon-PUB-wide"
+	consumer := "legion-go-PUB-dispatch"
+	hub := startLiveHub(t, map[string]natsgrant.Permissions{"held-pub": within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	// Today's daemon's dispatch consumer, on every project's issue events.
+	_, err := hub.js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{
+		Durable: consumer, FilterSubjects: []string{"notifications.dispatch.issue.>"}, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+	publish := func(subject, body string) {
+		t.Helper()
+		_, err := hub.js.Publish(ctx, subject, []byte(body))
+		require.NoError(t, err, "publish %s", subject)
+	}
+	publish("notifications.dispatch.issue.PUB.PUB-1.created", "PUB-1")
+	publish("notifications.dispatch.issue.PRIV.PRIV-1.created", "PRIV-1")
+
+	held := connectAs(t, hub.url, "held-pub", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(identity)))
+	js, err := jetstream.New(held.conn)
+	require.NoError(t, err)
+	pull := func() []string {
+		t.Helper()
+		wide, err := js.Consumer(ctx, bus.Stream, consumer)
+		require.NoError(t, err, "the held PUB daemon's info of %s; the server reported %v", consumer, held.reported())
+		batch, err := wide.Fetch(2, jetstream.FetchMaxWait(liveRefusalWait))
+		require.NoError(t, err)
+		var bodies []string
+		for msg := range batch.Messages() {
+			bodies = append(bodies, string(msg.Data()))
+			require.NoError(t, msg.DoubleAck(ctx))
+		}
+		require.NoError(t, batch.Error())
+		return bodies
+	}
+	require.ElementsMatch(t, []string{"PUB-1", "PRIV-1"}, pull(),
+		"the held PUB daemon did not read the wide %s whole: the grant now holds the consumer's filter, and its doc must say so", consumer)
+	t.Logf("the held PUB daemon pulled PRIV-1 through the wide %s", consumer)
+
+	narrowed := openConsumer(ctx, t, js, consumer, "notifications.dispatch.issue.PUB.>")
+	require.Equal(t, "notifications.dispatch.issue.PUB.>", narrowed.CachedInfo().Config.FilterSubject,
+		"the held PUB daemon could not update %s in place to PUB's lane", consumer)
+	publish("notifications.dispatch.issue.PUB.PUB-2.created", "PUB-2")
+	publish("notifications.dispatch.issue.PRIV.PRIV-2.created", "PRIV-2")
+	require.Equal(t, []string{"PUB-2"}, pull(), "the held PUB daemon's %s, narrowed in place to PUB's lane", consumer)
+}
+
+// liveHub is a hub on the image the hub runs behind a stand-in auth callout (serveCallout), with a
+// static admin user that may publish and subscribe anything, and the notification stream made.
+type liveHub struct {
+	url     string
+	admin   *natsgo.Conn
+	js      jetstream.JetStream
+	answers *calloutAnswers
+}
+
+// startLiveHub starts a liveHub whose auth callout admits each user of grants with its grant.
+func startLiveHub(t *testing.T, grants map[string]natsgrant.Permissions) liveHub {
+	t.Helper()
+	keys := testnats.NewCalloutKeys(t)
+	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
+	adminSeed, adminPublic := testnats.User(t)
+	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
+	answers := serveCallout(t, url, keys, grants)
+	admin, err := testnats.ConnectSeed(t, url, adminSeed)
+	require.NoError(t, err)
+	t.Cleanup(admin.Close)
+	js, err := jetstream.New(admin)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
+	require.NoError(t, err)
+	return liveHub{url: url, admin: admin, js: js, answers: answers}
+}
+
 // within is WithinProjects(Daemon(), scope), which must not refuse.
 func within(t *testing.T, scope natsgrant.Scope) natsgrant.Permissions {
 	t.Helper()
 	grant, err := natsgrant.WithinProjects(natsgrant.Daemon(), scope)
 	require.NoError(t, err)
 	return grant
+}
+
+// githubConsumer is the name of project's GitHub consumer, the daemon's legion-go-<P>-github
+// (packages/daemon/internal/intake/consume.go).
+func githubConsumer(project string) string {
+	return "legion-go-" + project + "-github"
+}
+
+// githubCreate is the subject of the create of project's GitHub consumer on filter.
+func githubCreate(project, filter string) string {
+	return "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + githubConsumer(project) + "." + filter
+}
+
+// withoutConsumer is grant with every entry that names consumer taken out: its create, info, pull
+// and acknowledgements, four entries, or the test fails, since a control that takes out nothing
+// proves nothing.
+func withoutConsumer(t *testing.T, grant natsgrant.Permissions, consumer string) natsgrant.Permissions {
+	t.Helper()
+	names := func(entry string) bool { return slices.Contains(strings.Split(entry, "."), consumer) }
+	out := grant
+	out.Publish = slices.DeleteFunc(slices.Clone(grant.Publish), names)
+	out.Subscribe = slices.DeleteFunc(slices.Clone(grant.Subscribe), names)
+	require.Len(t, out.Publish, len(grant.Publish)-4, "the grant names %s in four publish entries", consumer)
+	require.Equal(t, grant.Subscribe, out.Subscribe, "no subscribe entry names %s", consumer)
+	return out
+}
+
+// githubBodies opens project's GitHub consumer as the daemon opens it, with every repository's
+// events as its one filter, and pulls what it holds, acknowledging each. The create is given
+// liveRefusalWait, since the server sends no answer to a create it refuses; an error names the
+// call that failed.
+func githubBodies(ctx context.Context, client *liveClient, project string) ([]string, error) {
+	js, err := jetstream.New(client.conn)
+	if err != nil {
+		return nil, err
+	}
+	createCtx, cancel := context.WithTimeout(ctx, liveRefusalWait)
+	defer cancel()
+	consumer, err := js.CreateOrUpdateConsumer(createCtx, bus.Stream, jetstream.ConsumerConfig{
+		Durable: githubConsumer(project), FilterSubject: githubFamily, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", githubCreate(project, githubFamily), err)
+	}
+	if filter := consumer.CachedInfo().Config.FilterSubject; filter != githubFamily {
+		return nil, fmt.Errorf("%s filters on %q, not %q", githubConsumer(project), filter, githubFamily)
+	}
+	batch, err := consumer.Fetch(3, jetstream.FetchMaxWait(2*time.Second))
+	if err != nil {
+		return nil, fmt.Errorf("pull %s: %w", githubConsumer(project), err)
+	}
+	var bodies []string
+	for msg := range batch.Messages() {
+		bodies = append(bodies, string(msg.Data()))
+		if err := msg.DoubleAck(ctx); err != nil {
+			return bodies, fmt.Errorf("acknowledge %s: %w", githubConsumer(project), err)
+		}
+	}
+	return bodies, batch.Error()
 }
 
 // calloutAnswers records the size of each answer the stand-in auth service sent, by user.
@@ -503,8 +621,8 @@ func pullPRIV(ctx context.Context, t *testing.T, conn *natsgo.Conn, n int) {
 }
 
 // openConsumer creates or updates the durable consumer name on the notification stream with the
-// one filter the daemon gives it, as t-c-10's daemon opens each (never js.Stream, which sends the
-// stream's info), and reads it back through its info.
+// one filter the daemon gives it, as a daemon held to its projects opens each (never js.Stream,
+// which sends the stream's info), and reads it back through its info.
 func openConsumer(ctx context.Context, t *testing.T, js jetstream.JetStream, name, filter string) jetstream.Consumer {
 	t.Helper()
 	_, err := js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{

@@ -1,7 +1,6 @@
 package natscred_test
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -10,48 +9,39 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // daemonAccount is the service account the rig's service tokens name, listed as a daemon.
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
 
-// lockedBuffer is the service's log, which its answering goroutines write while a test reads it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 // rig is a hub behind the real auth service, whose broker answers are the test's own.
 type rig struct {
 	url    string
 	server *testnats.Server
-	log    *lockedBuffer
+	// log is the service's log, which its reporter writes while a test reads it.
+	log *logtest.Buffer
+	// registry counts the service's decisions (natscallout.NewMetrics), which a test reads to see
+	// why a connection was refused: the log has only one line a minute of them.
+	registry *metrics.Registry
 
 	// settings and deps are the auth service's, which startService starts again after a stop.
 	settings natscallout.Settings
@@ -73,17 +63,19 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 		require.NoError(t, os.WriteFile(path, []byte(seed), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
-	log := &lockedBuffer{}
+	log := &logtest.Buffer{}
+	registry := metrics.New()
 	r := &rig{
-		url: url, server: server, log: log,
+		url: url, server: server, log: log, registry: registry,
 		settings: natscallout.Settings{
 			URLs:     []string{url},
 			SeedFile: write("service.seed", keys.ServiceSeed), IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
 			XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
 		},
-		deps: natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken, Log: slog.New(slog.NewTextHandler(log, nil))},
+		deps: natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken, Log: slog.New(slog.NewTextHandler(log, nil)),
+			Metrics: natscallout.NewMetrics(registry)},
 	}
 	r.startService(t)
 	return r
@@ -106,6 +98,28 @@ func (r *rig) startService(t *testing.T) {
 // admits none but its own users until startService.
 func (r *rig) stopService() { r.service.Close() }
 
+// refused is how many connections the service has refused under label, of every credential kind,
+// read from its decision counter. It may run off the test's goroutine (require.Eventually), so a
+// line it cannot read is reported with Errorf, never FailNow.
+func (r *rig) refused(t *testing.T, label string) int {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	r.registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	total := 0
+	for _, line := range strings.Split(recorder.Body.String(), "\n") {
+		if !strings.HasPrefix(line, "broker_nats_callout_decisions_total{") || !strings.Contains(line, `outcome="refused",reason="`+label+`"}`) {
+			continue
+		}
+		n, err := strconv.Atoi(line[strings.LastIndex(line, " ")+1:])
+		if err != nil {
+			t.Errorf("a counter line %q: %v", line, err)
+			continue
+		}
+		total += n
+	}
+	return total
+}
+
 // thumbprint is the RFC 7638 thumbprint of key, which the broker binds a token to.
 func thumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 	t.Helper()
@@ -121,8 +135,8 @@ func liveFor(jkt string, tokens func(string) bool) func(context.Context, string)
 			return oauthwire.Introspection{}, nil
 		}
 		return oauthwire.Introspection{
-			Active: true, Session: "ses_a", Person: "person@example.com", ClientID: brokertoken.ExchangeClientID,
-			ProjectScope: brokertoken.ProjectScopePerson, Thumbprint: jkt, ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
+			Active: true, Session: "ses_a", Person: "person@example.com", ClientID: ciphertoken.ExchangeClientID,
+			ProjectScope: ciphertoken.ProjectScopePerson, Thumbprint: jkt, ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		}, nil
 	}
 }

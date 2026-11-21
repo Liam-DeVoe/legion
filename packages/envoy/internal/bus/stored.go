@@ -22,12 +22,14 @@ const storedMessageAPI = "$JS.API.STREAM.MSG.GET." + Stream
 const storedMessageWait = 10 * time.Second
 
 // StoredMessage is one message the notification stream holds: its stream sequence, the concrete
-// subject it was published on, when the stream stored it, and its body.
+// subject it was published on, when the stream stored it, its body, and the Nats-Msg-Id it was
+// published under (empty for one published under none).
 type StoredMessage struct {
 	Sequence uint64
 	Subject  string
 	Time     time.Time
 	Data     []byte
+	MsgID    string
 }
 
 // NextStoredMessage reads the first message the notification stream holds at or after sequence seq
@@ -236,6 +238,7 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 		Message *struct {
 			Subject  string    `json:"subject"`
 			Sequence uint64    `json:"seq"`
+			Header   []byte    `json:"hdrs"`
 			Data     []byte    `json:"data"`
 			Time     time.Time `json:"time"`
 		} `json:"message"`
@@ -250,12 +253,22 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 	if response.Message == nil {
 		return StoredMessage{}, fmt.Errorf("bus: the stored-message answer from %s holds no message", Stream)
 	}
-	return StoredMessage{
+	stored := StoredMessage{
 		Sequence: response.Message.Sequence,
 		Subject:  response.Message.Subject,
 		Time:     response.Message.Time,
 		Data:     response.Message.Data,
-	}, nil
+	}
+	// A header that does not decode leaves the message id empty, as a message published under
+	// none has it. The id of a takeover's copy names the key of the frame it was taken from, and
+	// the only reader is cmd/listener's walk, which names the message by that key in an exception
+	// about the copy (takenFrameOriginal); no reader judges a copy's owner, wake or dead letter by it.
+	if len(response.Message.Header) > 0 {
+		if header, err := nats.DecodeHeadersMsg(response.Message.Header); err == nil {
+			stored.MsgID = header.Get(nats.MsgIdHdr)
+		}
+	}
+	return stored, nil
 }
 
 // requestConfirmed sends data to subject as a request and returns its one reply. The publish is
@@ -298,9 +311,14 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 }
 
 // RequestCore sends a core NATS request on subject carrying header and no body, and returns its
-// one reply. It is the request the listener's connection probe makes (cmd/listener): one on a
-// session's relay subject (DeliverSubject) carrying the Envoy-Probe header, whose answer says
-// whether a plugin of that session still subscribes the subject. Its publish is confirmed as
+// one reply, which it takes on the reply subject reply names. It is the request the listener's
+// connection probe makes (cmd/listener): one on a session's relay subject (DeliverSubject)
+// carrying the Envoy-Probe header, on a reply subject that names that session
+// (SessionReplySubject), whose answer says whether a plugin of that session still subscribes the
+// subject. Once natsgrant.Session publishes SessionReplies in place of every _INBOX. subject,
+// only that session among the sessions on that grant may answer it; a holder of the shared
+// session user or of a host user reads every relay subject and may publish to every _INBOX.
+// subject, so it still can. Its publish is confirmed as
 // requestConfirmed's is (publishConfirmed), so a request the server refuses under the
 // connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
 // confirm for another reason still waits for its reply, and returns that reason if ctx ends
@@ -321,7 +339,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
-func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
+func (c *Client) RequestCore(ctx context.Context, subject, reply string, header nats.Header) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
@@ -331,23 +349,22 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 		return nil, err
 	}
 	conn := c.Connection()
-	inbox := conn.NewInbox()
 	replies := make(chan *nats.Msg, nats.RequestChanLen)
-	subscription, err := conn.ChanSubscribe(inbox, replies)
+	subscription, err := conn.ChanSubscribe(reply, replies)
 	if err != nil {
 		return nil, err
 	}
 	defer subscription.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
 	select {
-	case reply := <-replies:
-		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+	case answer := <-replies:
+		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
 			return nil, nats.ErrNoResponders
 		}
-		return reply, nil
+		return answer, nil
 	case <-ctx.Done():
 		return nil, cmp.Or(err, ctx.Err())
 	}
@@ -373,7 +390,12 @@ func CheckFilterSubject(subject string) error {
 // may hold wildcards; a wildcard in subject is contained only by a wildcard in pattern at least as
 // wide (`a.>` contains `a.*.b` and `a.>`, `a.*` contains `a.*` but not `a.>`).
 func SubjectContains(pattern, subject string) bool {
-	patternTokens, subjectTokens := strings.Split(pattern, "."), strings.Split(subject, ".")
+	return tokensContain(strings.Split(pattern, "."), strings.Split(subject, "."))
+}
+
+// tokensContain is SubjectContains on two subjects already split into their tokens, for a caller
+// that weighs each subject against many others and splits it once.
+func tokensContain(patternTokens, subjectTokens []string) bool {
 	for index, patternToken := range patternTokens {
 		if patternToken == ">" {
 			return index < len(subjectTokens)
@@ -399,34 +421,70 @@ func SubjectContains(pattern, subject string) bool {
 // (`>` alone when the first tokens differ), until no two overlap. `X` and `X.>` do not overlap (one
 // matches X alone, the other only what lies under X), so both stay. The result is sorted and holds
 // each subject once, so the same set always reduces to the same list.
+//
+// A registration reduces its topics twice (sessionConsumerTarget), inside the request's own time
+// budget, and a session can register hundreds of them. So each subject is split into its tokens
+// once, and every pair is weighed on those tokens; a drop does not restart the scan of the pairs
+// (reduceFilterPairs).
 func ReduceFilterSubjects(subjects []string) []string {
-	reduced := slices.Clone(subjects)
-	for {
-		slices.Sort(reduced)
-		reduced = slices.Compact(reduced)
-		next, changed := reduceFilterPair(reduced)
-		if !changed {
-			return reduced
-		}
-		reduced = next
+	// An empty list reduces to itself, given back nil or empty as it came.
+	if len(subjects) == 0 {
+		return slices.Clone(subjects)
 	}
+	reduced := make([]filterSubject, 0, len(subjects))
+	for _, subject := range subjects {
+		reduced = append(reduced, filterSubject{subject: subject, tokens: strings.Split(subject, ".")})
+	}
+	for merged := true; merged; {
+		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
+		reduced = slices.CompactFunc(reduced, func(a, b filterSubject) bool { return a.subject == b.subject })
+		reduced, merged = reduceFilterPairs(reduced)
+	}
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
+	return filters
 }
 
-// reduceFilterPair applies ReduceFilterSubjects's rule to the first pair of subjects that overlap,
-// reporting false when none do.
-func reduceFilterPair(subjects []string) ([]string, bool) {
-	for i, a := range subjects {
-		for j := i + 1; j < len(subjects); j++ {
-			b := subjects[j]
+// filterSubject is one subject ReduceFilterSubjects weighs, with its tokens.
+type filterSubject struct {
+	subject string
+	tokens  []string
+}
+
+// reduceFilterPairs weighs the pairs of subjects, which are sorted and each held once, in order:
+// it drops each subject another contains, and at the first pair that overlaps without either
+// containing the other it merges that pair and reports true, or reports false when it reaches the
+// last pair with no merge. It changes subjects in place.
+//
+// A pair that does not overlap is weighed by that test alone, which settles most pairs: a subject
+// that contains another overlaps it, so such a pair is neither a drop nor a merge.
+//
+// A drop does not restart the scan. Every pair before the one that dropped a subject was weighed
+// and holds no overlap, and a drop changes no other subject and keeps the rest in their order, so
+// a scan from the first pair would weigh those pairs again to the same end. The scan goes on at
+// the dropped subject's place instead: with the same first subject when the second went, and with
+// the subject that follows when the first went. A merge does restart it, from a sorted list: the
+// merged subject is new, so every subject must be weighed against it, and it takes its own place
+// in the order.
+func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
+	for i := 0; i < len(subjects); i++ {
+		for j := i + 1; j < len(subjects); {
+			a, b := subjects[i], subjects[j]
 			switch {
-			case SubjectContains(a, b):
-				return slices.Delete(slices.Clone(subjects), j, j+1), true
-			case SubjectContains(b, a):
-				return slices.Delete(slices.Clone(subjects), i, i+1), true
-			case subjectsOverlap(a, b):
-				merged := commonTokenPrefix(a, b) + ">"
-				rest := slices.DeleteFunc(slices.Clone(subjects), func(s string) bool { return s == a || s == b })
-				return append(rest, merged), true
+			case !tokensOverlap(a.tokens, b.tokens):
+				j++
+			case tokensContain(a.tokens, b.tokens):
+				subjects = slices.Delete(subjects, j, j+1)
+			case tokensContain(b.tokens, a.tokens):
+				subjects = slices.Delete(subjects, i, i+1)
+				j = i + 1
+			default:
+				tokens := append(commonTokenPrefix(a.tokens, b.tokens), ">")
+				subjects = slices.Delete(subjects, j, j+1)
+				subjects = slices.Delete(subjects, i, i+1)
+				return append(subjects, filterSubject{subject: strings.Join(tokens, "."), tokens: tokens}), true
 			}
 		}
 	}
@@ -434,15 +492,12 @@ func reduceFilterPair(subjects []string) ([]string, bool) {
 }
 
 // commonTokenPrefix is the tokens a and b begin with alike, up to the first that differs or is `>`,
-// with the dot after the last of them, or "" when their first tokens differ.
-func commonTokenPrefix(a, b string) string {
-	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
-	var prefix strings.Builder
-	for index := 0; index < len(aTokens) && index < len(bTokens); index++ {
-		if aTokens[index] != bTokens[index] || aTokens[index] == ">" {
-			break
-		}
-		prefix.WriteString(aTokens[index] + ".")
+// none when their first tokens differ. It is a's own leading tokens with no room past them, so an
+// append to it copies them rather than writing over a.
+func commonTokenPrefix(a, b []string) []string {
+	index := 0
+	for index < len(a) && index < len(b) && a[index] == b[index] && a[index] != ">" {
+		index++
 	}
-	return prefix.String()
+	return a[:index:index]
 }

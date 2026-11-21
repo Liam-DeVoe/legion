@@ -108,9 +108,10 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 
 // LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
 // interest a registration names (LegacyTopicWarnings) or a stored row holds when it is read into a
-// session's consumer filter (CountStoredLegacyTopics), or a role a claim names (ClaimedRole). The
+// session's consumer filter (CountStoredLegacyTopics), a role a claim names (ClaimedRole), or a
+// role a publish to its lane, a message on the role lane or a holder lookup names (ReadRole). The
 // listener passes its envoy_listener_legacy_subjects_total counter, whose movement is what tells
-// an operator a reader of the old form is still about.
+// an operator a reader or a writer of the old form is still about.
 type LegacySubjectCounter interface {
 	Inc(labels ...[2]string)
 }
@@ -122,7 +123,9 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 	return func(o *openOpts) { o.legacySubjects = counter }
 }
 
-func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
+// Open opens the interest and role claim buckets on conn, creating or raising each to the
+// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and restores the role claims.
+func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
 		o(&opts)
@@ -131,11 +134,11 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
 	if err != nil {
 		return nil, err
 	}
-	roleKV, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	roleKV, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
 	if err != nil {
 		return nil, err
 	}
@@ -267,25 +270,27 @@ func (r *Registry) roles() bus.KeyValue {
 // buckets from the reconnect on. A failure to open the role bucket or to rewatch the interest
 // watcher moves nothing: both watchers and both handles stay where they were. The role claim
 // watcher is rewatched last, once the interest watcher and the role handle have moved, and its
-// failure is returned with the role claim view left on its previous watcher.
-func (r *Registry) Rewatch(conn *nats.Conn) error {
+// failure is returned with the role claim view left on its previous watcher. The move waits on
+// nothing past ctx, which a reconnect hook passes as the run's context (bus.OpenKeyValue,
+// kvwatch.Watcher.Rewatch).
+func (r *Registry) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	// The role bucket opens first, so a failure leaves both handles on the previous connection
 	// rather than the interests on conn and the roles behind.
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		return fmt.Errorf("open role registry JetStream: %w", err)
 	}
-	roleKV, err := bus.OpenKeyValue(conn, js, r.roles().Bucket())
+	roleKV, err := bus.OpenKeyValue(ctx, conn, js, r.roles().Bucket())
 	if err != nil {
 		return fmt.Errorf("open role KV bucket: %w", err)
 	}
-	if err := r.watcher.Rewatch(conn); err != nil {
+	if err := r.watcher.Rewatch(ctx, conn); err != nil {
 		return err
 	}
 	r.kvMu.Lock()
 	r.roleKV = roleKV
 	r.kvMu.Unlock()
-	return r.roleWatcher.Rewatch(conn)
+	return r.roleWatcher.Rewatch(ctx, conn)
 }
 
 // CachedInterest returns sessionID's interest from the cache alone, and whether the cache holds

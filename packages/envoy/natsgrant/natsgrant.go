@@ -1,10 +1,43 @@
 // Package natsgrant is the one table of NATS grants Envoy's clients hold: the sets a hub renders
 // into its static authorization (packages/envoy/infra/core wraps each as the rules a User takes) and
-// the grants the auth service answers a connection with (internal/broker/natscallout). Both read
+// the grants the auth service answers a connection with (internal/cipher/natscallout). Both read
 // the same functions, so a hub's static user and a connection the auth service admits for the same
 // kind hold the same lists, built from the names internal/bus and internal/contracts export.
 //
 // Each call returns lists of its own, so a caller may narrow a grant without changing another's.
+//
+// WithinProjects (projects.go) holds a grant to a Scope: the projects a token lists and the
+// account the token names. The auth service answers a Legion daemon whose entry is held to
+// projects with it (internal/cipher/natscallout's scopeGrant). It writes _INBOX.> as the
+// account's own reply prefix (InboxPrefix, which the client sets with
+// nats.CustomInboxPrefix; it keeps [A-Za-z0-9-] and writes every other byte, '_' included, as '_'
+// and two hex digits, so no two accounts share one), each issue, role-exception and Legion lane as
+// the scope's projects', and each consumer call on the stream as the calls on the daemon's own
+// legion-go-<project>-<kind> consumers, each create subject naming its one filter. It keeps every
+// repository's GitHub events (notifications.github.>) whole, since a GitHub event is a message of
+// no project, which every service is granted, and grants each project one GitHub consumer,
+// legion-go-<project>-github, on that whole family: a grant could name a consumer per repository
+// only from a list of the repositories, which a Scope does not hold. The daemon drops in its own
+// process the events of a repository it does not work in.
+//
+// WithinProjects drops the stream's info and stored-message get, and refuses, naming the entry,
+// any other stored-message read, a create that names no filter, a KV bucket's call,
+// notifications.> and every entry it does not know. It refuses a grant whose publish or subscribe
+// list would end empty, since nats-server reads a user JWT with an empty allow list as allowing
+// every subject in that direction. It keeps the grant's deny lists (PublishDeny, SubscribeDeny) as
+// they are handed in, since a deny only narrows. Only a daemon's grant passes it: the listener's,
+// Dispatch's and the measurement job's hold notifications.> or a bucket, which it refuses, so an
+// auth-service entry of those kinds takes the whole grant.
+//
+// A daemon's ready consumer reads the one wake lane every daemon shares, where the listener also
+// puts every project's role and agent wake reports. So a daemon is held to its projects only once
+// it opens its consumers per project, every listener publishes each project's role and agent
+// wakes on that project's own lane, and each legion-go-<project>-* durable filters on its own
+// kind's lane only (dispatch and wake on the project's own lane, ready on the shared wake subject
+// notifications.legion.wake itself, which carries only listener_ready once the second condition
+// holds, github on notifications.github.>), and no daemon on today's static grant is left to widen
+// one again, since the held grant reads a wider durable whole (projects.go,
+// TestWithinProjectsReadsAWideConsumerWhole).
 package natsgrant
 
 import (
@@ -138,15 +171,14 @@ func Listener(machineID string) Permissions {
 // machineID: the listener's set (Listener), the session consumers' calls included, then a
 // subscribe to every notification topic (bus.NotificationTopicPrefix) that nothing now uses. It
 // existed for the opt-in that had a listener hold a core subscription on notifications.> for the
-// sessions it served, and that opt-in went with the listener's push to a session's serving port
-// (dispatch://INFRA-889), so this set grants the listener's set and the one subscribe nothing
-// reads. It keeps the subscribe rather than dropping it, and so stays a set of its own rather than
-// an alias, because a change to a set rewrites every hub's rendered authorization: it replaces a
-// VM hub's instance and reaches a clustered hub only as a live reload, which
-// dispatch://INFRA-429's non-goals leave to dispatch://INFRA-551. The set holds none of the
-// session's publish entries, so a process connecting as this user can neither publish a session's
-// agent stream frames nor subscribe to a session's control subject. Host stays the set of a user a
-// host's sessions share.
+// sessions it served, and that opt-in went with the listener's push to a session's serving port,
+// so this set grants the listener's set and the one subscribe nothing reads. It keeps the
+// subscribe rather than dropping it, and so stays a set of its own rather than an alias, because a
+// change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
+// reaches a clustered hub only as a live reload, which is left to later work. The set holds none
+// of the session's publish entries, so a process connecting as this user can neither publish a
+// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
+// of a user a host's sessions share.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")
@@ -158,7 +190,8 @@ func ListenerHost(machineID string) Permissions {
 // Beside them is the update of the bucket's stream: a start, and the program's keeper every 30
 // seconds after it, raises a bucket found with fewer copies than the deployment's replica count
 // (bus.ReplicasEnvVar) with a stream update (bus.EnsureKeyValue, bus.WithKeptBuckets). Without
-// that grant the raise times out and the start stops naming the bucket.
+// that grant the server refuses the raise and the start stops naming the bucket, the setting and
+// the refusal.
 func KVWrite(bucket string) []string {
 	stream := kvStream + bucket
 	return []string{
@@ -348,10 +381,10 @@ func Host(machineID string) Permissions {
 	}
 }
 
-// Measure is the grant of Envoy's measurement job, which agent-infra deploys as a static user of
-// both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It reads the
-// account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one test
-// stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
+// Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
+// static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
+// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
+// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
 // _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
 // deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {
@@ -380,16 +413,23 @@ const systemAccountPrefix = "$SYS"
 
 // NamesSystemSubject returns the first entry of p, publish then subscribe, that can match a
 // system subject: one whose first token is $SYS, or a wildcard that a $SYS subject's first token
-// matches (* or >). A subscribe entry's queue group, after a space, is not part of its subject.
+// matches (* or >). A subscribe entry's queue group is not part of its subject, and the entry is
+// split as nats-server splits it (server/client.go, splitSubjectQueue: strings.Fields), at any
+// whitespace, so a tab or a no-break space before a queue group hides no subject from this.
 // The auth service refuses any answer whose grant names one: the server takes from a callout
 // client only the publish of $SYS.REQ.USER.AUTH, so a grant naming a system subject would hand a
 // connection a subscribe the server does not take away.
 func NamesSystemSubject(p Permissions) (string, bool) {
-	for _, entry := range slices.Concat(p.Publish, p.Subscribe) {
-		subject, _, _ := strings.Cut(strings.TrimSpace(entry), " ")
-		first, _, _ := strings.Cut(subject, ".")
-		if first == systemAccountPrefix || first == "*" || first == ">" {
-			return entry, true
+	for _, entries := range [...][]string{p.Publish, p.Subscribe} {
+		for _, entry := range entries {
+			fields := strings.Fields(entry)
+			if len(fields) == 0 {
+				continue
+			}
+			first, _, _ := strings.Cut(fields[0], ".")
+			if first == systemAccountPrefix || first == "*" || first == ">" {
+				return entry, true
+			}
 		}
 	}
 	return "", false
@@ -401,7 +441,7 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 // list to that direction (server/accounts.go, client.go), so a user answered with one may publish,
 // or subscribe, to every subject but the ones a deny list names. A deny list beside it narrows
 // that and closes nothing, so an empty allow list is open whatever PublishDeny or SubscribeDeny
-// hold, and the auth service refuses every grant this names (internal/broker/natscallout).
+// hold, and the auth service refuses every grant this names (internal/cipher/natscallout).
 // A blank entry is the same fault: jwt skips an empty entry when it adds it to a user
 // (StringList.Add skips ""), so a list of "" encodes as an empty one, and a whitespace entry names
 // no subject any grant of this package means.

@@ -166,7 +166,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
-	registerTickController(t, pool)
+	registerProjectController(t, pool, "CAPTURE")
 	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if servedBootCall(t, w, r, "CAPTURE") {
 			return
@@ -183,7 +183,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
-		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil)
+		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, time.Now)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

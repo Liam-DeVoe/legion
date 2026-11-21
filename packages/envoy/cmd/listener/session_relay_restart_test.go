@@ -90,6 +90,9 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	held, _ := rig.storeEvent(t, agent)
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
+	// Every caller's next step restarts the relay at the ack floor, which deletes the consumer
+	// holding that message and creates it again.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	return rig, sessionID, standIn, held, floor
 }
 
@@ -168,16 +171,22 @@ type burstFrame struct {
 }
 
 // burstStandIn answers every relay frame of every session received and done at once on one NATS
-// connection, as many plugins in consumer mode do, and records each.
+// connection, as many plugins in consumer mode do, and records each. Once its test's cleanup has
+// begun to close its connection (closed), it reports no answer that close cut short, as
+// sessionStandIn does (closedUnder).
 type burstStandIn struct {
 	frames chan burstFrame
+	closed atomic.Bool
 }
 
 func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 	t.Helper()
 	conn := testnats.Connect(t, url)
-	t.Cleanup(conn.Close)
 	standIn := &burstStandIn{frames: make(chan burstFrame, capacity)}
+	t.Cleanup(func() {
+		standIn.closed.Store(true)
+		conn.Close()
+	})
 	prefix := bus.DeliverSubjectPrefix
 	if _, err := conn.Subscribe(prefix+"*", func(msg *natsgo.Msg) {
 		var item contracts.Envelope
@@ -190,7 +199,7 @@ func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 			t.Errorf("a frame on %s carries stream sequence %q: %v", msg.Subject, msg.Header.Get(relayHeaderStreamSeq), err)
 		}
 		for _, reply := range []string{relayReplyReceived, relayReplyDone} {
-			if err := conn.Publish(msg.Reply, []byte(reply)); err != nil {
+			if err := conn.Publish(msg.Reply, []byte(reply)); err != nil && !(standIn.closed.Load() && errors.Is(err, natsgo.ErrConnectionClosed)) {
 				t.Errorf("reply %s to a frame on %s: %v", reply, msg.Subject, err)
 			}
 		}

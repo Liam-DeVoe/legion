@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 // ServiceTokenFileKey is the configuration key naming the file of the platform identity token the
@@ -232,20 +233,9 @@ func ConnectService(urls []string, tokenFile, name string, options ...nats.Optio
 	if err != nil {
 		return nil, err
 	}
-	// The keeper ends when the connection closes, the daemon's own Close included. nats.go sends
-	// CLOSED to a status listener registered before the close, into a buffered channel, so the
-	// event is kept even when it comes before the goroutine waits; a close before the listener is
-	// registered sends nothing, which the IsClosed read after the registration catches.
-	closed := conn.StatusChanged(nats.CLOSED)
-	keep, stop := context.WithCancel(context.Background())
-	go func() {
-		defer stop()
-		if conn.IsClosed() {
-			return
-		}
-		<-closed
-	}()
-	go keeper.Keep(keep, conn)
+	// The keeper ends when the connection closes, the daemon's own Close included (natscred's
+	// Keep watches for the close).
+	go keeper.Keep(context.Background(), conn)
 	return conn, nil
 }
 
@@ -359,8 +349,12 @@ func WithLastError(err error, conn *nats.Conn) error {
 }
 
 // Unreachable reports whether err means NATS is not reachable yet, as against a misconfiguration
-// — a permission or an authorization violation the server itself refuses, or a malformed seed
-// (userKey, before any dial is attempted) — that no wait fixes.
+// — a permission or an authorization violation the server itself refuses, a TLS alert, on the
+// handshake or on a later record (tlsalert.In: a server that demands a client certificate, say, or
+// speaks no TLS version this client does), or a malformed seed (userKey, before any dial is
+// attempted) — that no wait fixes. The alert is read before the dial's shape because crypto/tls
+// returns it as a *net.OpError too, which would otherwise read as a NATS not up yet and be waited
+// out forever.
 // Matched by concrete, named shapes only, never the net.Error interface: two unrelated
 // standard library types satisfy that interface without being network failures at all —
 // context.DeadlineExceeded and *url.Error — so a caller must never classify by the interface
@@ -373,7 +367,7 @@ func WithLastError(err error, conn *nats.Conn) error {
 // no way to tell that shape from an unjoined permission violation, so both are refused rather
 // than waited on.
 func Unreachable(err error) bool {
-	if errors.Is(err, nats.ErrPermissionViolation) || errors.Is(err, nats.ErrAuthorization) {
+	if errors.Is(err, nats.ErrPermissionViolation) || errors.Is(err, nats.ErrAuthorization) || tlsalert.In(err) {
 		return false
 	}
 	if errors.Is(err, nats.ErrNoServers) {
@@ -388,27 +382,10 @@ func Unreachable(err error) bool {
 // every refusal of that service, whatever its reason (the service tells the server why, and the
 // server tells the client only that it was refused). For a seed's connection that is a
 // misconfiguration, which Unreachable refuses; for the daemon's service token it is waited out,
-// at boot and while running alike (ConnectService, ReconnectBackoff).
+// at boot and while running alike (ConnectService, and the daemon's reconnect delay, which is its
+// boot's schedule).
 func Refused(err error) bool {
 	return errors.Is(err, nats.ErrAuthorization)
-}
-
-// ReconnectBackoff is the connection option that waits initial before the first reconnect of a
-// lost connection, doubling each attempt up to max: the daemon's service-token connection's wait
-// while running, the same schedule its boot waits a refusal out on (daemon.readinessRetry), so a
-// hub whose auth service refuses every client while it is away is not met with a reconnect per
-// client every two seconds.
-func ReconnectBackoff(initial, max time.Duration) nats.Option {
-	return nats.CustomReconnectDelay(func(attempts int) time.Duration {
-		wait := initial
-		for range attempts - 1 {
-			if wait >= max/2 {
-				return max
-			}
-			wait *= 2
-		}
-		return min(wait, max)
-	})
 }
 
 // PublicKey is the public key of the nkey user seed is the seed of, a seed Seed answered: what a

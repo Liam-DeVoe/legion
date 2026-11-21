@@ -5,78 +5,55 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
-
-	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// Scope is what one credential may reach on the bus: the projects its token lists, the GitHub
-// repositories Dispatch maps to them, and the account the token names. The auth service builds it
-// for a service whose entry is held to projects (natscallout, from the broker's exchange list and
-// Dispatch's project answers) and hands it to WithinProjects with that service's grant.
+// Scope is what one credential may reach on the bus: the projects its token lists and the account
+// the token names. It holds no repository: a GitHub event is a message of no project, which every
+// service is granted whole (WithinProjects). The auth service builds it for a service whose entry
+// is held to projects (natscallout, from the broker's exchange list) and hands it to
+// WithinProjects with that service's grant.
 type Scope struct {
 	// Projects are project keys (contracts.ProjectKeyPattern). None means the grant names no
 	// project's subject at all, so a daemon's grant keeps no publish entry and WithinProjects
 	// refuses it.
 	Projects []string
-	// Repositories are the "owner/name" repositories Dispatch maps to Projects, each mapping's
-	// name and its renamed_to both.
-	Repositories []string
 	// Identity is the account the token names: its sub, or a Google token's email. It names the
-	// reply prefix (InboxPrefix).
+	// reply prefix (InboxPrefix), which depends on the identity alone. So one identity must have
+	// one scope: two connections of one identity with different project lists would subscribe the
+	// same prefix, and the narrower would receive the wider one's pull deliveries. The auth
+	// service keeps this by taking one BROKER_NATS_SERVICES entry per account, so each account
+	// gets one project list.
 	Identity string
 }
 
-// inboxPrefixBase begins every reply prefix InboxPrefix makes: nats.go's own prefix, "_INBOX.",
-// with its dot written "_", so the token differs from nats.go's "_INBOX" and no prefix reaches
-// another's.
-var inboxPrefixBase = strings.TrimSuffix(nats.InboxPrefix, ".") + "_"
+// ReplyRoot is the first token of every reply prefix the auth service grants a service
+// (InboxPrefix). With one root, a hub that runs the JetStream API in another account can carry
+// every service's deliveries back with one subject, ReplyRoot+".>": a push or ordered consumer's
+// deliveries, a KV watch's among them, go to the client's custom prefix and are published inside
+// the API's account. It is not nats.go's own "_INBOX", so no prefix under it reaches another
+// client's replies under _INBOX.>.
+const ReplyRoot = "_INBOX_envoy"
 
-// InboxPrefix is the reply prefix of the client whose credential names identity: "_INBOX_" and
-// identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two lowercase
-// hex digits. It is one subject token and distinct identities have distinct prefixes. The client
-// sets it with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in
-// place of _INBOX.>; both ends call this function with the identity their credential names.
+// InboxPrefix is the reply prefix of the client whose credential names identity: ReplyRoot, ".",
+// and identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two
+// lowercase hex digits. That last part is one subject token, and distinct identities have
+// distinct prefixes. Every '_' in it opens an escape that two hex digits close, so no identity's
+// token is a name the broker's own clients may take under ReplyRoot, such as _operator or
+// _measure, whose '_' is followed by a letter that is no hex digit. The client sets it
+// with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in place of
+// _INBOX.>; both ends call this function with the identity their credential names.
 func InboxPrefix(identity string) string {
-	return token(inboxPrefixBase, identity)
-}
-
-// GitHubConsumerName is the name of the durable consumer through which a Legion daemon of project
-// hears repository's GitHub events: legion-go-<project>-github- and repository ("owner/name") in
-// lower case, spelled as InboxPrefix spells an identity, so two repositories never share a
-// consumer and the name is one token whatever the repository holds. It lower-cases first because
-// the daemon keeps a repository in GitHub's spelling (Acme/Widgets) and Dispatch, whose list the
-// grant is built from, in lower case, and both must name one consumer. t-c-10's daemon is to name
-// its consumer with it and WithinProjects grants it, so the two cannot drift apart.
-func GitHubConsumerName(project, repository string) string {
-	return token(daemonConsumerPrefix+project+"-github-", strings.ToLower(repository))
-}
-
-// GitHubPrefix is what every subject Envoy's listener publishes repository's GitHub events under
-// begins with: notifications.github.<owner>.<name>, each segment spelled by
-// contracts.SanitizeSubjectSegment (a dot written "_") in the case it is given. repository is
-// "owner/name". Lower-casing the subject is t-c-21's, at that one source.
-func GitHubPrefix(repository string) string {
-	owner, name, _ := strings.Cut(repository, "/")
-	return contracts.GithubRepositoryPrefix(owner, name)
-}
-
-// GitHubFilter is the filter of repository's GitHub consumer (GitHubConsumerName): its prefix
-// (GitHubPrefix) and ".>". t-c-10's daemon is to name it in its consumer create, as
-// WithinProjects' grant does, and nats-server refuses a create whose body's filter is not the one
-// its subject names, so the two must be built by this one function.
-func GitHubFilter(repository string) string {
-	return GitHubPrefix(repository) + ".>"
+	return token(ReplyRoot+".", identity)
 }
 
 // token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
 // and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
 // tokens, and the result holds no '.', wildcard, whitespace or control character.
 func token(prefix, s string) string {
-	const hex = "0123456789abcdef"
+	const digits = "0123456789abcdef"
 	var out strings.Builder
 	out.Grow(len(prefix) + 3*len(s))
 	out.WriteString(prefix)
@@ -86,22 +63,12 @@ func token(prefix, s string) string {
 			out.WriteByte(c)
 		} else {
 			out.WriteByte('_')
-			out.WriteByte(hex[c>>4])
-			out.WriteByte(hex[c&15])
+			out.WriteByte(digits[c>>4])
+			out.WriteByte(digits[c&15])
 		}
 	}
 	return out.String()
 }
-
-// The subjects of Dispatch and the Legion daemon that the daemon's consumers filter on and that
-// no Envoy package exports a name for: Dispatch's project events (the Dispatch outbox's envelope,
-// notifications.dispatch.project.<KEY>.<type>) and the type of the one the daemon hears there, a
-// repository's mapping to a project changing (packages/daemon/internal/intake/decode.go
-// mappingSubject).
-const (
-	dispatchProjectTopicPrefix = bus.NotificationTopicPrefix + "dispatch.project."
-	repoMappingType            = "settings.repo_project.updated"
-)
 
 // daemonConsumerPrefix begins the name of every durable consumer a Legion daemon opens on the
 // notification stream, legion-go-<project>-<kind> (packages/daemon/internal/intake/consume.go).
@@ -129,33 +96,50 @@ const (
 var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 
 // WithinProjects is grant held to scope: each entry that reaches every project's subjects
-// rewritten to the subjects of scope's projects and repositories, and refused, naming the entry,
-// when it cannot be. The grant handed in is not changed, and a subscribe entry's queue group
-// follows each subject that replaces it. Per entry:
+// rewritten to the subjects of scope's projects, and refused, naming the entry, when it cannot be.
+// The grant handed in is not changed, and a subscribe entry's queue group follows each subject
+// that replaces it. Per entry:
 //
 //   - _INBOX.>, where every client's replies arrive, becomes InboxPrefix(scope.Identity)+".>";
 //   - each family whose names carry the project as a token of their own becomes that family under
 //     each project: an issue's events (notifications.dispatch.issue.<P>.>), the role lanes'
 //     delivery exceptions (notifications.envoy.exceptions.notifications.role.<P>.>) and the Legion
 //     daemon's lanes (notifications.legion.<p>.>, p the project key in lower case, the token
-//     contracts.SubjectProject reads back as the key); a repository's events become each
-//     repository's (notifications.github.<owner>.<name>.>);
+//     contracts.SubjectProject reads back as the key);
+//   - every repository's GitHub events (notifications.github.>) are kept whole: a GitHub event is
+//     a message of no project, which every service is granted, and a daemon drops in its own
+//     process the events of a repository it does not work in;
 //   - a consumer call on the notification stream that reaches every consumer (its consumer token a
 //     wildcard) becomes that call on each consumer the Legion daemon opens under each project,
 //     legion-go-<P>-<kind>, and nothing else: the create (its subject naming the consumer's one
 //     filter, which nats-server holds the request's body to), the info, the pull
 //     (CONSUMER.MSG.NEXT) and the acknowledgements. The kinds are dispatch (the project's issue
-//     events), mapping (its repository mapping changes), wake (its Legion wake lane), ready (the
-//     one wake lane every daemon shares, bus.LegionWakeTopic) and, for each repository of the
-//     scope, its GitHub consumer (GitHubConsumerName) on that repository's lane (GitHubFilter).
-//     The shared lane is a project's own only once the listener publishes its role and agent wake
-//     reports on each project's lane (t-c-10, contracts.LegionWakeSubject) and keeps only
-//     listener_ready there: until then it carries every project's role names and session ids,
-//     and no daemon may take this grant before t-c-10, whose consumers it describes;
+//     events), wake (its Legion wake lane), ready (the one wake lane every daemon shares,
+//     bus.LegionWakeTopic) and github (every repository's events, notifications.github.>). The
+//     GitHub consumer's create subject ends in its filter's wildcard, so it admits a create of
+//     that consumer on any filter inside the family. Each project has one GitHub consumer, not
+//     one per repository: a grant names a create subject exactly, with a wildcard only as a whole
+//     token, so it could name a consumer per repository only from a list of the repositories,
+//     which no scope holds, and a wildcard in place of the consumer's name would reach every
+//     consumer of the stream, other projects' included.
+//     The create alone names a filter: the info, the pull and the acknowledgements name the
+//     consumer only, so the grant holds a daemon to its consumers by name, not by what they
+//     filter. A durable of one of those names that already exists with a wider filter is read
+//     whole through this grant: today's daemon opens legion-go-<P>-dispatch on every project's
+//     issue events (notifications.dispatch.issue.>) and legion-go-<P>-wake on the shared wake
+//     lane, so a held PUB daemon pulls PRIV's issue events through its own dispatch consumer
+//     (TestWithinProjectsReadsAWideConsumerWhole). The grant holds a daemon to its projects only
+//     once each of its consumers filters on the project's own lane, which the daemon that opens
+//     its consumers per project does in place at boot, and only while it stays so: a user holding
+//     today's daemon grant, or a listener, may widen it again.
+//     The shared wake lane is a project's own only once the listener publishes its role and agent
+//     wake reports on each project's lane (contracts.LegionWakeSubject) and keeps only
+//     listener_ready there: until then it carries every project's role names and session ids, and
+//     no daemon may take this grant before it opens these consumers;
 //   - the notification stream's info and stored-message get are dropped: the info lists every
-//     stored subject with its count, the get reads any stored message, and t-c-10's daemon reads
-//     its consumers' info instead (today's daemon opens the stream and reads stored messages, so
-//     it cannot run under this grant).
+//     stored subject with its count, the get reads any stored message, and a daemon held to its
+//     projects reads its consumers' info instead (today's daemon opens the stream and reads
+//     stored messages, so it cannot run under this grant).
 //
 // Refused: a stored-message read of any other stream and a direct get of this one; a consumer
 // create whose subject cannot name a filter; any call on a KV bucket; notifications.>; and every
@@ -193,12 +177,10 @@ func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 }
 
 // heldScope is a Scope checked and laid out for the rewrite: the identity that names its reply
-// prefix, its projects and repositories sorted with repeats taken out, each repository's lane,
-// and the daemon's consumers under it.
+// prefix, its projects sorted with repeats taken out, and the daemon's consumers under them.
 type heldScope struct {
 	identity  string
 	projects  []string
-	repoLanes []string // each repository's events, notifications.github.<owner>.<name>.>
 	consumers []daemonConsumer
 }
 
@@ -218,50 +200,19 @@ func newHeldScope(scope Scope) (heldScope, error) {
 	slices.Sort(projects)
 	projects = slices.Compact(projects)
 
-	repositories := slices.Clone(scope.Repositories)
-	slices.Sort(repositories)
-	repositories = slices.Compact(repositories)
-	if len(projects) == 0 && len(repositories) > 0 {
-		return heldScope{}, fmt.Errorf("natsgrant: scope names repositories %q but no project they belong to", repositories)
-	}
 	held := heldScope{identity: scope.Identity, projects: projects}
-	lanes := make([]string, len(repositories))
-	for i, repository := range repositories {
-		owner, name, found := strings.Cut(repository, "/")
-		if !found || !repositoryPart(owner) || !repositoryPart(name) {
-			return heldScope{}, fmt.Errorf("natsgrant: scope repository %q is not owner/name", repository)
-		}
-		lanes[i] = GitHubFilter(repository)
-		// Two repositories can spell one lane (a.b and a_b): the lane is held once.
-		if !slices.Contains(held.repoLanes, lanes[i]) {
-			held.repoLanes = append(held.repoLanes, lanes[i])
-		}
-	}
-
 	for _, project := range projects {
 		named := func(kind, filter string) daemonConsumer {
 			return daemonConsumer{name: daemonConsumerPrefix + project + "-" + kind, filter: filter}
 		}
 		held.consumers = append(held.consumers,
 			named("dispatch", contracts.DispatchIssueTopicPrefix+project+".>"),
-			named("mapping", dispatchProjectTopicPrefix+project+"."+repoMappingType),
 			named("wake", contracts.LegionWakeSubject(strings.ToLower(project))),
 			named("ready", bus.LegionWakeTopic),
+			named("github", githubLanes),
 		)
-		for i, repository := range repositories {
-			held.consumers = append(held.consumers, daemonConsumer{name: GitHubConsumerName(project, repository), filter: lanes[i]})
-		}
 	}
 	return held, nil
-}
-
-// repositoryPart reports whether part is a repository owner or name a subject can spell: not
-// empty, and holding no '/', wildcard, whitespace or control character. A dot is allowed: the
-// subject writes it "_" (contracts.SanitizeSubjectSegment).
-func repositoryPart(part string) bool {
-	return part != "" && !strings.ContainsFunc(part, func(r rune) bool {
-		return r == '/' || r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r)
-	})
 }
 
 // entries is each of entries held to the scope (WithinProjects), in order, with no entry twice.
@@ -339,7 +290,7 @@ func (h heldScope) subjects(entry, subject string) ([]string, error) {
 			return contracts.LegionNoticeTopicPrefix + strings.ToLower(project) + ".>"
 		}), nil
 	case subject == githubLanes:
-		return h.repoLanes, nil
+		return []string{githubLanes}, nil
 	case subject == everyTopic:
 		return refuse("reaches every project's notifications")
 	}

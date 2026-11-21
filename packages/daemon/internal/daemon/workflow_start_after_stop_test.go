@@ -33,8 +33,8 @@ import (
 // repositoriesGitHub answers for and testRepositories serves at main.
 const startedAgainRepo = "acme/widgets"
 
-// startedAgainDispatch is the Dispatch board the daemon of each subtest reads: the repository
-// mapping and the other calls every boot makes (servedBootCall), no issues listed, and every
+// startedAgainDispatch is the Dispatch board the daemon of each subtest reads: the calls every
+// boot makes (servedBootCall), no issues listed, and every
 // other call unavailable, as a Dispatch whose dependencies are down answers.
 //
 // It stands in for workflowConfig's board, which fails the test on a call it does not model.
@@ -359,9 +359,9 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Both roots stand where a root's own architect works and no phase worker does: at
-		// admitted, before the first phase (record.AtWork), which no pass starts a worker for
-		// (phase.RoleFor names none).
-		// So the only worker of this fixture is the member's implementer.
+		// admitted, before the first phase (record.AtWork), whose role is the architect
+		// (phase.RoleFor), which no pass starts a worker for. So the only worker of this
+		// fixture is the member's implementer.
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Admitted))
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, other, other, phase.Admitted))
 		kept := stoppableWorker(cfg, project, implementer, root, member, claim.RoleImplementer, phase.Implementing)

@@ -23,13 +23,14 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -48,8 +49,8 @@ const (
 	reachRefusalWait = 3 * time.Second
 )
 
-// TestEachConnectionReceivesOnlyItsTokensProjects is check c-callout-image of dispatch://INFRA-840
-// and c-private-session-reach of dispatch://INFRA-3862: on testnats.HubImage, the nats-server image
+// TestEachConnectionReceivesOnlyItsTokensProjects is the check that each connection the auth
+// service admits reaches only its token's projects: on testnats.HubImage, the nats-server image
 // the hub deploys, behind the real auth service (natscallout.Start, deciding with its own Decide and
 // scopeGrant), whose broker answers are the test's: Introspect as the broker answers two sessions'
 // tokens, ServiceToken as it verifies the daemon's platform token, and Exchange and Access as the
@@ -69,8 +70,8 @@ const (
 //     test fails naming PRIV's subject.
 //
 // The check's listener rows (a listener called with a token listing PUB refuses PRIV's interest,
-// role claim, session consumer's resume and send, and serves PUB's) are plan C's t-c-8
-// (dispatch://INFRA-3884), which has no branch yet; they join this test when t-c-8 has one.
+// role claim, session consumer's resume and send, and serves PUB's) come with the listener's
+// project checks, which have no branch yet; they join this test then.
 func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 	sessions := []*reachSession{newReachSession(t, "ses_pub", "PUB"), newReachSession(t, "ses_priv", "PRIV")}
 	daemonToken := unsignedPlatformToken(reachDaemonAccount, time.Now().Add(time.Hour))
@@ -90,14 +91,9 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 			return "", nil, false
 		},
 		Access: dispatchAccess(map[string]projectaccess.Answer{
-			"PUB":  {Project: "PUB", Visibility: "public", Visible: true, Repositories: []string{"acme/pub"}},
-			"PRIV": {Project: "PRIV", Visibility: "private", Repositories: []string{"acme/priv"}},
+			"PUB":  {Project: "PUB", Visibility: "public", Visible: true},
+			"PRIV": {Project: "PRIV", Visibility: "private"},
 		}),
-		// Dispatch's whole repository mapping, which each pass reads beside the answers: PUB and
-		// PRIV share no GitHub lane, so nothing of PUB's is withheld.
-		RepoProjects: func(context.Context) ([]projectaccess.RepoProject, error) {
-			return []projectaccess.RepoProject{{Repo: "acme/pub", Project: "PUB"}, {Repo: "acme/priv", Project: "PRIV"}}, nil
-		},
 		Log: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
 
@@ -163,7 +159,7 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 		}
 		// Each consumer the daemon opens under PUB, created and read back through its info; then
 		// PUB's issue event pulled from the first, its Dispatch consumer, and acknowledged.
-		pubConsumers := daemonConsumers("PUB", "acme/pub")
+		pubConsumers := daemonConsumers("PUB")
 		opened := make([]jetstream.Consumer, len(pubConsumers))
 		for i, consumer := range pubConsumers {
 			if opened[i], err = js.CreateOrUpdateConsumer(ctx, bus.Stream, consumer.config()); err != nil {
@@ -193,7 +189,7 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 
 		// Each consumer the daemon would open under PRIV, and its own Dispatch consumer on PRIV's
 		// lane: the server refuses each create, so no PRIV message reaches the daemon through one.
-		refused := append(daemonConsumers("PRIV", "acme/priv"),
+		refused := append(daemonConsumers("PRIV"),
 			daemonConsumer{name: pubConsumers[0].name, filter: contracts.DispatchIssueTopicPrefix + "PRIV.>"})
 		created := make([]error, len(refused))
 		var calls sync.WaitGroup
@@ -236,8 +232,8 @@ func newReachSession(t *testing.T, id, project string) *reachSession {
 	return &reachSession{
 		id: id, key: key, token: "access-token-of-" + id,
 		answer: oauthwire.Introspection{
-			Active: true, Session: id, Person: "person@example.com", ClientID: brokertoken.ExchangeClientID,
-			ProjectScope: brokertoken.ProjectScopePerson, Projects: []string{project},
+			Active: true, Session: id, Person: "person@example.com", ClientID: ciphertoken.ExchangeClientID,
+			ProjectScope: ciphertoken.ProjectScopePerson, Projects: []string{project},
 			Thumbprint: base64.RawURLEncoding.EncodeToString(sum), ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		},
 	}
@@ -303,7 +299,7 @@ func dispatchAccess(answers map[string]projectaccess.Answer) func(context.Contex
 // returns once its subscription has reached the server.
 func startReachService(t *testing.T, url string, keys testnats.CalloutKeys, services string, deps natscallout.Deps) {
 	t.Helper()
-	entries, err := natscallout.ParseServices(services)
+	entries, err := config.ParseNATSServices(services)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +364,7 @@ func connectReach(t *testing.T, url, who string, options ...natsgo.Option) *reac
 func connectReachSession(t *testing.T, url string, s *reachSession) *reachClient {
 	t.Helper()
 	sign := func(nonce []byte) ([]byte, error) {
-		signed, err := brokerclient.ConnectionProof(s.key, s.token, string(nonce))
+		signed, err := cipherclient.ConnectionProof(s.key, s.token, string(nonce))
 		return []byte(signed), err
 	}
 	return connectReach(t, url, "session "+s.id, natsgo.UserJWT(func() (string, error) { return "-", nil }, sign), natsgo.Token(s.token))
@@ -460,18 +456,17 @@ func publishCore(t *testing.T, conn *natsgo.Conn, subject, body string) {
 type daemonConsumer struct{ name, filter string }
 
 // daemonConsumers are the consumers a Legion daemon of project opens (natsgrant.WithinProjects
-// holds a daemon's grant to these): its issue events first, then its repository mapping changes,
-// its wake lane, the shared wake lane, and repository's GitHub events.
-func daemonConsumers(project, repository string) []daemonConsumer {
+// holds a daemon's grant to these): its issue events first, then its wake lane, the shared wake
+// lane, and every repository's GitHub events, a message of no project.
+func daemonConsumers(project string) []daemonConsumer {
 	named := func(kind, filter string) daemonConsumer {
 		return daemonConsumer{name: "legion-go-" + project + "-" + kind, filter: filter}
 	}
 	return []daemonConsumer{
 		named("dispatch", contracts.DispatchIssueTopicPrefix+project+".>"),
-		named("mapping", "notifications.dispatch.project."+project+".settings.repo_project.updated"),
 		named("wake", contracts.LegionWakeSubject(strings.ToLower(project))),
 		named("ready", bus.LegionWakeTopic),
-		{name: natsgrant.GitHubConsumerName(project, repository), filter: natsgrant.GitHubFilter(repository)},
+		named("github", "notifications.github.>"),
 	}
 }
 

@@ -20,11 +20,13 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
@@ -65,7 +67,7 @@ func newBroker(t *testing.T) *broker {
 		token := fmt.Sprintf("tok-%d", len(b.bound)+1)
 		b.bound[token] = oauthwire.Introspection{
 			Active: true, Session: r.PostForm.Get(oauthwire.FormSession), Person: "person@example.com",
-			ClientID: brokertoken.ExchangeClientID, ProjectScope: brokertoken.ProjectScopePerson,
+			ClientID: ciphertoken.ExchangeClientID, ProjectScope: ciphertoken.ProjectScopePerson,
 			Thumbprint: base64.RawURLEncoding.EncodeToString(sum), ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		}
 		b.mu.Unlock()
@@ -122,7 +124,7 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
@@ -135,10 +137,10 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 	require.NoError(t, service.Ready(ctx))
 
 	environment := map[string]string{
-		brokerclient.BrokerURLVar:        stub.server.URL,
-		brokerclient.IdentityVar:         brokerclient.IdentityKubernetes,
-		brokerclient.MachineTokenFileVar: write("pod-token", "pod-token"),
-		brokerclient.SessionVar:          "ses_a",
+		cipherclient.BrokerURLVar:        stub.server.URL,
+		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: write("pod-token", "pod-token"),
+		cipherclient.SessionVar:          "ses_a",
 	}
 	getenv := func(name string) string { return environment[name] }
 	serviceFile := write("service-token", platformToken(daemonAccount, time.Hour))
@@ -167,4 +169,42 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 			require.NotContains(t, stdout.String()+stderr.String(), "tok-")
 		})
 	}
+}
+
+// A hub that sends no nonce, as this plain one does, gives the probe nothing to sign a session's
+// proof over: it says so, names the credentials such a hub does take, and exits 1, since the hub
+// refused nothing. The control is the probe printing cipherclient's error without that hint.
+func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
+	_, url := testnats.Start(t)
+	stub := newBroker(t)
+	pod := filepath.Join(t.TempDir(), "pod-token")
+	require.NoError(t, os.WriteFile(pod, []byte("pod-token"), 0o600))
+	environment := map[string]string{
+		cipherclient.BrokerURLVar:        stub.server.URL,
+		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: pod,
+		cipherclient.SessionVar:          "ses_a",
+	}
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", url, "--wait", "1s", "--subscribe", "notifications.envoy.deliver.ses_a"},
+		func(name string) string { return environment[name] }, &stdout, &stderr)
+	require.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never sent a CONNECT")
+	require.Contains(t, stderr.String(), "the NATS server sent no nonce to sign, so it runs no auth service and takes no session's broker token")
+	require.Contains(t, stderr.String(), "name the credential it does take: --no-credential, --service-token-file or --service-google-audience")
+	require.NotContains(t, stderr.String(), "tok-")
+}
+
+// The probe says "not admitted", exit 4, only for the hub's own refusal of the connection
+// (nats.ErrAuthorization). A connection that fails any other way, here a hub that is not
+// listening, is no answer of the hub's: it exits 1, prints nothing on stdout, and says on stderr
+// why it could not connect. The control is the TestNatsprobeSaysWhatTheHubAnswered row of a
+// connection with no credential, which the hub refuses and the probe reports exit 4.
+func TestAnUnreachableHubIsNoRefusal(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", "nats://" + testport.Refused(t), "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never reached")
+	require.Contains(t, stderr.String(), "natsprobe: connect: ")
 }

@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -300,6 +300,65 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
+	}
+}
+
+// A link names a pull request only where its owner and its name are GitHub's own characters, by
+// the patterns refs reads every name with (refs.GitHubOwnerPattern, refs.GitHubNamePattern) — an
+// owner of a letter or digit and then letters, digits, `-` and `_`, as a managed user's login
+// (`mona-cat_octo`) is, and a name of those and `.` — and the name is not `.` or `..`. The reads
+// build `/repos/{owner}/{repo}/...` from the two parts and url.PathEscape keeps a dot, so
+// `https://github.com/../x/pull/1` would send the installation read to `/repos/../x/installation`.
+// Such a URL stays a link of the issue and names no pull request, and neither does one whose
+// owner or name holds a character GitHub's never do, nor one whose owner starts with `-`; a name
+// with a dot inside it, as `tools.js` and `.github` are, is GitHub's own and names one.
+//
+// The negative control is the owner pattern as it was written here, letters, digits and `-`,
+// which drops the two links whose owner holds an `_` and names `-linkcheck/tools#13`.
+func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 80)
+	// deliveryTestPool clears only the delivery tables, so the links an earlier run wrote go
+	// first.
+	if _, err := pool.Exec(ctx, `delete from issue_external_links where issue_key = $1`, issue); err != nil {
+		t.Fatalf("drop the links of %s: %v", issue, err)
+	}
+	for _, url := range []string{
+		"https://github.com/../linkcheck/pull/1",
+		"https://github.com/./linkcheck/pull/2",
+		"https://github.com/linkcheck/../pull/3",
+		"https://github.com/linkcheck/./pull/4",
+		"https://github.com/link.check/tools/pull/5",
+		"https://github.com/link_check/tools/pull/6",
+		"https://github.com/link%2Fcheck/tools/pull/7",
+		"https://github.com/linkcheck/to%2E%2E/pull/8",
+		"https://github.com/linkcheck/tools.js/pull/9",
+		"https://github.com/linkcheck/.github/pull/10",
+		"https://github.com/linkcheck/tools/pull/11",
+		"https://github.com/mona-cat_octo/tools/pull/12",
+		"https://github.com/-linkcheck/tools/pull/13",
+	} {
+		if _, err := pool.Exec(ctx, `
+			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')
+		`, issue, url); err != nil {
+			t.Fatalf("link %s to %s: %v", issue, url, err)
+		}
+	}
+
+	pulls, err := LinkedPullRequests(ctx, pool, issue)
+	if err != nil {
+		t.Fatalf("read the pull requests %s links: %v", issue, err)
+	}
+	named := map[string]bool{}
+	for _, pull := range pulls {
+		named[fmt.Sprintf("%s#%d", pull.Repo, pull.Number)] = true
+	}
+	want := map[string]bool{
+		"link_check/tools#6": true, "linkcheck/tools.js#9": true, "linkcheck/.github#10": true,
+		"linkcheck/tools#11": true, "mona-cat_octo/tools#12": true,
+	}
+	if !maps.Equal(named, want) {
+		t.Fatalf("the links of %s name the pull requests %v, want %v alone", issue, named, want)
 	}
 }
 
@@ -733,7 +792,8 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 }
 
 // A row whose repository the App cannot read is stamped, not warned about forever: the reconcile
-// orders the never-read first, so an unstamped row holds the front of every batch.
+// orders the never-read first, so an unstamped row holds the front of every batch. So is a row
+// stored under a name GitHub does not allow, `acme/..`, which no read can reach.
 func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -748,7 +808,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	})
-	for _, repo := range []string{"acme/hidden", "acme/walled"} {
+	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
 		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: repo, Number: 51, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
 			HeadRef: "topic", BaseRef: "main", State: "open",
@@ -762,7 +822,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
-	for _, repo := range []string{"acme/hidden", "acme/walled"} {
+	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
 		if head := readHead(t, ctx, pool, repo, 51); head.CheckedAt == nil {
 			t.Fatalf("%s#51 = %+v, want it stamped read so it leaves the front of the batch", repo, head)
 		}
@@ -1361,8 +1421,8 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 // A merge recorded under GitHub's own spelling of a repository is answered for the lowercased
 // name the results read asks under. GitHub spells an owner and a repository as their owners do
 // (`Acme/Widgets`) and refs.CanonicalRepo hands a caller's own spelling back where no rename is
-// recorded, while the results read asks under the name repo_projects stores (api's
-// canonicalRepo); branch_commits is keyed by one lowercased name so that the two meet
+// recorded, while the results read asks under the name repo_projects stores
+// (refs.ExternalRepo); branch_commits is keyed by one lowercased name so that the two meet
 // (readBranchCommit). Without it, every result of a squash-merged issue of a repository whose
 // owner writes their name with capitals would stand at no basis for good once its base branch
 // was deleted, which is the case the seed exists for.
@@ -1398,39 +1458,26 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 	}
 }
 
-// withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
-// the way a write fails, and puts it back afterwards. It answers that repair, for the row that
-// needs the table back while it still runs; the cleanup makes it for every other row, and the
-// two are one call, so a row that repairs the table itself does not repair it twice.
+// withoutBranchCommits drops branch_commits, so a write of it fails the way a write fails, and
+// answers the repair that puts it back, for the row that needs the table back while it still
+// runs. The database is the test's own clone (deliveryTestPool), dropped with the test, so a row
+// that never repairs it leaves nothing for another test or a later run to find.
 //
-// The run ending does not contain the drop. The database DISPATCH_TEST_DATABASE_URL names is
-// the server's own and outlives the run (deliveryTestPool), and a test binary `go test
-// -timeout` kills never reaches this cleanup at all: the table would then stay missing while
-// schema_migrations still recorded the migration that creates it, and every later run of this
-// package would fail at the truncate of it. What contains it is the harness, which makes such
-// a table again before it migrates (repairDroppedTables). This cleanup is the fast path: it
-// puts the table back while the test that dropped it is still running, so the next test in
-// the same binary finds the database as it expects it.
-//
-// It is the harness's own repair that it runs, rather than a second copy of it: the repair
-// forgets the migration's recorded version, and the Migrate here makes the table again from
-// that migration.
+// The repair forgets the recorded version of branchCommitsMigration and migrates, which makes
+// the table again from that migration rather than from a second copy of it.
 func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
 		t.Fatalf("drop branch_commits: %v", err)
 	}
-	restore = sync.OnceFunc(func() {
-		// The test's own context is cancelled before its cleanups run, so the repair takes one
-		// that is not (context.WithoutCancel).
-		repair := context.WithoutCancel(ctx)
-		repairDroppedTables(t, repair, pool)
-		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
+	return func() {
+		if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
+			t.Fatalf("forget the migration of branch_commits: %v", err)
+		}
+		if err := (&store.Store{Pool: pool}).Migrate(ctx); err != nil {
 			t.Fatalf("put branch_commits back: %v", err)
 		}
-	})
-	t.Cleanup(restore)
-	return restore
+	}
 }
 
 // A merge whose branch seed cannot be written stores no head row and says so. The seed is the

@@ -4,7 +4,8 @@
 // runtime, so neither script can run the NATS image. e2e-refill.sh also stops, kills and restarts
 // it under a running listener, and a restart reads back the JetStream store the directory holds.
 //
-// With -callout-keys <dir> it runs the server testnats.StartWithCallout runs instead: every
+// With -callout-keys <dir> it runs the configuration testnats.StartWithCallout runs instead, on
+// options of its own, so it keeps nats-server's short first PING as a deployed hub does: every
 // client but the auth service's own user is sent to the auth service (packages/envoy/scripts/
 // dev-stack.sh --callout runs that service in its brokers). The service's user, the issuer and the
 // curve key are made the first time, as testnats.NewCalloutKeys makes them, and written to
@@ -35,10 +36,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/testnats"
 )
-
-// readyTimeout bounds the wait for the server to accept connections, so a port another process
-// holds ends this command instead of leaving its caller waiting.
-const readyTimeout = 10 * time.Second
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -80,10 +77,12 @@ func run(args []string) error {
 	}
 	srv.ConfigureLogger()
 	go srv.Start()
-	if !srv.ReadyForConnections(readyTimeout) {
-		srv.Shutdown()
-		srv.WaitForShutdown()
-		return fmt.Errorf("no connections accepted on %s:%d within %s; is the port taken?", opts.Host, opts.Port, readyTimeout)
+	// The server's own readiness, asked every 100 ms, for as long as it takes: a JetStream start
+	// on a loaded machine can take longer than any fixed wait allows, and the script that started
+	// natsd waits for its readiness line under a deadline of its own. A listener the server cannot
+	// open, a port another process holds among them, is logged as fatal, and nats-server's logger
+	// (ConfigureLogger's) exits on a fatal line, so that ends this command at once, naming the port.
+	for !srv.ReadyForConnections(100 * time.Millisecond) {
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // lookup is os.LookupEnv over exactly values, whatever the shell running the test set.
@@ -37,7 +38,7 @@ func lookup(values map[string]string) func(string) (string, bool) {
 // user is that seed's nkey, and without it the same server refuses the daemon's boot.
 func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 	quickAppMints(t)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, public)
 	user, err := nkeys.FromSeed([]byte(seed))
 	if err != nil {
@@ -58,7 +59,7 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 
 	t.Run("with the seed", func(t *testing.T) {
 		cfg := workflowConfig(t, url)
-		cfg.NatsNkeySeedFile = testnats.SeedFile(t, seed+"\n")
+		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, seed+"\n")
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
 		if err := bootsOrExits(t, cfg, tokens, 60*time.Second); err != nil {
 			t.Fatalf("boot with the seed = %v, want the daemon serving", err)
@@ -80,8 +81,8 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 // refuses one configured with the pane seed alone, which it then connects as.
 func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 	quickAppMints(t)
-	daemonSeed, daemonUser := testnats.User(t)
-	paneSeed, paneUser := testnats.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
+	paneSeed, paneUser := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, daemonUser)
 	user, err := nkeys.FromSeed([]byte(daemonSeed))
 	if err != nil {
@@ -102,8 +103,8 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 
 	t.Run("with both seeds", func(t *testing.T) {
 		cfg := workflowConfig(t, url)
-		cfg.NatsNkeySeedFile = testnats.SeedFile(t, paneSeed+"\n")
-		cfg.NatsDaemonNkeySeedFile = testnats.SeedFile(t, daemonSeed+"\n")
+		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, paneSeed+"\n")
+		cfg.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, daemonSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
 		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
@@ -122,7 +123,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 	})
 	t.Run("with the pane seed alone", func(t *testing.T) {
 		cfg := workflowConfig(t, url)
-		cfg.NatsNkeySeedFile = testnats.SeedFile(t, paneSeed+"\n")
+		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, paneSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
 		err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil)))
@@ -140,11 +141,11 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 // pane seed, else none, and its one line says which user that is and whether it is the pane user,
 // the daemon seed naming the pane user included: for the token, the account it names.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
-	daemonSeed, daemonUser := testnats.User(t)
-	paneSeed, paneUser := testnats.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
+	paneSeed, paneUser := testnkeys.User(t)
 	const account = "system:serviceaccount:legion-pub:legion-daemon"
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")
-	if err := os.WriteFile(tokenFile, []byte(testnats.ServiceToken(account, time.Now().Add(time.Hour))), 0o600); err != nil {
+	if err := os.WriteFile(tokenFile, []byte(testnkeys.ServiceToken(account, time.Now().Add(time.Hour))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -191,7 +192,7 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 	})
 }
 
-// `legion start --check-config` (CheckStart) names whom each NATS credential boot reads
+// `legion config check` (CheckStart) names whom each NATS credential boot reads
 // authenticates as, as boot logs it, and never the credential: beside the pane seed's user, the
 // daemon seed's user by public key, or, for nats_daemon_service_token_file, the account the token
 // names. A configuration with no project mapped, run on tmux with LEGION_OMP_PATH naming an
@@ -202,10 +203,10 @@ func TestCheckStartNamesWhomTheDaemonsNATSCredentialAuthenticatesAs(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_OMP_PATH", omp)
-	paneSeed, paneUser := testnats.User(t)
-	daemonSeed, daemonUser := testnats.User(t)
+	paneSeed, paneUser := testnkeys.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
 	const account = "system:serviceaccount:legion-pub:legion-daemon"
-	token := testnats.ServiceToken(account, time.Now().Add(time.Hour))
+	token := testnkeys.ServiceToken(account, time.Now().Add(time.Hour))
 	dir := t.TempDir()
 	tokenFile, operatorToken := filepath.Join(dir, "nats-token"), filepath.Join(dir, "operator-token")
 	for path, contents := range map[string]string{tokenFile: token, operatorToken: testOperatorToken + "\n"} {
@@ -224,10 +225,10 @@ func TestCheckStartNamesWhomTheDaemonsNATSCredentialAuthenticatesAs(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{
 				Project: "TEST", Runtime: config.Runtime{Name: "tmux"}, OperatorTokenFile: operatorToken,
-				NatsNkeySeedFile: testnats.SeedFile(t, paneSeed+"\n"), NatsDaemonServiceTokenFile: tc.tokenFile,
+				NatsNkeySeedFile: testnkeys.SeedFile(t, paneSeed+"\n"), NatsDaemonServiceTokenFile: tc.tokenFile,
 			}
 			if tc.daemon != "" {
-				cfg.NatsDaemonNkeySeedFile = testnats.SeedFile(t, tc.daemon+"\n")
+				cfg.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, tc.daemon+"\n")
 			}
 			checked, err := CheckStart(cfg, lookup(map[string]string{}))
 			if err != nil || checked != tc.want {
@@ -282,7 +283,7 @@ func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
 	if _, err := jetstreamOf(t, s.Connect(t)).CreateStream(t.Context(), jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("create notification stream: %v", err)
 	}
-	token := testnats.ServiceToken(account, time.Now().Add(time.Hour))
+	token := testnkeys.ServiceToken(account, time.Now().Add(time.Hour))
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")
 	if err := os.WriteFile(tokenFile, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
@@ -331,7 +332,7 @@ func TestTheWorkflowWaitsOutARefusalOfItsServiceToken(t *testing.T) {
 		t.Fatalf("create notification stream: %v", err)
 	}
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")
-	if err := os.WriteFile(tokenFile, []byte(testnats.ServiceToken(account, time.Now().Add(time.Hour))), 0o600); err != nil {
+	if err := os.WriteFile(tokenFile, []byte(testnkeys.ServiceToken(account, time.Now().Add(time.Hour))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := workflowConfig(t, s.URL)
@@ -386,19 +387,19 @@ func jetstreamOf(t *testing.T, conn *nats.Conn) jetstream.JetStream {
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
-	daemonSeed, paneSeed := testnats.UserSeed(t), testnats.UserSeed(t)
+	daemonSeed, paneSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string
 		key     string
 		environ []string
 	}{
-		{"nats_daemon_nkey_seed_file", testnats.SeedFile(t, daemonSeed), nil},
-		{"NATS_DAEMON_NKEY_SEED_FILE", "", []string{"NATS_DAEMON_NKEY_SEED_FILE=" + testnats.SeedFile(t, daemonSeed)}},
+		{"nats_daemon_nkey_seed_file", testnkeys.SeedFile(t, daemonSeed), nil},
+		{"NATS_DAEMON_NKEY_SEED_FILE", "", []string{"NATS_DAEMON_NKEY_SEED_FILE=" + testnkeys.SeedFile(t, daemonSeed)}},
 		{"NATS_DAEMON_NKEY_SEED", "", []string{"NATS_DAEMON_NKEY_SEED=" + daemonSeed}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(t)
-			cfg.NatsNkeySeedFile = testnats.SeedFile(t, paneSeed)
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, paneSeed)
 			cfg.NatsDaemonNkeySeedFile = tc.key
 			rt := fake.NewRuntime()
 			o := fakeRuntime(rt, &built{})

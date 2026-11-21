@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // bootReads is what boot reads from the configuration, the daemon's environment and the files they
@@ -48,7 +50,7 @@ type variantInstructions struct {
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
 // file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
-// runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
+// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
 // do: create the state directory, write the instructions copies and the Dispatch token file, read
 // provider keys from secretsd, and run the plugin gate or the image probe.
@@ -91,7 +93,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// Every hook that reads its words from a file rather than writing them in the key, read as
 	// the deployment's instructions are and refused the same way. The engine is given words and
 	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
-	// missing one refuses boot, and `legion start --check-config` with it.
+	// missing one refuses boot, and `legion config check` with it.
 	for _, hook := range cfg.Hooks {
 		if hook.PromptFile == "" {
 			continue
@@ -201,8 +203,9 @@ func chooseNATSConnection(tokenFile, daemonSeed, paneSeed, paneUser string) (nat
 	}
 }
 
-// log logs, once, the user the connection authenticates as, by public key, whether that is the pane
-// user, and where its seed came from; never the seed.
+// log logs, once, who the connection authenticates as, never the credential: for a seed, the user
+// by public key, whether that is the pane user, and where its seed came from; for the service
+// token, the account the token names, and seed=service-token.
 func (c natsConnection) log(log *slog.Logger) {
 	log.Info("legion daemon connects to NATS", "user", c.user, "paneUser", c.paneUser, "seed", string(c.source))
 }
@@ -212,7 +215,7 @@ func (c natsConnection) log(log *slog.Logger) {
 // the boot: an unreachable NATS for every credential (natsauth.Unreachable), and, for the service
 // token alone, a refusal (natsauth.Refused). The NATS auth service refuses a token while it is
 // away or holds no answer a decision needs yet, so the token's connection waits that out at boot as
-// it does while running (natsauth.ConnectService, natsauth.ReconnectBackoff), and the daemon,
+// it does while running (natsauth.ConnectService, and options' reconnect delay), and the daemon,
 // which serves nothing while its boot runs, reads as not ready meanwhile rather than exiting into a
 // restart. A seed's refusal, or a refusal of no credential, is a misconfiguration no wait fixes,
 // and refuses the boot as before.
@@ -223,13 +226,14 @@ func (c natsConnection) waitsOut(err error) bool {
 // options are the connection options the daemon's own connection dials with, after its
 // credential: what the server reports, logged (natsauth.LogEvents), and reconnects that never give
 // up (natsauth.ReconnectForever). The service token's connection also waits its reconnects out on
-// the boot's own schedule, readinessRetry, which waitsOut holds the boot's connect to, so one rule
-// waits a refusal of the auth service out at boot and while running (natsauth.ReconnectBackoff); a
-// seed's keeps nats.go's own reconnect wait.
+// the boot's own schedule, readinessRetry, which waitsOut holds the boot's connect to: one rule,
+// bootprobe.Retry.Delay, waits a refusal of the auth service out at boot and while running. nats.go
+// counts a reconnect's attempts from one, and Delay its retries from none. A seed's keeps nats.go's
+// own reconnect wait.
 func (c natsConnection) options(log *slog.Logger) []nats.Option {
 	options := []nats.Option{natsauth.LogEvents(log), natsauth.ReconnectForever()}
 	if c.tokenFile != "" {
-		options = append(options, natsauth.ReconnectBackoff(readinessRetry.Initial, readinessRetry.Max))
+		options = append(options, nats.CustomReconnectDelay(func(attempts int) time.Duration { return readinessRetry.Delay(attempts - 1) }))
 	}
 	return options
 }
@@ -305,14 +309,26 @@ type CheckedNATS struct {
 	PaneUser, DaemonUser, DaemonServiceAccount string
 }
 
-// CheckStart is `legion start --check-config`'s reading of what boot reads before it writes
+// CheckStart is `legion config check`'s reading of what boot reads before it writes
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
-// invocation): nil when boot would get past every such refusal, and who the daemon's NATS
-// credentials authenticate as (CheckedNATS).
+// invocation), then of postgres_dsn as the store reads it before it opens a connection
+// (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
+// such refusal, and who the daemon's NATS credentials authenticate as (CheckedNATS). The store
+// refuses a postgres_dsn pgx cannot parse, such as a malformed URL, a bad pool_* key or an
+// sslrootcert, sslcert or sslkey file it cannot read, and one whose default_query_exec_mode the
+// store's text rule cannot run in. pgx fills what the DSN leaves unset from the process's own PG*
+// environment variables, whatever lookup holds, as it does at boot. Each such refusal is
+// store.ConnectError, as store.Open wraps it: the DSN's address and the driver's detail, never the
+// DSN's password. The driver's detail of a DSN pgx cannot parse quotes the DSN with its user name
+// and its query, which `legion config check` and `legion start` both remove when they write the
+// refusal (printRefusal, the URL rule).
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (CheckedNATS, error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return CheckedNATS{}, err
+	}
+	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
+		return CheckedNATS{}, store.ConnectError(cfg.PostgresDSN, err)
 	}
 	checked := CheckedNATS{PaneUser: r.paneNatsUser}
 	switch r.nats.source {

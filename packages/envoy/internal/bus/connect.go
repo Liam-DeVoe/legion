@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -76,17 +77,36 @@ func detectSilentCuts(o *nats.Options) error {
 	return nil
 }
 
-// reconnectJitterImmediate is the jitter WithImmediateReconnect leaves between two clients'
-// retries, in place of the second every other connection waits.
-const reconnectJitterImmediate = 50 * time.Millisecond
+// The waits of WithPromptReconnect (promptRedialWait): the first redial of an outage is at once
+// but for promptRedialJitter, which keeps two replicas from dialling in the same instant; each
+// later wait is drawn anew between half and all of a bound that starts at promptRedialBase and
+// doubles with each redial up to promptRedialCap.
+const (
+	promptRedialJitter = 50 * time.Millisecond
+	promptRedialBase   = 250 * time.Millisecond
+	promptRedialCap    = 2 * time.Second
+)
 
-// reconnectImmediately is the nats.Option WithImmediateReconnect adds to every connection of a
-// client: no wait between attempts, and a jitter small enough that the client is back before the
-// clients that wait on it are.
-func reconnectImmediately(o *nats.Options) error {
-	o.ReconnectWait = 0
-	o.ReconnectJitter = reconnectJitterImmediate
-	o.ReconnectJitterTLS = reconnectJitterImmediate
+// promptRedialWait is a connection's wait, made WithPromptReconnect, in the pass'th round of an
+// outage's dials over the servers of its pool. It is the connection's CustomReconnectDelayCB:
+// nats.go calls it once each round, with the round's number counted from 1 again in each outage,
+// so the waits start over at every connect (nats.go v1.55.0 doReconnect, :3413 and :3480-3528).
+// With one server it is the wait before each redial; a pool of n servers is dialled n times for
+// each wait. draw returns a number in [0, n) uniformly: rand.Int64N, or a test's own.
+func promptRedialWait(pass int, draw func(n int64) int64) time.Duration {
+	if pass <= 1 {
+		return time.Duration(draw(int64(promptRedialJitter)))
+	}
+	bound := promptRedialBase
+	for round := 2; round < pass && bound < promptRedialCap; round++ {
+		bound = min(bound*2, promptRedialCap)
+	}
+	return bound/2 + time.Duration(draw(int64(bound/2)))
+}
+
+// promptRedial is the nats.Option WithPromptReconnect adds to every connection of a client.
+func promptRedial(o *nats.Options) error {
+	o.CustomReconnectDelayCB = func(pass int) time.Duration { return promptRedialWait(pass, rand.Int64N) }
 	return nil
 }
 
@@ -115,9 +135,10 @@ func allOf(options ...nats.Option) nats.Option {
 //
 // A refusal of the credential (authorizationRefusal) is logged at ERROR, at most once per
 // reconnectErrEvery of refusals: a refusal that lasts is a grant someone has to fix, and nats.go
-// retries it about once a second. Once the connection has connected, nats.go reports each refusal
-// to the async error callback, which takes the line here in place of its own; before then it
-// reports none, and reportRefusalsUntilConnected logs them on the same throttle.
+// retries it about once a second (every 1 to 2 s at WithPromptReconnect's cap, promptRedialWait).
+// Once the connection has connected, nats.go reports each refusal to the async error callback,
+// which takes the line here in place of its own; before then it reports none, and
+// reportRefusalsUntilConnected logs them on the same throttle.
 func connectInBackground(name string, urls []string, refusals *reconnectErrThrottle, connected func(*nats.Conn)) nats.Option {
 	return func(o *nats.Options) error {
 		o.RetryOnFailedConnect = true
@@ -247,10 +268,11 @@ func serverList(urls []string) string {
 // options starts from nats.GetDefaultOptions: Connect fills in only some zero fields, and the
 // defaults are what turn on reconnecting, the client's pings and the drain and flusher timeouts. A
 // lost server is reconnected in place, forever, so JetStream handles taken from the connection
-// keep working; ReconnectedCB re-subscribes and runs the reconnect hooks. DisconnectedErrCB logs
-// the disconnect and then calls disconnectedCB: the reconnect loop keeps every subscription open
-// through an outage, so a KV watcher never ends on its own and only this callback says its cache
-// stopped following the bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
+// keep working; ReconnectedCB starts the re-subscribe and a run of the reconnect hooks off nats.go's
+// callback goroutine (onReconnect). DisconnectedErrCB logs the disconnect and then calls
+// disconnectedCB: the reconnect loop keeps every subscription open through an outage, so a KV
+// watcher never ends on its own and only this callback says its cache stopped following the
+// bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
 // not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
@@ -314,7 +336,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		// what is left of the previous outage's minute.
 		throttle.reset()
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
-		// discovered inherits the configured URL's (nats.go v1.50.0 nats.go:2025-2027);
+		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
 		// ConnectedUrlRedacted keeps a token, which is a user name alone.
 		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 		if reconnectCB != nil {
@@ -335,8 +357,8 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 			// A server that closes the connection during a reconnect's CONNECT and PING handshake
 			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
 			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
-			// tries again without calling ReconnectErrCB (nats.go v1.50.0 nats.go:2930-2938,
-			// 3251-3258). It is a failed reconnect attempt, so it is logged as one, on the same
+			// tries again without calling ReconnectErrCB (nats.go v1.55.0 processConnectInit and doReconnect).
+			// It is a failed reconnect attempt, so it is logged as one, on the same
 			// throttle. Only that report is: the connection is still in that handshake
 			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
 			// and every other async error, an EOF on a connected connection included, stays an
