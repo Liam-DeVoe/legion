@@ -312,7 +312,6 @@ listener_command: &listener_command
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/metrics/*'
   - 'packages/envoy/internal/oidc/*'
-  - 'packages/envoy/internal/projectscope/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/roles/*'
   - 'packages/envoy/internal/session/*'
