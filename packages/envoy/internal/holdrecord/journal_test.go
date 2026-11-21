@@ -56,14 +56,18 @@ func lose(served http.Handler) func(http.ResponseWriter, *http.Request) bool {
 	}
 }
 
-// row reads the hold row, restoring the first one, released, when there is none.
+// row reads the hold row, writing the first one, released with no hold id, by Bootstrap when there
+// is none.
 func row(t *testing.T, c *holdrecord.Client) holdrecord.Row {
 	t.Helper()
 	ctx := context.Background()
 	got, err := c.Row(ctx)
 	var refusal *holdrecord.RouteError
 	if errors.As(err, &refusal) && refusal.Code == "no_row" {
-		got, err = c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "first-row", "the first row")
+		if err := c.Bootstrap(ctx); err != nil {
+			t.Fatalf("bootstrap the first row: %v", err)
+		}
+		got, err = c.Row(ctx)
 	}
 	if err != nil {
 		t.Fatalf("read the hold row: %v", err)
@@ -584,6 +588,66 @@ func TestTheHoldJournal(t *testing.T) {
 		release(t, c, "h-restored")
 		if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
 			t.Fatalf("after hold release the row is %s", after.Phase)
+		}
+	})
+
+	// The first row is Bootstrap's alone: RestoreRow restores a lost row, so a released row with no
+	// hold id is refused before anything is sent, naming Bootstrap. With the row deleted mid-hold,
+	// RestoreRow of the held row with its hold id still follows restore_gen once. Fails if RestoreRow
+	// follows restore_gen for a released row with no hold id: it lands that row at gen 8, mid-hold.
+	t.Run("RestoreRow refuses the first row's shape and still follows restore_gen for a held row", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-lost", holdrecord.WorkflowBucketsCreate, nil)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "", "the first row")
+		if err == nil || !strings.Contains(err.Error(), "Bootstrap") {
+			t.Fatalf("RestoreRow of a released row with no hold id, mid-hold, answered %+v, %v; want a refusal naming Bootstrap", got, err)
+		}
+		var refusal *holdrecord.RouteError
+		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
+			t.Fatalf("after the refused restore Row answered %v, want no_row", err)
+		}
+		restored, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-lost", "restored after a delete")
+		if err != nil || restored.Gen <= 1 || restored.Phase != natsgrant.OperatorPhaseHeld || restored.HoldID != "h-lost" {
+			t.Fatalf("RestoreRow of the held row = %+v, %v; want held h-lost at restore_gen", restored, err)
+		}
+	})
+
+	// Bootstrap writes the first row, gen 1, released, no hold id, once. With the row there it
+	// answers row_exists; with the row deleted mid-hold, the log holds entries, and it answers the
+	// route's 409 as it is, a RestoreGenError naming restore_gen, writing nothing.
+	t.Run("Bootstrap writes the first row once and answers any 409 as it is", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		if err := c.Bootstrap(ctx); err != nil {
+			t.Fatalf("Bootstrap on an empty log: %v", err)
+		}
+		first, err := c.Row(ctx)
+		if err != nil || first.Gen != 1 || first.Phase != natsgrant.OperatorPhaseReleased || first.HoldID != "" {
+			t.Fatalf("after Bootstrap the row is %+v, %v; want gen 1, released, no hold id", first, err)
+		}
+		var refusal *holdrecord.RouteError
+		if err := c.Bootstrap(ctx); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
+			t.Fatalf("Bootstrap with the row there answered %v, want 409 row_exists", err)
+		}
+		hold(t, c, "h-boot", holdrecord.WorkflowBucketsCreate, nil)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		var highest int64
+		if err := r.Pool.QueryRow(ctx, `select max(gen) from nats_hold_log`).Scan(&highest); err != nil {
+			t.Fatal(err)
+		}
+		err = c.Bootstrap(ctx)
+		var mismatch *holdrecord.RestoreGenError
+		if !errors.As(err, &mismatch) || mismatch.RestoreGen != uint64(highest)+1 || !errors.As(err, &refusal) || refusal.Code != "gen_mismatch" {
+			t.Fatalf("Bootstrap with the log at gen %d answered %v, want a RestoreGenError naming restore_gen %d (409 gen_mismatch)", highest, err, highest+1)
+		}
+		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
+			t.Fatalf("after the refused Bootstrap Row answered %v, want no_row: it wrote a row", err)
 		}
 	})
 
