@@ -3856,6 +3856,41 @@
       }
     },
     {
+      "id": "brokerclient-retried-trade-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/fragment",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: the code as the address lets the answer's text print (cipheraddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade",
+      "capture": "brokerclient.retried-trade/fragment",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "\"code\", c.brokerURL.WordsOf(refused.code)",
+        "replacement": "\"code\", refused.code"
+      }
+    },
+    {
+      "id": "brokerclient-retried-trade-user-information",
+      "requirement": "r4-unchanged",
+      "package": "./internal/cipherclient",
+      "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/user-information",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with user information the code prints as cipheraddr.WordsNotPrinted, as the trade's error withholds it"
+    },
+    {
+      "id": "brokerclient-retried-trade-query",
+      "requirement": "r4-unchanged",
+      "package": "./internal/cipherclient",
+      "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/query",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with a query the code prints as cipheraddr.WordsNotPrinted, as the trade's error withholds it"
+    },
+    {
+      "id": "brokerclient-retried-trade-clean",
+      "requirement": "r4-unchanged",
+      "package": "./internal/cipherclient",
+      "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/clean",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside a clean address the code still prints, as the rule reads it"
+    },
+    {
       "id": "agentsecrets-answer-echo-body",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
@@ -3889,6 +3924,34 @@
       "package": "./cmd/cipher-devrelay",
       "test": "TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes/code",
       "production": "agent-secrets-devrelay apiClient.do: the envelope's code, through the record (redact.Carried)"
+    },
+    {
+      "id": "devrelay-machine-approve-state-fragment",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/fragment",
+      "production": "agent-secrets-devrelay cmdMachineApprove: the looked-up state as the address lets the answer's text print (cipheraddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
+      "function": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove",
+      "capture": "devrelay.machine-approve-state/fragment",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipher-devrelay/main.go",
+        "preimage": "client.base.WordsOf(rec.State)",
+        "replacement": "rec.State"
+      }
+    },
+    {
+      "id": "devrelay-machine-approve-state-user-information",
+      "requirement": "r4-unchanged",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/user-information",
+      "production": "agent-secrets-devrelay cmdMachineApprove: beside an address with user information the state prints as cipheraddr.WordsNotPrinted, as the call's refusal withholds its words"
+    },
+    {
+      "id": "devrelay-machine-approve-state-clean",
+      "requirement": "r4-unchanged",
+      "package": "./cmd/cipher-devrelay",
+      "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/clean",
+      "production": "agent-secrets-devrelay cmdMachineApprove: beside a clean address the state still prints, as the rule reads it"
     },
     {
       "id": "listener-answer-echo-session",
@@ -5728,6 +5791,16 @@
       "source": "control 19 leak row ts-request-echo-description at ee316f783d",
       "guard": "ts-request-echo-description",
       "note": "out of control 19: main fixed this leak on its own before the merge base, at e5e4900fe7 (#4140), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "cipherclient's retried-trade log line, whose code printed as the rule reads it beside a broker address that is not clean",
+      "source": "a review of #4330 after it merged",
+      "guard": "brokerclient-retried-trade-fragment"
+    },
+    {
+      "site": "agent-secrets-devrelay machine-approve's line for a looked-up state that is not pending, which printed the state as the rule reads it beside a broker address that is not clean",
+      "source": "the class search of the retried-trade finding",
+      "guard": "devrelay-machine-approve-state-fragment"
     }
   ]
 }

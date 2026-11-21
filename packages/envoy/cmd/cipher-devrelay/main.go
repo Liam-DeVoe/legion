@@ -271,7 +271,9 @@ func cmdMachineApprove(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !rec.State.Equal("pending") {
-		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: code %s names a machine login that is %s, not pending\n", *code, rec.State)
+		// The state is the broker's text, so it prints as the address lets the text of its answer
+		// print (cipheraddr.Address.WordsOf), as the call's refusal prints its words.
+		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: code %s names a machine login that is %s, not pending\n", *code, client.base.WordsOf(rec.State))
 		return 1
 	}
 	action := "approve"

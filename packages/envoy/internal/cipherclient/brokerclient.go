@@ -410,7 +410,7 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	}
 	var refused *RefusedError
 	if !(errors.As(err, &refused) && refused.Permanent()) && c.held != nil && c.now().Before(c.held.Expiry) {
-		what, attrs := retriedTrade(err)
+		what, attrs := c.retriedTrade(err)
 		c.logf(ctx, what+"; the token in hand is still live", attrs...)
 		return c.held, nil
 	}
@@ -482,7 +482,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 				logged = now
 			}
 		default:
-			what, attrs := retriedTrade(err)
+			what, attrs := c.retriedTrade(err)
 			c.logf(ctx, what+"; asking again", append(attrs, "in", wait.String())...)
 		}
 		if !c.sleep(ctx, wait) {
@@ -502,13 +502,15 @@ func (c *Client) RenewalAt(token *Token) time.Time {
 }
 
 // retriedTrade is what a log line says of a trade the renewal retries, and its fields: a refusal's
-// status and its code as the rule reads it (the code is a redact.RemoteText, which a log field
-// prints only as that reading), or the failure alone.
-func retriedTrade(err error) (string, []any) {
+// status and its code as the broker's address lets its answer print (cipheraddr.Address.WordsOf),
+// as the trade's error prints it - the rule's reading beside a clean address, and
+// cipheraddr.WordsNotPrinted beside any other, where whoever answers can repeat the credential the
+// address carries in the code - or the failure alone.
+func (c *Client) retriedTrade(err error) (string, []any) {
 	var refused *RefusedError
 	if errors.As(err, &refused) {
 		return "the secrets broker refused a trade, which a later trade may cure",
-			[]any{"status", refused.status, "code", refused.code, "error", err.Error()}
+			[]any{"status", refused.status, "code", c.brokerURL.WordsOf(refused.code), "error", err.Error()}
 	}
 	return "a trade got no usable answer from the secrets broker", []any{"error", err.Error()}
 }

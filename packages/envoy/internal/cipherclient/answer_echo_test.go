@@ -3,12 +3,15 @@ package cipherclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -57,7 +60,7 @@ func TestATradeAnswerPrintsNoSubjectTokenItEchoes(t *testing.T) {
 				t.Fatalf("the broker saw %d trades, want the one", len(broker.Requests()))
 			}
 			redacttest.RequireNone(t, "brokerclient.answer-echo/"+c.name, tradeErr.Error())
-			msg, args := retriedTrade(tradeErr)
+			msg, args := client.retriedTrade(tradeErr)
 			var line bytes.Buffer
 			slog.New(slog.NewTextHandler(&line, nil)).Warn(msg, args...)
 			redacttest.RequireNone(t, "brokerclient.answer-echo/"+c.name+"/log", line.String())
@@ -93,5 +96,90 @@ func TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords(t *testing.T) {
 	redacttest.RequireNone(t, "brokerclient.refusal-beside-credential", tradeErr.Error())
 	if !strings.Contains(tradeErr.Error(), "400") {
 		t.Errorf("the trade's error is %q, want its status", tradeErr)
+	}
+}
+
+// TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint: whatever answers at the configured broker
+// address refuses two trades with a 429, which the client retries, and its code and description
+// repeat a credential. Each line the client logs of a retried trade - Token's while the token in
+// hand is live, and Run's before it asks again - prints the refusal's status, and its code as the
+// address lets the answer's text print (cipheraddr.Address.WordsOf), as the trade's error prints
+// it: beside an address that carries a credential in its user information, its query or its
+// fragment, cipheraddr.WordsNotPrinted, since whoever answers there can repeat that credential in
+// any text of its answer, and a fragment, which no request sends, is a credential the request's
+// record cannot redact; beside a clean address, the code as the rule reads it. Captures
+// brokerclient.retried-trade/<case>.
+func TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint(t *testing.T) {
+	for _, c := range []struct {
+		name, suffix, code, want string
+		credentialed             bool
+	}{
+		{"user-information", "", redacttest.Password, cipheraddr.WordsNotPrinted, true},
+		{"query", "/?access_token=" + redacttest.Token, redacttest.Token, cipheraddr.WordsNotPrinted, true},
+		{"fragment", "#access_token=" + redacttest.Token, redacttest.Token, cipheraddr.WordsNotPrinted, true},
+		{"clean", "", redacttest.Code, redacttest.CodeShown, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var trades atomic.Int64
+			base := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				status, body := http.StatusTooManyRequests, map[string]any{"error": c.code, "error_description": "the address " + c.code + " is busy"}
+				switch trades.Add(1) {
+				case 1:
+					status, body = http.StatusOK, mintedToken(1)
+				case 4:
+					status, body = http.StatusBadRequest, map[string]any{"error": "invalid_grant", "error_description": "no entry lists this account"}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(body)
+			})
+			address := base + c.suffix
+			if c.name == "user-information" {
+				address = strings.Replace(base, "://", "://"+redacttest.User+":"+redacttest.Password+"@", 1)
+			}
+			var logged bytes.Buffer
+			client, err := New(Config{BrokerURL: cipheraddr.New(address), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute,
+				Log: slog.New(slog.NewJSONHandler(&logged, nil)),
+				After: func(time.Duration) <-chan time.Time {
+					now := make(chan time.Time, 1)
+					now <- time.Now()
+					return now
+				}})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if cipheraddr.New(address).Clean() == c.credentialed {
+				t.Fatalf("the address of case %s reads as clean %t, want %t", c.name, c.credentialed, !c.credentialed)
+			}
+			ctx := context.Background()
+			if _, err := client.Token(ctx); err != nil {
+				t.Fatalf("the first trade: %v", err)
+			}
+			client.held.Expiry = time.Now().Add(30 * time.Second)
+			if _, err := client.Token(ctx); err != nil {
+				t.Fatalf("Token = %v; want the token in hand, which is still live", err)
+			}
+			if err := client.Run(ctx, func(context.Context, *Token) error { return nil }); err == nil {
+				t.Fatal("Run ended with no error, want the broker's last refusal")
+			}
+			redacttest.RequireNone(t, "brokerclient.retried-trade/"+c.name, logged.String())
+			var lines int
+			for line := range strings.Lines(logged.String()) {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("the client logged %q, which is no JSON line: %v", line, err)
+				}
+				if msg, _ := record["msg"].(string); !strings.HasPrefix(msg, retriedRefusalLine) {
+					continue
+				}
+				lines++
+				if record["code"] != c.want || record["status"] != float64(http.StatusTooManyRequests) {
+					t.Errorf("the line %q names the code %v and the status %v; want %q and 429", record["msg"], record["code"], record["status"], c.want)
+				}
+			}
+			if lines != 2 {
+				t.Errorf("the client logged %d lines of a retried refusal, want Token's and Run's: %s", lines, logged.String())
+			}
+		})
 	}
 }
