@@ -2327,6 +2327,41 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
 		}
 	})
+	// A daemon that answers its claims with a body that does not decode (a proxy's page, a daemon of
+	// another release): `legion claims retry --failed` and `legion claims suspend` read the list as
+	// `legion claims list` does, and name it through redact.URL, holding no part of a made-up
+	// password in LEGION_DAEMON_URL.
+	served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(w, "{}")
+			return
+		}
+		fmt.Fprint(w, "<html>not the claims</html>")
+	}))
+	t.Cleanup(served.Close)
+	for name, args := range map[string][]string{
+		"claims list":           {"list"},
+		"claims retry --failed": {"retry", "--failed"},
+		"claims suspend":        {"suspend", "--claim", "legion-demo-1-architect"},
+	} {
+		t.Run("an answer that does not decode/"+name, func(t *testing.T) {
+			const secret = "madeUpClaimsPassword0123"
+			t.Chdir(t.TempDir())
+			bearer := filepath.Join(t.TempDir(), "operator-token")
+			if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			userinfo := "legion:" + secret + "@"
+			t.Setenv("LEGION_DAEMON_URL", strings.Replace(served.URL, "://", "://"+userinfo, 1))
+			var out, errb bytes.Buffer
+			code := run(context.Background(), append(append([]string{"legion", "claims"}, args...), "--operator-token-file", bearer), &out, &errb)
+			if code != 1 || !strings.Contains(errb.String(), "read the answer http://[a URL with credentials]/legion/v1/operator/claims served") ||
+				strings.Contains(errb.String(), secret[:10]) {
+				t.Fatalf("legion %s = %d, stderr %q; want 1, the list named by the mark, and no part of the password", name, code, errb.String())
+			}
+		})
+	}
 }
 
 // The deployment that writes no `memory` block and declares no `experiments` key — the
