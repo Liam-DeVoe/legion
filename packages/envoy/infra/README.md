@@ -3337,11 +3337,16 @@ protected stream's group is led with every copy current, the meta barrier and th
 the operator and the auth service remain. Every held command that fails after its intent writes a
 stop entry recording what it left; `hold release` ends a hold whose stops all left nothing
 changed, and `hold abort` is every workflow's way out once a command has stopped and no intent is
-pending (in hub-restore, not after a done `hold prove`), printing what each stop left. Once
-`hold release` or `hold abort` is done, no command is admitted in that hold. A journal the broker
-answers below its floor (an older signed record put back into its database) is UNKNOWN. Exit
-codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a reading that is not whole,
-which is never a pass.
+pending, printing what each stop left. In hub-restore, after a done `hold prove`, abort is
+admitted only after a stop, and checks each claim against the newest done prove's disk; a proven
+disk that is gone (a 404, or another id under its name) is named in its stop, and a restore onto
+another disk and a new prove follow. Once `hold release` or `hold abort` is done, no command is
+admitted in that hold. `hold restore --hold ID` puts a row lost mid-hold back held (refused for a
+hold that has ended); `hold restore --bootstrap` writes the first row into an empty log, or the
+released row a completed hold left at the log's next gen, and is refused mid-hold. A journal or
+row the broker answers below its floor (an older signed record put back into its database) is
+UNKNOWN. Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a reading that
+is not whole, which is never a pass.
 
 ## `envoy-infra buckets`
 
