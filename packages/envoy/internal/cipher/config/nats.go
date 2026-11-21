@@ -8,13 +8,15 @@ import (
 	"strings"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
 // any set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
 // BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
-// or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
-// a seed or a URL.
+// an "@" after its host, a query or a fragment, or one that is no URL, is refused by its place in
+// the list (hubURLRefusal). No refusal carries a seed or a URL.
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
 	settings := NATSCallout{
 		SeedFile:       strings.TrimSpace(getenv("BROKER_NATS_SEED_FILE")),
@@ -76,7 +78,7 @@ func hubURLRefusal(entry string) string {
 	switch {
 	case err != nil:
 		return "is not a URL nats.go can dial"
-	case parsed.User != nil || strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@"):
+	case parsed.User != nil || natsurl.UserinfoPastHost(parsed):
 		return "carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone"
 	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(entry, "#"):
 		return "carries a query or a fragment: the NATS auth service needs neither to dial the hub, so name the hub by its address alone"
