@@ -54,6 +54,7 @@ import { issueStatuses } from "../project/board-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { narrowIssue } from "./issue-fixtures";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
@@ -83,12 +84,6 @@ const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, 
 // A document's approval reason comes with its reading (`doc`), which the engine makes, so the file
 // waits for the engine at its top level: it is ready before any test reads that reason.
 await warmMarkdownRenderer();
-
-/** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
 
 /** The header and the Details panel of one issue page: two callers of the hook on one client. */
 function useBothCallers() {

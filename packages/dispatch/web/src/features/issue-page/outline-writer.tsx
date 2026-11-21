@@ -1,7 +1,6 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
-import { api } from "../../api/client";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -9,6 +8,7 @@ import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
 import type { SentRequest, StatementAnchor } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockOfNodeId } from "./issue-artifacts";
@@ -16,7 +16,7 @@ import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
 import { criterionOffered } from "./model-rows/criterion-write";
 import { useRoomFacts } from "./model-rows/room-target";
-import { EVENT_FRESH, issueAsksQuery } from "./useIssueTree";
+import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -232,19 +232,11 @@ export function OutlineWriterProvider({
   const offersCriterion = criterionOffered(facts);
   const agentText = useAgentText();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
-  // keeps them (`useIssueTree.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
+  // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
-  const comments = useQuery({
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
-    ...EVENT_FRESH,
-  });
-  const messages = useQuery({
-    queryFn: () => api.listIssueMessages(issueKey),
-    queryKey: ["issue-messages", issueKey],
-    ...EVENT_FRESH,
-  });
+  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
+  const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   const focus = useCallback(() => {
     // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
     // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.

@@ -29,6 +29,13 @@ const NONE_WRITTEN = "No description is written.";
  * keyboard's and the screen reader's way in is a real button beside the text, named by the
  * words it shows ("Edit the description of P3") and drawn over the block's corner only while it
  * holds the focus, so the page a mouse reads is the rendered text alone.
+ *
+ * The stored description is drawn from the tree the server read it into (`descriptionTree`),
+ * as every other stored text is, so no reader's browser parses it: Go's reading holds marks
+ * nested past its bound as text, where the browser's parser spends the square of their depth.
+ * What the reader has just written is a text the server has not stored, so it is drawn from its
+ * own markdown, as a reply quoting a write the server has not stored is (`ReplyQuote`'s
+ * `excerptTree`), until the stored description is that text.
  */
 export function PriorityDescription({
   canWrite,
@@ -40,8 +47,10 @@ export function PriorityDescription({
 }: {
   canWrite: boolean;
   description: string;
-  /** The reading Go made of `description` (`description_tree`), which the rendered block draws
-   *  while it shows what Dispatch holds. */
+  /** The server's reading of `description` (the priority's `description_tree`), absent from an
+   *  answer that carries none: a read made without `Dispatch-Trees: 1`, an empty description,
+   *  and the answer of a pod of the build before this one during a rolling deploy. The rendered
+   *  block draws it while it shows what Dispatch holds. */
   descriptionTree: DisplayTree | undefined;
   /** What the description is called, which names the priority it belongs to: "Description of
    *  P3". The editor and the group around the rendered text carry it, and the button that
