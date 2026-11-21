@@ -1071,6 +1071,12 @@ type SuperviseRequest struct {
 	Kept *KeptDecisions `json:"kept,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
+	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
+	// its check instead (the daemon outbox's checkLookHolds). A tree close of the issue's own tree
+	// whose cleanup is reserved still retires its claim and drives that cleanup, however stale its
+	// generation (reservedTreeClose). And a suspend or a tree close of a tree the issue has since
+	// left (Tree is not the issue's tree) still stops a claim that stands in that tree, which no
+	// worker of the issue's new tree is until that tree's start re-points it (stopInLeftTree).
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
 	// finishes without acting. It is empty for a root's architect, which serves every phase, for a
@@ -1252,9 +1258,9 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 
 // IssueSuspend stops an issue's pod after its close has stopped every role, and deletes the
 // Sandbox the roles ran in (runtime.IssueSuspender). Both workflow generations and this row's ID
-// fence a later re-admission or start. The issue keeps nothing: its disk is its pod's own and
-// goes with the pod, so a later todo re-enters the issue fresh on a Sandbox its next launch
-// makes.
+// fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
+// and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
+// issue fresh on a Sandbox its next launch makes.
 type IssueSuspend struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -1283,15 +1289,17 @@ type IssueBundle struct {
 func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
 // IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the per-role `release` supervise rows that stopped the pod's role processes: it suspends the
-// issue's Sandbox, waits its pod out and deletes the Sandbox with the role Secrets it owns
-// (runtime.IssueSuspender), and records the release with the size of the bundle the save stored.
+// the per-role `release` supervise rows that stopped the pod's role processes: it asks the
+// runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
+// out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
+// role Secrets it owns, and records the release with the size of the bundle the save stored.
 // Both workflow generations and this row's ID fence a start or a re-admission that came after, as
 // an IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
 // task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts.
+// any role starts. A new pod of a kept Sandbox mounts the volume the work was taken off, so it
+// restores nothing, and the daemon drops the bundle (runtime.HeldWorkspaceBundleDrop).
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -2516,13 +2524,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
+// launcher, older than the release that added the kind, could not look the session up by its id,
+// and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
+// not `session-lost` because the kind is published as the notice's one-line message, and that
+// session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
+// of migration 20261120042902 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-store-fault",
+	"session-lost", "session-forgotten", "session-store-fault",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
