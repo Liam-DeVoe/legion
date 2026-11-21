@@ -16,7 +16,8 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
+import { projectArchitectureSourcesQuery } from "../../api/queries";
+import type { ArchitectureSource, ArchitectureTree, InboxRow, IssueSummary } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
@@ -93,7 +94,8 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
  *  `GET /projects/CORE/architecture-sources` answers: the project's sources (a non-empty list
  *  opens it on Architecture; `[]`, the default, on Issues, as every render here expects unless it
  *  says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup that never
- *  settles. */
+ *  settles. `architecture` is what `GET /projects/{key}/architecture` answers for every project;
+ *  left out, that read never settles. */
 function renderPage(
   path: string | readonly string[],
   projects = [
@@ -107,7 +109,8 @@ function renderPage(
   ],
   login: string | null = "alice",
   inboxRows: InboxRow[] = [],
-  sources: ArchitectureSource[] | ApiError | "pending" = []
+  sources: ArchitectureSource[] | ApiError | "pending" = [],
+  architecture?: ArchitectureTree
 ) {
   // The project's issue list is read through `api.listIssues`, which the spy below answers -
   // except for a fetch the last assertion of a test starts: its query function awaits the
@@ -134,10 +137,14 @@ function renderPage(
   } else {
     listProjectArchitectureSources.mockResolvedValue(sources);
   }
-  // The Architecture pane's own tree fetch is not under test here; it never settles.
-  const getArchitecture = spyOn(api, "getArchitecture").mockImplementation(
-    () => Promise.withResolvers<never>().promise
-  );
+  // The Architecture pane's own tree fetch is not under test here unless the caller gives a tree;
+  // else it never settles.
+  const getArchitecture = spyOn(api, "getArchitecture");
+  if (architecture === undefined) {
+    getArchitecture.mockImplementation(() => Promise.withResolvers<never>().promise);
+  } else {
+    getArchitecture.mockResolvedValue(architecture);
+  }
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const entries = typeof path === "string" ? [path] : [...path];
   const view = render(
@@ -163,12 +170,14 @@ function renderPage(
     whoAmI.mockRestore();
   };
   return {
+    getArchitecture,
     listProjectArchitectureSources,
     getInbox,
     getMyState,
     listIssues,
     listProjectArtifacts,
     listProjects,
+    queryClient,
     restore,
     view,
     whoAmI,
@@ -437,6 +446,90 @@ test("a draft on one project's Access tab is not saved to the project the reader
     getProjectAccess.mockRestore();
     listAccessGroups.mockRestore();
     patchProjectAccess.mockRestore();
+  }
+});
+
+// A Refresh belongs to the project it was pressed on: going to another project's Architecture
+// tab while ALPHA's Refresh is still out draws BETA's same-named source ready to refresh, and
+// ALPHA's Refresh settling reloads ALPHA's architecture, not BETA's. The pane is keyed by the
+// project, as the issue list and the board are. Control: unkeyed, BETA's source says
+// "Refreshing…" and the settle reads BETA's architecture again.
+test("a Refresh still out on one project's Architecture tab is not the next project's", async () => {
+  const user = userEvent.setup();
+  const tree: ArchitectureTree = {
+    components: [],
+    not_architectural: [],
+    retired_links: [],
+    sources: [
+      {
+        branch: "main",
+        last_commit: null,
+        last_error: null,
+        last_sync_at: null,
+        repo: "legion/legion",
+      },
+    ],
+    totals: {
+      components_without_work: 0,
+      issues_done: 0,
+      issues_total: 0,
+      not_architectural: 0,
+      retired_links: 0,
+      unassigned: 0,
+    },
+    unassigned: [],
+  };
+  const project = (key: string, name: string) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    key,
+    name,
+    open_asks: 0,
+    gated_steps: [],
+  });
+  let settle: (() => void) | undefined;
+  const syncArchitectureSource = spyOn(api, "syncArchitectureSource").mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<never>();
+    settle = () => resolve(undefined as never);
+    return promise;
+  });
+  const page = renderPage(
+    ["/projects/BETA/architecture", "/projects/ALPHA/architecture"],
+    [project("ALPHA", "Alpha"), project("BETA", "Beta")],
+    "alice",
+    [],
+    [coreSource],
+    tree
+  );
+  const readsOf = (key: string) =>
+    page.getArchitecture.mock.calls.filter(([asked]) => asked === key).length;
+  try {
+    await user.click(await screen.findByRole("button", { name: "Refresh legion/legion" }));
+    await screen.findByRole("button", { name: "Refreshing legion/legion…" });
+    expect(syncArchitectureSource).toHaveBeenCalledWith(
+      "ALPHA",
+      "legion/legion",
+      expect.anything()
+    );
+
+    // BETA's sources are held as a visit to BETA earlier leaves them, so the tab strip and the
+    // pane stay drawn across the move rather than wait on BETA's read.
+    page.queryClient.setQueryData(projectArchitectureSourcesQuery("BETA").queryKey, [coreSource]);
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Beta" });
+    await screen.findByTestId("architecture-source");
+    expect(screen.queryByRole("button", { name: "Refreshing legion/legion…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh legion/legion" })).not.toBeDisabled();
+    const betaReads = readsOf("BETA");
+
+    // ALPHA's Refresh settles; a pane that took it as BETA's would read BETA's architecture again.
+    await act(async () => {
+      settle?.();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(readsOf("BETA")).toBe(betaReads);
+  } finally {
+    page.restore();
+    syncArchitectureSource.mockRestore();
   }
 });
 
