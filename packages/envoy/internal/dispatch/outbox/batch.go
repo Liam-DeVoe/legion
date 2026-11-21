@@ -278,6 +278,11 @@ type chainSend struct {
 	standIn *contracts.Envelope
 }
 
+// subject is the bus subject the send went out on (busSubject), which is what its log lines name.
+func (s *chainSend) subject() string {
+	return busSubject(s.dest.subject, s.event.event.Project)
+}
+
 // sent reports whether the send counts as one the batch made: its answer is in, it was not refused
 // for the hold's deadline, and it is not a role route reached with nothing to send
 // (roleForward.skip), which delivers nothing to anyone.
@@ -631,7 +636,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 				// Logged here, where the stand-in is answered, rather than where it was made:
 				// only now has it reached NATS.
 				slog.Warn("dispatch outbox: a stand-in went out with the payload left out",
-					"event_id", send.event.event.ID, "topic", send.dest.subject)
+					"event_id", send.event.event.ID, "topic", send.subject())
 			}
 			send.state = reached
 		case errors.Is(err, bus.ErrRefused):
@@ -643,12 +648,12 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			// of, and counting it again would count one event twice.
 			if send.standIn != nil {
 				slog.Error("dispatch outbox: the stand-in was refused too",
-					"event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)
+					"event_id", send.event.event.ID, "topic", send.subject(), "error", err)
 				send.state = reached
 				break
 			}
 			deps.countPublishFailure("refused")
-			slog.Error("dispatch outbox: destination refused", "event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)
+			slog.Error("dispatch outbox: destination refused", "event_id", send.event.event.ID, "topic", send.subject(), "error", err)
 			// An event whose payload NATS will not take still has readers waiting on it, so the
 			// same event goes out once more with that payload left out (standInEnvelope): the
 			// reader learns which event it is and reads the item itself. A stand-in refused in
