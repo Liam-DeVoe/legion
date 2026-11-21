@@ -906,18 +906,29 @@ func nullKeys(document any, prefix string) []string {
 }
 
 // runtime.kubernetes.agent_secrets.exchange_audience reaches the settings as the block's
-// exchange_audience, an audience and no credential. runtime: kubernetes requires it, so the
-// settings always name it.
-func TestSettingsOfNamesTheExchangeAudience(t *testing.T) {
-	cfg := settingsFixtureConfig(t)
-	cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = "legion-broker-exchange"
-	encoded, err := json.Marshal(SettingsOf(cfg).Runtime.Kubernetes.AgentSecrets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = `{"url":"https://agent-secrets.internal.example","audience":"fixture-broker-audience","token_expiry_seconds":1800,"exchange_audience":"legion-broker-exchange"}`
-	if string(encoded) != want {
-		t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+// exchange_audience where the file sets it, an audience and no credential, and is absent where it
+// does not, so a deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ audience, want string }{
+		"set":   {"legion-broker-exchange", `"exchange_audience":"legion-broker-exchange"`},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = tc.audience
+			encoded, err := json.Marshal(SettingsOf(cfg).Runtime.Kubernetes.AgentSecrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const before = `{"url":"https://agent-secrets.internal.example","audience":"fixture-broker-audience","token_expiry_seconds":1800`
+			want := before + "}"
+			if tc.want != "" {
+				want = before + "," + tc.want + "}"
+			}
+			if string(encoded) != want {
+				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
 	}
 }
 
