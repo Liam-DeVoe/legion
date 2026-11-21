@@ -1126,7 +1126,7 @@ It writes the task's value again when that turn ends, the role takes it then, an
 The worker of each claim whose turn holds the take is told, within a minute and two tool boundaries of the refusal.
 While its host is in a turn, its plugin reads `POST /legion/v1/claims/task` at a tool result, at most once a minute, and the answer's `holds` names each held take by its role and its task number.
 The next tool result carries one note for each held take, which asks the agent to stop at a safe point and end its turn.
-A plugin on a daemon API contract below 205 is served no `holds`, and its worker is told nothing.
+A plugin on a daemon API contract below 206 is served no `holds`, and its worker is told nothing.
 A turn that is in one long tool call reads no note until that call returns.
 
 **Five lines in the daemon's log show what each adoption did.**

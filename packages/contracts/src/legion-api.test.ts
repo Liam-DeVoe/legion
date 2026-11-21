@@ -100,7 +100,7 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
   // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 203).
   "task.json": LegionTaskResponse,
-  // `claim.TaskResponse` carrying `holds`, the takes held behind the caller's turn (contract 205).
+  // `claim.TaskResponse` carrying `holds`, the takes held behind the caller's turn (contract 206).
   "task-holds.json": LegionTaskResponse,
   "take-accepted.json": LegionTakeResponse,
   "take-refused.json": LegionTakeResponse,
@@ -2281,7 +2281,7 @@ test("the register golden and the task read carry the claim's value and its fini
 });
 
 // A caller whose turn holds the take of another claim of its issue is told of it on its task read
-// (contract 205): `holds`, each held claim's role and its task's number, written by the Go side
+// (contract 206): `holds`, each held claim's role and its task's number, written by the Go side
 // beside the caller's own value. The key is absent where nothing is held, so the read without it
 // parses to no holds, and a held take names a role and a task.
 test("the task read names the takes held behind the caller's turn", () => {

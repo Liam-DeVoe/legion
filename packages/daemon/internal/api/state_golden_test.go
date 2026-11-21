@@ -1432,7 +1432,7 @@ func TestTaskResponseGolden(t *testing.T) {
 	golden(t, "task.json", claim.TaskResponse{Finished: 4})
 }
 
-// What `claims/task` answers a caller at contract 205 or later whose turn holds the take of
+// What `claims/task` answers a caller at contract 206 or later whose turn holds the take of
 // another claim of its issue: its own value and finished number beside `holds`, each held take's
 // role and its task's number. task.json above carries no `holds`, since the key is written only
 // where a take is held.
