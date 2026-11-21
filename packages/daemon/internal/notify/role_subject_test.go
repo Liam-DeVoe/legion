@@ -25,25 +25,43 @@ const notifyImportPath = "github.com/sjawhar/legion/daemon/internal/notify"
 // subjectformsImportPath is Envoy's public door onto its subject builders and readers.
 const subjectformsImportPath = "github.com/sjawhar/envoy/subjectforms"
 
+// roleLaneStem is what every role lane's name begins with: the prefix without its last dot, so a
+// name joined from the prefix's words is read as the prefix it spells.
+var roleLaneStem = strings.TrimSuffix(RoleTopicPrefix, ".")
+
+// unknownText stands, in the text the census reads a name as, for each part only a run would know.
+const unknownText = "\x00"
+
 // Every role topic the daemon publishes names its project: it is RoleTopic's, which is the role's
 // lane under the project its own name says (subjectforms.RoleSubject of subjectforms.RoleProject),
-// never the bare old form, the prefix and the role alone. A Legion role token's project is the one
-// Envoy's contracts define, so a deployment whose Legion project is not its Dispatch key cannot
-// split a role's topic from its claim.
+// never the bare old form, the prefix and the role alone, and never a lane under a project chosen
+// anywhere else. A Legion role token's project is the one Envoy's contracts define, so a
+// deployment whose Legion project is not its Dispatch key cannot split a role's topic from its
+// claim.
 //
 // The census reads every non-test Go file of the daemon module and refuses each place that builds
-// a role topic by hand: a use of RoleTopicPrefix that is neither a reader (an argument of
-// strings.CutPrefix, HasPrefix or TrimPrefix) nor a subscription (a concatenation that ends in the
-// wildcard ">"), and every string literal that begins a role lane. That covers publishToRole, the
-// executors that publish to a role (deliverNotice, roleMessage, hookPrompt, updateAsk, and
-// deliverHeld for mergeQueueRemoval and mergeForwardMessage), the notice re-hold's topic, the
-// addressing line a launch is told and the reviewer's topic a review-stuck notice names.
+// a role topic by hand, not by RoleTopic:
+//   - a use of subjectforms.RoleSubject anywhere but in RoleTopic's own body, since any other use
+//     picks the project itself and can name one the role's claim is not keyed by;
+//   - a name that begins a role lane, read as far as its source spells it out: a string literal,
+//     the prefix, and a concatenation, a strings.Join or a fmt formatting of those, so the prefix
+//     joined from its words is read as the prefix. A use of the prefix as a reader (an argument of
+//     strings.CutPrefix, HasPrefix or TrimPrefix), a subscription (a name that ends in the
+//     wildcard ">") and notify's own declaration of RoleTopicPrefix build no topic.
 //
-// Its control is in the same run: the census applied to a source that builds the bare role topic
-// the way every executor did before this rule must name it, and must leave a reader and a
-// subscription alone. Negative control, run when this was written: put deliverNotice's publish
-// back on notify.RoleTopicPrefix+string(architect); the census fails naming outbox.go and that
-// expression.
+// That covers publishToRole, the executors that publish to a role (deliverNotice, roleMessage,
+// hookPrompt, updateAsk, and deliverHeld for mergeQueueRemoval and mergeForwardMessage), the
+// notice re-hold's topic, the addressing line a launch is told and the reviewer's topic a
+// review-stuck notice names. A name put together across statements, or through a variable, is
+// beyond what the census reads; the executors' own tests compare each topic with RoleTopic's.
+//
+// Its control is in the same run: the census applied to sources that build a role topic by hand
+// in each of those ways must name each one, and must leave a reader, a subscription, a join that
+// begins no role lane and RoleTopic's own body alone. Negative controls, run when this was written,
+// each failing naming its file and expression: deliverNotice's publish put back on
+// notify.RoleTopicPrefix+string(architect); publishToRole's on
+// strings.Join([]string{"notifications", "role", bare}, "."); and roleMessage's on
+// subjectforms.RoleSubject(r.dispatchProject, payload.Role), a lane under the wrong project.
 func TestEveryRoleTopicTheDaemonPublishesNamesItsProject(t *testing.T) {
 	t.Run("the topic names the role's own project", func(t *testing.T) {
 		for _, tc := range []struct{ role, want, project string }{
@@ -68,7 +86,7 @@ func TestEveryRoleTopicTheDaemonPublishesNamesItsProject(t *testing.T) {
 		}
 	})
 
-	t.Run("no file builds a bare role topic", func(t *testing.T) {
+	t.Run("no file builds a role topic by hand", func(t *testing.T) {
 		var findings []string
 		files, roleTopicCalls := 0, map[string]int{}
 		err := filepath.WalkDir(daemonModuleRoot, func(path string, entry fs.DirEntry, err error) error {
@@ -95,7 +113,7 @@ func TestEveryRoleTopicTheDaemonPublishesNamesItsProject(t *testing.T) {
 				return err
 			}
 			census := roleTopicCensus(fset, file, filepath.ToSlash(rel))
-			findings = append(findings, census.bare...)
+			findings = append(findings, census.byHand...)
 			roleTopicCalls[filepath.ToSlash(rel)] += census.roleTopicCalls
 			return nil
 		})
@@ -103,7 +121,7 @@ func TestEveryRoleTopicTheDaemonPublishesNamesItsProject(t *testing.T) {
 			t.Fatalf("read the daemon module's sources: %v", err)
 		}
 		if len(findings) != 0 {
-			t.Errorf("a role topic is built bare, with no project, in %d places; build it with notify.RoleTopic:\n%s", len(findings), strings.Join(findings, "\n"))
+			t.Errorf("a role topic is built by hand, not by notify.RoleTopic, in %d places; build it with notify.RoleTopic:\n%s", len(findings), strings.Join(findings, "\n"))
 		}
 		// A census that read nothing, or could not see the executors' own calls, has not passed: the
 		// files that publish to a role must each show RoleTopic, or the walk is blind.
@@ -114,13 +132,21 @@ func TestEveryRoleTopicTheDaemonPublishesNamesItsProject(t *testing.T) {
 		}
 	})
 
-	t.Run("control: the census names a bare role topic and leaves readers alone", func(t *testing.T) {
-		const source = `package daemon
+	t.Run("control: the census names each role topic built by hand and leaves readers alone", func(t *testing.T) {
+		for _, control := range []struct {
+			path, source   string
+			want           []string
+			roleTopicCalls int
+		}{
+			{
+				path: "control.go",
+				source: `package daemon
 
 import (
 	"fmt"
 	"strings"
 
+	"github.com/sjawhar/envoy/subjectforms"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 )
 
@@ -130,60 +156,104 @@ func (r *outbox) deliver(ctx context.Context, architect claim.Token, topic strin
 	if _, ok := strings.CutPrefix(topic, notify.RoleTopicPrefix); ok {
 		return nil
 	}
+	r.log.Info("deliver", "role", architect, "lane", strings.Join([]string{"notifications", "agent", "s"}, "."))
 	_ = fmt.Sprintf("%s%s", notify.RoleTopicPrefix, architect)
 	_ = r.publish(ctx, "notifications.role.merge-queue", "m", nil, "k")
+	_ = r.publish(ctx, strings.Join([]string{"notifications", "role", string(architect)}, "."), "m", nil, "k")
+	_ = r.publish(ctx, "notifications."+"role."+string(architect), "m", nil, "k")
+	_ = r.publish(ctx, fmt.Sprintf("%s.%s.%s", "notifications", "role", architect), "m", nil, "k")
+	_ = r.publish(ctx, subjectforms.RoleSubject(r.dispatchProject, string(architect)), "m", nil, "k")
 	_ = r.publish(ctx, notify.RoleTopic(string(architect)), "m", nil, "k")
 	return r.publish(ctx, notify.RoleTopicPrefix+string(architect), "m", nil, "k")
 }
-`
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, "control.go", source, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse the control's source: %v", err)
-		}
-		census := roleTopicCensus(fset, file, "control.go")
-		want := []string{
-			`control.go:16: fmt.Sprintf("%s%s", notify.RoleTopicPrefix, architect)`,
-			`control.go:17: "notifications.role.merge-queue"`,
-			`control.go:19: notify.RoleTopicPrefix + string(architect)`,
-		}
-		if !slices.Equal(census.bare, want) || census.roleTopicCalls != 1 {
-			t.Fatalf("the census of the control found %q and %d RoleTopic calls, want %q and 1", census.bare, census.roleTopicCalls, want)
+`,
+				want: []string{
+					`control.go:18: fmt.Sprintf("%s%s", notify.RoleTopicPrefix, architect)`,
+					`control.go:19: "notifications.role.merge-queue"`,
+					`control.go:20: strings.Join([]string{…}, ".")`,
+					`control.go:21: "notifications." + "role." + string(architect)`,
+					`control.go:22: fmt.Sprintf("%s.%s.%s", "notifications", "role", architect)`,
+					`control.go:23: subjectforms.RoleSubject(r.dispatchProject, string(architect))`,
+					`control.go:25: notify.RoleTopicPrefix + string(architect)`,
+				},
+				roleTopicCalls: 1,
+			},
+			{
+				// In notify itself RoleTopic's own body is the one place the builder is called.
+				path: "notify.go",
+				source: `package notify
+
+import "github.com/sjawhar/envoy/subjectforms"
+
+const RoleTopicPrefix = subjectforms.RoleTopicPrefix
+
+func RoleTopic(role string) string {
+	return subjectforms.RoleSubject(subjectforms.RoleProject(role), role)
+}
+
+func architectTopic(project, role string) string {
+	return subjectforms.RoleSubject(project, role)
+}
+
+func controllerTopic(role string) string {
+	return RoleTopicPrefix + role
+}
+`,
+				want: []string{
+					`notify.go:12: subjectforms.RoleSubject(project, role)`,
+					`notify.go:16: RoleTopicPrefix + role`,
+				},
+			},
+		} {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, control.path, control.source, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatalf("parse the control %s: %v", control.path, err)
+			}
+			census := roleTopicCensus(fset, file, control.path)
+			if !slices.Equal(census.byHand, control.want) || census.roleTopicCalls != control.roleTopicCalls {
+				t.Errorf("the census of the control %s found %q and %d RoleTopic calls, want %q and %d",
+					control.path, census.byHand, census.roleTopicCalls, control.want, control.roleTopicCalls)
+			}
 		}
 	})
 }
 
-// roleTopicReading is what the census reads of one file: each place that builds a role topic
-// bare, as "<path>:<line>: <expression>", and how many times the file calls RoleTopic.
+// roleTopicReading is what the census reads of one file: each place that builds a role topic by
+// hand, as "<path>:<line>: <expression>", and how many times the file calls RoleTopic.
 type roleTopicReading struct {
-	bare           []string
+	byHand         []string
 	roleTopicCalls int
 }
 
-// roleTopicCensus reads one parsed file for the role topics it builds (the test above says what
-// it refuses), path naming the file in what it reports.
+// roleTopicCensus reads one parsed file for the role topics it builds by hand (the test above says
+// what it refuses), path naming the file in what it reports.
 func roleTopicCensus(fset *token.FileSet, file *ast.File, path string) roleTopicReading {
 	notifyName, subjectformsName := importName(file, notifyImportPath), importName(file, subjectformsImportPath)
 	inNotify := file.Name.Name == "notify"
 	// stack holds the ancestors of the node the inspection is at.
 	var stack []ast.Node
-	// isPrefix is whether expr names the role lanes' prefix: notify's, or subjectforms' own. An
-	// identifier that is a selector's part (subjectforms.RoleTopicPrefix's last) is read with its
-	// selector, never on its own.
-	isPrefix := func(expr ast.Expr) bool {
+	// namesPrefix is whether expr names the role lanes' prefix: notify's, or subjectforms' own.
+	namesPrefix := func(expr ast.Expr) bool {
 		switch e := expr.(type) {
 		case *ast.Ident:
-			if len(stack) > 0 {
-				if _, partOfSelector := stack[len(stack)-1].(*ast.SelectorExpr); partOfSelector {
-					return false
-				}
-			}
 			return inNotify && e.Name == "RoleTopicPrefix"
 		case *ast.SelectorExpr:
 			x, ok := e.X.(*ast.Ident)
 			return ok && e.Sel.Name == "RoleTopicPrefix" && ((notifyName != "" && x.Name == notifyName) || (subjectformsName != "" && x.Name == subjectformsName))
 		}
 		return false
+	}
+	// isPrefix is namesPrefix for the node the inspection is at. An identifier that is a
+	// selector's part (subjectforms.RoleTopicPrefix's last) is read with its selector, never on
+	// its own.
+	isPrefix := func(expr ast.Expr) bool {
+		if _, isIdent := expr.(*ast.Ident); isIdent && len(stack) > 0 {
+			if _, partOfSelector := stack[len(stack)-1].(*ast.SelectorExpr); partOfSelector {
+				return false
+			}
+		}
+		return namesPrefix(expr)
 	}
 	isRoleTopic := func(call *ast.CallExpr) bool {
 		switch fun := call.Fun.(type) {
@@ -195,8 +265,68 @@ func roleTopicCensus(fset *token.FileSet, file *ast.File, path string) roleTopic
 		}
 		return false
 	}
+	isRoleSubject := func(expr ast.Expr) bool {
+		selector, ok := expr.(*ast.SelectorExpr)
+		if !ok || subjectformsName == "" {
+			return false
+		}
+		x, ok := selector.X.(*ast.Ident)
+		return ok && x.Name == subjectformsName && selector.Sel.Name == "RoleSubject"
+	}
+	// inRoleTopic is whether the inspection is inside notify's own RoleTopic, the one place the
+	// builder is called.
+	inRoleTopic := func() bool {
+		return inNotify && slices.ContainsFunc(stack, func(n ast.Node) bool {
+			decl, ok := n.(*ast.FuncDecl)
+			return ok && decl.Recv == nil && decl.Name.Name == "RoleTopic"
+		})
+	}
+	// text is what expr builds as far as its source spells it out, unknownText standing for each
+	// part only a run would know: a string literal, the prefix, and a concatenation, a
+	// strings.Join of a listed slice or a fmt.Sprintf or Errorf of a literal format, of those.
+	var text func(ast.Expr) string
+	text = func(expr ast.Expr) string {
+		switch e := expr.(type) {
+		case *ast.BasicLit:
+			if value, err := strconv.Unquote(e.Value); err == nil && e.Kind == token.STRING {
+				return value
+			}
+		case *ast.ParenExpr:
+			return text(e.X)
+		case *ast.BinaryExpr:
+			if e.Op == token.ADD {
+				return text(e.X) + text(e.Y)
+			}
+		case *ast.CallExpr:
+			if parts, ok := joinedParts(e); ok {
+				read := make([]string, len(parts.Elts))
+				for i, part := range parts.Elts {
+					read[i] = text(part)
+				}
+				return strings.Join(read, text(e.Args[1]))
+			}
+			if (isCall(e, "fmt", "Sprintf") || isCall(e, "fmt", "Errorf")) && len(e.Args) > 0 {
+				args := make([]string, len(e.Args)-1)
+				for i, arg := range e.Args[1:] {
+					args[i] = text(arg)
+				}
+				return formatted(text(e.Args[0]), args)
+			}
+		}
+		if namesPrefix(expr) {
+			return RoleTopicPrefix
+		}
+		return unknownText
+	}
 
 	var reading roleTopicReading
+	reported := map[ast.Expr]bool{}
+	report := func(built ast.Expr) {
+		if !reported[built] {
+			reported[built] = true
+			reading.byHand = append(reading.byHand, path+":"+strconv.Itoa(fset.Position(built.Pos()).Line)+": "+types.ExprString(built))
+		}
+	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		if n == nil {
 			stack = stack[:len(stack)-1]
@@ -206,9 +336,24 @@ func roleTopicCensus(fset *token.FileSet, file *ast.File, path string) roleTopic
 			reading.roleTopicCalls++
 		}
 		expr, isExpr := n.(ast.Expr)
-		if isExpr && (isPrefix(expr) || isRoleLane(expr)) && !isPrefixDeclaration(stack, inNotify) && !isReader(stack, expr) {
-			if built, subscription := builtFrom(stack, expr); !subscription {
-				reading.bare = append(reading.bare, path+":"+strconv.Itoa(fset.Position(expr.Pos()).Line)+": "+types.ExprString(built))
+		switch {
+		case !isExpr:
+		case isRoleSubject(expr):
+			if !inRoleTopic() {
+				built := expr
+				if call, ok := stack[len(stack)-1].(*ast.CallExpr); ok && call.Fun == expr {
+					built = call
+				}
+				report(built)
+			}
+		case isPrefix(expr) || isStringLiteral(expr):
+			if isPrefixDeclaration(stack, inNotify) || isReader(stack, expr) {
+				break
+			}
+			built := builtFrom(stack, expr)
+			name := text(built)
+			if (strings.HasPrefix(text(expr), roleLaneStem) || strings.HasPrefix(name, roleLaneStem)) && !strings.HasSuffix(name, ">") {
+				report(built)
 			}
 		}
 		stack = append(stack, n)
@@ -231,14 +376,81 @@ func importName(file *ast.File, path string) string {
 	return ""
 }
 
-// isRoleLane is whether expr is a string literal that begins a role lane's name.
-func isRoleLane(expr ast.Expr) bool {
+// isStringLiteral is whether expr is a string literal.
+func isStringLiteral(expr ast.Expr) bool {
 	literal, ok := expr.(*ast.BasicLit)
-	if !ok || literal.Kind != token.STRING {
+	return ok && literal.Kind == token.STRING
+}
+
+// isCall is whether call calls the function name of the package its source names pkg.
+func isCall(call *ast.CallExpr, pkg, name string) bool {
+	fun, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
 		return false
 	}
-	value, err := strconv.Unquote(literal.Value)
-	return err == nil && strings.HasPrefix(value, RoleTopicPrefix)
+	x, ok := fun.X.(*ast.Ident)
+	return ok && x.Name == pkg && fun.Sel.Name == name
+}
+
+// isFmtCall is whether call calls a function of package fmt.
+func isFmtCall(call *ast.CallExpr) bool {
+	fun, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	x, ok := fun.X.(*ast.Ident)
+	return ok && x.Name == "fmt"
+}
+
+// joinedParts is the listed slice call joins, when call is strings.Join of one and a separator.
+func joinedParts(call *ast.CallExpr) (*ast.CompositeLit, bool) {
+	if !isCall(call, "strings", "Join") || len(call.Args) != 2 {
+		return nil, false
+	}
+	parts, ok := call.Args[0].(*ast.CompositeLit)
+	return parts, ok
+}
+
+// formatted is format with each verb replaced by its argument's text: a %s or %v by the text, a
+// %q by the text quoted, a %% by a percent sign, and any other verb, or one past the arguments, by
+// unknownText. A verb that takes its width, precision or argument from the arguments makes the
+// rest of the text unknown, since which argument each later verb takes is then a run's to know.
+func formatted(format string, args []string) string {
+	if strings.Contains(format, unknownText) {
+		return unknownText
+	}
+	var out strings.Builder
+	next := 0
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' {
+			out.WriteByte(format[i])
+			continue
+		}
+		j := i + 1
+		for j < len(format) && strings.IndexByte("+-# 0123456789.", format[j]) >= 0 {
+			j++
+		}
+		if j == len(format) || format[j] == '*' || format[j] == '[' {
+			out.WriteString(unknownText)
+			return out.String()
+		}
+		i = j
+		switch verb := format[j]; {
+		case verb == '%':
+			out.WriteByte('%')
+			continue
+		case next == len(args):
+			out.WriteString(unknownText)
+		case verb == 's' || verb == 'v':
+			out.WriteString(args[next])
+		case verb == 'q':
+			out.WriteString(`"` + args[next] + `"`)
+		default:
+			out.WriteString(unknownText)
+		}
+		next++
+	}
+	return out.String()
 }
 
 // isPrefixDeclaration is whether the expression on top of stack is the value notify's own
@@ -275,50 +487,40 @@ func isReader(stack []ast.Node, expr ast.Expr) bool {
 	return false
 }
 
-// builtFrom is the whole expression expr builds a name in, stack holding its ancestors: the
-// concatenation it is part of, else the fmt call that formats it, else expr itself; and whether
-// that concatenation ends in the wildcard ">", which names a subscription, not a topic.
-func builtFrom(stack []ast.Node, expr ast.Expr) (ast.Expr, bool) {
+// builtFrom is the whole expression expr builds a name in, stack holding its ancestors: it climbs
+// from expr through each concatenation, parenthesis, fmt call and strings.Join of a listed slice
+// that holds it, and stops at anything else, which takes the name as built.
+func builtFrom(stack []ast.Node, expr ast.Expr) ast.Expr {
 	built := expr
 	for i := len(stack) - 1; i >= 0; i-- {
-		parent, ok := stack[i].(ast.Expr)
-		if !ok {
-			break
-		}
-		if binary, isBinary := parent.(*ast.BinaryExpr); isBinary && binary.Op == token.ADD {
-			built = binary
-			continue
-		}
-		if _, isParen := parent.(*ast.ParenExpr); isParen {
+		switch parent := stack[i].(type) {
+		case *ast.BinaryExpr:
+			if parent.Op != token.ADD {
+				return built
+			}
 			built = parent
-			continue
-		}
-		if call, isCall := parent.(*ast.CallExpr); isCall && built == expr {
-			if fun, isSelector := call.Fun.(*ast.SelectorExpr); isSelector {
-				if x, isIdent := fun.X.(*ast.Ident); isIdent && x.Name == "fmt" {
-					return call, false
-				}
+		case *ast.ParenExpr:
+			built = parent
+		case *ast.CompositeLit:
+			// A part of the slice strings.Join joins builds the join, the call just above.
+			if i == 0 {
+				return built
 			}
-		}
-		break
-	}
-	if binary, ok := built.(*ast.BinaryExpr); ok {
-		last := binary.Y
-		for {
-			if paren, isParen := last.(*ast.ParenExpr); isParen {
-				last = paren.X
-				continue
+			call, overCall := stack[i-1].(*ast.CallExpr)
+			if !overCall {
+				return built
 			}
-			if inner, isBinary := last.(*ast.BinaryExpr); isBinary && inner.Op == token.ADD {
-				last = inner.Y
-				continue
+			if parts, joined := joinedParts(call); !joined || parts != parent {
+				return built
 			}
-			break
-		}
-		if literal, isLiteral := last.(*ast.BasicLit); isLiteral && literal.Kind == token.STRING {
-			value, err := strconv.Unquote(literal.Value)
-			return built, err == nil && strings.HasSuffix(value, ">")
+		case *ast.CallExpr:
+			if _, joined := joinedParts(parent); !joined && !isFmtCall(parent) {
+				return built
+			}
+			built = parent
+		default:
+			return built
 		}
 	}
-	return built, false
+	return built
 }
