@@ -1090,7 +1090,8 @@ func (d *chainDaemon) pass(answer func(key, label, value string)) {
 		t.Fatalf("read the claims of %s: %v", d.project, err)
 	}
 	project := func(tx pgx.Tx) (api.State, error) {
-		return projection.Project(ctx, tx, d.records, d.project, config.DesignGateRootIssues.Steps(), nil, claims, nil, nil, time.Now().UTC())
+		return projection.Project(ctx, projection.Inputs{Tx: tx, Store: d.records, Project: d.project,
+			Steps: config.DesignGateRootIssues.Steps(), Claims: claims, Now: time.Now().UTC()})
 	}
 	recorded := func(tx pgx.Tx) map[string]record.Issue {
 		issues, err := d.records.Issues(ctx, tx)

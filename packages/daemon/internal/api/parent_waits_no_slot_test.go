@@ -15,10 +15,13 @@ import (
 // (dispatch://INFRA-3320 R13, and the state read of its check
 // dispatch://INFRA-3320/artifact/verification-md#b-k13): a plugin of the contract before
 // gateBasisContract, the contract that added awaiting_children, knows neither of its words, so a
-// caller whose pod records that contract is served the parent at phase `admitted`, a phase that
-// names no worker's, and its held row under `children_first`, the word a started parent's wait
-// took over, with the children that hold it beside. A pod at the contract, and a caller in no pod
-// — the operator's `legion state` — read the new words. At every contract the parent stands in
+// caller below that contract — one that states a contract below it, or one that states none from
+// a pod whose claims record a contract below shapedAnswersContract, the newest a pod reading
+// places (podContracts) — is served the parent at phase `admitted`, a phase that names no
+// worker's, and its held row under `children_first`, the word a started parent's wait took over,
+// with the children that hold it beside. A caller that states the contract, a pod whose claims
+// record it, which no pod reading counts, and a caller in no pod — the operator's `legion state`
+// — read the new words. At every contract the parent stands in
 // `admission.blocked` naming its open child and in neither `admission.active` nor
 // `admission.waiting`. The state is the one the projection writes for a parent the admission pass
 // moved into the phase while another tree's issue holds the cap's one slot
@@ -46,18 +49,23 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		name   string
 		remote string
 		claims []supervise.Claim
+		stated int
 		phase  phase.Phase
 		held   record.HeldReason
 	}{
-		{name: "a pod at the previous contract", remote: statePodAddr + ":41000", claims: podClaims(gateBasisContract - 1),
+		{name: "a caller stating the previous contract", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: gateBasisContract - 1,
 			phase: phase.Admitted, held: record.HeldChildrenFirst},
+		{name: "a pod at the newest contract a pod reading places", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1),
+			phase: phase.Admitted, held: record.HeldChildrenFirst},
+		{name: "a caller stating the contract that added the phase", remote: "192.0.2.1:41000", claims: podClaims(shapedAnswersContract - 1), stated: gateBasisContract,
+			phase: phase.AwaitingChildren, held: record.HeldAwaitingChildren},
 		{name: "a pod at the contract that added the phase", remote: statePodAddr + ":41000", claims: podClaims(gateBasisContract),
 			phase: phase.AwaitingChildren, held: record.HeldAwaitingChildren},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(gateBasisContract - 1),
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(shapedAnswersContract - 1),
 			phase: phase.AwaitingChildren, held: record.HeldAwaitingChildren},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := stateFrom(t, state, tc.remote, tc.claims)
+			body := stateStating(t, stateServer(t, state, tc.claims), tc.remote, tc.stated)
 			var served struct {
 				Issues map[string]struct {
 					Phase  phase.Phase `json:"phase"`

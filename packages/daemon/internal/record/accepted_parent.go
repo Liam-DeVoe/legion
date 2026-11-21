@@ -11,9 +11,9 @@ import (
 // through key (Chains.Under), and nothing at all when none is. It is the one set the two
 // acceptance rules read: an architect's sign-off of a reviewed head (signOff) and its close of an
 // issue that never started a phase (closeRoot) are both refused while it is not empty, and an
-// issue whose pull request merged waits in merging until it empties (closeMerged). A parent's work
-// is proved by a head that carries its children's merges, so a parent that is accepted or closed
-// first would merge work its own head does not carry.
+// issue whose pull request merged waits in merging until it empties (closeMerged). A parent is
+// accepted once its checks pass on a base commit that carries its children's merges, so a parent
+// that is accepted or closed first would merge with no check of it run on its children's work.
 //
 // One kind of issue beneath is left out: one the daemon is itself holding at phase.Admitted,
 // because an issue above it has already been accepted (HeldUnderAccepted). Without that exclusion

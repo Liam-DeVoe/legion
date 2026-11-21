@@ -40,7 +40,7 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 				issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "Continue root. Issue: LEGION-208. Phase: implementing.",
 					Reason: "the admission pass stopped the implementer's implementing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)",
 					Since:  waited}
-				issue.ForwardMergeOwed, issue.ChildrenWaitedAt = true, &waited
+				issue.ChildrenWaitedAt = &waited
 			}
 			putOutboxIssue(t, pool, records, issue)
 			st := outboxTreeStore(t, pool, issue.Key)

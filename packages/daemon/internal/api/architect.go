@@ -164,7 +164,7 @@ func (s *server) architectGrant(w http.ResponseWriter, r *http.Request, id strin
 		return credential.Grant{}, false
 	}
 	if grant.Controller || grant.Role != claim.RoleArchitect {
-		writeFailure(w, http.StatusForbidden, "ARCHITECT_REQUIRED", "architect grant required")
+		s.writeFailure(w, r, http.StatusForbidden, "ARCHITECT_REQUIRED", "architect grant required")
 		return credential.Grant{}, false
 	}
 	return grant, true
@@ -176,7 +176,7 @@ func (s *server) phaseWorkerGrant(w http.ResponseWriter, r *http.Request, id str
 		return credential.Grant{}, false
 	}
 	if grant.Controller || !isPhaseWorker(grant.Role) {
-		writeFailure(w, http.StatusForbidden, "PHASE_WORKER_REQUIRED", "phase worker grant required")
+		s.writeFailure(w, r, http.StatusForbidden, "PHASE_WORKER_REQUIRED", "phase worker grant required")
 		return credential.Grant{}, false
 	}
 	return grant, true
@@ -233,8 +233,9 @@ func (s *server) chainsOf(ctx context.Context, keys []string) (*record.Chains, e
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
-// Both routes say one sentence, because they refuse for one reason: a parent's head proves its
-// children's merged work, so nothing enters the workflow beneath a head already accepted.
+// Both routes say one sentence, because they refuse for one reason: the ancestor was accepted on
+// checks of its children's work as it stood, so nothing enters the workflow beneath a head
+// already accepted.
 // operation is what the caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
 	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
@@ -250,15 +251,15 @@ func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grant
 	}
 	recorded, err := s.recordedIssue(r.Context(), issue)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return credential.Grant{}, record.Issue{}, false
 	}
 	if recorded == nil {
-		writeFailure(w, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
+		s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return credential.Grant{}, record.Issue{}, false
 	}
 	if recorded.Tree != grant.Tree {
-		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
+		s.writeFailure(w, r, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
 		return credential.Grant{}, record.Issue{}, false
 	}
 	return grant, *recorded, true
@@ -272,24 +273,24 @@ func requestFactID(route string) string {
 
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
 	if s.pool == nil {
-		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
 	}
 	result, err := s.apply(r.Context(), "api", eventID, fact)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
 		return
 	}
 	if result.Refusal != nil {
-		writeFailure(w, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
 		return
 	}
-	writeJSON(w, http.StatusOK, response)
+	s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, response)
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	var req GateRegisterRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID},
 		field{"issue", req.Issue},
 		field{"artifactId", req.ArtifactID},
@@ -297,18 +298,18 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	if !validUUID(req.ArtifactID) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ARTIFACT_ID", "artifactId must be a UUID")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ARTIFACT_ID", "artifactId must be a UUID")
 		return
 	}
 	if req.Version < 1 {
-		writeFailure(w, http.StatusBadRequest, "INVALID_VERSION", "version must be positive")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_VERSION", "version must be positive")
 		return
 	}
-	if refuseBasisInput(w, req) {
+	if s.refuseBasisInput(w, r, req) {
 		return
 	}
 	artifactID := strings.ToLower(req.ArtifactID)
@@ -318,7 +319,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.rootArchitectOf(w, r, grant, recorded, gateRoute) {
 		return
 	}
-	step, ok := s.registeredStep(w, req.Step)
+	step, ok := s.registeredStep(w, r, req.Step)
 	if !ok {
 		return
 	}
@@ -339,14 +340,14 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// that gates no step asks nobody, so nothing turns on which document its one record names,
 	// and it takes whatever the architect registers, as it always has under `gates.design: off`.
 	if len(s.steps) > 0 && !stepDocument(step, approval) {
-		writeFailure(w, http.StatusConflict, "GATE_STEP_DOCUMENT_MISMATCH", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "GATE_STEP_DOCUMENT_MISMATCH", fmt.Sprintf(
 			"%s is not the %s step's document of %s; that step records the issue's %s", artifactID, step, req.Issue, step.Document()))
 		return
 	}
 	// The version registered is the caller's; only Dispatch's read says the document has it. A
 	// version Dispatch does not show would record a gate no person's review can open.
 	if req.Version > approval.LatestVersion {
-		writeFailure(w, http.StatusConflict, "VERSION_NOT_IN_DISPATCH", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "VERSION_NOT_IN_DISPATCH", fmt.Sprintf(
 			"Dispatch shows %s at version %d, not %d; register the version you requested approval of", artifactID, approval.LatestVersion, req.Version))
 		return
 	}
@@ -430,7 +431,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 // RECORD_UNAVAILABLE and records nothing.
 func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue string, step record.DesignStep) (int, bool) {
 	if s.pool == nil || s.records == nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the design gate of "+issue)
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the design gate of "+issue)
 		return 0, false
 	}
 	var moves int
@@ -439,7 +440,7 @@ func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue st
 		moves = gates[step].BasisMoves
 		return err
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the design gate of "+issue)
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the design gate of "+issue)
 		return 0, false
 	}
 	return moves, true
@@ -454,18 +455,18 @@ func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue st
 // which is every call a one-step deployment's architect makes. A deployment of several steps
 // needs the call to say which one it registers, since the document alone would leave the daemon
 // guessing.
-func (s *server) registeredStep(w http.ResponseWriter, named record.DesignStep) (record.DesignStep, bool) {
+func (s *server) registeredStep(w http.ResponseWriter, r *http.Request, named record.DesignStep) (record.DesignStep, bool) {
 	switch {
 	case len(s.steps) == 0:
 		return record.DesignStepSpec, true
 	case named == "" && len(s.steps) == 1:
 		return s.steps[0], true
 	case named == "":
-		writeFailure(w, http.StatusBadRequest, "GATE_STEP_REQUIRED", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadRequest, "GATE_STEP_REQUIRED", fmt.Sprintf(
 			"this deployment gates the design-gate steps %s; name the step this document is for", stepNames(s.steps)))
 		return "", false
 	case !slices.Contains(s.steps, named):
-		writeFailure(w, http.StatusConflict, "GATE_STEP_NOT_CONFIGURED", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "GATE_STEP_NOT_CONFIGURED", fmt.Sprintf(
 			"this deployment does not gate the design-gate step %s; it gates %s", named, stepNames(s.steps)))
 		return "", false
 	}
@@ -507,12 +508,12 @@ func stepRecords(step record.DesignStep, primary bool, role, slug string) bool {
 // retries.
 func (s *server) gateIssue(w http.ResponseWriter, r *http.Request, issue string) (dispatch.Issue, bool) {
 	if s.dispatch == nil {
-		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return dispatch.Issue{}, false
 	}
 	current, err := s.dispatch.GetIssue(r.Context(), issue)
 	if err != nil {
-		refuseFailedRead(w, &readFailure{what: issue, err: err})
+		s.refuseFailedRead(w, r, &readFailure{what: issue, err: err})
 		return dispatch.Issue{}, false
 	}
 	return current, true
@@ -523,16 +524,16 @@ func (s *server) gateIssue(w http.ResponseWriter, r *http.Request, issue string)
 // records nothing, so the architect's register_gate retries. It returns the approval it read.
 func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifactID, issue string) (dispatch.Approval, bool) {
 	if s.dispatch == nil {
-		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return dispatch.Approval{}, false
 	}
 	approval, err := s.dispatch.Approval(r.Context(), artifactID)
 	switch {
 	case dispatch.Missing(err), err == nil && approval.IssueKey != issue:
-		writeFailure(w, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
+		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return dispatch.Approval{}, false
 	case err != nil:
-		refuseFailedRead(w, &readFailure{what: artifactID, err: err})
+		s.refuseFailedRead(w, r, &readFailure{what: artifactID, err: err})
 		return dispatch.Approval{}, false
 	}
 	return approval, true
@@ -577,7 +578,7 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant c
 			}
 			parent = ancestor.Parent
 		}
-		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, grant.Tree))
+		s.writeFailure(w, r, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, grant.Tree))
 		return false, false
 	}
 	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
@@ -591,7 +592,7 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant c
 			}
 		}
 		if !under {
-			notUnder(w, "release_children", key, grant)
+			s.notUnder(w, r, "release_children", key, grant)
 			return dispatch.Issue{}, false, false
 		}
 	}
@@ -601,7 +602,7 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant c
 	case "todo":
 		write = false
 	default:
-		writeFailure(w, http.StatusConflict, "ISSUE_ALREADY_RELEASED", fmt.Sprintf("%s is %s; release_children releases only a triage, backlog, or icebox child", key, child.Status))
+		s.writeFailure(w, r, http.StatusConflict, "ISSUE_ALREADY_RELEASED", fmt.Sprintf("%s is %s; release_children releases only a triage, backlog, or icebox child", key, child.Status))
 		return dispatch.Issue{}, false, false
 	}
 	if byRoot {
@@ -663,7 +664,7 @@ const (
 func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, read issueReader, todoNow func(string) bool) (string, bool) {
 	recorded, err := s.recordedIssue(r.Context(), child.Key)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
 		return "", false
 	}
 	if recorded != nil {
@@ -675,20 +676,20 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant cr
 		var later *intake.RetryLater
 		switch {
 		case errors.As(err, &later):
-			writeFailure(w, http.StatusConflict, "CHILD_RELEASE_BACKOFF", fmt.Sprintf("%s: %v; retry after %s", child.Key, err, later.After))
+			s.writeFailure(w, r, http.StatusConflict, "CHILD_RELEASE_BACKOFF", fmt.Sprintf("%s: %v; retry after %s", child.Key, err, later.After))
 			return "", false
 		case err != nil:
-			writeFailure(w, http.StatusBadGateway, "REPOSITORY_READ_FAILED", fmt.Sprintf("could not read the repository of %s: %v; retry release_children", child.Key, err))
+			s.writeFailure(w, r, http.StatusBadGateway, "REPOSITORY_READ_FAILED", fmt.Sprintf("could not read the repository of %s: %v; retry release_children", child.Key, err))
 			return "", false
 		}
 		observed = prepared
 	}
 	if _, err := s.apply(r.Context(), "api", requestFactID("waves/release"), observed); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record %s", child.Key))
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record %s", child.Key))
 		return "", false
 	}
 	if recorded, err = s.recordedIssue(r.Context(), child.Key); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
 		return "", false
 	}
 	if recorded != nil {
@@ -720,7 +721,7 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 		seen[key] = true
 		above, err := s.recordedIssue(r.Context(), key)
 		if err != nil {
-			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", key))
+			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", key))
 			return "", false, true
 		}
 		if above != nil {
@@ -806,7 +807,7 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant c
 		}
 		return s.records.Enqueue(scoped, tx, row)
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
+		s.writeFailure(w, r, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
 	committed()
@@ -836,7 +837,7 @@ func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, 
 	if err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
 		return s.records.DeleteReleaseRetry(r.Context(), tx, issue)
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not clear the release retry of %s", issue))
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not clear the release retry of %s", issue))
 		return false
 	}
 	return true
@@ -890,7 +891,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 		}
 		return s.records.PutReleaseRetry(scoped, tx, retry)
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RETRY_UNAVAILABLE", fmt.Sprintf("could not record the release retry of %s", child.Key))
+		s.writeFailure(w, r, http.StatusInternalServerError, "RETRY_UNAVAILABLE", fmt.Sprintf("could not record the release retry of %s", child.Key))
 		return false
 	}
 	committed()
@@ -899,14 +900,14 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 		if told {
 			notified = fmt.Sprintf("the architect of %s was notified", grant.Issue)
 		}
-		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; %s", child.Key, parent, retry.Attempts, notified))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; %s", child.Key, parent, retry.Attempts, notified))
 		return false
 	}
 	if backoff {
-		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_BACKOFF", fmt.Sprintf("%s is waiting for %s's release; retry after %s", child.Key, parent, time.Until(retry.NextAt).Round(time.Millisecond)))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_RELEASE_BACKOFF", fmt.Sprintf("%s is waiting for %s's release; retry after %s", child.Key, parent, time.Until(retry.NextAt).Round(time.Millisecond)))
 		return false
 	}
-	writeFailure(w, http.StatusConflict, "CHILD_NOT_RECORDED", fmt.Sprintf("%s is todo but not recorded: the daemon records a child only under a recorded parent (%s) of a live tree; retry after %s", child.Key, parent, childReleaseBackoff<<(retry.Attempts-1)))
+	s.writeFailure(w, r, http.StatusConflict, "CHILD_NOT_RECORDED", fmt.Sprintf("%s is todo but not recorded: the daemon records a child only under a recorded parent (%s) of a live tree; retry after %s", child.Key, parent, childReleaseBackoff<<(retry.Attempts-1)))
 	return false
 }
 
@@ -936,7 +937,7 @@ func (s *server) cachedIssueReader() issueReader {
 		issue, err := s.dispatch.GetIssue(r.Context(), key)
 		switch {
 		case dispatch.Missing(err):
-			writeFailure(w, http.StatusNotFound, "ISSUE_NOT_FOUND", fmt.Sprintf("%s is not a Dispatch issue", key))
+			s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", fmt.Sprintf("%s is not a Dispatch issue", key))
 			return dispatch.Issue{}, false
 		case err != nil:
 			if listed == nil && listErr == nil {
@@ -948,7 +949,7 @@ func (s *server) cachedIssueReader() issueReader {
 				if listErr != nil {
 					listing = fmt.Sprintf("failed too (%v)", listErr)
 				}
-				writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed (%v), and the project listing %s; retry release_children", key, err, listing))
+				s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed (%v), and the project listing %s; retry release_children", key, err, listing))
 				return dispatch.Issue{}, false
 			}
 			s.log.Warn("api: Dispatch's detail read of an issue failed, so release_children read it from the project listing", "issue", key, "error", err)
@@ -982,7 +983,7 @@ func (s *server) listedIssues(ctx context.Context) (map[string]dispatch.IssueSum
 // yet, which its todo event records.
 func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	var req WaveReleaseRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}) {
 		return
 	}
 	grant, ok := s.architectGrant(w, r, req.GrantID)
@@ -990,7 +991,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.dispatch == nil {
-		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return
 	}
 	if req.Issues == nil {
@@ -1012,7 +1013,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	children := make([]releasedChild, 0, len(req.Issues))
 	for _, issue := range req.Issues {
 		if !claim.IsIssueKey(issue) {
-			writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issues must contain issue keys")
+			s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issues must contain issue keys")
 			return
 		}
 		child, write, ok := s.releasableChild(w, r, grant, issue, read)
@@ -1024,7 +1025,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	// The records are read before anything is written, so releaseOutcome counts a child the
 	// release started as one this request started.
 	if err := s.readReleasedBefore(r.Context(), children); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the records of the children to release")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the records of the children to release")
 		return
 	}
 	// No child enters the workflow beneath an ancestor the daemon has already accepted: that
@@ -1047,7 +1048,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		chains, err := s.chainsOf(r.Context(), keys)
 		if err != nil {
-			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the chains of the children to release")
+			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the chains of the children to release")
 			return
 		}
 		for _, child := range children {
@@ -1055,7 +1056,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			// taken as the store would keep it (storetext.Text).
 			parent := storetext.Text(intake.ObservedIssue(child.view).Parent)
 			if ancestor := record.AcceptedAncestorIn(chains, child.view.Key, parent); ancestor != "" {
-				writeFailure(w, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.view.Key, ancestor, "release it again"))
+				s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.view.Key, ancestor, "release it again"))
 				return
 			}
 		}
@@ -1150,10 +1151,10 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	started, held, err := s.releaseOutcome(r.Context(), children)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read what the released children wait on")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read what the released children wait on")
 		return
 	}
-	writeJSON(w, http.StatusOK, WaveReleaseResponse{Released: req.Issues, Started: started, Held: held})
+	s.writeAnswer(w, r, AnswerWaveRelease, http.StatusOK, WaveReleaseResponse{Released: req.Issues, Started: started, Held: held})
 }
 
 // releasedChild is one child of a release as its answer judges it: Dispatch's view of it as the
@@ -1335,7 +1336,7 @@ func (s *server) mirrorRecordedChildren(w http.ResponseWriter, r *http.Request, 
 			continue
 		}
 		if _, err := s.apply(r.Context(), "api", requestFactID("waves/read"), intake.ObservedIssue(child.view)); err != nil {
-			writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record the release's read of %s", child.view.Key))
+			s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record the release's read of %s", child.view.Key))
 			return false
 		}
 	}
@@ -1349,7 +1350,7 @@ func (s *server) mirrorRecordedChildren(w http.ResponseWriter, r *http.Request, 
 // architect's — which apply waits for the requester's stream before.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID},
 		field{"to", string(req.To)},
 		field{"reason", req.Reason},
@@ -1357,11 +1358,11 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validPhase(req.To) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_PHASE", "to is not a phase")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_PHASE", "to is not a phase")
 		return
 	}
 	if req.Issue != "" && !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -1369,7 +1370,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !grant.Controller && grant.Role == claim.RoleArchitect {
-		if !requireFailureFields(w, field{"issue", req.Issue}) {
+		if !s.requireFailureFields(w, r, field{"issue", req.Issue}) {
 			return
 		}
 		architect, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
@@ -1385,7 +1386,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Issue != "" && req.Issue != grant.Issue {
-		writeFailure(w, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
+		s.writeFailure(w, r, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
@@ -1394,7 +1395,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 	var req PhaseRetryRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID},
 		field{"issue", req.Issue},
 		field{"decision", string(req.Decision)},
@@ -1402,11 +1403,11 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	if req.Decision != intake.RetryDecision && req.Decision != intake.EscalateDecision {
-		writeFailure(w, http.StatusBadRequest, "INVALID_DECISION", "decision must be retry or escalate")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_DECISION", "decision must be retry or escalate")
 		return
 	}
 	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
@@ -1419,11 +1420,11 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	var req SignOffRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
@@ -1438,11 +1439,11 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 // as a message.
 func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	var req RootCloseRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"reason", req.Reason}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"reason", req.Reason}) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	fact := intake.CloseRoot{Issue: req.Issue, Reason: req.Reason}
@@ -1462,11 +1463,11 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 		// nobody can answer, so the refusal names the block as the cause and where the question
 		// belongs rather than asking for a shorter reason.
 		if dispatchbody.IsDecisionBlock(over) {
-			writeFailure(w, http.StatusBadRequest, "CLOSE_REASON_DECISION_BLOCK",
+			s.writeFailure(w, r, http.StatusBadRequest, "CLOSE_REASON_DECISION_BLOCK",
 				fmt.Sprintf("the reason holds a decision block, and the close posts the reason on the issue as a message, where nobody can answer one: %s; the close was not applied, so close again with a reason that states the decision rather than asking for it", over))
 			return
 		}
-		writeFailure(w, http.StatusBadRequest, "CLOSE_REASON_TOO_LONG",
+		s.writeFailure(w, r, http.StatusBadRequest, "CLOSE_REASON_TOO_LONG",
 			fmt.Sprintf("the reason makes a message Dispatch refuses: %s; shorten it", over))
 		return
 	}
@@ -1498,16 +1499,16 @@ var (
 // otherwise.
 func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, route rootRoute) bool {
 	if !claim.IsTreeRoot(recorded.Key, grant.Tree) {
-		writeFailure(w, http.StatusForbidden, route.code, fmt.Sprintf(route.forChild, grant.Tree))
+		s.writeFailure(w, r, http.StatusForbidden, route.code, fmt.Sprintf(route.forChild, grant.Tree))
 		return false
 	}
 	owns, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return false
 	}
 	if !owns {
-		writeFailure(w, http.StatusForbidden, route.code, fmt.Sprintf(route.notOwner, grant.Tree))
+		s.writeFailure(w, r, http.StatusForbidden, route.code, fmt.Sprintf(route.notOwner, grant.Tree))
 	}
 	return owns
 }
@@ -1519,11 +1520,11 @@ func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant c
 func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
 	owns, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return false
 	}
 	if !owns {
-		writeFailure(w, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s belongs to its own architect or one above it in the tree, not the architect of %s", op, recorded.Key, grant.Issue))
+		s.writeFailure(w, r, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s belongs to its own architect or one above it in the tree, not the architect of %s", op, recorded.Key, grant.Issue))
 	}
 	return owns
 }
@@ -1544,12 +1545,12 @@ func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, gran
 	if under {
 		var err error
 		if under, err = s.owns(r.Context(), grant, recorded); err != nil {
-			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 			return false
 		}
 	}
 	if !under {
-		notUnder(w, op, recorded.Key, grant)
+		s.notUnder(w, r, op, recorded.Key, grant)
 	}
 	return under
 }
@@ -1557,8 +1558,8 @@ func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, gran
 // notUnder refuses grant's sub-architect op on key, an issue of its tree that is not under the
 // grant's own issue (architectOwnsUnder, releasableChild), with architectOwns' status and code
 // (403 ISSUE_NOT_OWNED), naming op, in a message of its own.
-func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
-	writeFailure(w, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s is refused: the architect of %s takes it only on an issue under %s", op, key, grant.Issue, grant.Issue))
+func (s *server) notUnder(w http.ResponseWriter, r *http.Request, op, key string, grant credential.Grant) {
+	s.writeFailure(w, r, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s is refused: the architect of %s takes it only on an issue under %s", op, key, grant.Issue, grant.Issue))
 }
 
 // owns says whether grant's architect owns recorded, an issue of its tree: recorded is the grant's
@@ -1624,11 +1625,11 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !record.InLegionsWork(child) {
-		writeFailure(w, http.StatusConflict, "CHILD_NOT_RUNNING", fmt.Sprintf("%s is already out of the workflow; rerun_child runs it again", child.Key))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_NOT_RUNNING", fmt.Sprintf("%s is already out of the workflow; rerun_child runs it again", child.Key))
 		return
 	}
 	if written, ok := s.setDispatchStatus(w, r, child.Key, "backlog"); ok && s.applyOwnStatusWrite(w, r, written) {
-		writeJSON(w, http.StatusOK, EmptyResponse{})
+		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, EmptyResponse{})
 	}
 }
 
@@ -1650,20 +1651,20 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if record.InLegionsWork(child) {
-		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s at status %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase, child.Status))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s at status %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase, child.Status))
 		return
 	}
 	chains, err := s.chainsOf(r.Context(), []string{child.Key})
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the chain of the child to rerun")
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the chain of the child to rerun")
 		return
 	}
 	if ancestor := record.AcceptedAncestorIn(chains, child.Key, ""); ancestor != "" {
-		writeFailure(w, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.Key, ancestor, "run it again"))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.Key, ancestor, "run it again"))
 		return
 	}
 	if written, ok := s.setDispatchStatus(w, r, child.Key, "todo"); ok && s.applyOwnStatusWrite(w, r, written) {
-		writeJSON(w, http.StatusOK, EmptyResponse{})
+		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, EmptyResponse{})
 	}
 }
 
@@ -1675,11 +1676,11 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 // answers, CHILD_REQUIRED for the root included.
 func (s *server) childOfTree(w http.ResponseWriter, r *http.Request, op string) (record.Issue, bool) {
 	var req ChildRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
 		return record.Issue{}, false
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return record.Issue{}, false
 	}
 	grant, child, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
@@ -1687,7 +1688,7 @@ func (s *server) childOfTree(w http.ResponseWriter, r *http.Request, op string) 
 		return record.Issue{}, false
 	}
 	if claim.IsTreeRoot(child.Key, child.Tree) {
-		writeFailure(w, http.StatusForbidden, "CHILD_REQUIRED", fmt.Sprintf("%s is the tree root; park_child and rerun_child take a child of it", child.Key))
+		s.writeFailure(w, r, http.StatusForbidden, "CHILD_REQUIRED", fmt.Sprintf("%s is the tree root; park_child and rerun_child take a child of it", child.Key))
 		return record.Issue{}, false
 	}
 	return child, true

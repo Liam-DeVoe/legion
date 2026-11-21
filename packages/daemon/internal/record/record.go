@@ -293,14 +293,6 @@ type Issue struct {
 	// ChildrenWait is the phase start a parent held when it entered awaiting_children, nil in every
 	// other phase: the two change together, as Awaiting and awaiting_person do.
 	ChildrenWait *ChildrenWait
-	// ForwardMergeOwed is whether the parent still owes a forward merge of its children's work. It
-	// is set whenever a parent enters awaiting_children (workflow's awaitChildren), and after the
-	// return every task of the implementing phase that owes it asks for the merge (workflow's
-	// withForwardMerge). Writing such a task clears nothing: the flag stays set until the
-	// implementer completes that round (workflow's settleForwardMerge), and a merged pull request
-	// clears it too (dispatch://INFRA-3320 R12). It outlives the phase, so PutIssue carries it on
-	// every write.
-	ForwardMergeOwed bool
 	// ChildrenWaitedAt is when the parent last moved into awaiting_children, nil for a parent that
 	// never did. It outlives the phase, which the late-completion guard needs: it refuses a
 	// completion of a phase whose entry was raised before this moment (workflow's leftItsPhase).
@@ -493,16 +485,31 @@ const (
 // Dispatch child of it was still open (Issue.ChildrenWait), nil in every other phase: the two
 // change together, as Hold and held do. Start is the phase whose start was held — planning,
 // implementing, testing, reviewing or accepting; Task the task its transition wrote and Reason
-// that transition's reason, which the return names (dispatch://INFRA-3320 R12); and Since when
-// the wait on the children began. The daemon resumes the parent from this when no open child is
-// left (workflow's ReturnFromChildren): a held planning or implementing starts that phase, and a
-// held testing, reviewing or accepting starts implementing in its place, unless the pull request
-// merged during the wait, when the start goes back as it was held.
+// that transition's reason, which the return names (dispatch://INFRA-3320 R12); Since when the
+// wait on the children began; and Children the children that held the wait. The daemon resumes
+// the parent from this when no open child is left (workflow's ReturnFromChildren): a held
+// planning or implementing starts that phase, and a held testing, reviewing or accepting starts
+// testing in its place (ReturnsAsTesting), unless the pull request merged during the wait, when
+// the start goes back as it was held. Each task the return starts names every child of Children
+// that merged during the wait.
 type ChildrenWait struct {
 	Start  phase.Phase
 	Task   string
 	Reason string
 	Since  time.Time
+	// Children is the key of every Dispatch child that held the parent while it waited: the open
+	// children the move into the wait named, and each child a later admission pass found open
+	// under the waiting parent (dispatch://INFRA-3320 R12).
+	Children []string
+}
+
+// ReturnsAsTesting says whether a held start of held comes back as testing once no open child is
+// left and the pull request has not merged (workflow's ReturnFromChildren, dispatch://INFRA-3320
+// R12): a held testing, reviewing or accepting does, since each round of them before the wait
+// ran on a base without the children's merges, and a held planning or implementing comes back as
+// that phase.
+func ReturnsAsTesting(held phase.Phase) bool {
+	return held == phase.Testing || held == phase.Reviewing || held == phase.Accepting
 }
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
@@ -2554,9 +2561,9 @@ type Store interface {
 	DeleteReleaseRetry(ctx context.Context, tx pgx.Tx, issue string) error
 	// WaitingNotices is every notice row of project's issues not yet due at now, oldest first.
 	WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error)
-	// ExpediteOutbox makes row due at now if it was due later. It takes the row, not its id, so a
-	// caller that then wakes the row's lane has its issue and kind.
-	ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) error
+	// ExpediteOutbox makes row due at now if it was due later, returning whether it moved the row.
+	// It takes the row, not its id, so a caller that wakes the row's lane has its issue and kind.
+	ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) (bool, error)
 	// DropCatchUps deletes every catch-up notice row of issue the outbox still holds, a re-held copy
 	// and a row the runner has leased included, but for two a drop would lose a person's decision
 	// from. The first is a row whose publish told the decisions it named (KeptToldSource) and whose

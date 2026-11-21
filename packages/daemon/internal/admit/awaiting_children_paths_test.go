@@ -78,7 +78,7 @@ func TestTheEntrySweepStartsNoRoleOfAWaitingParent(t *testing.T) {
 				if tc.at == phase.AwaitingChildren {
 					waited := fixedNow.Add(-2 * time.Hour)
 					issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: acHeldTask, Reason: acHeldReason, Since: waited}
-					issue.ForwardMergeOwed, issue.ChildrenWaitedAt = true, &waited
+					issue.ChildrenWaitedAt = &waited
 				}
 			})
 			token := putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateIdle, "")
@@ -254,7 +254,7 @@ func TestARestartBetweenTheMoveAndTheReturnChangesNothing(t *testing.T) {
 	restarted := quiet(t, 2)
 	spPass(t, pool, restarted)
 	if again := issue(t, pool, spParent); again.Phase != phase.AwaitingChildren || !sameHeldStart(again.ChildrenWait, moved.ChildrenWait) ||
-		!again.ForwardMergeOwed || again.ChildrenWaitedAt == nil || !again.ChildrenWaitedAt.Equal(*moved.ChildrenWaitedAt) {
+		again.ChildrenWaitedAt == nil || !again.ChildrenWaitedAt.Equal(*moved.ChildrenWaitedAt) {
 		t.Fatalf("the parent after the restarted daemon's first pass = %+v, want it waiting still as the move wrote it, %+v", again, moved)
 	}
 

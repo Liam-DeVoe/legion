@@ -23,7 +23,7 @@ func TestAnIssueUnderAParentOutOfTheWorkflowIsARoot(t *testing.T) {
 		gates:  map[string]map[record.DesignStep]record.DesignGate{"LEGION-200": openGate("LEGION-200", projectedAt.Add(-time.Hour))},
 	}
 
-	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

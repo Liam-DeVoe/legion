@@ -63,7 +63,7 @@ func TestProjectShowsEveryIssueItsOwnMemoryDraw(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestProjectAnswersTheMemoryFieldsOfAProjectThatDeclaresNothing(t *testing.T
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, config.Project{}.ExperimentsDeclared("projects.LEGION"), nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Experiments: config.Project{}.ExperimentsDeclared("projects.LEGION"), Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestProjectShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestProjectOrdersEveryIssuesAssignmentsAsTheProjectDeclaresThem(t *testing.
 
 	// A deployment that writes the `memory` block and no `experiments` key: one declared
 	// experiment, and a row of an experiment the file no longer names beside it.
-	block, err := Project(context.Background(), nil, store, "LEGION", nil, []config.Experiment{memory}, nil, nil, nil, projectedAt)
+	block, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Experiments: []config.Experiment{memory}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestProjectOrdersEveryIssuesAssignmentsAsTheProjectDeclaresThem(t *testing.
 		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue,
 			Variants: []config.Variant{{Name: "long", Weight: 1}, {Name: "short", Weight: 1}}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, declared, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Experiments: declared, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

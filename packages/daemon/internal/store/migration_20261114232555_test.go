@@ -12,8 +12,8 @@ import (
 const awaitingChildrenVersion = 20261114232555
 
 // 20261114232555 adds the awaiting_children phase and the held start a parent in it keeps, with a
-// shape check that ties the held start to the phase as 0057 ties the awaiting_* columns, and two
-// columns that outlive the phase. Before the migration the phase check refuses the new value; after
+// shape check that ties the held start to the phase as 0057 ties the awaiting_* columns, and a
+// column that outlives the phase. Before the migration the phase check refuses the new value; after
 // it the value is accepted with a full held start, the old values still pass, and the shape check
 // refuses a held start without the phase and the phase without a held start. It adds
 // phases.entry_from beside the phase entry as well, null on every row the upgrade finds, since no
@@ -59,32 +59,31 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 		t.Fatalf("an empty entry_from = %v, want a constraint to refuse it: an entry no move raised reads null", err)
 	}
 
-	// The new value is accepted with a full held start, and the two outliving columns stand beside
-	// it: forward_merge_owed owed and children_waited_at set.
+	// The new value is accepted with a full held start, and the outliving column stands beside it:
+	// children_waited_at set.
 	exec(`update issues set phase = 'awaiting_children', children_wait_start = 'implementing',
 		children_wait_task = 'merge the base and finish', children_wait_reason = 'a child of it is open',
-		children_wait_since = now(), forward_merge_owed = true, children_waited_at = now() where key = 'LEGION-208'`)
+		children_wait_since = now(), children_waited_at = now() where key = 'LEGION-208'`)
 
-	var owed bool
 	var waitedAt, since *string
-	if err := store.Pool().QueryRow(ctx, `select forward_merge_owed, children_waited_at::text, children_wait_since::text
-		from issues where key = 'LEGION-208'`).Scan(&owed, &waitedAt, &since); err != nil {
+	if err := store.Pool().QueryRow(ctx, `select children_waited_at::text, children_wait_since::text
+		from issues where key = 'LEGION-208'`).Scan(&waitedAt, &since); err != nil {
 		t.Fatalf("read the held start back: %v", err)
 	}
-	if !owed || waitedAt == nil || since == nil {
-		t.Fatalf("after the move forward_merge_owed = %t, children_waited_at = %v and children_wait_since = %v, want the merge owed and both times set", owed, waitedAt, since)
+	if waitedAt == nil || since == nil {
+		t.Fatalf("after the move children_waited_at = %v and children_wait_since = %v, want both times set", waitedAt, since)
 	}
 
-	// Leaving the phase clears the held start; the two outliving columns may stand, so the move out
-	// clears only the four held-start columns.
+	// Leaving the phase clears the held start; the outliving column may stand, so the move out
+	// clears only the held-start columns.
 	exec(`update issues set phase = 'implementing', children_wait_start = null, children_wait_task = null,
 		children_wait_reason = null, children_wait_since = null where key = 'LEGION-208'`)
-	if err := store.Pool().QueryRow(ctx, `select forward_merge_owed, children_waited_at::text from issues where key = 'LEGION-208'`).
-		Scan(&owed, &waitedAt); err != nil {
-		t.Fatalf("read the outliving columns back: %v", err)
+	if err := store.Pool().QueryRow(ctx, `select children_waited_at::text from issues where key = 'LEGION-208'`).
+		Scan(&waitedAt); err != nil {
+		t.Fatalf("read the outliving column back: %v", err)
 	}
-	if !owed || waitedAt == nil {
-		t.Fatalf("after the return forward_merge_owed = %t and children_waited_at = %v, want both to outlive the phase", owed, waitedAt)
+	if waitedAt == nil {
+		t.Fatalf("after the return children_waited_at = %v, want it to outlive the phase", waitedAt)
 	}
 
 	// The old phase values still pass the phase check, each with no held start.

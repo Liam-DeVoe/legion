@@ -62,7 +62,7 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 			{Issue: "LEGION-40", Index: 1, AdmittedAt: answeredAt}, {Issue: "LEGION-30", Index: 2, AdmittedAt: opened}},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

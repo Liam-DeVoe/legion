@@ -151,12 +151,17 @@ holds its next phase, and the daemon stops a phase that is under way and tells i
 what it has and stop. The issue then waits in `awaiting_children`: it holds no admission slot,
 Dispatch shows it `in_progress`, and no role of it works: the architect's `sign_off` and
 `request_backward_move` on it are refused (`WAITING_ON_CHILDREN`). Once no child under it is open,
-it goes back by itself to the phase it held, a held test, review or acceptance as `implementing`.
-That round merges the children's work into its branch, and the tester then runs every check again.
-For the same reason the daemon refuses a parent's acceptance, and a root's close, while an issue
-beneath it is still in the workflow. A child's own architect starts with the child's first phase,
-so a child it files stops the child's phase in this way, and the child is accepted only at a head
-that carries the merges of every child its checks need.
+it goes back by itself to the phase it held, a held test, review or acceptance as `testing`, with
+a task that names the children that merged during the wait. The return asks for no merge of the
+base into its branch, which takes its base under the rules of any other pull request. Every test
+round of a parent runs on its head merged with the tip of the pull request's base branch, once that
+tip carries each needed child's merge, in the tester's own checkout and pushed nowhere, and each
+result names that base commit. A parent is accepted on its head once each check a role runs has a
+pass there that names a base commit carrying the merge of every child the check needs, and a pass
+that names an older commit, or none, sends it back to `testing`. The daemon also refuses a parent's
+acceptance, and a root's close, while an issue beneath it is still in the workflow. A child's own
+architect starts with the child's first phase, so a child it files stops the child's phase in this
+way.
 
 ## Phase workers
 
@@ -171,7 +176,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
-| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open. | none |
+| `awaiting_children` | none | A parent whose phases started waits here while Dispatch shows an open child under it. It holds no admission slot, Dispatch shows it `in_progress`, and no role of it works. It goes back to the phase it held once no child is open, a held test, review or acceptance as `testing`. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
@@ -445,8 +450,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   the phase is told to stop writing the workspace and not to complete its phase at the old head,
   and keeps its turn, its background jobs, its process and its session. The architect is told once
   with a `checks-red` notice naming the phase the issue stays in. In `implementing` only the
-  implementer is told. A parent that waits in `awaiting_children` is asked nothing: the forward
-  merge its return asks for resolves the conflict.
+  implementer is told. A parent that waits in `awaiting_children` is asked nothing, and once it is
+  back in a phase this rule reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
@@ -582,7 +587,7 @@ result of the issue's `after_merge` check, naming the merge commit and what woke
 that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
-look when production carries the merge, or a defect, naming the issue, the pull
+look whether or not production carries the merge, or a defect, naming the issue, the pull
 request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
 controller, which gives it to the tree that owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's

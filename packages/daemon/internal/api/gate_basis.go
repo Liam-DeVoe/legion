@@ -50,7 +50,7 @@ func (req GateRegisterRequest) basisNamed() bool {
 // reads one (dispatchbody.Check), since the reason is posted on the root's issue as a message,
 // where nobody can answer one. A reason inside reasonRunes passes Dispatch's bounds on a body's
 // blocks and their length, so the decision block is the one refusal Check can answer for it.
-func refuseBasisInput(w http.ResponseWriter, req GateRegisterRequest) bool {
+func (s *server) refuseBasisInput(w http.ResponseWriter, r *http.Request, req GateRegisterRequest) bool {
 	if !req.basisNamed() {
 		return false
 	}
@@ -66,23 +66,23 @@ func refuseBasisInput(w http.ResponseWriter, req GateRegisterRequest) bool {
 	}
 	switch characters := utf8.RuneCountInString(req.Reason); {
 	case len(missing) > 0:
-		writeFailure(w, http.StatusBadRequest, "BASIS_INCOMPLETE", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadRequest, "BASIS_INCOMPLETE", fmt.Sprintf(
 			"basisArtifactId, basisVersion and reason come together or not at all, and this call leaves out %s; name all three to register on an ancestor's approval, or none to register the issue's own document",
 			strings.Join(missing, " and ")))
 		return true
 	case !validUUID(req.BasisArtifactID):
-		writeFailure(w, http.StatusBadRequest, "INVALID_ARTIFACT_ID", "basisArtifactId must be a UUID")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ARTIFACT_ID", "basisArtifactId must be a UUID")
 		return true
 	case req.BasisVersion < 1:
-		writeFailure(w, http.StatusBadRequest, "INVALID_VERSION", "basisVersion must be positive")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_VERSION", "basisVersion must be positive")
 		return true
 	case characters > reasonRunes:
-		writeFailure(w, http.StatusBadRequest, "REASON_INVALID", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadRequest, "REASON_INVALID", fmt.Sprintf(
 			"the reason is %d characters, and a registration on a basis carries a reason of 1 to %d characters; shorten it", characters, reasonRunes))
 		return true
 	}
 	if over := dispatchbody.Check(req.Reason); dispatchbody.IsDecisionBlock(over) {
-		writeFailure(w, http.StatusBadRequest, "REASON_HOLDS_DECISION_BLOCK", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadRequest, "REASON_HOLDS_DECISION_BLOCK", fmt.Sprintf(
 			"the reason holds a decision block, and the daemon posts the reason on the issue as a message, where nobody can answer one: %s; nothing was recorded, so register again with a reason that states the decision rather than asking for it",
 			over))
 		return true
@@ -101,13 +101,13 @@ func (f *readFailure) Unwrap() error { return f.err }
 
 // refuseFailedRead answers a failed Dispatch read as register_gate answers every one: 502
 // DISPATCH_FAILED, nothing recorded, so the architect's register_gate retries.
-func refuseFailedRead(w http.ResponseWriter, err error) {
+func (s *server) refuseFailedRead(w http.ResponseWriter, r *http.Request, err error) {
 	what := "Dispatch"
 	var failure *readFailure
 	if errors.As(err, &failure) {
 		what = failure.what
 	}
-	writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", what))
+	s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", what))
 }
 
 // gateAncestors walks root's Dispatch child_of chain upward from its parent, nearest first,
@@ -197,11 +197,11 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 	root dispatch.Issue, document string, own dispatch.Approval) (*record.GateBasis, bool) {
 	ctx := r.Context()
 	refuse := func(code, format string, args ...any) (*record.GateBasis, bool) {
-		writeFailure(w, http.StatusConflict, code, fmt.Sprintf(format, args...))
+		s.writeFailure(w, r, http.StatusConflict, code, fmt.Sprintf(format, args...))
 		return nil, false
 	}
 	failed := func(err error) (*record.GateBasis, bool) {
-		refuseFailedRead(w, err)
+		s.refuseFailedRead(w, r, err)
 		return nil, false
 	}
 
@@ -286,7 +286,7 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 	}
 	recorded, err := s.recordedIssue(ctx, ancestor.Key)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the record of "+ancestor.Key)
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the record of "+ancestor.Key)
 		return nil, false
 	}
 	if recorded != nil && record.Accepted(*recorded) {
@@ -397,7 +397,7 @@ func (s *server) viewFact(w http.ResponseWriter, r *http.Request, root dispatch.
 		nearest, shown = above, approval
 		return true, nil
 	}); err != nil {
-		refuseFailedRead(w, err)
+		s.refuseFailedRead(w, r, err)
 		return "", false
 	}
 	if nearest.Key == "" {
@@ -405,7 +405,7 @@ func (s *server) viewFact(w http.ResponseWriter, r *http.Request, root dispatch.
 	}
 	requirements, err := s.requirementsOf(ctx, nearest.PrimaryArtifactID, shown.LatestVersion)
 	if err != nil {
-		refuseFailedRead(w, err)
+		s.refuseFailedRead(w, r, err)
 		return "", false
 	}
 	if len(requirements) == 0 {
@@ -413,7 +413,7 @@ func (s *server) viewFact(w http.ResponseWriter, r *http.Request, root dispatch.
 	}
 	_, refusal, err := s.viewOf(ctx, root.Key, viewBasis{issue: nearest.Key, version: shown.LatestVersion, requirements: requirements})
 	if err != nil {
-		refuseFailedRead(w, err)
+		s.refuseFailedRead(w, r, err)
 		return "", false
 	}
 	if refusal != nil {

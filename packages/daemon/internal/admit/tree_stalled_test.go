@@ -85,7 +85,7 @@ func quietRootRecord(key, rank string, standing phase.Phase) record.Issue {
 		waited := fixedNow.Add(-time.Hour)
 		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "Continue " + key + ". Issue: " + key + ". Phase: implementing.",
 			Reason: "a review asked for changes, while a Dispatch child of " + key + " was open", Since: waited}
-		issue.ForwardMergeOwed, issue.ChildrenWaitedAt = true, &waited
+		issue.ChildrenWaitedAt = &waited
 	}
 	return issue
 }

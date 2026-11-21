@@ -10,14 +10,26 @@ body: |-
   worker whose phase the move ended is told to push what it has and stop, in a `phase_ended`
   message, the kind #4464 stopped writing for a conflict, which migration
   `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
-  worker's pending task for the phase is retired (the supervise op `retire_task`).
-  `request_backward_move` and `sign_off` on the parent are refused `WAITING_ON_CHILDREN`. Once no
-  child is open, the admission pass returns the parent to the start it held on a new phase entry.
-  A held test, review or acceptance returns as `implementing`, and each task of the first
-  implementing round after the wait, a retry's, a fresh session's and a re-admission's included,
-  asks for a forward merge and a full test round until the implementer completes that round.
-  Migration `20261114232555_awaiting_children` adds the phase, the held start,
-  `forward_merge_owed`, `children_waited_at` and `phases.entry_from`. `docs/kubernetes.md` says
-  how to roll the release back.
+  worker's pending task for the phase is retired (the supervise op `retire_task`). Where the move
+  drops a merge forward of the parent's pull request that has not landed, a stopped worker other
+  than the implementer is told to write and push nothing more, since the implementer may be
+  merging in the workspace they share, and the implementer is told of the dropped merge forward,
+  with its head and its base, in its own `phase_ended` message where the move ended its phase and
+  otherwise in a `role_message`: one that has begun the merge finishes and pushes it and does
+  nothing more, one that has not begun it begins none, and the daemon does not ask for it again.
+  `request_backward_move` and `sign_off` on the parent are refused `WAITING_ON_CHILDREN`. The wait
+  records each child that held it, the ones open at the move and each one an admission pass finds
+  open under the parent later. Once no child is open, the admission pass returns the parent on a
+  new phase entry, marked as a move back, so a completion from before the wait is refused. A held
+  plan or implementation comes back as that phase, and a held test, review or acceptance comes
+  back as `testing`, on a task that names the held start and carries the implementer's last
+  handoff; a parent whose pull request merged during the wait comes back at the start it held.
+  Each task the return starts names the children that merged during the wait, with their pull
+  requests, and asks for no merge of the default branch. Every testing task of a parent, an issue
+  with a Dispatch child, waited or not, asks the tester to test the head merged with the tip of
+  the pull request's base branch once it carries the children's merges, in a checkout of its own,
+  and to record each result with that base commit. Migration `20261114232555_awaiting_children`
+  adds the phase, the held start with `children_wait_children`, `children_waited_at` and
+  `phases.entry_from`. `docs/kubernetes.md` says how to roll the release back.
 custom:
     Issue: pr4592

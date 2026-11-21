@@ -37,6 +37,12 @@ func restingBasis() *record.GateBasis {
 	return basis
 }
 
+// restingReturn is the sentence of the SIGNOFF_CHILD_OPEN refusal of P (LEGION-100) that says
+// where a parent in accepting goes once its open children are finished: into awaiting_children,
+// and back by itself to the start it held, a held acceptance as testing (workflow's
+// ReturnFromChildren; dispatch://INFRA-3320 R8 and R12, on the person's answer "Children first").
+const restingReturn = "Unless the pull request of LEGION-100 has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. "
+
 // seedAcceptingAncestor records P as the root of a running tree of its own in accepting, on its
 // open pull request #41 at head with the reviewer's approval of that head (seedAccepting's rows).
 func seedAcceptingAncestor(t *testing.T, pool *pgxpool.Pool) {
@@ -334,7 +340,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		message = refusedWith(t, signOffNow(t, pool, "signoff-open", basisAncestor), signOffChildOpen, "LEGION-303 (triage)")
 		if want := "LEGION-100 is not accepted while these Dispatch children of it are open: LEGION-303 (triage). " +
 			"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. " +
-			"Unless the pull request of LEGION-100 has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back to implementing by itself for the forward merge of their work; otherwise sign off again. " +
+			restingReturn +
 			"A child that runs as a tree of its own is moved by its own architect or a person. " +
 			"Close or icebox a child " + parkRule + ", and say in a comment which of those it is. " +
 			"Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer"; message != want {

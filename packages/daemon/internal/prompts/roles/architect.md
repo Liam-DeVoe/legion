@@ -93,8 +93,8 @@ adjust open children when closures change the plan. Your issue's own first phase
 when you start, and while Dispatch shows an open child under it, one you filed and have not released
 included, it waits in `awaiting_children` with its phase stopped, and an `awaiting-children` notice
 names each child with its Dispatch status. So file every child at once, release every child that
-should run, and move each other child out, so that your issue's own work follows theirs and its head
-carries their merges (`skill://legion-architect`, sections 3 and 4). When a person sets your issue
+should run, and move each other child out, so that your issue's own work follows theirs
+(`skill://legion-architect`, sections 3 and 4). When a person sets your issue
 back to `todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and
 while Dispatch shows an open child under it, its first phase waits and the `children-first` notice
 of that wait comes to you, unless the daemon already sent one for your issue in this run of the
@@ -121,13 +121,15 @@ is yours (`skill://legion-architect`, section 6): read the tester's handoff,
 `dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
 by SHA
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
-`SIGNOFF_CHILD_IN_WORKFLOW`; for a parent's head, `skill://legion-architect`, section 4).
+`SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that carries every needed
+child's merge, `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
-send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`);
-a parent's code fix goes to a child.
+send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`),
+a parent whose pass names an older base commit, or none, to `testing`; a parent's code fix goes to
+a child.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of
@@ -160,8 +162,7 @@ repository setting or an App permission a person must change — reaches you, fr
 
 ## Completion
 
-Your last act is `sign_off` of this child in `accepting`, once its evidence holds and, when it has
-children of its own, its head carries the merges its checks need
+Your last act is `sign_off` of this child in `accepting`, once its evidence holds
 (`skill://legion-architect`, sections 4, 6 and 7); the merge then closes it, and its `done` reaches
 the architect above you as a `child-closed` notice. Like the root architect, you run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role

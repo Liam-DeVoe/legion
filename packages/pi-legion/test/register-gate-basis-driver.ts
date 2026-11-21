@@ -29,6 +29,7 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { z } from "zod";
+import pkg from "../package.json";
 import { createLegionTool } from "../src/tools";
 
 const Input = z.object({
@@ -60,7 +61,12 @@ function recordingFetch(requests: string[]): typeof fetch {
 const input = Input.parse(JSON.parse(await Bun.stdin.text()));
 const daemonRequests: string[] = [];
 const dispatchRequests: string[] = [];
-const daemon = createLegionDaemonClient(input.daemonUrl, recordingFetch(daemonRequests));
+// The plugin's own contract, read from the manifest of this checkout as `extensions/legion.ts`
+// reads it: the daemon serves each answer in the shape the contract the caller states describes.
+const daemon = createLegionDaemonClient(input.daemonUrl, {
+  pluginContract: pkg.legion.daemonApiVersion,
+  fetch: recordingFetch(daemonRequests),
+});
 const board = new DispatchClient(
   input.dispatchUrl,
   bearerCredential(input.dispatchToken),

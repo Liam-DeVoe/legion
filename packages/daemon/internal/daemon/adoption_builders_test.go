@@ -508,7 +508,7 @@ func aReadyOwnersResumeTaskIsAdoptedOnce(r *adoptionRig) {
 		r.t.Fatalf("the tester's death relaunched its session %d times, want once", resumed)
 	}
 	start := theOneStartRow(r.t, r.pool, issue.Key)
-	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != workflow.ResumePhaseTask(issue) {
+	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != workflow.ResumePhaseTask(issue, false) {
 		r.t.Fatalf("the ready wrote the start %+v, want the tester's testing resume task", start)
 	}
 	r.run()

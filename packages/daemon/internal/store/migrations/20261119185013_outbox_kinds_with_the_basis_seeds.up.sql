@@ -14,7 +14,10 @@
 -- its migration 20261119003157 deleted every row an earlier release had queued for a conflict. This
 -- release queues it again for one move alone: the admission pass's move of a parent whose worker
 -- is in the middle of its phase into awaiting_children, which tells that worker its phase ended
--- (record.PhaseEnded, dispatch://INFRA-3320 R10). The payload has the shape that kind always had.
+-- (record.PhaseEnded, dispatch://INFRA-3320 R10). A row that names no dropped merge forward has
+-- the shape that kind always had. A row of a move that dropped a merge forward before it landed
+-- also carries `mergeForward`, its head and its base, which no earlier release knows: each decodes
+-- a payload strictly, so it refuses such a row.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261117023932 and
 -- 20261119003157 did: whichever of two open branches merges last admits both their kinds. The
