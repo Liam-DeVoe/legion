@@ -37,7 +37,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
+			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
+			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
 	}

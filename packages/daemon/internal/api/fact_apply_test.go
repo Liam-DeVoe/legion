@@ -273,8 +273,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 // agent made waits only where the record names that agent the agent of a run on the issue its
 // fact names: the architect's park of a child in implementing, whose run is its implementer's,
 // waits for nothing, though the architect runs the accepting step of another child. A request
-// refused before it applies a fact waits for nothing: the tester's completion with no verdict,
-// and the architect's move back of an issue of another tree.
+// refused before it applies a fact waits for nothing: the tester's completion naming a verdict,
+// which no completion carries, and the architect's move back of an issue of another tree.
 func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	r := newAwaitRig(t)
 	worker, _ := r.h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
@@ -306,8 +306,8 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
 	r.runs(t, "LEGION-208", testingPlace, tester.token)
 	written := tester.writeHandoff("test", 1)
-	refused(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}),
-		http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
+	refused(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", Verdict: "pass", HandoffID: written, HandoffVersion: 1}),
+		http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 	seedIssueAt(t, r.h, "LEGION-400", phase.Implementing)
 	other := newLiveClaim(t, r.h, "LEGION-400", claim.RoleArchitect)
 	refused(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{

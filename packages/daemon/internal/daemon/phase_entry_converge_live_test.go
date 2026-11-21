@@ -403,7 +403,7 @@ func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch; that launch spent the burst of %d wake(s) a minute in bursts of %d",
 		convergeWakeRate, convergeWakeBurst)
 	r.imp.startOwnTurn()
-	if status, failure := r.imp.complete("implemented it", convergeFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	if status, failure := r.imp.complete("implemented it", convergeFirstHead, r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s from a turn of its own, which it goes on in: 200", convergeFirstHead)
@@ -495,7 +495,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 
 	// The second: the implementer, still in its turn, pushes a head of its own and completes there.
 	r.push(convergeFirstHead, convergeSecondHead, "fix the fault the tests showed")
-	if status, failure := r.imp.complete("fixed the fault the tests showed", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	if status, failure := r.imp.complete("fixed the fault the tests showed", convergeSecondHead, r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.note("drove the implementer's push of %s and GitHub's synchronize of #%d to it, then its completion there, still in its first turn: 200", convergeSecondHead, r.number)
@@ -551,7 +551,7 @@ func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 	r.note("read back: the tester was sent %s on its own connection (%s) — the work of entry %d, with the phase on entry %d; the implementer's implementing task was dropped unsent",
 		first.DeliveryID, firstLine(first.Message), givenEntry, phaseEntry)
 
-	status, failure := r.test.complete("tested the first head", convergeFirstHead, "pass", r.test.handoff("test"))
+	status, failure := r.test.complete("tested the first head", convergeFirstHead, r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("the completion of entry 1's work = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
@@ -576,7 +576,8 @@ func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 	r.note("read back: the tester was sent %s (%s), and the state reads phaseEntry %d, givenEntry %d",
 		second.DeliveryID, firstLine(second.Message), phaseEntry, givenEntry)
 
-	if status, failure := r.test.complete("tested the fix", convergeSecondHead, "pass", r.test.handoff("test")); status != http.StatusOK {
+	testedAs(t, r.st.Pool(), r.key, convergeSecondHead, true)
+	if status, failure := r.test.complete("tested the fix", convergeSecondHead, r.test.handoff("test")); status != http.StatusOK {
 		t.Fatalf("the completion of entry 2's work = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()

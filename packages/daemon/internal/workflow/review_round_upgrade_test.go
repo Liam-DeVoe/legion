@@ -90,10 +90,10 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 		('LEGION-209', 'LEGION-209', 'LEGION', 'other', 'reviewing', 1, 'needs_review', 'B', 1)`); err != nil {
 		t.Fatalf("record the issues as the release before writes them: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task) values
-		('LEGION-208', 'reviewer', 'legion-LEGION-208-reviewer', '', 0, '', 2, $1),
-		('LEGION-208', 'tester', 'legion-LEGION-208-tester', '', 0, '', 1, $2),
-		('LEGION-209', 'reviewer', 'legion-LEGION-209-reviewer', '', 0, '', 3, '')`, reviewerTask, testerTask); err != nil {
+	if _, err := pool.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, entry, entry_task) values
+		('LEGION-208', 'reviewer', 'legion-LEGION-208-reviewer', '', 0, 2, $1),
+		('LEGION-208', 'tester', 'legion-LEGION-208-tester', '', 0, 1, $2),
+		('LEGION-209', 'reviewer', 'legion-LEGION-209-reviewer', '', 0, 3, '')`, reviewerTask, testerTask); err != nil {
 		t.Fatalf("record the phases rows as the release before writes them: %v", err)
 	}
 

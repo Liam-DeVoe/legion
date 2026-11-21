@@ -499,15 +499,18 @@ func (r *lateCompletionLive) finishedImplementerRepeats() {
 }
 
 // Step 3. The tester the implementer's completion started takes its testing task, its turn held
-// at the stand-in; the driver writes the tester's test record as that pane's own session; then
-// the turn calls handoff_complete with verdict pass; the completion is taken, naming that record,
-// and the issue moves to reviewing. The tool and the daemon answer it alike on this tree and the
-// negative control's: the tester works the issue's phase.
+// at the stand-in; the driver writes the tester's test record as that pane's own session, and the
+// daemon is given the check state that passes at the head through the intake, as Dispatch's
+// check.state_changed event of a passing result gives it (testedAs); then the turn calls
+// handoff_complete; the completion is taken, naming that record, and the issue
+// moves to reviewing. The tool and the daemon answer it alike on this tree and the negative
+// control's: the tester works the issue's phase.
 func (r *lateCompletionLive) testerCompletes() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
 	held := r.heldTurn(claim.RoleTester, phase.Testing, r.testerCall)
 	r.testRecord = r.writeRecord(held.Session, "test")
+	testedAs(t, r.st.Pool(), r.key, "", true)
 	mark := time.Now()
 	r.testerCall.release()
 	result := r.testerCall.awaitResult(t, 2*time.Minute)

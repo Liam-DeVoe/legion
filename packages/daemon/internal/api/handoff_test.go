@@ -1247,7 +1247,7 @@ func TestACheckReportFromAnotherRoleIsRefusedAndTheChecksOwnRolesIsRecorded(t *t
 // The commit is a phase completion's field, read once the grant is redeemed and the record says
 // the call is one: an expired grant is refused before the missing commit is, a phase completion
 // without a commit is still refused for it, and an implementer's verdict on a phase completion is
-// still a tester's field.
+// refused, since no phase completion carries one.
 func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), credential.New(func() time.Time { return now }), nil)
@@ -1261,7 +1261,7 @@ func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *te
 	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented"}), http.StatusBadRequest, "MISSING_FIELD"); message != "commit is required" {
 		t.Fatalf("a phase completion naming no commit was refused with %q; want the field named", message)
 	}
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pending", Commit: headSHA}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pending", Commit: headSHA}), http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
 	}

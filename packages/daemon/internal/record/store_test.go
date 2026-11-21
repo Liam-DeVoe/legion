@@ -1102,8 +1102,8 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		inTx(t, st, func(tx pgx.Tx) {
 			must(t, NewStore().PutIssue(ctx, tx, issue))
 			// The release before names each column it writes, and reviewed_head is none of them.
-			_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, decision)
-				values ($1, 'reviewer', 'reviewer', '', 0, '', '{"state": "approved", "head": "bbb222"}')`, issue.Key)
+			_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, decision)
+				values ($1, 'reviewer', 'reviewer', '', 0, '{"state": "approved", "head": "bbb222"}')`, issue.Key)
 			must(t, err)
 		})
 		row := reviewerOf(t, st, issue.Key)

@@ -16,6 +16,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// phaseVerdictGoneVersion is the migration that drops phases.verdict
+// (internal/store/migrations/20261121074614_phase_verdict_gone.up.sql): a rollback to a release
+// that reads that column runs its way back before any older one (docs/kubernetes.md).
+const phaseVerdictGoneVersion = 20261121074614
+
 // testedFact is the check.state_changed event that decides a tester's completion of issue's
 // testing, and the event id the live consumer would apply it under: k1, the head's one check, yes
 // from the tester where passes, and no for a fail where not, at head, or at the head of the pull
