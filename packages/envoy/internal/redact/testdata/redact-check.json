@@ -259,6 +259,22 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.ErrPublishDenied",
         "test": "print-notify.ErrPublishDenied"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.SessionDeleted",
+        "test": "print-notify.SessionDeleted"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.deleteAnswer",
+        "test": "print-notify.deleteAnswer"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.SessionRegistration",
+        "test": "print-notify.SessionRegistration"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/notify.DeleteConditions",
+        "test": "print-notify.DeleteConditions"
       }
     ],
     "reflection": [
@@ -4742,8 +4758,8 @@
       "capture": "notify.status-line/publish-refused",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "topic, oauth2call.StatusLine(response.StatusCode), excerpt(answered, cut))",
-        "replacement": "topic, response.Status, excerpt(answered, cut))"
+        "preimage": "topic, oauth2call.StatusLine(response.StatusCode), excerpt(answer, cut))",
+        "replacement": "topic, response.Status, excerpt(answer, cut))"
       }
     },
     {
@@ -4756,8 +4772,8 @@
       "capture": "notify.status-line/registration-refused",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))",
-        "replacement": "session, response.Status, excerpt(body, cut))"
+        "preimage": "session, oauth2call.StatusLine(response.StatusCode), excerpt(answer, cut))",
+        "replacement": "session, response.Status, excerpt(answer, cut))"
       }
     },
     {
@@ -4798,8 +4814,8 @@
       "capture": "notify.status-line/role-holder-busy",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "role, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))",
-        "replacement": "role, response.Status, excerpt(body, cut))"
+        "preimage": "role, oauth2call.StatusLine(response.StatusCode), excerpt(answer, cut))",
+        "replacement": "role, response.Status, excerpt(answer, cut))"
       }
     },
     {
@@ -4840,8 +4856,8 @@
       "capture": "notify.status-line/delete-refused",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))",
-        "replacement": "session, response.Status, excerpt(body, cut))"
+        "preimage": "session, oauth2call.StatusLine(response.StatusCode), excerpt(answer, cut))",
+        "replacement": "session, response.Status, excerpt(answer, cut))"
       }
     },
     {
@@ -5153,6 +5169,13 @@
       "production": "notify publishRefusal and the outbox's reholdNotice: a 504's holder is the listener's words as they came (ErrNotDelivered.Holder), which copyDueAtOnce compares as they came"
     },
     {
+      "id": "daemon-session-stop-words",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKeptStopsLinePrintsTheListenersWordsAsTheRuleReadsThem",
+      "production": "notify ReadSessionRegistration and DeleteSession, and the daemon's sessionStop.send: the registration's client instance and the delete's reason are the listener's words, decoded through Answer.Decode and printed as the rule reads them"
+    },
+    {
       "id": "legion-cli-decided-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
@@ -5207,6 +5230,34 @@
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.ErrPublishDenied",
       "production": "github.com/sjawhar/legion/daemon/internal/notify.ErrPublishDenied: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.SessionDeleted",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.SessionDeleted",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.SessionDeleted: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.deleteAnswer",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.deleteAnswer",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.deleteAnswer: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.SessionRegistration",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.SessionRegistration",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.SessionRegistration: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.DeleteConditions",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.DeleteConditions",
+      "production": "github.com/sjawhar/legion/daemon/internal/notify.DeleteConditions: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-boot-limit-names-github",
@@ -6640,6 +6691,11 @@
       "site": "ErrNotDelivered.Holder held as the rule's reading, on which the re-hold decides whether a copy is due at once",
       "source": "round 5's deep review",
       "guard": "daemon-rehold-holder-as-it-came"
+    },
+    {
+      "site": "a dead session's registration (client_instance_id) and the delete's reason, decoded into plain strings and logged raw by the daemon's kept line",
+      "source": "the class search of round 5's deep review (notify.go StreamTo handback)",
+      "guard": "daemon-session-stop-words"
     }
   ]
 }
