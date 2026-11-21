@@ -117,7 +117,8 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // statement that matches a name in SQL puts them in its own pattern. They are written in what
 // RE2 and Postgres' advanced regular expressions read alike, bracket expressions and a bounded
 // repeat, and hold no quote, so they go into a SQL string literal as they are. The name's bound
-// of 100 and the two names `.` and `..` are no part of them (gitHubName holds those).
+// (GitHubNameMax) and the two names `.` and `..` are no part of them (gitHubName holds those, and
+// a SQL reader states each beside the pattern).
 const (
 	GitHubOwnerPattern = `[A-Za-z0-9][A-Za-z0-9_-]{0,38}`
 	GitHubNamePattern  = `[A-Za-z0-9._-]+`
@@ -128,8 +129,8 @@ var (
 	repoNamePattern  = regexp.MustCompile(`^` + GitHubNamePattern + `$`)
 )
 
-// repoNameMax is the most characters GitHub allows in a repository's own name.
-const repoNameMax = 100
+// GitHubNameMax is the most characters GitHub allows in a repository's own name.
+const GitHubNameMax = 100
 
 // gitHubOwner answers whether owner is a login GitHub serves, by the grammar above.
 func gitHubOwner(owner string) bool {
@@ -141,7 +142,7 @@ func gitHubOwner(owner string) bool {
 // is; SplitGitHubRepo puts a name to it as a GitHub path carries it and once one trailing `.git`
 // is trimmed.
 func gitHubName(name string) bool {
-	return name != "." && name != ".." && len(name) <= repoNameMax && repoNamePattern.MatchString(name)
+	return name != "." && name != ".." && len(name) <= GitHubNameMax && repoNamePattern.MatchString(name)
 }
 
 // ErrNotGitHubRepo is SplitGitHubRepo's refusal: a name no repository GitHub could hold is
@@ -171,14 +172,16 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // parseIssueRepo and ParseRepoProjects). Delivery, wherever it turns a stored name into a
 // GitHub path, cireconcile's splitRepo, the architecture importer's resolve and api's readCIRuns
 // each refuse one there, so a name stored before the routes held it to the rule, or by direct
-// SQL, reaches GitHub through none of them. Delivery's linked pull requests
-// (linkedPullRequestTerms) read a link's owner and name in SQL by the same patterns
-// (GitHubOwnerPattern, GitHubNamePattern), and refuse a name of `.` or `..` there; a read that
-// puts such a repository into a GitHub path splits it here. One reader does not put the name to
-// it: the Legion metrics' readMergeTimes (legion/metrics/population.go) splits
-// delivery_pull_requests.repo with strings.Cut into delivery.FetchPullRequest's path. Those rows
-// are written from the names GitHub itself gives, so only a name planted there by direct SQL
-// reaches GitHub through that read.
+// SQL, reaches GitHub through none of them. Delivery's one link rule, which every reader of an
+// issue's link takes (delivery's linkedPullRequest in Go and LinkedPullRequestSQL in SQL), reads a
+// link's owner and name by this rule too: in Go through this function, and in SQL by the same
+// patterns (GitHubOwnerPattern, GitHubNamePattern) with the bound (GitHubNameMax) and the refusal
+// of a name that is `.` or `..`, or empty, `.` or `..` once a trailing `.git` is trimmed, stated
+// beside them; a read that puts such a repository into a GitHub path splits it here. One reader
+// does not put the name to it: the Legion metrics' readMergeTimes (legion/metrics/population.go)
+// splits delivery_pull_requests.repo with strings.Cut into delivery.FetchPullRequest's path.
+// Those rows are written from the names GitHub itself gives, so only a name planted there by
+// direct SQL reaches GitHub through that read.
 func SplitGitHubRepo(full string) (owner, name string, err error) {
 	owner, name, found := strings.Cut(full, "/")
 	if !found || !gitHubOwner(owner) || !gitHubName(name) || !gitHubName(strings.TrimSuffix(strings.ToLower(name), ".git")) {

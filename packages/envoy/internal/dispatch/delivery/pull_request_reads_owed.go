@@ -320,22 +320,22 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 // the link write take one link to one pull request. TestTheLinkRuleInSQLIsTheLinkRuleInGo holds
 // it to linkedPullRequest link by link.
 //
-// The owner's pattern is refs.GitHubOwnerPattern and the name's githubRepositoryName's, split at
-// the slash, with the two parts of the path after them; the scheme and the host are compared in
-// lower case, and `pull` and `issues` in any case. The name, lowercased and with one trailing
-// `.git` trimmed, must not be empty, `.` or `..`, as refs.SplitGitHubRepo holds it. A link of a
-// character outside ASCII is no link of a pull request, as in Go: octet_length counts the bytes of
-// UTF-8 text and length its characters. The number is cast to int only where it is at most
-// math.MaxInt32, inside a case, so no order the planner gives the conditions casts a number of ten
-// digits past int's bound.
+// The owner's pattern is refs.GitHubOwnerPattern and the name's refs.GitHubNamePattern, with the
+// name's bound (refs.GitHubNameMax), split at the slash, with the two parts of the path after
+// them; the scheme and the host are compared in lower case, and `pull` and `issues` in any case.
+// The name, lowercased and with one trailing `.git` trimmed, must not be empty, `.` or `..`, as
+// refs.SplitGitHubRepo holds it. A link of a character outside ASCII is no link of a pull request,
+// as in Go: octet_length counts the bytes of UTF-8 text and length its characters. The number is
+// cast to int only where it is at most math.MaxInt32, inside a case, so no order the planner gives
+// the conditions casts a number of ten digits past int's bound.
 func LinkedPullRequestSQL(url string) string {
 	prefix := strconv.Itoa(len(pullRequestURLPrefix))
 	inBound := `p.m[4]::bigint <= ` + strconv.Itoa(math.MaxInt32)
 	return `(select p.m[1] || '/' || p.m[2] as repo, case when ` + inBound + ` then p.m[4]::int end as number
 		from (select regexp_match(lower(left(` + url + `, ` + prefix + `)) || substr(` + url + `, ` + prefix + ` + 1),
-			'^https://github\.com/(` + refs.GitHubOwnerPattern + `)/([A-Za-z0-9._-]{1,100})/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
+			'^https://github\.com/(` + refs.GitHubOwnerPattern + `)/(` + refs.GitHubNamePattern + `)/([A-Za-z]+)/([1-9][0-9]{0,9})$') as m
 			where octet_length(` + url + `) = length(` + url + `)) p
-		where lower(p.m[3]) in ('pull', 'issues') and p.m[2] not in ('.', '..')
+		where lower(p.m[3]) in ('pull', 'issues') and p.m[2] not in ('.', '..') and length(p.m[2]) <= ` + strconv.Itoa(refs.GitHubNameMax) + `
 			and regexp_replace(lower(p.m[2]), '\.git$', '') not in ('', '.', '..')
 			and case when ` + inBound + ` then true else false end)`
 }

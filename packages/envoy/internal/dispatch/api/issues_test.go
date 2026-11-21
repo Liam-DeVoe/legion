@@ -1213,6 +1213,14 @@ func TestALinkInAnotherCaseOfAHeldURLIsTaken(t *testing.T) {
 	want("create owner/repo#9", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#9"}, "alice"), http.StatusOK, three)
 	want(three+" links another URL beside its own", link(three, "https://github.com/Owner/Repo/issues/9", "https://github.com/owner/repo/pull/8"), http.StatusOK)
 	want("resolve owner/repo#10", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%2310", nil, "alice"), http.StatusNotFound)
+	// A link of a name GitHub cannot have, an owner that starts with `-`, names no pull request
+	// (the link rule), so a reference finds it only as the URL the reference reads as, the
+	// /issues/ form that the external create stores: its /pull/ URL is another URL, which the
+	// reference does not name. At the head before, the reference read the /pull/ URL too and
+	// answered #12's issue. The control is #14 in its /issues/ form, which the reference finds.
+	want(four+" links URLs of a name GitHub cannot have", link(four, "https://github.com/-acme/widgets/pull/12", "https://github.com/-acme/widgets/issues/14"), http.StatusOK)
+	want("resolve -acme/widgets#12", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=-acme/widgets%2312", nil, "alice"), http.StatusNotFound)
+	want("resolve -acme/widgets#14", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=-acme/widgets%2314", nil, "alice"), http.StatusOK, four)
 
 	if _, err := database.Pool.Exec(context.Background(), `insert into issue_external_links (issue_key, url, kind) values
 		($1, 'https://github.com/owner/repo/pull/11', 'github'), ($2, 'https://github.com/Owner/Repo/pull/11', 'github')`, five, six); err != nil {

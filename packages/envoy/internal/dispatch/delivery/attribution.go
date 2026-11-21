@@ -152,15 +152,6 @@ const attributionSubjects = `subjects as (
 // (pull_request_texts_keys): an overlap of the list with an array under "C" reads no index.
 const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 
-// LinkURLAsPullRequestSQL is column, a link's URL, with an /issues/N ending read as /pull/N: the one
-// form GitHub's two URLs of a pull request share (linkedPullRequest), lowercased by its caller. A
-// link in any other form is its own URL. api's link check and lock read a link that names no pull
-// request in it (linkFormsSQL), and dispatch attribution counts the links that two issues hold in
-// it where they name no pull request (ReadAttributionCounts).
-func LinkURLAsPullRequestSQL(column string) string {
-	return `regexp_replace(` + column + `, '/issues/([0-9]+)$', '/pull/\1', 'i')`
-}
-
 // attributedTerms is the statement's terms over judged, a query of (repo, number) under any
 // stored name, for the schema that holds the reading. A caller adds its own select over
 // `attributed`, one row for each judged pull request: repo (the canonical name), number,

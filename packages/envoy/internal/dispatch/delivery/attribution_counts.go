@@ -16,11 +16,13 @@ import (
 // whose keys another reading made. MovesQueued is the moves that wait for their events.
 // LinksInTwoCases is the links that more than one issue holds for one thing: one pull request
 // under any of its spellings, forms and names (linkedPullRequest, under its canonical name), or
-// one other URL in two letter cases. OwedFailures and
-// OwedRefusals count the pull requests whose head is not read while a read is owed: GitHub did
-// not answer the read, or GitHub refuses it. OwedFailuresOldestAt is the oldest time that a
-// failure is owed since. OwedRefusalsSince is the oldest time that a refusal is refused since, or
-// owed since where an older release owed it. Each time is nil where its count is 0.
+// one other URL in two letter cases, as the link check compares a link that names no pull
+// request (api's linkFormsSQL): the /pull/ and the /issues/ URL of a link the link rule refuses
+// are two URLs. OwedFailures and OwedRefusals count the pull requests whose head is not read
+// while a read is owed: GitHub did not answer the read, or GitHub refuses it.
+// OwedFailuresOldestAt is the oldest time that a failure is owed since. OwedRefusalsSince is the
+// oldest time that a refusal is refused since, or owed since where an older release owed it. Each
+// time is nil where its count is 0.
 type AttributionCounts struct {
 	FactsLeft            int        `json:"facts_left"`
 	ReadsLeft            int        `json:"reads_left"`
@@ -52,7 +54,7 @@ var attributionCountsSelect = `
 		(select count(*) from pull_request_attribution_moves),
 		(select count(*) from (select coalesce(
 				(select lower(` + refs.CanonicalRepoSQL("lp.repo") + `) || '#' || lp.number from ` + LinkedPullRequestSQL("l.url") + ` lp),
-				lower(` + LinkURLAsPullRequestSQL("l.url") + `))
+				lower(l.url))
 			from issue_external_links l group by 1 having count(distinct l.issue_key) > 1) tie)`
 
 // ReadAttributionCounts counts, at the call, what the attribution of the stored pull requests

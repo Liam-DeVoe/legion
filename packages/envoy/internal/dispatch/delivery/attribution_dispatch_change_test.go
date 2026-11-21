@@ -168,21 +168,30 @@ func TestAPullRequestTwoIssuesLinkInItsTwoFormsServesTheFirstKey(t *testing.T) {
 // the links in two cases, as it counts the pull request's two forms (links_in_two_cases groups a
 // link under its canonical name, refs.CanonicalRepoSQL). acme/old is renamed to acme/new. The
 // control is the pair of ACME-193 and ACME-194, which link two pull requests, one by each name,
-// and count nothing.
+// and count nothing. A link the link rule refuses, of `acme/.git`, whose name is empty once `.git`
+// is trimmed, names no pull request, so it is its own URL, as the link check compares it
+// (api's linkFormsSQL): ACME-195 and ACME-196, which hold its /pull/5 and its /issues/5 URL, hold
+// two URLs and count nothing, and ACME-197 and ACME-198, which hold its /pull/6 URL in two letter
+// cases, count once. At the head before, the count read such a link's /issues/ URL as its /pull/
+// one, and counted ACME-195 and ACME-196 too.
 func TestTwoIssuesThatLinkAPullRequestUnderTwoNamesCountOnceInTwoCases(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	statementIssues(t, ctx, pool, "RENM-1", "ACME-191", "ACME-192", "ACME-193", "ACME-194")
+	statementIssues(t, ctx, pool, "RENM-1", "ACME-191", "ACME-192", "ACME-193", "ACME-194", "ACME-195", "ACME-196", "ACME-197", "ACME-198")
 	renameStatementRepo(t, ctx, pool)
 	changeIssueLink(t, ctx, pool, "ACME-191", "https://github.com/acme/new/pull/191", "url", true)
 	changeIssueLink(t, ctx, pool, "ACME-192", "https://github.com/acme/old/pull/191", "url", true)
 	changeIssueLink(t, ctx, pool, "ACME-193", "https://github.com/acme/new/pull/193", "url", true)
 	changeIssueLink(t, ctx, pool, "ACME-194", "https://github.com/acme/old/pull/194", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-195", "https://github.com/acme/.git/pull/5", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-196", "https://github.com/acme/.git/issues/5", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-197", "https://github.com/acme/.git/pull/6", "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-198", "https://github.com/ACME/.GIT/pull/6", "url", true)
 	counts, err := ReadAttributionCounts(ctx, pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts.LinksInTwoCases != 1 {
-		t.Errorf("dispatch attribution counts %d links in two cases, want 1: acme/new#191 under its two names", counts.LinksInTwoCases)
+	if counts.LinksInTwoCases != 2 {
+		t.Errorf("dispatch attribution counts %d links in two cases, want 2: acme/new#191 under its two names, and acme/.git/pull/6 in two letter cases", counts.LinksInTwoCases)
 	}
 }
 
