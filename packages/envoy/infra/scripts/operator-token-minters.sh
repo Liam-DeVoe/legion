@@ -101,11 +101,15 @@
 #                     service account a pair is bound to. The guarded pairs are the operator's
 #                     (--namespace/--service-account), the broker's (--broker-workload) and each
 #                     --guarded <namespace>/<service account>, such as a route password reader
-#                     reached the same way. On every
-#                     cluster of the pool (the operator's, every other cluster of the project, and
-#                     every member cluster of the pool project's fleet) no principal the step
-#                     reviews may create a namespace cluster-wide, or a ServiceAccount or a pod in a
-#                     guarded pair's namespace; each finding's right names the pairs it guards. On
+#                     reached the same way. On every cluster of the pool (the operator's, every other
+#                     cluster of the project, and every member cluster of the pool project's fleet)
+#                     no principal the step reviews may create a namespace cluster-wide, or a
+#                     ServiceAccount or a pod in a guarded pair's namespace, nor hold an escalation
+#                     right by which it grants itself one: impersonate users, groups and
+#                     serviceaccounts, escalate and bind clusterroles, and create and patch
+#                     clusterrolebindings, cluster-wide; bind and escalate roles and create and
+#                     patch rolebindings in a guarded pair's namespace. Each finding's right names
+#                     the pairs it guards. On
 #                     every cluster but the operator's, a guarded pair's namespace must not exist
 #                     either, and the principals are that cluster's ServiceAccounts outside its
 #                     system namespaces (kube-system, gke-*, gmp-*), with their groups, and its

@@ -56,6 +56,76 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate groups cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate groups cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate groups cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate serviceaccounts cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate serviceaccounts cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate serviceaccounts cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate clusterroles.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate clusterroles.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate clusterroles.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create clusterrolebindings.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create clusterrolebindings.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
       "role": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -71,6 +141,46 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "create pods in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
@@ -96,6 +206,46 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
       "role": "create serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -111,6 +261,46 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "create pods in secrets-broker, guarding secrets-broker/secrets-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },

@@ -143,7 +143,10 @@ rights_json() {
 # the pool, as rights_json writes rights: create namespaces cluster-wide, and for each guarded
 # pair's namespace, create serviceaccounts and create pods there. A pod in the namespace runs as
 # any ServiceAccount of it, and the ServiceAccount is the pair the pool binds, so either lets its
-# maker act as the pair's Google service account. Each label names the pairs the namespace holds.
+# maker act as the pair's Google service account. Beside them, the escalation rights by which a
+# holder grants itself any of those: impersonate users, groups and serviceaccounts, escalate and
+# bind clusterroles, and create and patch clusterrolebindings, cluster-wide; bind and escalate roles
+# and create and patch rolebindings in each guarded namespace (guard-rights.jq).
 GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq")"
 GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
 GUARDED_TEXT="${GUARDED_TEXT%, }"

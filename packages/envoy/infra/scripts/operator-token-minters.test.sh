@@ -121,7 +121,11 @@
 #   (al) a run that stops mid-way leaves an UNKNOWN report, never the old one, and a usage error
 #        leaves none;
 #   (am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it, beside two that
-#        match.
+#        match;
+#   (an) each escalation right alone, given to ci/runner on another cluster of the pool (impersonate
+#        users, groups and serviceaccounts, escalate and bind clusterroles, create and patch
+#        clusterrolebindings cluster-wide; bind and escalate roles and create and patch rolebindings
+#        in envoy-operator), exits 1 naming it.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -1454,6 +1458,40 @@ if row am; then
   want_line "UNKNOWN live: RBAC on operator-cluster: --agent-namespace legion-*-session matches no namespace that holds a ServiceAccount, so the agents it was to name are not reviewed as agents" \
     "a mistyped --agent-namespace beside two that match"
   passed "(am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it"
+fi
+
+# --- (an) The escalation rights on another cluster of the pool, each alone. Each entry is the grant
+# (verb, API group, resource, the binding's namespace or none for cluster-wide) and the right the
+# run must name. ---
+escalation_rights=(
+  "impersonate||users|=impersonate users cluster-wide"
+  "impersonate||groups|=impersonate groups cluster-wide"
+  "impersonate||serviceaccounts|=impersonate serviceaccounts cluster-wide"
+  "escalate|rbac.authorization.k8s.io|clusterroles|=escalate clusterroles.rbac.authorization.k8s.io cluster-wide"
+  "bind|rbac.authorization.k8s.io|clusterroles|=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
+  "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "patch|rbac.authorization.k8s.io|clusterrolebindings|=patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "bind|rbac.authorization.k8s.io|roles|envoy-operator=bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "escalate|rbac.authorization.k8s.io|roles|envoy-operator=escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "create|rbac.authorization.k8s.io|rolebindings|envoy-operator=create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "patch|rbac.authorization.k8s.io|rolebindings|envoy-operator=patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+)
+escalation_row() {
+  local right="${1#*=}" verb group resource namespace
+  IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
+  base_world
+  add_cluster other-cluster us-east1
+  add_sa other-cluster ci runner
+  subject_grant other-cluster "$(sa_subject ci runner)" "$verb" "$group" "$resource" "" "$namespace" ""
+  run
+  want_status 1 "ci/runner with $right on other-cluster"
+  want_line "FINDING system:serviceaccount:ci:runner: $right on cluster $project/us-east1/other-cluster" "ci/runner with $right on other-cluster"
+  [ "$(count_prefix 'FINDING system:serviceaccount:ci:runner: ')" -eq "$(count_prefix 'FINDING ')" ] ||
+    fail "ci/runner with $right on other-cluster: a finding names another principal"
+}
+if row an; then
+  each escalation_row "${escalation_rights[@]}"
+  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given alone to ci/runner on another cluster of the pool, exits 1 naming it"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

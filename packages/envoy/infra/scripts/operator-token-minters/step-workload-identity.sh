@@ -57,7 +57,7 @@ read_other_cluster() {
   elif judge_reviews "$cstep" "$where" "$principal"; then
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
-      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $BOUND binding subjects and anyone unauthenticated may make a namespace, or a ServiceAccount, a pod or a custom resource in a guarded namespace"
+      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, or hold an escalation right"
   fi
 }
 
