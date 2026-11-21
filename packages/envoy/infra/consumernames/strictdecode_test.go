@@ -259,18 +259,19 @@ func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 	}
 }
 
-// For each malformed value (malformedCases), cleanup under a held row is UNKNOWN, exit 2, naming the
-// key, and deletes nothing: ses_a's retired session~<nuid>, which the server holds, stays on the
-// stream and in ses_a's record. Control: today's decode takes each value (malformedCase.lenient),
-// and cleanup on it deletes that retired name (shown by an overlay run of today's decode). The
-// copied record waits on the library's records carrying their own key.
+// For each malformed value (malformedCases), cleanup in a consumer-cleanup hold is UNKNOWN, exit 2,
+// naming the key, and deletes nothing: ses_a's retired session~<nuid>, which the server holds,
+// stays on the stream and in ses_a's record, and its stop entry records the run unchanged.
+// Control: today's decode takes each value (malformedCase.lenient), and cleanup on it deletes that
+// retired name (shown by an overlay run of today's decode). The copied record waits on the
+// library's records carrying their own key.
 func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
 			h := newStack(t)
 			ctx := t.Context()
 			h.database(familyDispatch, dispatchMigrations...)
-			id := h.heldHold(holdrecord.WorkflowStreamsCensus)
+			id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
 			nc, js := h.operator()
 			censusNotificationStream(t, js)
 			_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
@@ -291,6 +292,9 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 			require.Contains(t, stderr, "UNKNOWN")
 			require.Contains(t, stderr, c.key)
 			require.NotContains(t, stdout, "deleted")
+			last := h.lastEntry(id, "")
+			require.Equal(t, "consumer-names cleanup stop", last.Command+" "+last.State, "the UNKNOWN cleanup ends in its stop entry")
+			require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
 			nc, _ = h.operator()
 			require.Contains(t, censusConsumers(t, nc), retired, "the refused cleanup deleted ses_a's retired name")
 			record, _, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(ctx, "ses_a")

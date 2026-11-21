@@ -16,8 +16,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -743,4 +745,41 @@ func TestAnEnrolledStoreLetsTheDaemonCountItsFloor(t *testing.T) {
 	require.Equal(t, []uint64{next}, enrollFetch(t, e2.js, e2.current, 1), "the enrolled daemon counts its last floor: its new consumer starts after it and hands over nothing it acknowledged")
 	require.Equal(t, append(append([]uint64{}, after...), next), enrollFetch(t, b2.js, b2.current, 4),
 		"control: the bare store's daemon cannot count its floor: its new consumer starts at the record's saved start and hands over again what it acknowledged")
+}
+
+// enroll refuses a store whose address, a database on an instance, another daemon's Deployment
+// names too, as the census's readers of the daemon stores refuse it: with the project's Deployment
+// and another project's naming its store's one database, enroll writes a stop entry naming both
+// Deployments and both projects and recording the run unchanged, writes neither the store's marker
+// nor the broker's cutover record, and the hold is released. Control: with the other Deployment
+// naming another database, the same enroll is done and marks the store.
+func TestEnrollRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
+	h := newStack(t)
+	ctx := context.Background()
+	const project, other = "ENRSHARE", "ENROTHER"
+	db := h.database(daemonFamily(project), daemonMigrations...)
+	h.replaceNotificationStream()
+	h.enrollWindow()
+	database := db.Config().ConnConfig.Database
+	h.censusDeploy(censusDeploymentOf(project, db))
+	sharer := censusDeployment(other, database, censusInstance)
+	h.censusDeploy(sharer)
+	h.enrollRequireStopped(project, selection.NewPGStore(db), daemonFamily(project)+"'s store address is shared",
+		"legion/legion-daemon-enrshare (project ENRSHARE)", "legion/legion-daemon-enrother (project ENROTHER)",
+		fmt.Sprintf("each name database %q on instance %q", database, censusInstance))
+
+	// Control: the other Deployment names another database.
+	deployments := h.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace)
+	rendered, err := deployments.Get(ctx, sharer.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	rendered.Annotations[writerhold.DaemonStoreDatabaseAnnotation] = "daemon_enrother"
+	_, err = deployments.Update(ctx, rendered, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	id := h.heldHold(holdrecord.WorkflowEnroll)
+	code, stdout, stderr := h.enrollRun(id, project)
+	require.Equal(t, 0, code, "control: enroll beside a Deployment at another address: %s%s", stdout, stderr)
+	state, err := selection.NewPGStore(db).State(ctx)
+	require.NoError(t, err)
+	require.Equal(t, id, state.Hold, "control: the enroll marked the store")
+	require.NoError(t, h.release(id))
 }

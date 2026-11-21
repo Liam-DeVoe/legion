@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -11,7 +12,6 @@ import (
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // replaceMaxName is NATS's limit on a consumer's name (nats-server JSMaxNameLen), and
@@ -46,8 +46,14 @@ const (
 // nothing acknowledges a message, so the new current's floor is its start minus one, and the rerun
 // starts at the same sequence.
 //
-// No workflow's table names the command (internal/holdrecord/table.go, tableFor), so it writes no
-// journal entry, and a hold that ran it is released by its own workflow's rule.
+// It is a command of the hold's consumer-cleanup workflow (consumerCleanupAdmit, input listener):
+// its intent is its admission, after the held re-read, and its done entry names the durable, the
+// name it replaced and the new current with its start. A refusal or an UNKNOWN after its intent
+// writes its stop, which records what every run of the command in this hold left
+// (admission.stopped): nothing while no run wrote a record or made or deleted a consumer, the
+// bucket barrier's key, the hold's own, aside (as writerhold's census counts it). A Step 0 that
+// settled an open operation wrote the record, and a Replace that failed may have reserved, created
+// or published a name, so a stop after either records the record.
 func (r *run) replaceListener(ctx context.Context) error {
 	if err := core.CheckMachineID("--listener", r.o.listener); err != nil {
 		return err
@@ -60,59 +66,79 @@ func (r *run) replaceListener(ctx context.Context) error {
 	if !ok || m.Family != familySession {
 		return fmt.Errorf("--listener: %s is no listener durable's name", durable)
 	}
-	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
-		return err
-	}
-	nc, _, err := r.conn(ctx)
+	a, err := r.consumerCleanupAdmit(ctx, replaceCommand, map[string]string{"listener": r.o.listener})
 	if err != nil {
 		return err
+	}
+	const nothing = "this run wrote no record and made or deleted no consumer"
+	nc, _, err := r.conn(ctx)
+	if err != nil {
+		return a.stopped(ctx, err, true, nothing)
 	}
 	// The bucket barrier reads the bucket's stream leader first, which a missing bucket answers
 	// UNKNOWN; a missing bucket is replace's refusal.
 	if _, err := streamInfo(ctx, nc, selectionStreamName); apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
-		return fmt.Errorf("the selection bucket %s is missing, so %s has no record to replace by: %w", selection.SessionBucket, durable, err)
+		return a.stopped(ctx, fmt.Errorf("the selection bucket %s is missing, so %s has no record to replace by: %w", selection.SessionBucket, durable, err), true, nothing)
 	} else if err != nil {
-		return unknownf(err, "the info of %s", selectionStreamName)
+		return a.stopped(ctx, unknownf(err, "the info of %s", selectionStreamName), true, nothing)
 	}
 	store, err := r.store(ctx, familySession)
 	if err != nil {
-		return err
+		return a.stopped(ctx, err, true, nothing)
 	}
 	names := replaceNames(nc, store, m, r.o.holdID)
 	var sel selection.Selection
-	var selected error
+	var selected, read error
+	var before selection.Record
+	var revision uint64
 	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+		before, revision, read = store.Read(ctx, m.Logical)
 		sel, selected = names.Select(ctx, m.Logical, nil)
 		return nil
 	}); err != nil {
-		return err
+		return a.stopped(ctx, err, true, nothing)
+	}
+	// Step 0 writes the record only when it holds an open operation: settled is whether this
+	// run's Select may have written it, a record it could not read first counting as one it may.
+	settled := (read != nil && !errors.Is(read, selection.ErrNoRecord) && !errors.Is(read, selection.ErrRecordDeleted)) ||
+		(read == nil && before.Op != nil && (selected != nil || sel.Revision != revision))
+	account := nothing
+	if settled {
+		account = fmt.Sprintf("this run's Step 0 may have settled the open operation of %s's record %s", durable, m.Logical)
 	}
 	switch {
 	case errors.Is(selected, selection.ErrCutoverNotRun):
-		return fmt.Errorf("%s: the selection bucket's sentinel does not read cutover done, so the listener's durable is its fixed name, which replace does not take: %w", durable, selected)
+		return a.stopped(ctx, fmt.Errorf("%s: the selection bucket's sentinel does not read cutover done, so the listener's durable is its fixed name, which replace does not take: %w", durable, selected), !settled, account)
 	case selected != nil:
-		return fmt.Errorf("%s's selection record (%s): %w", durable, m.Logical, selected)
+		return a.stopped(ctx, fmt.Errorf("%s's selection record (%s): %w", durable, m.Logical, selected), !settled, account)
 	case sel.Record.Current == "":
-		return fmt.Errorf("%s's selection record (%s) selects no current: the listener's start creates its durable at the record's start", durable, m.Logical)
+		return a.stopped(ctx, fmt.Errorf("%s's selection record (%s) selects no current: the listener's start creates its durable at the record's start", durable, m.Logical), !settled, account)
 	case sel.Missing:
-		return fmt.Errorf("%s's selection record (%s) selects %s, which %s does not hold: the listener's start creates it again at the start the record proves", durable, m.Logical, sel.Record.Current, notifications)
+		return a.stopped(ctx, fmt.Errorf("%s's selection record (%s) selects %s, which %s does not hold: the listener's start creates it again at the start the record proves", durable, m.Logical, sel.Record.Current, notifications), !settled, account)
 	}
 	old, info := sel.Record.Current, sel.Info
 	stream, err := streamInfo(ctx, nc, notifications)
 	if err != nil {
-		return unknownf(err, "the info of %s", notifications)
+		return a.stopped(ctx, unknownf(err, "the info of %s", notifications), !settled, account)
 	}
 	start := clampStart(info.AckFloor.Stream+1, stream.State)
 	replaced, err := names.Replace(ctx, sel, start, replaceCreate(nc, info.Config, m))
 	if err != nil {
-		return fmt.Errorf("replace %s (%s) at %d: %w", old, durable, start, err)
+		return a.stopped(ctx, fmt.Errorf("replace %s (%s) at %d: %w", old, durable, start, err), false,
+			fmt.Sprintf("this run's replace of %s may have reserved, created or published a fresh name in %s's record %s, which its rerun settles (Step 0)", old, durable, m.Logical))
 	}
 	deleted, err := replaceDeleteRetired(ctx, nc, replaced.Record)
 	if err != nil {
-		return fmt.Errorf("%s is %s's current at %d, and %w", replaced.Record.Current, durable, replaced.Record.Start, err)
+		return a.stopped(ctx, fmt.Errorf("%s is %s's current at %d, and %w", replaced.Record.Current, durable, replaced.Record.Start, err), false,
+			fmt.Sprintf("this run replaced %s by %s in %s's record %s, and deleted %d of its retired names", old, replaced.Record.Current, durable, m.Logical, deleted))
 	}
 	fmt.Fprintf(r.stdout, "replace: %s (record %s): %s replaced by %s at stream sequence %s; %s retired; deleted %d retired name(s) the server held\n",
 		durable, m.Logical, old, replaced.Record.Current, formatSeq(replaced.Record.Start), old, deleted)
+	outputs := map[string]string{"durable": durable, "replaced": old, "current": replaced.Record.Current,
+		"start": formatSeq(replaced.Record.Start), "deleted": strconv.Itoa(deleted)}
+	if err := a.done(ctx, outputs); err != nil {
+		return unknownf(err, "%s's done entry, after it replaced %s by %s", a.command, old, replaced.Record.Current)
+	}
 	return nil
 }
 

@@ -1317,10 +1317,6 @@ func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLe
 	return what
 }
 
-// restoreLeftListed bounds how many names each list of a stop entry's account names; the rest are
-// counted, and each record's restore field holds its own phase.
-const restoreLeftListed = 32
-
 // restoreLeft is what one run of a restore command changed outside the journal, which its stop
 // entry names, so whoever reads a stopped hold knows what the run left before acting: each record
 // it wrote, by the phase it last wrote there, each consumer it deleted or found gone, each target
@@ -1356,17 +1352,17 @@ func (l *restoreLeft) String() string {
 			}
 		}
 		if len(names) > 0 {
-			parts = append(parts, "records at "+phase+": "+restoreListed(names))
+			parts = append(parts, "records at "+phase+": "+listNames(names))
 		}
 	}
 	if len(l.deleted) > 0 {
-		parts = append(parts, "consumers deleted or found gone: "+restoreListed(l.deleted))
+		parts = append(parts, "consumers deleted or found gone: "+listNames(l.deleted))
 	}
 	if len(l.created) > 0 {
-		parts = append(parts, "targets created: "+restoreListed(l.created))
+		parts = append(parts, "targets created: "+listNames(l.created))
 	}
 	if len(l.marked) > 0 {
-		parts = append(parts, "rolled_back now: "+restoreListed(l.marked))
+		parts = append(parts, "rolled_back now: "+listNames(l.marked))
 	}
 	if len(parts) == 0 {
 		return "this run changed no selection record, consumer, cutover row or store marker"
@@ -1378,11 +1374,6 @@ func (l *restoreLeft) String() string {
 func (l *restoreLeft) empty() bool {
 	return len(l.phases) == 0 && len(l.deleted) == 0 && len(l.created) == 0 && len(l.marked) == 0
 }
-
-// restoreStopLeftKey is the key of a stop entry's outputs that holds what its command left, as
-// holdrecord's AppendStopLeft writes it (internal/holdrecord/journal.go, stopLeftKey, which
-// holdrecord does not export).
-const restoreStopLeftKey = "left"
 
 // journal is what a's stop entry records as left (holdrecord's AppendStopLeft): this run's
 // account together with every earlier run of a's command in this hold (restoreJournalLeft). It
@@ -1403,64 +1394,13 @@ func (l *restoreLeft) journal(ctx context.Context, a *admission) string {
 }
 
 // restoreJournalLeft is what a stop of command records as left, from d, the hold's journal with
-// this run's intent as command's latest entry, and l, this run's account. It is
-// holdrecord.LeftUnchanged only when no run of command in this hold changed anything outside the
-// journal: for restore --prepare while no run has saved the restore set (setSaved false), since
-// each of its changes outside the journal follows that save; for every command when this run
-// changed nothing and each earlier run of the command ended in a stop that recorded unchanged. A
-// done entry and a run cut after its intent (an intent the command's next intent follows) count as
-// changes. Otherwise it is this run's account and how each earlier run ended; an earlier stop's own
-// account is in that stop entry, so it is named, not copied, and the text does not grow with each
-// rerun.
+// this run's intent as command's latest entry, and l, this run's account: holdrecord.LeftUnchanged
+// for restore --prepare while no run has saved the restore set (setSaved false), since each of its
+// changes outside the journal follows that save; otherwise what every run of command in this hold
+// left (journalLeft).
 func restoreJournalLeft(d holdrecord.Done, command string, setSaved bool, l *restoreLeft) string {
 	if command == restoreCommandPrepare && !setSaved {
 		return holdrecord.LeftUnchanged
 	}
-	var ops []holdrecord.Operation
-	for _, op := range d.Ops {
-		if op.Command == command {
-			ops = append(ops, op)
-		}
-	}
-	// The latest entry is this run's intent; every intent before it began an earlier run.
-	if n := len(ops); n > 0 && ops[n-1].State == "intent" {
-		ops = ops[:n-1]
-	}
-	unchanged := l.empty()
-	var earlier []string
-	for i, op := range ops {
-		if op.State != "intent" {
-			continue
-		}
-		end, leftNothing := "ended with no entry (cut after its intent), and the records hold what it wrote", false
-		if i+1 < len(ops) {
-			switch next := ops[i+1]; {
-			case next.State == "stop" && next.Outputs[restoreStopLeftKey] == holdrecord.LeftUnchanged:
-				end, leftNothing = "stopped, and its stop recorded it left nothing changed", true
-			case next.State == "stop" && next.Outputs[restoreStopLeftKey] != "":
-				end = "stopped, and its stop entry records what it left"
-			case next.State == "stop":
-				end = "stopped, and its stop recorded nothing of what it left"
-			case next.State == "done":
-				end = "is done"
-			}
-		}
-		unchanged = unchanged && leftNothing
-		earlier = append(earlier, fmt.Sprintf("run %d %s", len(earlier)+1, end))
-	}
-	switch {
-	case unchanged:
-		return holdrecord.LeftUnchanged
-	case len(earlier) == 0:
-		return l.String()
-	}
-	return l.String() + "; earlier runs of " + command + " in this hold: " + restoreListed(earlier)
-}
-
-// restoreListed is names joined, at most restoreLeftListed of them, and how many more.
-func restoreListed(names []string) string {
-	if len(names) <= restoreLeftListed {
-		return strings.Join(names, ", ")
-	}
-	return fmt.Sprintf("%s and %d more", strings.Join(names[:restoreLeftListed], ", "), len(names)-restoreLeftListed)
+	return journalLeft(d, command, l.empty(), l.String())
 }

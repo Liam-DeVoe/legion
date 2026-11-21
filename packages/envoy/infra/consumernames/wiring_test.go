@@ -82,13 +82,14 @@ func TestEveryHeldCommandReachesTheHubThroughItsFlags(t *testing.T) {
 		workflow holdrecord.Workflow
 		args     func(h *stack) []string
 		// bucket is a workflow whose re-read reads the selection bucket present, so the row makes it
-		// (the rollback and enroll workflows run after a cutover made it).
+		// (the rollback, enroll, sentinel-repair and consumer-cleanup workflows run after a cutover
+		// made it).
 		bucket bool
 	}{
 		{"create-bucket", holdrecord.WorkflowCutover, func(*stack) []string { return []string{actionCreateBucket} }, false},
 		{"convert", holdrecord.WorkflowCutover, func(*stack) []string { return []string{actionConvert} }, false},
-		{"cleanup", holdrecord.WorkflowCutover, func(*stack) []string { return []string{actionCleanup} }, false},
-		{"replace", holdrecord.WorkflowCutover, func(*stack) []string { return []string{actionReplace, "--listener", "hub"} }, false},
+		{"cleanup", holdrecord.WorkflowConsumerCleanup, func(*stack) []string { return []string{actionCleanup} }, true},
+		{"replace", holdrecord.WorkflowConsumerCleanup, func(*stack) []string { return []string{actionReplace, "--listener", "hub"} }, true},
 		{"create-bucket --after-loss", holdrecord.WorkflowSelectionRecovery, func(*stack) []string {
 			return []string{actionCreateBucket, "--after-loss"}
 		}, false},

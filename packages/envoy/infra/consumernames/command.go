@@ -20,6 +20,7 @@ import (
 // The words of `envoy-infra consumer-names`.
 const (
 	actionStatus       = "status"
+	actionBackup       = "backup"
 	actionPrepare      = "prepare"
 	actionCreateBucket = "create-bucket"
 	actionReplay       = "replay"
@@ -32,20 +33,21 @@ const (
 )
 
 // actions are the words, in the usage's order.
-var actions = []string{actionStatus, actionPrepare, actionCreateBucket, actionReplay, actionConvert, actionCleanup,
+var actions = []string{actionStatus, actionBackup, actionPrepare, actionCreateBucket, actionReplay, actionConvert, actionCleanup,
 	actionRestore, actionReplace, actionEnroll, actionRepair}
 
-const usage = `usage: envoy-infra consumer-names status|prepare|create-bucket|replay|convert|cleanup|restore|replace|enroll|repair-sentinel [options]
+const usage = `usage: envoy-infra consumer-names status|backup|prepare|create-bucket|replay|convert|cleanup|restore|replace|enroll|repair-sentinel [options]
 
   status         [--hold ID]                               (the row released)
+  backup         --out DIR                                 (the row released, outside a hold)
   prepare        --hold ID                                 (the row prepare)
   create-bucket  --hold ID [--replicas N]                  (the row held, and every command below)
   create-bucket  --hold ID --after-loss [--replay-from SEQ] [--backup DIR] [--replicas N]
   replay         --hold ID --key K --from SEQ [--final]
   convert        --hold ID
-  cleanup        --hold ID
+  cleanup        --hold ID [--gone PROJECT-KEY] [--final]  (cleanup and replace: a consumer-cleanup hold)
   restore        --hold ID (--prepare | --finish | --key K --from SEQ)
-  replace        --hold ID --listener MACHINE-ID
+  replace        --hold ID --listener MACHINE-ID [--final]
   enroll         --hold ID --daemon PROJECT-KEY
   repair-sentinel --hold ID
 
@@ -58,6 +60,11 @@ const usage = `usage: envoy-infra consumer-names status|prepare|create-bucket|re
   restore --finish also restarts the hub's servers and needs --probe-token-file F, the hold probe's
   token. Dispatch's store: --dispatch-database-file F, a file holding its database URL with the
   operator's credential; each Legion daemon's: --daemon-database PROJECT-KEY=F, once per daemon.
+  backup makes --out DIR, refusing one that exists, writes into it the walk of
+  KV_envoy_session_consumers that create-bucket --after-loss --backup DIR loads, and prints its
+  sha256, which that recovery records. cleanup and replace run only in a consumer-cleanup hold,
+  whose record a run with --final completes; cleanup --gone P removes daemon P's consumers only when
+  its store, at the address P's Deployment names, answers that its database does not exist.
 
 Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN: a reading that is not
 whole, which is never a pass.
@@ -82,12 +89,14 @@ type options struct {
 	afterLoss            bool
 	replayFrom           uint64
 	backup               string
+	out                  string
 	key                  string
 	from                 uint64
 	final                bool
 	prepare, finish      bool
 	listener             string
 	daemon               string
+	gone                 string
 }
 
 // daemonDatabase is the database file --daemon-database names for project, and whether it names
@@ -176,13 +185,15 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags.BoolVar(&o.afterLoss, "after-loss", false, "create the selection bucket again after it was lost")
 	flags.Uint64Var(&o.replayFrom, "replay-from", 0, "where a key with no record starts after a loss (default the stream's first sequence)")
 	flags.StringVar(&o.backup, "backup", "", "a directory holding a backup of KV_"+bus.SessionConsumersBucket+" to restore first")
+	flags.StringVar(&o.out, "out", "", "backup's new directory, for the walk of KV_"+bus.SessionConsumersBucket)
 	flags.StringVar(&o.key, "key", "", "a logical name")
 	flags.Uint64Var(&o.from, "from", 0, "the stream sequence the logical name starts at")
-	flags.BoolVar(&o.final, "final", false, "replay's last entry of a selection recovery")
+	flags.BoolVar(&o.final, "final", false, "the last run: replay's of a selection recovery, cleanup's or replace's of a consumer cleanup")
 	flags.BoolVar(&o.prepare, "prepare", false, "restore's first step")
 	flags.BoolVar(&o.finish, "finish", false, "restore's last step")
 	flags.StringVar(&o.listener, "listener", "", "the listener's machine id")
 	flags.StringVar(&o.daemon, "daemon", "", "the Legion daemon's project key")
+	flags.StringVar(&o.gone, "gone", "", "cleanup's Legion daemon whose store is gone, by its project key: cleanup removes its consumers")
 	if err := flags.Parse(args[1:]); err != nil {
 		switch {
 		case errors.Is(err, flag.ErrHelp):
@@ -245,7 +256,12 @@ func (o options) usageProblem() string {
 	need("nats", len(o.NATS) > 0)
 	if o.action != actionStatus {
 		need("signing-key-secret", o.KeySecret != "")
+	}
+	if o.action != actionStatus && o.action != actionBackup {
 		need("hold", o.holdID != "")
+	}
+	if o.action == actionBackup && o.holdID != "" {
+		add("--hold is not backup's: backup runs outside a hold, with the row released")
 	}
 	if o.action == actionRestore && o.finish {
 		// restore --finish restarts every declared server and proves each refuses the hold's probe.
@@ -259,9 +275,13 @@ func (o options) usageProblem() string {
 	only(actionCreateBucket, "after-loss", o.afterLoss)
 	only(actionCreateBucket, "backup", o.backup != "")
 	only(actionCreateBucket, "replicas", o.replicas != 0)
+	only(actionBackup, "out", o.out != "")
 	only(actionReplace, "listener", o.listener != "")
 	only(actionEnroll, "daemon", o.daemon != "")
-	only(actionReplay, "final", o.final)
+	only(actionCleanup, "gone", o.gone != "")
+	if o.final && o.action != actionReplay && o.action != actionCleanup && o.action != actionReplace {
+		add("--final is replay's, cleanup's and replace's alone")
+	}
 	if o.action != actionReplay && o.action != actionRestore {
 		if o.key != "" || o.from != 0 {
 			add("--key and --from are replay's and restore's alone")
@@ -280,6 +300,8 @@ func (o options) usageProblem() string {
 		add("--replicas is 1 to 5")
 	}
 	switch o.action {
+	case actionBackup:
+		need("out", o.out != "")
 	case actionReplay:
 		need("key", o.key != "")
 		need("from", o.from != 0)
@@ -295,6 +317,12 @@ func (o options) usageProblem() string {
 		}
 		if (o.key != "") != (o.from != 0) {
 			add("--key and --from go together")
+		}
+	case actionCleanup:
+		if o.gone != "" {
+			if _, ok := o.daemonDatabase(o.gone); !ok {
+				add("--daemon-database " + o.gone + "=<file> is required: cleanup --gone reads that store at the address its Deployment names")
+			}
 		}
 	case actionReplace:
 		need("listener", o.listener != "")

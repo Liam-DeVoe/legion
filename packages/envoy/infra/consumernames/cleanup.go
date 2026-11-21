@@ -5,14 +5,50 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	selection "github.com/sjawhar/envoy/consumernames"
-	"github.com/sjawhar/envoy/natsgrant"
+	"github.com/sjawhar/envoy/infra/writerhold"
+	"github.com/sjawhar/envoy/internal/holdrecord"
 )
+
+// The consumer-cleanup workflow's commands as the hold's journal names them
+// (internal/holdrecord/table.go, consumerCleanupCommands): the word and the flag that picks its
+// mode, and each with finalSuffix for its run with --final, which completes the hold's record.
+const (
+	cleanupCommand     = "consumer-names cleanup"
+	cleanupGoneCommand = "consumer-names cleanup --gone"
+	replaceCommand     = "consumer-names replace"
+	finalSuffix        = " --final"
+)
+
+// consumerCleanupAdmit admits this run of command, one of the consumer-cleanup workflow's, as its
+// run with --final (command and finalSuffix) when the run names --final: the row read and the
+// held re-read (admit, requirePhase), then its intent with inputs. A hold of another workflow
+// refuses it at its intent, which it does not write (holdrecord.ErrNotAdmitted: that workflow's
+// table names no such command), and the refusal names the workflow the command runs in.
+func (r *run) consumerCleanupAdmit(ctx context.Context, command string, inputs map[string]string) (*admission, error) {
+	if r.o.final {
+		command += finalSuffix
+	}
+	a, err := r.admit(ctx, command, inputs)
+	if errors.Is(err, holdrecord.ErrNotAdmitted) {
+		return nil, fmt.Errorf("%s runs only in a %s hold: %w", command, holdrecord.WorkflowConsumerCleanup, err)
+	}
+	return a, err
+}
+
+// namesOrNone is names joined by ", " in their order, or "none".
+func namesOrNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
 
 // cleanupMaxConflicts is how many refused writes of one record cleanup reads again past before it
 // leaves the record for its next run.
@@ -25,33 +61,45 @@ type cleanupTarget struct {
 	store   selection.Store
 }
 
-// cleanup deletes, with the row held under --hold, the retired names of every family's records
-// that the server still holds, and drops from each record every retired name the server reports
-// absent: the session family's and every listener durable's records in the selection bucket,
-// walked behind the hold's bucket barrier (behindBarrier, writerhold.ReadBucket), and Dispatch's
-// and each daemon's intake_consumers rows. It is the one command that deletes a daemon's names,
-// whose grant has no consumer delete (§2, "Cleanup"). It deletes only names a record retired, never
-// a name the record still selects (its current, or its open operation's candidate or predecessor),
-// and never by a name pattern. Each record's write is conditional on the revision it read; a
-// refused write (selection.ErrConflict) reads the record again, which finds the names it deleted
-// absent.
+// cleanup is `consumer-names cleanup --hold <id> [--final]`, a command of the hold's
+// consumer-cleanup workflow (consumerCleanupAdmit), and `consumer-names cleanup --gone <project>`
+// (cleanupGone). It deletes, with the row held under --hold, the retired names of every family's
+// records that the server still holds, and drops from each record every retired name the server
+// reports absent: the session family's and every listener durable's records in the selection
+// bucket, walked behind the hold's bucket barrier (behindBarrier, writerhold.ReadBucket), and
+// Dispatch's and each daemon's intake_consumers rows. It is the one command that deletes a
+// daemon's names, whose grant has no consumer delete (§2, "Cleanup"). It deletes only names a
+// record retired, never a name the record still selects (its current, or its open operation's
+// candidate or predecessor), and never by a name pattern. Each record's write is conditional on
+// the revision it read; a refused write (selection.ErrConflict) reads the record again, which
+// finds the names it deleted absent.
 //
 // It reads every store before it deletes anything: a store a family needs that no flag names
 // refuses the run (Dispatch's, and each daemon's that the broker's cutover rows or
 // --daemon-database name), and a reading that is not whole is UNKNOWN; either way nothing is
 // deleted. It does not use selection.Names.Cleanup, which runs Step 0 on a record's open
 // operation (a creator's protocol, whose owner may be the process the hold stopped) and refuses a
-// store whose marker is not done, so it could not clean the names a rollback retired. No workflow
-// of the hold's table names cleanup (internal/holdrecord/table.go tableFor), so it writes no
-// journal entry. It runs the held re-read when it starts (requirePhase) and again before its first
-// delete.
+// store whose marker is not done, so it could not clean the names a rollback retired.
+//
+// Its intent is its admission, after the held re-read; it runs the re-read again before its first
+// delete, whose refusal leaves the intent pending for its rerun. Its done entry names each
+// consumer it deleted (deleted), how many records held a retired name (records) and how many
+// names it dropped from them (dropped). A refusal or an UNKNOWN after its intent writes its stop,
+// which records what every run of the command in this hold left (admission.stopped): nothing while
+// no run deleted a name or wrote a record, else this run's deletions and how each earlier run
+// ended.
 func (r *run) cleanup(ctx context.Context) error {
-	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
+	if r.o.gone != "" {
+		return r.cleanupGone(ctx)
+	}
+	a, err := r.consumerCleanupAdmit(ctx, cleanupCommand, nil)
+	if err != nil {
 		return err
 	}
+	const nothing = "this run deleted no consumer and wrote no record"
 	cutovers, err := r.records.Cutovers(ctx)
 	if err != nil {
-		return unknownf(err, "the broker's cutover rows")
+		return a.stopped(ctx, unknownf(err, "the broker's cutover rows"), true, nothing)
 	}
 	families := pgFamilies(r.o, cutovers)
 	var unnamed []string
@@ -61,34 +109,35 @@ func (r *run) cleanup(ctx context.Context) error {
 		}
 	}
 	if len(unnamed) > 0 {
-		return fmt.Errorf("cleanup reads every family's store before it deletes a name, and no flag names the store of %s (--dispatch-database-file, --daemon-database <project>=<file>)", strings.Join(unnamed, ", "))
+		return a.stopped(ctx, fmt.Errorf("cleanup reads every family's store before it deletes a name, and no flag names the store of %s (--dispatch-database-file, --daemon-database <project>=<file>)", strings.Join(unnamed, ", ")), true, nothing)
 	}
 	nc, _, err := r.conn(ctx)
 	if err != nil {
-		return unknownf(err, "the hub")
+		return a.stopped(ctx, unknownf(err, "the hub"), true, nothing)
 	}
 	targets, err := r.cleanupSessionTargets(ctx, nc)
 	if err != nil {
-		return err
+		return a.stopped(ctx, err, true, nothing)
 	}
 	for _, family := range families {
 		more, err := r.cleanupPGTargets(ctx, family)
 		if err != nil {
-			return err
+			return a.stopped(ctx, err, true, nothing)
 		}
 		targets = append(targets, more...)
 	}
 	// Every held command reads the hold again before its mutation steps (heldReread), not only
 	// when it starts: its refusal deletes nothing.
-	if err := r.heldReread(ctx); err != nil {
+	if err := a.reread(ctx); err != nil {
 		return err
 	}
 
-	var deletedAll, droppedAll int
+	var deletedAll []string
+	var droppedAll int
 	var failures []string
 	for _, target := range targets {
 		deleted, dropped, err := cleanupRecord(ctx, nc, target)
-		deletedAll += len(deleted)
+		deletedAll = append(deletedAll, deleted...)
 		droppedAll += len(dropped)
 		if len(deleted) > 0 || len(dropped) > 0 {
 			fmt.Fprintf(r.stdout, "cleanup %s %s: deleted %v, dropped from retired %v\n", target.family, target.logical, deleted, dropped)
@@ -97,9 +146,95 @@ func (r *run) cleanup(ctx context.Context) error {
 			failures = append(failures, fmt.Sprintf("%s %s: %v", target.family, target.logical, err))
 		}
 	}
-	fmt.Fprintf(r.stdout, "cleanup: %d records with retired names, %d names deleted, %d dropped from retired\n", len(targets), deletedAll, droppedAll)
+	fmt.Fprintf(r.stdout, "cleanup: %d records with retired names, %d names deleted, %d dropped from retired\n", len(targets), len(deletedAll), droppedAll)
 	if len(failures) > 0 {
-		return fmt.Errorf("cleanup left retired names for its next run: %s", strings.Join(failures, "; "))
+		// A delete or a record's write whose answer failed may have landed, so the stop never
+		// records this run unchanged.
+		account := fmt.Sprintf("this run deleted %s and dropped %d retired names from their records, and a failed delete or write may have landed",
+			namesOrNone(deletedAll), droppedAll)
+		return a.stopped(ctx, fmt.Errorf("cleanup left retired names for its next run: %s", strings.Join(failures, "; ")), false, account)
+	}
+	outputs := map[string]string{"records": strconv.Itoa(len(targets)), "deleted": namesOrNone(deletedAll), "dropped": strconv.Itoa(droppedAll)}
+	if err := a.done(ctx, outputs); err != nil {
+		return unknownf(err, "%s's done entry, after it deleted %s", a.command, namesOrNone(deletedAll))
+	}
+	return nil
+}
+
+// cleanupGone is `consumer-names cleanup --gone <project> --hold <id> [--final]`, a command of the
+// hold's consumer-cleanup workflow (consumerCleanupAdmit, input daemon): it removes the consumers
+// of a Legion daemon whose store is gone, which the census leaves (RecordedFreshNames, GoneNames),
+// and only then. Under its intent it lists the daemons' Deployments again (writerhold.
+// KubeDaemonDeployments, with the hold's own Kubernetes client) and reads the project's store by
+// the census's rule for the daemon stores (censusReadDaemonStores), at exactly the address the
+// project's Deployment names, from its --daemon-database file: only a server there answering
+// SQLSTATE 3D000, the database does not exist, makes the store gone. Any other reading refuses the
+// run, naming it, before anything is removed: a store that answers, one the rule leaves
+// unreconciled (an address that is not the Deployment's, or that another Deployment names too, a
+// server that does not answer, or answers another SQLSTATE, such as 57P01 or 57P03), and a listing
+// it cannot read. Then, after the held re-read again, it deletes every consumer of the notification
+// stream whose logical name is one of the daemon's (enrollLogicalNames, selection.LogicalOf), in
+// any form, fixed or fresh, naming each, and its done entry names the store and each removal. A
+// delete that fails stops the run, which records each consumer it removed before.
+func (r *run) cleanupGone(ctx context.Context) error {
+	project := r.o.gone
+	family := daemonFamily(project)
+	a, err := r.consumerCleanupAdmit(ctx, cleanupGoneCommand, map[string]string{"daemon": project})
+	if err != nil {
+		return err
+	}
+	const nothing = "this run removed no consumer"
+	op, err := r.operatorHub(ctx)
+	if err != nil {
+		return a.stopped(ctx, unknownf(err, "the daemons' Deployments"), true, nothing)
+	}
+	file, _ := r.o.daemonDatabase(project)
+	stores, closeStores, err := censusReadDaemonStores(ctx, writerhold.KubeDaemonDeployments(op.Hub.Client), []string{family}, []string{project + "=" + file})
+	defer closeStores()
+	switch {
+	case err != nil:
+		return a.stopped(ctx, unknownf(err, "%s's store, at the address its Deployment names", family), true, nothing)
+	case len(stores) != 1:
+		return a.stopped(ctx, unknownf(nil, "%s's store: the census's rule read %d stores, not one", family, len(stores)), true, nothing)
+	case stores[0].unreconciled != "":
+		return a.stopped(ctx, fmt.Errorf("--gone %s: %s's store is unreconciled, so nothing shows it is gone, and cleanup removes none of its consumers: %s", project, family, stores[0].unreconciled), true, nothing)
+	case stores[0].gone == nil:
+		return a.stopped(ctx, fmt.Errorf("--gone %s: %s's store answers at the address its Deployment names, so it is not gone, and cleanup removes none of its consumers", project, family), true, nothing)
+	}
+	gone := stores[0].gone
+	why := fmt.Sprintf("database %s on instance %s (the operator's file states %s): %s", gone.Database, gone.Instance, gone.StatedInstance, gone.Answer)
+	nc, _, err := r.conn(ctx)
+	if err != nil {
+		return a.stopped(ctx, unknownf(err, "the hub"), true, nothing)
+	}
+	listed, err := consumerNames(ctx, nc, notifications)
+	if err != nil {
+		return a.stopped(ctx, err, true, nothing)
+	}
+	logicals := enrollLogicalNames(project)
+	var targets []string
+	for _, name := range listed {
+		if slices.Contains(logicals, selection.LogicalOf(name)) {
+			targets = append(targets, name)
+		}
+	}
+	slices.Sort(targets)
+	if err := a.reread(ctx); err != nil {
+		return err
+	}
+	var removed []string
+	for _, name := range targets {
+		if err := deleteConsumer(ctx, nc, notifications, name); err != nil {
+			// A delete whose answer failed may have landed, so the stop never records this run unchanged.
+			return a.stopped(ctx, fmt.Errorf("cleanup --gone %s: the delete of %s: %w", family, name, err),
+				false, "this run removed "+namesOrNone(removed)+" from "+notifications+", and the delete of "+name+" may have landed")
+		}
+		removed = append(removed, name)
+		fmt.Fprintf(r.stdout, "cleanup --gone %s: removed %s consumer %s: store gone: %s\n", family, notifications, name, why)
+	}
+	fmt.Fprintf(r.stdout, "cleanup --gone %s: %d consumers removed; store gone: %s\n", family, len(removed), why)
+	if err := a.done(ctx, map[string]string{"gone." + family: why, "removed": namesOrNone(removed)}); err != nil {
+		return unknownf(err, "%s's done entry, after it removed %s", a.command, namesOrNone(removed))
 	}
 	return nil
 }

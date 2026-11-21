@@ -816,7 +816,7 @@ func TestRestoreJournalLeftCountsEveryRunOfTheCommand(t *testing.T) {
 	stop := func(command, left string) holdrecord.Operation {
 		outputs := map[string]string{"reason": "refused"}
 		if left != "" {
-			outputs[restoreStopLeftKey] = left
+			outputs[stopLeftKey] = left
 		}
 		return holdrecord.Operation{Command: command, State: "stop", Outputs: outputs}
 	}

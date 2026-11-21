@@ -190,13 +190,16 @@ func replaceFirstDelivered(t *testing.T, nc *nats.Conn, deliver string) uint64 {
 	return 0
 }
 
-// TestReplaceAListenerDurableAtItsFloor: `replace --listener M --hold ID` replaces the durable a
-// listener's record selects, one whose idle heartbeat the listener refuses, by a fresh name at the
-// sequence after its ack floor, retires the old name and deletes it; after the release the fresh
-// name delivers from that sequence, and so replays none of the messages the old name's listener
-// acknowledged. A rerun after a crash at each step of the replace (after its reservation, after
-// its create, after its publish) ends in the same state. A floor past the stream's end starts at
-// the stream's first sequence. Control: a consumer created as the README's delete-and-let-the-
+// TestReplaceAListenerDurableAtItsFloor: `replace --listener M --hold ID`, in a consumer-cleanup
+// hold, replaces the durable a listener's record selects, one whose idle heartbeat the listener
+// refuses, by a fresh name at the sequence after its ack floor, retires the old name and deletes
+// it; after the release the fresh name delivers from that sequence, and so replays none of the
+// messages the old name's listener acknowledged. Each run writes its intent and its done entry,
+// which names the name it replaced and the new current; a refused run writes its stop, recording
+// it changed nothing. A rerun after a crash at each step of the replace (after its reservation,
+// after its create, after its publish) ends in the same state. A floor past the stream's end starts
+// at the stream's first sequence. The last rerun, with --final, completes the hold's record, so
+// hold release follows. Control: a consumer created as the README's delete-and-let-the-
 // listener-recreate-it does (deliver policy all) hands over the stream's first message, which the
 // listener had acknowledged.
 func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
@@ -250,7 +253,7 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	require.Equal(t, 1, code)
 	require.Contains(t, stderr, "while the hold row is held, and it is released")
 
-	id := h.heldHold(holdrecord.WorkflowCutover)
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
 	nc, _ := h.operator()
 	created, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
@@ -272,6 +275,9 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	require.Contains(t, stderr, "selects no current")
 	nc, _ = h.replaceOp()
 	require.Empty(t, replaceNamesOf(t, nc, durable("replace-none")))
+	stop := h.lastEntry(id, "")
+	require.Equal(t, "consumer-names replace stop", stop.Command+" "+stop.State, "the refused replace ends in its stop entry")
+	require.Equal(t, holdrecord.LeftUnchanged, stop.Outputs["left"], "the refused replace's stop records it changed nothing")
 
 	code, stdout, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-main")
 	require.Equal(t, 0, code)
@@ -281,9 +287,13 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	require.Contains(t, stdout, main+" replaced by "+replaced+" at stream sequence 5")
 	nc, _ = h.replaceOp()
 	require.NotEqual(t, mainDeliver, replaceInfo(t, nc, replaced).Config.DeliverSubject, "the fresh name delivers to a new inbox")
-	for _, op := range h.journal(id).Ops {
-		require.NotContains(t, op.Command, actionReplace, "no workflow names replace, so it writes no journal entry")
-	}
+	done := h.lastEntry(id, "")
+	require.Equal(t, "consumer-names replace done", done.Command+" "+done.State)
+	require.Equal(t, map[string]string{"durable": durable("replace-main"), "replaced": main, "current": replaced, "start": "5"},
+		map[string]string{"durable": done.Outputs["durable"], "replaced": done.Outputs["replaced"], "current": done.Outputs["current"], "start": done.Outputs["start"]},
+		"the done entry names the name replaced and the new current")
+	require.Equal(t, map[string]string{"listener": "replace-main"}, cleanupIntentOf(h.journal(id), "consumer-names replace").Inputs, "the intent names the listener")
+	require.ErrorContains(t, h.release(id), "the record is not complete", "hold release before a run with --final")
 
 	t.Run("a rerun after a crash after the reservation", func(t *testing.T) {
 		code, _, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-crash-reserve")
@@ -311,10 +321,13 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 		require.Equal(t, 0, code)
 		h.replaceRequireReplaced(durable("replace-past-end"), 1, pastEnd)
 	})
-	t.Run("a rerun after a whole replace replaces again at the same start", func(t *testing.T) {
-		code, _, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-main")
+	t.Run("a rerun after a whole replace replaces again at the same start, and with --final completes the hold's record", func(t *testing.T) {
+		code, _, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-main", "--final")
 		require.Equal(t, 0, code)
 		h.replaceRequireReplaced(durable("replace-main"), acked+1, main, replaced)
+		last := h.lastEntry(id, "")
+		require.Equal(t, "consumer-names replace --final done", last.Command+" "+last.State)
+		require.True(t, h.journal(id).Complete, "the run with --final completes the hold's record")
 	})
 
 	// After the release, the main durable's current hands over the first message its listener had
@@ -343,7 +356,7 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 func TestReplaceAListenerDurableAtAFullCap(t *testing.T) {
 	h := newStack(t)
 	ctx := context.Background()
-	id := h.heldHold(holdrecord.WorkflowCutover)
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
 	nc, js := h.operator()
 	config := bus.NotificationStreamConfig(1, 0)
 	config.MaxConsumers = 2

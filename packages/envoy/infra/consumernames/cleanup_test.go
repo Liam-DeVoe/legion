@@ -1,6 +1,11 @@
 package consumernames
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -8,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
@@ -27,18 +33,21 @@ func cleanupPull(t *testing.T, nc *nats.Conn, name string) {
 	require.NoError(t, err, "create %s", name)
 }
 
-// cleanup, with the row held, deletes the retired names of every family that the server holds:
-// a session's, the listener durable's, and a daemon's, whose grant deletes no consumer; and drops
-// from each record every retired name the server reports absent, a deleted one included, so
-// Dispatch's absent retired name is dropped with no delete. It never deletes a record's current,
-// even one its retired list names, never a consumer no record retired (an unrecorded
-// session~<nuid> stays), and writes no journal entry, since no workflow names it. A second run
-// deletes nothing. Control: a run with no flag naming the store of a daemon the broker's cutover
-// rows name is refused before it deletes anything.
+// cleanup, with the row held in a consumer-cleanup hold, deletes the retired names of every family
+// that the server holds: a session's, the listener durable's, and a daemon's, whose grant deletes
+// no consumer; and drops from each record every retired name the server reports absent, a deleted
+// one included, so Dispatch's absent retired name is dropped with no delete. It never deletes a
+// record's current, even one its retired list names, and never a consumer no record retired (an
+// unrecorded session~<nuid> stays). Each run writes its intent and then its done entry, which
+// names each consumer it deleted; a second run deletes nothing, and its done entry says so.
+// Neither completes the hold's record, so hold release is refused until a run with --final, whose
+// done entry completes it, and the release then succeeds. Control: a run with no flag naming the
+// store of a daemon the broker's cutover rows name is refused before it deletes anything, and its
+// stop records that no run changed anything.
 func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
-	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
 	nc, js := h.operator()
 	h.notificationStream(js)
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
@@ -82,6 +91,9 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	code, _, stderr := h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url")
 	require.Equal(t, 1, code, "control: no flag names daemon/PROJ's store")
 	require.Contains(t, stderr, "no flag names the store of daemon/PROJ")
+	stop := h.lastEntry(id, "")
+	require.Equal(t, "consumer-names cleanup stop", stop.Command+" "+stop.State, "the refused cleanup ends in its stop entry")
+	require.Equal(t, holdrecord.LeftUnchanged, stop.Outputs["left"], "the refused cleanup's stop records it changed nothing")
 	// h.run closes the row's operator connections before a held command (closeOperators), so the
 	// row connects again after each.
 	nc, _ = h.operator()
@@ -104,9 +116,223 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	require.Empty(t, cleanupRetired(t, kv, listenerKey))
 	require.Empty(t, cleanupRetired(t, daemon, "legion-go-PROJ-github"))
 	require.Empty(t, cleanupRetired(t, dispatch, "delivery-events"))
-	require.Len(t, h.journal(id).Ops, before, "cleanup wrote a journal entry")
+	journal := h.journal(id)
+	require.Len(t, journal.Ops, before+4, "the refused run's intent and stop, and this run's intent and done entry")
+	require.Equal(t, "consumer-names cleanup intent", journal.Ops[before+2].Command+" "+journal.Ops[before+2].State)
+	done := journal.Ops[before+3]
+	require.Equal(t, "consumer-names cleanup done", done.Command+" "+done.State)
+	require.ElementsMatch(t, []string{sessionRetired, listenerOld, daemonRetired}, strings.Split(done.Outputs["deleted"], ", "),
+		"the done entry names each consumer the run deleted")
+	require.Equal(t, map[string]string{"records": "5", "dropped": "5"}, map[string]string{"records": done.Outputs["records"], "dropped": done.Outputs["dropped"]})
+	require.False(t, journal.Complete, "a run with no --final completed the hold's record")
+	require.ErrorContains(t, h.release(id), "the record is not complete", "hold release before a run with --final")
 
 	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url")
 	require.Equal(t, 0, code, "%s", stderr)
 	require.Contains(t, stdout, "cleanup: 1 records with retired names, 0 names deleted, 0 dropped from retired")
+	require.Equal(t, "none", h.lastEntry(id, "consumer-names cleanup").Outputs["deleted"], "the second run's done entry names no deletion")
+
+	code, _, stderr = h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url", "--final")
+	require.Equal(t, 0, code, "%s", stderr)
+	journal = h.journal(id)
+	last := journal.Ops[len(journal.Ops)-1]
+	require.Equal(t, "consumer-names cleanup --final done", last.Command+" "+last.State)
+	require.True(t, journal.Complete, "the run with --final completes the hold's record")
+	require.NoError(t, h.release(id), "hold release after the run with --final")
+	require.Equal(t, "released", string(h.row().Phase))
+}
+
+// cleanup, cleanup --gone and replace run only in a consumer-cleanup hold: with the row held in a
+// cutover hold, each, and each with --final, is refused at its admission, naming the workflow it
+// runs in and the hold's, and writes nothing: no journal entry, and the retired name cleanup would
+// delete stays on the stream. Control: today's cleanup under any held row runs in the cutover hold
+// and deletes that name (the red run, before the commands joined the workflow); the same cleanup
+// in a consumer-cleanup hold deletes it (TestTheCleanupDeletesOnlyRecordedRetiredNames).
+func TestTheConsumerCleanupCommandsRunOnlyInItsHold(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	h.database(familyDispatch, dispatchMigrations...)
+	id := h.heldHold(holdrecord.WorkflowCutover)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	const current, retired = "session~onlyInItsHoldCurrentAAA", "session~onlyInItsHoldRetiredBBB"
+	cleanupPull(t, nc, current)
+	cleanupPull(t, nc, retired)
+	kv := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	_, err = kv.Write(ctx, "ses_a", selection.Record{Current: current, Start: 2, Retired: []string{retired}}, 0)
+	require.NoError(t, err)
+	before := len(h.journal(id).Ops)
+
+	for _, args := range [][]string{
+		{actionCleanup, "--dispatch-database-file", "dispatch.url"},
+		{actionCleanup, "--dispatch-database-file", "dispatch.url", "--final"},
+		{actionCleanup, "--gone", "GONE", "--daemon-database", "GONE=/dev/null"},
+		{actionCleanup, "--gone", "GONE", "--daemon-database", "GONE=/dev/null", "--final"},
+		{actionReplace, "--listener", "hub"},
+		{actionReplace, "--listener", "hub", "--final"},
+	} {
+		code, stdout, stderr := h.run(append([]string{args[0], "--hold", id}, args[1:]...)...)
+		require.Equal(t, 1, code, "%v in a cutover hold: %s%s", args, stdout, stderr)
+		require.Contains(t, stderr, "runs only in a "+string(holdrecord.WorkflowConsumerCleanup)+" hold", "%v", args)
+		require.Contains(t, stderr, string(holdrecord.WorkflowCutover), "%v: the refusal names the hold's workflow", args)
+	}
+	require.Len(t, h.journal(id).Ops, before, "a refused admission wrote to the hold's journal")
+	nc, _ = h.operator()
+	require.Contains(t, censusConsumers(t, nc), retired, "a cleanup refused in a cutover hold deleted a retired name")
+}
+
+// consumer-names cleanup's and replace's flags: --final is replay's, cleanup's and replace's,
+// --gone cleanup's alone, and cleanup --gone <project> needs that project's --daemon-database
+// entry, the file it reads the store's address from; each misuse is a usage error naming it, exit
+// 2. Control: the same flags otherwise pass the usage check (a run whose env reaches nothing then
+// fails past it, exit 1).
+func TestTheConsumerCleanupFlags(t *testing.T) {
+	refused := env{records: func(context.Context, options, bool) (*holdrecord.Client, error) {
+		return nil, fmt.Errorf("this run reaches no broker")
+	}}
+	for _, row := range []struct {
+		name    string
+		args    []string
+		code    int
+		problem string
+	}{
+		{"cleanup with --final", []string{"cleanup", "--hold", "h1", "--final"}, 1, ""},
+		{"replace with --final", []string{"replace", "--hold", "h1", "--listener", "hub", "--final"}, 1, ""},
+		{"cleanup --gone with its store's file", []string{"cleanup", "--hold", "h1", "--gone", "P", "--daemon-database", "P=/dev/null"}, 1, ""},
+		{"cleanup --gone without its store's file", []string{"cleanup", "--hold", "h1", "--gone", "P"}, 2,
+			"envoy-infra consumer-names cleanup: --daemon-database P=<file> is required: cleanup --gone reads that store at the address its Deployment names"},
+		{"--gone on another word", []string{"replace", "--hold", "h1", "--listener", "hub", "--gone", "P"}, 2,
+			"envoy-infra consumer-names replace: --gone is cleanup's alone"},
+		{"--final on another word", []string{"convert", "--hold", "h1", "--final"}, 2,
+			"envoy-infra consumer-names convert: --final is replay's, cleanup's and replace's alone"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			full := append(append(append([]string{}, row.args...), commonArgs...), writingArgs...)
+			code := runCommand(context.Background(), full, &stdout, &stderr, refused)
+			require.Equal(t, row.code, code, stderr.String())
+			if row.problem == "" {
+				require.NotContains(t, stderr.String(), "usage:", "control: the flags did not pass the usage check")
+				return
+			}
+			require.Contains(t, stderr.String(), row.problem+"\n")
+		})
+	}
+}
+
+// cleanupGoneConsumer creates, as the operator on nc, a consumer named name of the notification
+// stream carrying logical as its logical name, as a daemon creates one.
+func cleanupGoneConsumer(t *testing.T, nc *nats.Conn, name, logical string) {
+	t.Helper()
+	_, err := writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{Durable: name, FilterSubject: bus.LegionWakeTopic,
+		AckPolicy: jetstream.AckExplicitPolicy, Metadata: map[string]string{selection.LogicalMetadataKey: logical}}, actionCreateConsumer)
+	require.NoError(t, err, "create %s", name)
+}
+
+// A daemon whose store is gone (its database answers SQLSTATE 3D000 at the address its Deployment
+// names) keeps its consumers through a plain census, which names each LEFT, and loses them to
+// cleanup --gone in a consumer-cleanup hold: it reads the Deployment again, finds the store gone,
+// deletes every consumer whose logical name is the daemon's, fixed or fresh, declared or not,
+// names each removal, and its done entry names the store and each consumer it removed; another
+// daemon's consumer stays. A run with --final then removes nothing more and completes the hold's
+// record, and hold release follows. Controls, before it and in the same hold: --gone against a
+// live store refuses, and so does --gone against a store whose server answers 57P01, a PgError
+// that is no 3D000; each removes nothing and its stop records the run unchanged.
+func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	census := h.heldHold(holdrecord.WorkflowStreamsCensus)
+	nc, js := h.operator()
+	censusNotificationStream(t, js)
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	const wake, ready, dispatch = "legion-go-GONE-wake", "legion-go-GONE-ready", "legion-go-GONE-dispatch"
+	declared, undeclared := selection.FreshName(wake), selection.FreshName(ready)
+	goneConsumers := []string{declared, undeclared, dispatch}
+	for name, logical := range map[string]string{declared: wake, undeclared: ready, dispatch: dispatch} {
+		cleanupGoneConsumer(t, nc, name, logical)
+	}
+	for _, family := range []string{familySession, daemonFamily("GONE")} {
+		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, census)
+		require.NoError(t, err)
+	}
+	_, server := censusStore(t, "SERVER")
+	dropped := censusDroppedDatabase()
+	h.censusDeploy(censusDeployment("GONE", dropped, censusInstance))
+	gone := censusStoreFileFor(t, "GONE", server, dropped, censusInstance)
+	consumers := func() []string {
+		nc, _ := h.operator()
+		return censusConsumers(t, nc)
+	}
+
+	// A plain census keeps the gone store's consumers, naming each.
+	code, stdout, stderr := h.censusCommand(census, "--family", familySession, "--family", daemonFamily("GONE"),
+		"--daemon-consumer", wake+"="+bus.LegionWakeTopic, "--daemon-database", gone)
+	require.Equal(t, 0, code, "the census beside a gone store: %s%s", stdout, stderr)
+	for _, name := range goneConsumers {
+		require.Contains(t, stdout, "LEFT "+notifications+" consumer "+name+": left, store gone: ")
+	}
+	require.Subset(t, consumers(), goneConsumers, "the census removed a gone daemon's consumer")
+	require.NoError(t, h.release(census))
+
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	nc, _ = h.operator()
+	live := selection.FreshName("legion-go-LIVE-wake")
+	cleanupGoneConsumer(t, nc, live, "legion-go-LIVE-wake")
+	liveEntry, liveDB := censusDaemonStore(t, "LIVE", daemonMigrations...)
+	h.censusDeploy(censusDeploymentOf("LIVE", liveDB))
+	down := censusAnsweringServer(t, "DOWN", "daemon_down", "57P01")
+	h.censusDeploy(censusDeployment("DOWN", "daemon_down", censusInstance))
+
+	for _, control := range []struct{ name, project, entry, why string }{
+		{"a live store", "LIVE", liveEntry, "answers at the address its Deployment names, so it is not gone"},
+		{"a store whose server answers 57P01", "DOWN", down, "SQLSTATE 57P01"},
+	} {
+		code, stdout, stderr := h.run(actionCleanup, "--hold", id, "--gone", control.project, "--daemon-database", control.entry)
+		require.Equal(t, 1, code, "control: --gone against %s: %s%s", control.name, stdout, stderr)
+		require.Contains(t, stderr, control.why, "control: --gone against %s", control.name)
+		require.NotContains(t, stdout, "removed", "control: --gone against %s", control.name)
+		stop := h.lastEntry(id, "")
+		require.Equal(t, "consumer-names cleanup --gone stop", stop.Command+" "+stop.State, "control: --gone against %s", control.name)
+		require.Equal(t, holdrecord.LeftUnchanged, stop.Outputs["left"], "control: --gone against %s", control.name)
+		require.Subset(t, consumers(), append([]string{live}, goneConsumers...), "control: --gone against %s removed a consumer", control.name)
+	}
+
+	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--gone", "GONE", "--daemon-database", gone)
+	require.Equal(t, 0, code, "cleanup --gone GONE: %s%s", stdout, stderr)
+	for _, name := range goneConsumers {
+		require.Contains(t, stdout, "cleanup --gone daemon/GONE: removed "+notifications+" consumer "+name+": store gone: database "+dropped)
+	}
+	left := consumers()
+	require.Contains(t, left, live, "cleanup --gone removed another daemon's consumer")
+	for _, name := range goneConsumers {
+		require.NotContains(t, left, name, "cleanup --gone left the gone daemon's %s", name)
+	}
+	done := h.lastEntry(id, "")
+	require.Equal(t, "consumer-names cleanup --gone done", done.Command+" "+done.State)
+	require.ElementsMatch(t, goneConsumers, strings.Split(done.Outputs["removed"], ", "), "the done entry names each removal")
+	require.Contains(t, done.Outputs["gone.daemon/GONE"], "SQLSTATE 3D000")
+	require.Contains(t, done.Outputs["gone.daemon/GONE"], "database "+dropped+" on instance "+censusInstance)
+	require.Equal(t, holdrecord.Operation{Command: "consumer-names cleanup --gone", State: "intent", Inputs: map[string]string{"daemon": "GONE"}},
+		cleanupIntentOf(h.journal(id), "consumer-names cleanup --gone"), "its intent names the daemon")
+	require.ErrorContains(t, h.release(id), "the record is not complete", "hold release before a run with --final")
+
+	code, stdout, stderr = h.run(actionCleanup, "--hold", id, "--gone", "GONE", "--daemon-database", gone, "--final")
+	require.Equal(t, 0, code, "cleanup --gone GONE --final: %s%s", stdout, stderr)
+	require.Contains(t, stdout, "cleanup --gone daemon/GONE: 0 consumers removed")
+	require.True(t, h.journal(id).Complete, "the run with --final completes the hold's record")
+	require.NoError(t, h.release(id))
+	require.True(t, slices.Contains(consumers(), live))
+}
+
+// cleanupIntentOf is d's latest intent entry of command, its command, state and inputs alone.
+func cleanupIntentOf(d holdrecord.Done, command string) holdrecord.Operation {
+	for i := len(d.Ops) - 1; i >= 0; i-- {
+		if op := d.Ops[i]; op.Command == command && op.State == "intent" {
+			return holdrecord.Operation{Command: op.Command, State: op.State, Inputs: op.Inputs}
+		}
+	}
+	return holdrecord.Operation{}
 }

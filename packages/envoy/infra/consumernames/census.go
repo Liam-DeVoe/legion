@@ -375,15 +375,21 @@ func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDe
 //   - exactly one Deployment of deployments names the project (writerhold.DaemonProjectAnnotation),
 //     and it names the store's database and instance (writerhold.DaemonStoreDatabaseAnnotation,
 //     writerhold.DaemonStoreInstanceAnnotation);
+//   - no other Deployment names that database on that instance (daemonAddressSharers): a store two
+//     daemons' Deployments name is no one daemon's, so its records, its gone answer and its
+//     stream identity would be read as each daemon's;
 //   - the URL on the file's first line names that database, and the instance its second line
 //     states, the one the operator's own proxy reaches with that URL, is that instance.
 //
-// A store that fails either is unreconciled, naming why, and is not opened. At that address it
-// reads the store's sentinel row (censusReadSentinel): a server that answers SQLSTATE 3D000, the
-// database does not exist, makes the store gone, with that answer; a server that does not answer,
-// or any other failed read, leaves it unreconciled, naming why; and so does a sentinel that names
-// another family than the store's, or none (censusSentinelFamily). A store whose table holds no
-// sentinel row is read, with found false.
+// A store that fails any is unreconciled, naming why (a shared address names each Deployment and
+// its project), and is not opened. At that address it reads the store's sentinel row
+// (censusReadSentinel): a server that answers SQLSTATE 3D000, the database does not exist, makes
+// the store gone, with that answer. Every other answer leaves it unreconciled, naming why: a server
+// that does not answer, any other SQLSTATE among them (57P01 and 57P03, which a dying server
+// answers for a database it still holds, as a proxy's cached connection can reach it in the
+// seconds after its instance is deleted), and any other failed read; and so does a sentinel that
+// names another family than the store's, or none (censusSentinelFamily). A store whose table holds
+// no sentinel row is read, with found false.
 func censusReadDaemonStore(ctx context.Context, o options, project string, deployments []writerhold.DaemonDeployment) censusDaemonRead {
 	s := censusDaemonRead{project: project}
 	family := daemonFamily(project)
@@ -415,11 +421,14 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 	deployment := named[0].Name
 	database := named[0].Annotations[writerhold.DaemonStoreDatabaseAnnotation]
 	instance := named[0].Annotations[writerhold.DaemonStoreInstanceAnnotation]
+	sharers := daemonAddressSharers(deployments, deployment, database, instance)
 	switch {
 	case database == "":
 		s.unreconciled = fmt.Sprintf("Deployment %s/%s has no annotation %s, so the store it reads is unknown", writerhold.DaemonNamespace, deployment, writerhold.DaemonStoreDatabaseAnnotation)
 	case instance == "":
 		s.unreconciled = fmt.Sprintf("Deployment %s/%s has no annotation %s, so the store it reads is unknown", writerhold.DaemonNamespace, deployment, writerhold.DaemonStoreInstanceAnnotation)
+	case len(sharers) > 0:
+		s.unreconciled = daemonSharedAddress(project, deployment, database, instance, sharers)
 	case config.ConnConfig.Database != database:
 		s.unreconciled = fmt.Sprintf("%s reaches database %q, and Deployment %s/%s reads database %q", file.flag, config.ConnConfig.Database, writerhold.DaemonNamespace, deployment, database)
 	case file.instance == "":
@@ -449,6 +458,34 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 		}
 	}
 	return s
+}
+
+// daemonAddressSharers are the Deployments of deployments, but the one named own, that name the
+// store address database on instance by their annotations (writerhold.DaemonStoreDatabaseAnnotation,
+// writerhold.DaemonStoreInstanceAnnotation): the Deployments of other daemons whose store is the
+// same database. Every daemon's store is its own database, so a shared address is refused by every
+// reader of a daemon store (censusReadDaemonStore, enroll), never read as one daemon's.
+func daemonAddressSharers(deployments []writerhold.DaemonDeployment, own, database, instance string) []writerhold.DaemonDeployment {
+	var sharers []writerhold.DaemonDeployment
+	for _, d := range deployments {
+		if d.Name != own && d.Annotations[writerhold.DaemonStoreDatabaseAnnotation] == database &&
+			d.Annotations[writerhold.DaemonStoreInstanceAnnotation] == instance {
+			sharers = append(sharers, d)
+		}
+	}
+	return sharers
+}
+
+// daemonSharedAddress is why a store whose address, database on instance, project's Deployment
+// deployment and each of sharers name is no one daemon's, naming each Deployment and its project.
+func daemonSharedAddress(project, deployment, database, instance string, sharers []writerhold.DaemonDeployment) string {
+	named := []string{fmt.Sprintf("%s/%s (project %s)", writerhold.DaemonNamespace, deployment, project)}
+	for _, d := range sharers {
+		named = append(named, fmt.Sprintf("%s/%s (project %s)", writerhold.DaemonNamespace, d.Name,
+			cmp.Or(d.Annotations[writerhold.DaemonProjectAnnotation], "none")))
+	}
+	return fmt.Sprintf("Deployments %s each name database %q on instance %q: a store two daemons share is no one daemon's, so none of them reads it",
+		strings.Join(named, " and "), database, instance)
 }
 
 // censusSentinelFamily is the family a store's sentinel row names, and whether this build's
@@ -517,8 +554,9 @@ const censusMaxConflicts = 10
 // it is left as it is, reconciled with none. A store the rule finds gone, its database answering
 // that it does not exist, is no daemon's, and does not hold back the others. A store the rule
 // leaves unreconciled is named with why: a declared family no entry names, an address that is not
-// its Deployment's, a file or database it cannot open, a server that does not answer, a missing
-// table, and a sentinel that does not decode or holds a field this build does not know, which a
+// its Deployment's or that another daemon's Deployment names too, a file or database it cannot
+// open, a server that does not answer or answers any SQLSTATE but 3D000, a missing table, and a
+// sentinel that does not decode or holds a field this build does not know, which a
 // rewrite would drop. While any is, it writes nothing, and each stale store is unreconciled too,
 // not written. A failed write after others leaves the stores changed so far in the result, and
 // the failed one and each stale store still to write unreconciled. A malformed daemonDatabases

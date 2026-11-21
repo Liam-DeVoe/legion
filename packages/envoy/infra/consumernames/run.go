@@ -462,6 +462,94 @@ func (a *admission) stop(ctx context.Context, reason, left string) error {
 	return refusal
 }
 
+// stopped ends err, a refusal or an UNKNOWN after a's intent, with a's stop (stop), which records
+// what every run of a's command in this hold left (left: unchanged when this run changed nothing
+// outside the journal, and account what it did change), and answers err as it is, so an UNKNOWN
+// stays UNKNOWN; a stop entry the broker refused is named after it.
+func (a *admission) stopped(ctx context.Context, err error, unchanged bool, account string) error {
+	if serr := a.stop(ctx, err.Error(), a.left(ctx, unchanged, account)); errors.Unwrap(serr) != nil {
+		return fmt.Errorf("%w; and its stop entry: %w", err, errors.Unwrap(serr))
+	}
+	return err
+}
+
+// left is what a's stop records as left: what every run of a's command in this hold left
+// (journalLeft over the hold's journal), this run's (unchanged, account) among them. A journal
+// read that fails is never taken as unchanged.
+func (a *admission) left(ctx context.Context, unchanged bool, account string) string {
+	d, _, err := a.r.records.Journal(ctx, a.r.o.holdID)
+	if err != nil {
+		return fmt.Sprintf("%s; what earlier runs of %s left is unknown: the hold's journal could not be read (%v)", account, a.command, err)
+	}
+	return journalLeft(d, a.command, unchanged, account)
+}
+
+// stopLeftKey is the key of a stop entry's outputs that holds what its command left, as
+// holdrecord's AppendStopLeft writes it (internal/holdrecord/journal.go, stopLeftKey, which
+// holdrecord does not export).
+const stopLeftKey = "left"
+
+// journalLeft is what a stop of command records as left, from d, the hold's journal with this
+// run's intent as command's latest entry, and this run's own account: unchanged when it changed
+// nothing outside the journal, and account, which names what it changed or that it changed
+// nothing. It is holdrecord.LeftUnchanged only when this run changed nothing and each earlier run
+// of command in this hold ended in a stop that recorded unchanged. A done entry and a run cut after
+// its intent (an intent the command's next intent follows) count as changes. Otherwise it is
+// account and how each earlier run ended; an earlier stop's own account is in that stop entry, so
+// it is named, not copied, and the text does not grow with each rerun.
+func journalLeft(d holdrecord.Done, command string, unchanged bool, account string) string {
+	var ops []holdrecord.Operation
+	for _, op := range d.Ops {
+		if op.Command == command {
+			ops = append(ops, op)
+		}
+	}
+	// The latest entry is this run's intent; every intent before it began an earlier run.
+	if n := len(ops); n > 0 && ops[n-1].State == "intent" {
+		ops = ops[:n-1]
+	}
+	var earlier []string
+	for i, op := range ops {
+		if op.State != "intent" {
+			continue
+		}
+		end, leftNothing := "ended with no entry (cut after its intent), and the records hold what it wrote", false
+		if i+1 < len(ops) {
+			switch next := ops[i+1]; {
+			case next.State == "stop" && next.Outputs[stopLeftKey] == holdrecord.LeftUnchanged:
+				end, leftNothing = "stopped, and its stop recorded it left nothing changed", true
+			case next.State == "stop" && next.Outputs[stopLeftKey] != "":
+				end = "stopped, and its stop entry records what it left"
+			case next.State == "stop":
+				end = "stopped, and its stop recorded nothing of what it left"
+			case next.State == "done":
+				end = "is done"
+			}
+		}
+		unchanged = unchanged && leftNothing
+		earlier = append(earlier, fmt.Sprintf("run %d %s", len(earlier)+1, end))
+	}
+	switch {
+	case unchanged:
+		return holdrecord.LeftUnchanged
+	case len(earlier) == 0:
+		return account
+	}
+	return account + "; earlier runs of " + command + " in this hold: " + listNames(earlier)
+}
+
+// leftListed bounds how many names each list of a stop entry's account names; the rest are
+// counted.
+const leftListed = 32
+
+// listNames is names joined, at most leftListed of them, and how many more.
+func listNames(names []string) string {
+	if len(names) <= leftListed {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:leftListed], ", "), len(names)-leftListed)
+}
+
 // realEnv is the env of a real run: the broker's routes with the operator's token and the hold
 // key from Secret Manager, the hub as the operator, and each family's database from the file its
 // flag names, all from the hold's flags as writerhold reads them (writerhold.HubFlags).

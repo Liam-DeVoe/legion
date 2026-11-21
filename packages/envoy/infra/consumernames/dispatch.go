@@ -10,6 +10,8 @@ func (r *run) dispatch(ctx context.Context) error {
 	switch r.o.action {
 	case actionStatus:
 		return r.status(ctx)
+	case actionBackup:
+		return r.backup(ctx)
 	case actionPrepare:
 		return r.prepareCutover(ctx)
 	case actionCreateBucket:

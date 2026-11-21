@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -499,9 +502,11 @@ func censusDroppedDatabase() string {
 
 // censusStoreFileFor writes a store's file as --daemon-database names one, and answers
 // <project>=<file>: its first line the database URL of pool with its database replaced by
-// database, or with its port replaced by one nothing listens on when database is "" (a store whose
-// database the server answers 3D000 for, or one whose server never answers), and its second line
-// instance, the instance the operator states, none when instance is "".
+// database, or, when database is "", with its port replaced by one nothing listens on and its
+// database by censusUnreachableDatabase (a store whose database the server answers 3D000 for, or
+// one whose server never answers, at an address of its own: no two daemons' Deployments name one
+// database), and its second line instance, the instance the operator states, none when instance
+// is "".
 func censusStoreFileFor(t *testing.T, project string, pool *pgxpool.Pool, database, instance string) string {
 	t.Helper()
 	config := pool.Config().ConnConfig.Copy()
@@ -509,6 +514,7 @@ func censusStoreFileFor(t *testing.T, project string, pool *pgxpool.Pool, databa
 		config.Database = database
 	} else {
 		config.Port = censusClosedPort(t)
+		config.Database = censusUnreachableDatabase
 	}
 	url := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable&connect_timeout=2",
 		config.User, config.Password, net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), config.Database)
@@ -521,6 +527,10 @@ func censusStoreFileFor(t *testing.T, project string, pool *pgxpool.Pool, databa
 	return project + "=" + file
 }
 
+// censusUnreachableDatabase is the database the file of a store whose server never answers names
+// (censusStoreFileFor), which that store's Deployment names too.
+const censusUnreachableDatabase = "cnames_unreachable"
+
 // censusClosedPort is a TCP port on the loopback that nothing listens on: one a listener held a
 // moment ago and gave back.
 func censusClosedPort(t *testing.T) uint16 {
@@ -530,6 +540,155 @@ func censusClosedPort(t *testing.T) uint16 {
 	port := uint16(l.Addr().(*net.TCPAddr).Port)
 	require.NoError(t, l.Close())
 	return port
+}
+
+// censusAnsweringServer is a server on the loopback that answers every connection's startup
+// message with Postgres's FATAL ErrorResponse of SQLSTATE code (pgproto3), as a server answers a
+// new connection while it shuts down (57P01 admin_shutdown, 57P03 cannot_connect_now) or to a
+// database it does not hold (3D000), and answers the --daemon-database value naming it for
+// project, <project>=<file>: the file's first line a URL of database on the server's port, with no
+// TLS, so the startup message is the first thing sent, and its second line censusInstance.
+func censusAnsweringServer(t *testing.T, project, database, code string) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				backend := pgproto3.NewBackend(conn, conn)
+				if _, err := backend.ReceiveStartupMessage(); err != nil {
+					return
+				}
+				backend.Send(&pgproto3.ErrorResponse{Severity: "FATAL", SeverityUnlocalized: "FATAL", Code: code,
+					Message: "the row's server answers SQLSTATE " + code})
+				_ = backend.Flush()
+			}()
+		}
+	}()
+	url := fmt.Sprintf("postgres://operator:secret@%s/%s?sslmode=disable&connect_timeout=2", l.Addr(), database)
+	file := filepath.Join(t.TempDir(), "store.url")
+	require.NoError(t, os.WriteFile(file, []byte(url+"\n"+censusInstance+"\n"), 0o600))
+	return project + "=" + file
+}
+
+// A daemon store whose server answers 57P01 (admin_shutdown) or 57P03 (cannot_connect_now), as a
+// dying server answers for a database it still holds in the seconds after its instance is deleted,
+// is unreconciled, never gone: the census's writer of the stream identity (ReconcileDaemonStreamIDs)
+// answers it in Unreconciled with the server's answer and nothing in Gone, and its reader of the
+// recorded names (ReadRecordedNames) fails naming it, with no gone store. Controls: the same
+// server answering 3D000 makes the store gone, so the row's server is one the rule reads; and each
+// answer is a *pgconn.PgError, so a check on "is a PgError" alone would call each store gone (the
+// overlay run with that check fails this row).
+func TestTheCensusLeavesAShuttingDownStoreUnreconciled(t *testing.T) {
+	ctx := t.Context()
+	conn, _ := censusHeldOperator(t, "stream-2")
+	// The reader of the recorded names reads the selection bucket too, which the held operator makes
+	// as create-bucket does.
+	_, err := selection.CreateSessionBucket(ctx, conn, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	const database = "daemon_down"
+	listing := censusListing(censusDeployment("DOWN", database, censusInstance))
+	families := []string{daemonFamily("DOWN")}
+	pgErrorOf := func(t *testing.T, entry string) *pgconn.PgError {
+		t.Helper()
+		raw, err := os.ReadFile(strings.TrimPrefix(entry, "DOWN="))
+		require.NoError(t, err)
+		url, _, _ := strings.Cut(string(raw), "\n")
+		_, err = pgx.Connect(ctx, url)
+		var pg *pgconn.PgError
+		require.True(t, errors.As(err, &pg), "control: the server's answer is no PgError: %v", err)
+		return pg
+	}
+	for _, code := range []string{"57P01", "57P03"} {
+		t.Run(code, func(t *testing.T) {
+			entry := censusAnsweringServer(t, "DOWN", database, code)
+			require.Equal(t, code, pgErrorOf(t, entry).Code, "control: a check on \"is a PgError\" alone would call the store gone")
+			result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{entry})
+			require.NoError(t, err)
+			require.Empty(t, result.Gone, "a %s answer was called gone", code)
+			require.Len(t, result.Unreconciled, 1, "%+v", result)
+			require.Equal(t, "DOWN", result.Unreconciled[0].Project)
+			require.Contains(t, result.Unreconciled[0].Reason, "SQLSTATE "+code)
+			require.NoError(t, result.Covers(families))
+			names, gone, err := ReadRecordedNames(ctx, conn, listing, families, "", []string{entry})
+			require.ErrorContains(t, err, "SQLSTATE "+code)
+			require.Empty(t, gone, "the recorded names' reader called a %s store gone", code)
+			require.Nil(t, names)
+		})
+	}
+	t.Run("control: 3D000 from the same server", func(t *testing.T) {
+		entry := censusAnsweringServer(t, "DOWN", database, censusUndefinedDatabase)
+		result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{entry})
+		require.NoError(t, err)
+		require.Empty(t, result.Unreconciled, "%+v", result)
+		require.Len(t, result.Gone, 1)
+		require.Equal(t, "DOWN", result.Gone[0].Project)
+		require.Contains(t, result.Gone[0].Answer, "SQLSTATE 3D000")
+	})
+}
+
+// The census's readers of the daemon stores refuse a store address, a database on an instance,
+// that two daemons' Deployments name: with both daemons' files reaching that one database, the
+// writer of the stream identity (ReconcileDaemonStreamIDs) leaves both stores unreconciled, each
+// naming both Deployments and their projects, and writes nothing, and the reader of the recorded
+// names (ReadRecordedNames) fails naming both. Control: the same stores with each Deployment
+// naming its own database, which the writer rewrites, both, and the reader reads. The row is red
+// at the rule without the shared-address check: there the first store is rewritten and the second
+// reads as consistent, one database counted as two daemons'.
+func TestTheCensusRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
+	ctx := t.Context()
+	conn, _ := censusHeldOperator(t, "stream-2")
+	_, err := selection.CreateSessionBucket(ctx, conn, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	first, firstDB := censusDaemonStore(t, "FIRST", daemonMigrations...)
+	second, secondDB := censusDaemonStore(t, "SECOND", daemonMigrations...)
+	stale := selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}
+	for _, pool := range []*pgxpool.Pool{firstDB, secondDB} {
+		_, err := selection.NewPGStore(pool).WriteSentinel(ctx, stale, 0)
+		require.NoError(t, err)
+	}
+	families := []string{daemonFamily("FIRST"), daemonFamily("SECOND")}
+	database := firstDB.Config().ConnConfig.Database
+	sharing := censusStoreFileFor(t, "SECOND", firstDB, database, censusInstance)
+	shared := censusListing(censusDeploymentOf("FIRST", firstDB), censusDeployment("SECOND", database, censusInstance))
+
+	result, err := ReconcileDaemonStreamIDs(ctx, conn, shared, families, []string{first, sharing})
+	require.NoError(t, err)
+	require.Empty(t, result.Changed, "a store two Deployments name was written")
+	require.Empty(t, result.Gone)
+	require.Empty(t, result.Reconciled, "a store two Deployments name was read as consistent")
+	require.Len(t, result.Unreconciled, 2, "%+v", result)
+	for i, project := range []string{"FIRST", "SECOND"} {
+		require.Equal(t, project, result.Unreconciled[i].Project)
+		for _, named := range []string{"legion/legion-daemon-first (project FIRST)", "legion/legion-daemon-second (project SECOND)",
+			fmt.Sprintf("each name database %q on instance %q", database, censusInstance)} {
+			require.Contains(t, result.Unreconciled[i].Reason, named, "%s's reason", project)
+		}
+	}
+	require.NoError(t, result.Covers(families))
+	state, _ := censusSentinel(t, firstDB)
+	require.Equal(t, "stream-1", state.StreamID, "a run over a shared address wrote the store")
+	_, _, err = ReadRecordedNames(ctx, conn, shared, families, "", []string{first, sharing})
+	require.ErrorContains(t, err, "project FIRST")
+	require.ErrorContains(t, err, "project SECOND")
+	require.ErrorContains(t, err, "no one daemon's")
+
+	// Control: each Deployment names its own database.
+	own := censusListing(censusDeploymentOf("FIRST", firstDB), censusDeploymentOf("SECOND", secondDB))
+	result, err = ReconcileDaemonStreamIDs(ctx, conn, own, families, []string{first, second})
+	require.NoError(t, err)
+	require.Equal(t, []writerhold.StreamIDChange{{Project: "FIRST", From: "stream-1", To: "stream-2"}, {Project: "SECOND", From: "stream-1", To: "stream-2"}},
+		result.Changed, "control: %+v", result)
+	names, _, err := ReadRecordedNames(ctx, conn, own, families, "", []string{first, second})
+	require.NoError(t, err, "control: the reader over two addresses")
+	require.Contains(t, names, daemonFamily("FIRST"))
+	require.Contains(t, names, daemonFamily("SECOND"))
 }
 
 // A daemon store whose database the server answers SQLSTATE 3D000 for (the database does not
@@ -551,7 +710,8 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 	dropped := censusDroppedDatabase()
 	gone := censusStoreFileFor(t, "GONE", staleDB, dropped, censusInstance)
 	unreachable := censusStoreFileFor(t, "AWAY", staleDB, "", censusInstance)
-	listing := censusListing(censusDeploymentOf("STALE", staleDB), censusDeployment("GONE", dropped, censusInstance), censusDeploymentOf("AWAY", staleDB))
+	listing := censusListing(censusDeploymentOf("STALE", staleDB), censusDeployment("GONE", dropped, censusInstance),
+		censusDeployment("AWAY", censusUnreachableDatabase, censusInstance))
 
 	result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, []string{daemonFamily("STALE"), daemonFamily("GONE")}, []string{stale, gone})
 	require.NoError(t, err, "a gone store fails the call")
@@ -673,7 +833,7 @@ create trigger refuse_writes before insert or update on `+selection.IntakeConsum
 	require.NoError(t, err)
 	dropped := censusDroppedDatabase()
 	entries["GONE"], deployments["GONE"] = censusStoreFileFor(t, "GONE", pools["EQUAL"], dropped, censusInstance), censusDeployment("GONE", dropped, censusInstance)
-	entries["AWAY"], deployments["AWAY"] = censusStoreFileFor(t, "AWAY", pools["EQUAL"], "", censusInstance), censusDeploymentOf("AWAY", pools["EQUAL"])
+	entries["AWAY"], deployments["AWAY"] = censusStoreFileFor(t, "AWAY", pools["EQUAL"], "", censusInstance), censusDeployment("AWAY", censusUnreachableDatabase, censusInstance)
 	listing := func(context.Context) ([]writerhold.DaemonDeployment, error) {
 		var listed []writerhold.DaemonDeployment
 		for _, d := range deployments {

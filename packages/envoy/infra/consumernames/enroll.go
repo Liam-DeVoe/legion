@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
@@ -30,6 +31,9 @@ const enrollCommand = "consumer-names enroll"
 // a checkpoint or a selection row, or lacks either table; the store's marker reads done or
 // rolled_back from another hold; or the broker holds a cutover record for the family from another
 // hold. So a store whose selection state was lost is never taken for a new one, and fails closed.
+// It stops too when an address the project's Deployment names, its store's database on its
+// instance, is one another daemon's Deployment names (enrollSharedAddress): a store two daemons
+// share is no one daemon's, and marking it would mark it for both.
 // Otherwise it writes the store's marker in one conditional write that keeps a done this hold
 // wrote: cutover=done naming this hold, the boundary (the stream's last sequence + 1 at the
 // enrolment, where a key with no record starts no later: selection.Names' first-create rule) and
@@ -134,9 +138,16 @@ func (r *run) enroll(ctx context.Context) error {
 		return unknownf(err, "the info of %s", notifications)
 	}
 	streamID := selection.StreamIdentity(stream)
+	shared, err := r.enrollSharedAddress(ctx, project)
+	if err != nil {
+		return err
+	}
 	var problems []string
 	if len(findings) > 0 {
 		problems = append(problems, fmt.Sprintf("%s's store is not new: %s", family, strings.Join(findings, "; ")))
+	}
+	if shared != "" {
+		problems = append(problems, fmt.Sprintf("%s's store address is shared: %s", family, shared))
 	}
 	switch {
 	case streamID == "":
@@ -186,6 +197,34 @@ func (r *run) enroll(ctx context.Context) error {
 	fmt.Fprintf(r.stdout, "enroll: %s: the store's marker and the broker's cutover record read %s under hold %s; boundary %s, stream identity %s\n",
 		family, selection.CutoverDone, r.o.holdID, formatSeq(boundary), streamID)
 	return nil
+}
+
+// enrollSharedAddress is why project's store is no one daemon's, "" when nothing says so: each
+// address a Deployment of project names (writerhold.DaemonProjectAnnotation, with its store's
+// database and instance annotations) that another Deployment names too (daemonAddressSharers),
+// naming each Deployment and its project, as the census's rule for the daemon stores refuses such
+// an address (censusReadDaemonStore). The daemons' Deployments are listed with the hold's own
+// Kubernetes client (writerhold.KubeDaemonDeployments); a listing it cannot read is UNKNOWN.
+func (r *run) enrollSharedAddress(ctx context.Context, project string) (string, error) {
+	op, err := r.operatorHub(ctx)
+	if err != nil {
+		return "", unknownf(err, "the daemons' Deployments")
+	}
+	listed, err := writerhold.KubeDaemonDeployments(op.Hub.Client)(ctx)
+	if err != nil {
+		return "", unknownf(err, "the daemons' Deployments, against which %s's store address is checked", daemonFamily(project))
+	}
+	var shared []string
+	for _, d := range listed {
+		database, instance := d.Annotations[writerhold.DaemonStoreDatabaseAnnotation], d.Annotations[writerhold.DaemonStoreInstanceAnnotation]
+		if d.Annotations[writerhold.DaemonProjectAnnotation] != project || database == "" || instance == "" {
+			continue
+		}
+		if sharers := daemonAddressSharers(listed, d.Name, database, instance); len(sharers) > 0 {
+			shared = append(shared, daemonSharedAddress(project, d.Name, database, instance, sharers))
+		}
+	}
+	return strings.Join(shared, "; "), nil
 }
 
 // enrollLeft is what every run of enroll in this hold left outside the journal, which its stop
