@@ -25,6 +25,7 @@ import {
   checkDispatchCall,
   dispatchServerUrls,
   dryRunAsksDispatch,
+  type ExecuteDispatchToolInput,
   executeDispatchTool,
 } from "./dispatch-execute";
 import { DispatchWriteLandedError } from "./dispatch-http";
@@ -437,6 +438,25 @@ export async function runDispatchCli(
     );
   }
   const config: ActiveDispatchConfig = resolution;
+  // The fields the two executeDispatchTool calls below share, the dry run's and the record's,
+  // named once so that a field added here reaches both. A function rather than a value, so the
+  // session's title file is read as each call is built: inside that call's try, which makes a
+  // file that cannot be read the call's refusal (and the record's ledger entry), and for the
+  // record only after its AskGate check and its session prune, which can return first or remove
+  // the session's directory.
+  const callFields = (): Pick<
+    ExecuteDispatchToolInput,
+    "cwd" | "host" | "sessionId" | "sessionTitle" | "config" | "env" | "fetchImpl" | "userAgent"
+  > => ({
+    cwd: io.cwd,
+    host,
+    sessionId,
+    sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
+    config,
+    env,
+    ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+    ...(io.userAgent === undefined ? {} : { userAgent: io.userAgent }),
+  });
 
   // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
   // pull-request body line the record would print, which Dispatch writes and records nothing
@@ -446,16 +466,9 @@ export async function runDispatchCli(
   if (parsed.dryRun) {
     try {
       const result = await executeDispatchTool({
+        ...callFields(),
         tool: parsed.tool,
         args: parsed.args,
-        cwd: io.cwd,
-        host,
-        sessionId,
-        sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
-        config,
-        env,
-        ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
-        ...(io.userAgent === undefined ? {} : { userAgent: io.userAgent }),
         dryRun: true,
       });
       print(`${JSON.stringify(parsed.args, null, 2)}\n\n${result.text}`);
@@ -617,17 +630,10 @@ export async function runDispatchCli(
   let code: number;
   try {
     const result = await executeDispatchTool({
+      ...callFields(),
       tool,
       args,
-      cwd: io.cwd,
       ...(uploadBytes === undefined ? {} : { uploadBytes }),
-      host,
-      sessionId,
-      sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
-      config,
-      env,
-      ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
-      ...(io.userAgent === undefined ? {} : { userAgent: io.userAgent }),
       subscriptions,
     });
     text = result.text;

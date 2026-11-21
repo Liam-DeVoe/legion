@@ -61,7 +61,8 @@ func successorValue(r *http.Request, name, value string) {
 // its handler recorded under (withSuccessorValues), one name per path value: a replay of that
 // answer runs no handler, so it records them again from there (recordStoredSuccessorValues), and
 // links what the first answer linked. It holds a space, so no header a handler sets is one of them,
-// and the replay takes them out before the stored headers reach the client.
+// and the read of the row takes them out of the stored headers (splitSuccessorValues), so no
+// reader of those headers meets one.
 const storedSuccessorValue = "successor value "
 
 // withSuccessorValues is headers, the answer a keyed write is about to store, with the values its
@@ -81,17 +82,30 @@ func withSuccessorValues(r *http.Request, headers http.Header) http.Header {
 	return stored
 }
 
-// recordStoredSuccessorValues records on r, a replay of a keyed write, each value the first
-// answer's handler recorded (withSuccessorValues), and takes them out of stored, the stored
-// answer's headers, which leaves the headers that answer carried.
-func recordStoredSuccessorValues(r *http.Request, stored http.Header) {
-	for key, values := range stored {
+// splitSuccessorValues splits stored, a keyed write's stored answer headers as its row holds them
+// (withSuccessorValues), into the headers that answer carried and the values its handler recorded,
+// by path value name without the prefix; values is nil where it recorded none. The names it moves
+// are taken out of stored itself, which the row's scan made for this read alone.
+func splitSuccessorValues(stored http.Header) (headers http.Header, values map[string][]string) {
+	for key, recorded := range stored {
 		name, kept := strings.CutPrefix(key, storedSuccessorValue)
 		if !kept {
 			continue
 		}
+		if values == nil {
+			values = map[string][]string{}
+		}
+		values[name] = recorded
 		delete(stored, key)
-		for _, value := range values {
+	}
+	return stored, values
+}
+
+// recordStoredSuccessorValues records on r, a replay of a keyed write, each value the first
+// answer's handler recorded, as the read of its row split them out (splitSuccessorValues).
+func recordStoredSuccessorValues(r *http.Request, values map[string][]string) {
+	for name, recorded := range values {
+		for _, value := range recorded {
 			successorValue(r, name, value)
 		}
 	}

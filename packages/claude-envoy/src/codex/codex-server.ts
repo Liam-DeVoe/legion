@@ -43,7 +43,6 @@ import {
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
-  postDispatchReply,
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"
@@ -619,7 +618,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
         },
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
         pluginName: CODEX_PACKAGE_NAME,
-        router: (state) =>
+        router: (state, reply) =>
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
@@ -630,8 +629,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
               return active === null ? undefined : codexDispatchClient(active, ms)
             },
             expect: (text, messageId) => stream?.expect(text, messageId),
-            reply: (target, result) =>
-              postDispatchReply(id, configFile, target, result, CODEX_ENVOY_USER_AGENT),
+            reply,
             sessionId: () => id.id,
             state,
             warn,

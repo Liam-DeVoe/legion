@@ -694,20 +694,24 @@ func (m *boundaryMask) flush() {
 	m.pending = nil
 }
 
-// heldRequestKey is the row a repeat found under its key.
+// heldRequestKey is the row a repeat found under its key. Its headers column holds the first
+// answer's headers and, under storedSuccessorValue, the values its handler recorded for a /api/v1
+// answer's Link (withSuccessorValues); the read splits them (splitSuccessorValues), so headers
+// holds headers alone and linkValues those values, by path value name.
 type heldRequestKey struct {
-	digest    string
-	method    string
-	path      string
-	attempt   int
-	status    *int
-	headers   http.Header
-	response  []byte
-	kept      bool
-	recovery  json.RawMessage
-	committed bool
-	lapsed    bool
-	expired   bool
+	digest     string
+	method     string
+	path       string
+	attempt    int
+	status     *int
+	headers    http.Header
+	linkValues map[string][]string
+	response   []byte
+	kept       bool
+	recovery   json.RawMessage
+	committed  bool
+	lapsed     bool
+	expired    bool
 }
 
 // keyState is what a repeat finds its key holding, decided once from the row (heldRequestKey.state)
@@ -897,6 +901,7 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 	if err != nil {
 		return held, false, fmt.Errorf("read an idempotency key: %w", err)
 	}
+	held.headers, held.linkValues = splitSuccessorValues(held.headers)
 	return held, true, nil
 }
 
@@ -1016,8 +1021,9 @@ func writeKeyCommitted(w http.ResponseWriter, r *http.Request, key string, held 
 
 // replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
 // header its handler set, and its body; on /api/v1, with the Link the first answer carried, from
-// the values its handler recorded for it (recordStoredSuccessorValues). held is keyAnswered, so its
-// status is set.
+// the values its handler recorded for it (recordStoredSuccessorValues). The read of the row keeps
+// those values apart from the headers (readHeldRequestKey), so the two steps can run in either
+// order and no stored value reaches the client. held is keyAnswered, so its status is set.
 func replayStoredAnswer(w http.ResponseWriter, r *http.Request, held heldRequestKey) {
 	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
 	if !held.kept {
@@ -1026,7 +1032,7 @@ func replayStoredAnswer(w http.ResponseWriter, r *http.Request, held heldRequest
 			*held.status, keyedAnswerKept))
 		return
 	}
-	recordStoredSuccessorValues(r, held.headers)
+	recordStoredSuccessorValues(r, held.linkValues)
 	maps.Copy(w.Header(), held.headers)
 	w.WriteHeader(*held.status)
 	_, _ = w.Write(held.response)

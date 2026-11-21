@@ -33,6 +33,7 @@ import {
 } from "../src/envoy-channel-server"
 import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
+import type { UserTurnRouterOptions } from "../src/user-turn-router"
 import {
   deliveryRaw,
   directSubject,
@@ -790,9 +791,9 @@ test("the Codex server names itself to Dispatch as codex-envoy and its release",
 })
 
 // The Codex server starts its session with its own User-Agent (codex-server.ts), so a rejected
-// frame of a Codex session is answered as codex-envoy, and a session started with none as this
-// server.
-test("a session answers a rejected targeted frame under the User-Agent it was started with", async () => {
+// frame of a Codex session is answered as codex-envoy, and so is every reply its router posts
+// (the `reply` the session hands the router); a session started with none answers as this server.
+test("a session answers Dispatch under the User-Agent it was started with", async () => {
   let server: Server<undefined> | undefined
   const sessions: ChannelSession[] = []
   try {
@@ -815,10 +816,15 @@ test("a session answers a rejected targeted frame under the User-Agent it was st
     ] as const) {
       sent.length = 0
       const nats = new FakeNats()
+      const replies: UserTurnRouterOptions["reply"][] = []
       const session = await startChannelSession({
         ...sessionOptions(new SessionIdentity("ses_claude", process.cwd()), scratchState(), {
           connection: nats,
           notifier: new FakeNotifier(),
+          router: (_state, reply) => {
+            replies.push(reply)
+            return { route: async () => false, observe: () => undefined }
+          },
         }),
         ...(userAgent === undefined ? {} : { userAgent }),
       })
@@ -826,9 +832,26 @@ test("a session answers a rejected targeted frame under the User-Agent it was st
 
       relayed(nats, 1, rejectedFrameRaw)
       await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the answer")
+      // The answer the router posts to a delivery it took, through the reply the session built.
+      const reply = replies.at(-1)
+      if (reply === undefined) throw new Error("the session built no router")
+      await reply(
+        {
+          resource: "message",
+          id: "66666666-6666-4666-8666-666666666666",
+          attempt: 1,
+          mode: "btw",
+          replyPath: "/api/v1/messages/66666666-6666-4666-8666-666666666666/reply",
+          replyFields: {},
+          issueKey: null,
+          body: "A question the router took.",
+        },
+        { error: "not answered" },
+      )
 
       expect(sent).toEqual([
         { path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply", userAgent: want },
+        { path: "/api/v1/messages/66666666-6666-4666-8666-666666666666/reply", userAgent: want },
       ])
     }
   } finally {
