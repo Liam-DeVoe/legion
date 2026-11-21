@@ -873,7 +873,11 @@ func settleCredentials(ctx context.Context, cfg config.Config, dispatchToken, en
 	if err != nil {
 		return credentials{}, err
 	}
-	settled := credentials{dispatch: dispatchTransport, listener: listenerCredentialOf(cfg, envoyToken, broker, log)}
+	listener, err := listenerCredentialOf(ctx, cfg, envoyToken, broker, log)
+	if err != nil {
+		return credentials{}, err
+	}
+	settled := credentials{dispatch: dispatchTransport, listener: listener}
 	if broker != nil {
 		go renewBrokerCredential(ctx, broker, held, dispatch.DaemonSession(cfg.Project), log)
 	}
@@ -1001,16 +1005,49 @@ type listenerCredential struct {
 // or, under runtime: kubernetes with no envoy_token_file (config.Config.ListenerPresentsBrokerToken),
 // broker's token, the daemon's own pod identity traded for its session legion-daemon:<PROJECT>
 // (tradeBrokerCredential), presented as `Authorization: DPoP` beside a proof of each request's URL
-// (cipherclient.NewTokenTransport). The proof names envoy_url, so envoy_url must be the listener's
-// own ENVOY_PUBLIC_URL. The listener takes that token for a Legion daemon's own: it may make the
-// clean stop of another session's registration, and its notices are not counted by the sender
-// limit, as the shared bearer's were not (packages/envoy/cmd/listener's daemonCaller).
-func listenerCredentialOf(cfg config.Config, envoyToken string, broker *cipherclient.Client, log *slog.Logger) listenerCredential {
+// (cipherclient.NewTokenTransport). The listener takes that token for a Legion daemon's own: it may
+// make the clean stop of another session's registration, and its notices are not counted by the
+// sender limit, as the shared bearer's were not (packages/envoy/cmd/listener's daemonCaller).
+//
+// Under the broker the boot reads the project's controller role at the listener with that token
+// first, at the boot gate's pacing (readinessRetry), and waits out a listener that does not answer
+// or answers 429 or 5xx, as it waits out Dispatch's whoami. A 401 or 403 refuses the boot, naming
+// envoy_url and ENVOY_PUBLIC_URL: the proof names envoy_url, which the listener checks against its
+// own ENVOY_PUBLIC_URL, and a listener that takes no broker token refuses every one, so otherwise
+// every listener call the daemon makes would fail for ever and no line would say why. Any other
+// answer, a holder or none, or one the lookup cannot read, came past the listener's credential
+// check, which is all the boot reads it for.
+func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken string, broker *cipherclient.Client, log *slog.Logger) (listenerCredential, error) {
 	if !cfg.ListenerPresentsBrokerToken() {
-		return listenerCredential{bearer: envoyToken}
+		return listenerCredential{bearer: envoyToken}, nil
+	}
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		return listenerCredential{}, err
+	}
+	credential := listenerCredential{transport: cipherclient.NewTokenTransport(broker, http.DefaultTransport)}
+	lookup := credential.publisher(cfg.EnvoyURL).RoleHolder
+	err = bootprobe.Run(ctx, "Envoy listener role lookup under the daemon's broker token", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		_, _, err := lookup(ctx, string(claim.ControllerToken(project)))
+		if refused := (*notify.RoleLookupRefused)(nil); errors.As(err, &refused) && refused.Status != http.StatusUnauthorized && refused.Status != http.StatusForbidden {
+			return nil
+		}
+		return err
+	}, bootTimeout, listenerUnanswered))
+	if err != nil {
+		return listenerCredential{}, fmt.Errorf("envoy_token_file is unset, so the daemon presents its broker token to the Envoy listener at envoy_url %s, which refuses it: %w; the listener must take broker tokens (ENVOY_AGENT_SECRETS_URL and the settings beside it), and envoy_url must be its ENVOY_PUBLIC_URL, the origin every proof names",
+			cfg.EnvoyURL, err)
 	}
 	log.Info(listenerCredentialLine, "credential", "broker", "session", dispatch.DaemonSession(cfg.Project))
-	return listenerCredential{transport: cipherclient.NewTokenTransport(broker, http.DefaultTransport)}
+	return credential, nil
+}
+
+// listenerUnanswered is every failed role lookup the boot asks again: a listener that did not
+// answer, or answered 429, 502, 503 or 504. A refusal (notify.RoleLookupRefused) is the answer
+// the listener gives however often it is asked.
+func listenerUnanswered(err error) bool {
+	var refused *notify.RoleLookupRefused
+	return !errors.As(err, &refused)
 }
 
 // publisher is the daemon's client of the Envoy listener at envoyURL, presenting c.

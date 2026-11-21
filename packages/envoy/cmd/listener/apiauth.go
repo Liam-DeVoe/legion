@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -406,8 +407,13 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 // fault of a few seconds would otherwise fail every send a live token makes. A source address
 // with no introspection left in its bucket is the 429 that bucket exists to write, carrying the
 // wait it must come back after; nothing of it reached the broker. Every other outcome is the
-// same 401 and the same body every other refused credential gets here, so the answer tells an
-// unauthenticated caller nothing about which credentials this listener takes.
+// same 401 and the same body every other refused credential gets here, but one: a token the
+// broker says is not live carries the code brokerTokenNotActive, as Dispatch's answer to one
+// does, so a client drops it and trades again at once rather than present it until its renewal
+// comes due (packages/envoy/internal/cipherclient's tokenTransport). A Legion daemon's token the
+// broker ended early would otherwise fail every listener call for up to ten minutes. That this
+// listener takes broker tokens is no secret its other answers keep: its configuration and code
+// both say so.
 func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, brokers *brokerTokens, err error) {
 	reason := brokerTokenReason(err)
 	logger.Warn("listener: broker token rejected",
@@ -426,10 +432,19 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	case reason == brokerTokenCheckFailed:
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again in a minute")
+	case errors.Is(err, ciphertoken.ErrNotActive):
+		writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: brokerTokenNotActive, Error: "unauthorized"})
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
 }
+
+// brokerTokenNotActive is the code of the 401 a token the broker no longer holds as live is
+// answered with: the code Dispatch answers the same token with (internal/dispatch/api), on which
+// the Go token transport drops the token it presented (internal/cipherclient's tokenTransport). No
+// mechanism shares the value between the servers and the clients, so the spellings change
+// together.
+const brokerTokenNotActive = "BROKER_TOKEN_NOT_ACTIVE"
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:
 // its spent-proof store did not answer. It is this listener's own failure, so refuseBrokerToken

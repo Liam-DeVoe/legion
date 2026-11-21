@@ -305,8 +305,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// Whether this launch keeps its pod is settled now, so under dispatch_token_broker so is its
 	// Dispatch credential: none for a pod that carries an exchange identity, the transition token
 	// for a kept pod built before it, or a refusal, before anything of the pod is touched, that
-	// waits for that pod's update round (dispatchCredential).
+	// waits for that pod's update round (dispatchCredential). Its listener credential is settled
+	// the same way where the daemon holds no Envoy bearer (listenerCredential).
 	if err := r.dispatchCredential(&l, pod); err != nil {
+		return runtime.Locator{}, err
+	}
+	if err := r.listenerCredential(&l, pod); err != nil {
 		return runtime.Locator{}, err
 	}
 	// So is whether its Oh My Pi starts under an id the runtime chose (trades): prepare chose one
@@ -544,6 +548,28 @@ func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
 	}
 	l.secrets[dispatchTokenKey] = r.dispatch.Transition
 	return nil
+}
+
+// listenerCredential refuses a launch whose role would have no credential for the Envoy listener.
+// Where the daemon holds no Envoy bearer (Options.ListenerBroker), no launch carries ENVOY_TOKEN,
+// and each role trades its pod's exchange identity for a broker token of its own; a launch that
+// keeps a pod built before that identity (keptPod.trades) has neither, so its role could reach the
+// listener for nothing until the pod's update round replaced the pod. It is refused with
+// runtime.AwaitingPodRound naming the pod, before anything of the pod is touched, and the
+// supervisor waits for that round, charging nothing, as dispatchCredential's refusal is waited out.
+// There is no transition token for the listener: a deployment that cannot wait for its rounds
+// keeps envoy_token_file until every pod carries the identity. As with dispatchCredential, pod is
+// read only for a launch that keeps it, and the controller's pod is never kept without the
+// identity.
+func (r *Runtime) listenerCredential(l *launch, pod *corev1.Pod) error {
+	if !r.listenerBroker || l.trades(r) {
+		return nil
+	}
+	return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
+		Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
+		Reason: fmt.Sprintf("pod %s carries no exchange identity and envoy_token_file is not set, so its role would hold no credential for the Envoy listener; its update round replaces it",
+			l.name),
+	})
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,

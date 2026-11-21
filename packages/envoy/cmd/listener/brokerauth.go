@@ -26,6 +26,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -303,19 +304,14 @@ func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
 	return caller, ok
 }
 
-// daemonSessionPrefix opens the session a Legion daemon's own broker token names,
-// legion-daemon:<PROJECT>: the session the daemon's exchange row fixes, which the daemon writes
-// Dispatch and calls this listener as (packages/daemon's dispatch.DaemonSession). No shared copy
-// of it reaches both modules, so the two spellings change together.
-const daemonSessionPrefix = "legion-daemon:"
-
 // daemonCaller is the project of the Legion daemon whose own broker token r presented, and
-// whether r presented one at all: a token whose session is legion-daemon:<P>, whose scope is the
-// named one only an exchange account row mints, and whose one project is P. The broker issues
-// such a token only under the daemon's own exchange row, which fixes both the session and the
-// project, and its name hold keeps that session from every other principal; a session that named
-// itself legion-daemon:<P>, or a person's token whose trade listed P, is no daemon's. A read-only
-// token names no project, so it is none either.
+// whether r presented one at all: a token whose session is legion-daemon:<P>
+// (oauthwire.DaemonSessionPrefix), whose scope is the named one only an exchange entry mints, and
+// whose one project is P. The broker issues such a session only as the fixed session of an entry,
+// which the configuration reserves for that entry's principal (exchange's daemonNamed), so only the
+// daemon's own exchange row mints it; a session that named itself legion-daemon:<P>, or a person's
+// token whose trade listed P, is no daemon's. A read-only token names no project, so it is none
+// either.
 //
 // What it lets a daemon do beyond its own session is what the shared bearer it replaces did, and
 // no more: make the clean stop of another session's registration (deleteSessionHandler), and send
@@ -327,7 +323,7 @@ func daemonCaller(r *http.Request) (project string, ok bool) {
 		return "", false
 	}
 	project = caller.Projects[0]
-	if project == "" || caller.Session != daemonSessionPrefix+project {
+	if project == "" || caller.Session != oauthwire.DaemonSessionPrefix+project {
 		return "", false
 	}
 	return project, true

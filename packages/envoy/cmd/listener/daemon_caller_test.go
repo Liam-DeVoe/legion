@@ -109,6 +109,18 @@ func TestADaemonsTokenMakesTheCleanStopOfAnotherSession(t *testing.T) {
 			"a DELETE naming a client instance alone under the daemon's token", role)
 	})
 
+	// A clean stop's moment is the daemon's own clock when the process ended, so it is never far
+	// ahead of this listener's: a moment past the listener's clock by more than the skew it allows
+	// would remove whatever registration stands, which is the unconditional delete under another
+	// name, and is refused as that delete is.
+	t.Run("the daemon's stop naming a moment far past the listener's clock is refused", func(t *testing.T) {
+		const role = "ses_daemon_far_moment"
+		rig.register(t, role)
+		far := strconv.FormatInt(time.Now().Add(daemonCleanStopSkew+time.Hour).UnixMilli(), 10)
+		refused(t, rig.call(t, rig.handler, http.MethodDelete, daemonToken, "/v1/sessions/"+role+"?if_not_registered_after="+far, ""),
+			"a clean stop an hour past the skew under the daemon's token", role)
+	})
+
 	t.Run("the daemon's token removes no other session's interests", func(t *testing.T) {
 		const role = "ses_daemon_interests"
 		rig.register(t, role)

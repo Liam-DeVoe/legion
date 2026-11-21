@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,10 +23,13 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/cipherclient"
 	"github.com/sjawhar/envoy/ciphertest"
+	"github.com/sjawhar/envoy/roleholder"
 
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // listenerRequest is one request as credentialListener received it.
@@ -112,8 +116,10 @@ func callListener(t *testing.T, cfg config.Config, credential listenerCredential
 	}
 }
 
-// The calls callListener makes, as the listener sees each: method and path.
+// The calls the boot's probe (listenerCredentialOf) and then callListener make, as the listener
+// sees each: method and path.
 var listenerCalls = []string{
+	"GET /v1/roles/legion-example-controller",
 	"POST /v1/messages/publish",
 	"GET /v1/roles/legion-example-controller",
 	"GET /v1/registry/ses-role",
@@ -217,6 +223,80 @@ func TestPublishPresentsTheDaemonsBrokerToken(t *testing.T) {
 			t.Fatalf("the broker was asked %d trades, want none: a daemon that holds the bearer trades nothing", trades)
 		}
 	})
+}
+
+// TestTheDaemonTradesAgainWhenTheListenerSaysItsTokenIsNotActive: a listener answers a broker
+// token the broker ended early (a revoke) 401 with the code BROKER_TOKEN_NOT_ACTIVE, as Dispatch
+// does, and the daemon's listener credential then drops that token, so its next call trades again
+// and presents the new one at once, rather than present the dead token until its renewal comes
+// due. The control is a listener that answers the plain 401 of every other refusal: the daemon's
+// next call presents the same token again.
+func TestTheDaemonTradesAgainWhenTheListenerSaysItsTokenIsNotActive(t *testing.T) {
+	for name, tc := range map[string]struct {
+		refusal  string
+		retrades bool
+	}{
+		"the listener's not-active code": {`{"code":"BROKER_TOKEN_NOT_ACTIVE","error":"unauthorized"}`, true},
+		"control: a plain 401":           {`{"error":"unauthorized"}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			broker := newCredentialBroker(t, func(n int64) (int, map[string]any) {
+				minted := "daemon-token-" + strconv.FormatInt(n, 10)
+				return http.StatusOK, map[string]any{
+					"access_token": minted, "token_type": "DPoP", "expires_in": 3600,
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				}
+			})
+			var mu sync.Mutex
+			var presented []string
+			// The boot's own role lookup is answered unclaimed; the first publish after it is the
+			// one refused, and every publish is kept with the token it carried.
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = io.WriteString(w, `{"error":"no claim","reason":"unclaimed"}`)
+					return
+				}
+				mu.Lock()
+				presented = append(presented, strings.TrimPrefix(r.Header.Get("Authorization"), "DPoP "))
+				first := len(presented) == 1
+				mu.Unlock()
+				if first {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = io.WriteString(w, tc.refusal)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(listener.Close)
+			cfg := listenerBrokerConfig(listener.URL)
+			credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			if err != nil {
+				t.Fatalf("settleCredentials: %v", err)
+			}
+			publisher := credentials.listener.publisher(listener.URL)
+			publish := func() error {
+				return publisher.Publish(t.Context(), notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1")
+			}
+			if err := publish(); err == nil {
+				t.Fatal("the publish the listener answered 401 succeeded")
+			}
+			if err := publish(); err != nil {
+				t.Fatalf("the publish after the 401: %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			want := []string{"daemon-token-0", "daemon-token-0"}
+			if tc.retrades {
+				want[1] = "daemon-token-1"
+			}
+			if !slices.Equal(presented, want) {
+				t.Fatalf("the listener was presented %v, want %v", presented, want)
+			}
+		})
+	}
 }
 
 // TestOneBrokerTokenServesDispatchAndTheListener: a daemon under dispatch_token_broker that also
@@ -347,6 +427,16 @@ func TestNoEnvoyBearerIsHandedOutWithoutTheKey(t *testing.T) {
 			if err := checkOperatorConfig(cfg, lookup); err != nil {
 				t.Fatalf("checkOperatorConfig: %v", err)
 			}
+			// The runtime is built from the same configuration: it hands no launch the bearer, and
+			// holds a launch into a kept pod that carries no exchange identity to that pod's round.
+			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "example", sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup, quietLogger())
+			if err != nil {
+				t.Fatalf("sandboxOptions: %v", err)
+			}
+			if opts.ListenerBroker == tc.bearer || slices.Contains(opts.LaunchSecrets, "ENVOY_TOKEN") != tc.bearer {
+				t.Fatalf("the runtime's options carry ListenerBroker %v and launch secrets %v, want ListenerBroker %v and ENVOY_TOKEN among them: %v",
+					opts.ListenerBroker, opts.LaunchSecrets, !tc.bearer, tc.bearer)
+			}
 			if got := cfg.ListenerPresentsBrokerToken(); got == tc.bearer {
 				t.Fatalf("ListenerPresentsBrokerToken() = %v, want %v: the daemon presents its broker token exactly where it holds no bearer", got, !tc.bearer)
 			}
@@ -384,3 +474,46 @@ runtime:
       token_file: /var/run/legion/agent-secrets-token/token
       exchange_audience: legion-broker-exchange
 `
+
+// TestTheBootRefusesAListenerThatRefusesTheDaemonsToken: a listener that answers the daemon's
+// broker token 401, because it takes no broker tokens or because envoy_url is not its
+// ENVOY_PUBLIC_URL, refuses the boot, naming envoy_url and ENVOY_PUBLIC_URL, rather than leave every
+// listener call failing with no line saying why. The control is a listener that answers 503 once,
+// as one starting does, and then that nobody holds the controller role: the boot waits it out and
+// goes on.
+func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
+	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
+	for name, tc := range map[string]struct {
+		answers []int
+		refused bool
+	}{
+		"a 401":                          {[]int{http.StatusUnauthorized}, true},
+		"control: a 503, then no holder": {[]int{http.StatusServiceUnavailable, http.StatusNotFound}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			broker := newCredentialBroker(t, mintsTheDaemonsToken)
+			var mu sync.Mutex
+			asked := 0
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				status := tc.answers[min(asked, len(tc.answers)-1)]
+				asked++
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":"unauthorized","reason":"`+roleholder.Unclaimed+`"}`)
+			}))
+			t.Cleanup(listener.Close)
+			_, err := settleCredentials(t.Context(), listenerBrokerConfig(listener.URL), "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), "envoy_url "+listener.URL) || !strings.Contains(err.Error(), "ENVOY_PUBLIC_URL") {
+					t.Fatalf("settleCredentials = %v, want the boot refused naming envoy_url %s and ENVOY_PUBLIC_URL", err, listener.URL)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("settleCredentials after a 503 = %v, want the lookup asked again and the boot on", err)
+			}
+		})
+	}
+}
