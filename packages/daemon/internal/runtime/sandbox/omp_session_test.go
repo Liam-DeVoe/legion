@@ -24,7 +24,7 @@ const recordedSessionID = "019a2b3c-4d5e-7f60-8a71-92b3c4d5e6f7"
 const unnamedSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/recorded.jsonl"
 
 // sessionWords are the words of an agent argv that name its session, in the argv's order:
-// `--session-id <id>`, `--resume <id>`, and `--resume=<file>`.
+// `--session-id <id>`, `--resume <id>`, and `--resume=<file>` or `--resume=<id>`.
 func sessionWords(argv []string) []string {
 	var words []string
 	for i, word := range argv {
@@ -205,11 +205,13 @@ func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 	}
 }
 
-// A launch that trades passes the id it resumes as a word of its own, `--resume <id>`, so an id an
-// argument parser would read as something else — one that begins with `-`, or holds white space or
-// a control character — is refused before anything of the pod is touched, naming the claim and
-// what is wrong with the id, whether the claim recorded it or its file's name gives it. An id of a
-// session id's shape, the control, resumes.
+// A launch that trades and resumes a recorded file passes the id it resumes as a word of its own,
+// `--resume <id>`, so an id an argument parser would read as something else — one that begins
+// with `-`, or holds white space or a control character — is refused before anything of the pod is
+// touched, naming the claim and what is wrong with the id, whether the claim recorded it or its
+// file's name gives it. An id of a session id's shape, the control, resumes. A resume of a session
+// the claim records with no file passes the one word `--resume=<id>` instead, which no such id is
+// refused for (TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot).
 func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
 	dir := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/"
 	g := newRig(t, nil, exchangeKeyed())

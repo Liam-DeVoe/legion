@@ -1308,11 +1308,11 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 // takes --session-id: what the line says of that Oh My Pi (flag and its omp-version mark,
 // version, each "" from a legion CLI that predates them), why the setting needs the flag, and the
 // remedy. Under the setting every new Oh My Pi role of a pod that carries the exchange identity
-// starts with `--session-id <id>`, and a resumed one with `--resume <id>` (launch.agentArgv), and
-// an Oh My Pi that does not define the flag stops at it (`Error: unknown flag: --session-id`), so
-// no role of any pod would start. Oh My Pi's version cannot say which it is — every release of the
-// fork's 18.18.6 line prints omp/18.18.6 — so the probe reads the flag off Oh My Pi's help, and a
-// help it could not read passes no more than one that lists no flag.
+// starts with `--session-id <id>`, and one it resumes by its recorded file with `--resume <id>`
+// (launch.agentArgv), and an Oh My Pi that does not define the flag stops at it (`Error: unknown
+// flag: --session-id`), so no role of any pod would start. Oh My Pi's version cannot say which it
+// is — every release of the fork's 18.18.6 line prints omp/18.18.6 — so the probe reads the flag
+// off Oh My Pi's help, and a help it could not read passes no more than one that lists no flag.
 func sessionIDRefusal(name, version, flag string) string {
 	omp := "its Oh My Pi, " + version + ","
 	if version == "" || version == bootprobe.OmpVersionUnread {
@@ -1330,7 +1330,7 @@ func sessionIDRefusal(name, version, flag string) string {
 		what = fmt.Sprintf("its OK line for %s says omp-session-id=%s, where the daemon's probe requires %s", omp, flag, bootprobe.SessionIDFlagTaken)
 	}
 	return fmt.Sprintf("pod %s Succeeded, but %s; runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> "+
-		"and resumes one with --resume <id>, and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start: "+
+		"and resumes one by its recorded file with --resume <id>, and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start: "+
 		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it, "+
 		"or unset runtime.kubernetes.agent_secrets.exchange_audience", name, what)
 }

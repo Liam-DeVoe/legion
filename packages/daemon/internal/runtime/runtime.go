@@ -260,9 +260,11 @@ type IssuePodReader interface {
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
 // prepares the launch (claudeInputs), and an Oh My Pi role's whose pod trades an exchange
-// identity, whose `--session-id` or `--resume <id>` it decides the same way (ompInputs). It
-// answers for the incarnation loc records, and false for any other — an Oh My Pi launch that named
-// no id (one into a kept pod that trades nothing, whose agent mints its id and reports it at its
+// identity, which it decides the same way (ompInputs): `--session-id <id>` for a launch that
+// starts a session, `--resume <id>` for a resume by a recorded file, and the one word
+// `--resume=<id>` for a resume of a session the claim records with no file. It answers for the
+// incarnation loc records, and false for any other — an Oh My Pi launch that named no id (one
+// into a kept pod that trades nothing, whose agent mints its id and reports it at its
 // registration), a launch the runtime does not remember (a daemon restarted since), or an earlier
 // incarnation. It is what lets the daemon register a role's chosen session for its pod at the
 // shim's hello, before the agent registers (supervise's ensureRegistered). A runtime that names no
