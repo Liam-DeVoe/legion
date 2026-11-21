@@ -2158,8 +2158,13 @@ func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 	role := r.registeredRole("proxy")
 	env := r.environment(role, "")
 	// The pages the client reads: P's two issues and 30 more, so a listing of P takes four pages.
+	// Their titles are alike on purpose, so each create is forced past Dispatch's near-copy gate
+	// (409 POSSIBLE_DUPLICATE otherwise).
 	for i := range 30 {
-		r.createIssue(rigP, fmt.Sprintf("Issue %d of the pages the proxy's client reads", i+1), "")
+		r.call(http.MethodPost, "/api/v1/issues", false, map[string]any{
+			"project": rigP, "title": fmt.Sprintf("Issue %d of the pages the proxy's client reads", i+1),
+			"actor": rigSetupActor, "force": true,
+		}, http.StatusCreated, nil)
 	}
 
 	// The file the client reads back: 64 KiB of random bytes the role uploads itself, stored as
