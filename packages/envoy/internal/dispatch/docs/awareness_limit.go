@@ -223,10 +223,18 @@ func (c *awarenessLimitConn) readFrame() error {
 	opcode := header[0] & 0x0f
 	final := header[0]&finalFrame != 0
 	starts := opcode == gws.BinaryMessage
-	if (starts || opcode == gws.TextMessage) && c.mode == limitIdle && payload >= 0 && c.end.refusesMessage() {
+	if (starts || opcode == gws.TextMessage) && c.mode != limitPassing && payload >= 0 && c.end.refusesMessage() {
 		// The socket has ended: a message the page begins now, binary or text (ygo reads either),
-		// reaches ygo as nothing, and so do the frames that continue it.
+		// reaches ygo as nothing, and so do the frames that continue it. That holds in every mode
+		// but limitPassing. In limitPassing gorilla has read the open message's first frame, which
+		// the filter passed without FIN (pass), so it refuses a new data frame itself ("data before
+		// FIN", gorilla/websocket conn.go:847-851). In every other mode the filter has handed gorilla
+		// nothing of the message it holds open (deciding, collecting, skipping or refusing it), so
+		// gorilla would take a new data frame as a message of its own: one a page could send after
+		// a non-final frame to slip an edit past the end. Whatever the filter held of that open
+		// message is dropped with it.
 		slog.Debug("dispatch: drop a message a document socket's page began after the socket ended", "room", c.room)
+		c.message = c.message[:0]
 		return c.refuse(payload, final)
 	}
 	if payload < 0 || header[1]&maskedFrame == 0 || (!starts && opcode != continuationFrame) || starts == (c.mode != limitIdle) {

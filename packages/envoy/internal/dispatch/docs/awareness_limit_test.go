@@ -19,7 +19,7 @@ const limitRoom = "0c4b4f2e-9b1f-4f9a-9c3a-1f6a2b5d7e80"
 
 // scriptedSocket is the connection a document socket's filter reads: it hands out the frames a
 // test wrote for it and then ends, and discards what ygo writes back.
-type scriptedSocket struct{ frames *bytes.Reader }
+type scriptedSocket struct{ frames io.Reader }
 
 func (s *scriptedSocket) Read(p []byte) (int, error)       { return s.frames.Read(p) }
 func (s *scriptedSocket) Write(p []byte) (int, error)      { return len(p), nil }

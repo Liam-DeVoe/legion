@@ -1081,11 +1081,10 @@ func (l *recordingListener) find(remote string) *serverSocket {
 	return nil
 }
 
-// socketWrite is one Write to a server socket: when it began, whether it began once the server
-// had closed the socket, whether it has returned, and the bytes the connection accepted of it -
-// the n it returned - which are the bytes that went on the wire.
+// socketWrite is one Write to a server socket: whether it began once the server had closed the
+// socket, whether it has returned, and the bytes the connection accepted of it - the n it
+// returned - which are the bytes that went on the wire.
 type socketWrite struct {
-	startedAt  time.Time
 	afterClose bool
 	returned   bool
 	bytes      []byte
@@ -1105,7 +1104,7 @@ type serverSocket struct {
 func (s *serverSocket) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	at := len(s.writes)
-	s.writes = append(s.writes, socketWrite{startedAt: time.Now(), afterClose: !s.closedAt.IsZero()})
+	s.writes = append(s.writes, socketWrite{afterClose: !s.closedAt.IsZero()})
 	s.mu.Unlock()
 	n, err := s.Conn.Write(payload)
 	s.mu.Lock()
@@ -1213,17 +1212,6 @@ func nextServerFrame(stream []byte) (websocketFrame, []byte, error) {
 		return websocketFrame{opcode: opcode, final: stream[0]&0x80 != 0, payload: body, length: int(length)}, nil, nil
 	}
 	return websocketFrame{opcode: opcode, final: stream[0]&0x80 != 0, payload: body[:length], length: int(length), whole: true}, body[length:], nil
-}
-
-// closeFrameCode reads payload as one whole close frame of a server's and returns the code it
-// carries. Anything else - a data frame, a frame cut short, a frame with bytes after it, a close
-// with no code - is not one.
-func closeFrameCode(payload []byte) (int, bool) {
-	frame, after, err := nextServerFrame(payload)
-	if err != nil || !frame.whole || frame.opcode != opcodeClose || len(after) > 0 || len(frame.payload) < 2 {
-		return 0, false
-	}
-	return int(binary.BigEndian.Uint16(frame.payload)), true
 }
 
 // serverStreamEnd is how the bytes a server wrote to one socket end, which is the end its page

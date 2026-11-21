@@ -43,8 +43,10 @@ import (
 // upgrader makes in one write before any frame (processHeaderConn reads the same), and goes out
 // as it is.
 //
-// Reads: the awareness filter asks it as each message the page sends begins (refusesMessage), and
-// a message begun after the end reaches ygo as nothing at all.
+// Reads: the awareness filter asks it as each data frame the page sends that could begin a
+// message of gorilla's arrives (refusesMessage), whatever message the filter holds open, and a
+// message begun after the end reaches ygo as nothing at all (awareness_limit.go, readFrame). Only
+// the continuation frames of a message the page began before the end reach ygo after it.
 type socketEnd struct {
 	// own is the socket's own context, which ygo serves it on and a revoke cancels; request is the
 	// request's context as ServeHTTP received it, which the API cancels.
