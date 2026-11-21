@@ -440,6 +440,14 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
+	// The life the pin took, which the wait for the answer reads as well as changed: nats.go
+	// reports a connection's loss both to connLife's status listener, whose drain goroutine ends
+	// the life, and to the client's disconnect callback, which closes changed, on goroutines of
+	// their own and in either order. A wait that woke on changed first reads the life as current
+	// and waits again, and the life's end then closes nothing changed carries.
+	w.pinning.Lock()
+	life := w.life
+	w.pinning.Unlock()
 	inbox := nats.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
@@ -578,6 +586,12 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				changed = w.client.ConnectionChanged()
+			case <-life:
+				// The life ended, whichever report of the loss came first (life, above).
+				if settled, err := drained(); settled {
+					return err
+				}
+				return lost()
 			case <-timer.C:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    A window's `Request` whose connection is lost answers `ErrUnavailable` as soon as the loss is
+    seen, whichever of the NATS client's two reports of it arrives first. It could wait out its
+    whole timeout instead: the client's change report could wake the wait while the connection still
+    read as current, and the report that then ended the connection's life woke nothing.
+time: 2026-11-21T07:03:56Z
+custom:
+    Issue: request-answers-its-lost-life
