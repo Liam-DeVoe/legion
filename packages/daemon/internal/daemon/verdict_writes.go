@@ -44,9 +44,10 @@ const (
 // R4, R19): the repositories its configuration names under verdict_repositories, the heads a fact
 // asked it to write on that it has not written yet, and what the merge-state reads of an issue wait
 // on. A fact that can change a head's verdict asks for the write on its commit
-// (workflow.Config.WriteVerdict, queueVerdictWrite), and one goroutine writes them one at a time
-// (writeVerdicts), so a fact's transaction waits on no GitHub call and two writes of one head never
-// both make a run. A write a fact asked for is held in memory, and a restart loses one not made:
+// (workflow.Config.WriteVerdict, queueVerdictWrite), a merge group's asks for one on the group's
+// commit (queueMergeGroupWrite), and one goroutine writes them one at a time (writeVerdicts), so a
+// fact's transaction waits on no GitHub call and two writes of one head never both make a run. A
+// write a fact asked for is held in memory, and a restart loses one not made:
 // the writers' sweep, at boot and every 10 minutes, writes each head whose verdict the record holds
 // and GitHub shows no run of this daemon's on.
 type verdictWriter struct {

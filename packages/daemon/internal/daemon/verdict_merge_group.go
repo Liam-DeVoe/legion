@@ -90,11 +90,12 @@ func (w *workflowRuntime) mergeGroupHead(ctx context.Context, repository ghrepo.
 		pr, err := ghrepo.Under(w.renames(), repository.String(), func(name string) (*record.PullRequest, error) {
 			return w.records.PullRequestByNumber(ctx, tx, name, number)
 		})
-		if err != nil || pr != nil {
-			if pr != nil {
-				head = pr.HeadSHA
-			}
+		if err != nil {
 			return err
+		}
+		if pr != nil {
+			head = pr.HeadSHA
+			return nil
 		}
 		outside, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
 		if found {

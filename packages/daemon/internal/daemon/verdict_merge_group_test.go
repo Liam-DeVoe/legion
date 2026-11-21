@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -174,6 +177,36 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		rig.w.queueMergeGroupWrite(widgets, 90, "group-90", false)
 		rig.written(t)
 		groupConcluded(t, rig.github, rig.pool, "group-90", "success")
+	})
+	// A pull request no record holds, opened before the daemon heard its repository, is read from
+	// GitHub at the head it shows, recorded there as an outside pull request, and gets failure, since
+	// no review is recorded at that head. One on another project's issue branch gets nothing: that
+	// project's daemon writes it, and the daemon says so once.
+	t.Run("a pull request no record holds", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
+		rig.github.mu.Lock()
+		rig.github.pulls[92] = `{"number":92,"state":"open","base":{"ref":"main"},"head":{"ref":"feature/faster-tests","sha":"out-9"}}`
+		rig.github.pulls[93] = `{"number":93,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/OTHER-1","sha":"other-1"}}`
+		rig.github.mu.Unlock()
+		rig.w.queueMergeGroupWrite(widgets, 92, "group-92", false)
+		rig.w.queueMergeGroupWrite(widgets, 93, "group-93", false)
+		rig.written(t)
+		groupConcluded(t, rig.github, rig.pool, "group-92", "failure")
+		if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+			pr, found, err := store.OutsidePullRequestTx(context.Background(), tx, widgets, 92)
+			if err == nil && (!found || pr.Head != "out-9") {
+				t.Errorf("the outside pull request 92 reads %+v (found %v), want it recorded at out-9", pr, found)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if runs := rig.github.legionRuns("group-93"); len(runs) != 0 {
+			t.Fatalf("legion-verdict runs on group-93 = %+v, want none: legion/OTHER-1 is another project's to write", runs)
+		}
+		if n := strings.Count(rig.logs.String(), otherProjectsLine); n != 1 {
+			t.Fatalf("the daemon logged %q %d times, want once for pull request 93", otherProjectsLine, n)
+		}
 	})
 	t.Run("a repository no entry names", func(t *testing.T) {
 		writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry})
