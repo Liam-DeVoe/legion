@@ -661,9 +661,10 @@ test("a page with no document on it makes those reads as it always did @phone", 
     expect(made.firstBatchMs).toBeUndefined();
     // And nothing held them. This page has no document surface, so "no first batch" is true of
     // it by construction, and a hold armed here by mistake releases at `LONGEST_HOLD_MS`, 20 s
-    // from the address (`web/src/features/doc/first-batch.ts`): inside the Subscribers wait
-    // above, after which every other clause of this row passes. So each read's first send, read
-    // from the address as the hold's deadline is, is held well inside that deadline: under
+    // from the address (`web/src/features/doc/first-batch.ts`): as long as the Subscribers wait
+    // above, which starts once the address has loaded, so that wait may see the chrome draw or
+    // may not, and every other clause of this row passes after it. So each read's first send,
+    // read from the address as the hold's deadline is, is held well inside that deadline: under
     // `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`, the 10 s the page gives the document's last step. The
     // poll above saw each of them go out, so every one of them is measured here.
     expect(

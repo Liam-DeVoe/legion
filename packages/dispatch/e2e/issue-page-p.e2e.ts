@@ -3749,8 +3749,9 @@ test("an approval entry's a approves its own document when an earlier entry also
 // was 7 px of padding above and below its 25 px line, about 39 px, from 1280 to 1599 px, while
 // every other control kept 44. A button the row adds to the page is the premise: it takes the
 // floor at the same width, so the row reads the floor as applying there.
-// SLOW(>=2s): not yet timed; one seeded header loaded at a 20 px default font and its menu
-// opened, as the 20 px row of `issue-page-g.e2e.ts` loads its issue.
+// SLOW(>=2s): a seeded header loaded at a 20 px default font and its menu opened: 1.3 s in a
+// one-worker build Job, where the 20 px row of `issue-page-g.e2e.ts` took 1.2 s against 1.8 s in
+// CI's shard (run 44842848677).
 test("at a 20 px default font just under xl, each action of the header's menu keeps the 44 px floor", async ({
   browser,
 }) => {
