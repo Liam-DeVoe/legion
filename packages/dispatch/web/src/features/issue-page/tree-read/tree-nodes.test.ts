@@ -340,6 +340,41 @@ test("a node's words come from its text_tree", () => {
   ]);
 });
 
+// R1: the read sends a typed block's reading as the blocks read does, of its whole stored text:
+// one node of the block's kind, its attributes on it. A row draws the block's own content from
+// it, and so does a chip that names the block; the kind and the attributes are drawn apart.
+test("a typed block's row and its chip draw the block's own content, not its kind and attributes", () => {
+  const whole = (type: string, attrs: Record<string, string>, ...paragraphs: string[]) => ({
+    content: [{ attrs, content: reading(...paragraphs).content, type }],
+    type: "doc",
+  });
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0, {
+          text_tree: whole("requirement", { blockId: "r1" }, "The first statement. Its reason."),
+        }),
+        block("t1", "plan_task", "r1", PLAN, 0, {
+          text_tree: whole(
+            "plan_task",
+            { blockId: "t1", serves: `dispatch://${KEY}/spec#b-r1` },
+            "Build the step."
+          ),
+        }),
+      ],
+      [tuple("serves", "t1", "r1"), tuple("needs", "t1", "r1")]
+    ),
+    { coverage: coverage([requirement("r1")]), issue: issueDetails() }
+  );
+
+  const step = nodeOf(root, blockNodeId("plan-md", "t1"));
+  expect(step === undefined ? undefined : [nodeWords(step), step.tree]).toEqual([
+    "Build the step.",
+    reading("Build the step."),
+  ]);
+  expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
+});
+
 // A node's `author` lists every author of its first version, whoever made it first ahead of the
 // rest, and a row draws one name: a comment two authors wrote draws the first of them, and a
 // message whose list is empty draws none.

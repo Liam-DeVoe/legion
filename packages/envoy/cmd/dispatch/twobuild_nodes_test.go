@@ -28,9 +28,10 @@ import (
 //
 //   - This build removes a document, stating its node gone, and the previous build makes a
 //     document of the same issue and name, which takes the same address: the row stands behind a
-//     gone node. This build's block-index tick makes the node live from the row's own content
-//     (docs' writeObjectNodesAnotherBuildWrote, the backfill's object pass), so the roll needs no
-//     second envoy-dispatch backfill-graph-store.
+//     gone node. Whichever of this build's two runs of the backfill's object pass reaches the row
+//     first makes the node live from the row's own content: the block-index tick's (docs'
+//     writeObjectNodesAnotherBuildWrote) or the one that opens the decisions step's phase 1
+//     (graphcensus's BackfillAsks). So the roll needs no second envoy-dispatch backfill-graph-store.
 //   - This build makes a document, writing its node, and the previous build removes it: the node
 //     stands live behind no row. The census names it orphaned, with the command that removes it,
 //     the backfill leaves it as it is, and that command, run as the census printed it, removes it.
@@ -39,27 +40,34 @@ import (
 //     event, and the census names nothing.
 //   - The previous build removes this build's document and makes it again itself: the live node is
 //     the first row's, by its create event, so the second row stands behind another row's node.
-//     This build's tick states the node gone, then live, under the second row's own event, with no
-//     backfill run.
+//     Whichever of this build's two object passes reaches the row first states the node gone, then
+//     live, under the second row's own event, with no backfill run.
 //
 // The tick runs under the block-index lease, which both builds' processes compete for each period,
 // and a period the previous build serves is one this build's tick waits out: while both serve, the
-// tick cures the first and fourth orders' rows only in a period this build happens to win. So the
-// test reads their cure once the previous build has stopped, as the end of a roll stops it: this
-// build's next tick then serves the period, finds the fleet alone after another build or joins its
-// build's cursor, and runs the object pass. The second order runs first, since the backfill it
-// runs would cure those two rows too, and every census read before the end reads only the lines
-// that name its own row. The cure is read three ways: each row's node is live, the census names
-// no row at all, and this build's ticks wrote at least the two rows' nodes (their object_nodes=).
+// tick cures the first and fourth orders' rows only in a period this build happens to win. The
+// decisions step takes no block-index lease: it ticks every block-index interval under a lock of
+// its own, and while a process of another build serves, each tick reads whether a row stands
+// unmarked and runs phase 1 where one does, so it can cure those rows before the previous build
+// stops. The tick and the decisions step start together at boot and each waits its interval after
+// its own pass, so either can reach the rows first, and the other then finds no row left to write.
+// So the test reads their cure once the previous build has stopped, as the end of a roll stops it:
+// the decisions step may have cured them by then, and this build's next tick serves the period,
+// finds the fleet alone after another build or joins its build's cursor, and runs the object pass.
+// The second order runs first, since the backfill it runs would cure those two rows too, and every
+// census read before the end reads only the lines that name its own row. The cure is read three
+// ways: each row's node is live, the census names no row at all, and this build's two passes
+// together wrote at least the two rows' nodes (the tick's object_nodes= and the decisions step's
+// rows= of kind=artifact), with no backfill run after those rows were made.
 //
 // After the last cure the census names no project row or node at all. Each order has its control.
-// The first and fourth orders' is the tick's object pass taken out of docs' ReconcileBlockIndex:
-// the census then names both rows gone for as long as the test waits after the previous build
-// stopped. The second's is this file run in the tree at the branch's head before these classes and
-// their cures, where this build's removal states nothing gone and the census prints no orphaned
-// field, so it fails at its first census. The third's is the gone step taken out of this build's
-// create (api's storeArtifact): the node then keeps the removed row's live statement, and the
-// census names the new row gone.
+// The first and fourth orders' is both writers taken out - the tick's object pass out of docs'
+// ReconcileBlockIndex and backfillObjectNodes out of graphcensus's BackfillAsks - after which the
+// census names both rows gone for as long as the test waits. The second's is this file run in the
+// tree at the branch's head before these classes and their cures, where this build's removal
+// states nothing gone and the census prints no orphaned field, so it fails at its first census.
+// The third's is the gone step taken out of this build's create (api's storeArtifact): the node
+// then keeps the removed row's live statement, and the census names the new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -69,7 +77,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	project := uniqueProjectKey(t, "NODE")
 	current.createProject(t, project, "Two builds' document nodes")
 	issue, _ := createDocument(t, current, project, "Documents two builds remove and make", "The spec.\n")
-	// The rows this build's tick cures, read once the previous build has stopped.
+	// The rows this build cures, read once the previous build has stopped.
 	var forTheTick []string
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
@@ -133,9 +141,9 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		forTheTick = append(forTheTick, again.ref)
 	})
 
-	t.Run("the previous build stops and this build's tick cures what it left", func(t *testing.T) {
+	t.Run("the previous build stops and this build cures what it left", func(t *testing.T) {
 		if len(forTheTick) != 2 {
-			t.Fatalf("the orders left %d row(s) for the tick, want the first and fourth orders' two", len(forTheTick))
+			t.Fatalf("the orders left %d row(s) for this build to cure, want the first and fourth orders' two", len(forTheTick))
 		}
 		t.Logf("before the previous build stops, the census names %q", incompleteLines(runTwoBuildStoreCensus(t, builds)))
 		var commits []string
@@ -148,23 +156,32 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		t.Logf("the registry holds %q", commits)
 		stop(t, previous)
 		for _, ref := range forTheTick {
-			awaitTheTicksCure(t, builds, ref)
+			awaitThisBuildsCure(t, builds, ref)
 		}
-		var ticks []string
+		objectNodes := regexp.MustCompile(`\bobject_nodes=([0-9]+)\b`)
+		documentRows := regexp.MustCompile(`\bkind=artifact\b.*\brows=([0-9]+)\b`)
+		var ticks, steps []string
 		written := 0
 		for _, line := range strings.Split(current.Output.String(), "\n") {
-			if !strings.Contains(line, `msg="dispatch: block index"`) {
-				continue
+			var field []string
+			switch {
+			case strings.Contains(line, `msg="dispatch: block index"`):
+				ticks = append(ticks, line)
+				field = objectNodes.FindStringSubmatch(line)
+			case strings.Contains(line, `msg="dispatch: decisions step stated rows written before this release on the store"`):
+				if field = documentRows.FindStringSubmatch(line); field != nil {
+					steps = append(steps, line)
+				}
 			}
-			ticks = append(ticks, line)
-			if field := regexp.MustCompile(`\bobject_nodes=([0-9]+)\b`).FindStringSubmatch(line); field != nil {
+			if field != nil {
 				count, _ := strconv.Atoi(field[1])
 				written += count
 			}
 		}
 		t.Logf("this build's block-index ticks: %q", ticks)
+		t.Logf("this build's decisions step's document rows: %q", steps)
 		if written < len(forTheTick) {
-			t.Errorf("this build's ticks wrote %d object node(s) in all, want at least the %d the orders left: no backfill ran after those rows were made, so a tick has to be what cured them",
+			t.Errorf("this build's block-index ticks (object_nodes=) and its decisions step's phase 1 (rows= of kind=artifact) wrote %d node(s) in all, want at least the %d the orders left: no envoy-dispatch backfill-graph-store ran after those rows were made, so this build's own passes have to be what cured them",
 				written, len(forTheTick))
 		}
 	})
@@ -188,11 +205,13 @@ func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string
 	}
 }
 
-// awaitTheTicksCure waits, for at most three block-index intervals and a margin, until a tick of
-// this build, once the previous build has stopped, has written the live node of the row at ref and
-// the census names no project row or node at all. No backfill is run: the tick's object pass is
-// the cure. It fails naming what the census still names once the wait is over.
-func awaitTheTicksCure(t *testing.T, builds *twoBuilds, ref string) {
+// awaitThisBuildsCure waits, for at most three block-index intervals and a margin, until the store
+// holds the live node of the row at ref and the census names no project row or node at all. The
+// test calls it once the previous build has stopped. No backfill is run: this build's own passes,
+// the block-index tick's object pass and the decisions step's phase 1, are the cure, and the
+// decisions step's can land before the stop. It fails naming what the census still names once the
+// wait is over.
+func awaitThisBuildsCure(t *testing.T, builds *twoBuilds, ref string) {
 	t.Helper()
 	deadline := time.Now().Add(3*docs.BlockIndexReconcileInterval + 30*time.Second)
 	for {
@@ -207,7 +226,7 @@ func awaitTheTicksCure(t *testing.T, builds *twoBuilds, ref string) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("this build's ticks left the node of %s %s and the census naming %q, %s after the previous build made the row, with no backfill run: the tick's object pass did not cure it",
+			t.Fatalf("this build left the node of %s %s and the census naming %q after a wait of %s, with no backfill run: neither the block-index tick's object pass nor the decisions step's phase 1 cured it",
 				ref, held, incompleteLines(census), 3*docs.BlockIndexReconcileInterval+30*time.Second)
 		}
 		time.Sleep(5 * time.Second)

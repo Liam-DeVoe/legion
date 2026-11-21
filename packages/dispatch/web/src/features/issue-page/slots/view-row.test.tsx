@@ -90,19 +90,15 @@ const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's six reads, the tree read the outline draws its
+/** Answers every read the row reaches: the tree's five reads, the tree read the outline draws its
  *  rows from - the spec's two statements and the two threads - the reader and the names. No
- *  document's blocks are read. A case changes the answer of the read it holds out or fails. */
+ *  document's blocks are read, and no decisions read: every decision is a node of the tree read. A
+ *  case changes the answer of the read it holds out or fails. */
 function answerReads() {
   return {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     names: spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),

@@ -36,14 +36,16 @@ import (
 // Once it has committed it counts again, outside its locks, the term statistics of every project
 // whose items it moved, having taken the erased words out of them under its locks; a count that
 // fails there is reported with the refresh pass that counts the project again, and is no failure
-// of the erase.
+// of the erase. It then searches again, outside its locks, for the rows it leaves, and prints each
+// one the listing does not name: a row written between the listing's search and its locks, which
+// holds the erased bytes, derives from another node and is left as it is.
 //
 // The exit convention is the census's: 0 when it erased, a failed count of the term statistics
 // after the commit included, 1 when it refused and said why (no --confirm, a digest that is not
 // the listing's, a row of another node that states something about this one, or a document whose
 // live text holds the erased bytes where its markdown spells them otherwise), 2 when it could not
-// run at all, and 2 too when it erased and its sweep of text_trees after the commit failed, the
-// report printed first.
+// run at all, and 2 too when it erased and its search for the rows it leaves after the commit or
+// its sweep of text_trees after the commit failed, the report printed first.
 func erase(ctx context.Context, args []string, databaseURL string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("erase", flag.ContinueOnError)
 	flags.SetOutput(errOut)

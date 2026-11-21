@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -194,7 +195,7 @@ func TestTheInteractionMigrationGivesEveryRecordedRunItsNode(t *testing.T) {
 	// migrations later than this one among them (document_block_versions.store_owed_at), so the
 	// rest are applied before it; none of them writes a run, a frame or a node of either.
 	store.MigrateThrough(t, database, math.MaxInt)
-	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

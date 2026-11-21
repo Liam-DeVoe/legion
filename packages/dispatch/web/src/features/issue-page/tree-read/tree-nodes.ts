@@ -729,22 +729,39 @@ function draftChild(
   return draft;
 }
 
-/** A draft of `node` as every kind starts one: its tree id, its words and their reading, its
- *  address (`referenceOf`), and, where the read sent a reading, the document a typed block is
- *  written in, which the links of the body drawn from that reading resolve against. The order
- *  and the read id are `treeDraftsFrom`'s. */
+/** A draft of `node` as every kind starts one: its tree id, its words and their reading
+ *  (`readingOf`), its address (`referenceOf`), and, where the read sent a reading, the document a
+ *  typed block is written in, which the links of the body drawn from that reading resolve
+ *  against. The order and the read id are `treeDraftsFrom`'s. */
 function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext): Draft {
   const draft = blank(context.treeIdOfNode(node), type, 0);
   draft.text = node.text;
   const reference = referenceOf(node, context);
   if (reference !== undefined) draft.reference = reference;
-  if (node.text_tree !== undefined) {
-    draft.tree = node.text_tree;
+  const reading = readingOf(node);
+  if (reading !== undefined) {
+    draft.tree = reading;
     if (node.document !== undefined) {
       draft.source = textSourceOf("artifact", node.document.artifact_id);
     }
   }
   return draft;
+}
+
+/** The reading of `node`'s words that a row and a chip draw. The read sends a block's reading
+ *  as the blocks read does, of the block's whole stored text: a typed block's reading is the one
+ *  typed node, its type and its attributes on it, which the row draws apart (its kind, its chips,
+ *  its facts). So a block whose reading is that one node of its own kind reads as the node's own
+ *  content, as the server's other reads cut a typed block's text to its content. Every other
+ *  reading is the node's words as sent. A view's line (`presets.ts`) reads it here too. */
+export function readingOf(node: TreeAnswerNode): DisplayTree | undefined {
+  const reading = node.text_tree;
+  const content = reading?.content;
+  if (reading === undefined || !Array.isArray(content) || content.length !== 1) return reading;
+  const only = content[0] as DisplayTree;
+  return only.type === node.supertag && Array.isArray(only.content)
+    ? { ...reading, content: only.content }
+    : reading;
 }
 
 /** When the node was made and who made it, as the read answers them: what the outline draws for
@@ -863,7 +880,8 @@ function chipName(target: TreeAnswerNode, context: TreeDraftContext): string {
     return plainWords(target.text);
   }
   if (target.supertag === "issue") return target.text;
-  return target.text_tree === undefined ? "" : context.chipLine(target.text_tree);
+  const reading = readingOf(target);
+  return reading === undefined ? "" : context.chipLine(reading);
 }
 
 /** Whether `node` names anything by `kind`: a tuple of that kind, or its attribute of that name,

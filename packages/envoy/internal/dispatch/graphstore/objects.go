@@ -175,7 +175,10 @@ func QueryTakes(query string) []string { return slices.Clone(queryTakes[query]) 
 //
 // A document's node becomes a query node through Write, whose node move rewrites a stored node's
 // supertag and attributes, never through WriteArms, whose node arm moves nothing on a node already
-// there.
+// there. The query's writer owns the values it states, so the node does not restate the document
+// (Node.Restates false): a restating write keeps the attributes its row stores (writtenAttributes),
+// which would leave the row of a document made a query without the query's values, and a version
+// written after it would read no definition_version off that row (VersionOwnerColumns).
 func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Node {
 	issue, _, _ := strings.Cut(refKey, "/")
 	node := objectNode(KindArtifact, refKey, SupertagQuery, project, nil, who, at)
@@ -185,6 +188,7 @@ func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Nod
 		AttributeSubtree:           KindIssue + ":" + issue,
 		AttributeDefinitionVersion: QueryDefinitionVersion,
 	}
+	node.Restates = false
 	return node
 }
 

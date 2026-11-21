@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
@@ -189,7 +190,7 @@ func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 		t.Fatalf("the backfill after the erase wrote back %d going_requests rows, %d going_events rows, %d nodes and %d tuples of the run, want none",
 			requests, events, nodes, tuples)
 	}
-	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

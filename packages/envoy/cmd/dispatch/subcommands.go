@@ -289,6 +289,9 @@ func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Write
 	return database, true
 }
 
+// backfillBlockIDs runs `envoy-dispatch backfill-block-ids`: it prints one line for each document
+// it read (writeBlockIDBackfillReport), and where it read none, one line saying so (`documents=0`),
+// so a run that owed nothing reads apart from one that printed nothing.
 func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-block-ids", databaseURL, out)
 	if !ok {
@@ -301,6 +304,9 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 	if err != nil {
 		fmt.Fprintf(out, "backfill-block-ids: %v\n", err)
 		return 1
+	}
+	if len(reports) == 0 {
+		fmt.Fprintln(out, "backfill-block-ids: documents=0")
 	}
 	exitCode := 0
 	for _, report := range reports {
@@ -364,8 +370,11 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 // the third phase with the rewrite of the gated steps and each issue's transaction rolled back.
 //
 // It prints one line for each issue it touched (writeDecisionIssue), and one for each issue whose
-// transaction failed, and exits 1 on such a failure, on another build live, or on any other
-// error, 2 on a usage error, and 0 otherwise.
+// transaction failed, and where it touched none and none failed, one line saying so
+// (`issues=0`), so a run that owed nothing reads apart from one that printed nothing. It exits 1
+// on such a failure, on another build live, or on any other error, 2 on a usage error or a
+// --project the projects table holds no row of under that exact key, which it refuses before any
+// phase runs, and 0 otherwise.
 func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -387,11 +396,21 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 		return 1
 	}
 	defer database.Pool.Close()
+	key := strings.TrimSpace(*project)
+	var known bool
+	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, key).Scan(&known); err != nil {
+		fmt.Fprintf(stdout, "%s: read the project %q: %v\n", name, key, err)
+		return 1
+	}
+	if !known {
+		fmt.Fprintf(stderr, "%s: the database holds no project %q; --project takes a project's key as the projects table holds it\n", name, key)
+		return 2
+	}
 	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env)})
 	defer documents.Shutdown(context.Background())
 	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
 	step.UseDocuments(documents)
-	issues, failures, err := step.RunByHand(ctx, strings.TrimSpace(*project), convert, *dryRun)
+	issues, failures, err := step.RunByHand(ctx, key, convert, *dryRun)
 	for _, issue := range issues {
 		writeDecisionIssue(stdout, name, issue, *dryRun)
 	}
@@ -404,6 +423,9 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 	}
 	if len(failures) > 0 {
 		return 1
+	}
+	if len(issues) == 0 {
+		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, *dryRun)
 	}
 	return 0
 }

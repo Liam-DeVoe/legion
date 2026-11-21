@@ -56,7 +56,8 @@ var blockProjections = []projection{{
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	owed:    `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	rowOwed: typedRowOwed,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
@@ -105,6 +106,7 @@ var blockProjections = []projection{{
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	rowOwed: typedRowOwed,
 }, {
 	name:     "block_rank",
 	nodeKind: refs.BlockNodeKind,
@@ -415,13 +417,16 @@ func roomOwed(artifactID string) string {
 // document's blocks hold no text this build's pass states until a pass of its rule reaches them,
 // so the census counts them as a class of their own (projection.unstated) and compares none of
 // them; a document of a converted issue, and one a pass of this rule has stated, it compares
-// whatever its issue.
+// whatever its issue. The column is read off the row as JSON (to_jsonb), so the statement runs
+// on a database before 20261120130000, which adds stated_rule, and reads every document there as
+// unstated.
 func unconvertedUnstated(alias string) string {
 	return `(` + alias + `.issue_key is not null
 		and not exists (select 1 from issue_trees tree where tree.issue_key = ` + alias + `.issue_key)
 		and not exists (
 			select 1 from document_block_versions stated
-			where stated.artifact_id = ` + alias + `.id and stated.stated_rule >= ` + strconv.Itoa(refs.BlockIndexMarkingRule) + `))`
+			where stated.artifact_id = ` + alias + `.id
+			  and (to_jsonb(stated)->>'stated_rule')::integer >= ` + strconv.Itoa(refs.BlockIndexMarkingRule) + `))`
 }
 
 // rowUnstated is unconvertedUnstated of the document of the document_blocks row aliased alias, the

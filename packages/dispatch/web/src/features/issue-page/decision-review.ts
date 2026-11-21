@@ -1,5 +1,13 @@
-import type { Artifact, Comment, Decision, DecisionEntry, IssueDetails } from "../../api/types";
+import type {
+  Artifact,
+  Comment,
+  Decision,
+  DecisionEntry,
+  DisplayTree,
+  IssueDetails,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { ownTree, ownWords } from "../issue/decision-text";
 import { parseNodeReference } from "../refs/routes";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
@@ -57,6 +65,25 @@ export function inReviewList(
       (link) => link.to.ref !== undefined && isCoverageStatement(link.to.ref)
     )
   );
+}
+
+/**
+ * What `decision` says: the decisions read answers a decision's text as its one `decision` block
+ * (`decisionread`'s words, the block rendered alone) and the server's reading of it as that
+ * block's (`DecisionEntry.text_tree`), so its own words are that text with the lines that open and
+ * close the block left out (`ownWords`), and its own reading is the block's content at the top
+ * level (`ownTree`), where a section's blocks stood. A text or a reading that is no such block is
+ * its own already. `tree` is absent where the read sent no reading. The page reads no decisions
+ * read: its decisions are nodes of the tree read, whose words are their own. Part I's browser
+ * rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
+ */
+export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+} {
+  const text = ownWords(decision.text);
+  const tree = ownTree(decision.text_tree);
+  return tree === undefined ? { text } : { text, tree };
 }
 
 /** The fields of the issue read a decision's document is found by (`decisionDocumentId`): its

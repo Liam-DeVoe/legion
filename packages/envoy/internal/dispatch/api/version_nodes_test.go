@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -152,7 +153,7 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	`, notes.ID, olderAt); err != nil {
 		t.Fatalf("store version 4 as an older build stores it: %v", err)
 	}
-	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census before the backfill: %v", err)
 	}

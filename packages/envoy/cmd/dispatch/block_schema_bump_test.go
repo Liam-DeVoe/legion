@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -22,7 +20,8 @@ var issueTreeMigration = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.u
 // type migrations it adds. The test reads the version blocks.json gives at this head and the one
 // the store's type nodes build once every migration has run, which must agree, and then runs again,
 // in order, the type migrations of store.TypeMigrations this branch did not add - the seed and each
-// later one, which every set the version on every block type - and reads the version the nodes
+// later one, which every set the version on every block type - through runTypeMigrationsAgain,
+// which takes out first the rows of a literal one among them, and reads the version the nodes
 // build then, which is the version the store held before this branch's type migrations. A second
 // bump - blocks.json, or a type migration of this branch, moving past the version after that one
 // - is one step too many, and so is none.
@@ -51,15 +50,7 @@ func TestTheBlockSchemaMovesOneVersionPastTheTypeMigrationsBeforeThisBranch(t *t
 	if len(ours) == 0 {
 		t.Fatal("store.TypeMigrations names no type migration of this branch, so nothing moves the block schema's version")
 	}
-	for _, name := range before {
-		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
-		if err != nil {
-			t.Fatalf("read the type migration %s: %v", name, err)
-		}
-		if _, err := database.Pool.Exec(ctx, string(text)); err != nil {
-			t.Fatalf("run the type migration %s again: %v", name, err)
-		}
-	}
+	runTypeMigrationsAgain(t, ctx, database.Pool, before)
 	earlier, err := schemanodes.Read(ctx, database.Pool)
 	if err != nil {
 		t.Fatalf("build the schema from the store's nodes as the type migrations before this branch's leave them: %v", err)

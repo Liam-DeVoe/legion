@@ -1,13 +1,18 @@
 import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { Comment, IssueDetails, MessageRead } from "../../api/types";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import { useTreeRead } from "./tree-read/tree-read";
-import { EVENT_FRESH, issueAsksQuery, standsFailed, useIssueTree } from "./useIssueTree";
+import {
+  issueAsksQuery,
+  issueCommentsQuery,
+  issueMessagesQuery,
+  useIssueTree,
+} from "./useIssueTree";
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
  *  come from has one while it stands failed (`standsFailed`), and its Retry asks that read alone
@@ -114,15 +119,14 @@ function fiveReads(key: string) {
       bringsQuestions: false,
       line: "comments",
       message: STATE_LINES.comments_unreadable,
-      query: { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+      query: { ...issueCommentsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
       line: "messages",
       message: STATE_LINES.messages_unreadable,
       query: {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
+        ...issueMessagesQuery(key),
         ...EVENT_FRESH,
       },
     },

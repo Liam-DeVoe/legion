@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -373,7 +374,7 @@ func TestAnIssueRelationAndItsProjectionCommitTogether(t *testing.T) {
 	if rows, _ := viewAnswers(t, database, rollbackEdge{"issue", unstamped, "child_of", "issue", parent}); rows != 1 {
 		t.Errorf("graph_edges answers %s's parent %s %d times, want once", unstamped, parent, rows)
 	}
-	report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

@@ -221,10 +221,17 @@ export async function requestSpecApproval(issue: Tracked, example: Example): Pro
   return requested.ask.id;
 }
 
-/** The human approves the spec. */
+/** The human approves the spec, confirming the request as it now reads: the version the person's
+ *  answer settled into moves the request in place, quietly, which rewords its question and sets
+ *  its `edited_at`, and the answer route refuses an answer to a version the person was not shown
+ *  (`ASK_EDITED`). */
 export async function approve(approval: string): Promise<void> {
   const api = await dispatchApi();
-  await api.answerAsk(approval, { expected_edited_at: null, selected: ["Approve"] });
+  const read = await api.getAsk(approval);
+  await api.answerAsk(approval, {
+    expected_edited_at: read.ask.edited_at ?? null,
+    selected: ["Approve"],
+  });
 }
 
 /** The implementer links the pull request it opened. */

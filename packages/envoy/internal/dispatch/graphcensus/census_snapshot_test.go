@@ -112,10 +112,12 @@ func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 }
 
 // storeCensusOf takes the store census over database as `envoy-dispatch census --store` takes
-// it, on a connection of its own.
+// it, on a connection of its own, with no test of the returns the restore declines: this package
+// cannot read docs' (docs.ReturnDeclined), and a fixture that owes a return takes its census with
+// a test of its own.
 func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}
@@ -238,7 +240,7 @@ func TestTheStoreCensusReadsOneSnapshot(t *testing.T) {
 	seeded := seedAgreeingStore(t, database)
 	ghost := seeded.document.refKey + "#ghost"
 	committedAfter := ""
-	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, func(ctx context.Context, kind string) error {
+	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, nil, func(ctx context.Context, kind string) error {
 		if committedAfter != "" {
 			return nil
 		}

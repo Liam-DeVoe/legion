@@ -5,7 +5,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // An issue's relations as the `dispatch` command writes and reads them (dispatch://INFRA-1253 R9,
 // R10). A wait is one relation, needs, which a Dispatch of the issue tree reads; a Dispatch of the
@@ -112,7 +111,6 @@ beforeEach(() => {
   requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {

@@ -3499,7 +3499,12 @@ GATES = [
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
     # TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under bun, so
-    # the job installs Bun and the workspace, and reads every package that command loads.
+    # the job installs Bun and the workspace, and reads bin/dispatch.ts and its imports:
+    # envoy-client's sources and broker-client's with them, which are reads here, and some of
+    # contracts' modules, which are not: check-ts-filters.sh builds that entry for this filter too
+    # (ci_ts_programs.py, BUNDLES), writes the contracts modules its bundle loads into this
+    # filter's listed block and holds that block to them, and rule 9's second direction passes over
+    # the block's patterns, as it does for dispatch_two_builds_go's.
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
             (ENVOY, race_pkgs(RACE_API),
@@ -3507,10 +3512,11 @@ GATES = [
         ]),
     ], reads=reads(
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-        ("packages/envoy-client/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 (runDispatchCLI) runs "
-                                     "`bun ../../../../envoy-client/bin/dispatch.ts`, which loads envoy-client's sources"),
-        ("packages/contracts/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862: that command imports @legion/contracts"),
-    ) + envoy_client_dep(f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 runs packages/envoy-client/bin/dispatch.ts")
+        ("packages/envoy-client/bin/dispatch.ts",
+         f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:896-909 (runDispatchCLI) runs "
+         "`bun ../../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command"),
+    ) + envoy_client_dep(f"packages/envoy-client/bin/dispatch.ts, which {ENVOY}/internal/dispatch/api/decision_entries_test.go:896-909 "
+                         "runs, imports src/dispatch-cli.ts")
       + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + bun_job("envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[

@@ -11,6 +11,7 @@ import {
   getArtifactVersion,
   getAsk,
   getIssue,
+  getIssueDecisions,
   patchIssue,
   requestApproval,
   reviewArtifact,
@@ -39,7 +40,6 @@ import {
   holdReviewReads,
   IPHONE_13,
   identityBand,
-  issueDecisions,
   issueHeader,
   LABELS_READING,
   type LabelsAgainstTheCount,
@@ -1024,11 +1024,15 @@ test("the count of what waits is a control that opens the Decisions address @pho
       },
       asAgent
     );
+    // The read's entries for the issue's `decision` blocks - an entry that names no document is
+    // an ask's - each with the blocks its `shaped` attribute names.
     expect(
-      ((await issueDecisions(decided.key)).decisions ?? []).map((decision) => ({
-        names: (decision.links ?? []).map((link) => link.to.block_id),
-        waiting: decision.waiting_review,
-      })),
+      ((await getIssueDecisions(decided.key)).entries ?? [])
+        .filter((entry) => entry.document !== null)
+        .map((decision) => ({
+          names: (decision.shaped ?? []).map((link) => link.to.block_id),
+          waiting: decision.waiting_review,
+        })),
       "the server does not read the agent's decision as waiting for review"
     ).toEqual([{ names: ["r1"], waiting: true }]);
     expect((await getIssue(decided.key)).open_asks ?? [], "an ask of the issue is open").toEqual(

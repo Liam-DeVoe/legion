@@ -1143,12 +1143,12 @@ func typedBlockIDs(tree *pmdoc.Node) map[string]struct{} {
 // logged and not readable, a number below 1, before the document's first version, is no version
 // and not readable either, and a version holding an element this build does not know is an error
 // (skipUnreadableVersion).
-func approvedVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int) (*pmdoc.Node, string, bool, error) {
+func approvedVersion(ctx context.Context, q Queryer, artifactID string, number int) (*pmdoc.Node, string, bool, error) {
 	if number < 1 {
 		return nil, "", false, nil
 	}
 	var markdown string
-	if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
+	if err := q.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
 		return nil, "", false, fmt.Errorf("read document version %d: %w", number, err)
 	}
 	tree, err := pmdoc.ParseRendering(markdown)

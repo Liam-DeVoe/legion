@@ -16,7 +16,10 @@
 # default: only the caller knows which release that is. Once the base server has booted, the
 # commit it is stamped with (the `commit` of its /healthz, the one it registers in
 # server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
-# naming both, so that a binary built from another commit never stands in for that release.
+# naming both, so that a binary built from another commit never stands in for that release. In
+# the same way this head's server must be stamped with the commit this checkout stands on (`git
+# rev-parse HEAD`, which the Verification preamble stamps HEAD_BINARY with), so that a binary left
+# from an earlier head never stands in for the head the result is recorded at.
 #
 # Before this head boots it captures, through the base server: each restored ask's id, question,
 # options, answer and answerer (GET /api/v1/asks/{id}); the spec blocks the base's Decisions read
@@ -24,7 +27,9 @@
 # of each issue the restore owes (GET /api/v1/artifacts/{id}/versions/{n}); the text the citation
 # of the second shape's old addresses answers (GET /api/v1/references?to=), and that of the main
 # shape's colliding old spec address; and the block_refs rows the decisions document holds for the
-# second shape's ask blocks. It then stops that server and boots this head, HEAD_BINARY (default
+# second shape's ask blocks and the blocks each holds (document_blocks.parent_block_id), among
+# them the citation of an issue the seed writes in each one's question, and it fails when an ask
+# holds none. It then stops that server and boots this head, HEAD_BINARY (default
 # $TMPDIR/bin/envoy-dispatch, built stamped as the Verification preamble builds it), over the same
 # database with the hold settings, so the commands below and not the boot make the first move:
 # neither the decisions step nor the boot's run of the backfill states a row before them.
@@ -42,14 +47,16 @@
 # to each spec node captured from its section's links, and no other; and no copied_from on its
 # block. It reads every captured version of both documents answering the captured bytes. For the
 # second shape it reads the two documents move together: the decisions document's block index and
-# block_refs hold nothing of the moved asks, and the spec's hold each and each captured edge. For
-# both collisions it reads the restored ask's new id, held by no other document of the issue, in
-# the asks row asks_block_id_unique keys; for the second shape the old address still resolving
-# through its one moved_to tuple to the captured text, and for the main shape no moved_to tuple and
-# the old spec address answering the live block that holds that id, as captured. A text is held to
-# the captured one character for character with two differences and no other, each printed: the
-# eight server-owned ask attributes are absent, and a block that took a new id carries it. It runs
-# the restore again and reads the same result for the closed issue, and for every other.
+# block_refs hold nothing of the moved asks or of a block they held, and the spec's hold each ask
+# and each captured edge, an ask block's own under its new id and a held block's under a block the
+# restored ask block holds. For both collisions it reads the restored ask's new id, held by no
+# other document of the issue, in the asks row asks_block_id_unique keys; for the second shape the
+# old address still resolving through its one moved_to tuple to the captured text, and for the
+# main shape no moved_to tuple and the old spec address answering the live block that holds that
+# id, as captured. A text is held to the captured one character for character with two
+# differences and no other, each printed: the eight server-owned ask attributes are absent, and a
+# block that took a new id carries it. It runs the restore again and reads the same result for the
+# closed issue, and for every other.
 #
 # Then, on the spec, which still holds the answered ask q-kept, it makes three writes as the agent
 # - a delete of that block, a whole-document replacement without it, and a retype of it - and reads
@@ -109,7 +116,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
 require_env DATABASE_URL TMPDIR BASELINE_SHA
-require_commands cmp curl git go jq psql sed sort
+require_commands cmp curl git go jq paste psql sed sort
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
 database_url="$DATABASE_URL"
 if [[ -z "${BASELINE_BINARY:-}" ]]; then
@@ -149,6 +156,12 @@ base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quie
   exit 2
 }
 readonly base_sha
+# The commit this checkout stands on, in full: the one this head's server must be stamped with.
+head_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet HEAD)" || {
+  printf 'this checkout stands on no commit (git rev-parse HEAD)\n' >&2
+  exit 2
+}
+readonly head_sha
 readonly project=SEED
 # The eight server-owned ask attributes R10 takes out of markdown.
 readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
@@ -346,6 +359,14 @@ shaped_of() {
     fail shaped "read the shaped tuples of ask $1" "psql: $(<"$work/psql")"
 }
 
+# held_cte DOCUMENT BLOCK: on stdout, the `with recursive held (block_id)` clause of a query that
+# follows it: BLOCK of DOCUMENT and every block BLOCK holds there, at any depth, through the block
+# index's document_blocks.parent_block_id.
+held_cte() {
+  printf "with recursive held (block_id) as (select '%s'::text union select b.block_id from document_blocks b join held h on b.parent_block_id = h.block_id where b.artifact_id = '%s')" \
+    "$2" "$1"
+}
+
 # ---------------------------------------------------------------------------------------------
 # The base release writes the corpus.
 # ---------------------------------------------------------------------------------------------
@@ -453,13 +474,27 @@ want_status 200 capture "resolve spec#b-q-left-store through the base release"
 expect capture "spec#b-q-left-store is the callout that took that id" '"callout"' '.node.text | capture("^:::(?<t>[a-z]+)").t'
 jq -j '.node.text' "$work/body" >"$work/capture/text.q-left-store"
 
-# The block_refs rows the decisions document holds for the second shape's ask blocks.
+# The block_refs rows the decisions document holds for the second shape's ask blocks and for every
+# block each holds: the seed's question of each cites an issue, which the base release indexes
+# under the question's paragraph, a block the ask block holds. The blocks' ids go to
+# capture/held.$key and the edges, one `where|kind|to_kind|to_id|count` line each (where: `own`
+# for the ask block's own, `held` for a block it holds), to capture/edges.$key, which must not be
+# empty: an ask that holds no edge would leave the check of the two documents moving together
+# below nothing to check.
 for key in ask_doc_plain ask_doc_collide; do
-  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "
-    select kind, to_kind, to_id from block_refs
-    where artifact_id = '$decisions_a' and block_id = '${old_id[$key]}' order by 1, 2, 3" \
+  env -u PGHOSTADDR psql "$database_url" -XAtq -c \
+    "$(held_cte "$decisions_a" "${old_id[$key]}") select block_id from held order by 1" \
+    >"$work/capture/held.$key" 2>"$work/psql" || fail capture "read the blocks $key holds" "psql: $(<"$work/psql")"
+  env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "$(held_cte "$decisions_a" "${old_id[$key]}")
+    select case when block_id = '${old_id[$key]}' then 'own' else 'held' end, kind, to_kind, to_id, count(*)
+    from block_refs where artifact_id = '$decisions_a' and block_id in (select block_id from held)
+    group by 1, 2, 3, 4 order by 1, 2, 3, 4" \
     >"$work/capture/edges.$key" 2>"$work/psql" || fail capture "read the edges of $key" "psql: $(<"$work/psql")"
-  printf 'captured edges of %s in the decisions document: %s\n' "$key" "$(wc -l <"$work/capture/edges.$key")"
+  [[ -s "$work/capture/edges.$key" ]] ||
+    fail capture "the decisions document holds an edge of $key or of a block it holds" \
+      "block_refs holds none for its blocks $(tr '\n' ' ' <"$work/capture/held.$key")"
+  printf 'captured edges of %s and the blocks it holds in the decisions document: %s\n' "$key" \
+    "$(tr '\n' ' ' <"$work/capture/edges.$key")"
 done
 baseline_stop_server
 
@@ -472,9 +507,10 @@ server="$baseline_boot_url"
 send agent GET /healthz
 want_status 200 head "read this head's /healthz"
 head_commit="$(jq -r '.commit // ""' "$work/body")"
-[[ -n "$head_commit" && "$head_commit" != "$base_commit" ]] ||
-  fail head "this head is stamped with a commit of its own" "it serves '$head_commit', the base '$base_commit'"
-pass head "this head serves $head_commit over the base release's database, the decisions step held"
+[[ "$head_commit" == "$head_sha" && "$head_commit" != "$base_commit" ]] ||
+  fail head "this head is stamped with the commit this checkout stands on, not the base's" \
+    "it serves '$head_commit', the checkout stands on '$head_sha', the base serves '$base_commit'"
+pass head "this head serves $head_commit, the commit this checkout stands on, over the base release's database, the decisions step held"
 sign_in head
 
 # The step's first phase, which states each answer on its ask's node.
@@ -643,23 +679,33 @@ for captured in "$work"/capture/version.*.md; do
 done
 pass history "every one of the $captured_versions captured versions answers the bytes captured before the upgrade"
 
-# The two documents of the second shape move together.
+# The two documents of the second shape move together: the ask block and every block it held leave
+# the decisions document's index and block_refs, and each captured edge stands in the spec, the
+# ask block's own under its new id and a held block's under a block the restored ask block holds.
 for key in ask_doc_plain ask_doc_collide; do
-  query together "read the decisions document's index of $key" \
-    "select count(*) from document_blocks where artifact_id = '$decisions_a' and block_id = '${old_id[$key]}'"
-  [[ "$answer" == 0 ]] || fail together "the decisions document no longer holds the block of $key" "its index holds $answer"
+  held_list="$(sed "s/.*/'&'/" "$work/capture/held.$key" | paste -sd, -)"
+  query together "read the decisions document's index of $key and the blocks it held" \
+    "select count(*) from document_blocks where artifact_id = '$decisions_a' and block_id in ($held_list)"
+  [[ "$answer" == 0 ]] ||
+    fail together "the decisions document no longer holds the block of $key or a block it held" "its index holds $answer"
   query together "read the spec's index of $key" \
     "select count(*) from document_blocks where artifact_id = '$spec_a' and block_id = '${new_id[$key]}' and type = 'ask'"
   [[ "$answer" == 1 ]] || fail together "the spec holds the block of $key" "its index holds $answer"
-  query together "read the decisions document's edges of $key" \
-    "select count(*) from block_refs where artifact_id = '$decisions_a' and block_id = '${old_id[$key]}'"
-  [[ "$answer" == 0 ]] || fail together "no edge of $key is left under the decisions document" "$answer are"
-  while IFS='|' read -r kind to_kind to_id; do
-    query together "read the spec's edge $kind of $key" \
-      "select count(*) from block_refs where artifact_id = '$spec_a' and block_id = '${new_id[$key]}' and kind = '$kind' and to_kind = '$to_kind' and to_id = '$to_id'"
-    [[ "$answer" == 1 ]] || fail together "the spec holds the edge $kind -> $to_id of $key" "it holds $answer"
+  query together "read the decisions document's edges of $key and the blocks it held" \
+    "select count(*) from block_refs where artifact_id = '$decisions_a' and block_id in ($held_list)"
+  [[ "$answer" == 0 ]] || fail together "no edge of $key or of a block it held is left under the decisions document" "$answer are"
+  while IFS='|' read -r where kind to_kind to_id count; do
+    if [[ "$where" == own ]]; then
+      query together "read the spec's edge $kind of $key" \
+        "select count(*) from block_refs where artifact_id = '$spec_a' and block_id = '${new_id[$key]}' and kind = '$kind' and to_kind = '$to_kind' and to_id = '$to_id'"
+    else
+      query together "read the spec's edge $kind of a block $key holds" \
+        "$(held_cte "$spec_a" "${new_id[$key]}") select count(*) from block_refs where artifact_id = '$spec_a' and block_id in (select block_id from held where block_id <> '${new_id[$key]}') and kind = '$kind' and to_kind = '$to_kind' and to_id = '$to_id'"
+    fi
+    [[ "$answer" == "$count" ]] ||
+      fail together "the spec holds the edge $kind -> $to_id of $key ($where block)" "it holds $answer, want $count"
   done <"$work/capture/edges.$key"
-  pass together "$key moved with its $(wc -l <"$work/capture/edges.$key") captured edges: the spec's index and block_refs hold it, the decisions document's hold nothing of it"
+  pass together "$key moved with its captured edges ($(tr '\n' ' ' <"$work/capture/edges.$key")): the spec's index and block_refs hold it and them, the decisions document's hold nothing of it or of a block it held"
 done
 
 # ---------------------------------------------------------------------------------------------

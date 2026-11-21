@@ -1022,7 +1022,7 @@ var issueRowStatement = `
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
+		       coalesce((select a.id::text ` + refs.DecisionsDocumentOf("i.key") + `), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,

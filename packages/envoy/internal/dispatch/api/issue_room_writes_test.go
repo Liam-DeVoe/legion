@@ -199,7 +199,7 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 		t.Errorf("the decisions query reads role %q room %q fragment %q, want role decisions, no room of an issue and no fragment", artifact.Role, artifact.Room, artifact.Fragment)
 	}
 	var selected int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from decisions_documents(include_retired => true) where issue_key = $1`, converted.Key).Scan(&selected); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*) from decisions_documents() where issue_key = $1`, converted.Key).Scan(&selected); err != nil {
 		t.Fatalf("read the decisions documents: %v", err)
 	}
 	if selected != 0 {

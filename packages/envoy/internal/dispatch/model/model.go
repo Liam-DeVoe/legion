@@ -3938,9 +3938,8 @@ type DecisionKeep struct {
 // CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
 // last changed in, and Stale true when that text changed after the tuple was written. The three
-// are absent where the store holds none.
-//
-// kept for one release: compat-objects
+// are absent where the store holds none. It is Decision's, and the Decisions read's `entries`
+// answer it as each entry's `shaped`, so it stays when the old `decisions` member goes.
 type DecisionLink struct {
 	FromBlock        string     `json:"from_block"`
 	To               GraphNode  `json:"to"`
@@ -3952,15 +3951,14 @@ type DecisionLink struct {
 	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
-// Decision is one decision node of an issue in the shape the release before's Decisions read
-// answered (decisionread.Decisions): an agent's `decision` block, Kind "agent", or a person's
-// answered ask, Kind "person". Heading is the ask's question or the decision's first paragraph;
-// Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
-// node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
-// the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
-// old `decisions` member answers it for one release.
-//
-// kept for one release: compat-objects
+// Decision is one decision node of an issue as decisionread.Decisions answers it, the one reader
+// of a decision (plan H1): an agent's `decision` block, Kind "agent", or a person's answered ask,
+// Kind "person". Heading is the ask's question or the decision's first paragraph; Unsure is true
+// where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the node.
+// ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is the
+// sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
+// `entries` and the Keep take their members from it, so it stays when the read's old `decisions`
+// member, which answers it whole for one release, goes.
 type Decision struct {
 	BlockID string `json:"block_id"`
 	Heading string `json:"heading"`
