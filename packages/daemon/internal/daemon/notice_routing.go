@@ -44,19 +44,56 @@ var errNoticeWaits = wait.New("the notice waits for its architect")
 // no dead-letter path, so the row finishes undelivered with one log line.
 var errNoticeUnroutable = errors.New("the notice has no architect to go to")
 
-// errNoticeRowGone is a notice row deleted while the runner held its lease: a catch-up a newer
-// ready dropped (record.Store.DropCatchUps), or a changes request the person's approval followed
-// that a clear of its generation dropped (record.Store.DropQueuedChanges).
+// errNoticeRowGone is a notice row, or a controller notice row, deleted while the runner held its
+// lease: a catch-up a newer ready dropped (record.Store.DropCatchUps), or a changes request, or
+// its relay to the controller, the person's approval followed that a clear of its generation
+// dropped (record.Store.DropQueuedChanges).
 var errNoticeRowGone = errors.New("the notice row was deleted under its lease")
 
-// changesSuperseded is a changes request the person's approval followed: the gates readNoticeTree
-// read record an approval of the document reviewed, at the version the request reviewed or a
-// later one, given after the review (decisionSuperseded). approved is the version approved, which
-// the line that finishes the row names.
+// changesSuperseded is a changes request the person's approval followed: the gates stillOwed read
+// record an approval of the document reviewed, at the version the request reviewed or a later
+// one, given after the review (decisionSuperseded). approved is the version approved, which the
+// line that finishes the row names.
 type changesSuperseded struct{ approved int }
 
 func (s changesSuperseded) Error() string {
 	return fmt.Sprintf("the person approved version %d of the document after the changes request", s.approved)
+}
+
+// stillOwed reads in tx, the caller's repeatable-read snapshot, whether row's publish is still
+// owed: the row is still in the outbox under its lease (errNoticeRowGone when it is not), and,
+// when its payload, a notice or a controller notice, holds a person's changes request
+// (record.ChangesRequest), that request is still the person's word (changesSuperseded when it is
+// not), asked of the gates of row's issue as tx holds them (decisionSuperseded). The two are read
+// in one snapshot because a clear of the row's generation asks each changes request queued on the
+// issues it clears while their gates stand, deletes the row of each one the person's approval
+// followed, and then deletes the gates, those of a request it found standing included, whose row
+// it keeps (workflow.Engine.ClearGeneration). A snapshot taken before the clear finds the row and
+// the approval both; one taken after it finds a row the approval followed gone, and asks a row
+// still there of the gates as they stand then. Read apart, the row could be read before the clear
+// and the gates after it, and a request the approval followed would read as the person's word. It
+// is the one read the delivery of a notice (readNoticeTree) and the publish of a relay to the
+// controller (controllerNotice) make before they publish.
+func (r *outbox) stillOwed(ctx context.Context, tx pgx.Tx, row record.OutboxRow, payload record.OutboxPayload) error {
+	leased, err := r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
+	if err != nil {
+		return err
+	}
+	if !leased {
+		return errNoticeRowGone
+	}
+	request, asks := record.ChangesRequest(payload)
+	if !asks {
+		return nil
+	}
+	approval, err := r.decisionSuperseded(ctx, tx, row.Issue, request, record.DecisionDesignChangesRequested)
+	if err != nil {
+		return err
+	}
+	if approval != nil {
+		return changesSuperseded{approved: approval.Version}
+	}
+	return nil
 }
 
 // noticeRoute is what routes a notice of a tree: the tree's project token, its root, and every
@@ -85,12 +122,11 @@ type recomposedCatchUp struct {
 	decided string
 }
 
-// readNoticeTree reads row's tree in one repeatable-read transaction: that the row is still in the
-// outbox under its lease, whether a changes request is still the person's word, row's issue and
-// the tree's route (readNoticeRoute), then the fence. A row deleted under its lease is
-// errNoticeRowGone, a changes request the person's approval followed is changesSuperseded, and a
-// notice it cannot route is errNoticeUnroutable. The changes request is asked of the gates of
-// row's issue as this read holds them (decisionSuperseded, of the decision the notice carries).
+// readNoticeTree reads row's tree in one repeatable-read transaction: whether the row's publish is
+// still owed (stillOwed: the row is still in the outbox under its lease, and a changes request is
+// still the person's word), row's issue and the tree's route (readNoticeRoute), then the fence. A
+// row deleted under its lease is errNoticeRowGone, a changes request the person's approval
+// followed is changesSuperseded, and a notice it cannot route is errNoticeUnroutable.
 // For a catch-up (payload.CatchUp) the same transaction composes again what the architect of
 // row's issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is queued on, as
 // workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and every issue
@@ -113,22 +149,10 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, paylo
 	var tree treeSnapshot
 	var recomposed *recomposedCatchUp
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		leased, err := r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
-		if err != nil {
+		if err := r.stillOwed(ctx, tx, row, payload); err != nil {
 			return err
 		}
-		if !leased {
-			return errNoticeRowGone
-		}
-		if decision, ok := record.SpecDecision(payload.Kind); ok && decision == record.DecisionDesignChangesRequested {
-			approval, err := r.decisionSuperseded(ctx, tx, row.Issue, payload, decision)
-			if err != nil {
-				return err
-			}
-			if approval != nil {
-				return changesSuperseded{approved: approval.Version}
-			}
-		}
+		var err error
 		if issue, tree.noticeRoute, err = r.readNoticeRoute(ctx, tx, row.Issue, map[string]noticeRoute{}); err != nil {
 			return err
 		}

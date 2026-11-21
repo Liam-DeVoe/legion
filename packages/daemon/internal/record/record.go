@@ -548,6 +548,14 @@ type ParkedDecision struct {
 	// identity with Ref (DecisionMark).
 	At  time.Time
 	Seq int64
+	// Artifact is the Dispatch artifact id of the document a spec decision's review is of (the
+	// notice's Artifact, which its relay to the controller carries too), so the kept decision is
+	// asked of that document as its relay is (workflow.SupersedingApproval): a step's gate can
+	// move to another document while Ref stays the step's, and the approval of that document
+	// answers no review of this one. It is "" for an answer, resolution or reply on an ask, for a
+	// notice that carried none, and for a row kept before the column was added, and such a
+	// decision is asked at its place in Dispatch's log alone.
+	Artifact string
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
@@ -555,9 +563,11 @@ type ParkedDecision struct {
 }
 
 // Mark is the mark a task names d by (DecisionMark): the row's identity, what the task says of
-// it, and Dispatch's sequence of its review, which a send asks the gate with.
+// it, and Dispatch's sequence of its review and the document reviewed, which a send asks the gate
+// with.
 func (d ParkedDecision) Mark() DecisionMark {
-	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
+	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq,
+		Artifact: d.Artifact}
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's

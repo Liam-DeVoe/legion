@@ -134,17 +134,18 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //
 // The reach is transitive, which bounds what the rule for a publisher proves: it fails a publisher
 // that reaches the predicate through nothing it calls, and no more. The delivery of a notice
-// (deliverNotice) reaches it four ways: through its ask of a changes request (readNoticeTree's
-// decisionSuperseded), through the catch-up's Decided that readNoticeTree writes again
-// (workflow.KeptDecisionsTask), through the hand-over of a catch-up's decisions to a fresh catch-up
-// (workflow.HandOverKept) once a newer one superseded it (supersededKept) or its re-holds are spent
-// (the re-hold policy's spentKept), and through the relay of a parked decision (parkDecision). Take
-// the first out and the walk still passes. What holds that ask is its behavior, which
-// TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of a relay to the
-// controller (controllerNotice) reaches it one way alone, through its ask of a relayed changes
-// request (decisionSuperseded), so the walk fails it if that ask goes; that the ask is of the
-// review's mark and document the relay carries, and of nothing kept beside the row, is its
-// behavior too, which TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
+// (deliverNotice) reaches it four ways: through its ask of a changes request (the stillOwed that
+// readNoticeTree reads, through decisionSuperseded), through the catch-up's Decided that
+// readNoticeTree writes again (workflow.KeptDecisionsTask), through the hand-over of a catch-up's
+// decisions to a fresh catch-up (workflow.HandOverKept) once a newer one superseded it
+// (supersededKept) or its re-holds are spent (the re-hold policy's spentKept), and through the
+// relay of a parked decision (parkDecision). Take the first out and the walk still passes. What
+// holds that ask is its behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished
+// drives. The publish of a relay to the controller (controllerNotice) reaches it one way alone,
+// through its ask of a relayed changes request (stillOwed, through decisionSuperseded), so the
+// walk fails it if that ask goes; that the ask is of the review's mark and document the relay
+// carries, and of nothing kept beside the row, is its behavior too, which
+// TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
 // and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a

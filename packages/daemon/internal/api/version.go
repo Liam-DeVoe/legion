@@ -3027,8 +3027,10 @@ package api
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
-// Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
-// writes: a row it keeps carries no sequence and its own clock, as before this release.
+// Dispatch's sequence of a kept spec decision's review, and `parked_decisions.artifact`, the
+// document that review is of (the empty string on every row already there), which an older
+// daemon neither reads nor writes: a row it keeps carries no sequence, no document and its own
+// clock, as before this release.
 // `20261118073048_phase_entry_awaiting.up.sql` replaces `phases.entry_verbatim` with
 // `phases.entry_awaiting`, the wait a resume answered, so the sweep's send again of a lost resume
 // start is rendered at that send rather than sent as the text written at the raise. A daemon of

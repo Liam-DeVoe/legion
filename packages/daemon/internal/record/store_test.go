@@ -2758,8 +2758,9 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
 // replaces it (an approval after a changes request of the same spec), an older one arriving late
 // does not. A read names them all, newest first and ties by reference, each with Dispatch's mark
-// of it, and leaves them; the forget of what a delivered start named deletes exactly those, so a
-// decision kept on a named reference since stays for the next start to name.
+// of it and the document reviewed, and leaves them; the forget of what a delivered start named
+// deletes exactly those, so a decision kept on a named reference since stays for the next start to
+// name, with the document it was kept with, none where it was kept with none.
 func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2772,7 +2773,8 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	for _, decision := range []ParkedDecision{
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:alice", At: t0},
 		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignChangesRequested, Actor: "user:alice", At: t0},
-		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12},
+		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12,
+			Artifact: "artifact-210"},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:carol", At: t0.Add(-time.Second)},
 	} {
@@ -2787,7 +2789,8 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		must(t, err)
 	})
 	want := []ParkedDecision{
-		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12},
+		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12,
+			Artifact: "artifact-210"},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 	}
 	if len(named) != len(want) {
@@ -2797,7 +2800,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		got := named[i]
 		if got.Issue != want[i].Issue || got.Ref != want[i].Ref ||
 			got.Decision != want[i].Decision || got.Actor != want[i].Actor ||
-			!got.At.Equal(want[i].At) || got.Seq != want[i].Seq {
+			!got.At.Equal(want[i].At) || got.Seq != want[i].Seq || got.Artifact != want[i].Artifact {
 			t.Fatalf("read[%d] = %#v, want %#v: each ref keeps its newest decision", i, got, want[i])
 		}
 	}
@@ -2818,8 +2821,9 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	inTx(t, st, func(tx pgx.Tx) {
 		left, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
 		must(t, err)
-		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" {
-			t.Fatalf("after the forget %#v, want only the decision kept since it was named", left)
+		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" ||
+			left[0].Artifact != "" {
+			t.Fatalf("after the forget %#v, want only the decision kept since it was named, with no document, as it was kept", left)
 		}
 	})
 }

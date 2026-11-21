@@ -1070,11 +1070,14 @@ var (
 )
 
 func (s *Postgres) AddParkedDecision(ctx context.Context, tx pgx.Tx, decision ParkedDecision) error {
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, seq) values ($1, $2, $3, $4, $5, nullif($6::bigint, 0))
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, seq, artifact)
+		values ($1, $2, $3, $4, $5, nullif($6::bigint, 0), $7)
 		on conflict (issue, ref) do update set decision = excluded.decision, actor = excluded.actor,
-		at = excluded.at, seq = excluded.seq, claimed_by = null, held_by_claim = null, held_by_delivery = null
+		at = excluded.at, seq = excluded.seq, artifact = excluded.artifact, claimed_by = null,
+		held_by_claim = null, held_by_delivery = null
 		where parked_decisions.at <= excluded.at`,
-		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At, decision.Seq); err != nil {
+		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At, decision.Seq,
+		decision.Artifact); err != nil {
 		return fmt.Errorf("keep the decision %s on %s: %w", decision.Ref, decision.Issue, err)
 	}
 	return nil
@@ -1117,8 +1120,8 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 // only those a start or catch-up of tree may name (keptCounts), newest first, ties by ref.
 func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool) ([]ParkedDecision, error) {
 	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at,
-		coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0), coalesce(kept.held_by_claim, ''),
-		coalesce(kept.held_by_delivery, '')
+		coalesce(kept.seq, 0), kept.artifact, coalesce(kept.claimed_by, 0),
+		coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')
 		from parked_decisions kept join issues owner on owner.key = kept.issue
 		where owner.tree = $1 and (not $2 or (`+keptNameable+`)) order by kept.at desc, kept.ref`, tree, nameable)
 	if err != nil {
@@ -1129,7 +1132,7 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 	for rows.Next() {
 		var decision ParkedDecision
 		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor,
-			&decision.At, &decision.Seq, &decision.ClaimedBy, &decision.HeldBy.Claim,
+			&decision.At, &decision.Seq, &decision.Artifact, &decision.ClaimedBy, &decision.HeldBy.Claim,
 			&decision.HeldBy.Delivery); err != nil {
 			return nil, fmt.Errorf("scan a decision owed to %s: %w", tree, err)
 		}
@@ -1569,9 +1572,32 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string
 	return nil
 }
 
+// ChangesRequest is the person's changes request payload holds, read as the Notice it is, and
+// whether it holds one: a notice whose kind reports a changes request (SpecDecision), or the
+// parked-decision controller notice that relays one. It is the one rule for which queued rows a
+// reader of the outbox asks again whether the person's approval followed (workflow's
+// NoticeSuperseded): the daemon's delivery of a notice and its publish of a relay (its stillOwed),
+// and the clear of a generation (queuedChanges, whose select names the same rows by the fields
+// this reads, which a test holds to this rule). An approval's own notice, or its relay, is the
+// person's later word, so neither is asked again, nor is any other row.
+func ChangesRequest(payload OutboxPayload) (Notice, bool) {
+	switch payload := payload.(type) {
+	case Notice:
+		if decision, spec := SpecDecision(payload.Kind); spec && decision == DecisionDesignChangesRequested {
+			return payload, true
+		}
+	case ControllerNotice:
+		if payload.Kind == ParkedDecisionNotice && payload.Decision == DecisionDesignChangesRequested {
+			return Notice(payload), true
+		}
+	}
+	return Notice{}, false
+}
+
 // queuedChanges is every person's changes request the outbox holds on the issues where selects
-// with key as $1, a row a runner has leased included, oldest first: each design-changes-requested
-// notice, and each parked-decision controller notice that relays one (QueuedChanges).
+// with key as $1, a row a runner has leased included, oldest first: each row ChangesRequest
+// accepts, read as the Notice it is (QueuedChanges). A row the select names that the rule refuses
+// is an error, since the two have drifted apart.
 func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedChanges, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where `+where+`
 		and ((kind = $2 and payload->>'kind' = $3)
@@ -1593,16 +1619,12 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 		if err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
-		request := QueuedChanges{Row: row.ID, Kind: row.Kind, Issue: row.Issue}
-		switch payload := payload.(type) {
-		case Notice:
-			request.Notice = payload
-		case ControllerNotice:
-			request.Notice = Notice(payload)
-		default:
-			return nil, fmt.Errorf("outbox row %d of kind %s carries %T, no notice", row.ID, row.Kind, payload)
+		request, ok := ChangesRequest(payload)
+		if !ok {
+			return nil, fmt.Errorf("outbox row %d of kind %s holds no changes request by ChangesRequest's rule, "+
+				"which the select of the changes requests must match", row.ID, row.Kind)
 		}
-		queued = append(queued, request)
+		queued = append(queued, QueuedChanges{Row: row.ID, Kind: row.Kind, Issue: row.Issue, Notice: request})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)

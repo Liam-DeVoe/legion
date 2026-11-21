@@ -43,8 +43,9 @@ type Approval struct {
 // request the outbox holds on them (Engine.ClearGeneration). It holds the guards that choose
 // whether the one rule (classify.ReviewSuperseded) is asked of a review, listed below, so a new
 // step kind or a change to how an approval of the same version is read is made here once. Which
-// reviews a sender asks about is the sender's: the daemon's readNoticeTree and controllerNotice,
-// and the clear, ask again of a queued notice only when it is a changes request, since an
+// reviews a sender asks about is the sender's. Of the queued notices, every reader asks again only
+// those record.ChangesRequest accepts, the one rule for which rows hold a changes request: the
+// daemon's delivery of a notice and publish of a relay (its stillOwed), and the clear. An
 // approval's own notice is the person's later word.
 //
 // It answers the approval that superseded the review, which a sender may name, and nil when the
