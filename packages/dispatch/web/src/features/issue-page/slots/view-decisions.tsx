@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -35,25 +35,31 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // time.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
-  // address that names a node the words filter would not have matched still draws it; the
-  // entry it names takes the focus, once per address (R6).
+  // address that names a node the words filter would not have matched still draws it, but for a
+  // person's write-up of an answered question (below); the entry it names takes the focus, once
+  // per address (R6).
   const { named, reveal } = useAddressTarget(root, address);
-  // Whether the tree holds the node an address beside the view names, said to the stage once
+  // Whether the list draws the node an address beside the view names, said to the stage once
   // for each following of the address, once every read the tree is built from holds its
-  // answer (`ViewSlotProps.onAddressDrawn`). The list draws every node the tree holds that an
-  // address names: an ask or a decision as an entry, a node of another kind as the row before
-  // the parts, a decision the decisions read holds no row for in the foot, and a person's
-  // write-up of an answered question, which is no row here, on the row of the question it
-  // answers (`DecisionsFilterBody`). Where the tree holds none, the stage draws the outline's
-  // fallback in the view's place. It is said before the browser paints, so where the reads were
-  // held as the view was drawn, as on Back to its address, no list is painted in its place.
+  // answer (`ViewSlotProps.onAddressDrawn`): before that the node may not have arrived. The body
+  // says whether it does (`onRevealDrawn`): only the body knows the rows it draws, and which
+  // decisions are a person's write-up of an answered question, which is no row here, so that an
+  // address naming one lands on the row of a question it answers where the list draws one. The
+  // body is handed the call only while the address is beside the view and those reads are held,
+  // and what it first says for a following is what the stage is told. Where the list draws none
+  // of the node - the tree holds none, or the words filter matched none of the questions a
+  // write-up answers - the stage draws the outline in the view's place, which lands on the node
+  // or says that the issue holds none of it.
   const beside = address.target !== undefined && address.document === undefined;
   const told = useRef<string | undefined>(undefined);
-  useLayoutEffect(() => {
-    if (!beside || !readsHeld || told.current === following) return;
-    told.current = following;
-    onAddressDrawn(reveal !== undefined);
-  }, [beside, following, onAddressDrawn, readsHeld, reveal]);
+  const tell = useCallback(
+    (drawn: boolean) => {
+      if (told.current === following) return;
+      told.current = following;
+      onAddressDrawn(drawn);
+    },
+    [following, onAddressDrawn]
+  );
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),
     [address.filter, named, root]
@@ -72,6 +78,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         holdsEscape
         isClosed={issue.closed_at !== null}
         issue={issue}
+        {...(beside && readsHeld ? { onRevealDrawn: tell } : {})}
         reader={viewer}
         request={request}
         reveal={reveal?.at(-1)?.id}

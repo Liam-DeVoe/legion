@@ -126,6 +126,7 @@ export function DecisionsFilterBody({
   holdsEscape,
   isClosed,
   issue,
+  onRevealDrawn,
   reader,
   request,
   reveal,
@@ -146,6 +147,12 @@ export function DecisionsFilterBody({
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
   issue: IssueDetails;
+  /** Told whether the list draws the node the address names (`reveal`), where the page draws
+   *  the outline in the view's place if it does not (`slots/view-decisions.tsx`): given only
+   *  while the address names a node beside the view and every read the tree is built from holds
+   *  its answer. The body tells it as soon as it can say, and again each time what it draws
+   *  changes; the caller acts on the first of these for each following of the address. */
+  onRevealDrawn?: (drawn: boolean) => void;
   /** Who is reading, whose own answer carries the ink rule (R34). Another person's decision
    *  stands under "Your decisions" too, with that person's name on its row. */
   reader: string | undefined;
@@ -154,7 +161,8 @@ export function DecisionsFilterBody({
   request?: OutlineRequest;
   /** The node the address names, which takes the focus once per address (R19): its own row, or
    *  for a person's write-up of an answered question, which is no row here, the row of a
-   *  question it answers. */
+   *  question it answers, where the list draws one. Undefined where the address names no node
+   *  or the tree holds none it names. */
   reveal?: string;
   /** The whole tree, which holds each ask and each decision and each statement a tie names. */
   root: TreeNode;
@@ -365,9 +373,10 @@ export function DecisionsFilterBody({
   // not on the page until the reads that hold it have answered, so this looks again on every
   // list the body draws, and unfolds the foot where the entry is one of its own. A person's
   // write-up of an answered question is no entry (`writeUps`), so an address naming one puts the
-  // focus on the first row the list draws of a question it answers. A decision the list draws
-  // before the asks read has answered may yet turn out to be a write-up, which leaves the list
-  // once it does, so the address lands on no decision until the seam can tell.
+  // focus on the first row the list draws of a question it answers, and lands nowhere where the
+  // list draws none of them. A decision the list draws before the asks read has answered may
+  // yet turn out to be a write-up, which leaves the list once it does, so the address lands on
+  // no decision until the seam can tell.
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
@@ -386,6 +395,36 @@ export function DecisionsFilterBody({
     taken.current = reveal;
     row.focus();
   }, [drawn, partOf, reveal, writeUps]);
+  // Whether the list draws the node the address names, which the page is told
+  // (`onRevealDrawn`), so that where it does not the outline is drawn in the view's place and
+  // lands on it as the outline does. The list draws every node the tree holds that an address
+  // names - an ask or a decision as an entry, a node of another kind as the row before the
+  // parts, a decision the decisions read holds no row for in the foot - but for a person's
+  // write-up of an answered question, which it draws only as the row of a question it answers,
+  // where the address lands as above. Under words that match none of those questions the list
+  // draws neither the write-up nor any question it answers, so the address would land nowhere
+  // here; the outline draws the write-up under the question it answers. A decision may be a
+  // write-up until the seam can tell (`writeUps`), so nothing is said of one before then. It is
+  // said before the browser paints, so where the reads were held as the view was drawn, as on
+  // Back to its address, no list is painted in the outline's place.
+  useLayoutEffect(() => {
+    if (onRevealDrawn === undefined) return;
+    if (reveal === undefined) {
+      onRevealDrawn(false);
+      return;
+    }
+    const answered = writeUps?.get(reveal);
+    if (answered !== undefined) {
+      onRevealDrawn(drawn.some((entry) => answered.has(entry.node.id)));
+      return;
+    }
+    if (
+      writeUps === undefined &&
+      nodesInOrder(root).some((node) => node.id === reveal && node.type === "decision")
+    )
+      return;
+    onRevealDrawn(true);
+  }, [drawn, onRevealDrawn, reveal, root, writeUps]);
 
   // Whether the focus on the foot's control is the one this body put there on its own, which
   // the reader has not yet pressed, typed on or left. The tree takes the focus only from a

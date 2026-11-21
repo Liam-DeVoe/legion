@@ -260,3 +260,29 @@ test("a write-up's address waits for the asks read, which answers after the deci
     decisions.mockRestore();
   }
 });
+
+// Under words the answered question does not hold, the list draws neither the write-up, which is
+// no row here, nor the question it answers, only the open question the words match, so the
+// write-up's address has no row of the view to land on. The stage draws the outline in the view's
+// place, which draws the write-up as a row under the question it answers and lands on it.
+test("a write-up's address under words its question does not hold draws the outline, with the focus on the write-up's row", async () => {
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
+  try {
+    const view = drawStage("?q=flag#b-writeup");
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the write-up's address left the focus on ${document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
+      ).toBe(WRITE_UP_NODE)
+    );
+    await waitInAct(20);
+    expect(drawnSlot(view), "the stage drew the view, which has no row for the write-up").toBe(
+      "the body"
+    );
+    expect(focusedRow(), "the focus left the write-up's row").toBe(WRITE_UP_NODE);
+  } finally {
+    asks.mockRestore();
+    decisions.mockRestore();
+  }
+});
