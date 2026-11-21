@@ -408,8 +408,8 @@ func TestHoldGateKeepsAnswerThirtySeconds(t *testing.T) {
 }
 
 // TestHoldGateBoundsEachAsk: an ask of a Dispatch that never answers ends within the gate's three
-// seconds, and the failure is remembered five seconds: a check in that time asks nothing and
-// answers at once.
+// seconds, and the failure is remembered five seconds: a check in that time asks Dispatch nothing,
+// which the number of questions Dispatch was asked decides.
 func TestHoldGateBoundsEachAsk(t *testing.T) {
 	ctx := t.Context()
 	url, calls := never(t)
@@ -422,15 +422,77 @@ func TestHoldGateBoundsEachAsk(t *testing.T) {
 		t.Fatalf("Check(%s) against a Dispatch that never answers took %s, want at most 3.5 s", ada, took)
 	}
 	r.clock.advance(5*time.Second - time.Millisecond)
-	start = time.Now()
 	if err := r.gate.Check(ctx, ada); err != nil {
 		t.Fatalf("Check(%s) again within five seconds = %v, want nil", ada, err)
 	}
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("Check(%s) within five seconds of a failure to ask took %s, want it answered at once from the remembered failure", ada, took)
-	}
 	if got := calls(); got != 1 {
 		t.Fatalf("two checks within five seconds asked Dispatch %d times, want 1", got)
+	}
+}
+
+// calloutBudget is the NATS auth service's whole decision (natscallout's decideBudget), the
+// deadline of the context its introspection, and so this gate's check, runs under.
+const calloutBudget = 1500 * time.Millisecond
+
+// TestAHangingDispatchIsAnsweredFromTheKeptRowWithinTheCalloutsBudget: the NATS auth service gives
+// a check the 1.5 s of its whole decision. While Dispatch hangs, a check with that budget is
+// answered from the row person_standing keeps, and returns while the budget still has time: ada,
+// kept not held, is served, with one WARN line and broker_hold_unchecked_total counting her; bob,
+// kept held, is refused hold.ErrHeld. The ask's own end is Dispatch's failure, remembered: ada's
+// redial at once asks Dispatch nothing and is served the same way, and so is a redial after the
+// failure is forgotten, which asks again.
+//
+// Control: the ask bounded by the caller's deadline alone, as it was. The ask then ends only with
+// the caller's budget, the kept row is read with a spent context, and ada and bob are each
+// hold.ErrUncheckable, which the auth service refuses as a decision past its budget.
+func TestAHangingDispatchIsAnsweredFromTheKeptRowWithinTheCalloutsBudget(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	asOf := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	keep := func(person string, held bool) {
+		t.Helper()
+		body := fmt.Sprintf(`{"person":%q,"member_kind":"full","held":%t,"as_of":%q}`, person, held, asOf.Format(time.RFC3339Nano))
+		_ = newRig(answering(t, http.StatusOK, body), projectaccesstest.StaticAccount("token"), openStore(t, databaseURL)).gate.Check(t.Context(), person)
+		if kept, _, found := standing(t, openStore(t, databaseURL), person); !found || kept != held {
+			t.Fatalf("person_standing for %s = held %t (found %t), want held %t kept", person, kept, found, held)
+		}
+	}
+	keep(ada, false)
+	keep(bob, true)
+
+	url, calls := never(t)
+	r := newRig(url, projectaccesstest.StaticAccount("token"), openStore(t, databaseURL))
+	check := func(person, when string) error {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), calloutBudget)
+		defer cancel()
+		err := r.gate.Check(ctx, person)
+		if ctx.Err() != nil {
+			t.Errorf("Check(%s) %s returned after the callout's %s budget had run out (%v), want it answered within the budget", person, when, calloutBudget, err)
+		}
+		return err
+	}
+
+	if err := check(ada, "while Dispatch hangs"); err != nil {
+		t.Errorf("Check(%s) while Dispatch hangs, kept not held = %v, want nil, served from the kept row", ada, err)
+	}
+	if got := r.unchecked(t, "not_held"); got != 1 {
+		t.Errorf("broker_hold_unchecked_total{last_answer=\"not_held\"} after ada's check = %d, want 1", got)
+	}
+	if got := len(r.logs.at(slog.LevelWarn, "broker: Dispatch could not be asked whether a person is held; serving on its last answer", ada)); got != 1 {
+		t.Errorf("WARN lines serving %s on her last answer = %d, want 1", ada, got)
+	}
+	if err := check(ada, "on her redial at once"); err != nil {
+		t.Errorf("Check(%s) on her redial at once = %v, want nil, served from the kept row", ada, err)
+	}
+	if got := calls(); got != 1 {
+		t.Errorf("Dispatch was asked %d times by ada's check and her redial at once, want 1: the ask's end is remembered", got)
+	}
+	r.clock.advance(5 * time.Second)
+	if err := check(ada, "on her redial once the failure is forgotten"); err != nil {
+		t.Errorf("Check(%s) on her redial once the failure is forgotten = %v, want nil, served from the kept row", ada, err)
+	}
+	if err := check(bob, "while Dispatch hangs"); !isHeld(err) {
+		t.Errorf("Check(%s) while Dispatch hangs, kept held = %v, want hold.ErrHeld alone", bob, err)
 	}
 }
 
@@ -566,6 +628,10 @@ func TestHoldGateRefusesWhenAHeldAnswerCannotBeWritten(t *testing.T) {
 		go func() { done <- r.gate.Check(caller, ada) }()
 		storetest.AwaitLockWaiters(t, st.Pool, blocker, 1)
 		hangUp()
+		// The sleep decides nothing this test asserts; it only feeds its control. A write bound to
+		// the caller would be cancelled by pgx asynchronously, and nothing observable marks that
+		// cancellation reaching Postgres, so the sleep gives such a write time to end before the
+		// lock is let go: without it, that write could still win the lock and the control pass.
 		time.Sleep(100 * time.Millisecond)
 		if err := blocker.Rollback(ctx); err != nil {
 			t.Fatal(err)

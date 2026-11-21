@@ -63,6 +63,17 @@ var (
 const askTimeout = 3 * time.Second
 const writeTimeout = 1 * time.Second
 
+// readReserve is what CheckUntil leaves a caller that has a deadline, out of the time it has left,
+// for reading the answer person_standing keeps once Dispatch cannot be asked: the ask ends at
+// askTimeout or at the caller's deadline less this, whichever comes first. The NATS auth service's
+// decision has 1.5 s for everything (natscallout's decideBudget), so an ask bounded by the caller
+// alone would end only as the decision did, and the kept answer could no longer be read.
+const readReserve = 500 * time.Millisecond
+
+// errNoTimeToAsk is the cause of a check whose caller had no more time than readReserve left: it
+// asks Dispatch nothing and answers from the kept row, and remembers no failure of Dispatch's.
+var errNoTimeToAsk = errors.New("hold: the caller had no time left to ask Dispatch")
+
 // failureMemory is how long a failure to ask is remembered per person.
 const failureMemory = 5 * time.Second
 
@@ -161,13 +172,16 @@ func (g *Gate) Check(ctx context.Context, person string) error {
 // served them on (not_held_until), which introspection carries: the zero time for an answer naming
 // none, as every answer outside IAP, and for a person served with no answer kept.
 //
-// It asks Dispatch about person as record.CanonicalLogin spells them, bounded by askTimeout, and
-// answers from Dispatch's answer, which it writes to person_standing, deadline included, unless it
-// already wrote that answer; the write runs apart from ctx, bounded by writeTimeout, so a caller
-// that hangs up does not stop it. Dispatch refusing the broker's own account is ErrUncheckable for
-// every person, logged at ERROR once a minute. Every other failure to ask is answered from the
-// later, by as_of, of the kept row and a held answer the gate could not write, and is remembered
-// failureMemory unless the caller itself hung up.
+// It asks Dispatch about person as record.CanonicalLogin spells them, bounded by askTimeout and,
+// for a caller with a deadline, by that deadline less readReserve, and answers from Dispatch's
+// answer, which it writes to person_standing, deadline included, unless it already wrote that
+// answer; the write runs apart from ctx, bounded by writeTimeout, so a caller that hangs up does
+// not stop it. Dispatch refusing the broker's own account is ErrUncheckable for every person,
+// logged at ERROR once a minute. Every other failure to ask, the ask's own bound running out among
+// them, is answered from the later, by as_of, of the kept row and a held answer the gate could not
+// write, read in the time the bound left the caller, and is remembered failureMemory unless the
+// caller itself hung up. A caller with no more than readReserve left asks nothing and is answered
+// from the kept row.
 //
 // A held answer, fresh or kept, is ErrHeld whatever deadline it carries. A not-held answer, fresh,
 // cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so is
@@ -189,7 +203,16 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 	if failed && now.Sub(remembered.at) < failureMemory {
 		return g.unasked(ctx, person, remembered.err)
 	}
-	askCtx, cancel := context.WithTimeout(ctx, askTimeout)
+	bound := askTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if left := time.Until(deadline) - readReserve; left < bound {
+			bound = left
+		}
+	}
+	if bound <= 0 {
+		return g.unasked(ctx, person, errNoTimeToAsk)
+	}
+	askCtx, cancel := context.WithTimeout(ctx, bound)
 	answer, err := g.access.Person(askCtx, person)
 	cancel()
 	switch {
@@ -203,7 +226,9 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUncheckable, person, err)
 	}
 	if ctx.Err() != nil {
-		// The caller hung up, which is no failure of Dispatch's to remember for the next one.
+		// The caller hung up, which is no failure of Dispatch's to remember for the next one. An ask
+		// whose own bound ran out ends while the caller still has its readReserve, so it is
+		// Dispatch's failure, and is remembered below.
 		return g.unasked(ctx, person, err)
 	}
 	g.mu.Lock()
