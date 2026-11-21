@@ -770,6 +770,14 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // envNameRule is the refusal's words for a name envVarName does not match.
 const envNameRule = "must be an environment variable name (letters, digits, and underscores, not starting with a digit)"
 
+// envNameRefusal is the refusal of entry, the 1-based position in key's map of a variable name
+// envVarName does not match. It names the entry by its position, never its text: what stands where
+// a variable name goes can be a credential pasted into the wrong place, and the refusal is printed
+// as it is (`legion stop`, `legion config check`).
+func envNameRefusal(key string, entry int) error {
+	return fmt.Errorf("%s entry %d: its key %s", key, entry, envNameRule)
+}
+
 // spendAttributesRule is the refusal's words for an operator value of
 // runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
 // member is caught by the detector's caller with an empty hand, so it costs the launch the whole

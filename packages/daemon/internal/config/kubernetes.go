@@ -560,7 +560,7 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from%s", key, sourceShown(source))
+	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from", key)
 	if strings.HasPrefix(source, "//") {
 		return "", noHost
 	}
@@ -574,21 +574,17 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 		return u.String(), nil
 	}
 	if !pluginVersion.MatchString(source) {
-		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions%s", key, sourceShown(source))
+		// The source is quoted only when it can hold no credential, a word or a range with no "/",
+		// ":", "@", "?" or "#": one with userinfo or a signed query is a URL whose credential
+		// url.Parse may not read as such (one with no scheme, or one it cannot parse), and `legion
+		// stop` prints this refusal as it is.
+		got := ""
+		if !strings.ContainsAny(source, "/:@?#") {
+			got = fmt.Sprintf("; got %q", source)
+		}
+		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions%s", key, got)
 	}
 	return source, nil
-}
-
-// sourceShown is source quoted for a refusal of it, when it can hold no credential: a word or a
-// range, with no "/", ":", "@", "?" or "#". Otherwise it is nothing and the refusal names the key
-// alone: a source with userinfo or a signed query is a URL whose credential url.Parse may not read
-// as such (one with no scheme, or one url.Parse cannot parse), and `legion stop` prints this
-// refusal as it is.
-func sourceShown(source string) string {
-	if strings.ContainsAny(source, "/:@?#") {
-		return ""
-	}
-	return fmt.Sprintf("; got %q", source)
 }
 
 // isLoopbackHost is localhost, with or without the root's trailing dot, or a loopback IP address.
@@ -1391,9 +1387,7 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 		nameNode, entry := value.Content[i], value.Content[i+1]
 		name := nameNode.Value
 		if nameNode.Kind != yaml.ScalarNode || !envVarName.MatchString(name) {
-			// By its position, not its text: what stands where a variable name goes can be a
-			// credential pasted into the wrong place, and this refusal is printed as it is.
-			return nil, fmt.Errorf("%s entry %d: its key %s", key, i/2+1, envNameRule)
+			return nil, envNameRefusal(key, i/2+1)
 		}
 		var text string
 		if entry.Kind != yaml.ScalarNode || entry.Tag == "!!null" || entry.Decode(&text) != nil {
