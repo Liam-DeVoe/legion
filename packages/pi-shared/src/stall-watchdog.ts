@@ -639,7 +639,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
           ? "the session was sent the message naming the ended call"
           : "the message naming the ended call was not sent, because a take of the claim's task " +
               "is pending: it waits for that take, and is sent if that take is refused or dropped, " +
-              "or once a take refused in-turn has waited its bound past the run's end"
+              "or once a take refused in-turn has waited its bound"
       );
     } catch (error) {
       outcomes.push(`the session refused the message naming the ended call: ${messageFor(error)}`);

@@ -82,12 +82,12 @@ async function flush(): Promise<void> {
  * passes; a wait that fired stops listening for its abort, as `timerWait` does, so a later abort
  * of its signal takes no other wait off the clock. `waits` is every wait the take made other than
  * an attempt's own bound, in the order they were made: the wait between two attempts of one
- * request, and the bound of a take refused `in-turn` after its run's end. `handed` is the host's
- * answer to each text the take handed it, in the order of `ran`, which a case rejects where the
- * host dropped that text. `host` is the host's own idle reading at each hand-over: a case sets
- * `idle` false while the host sets up a prompt it already took (a card's or a person's, before its
- * `agent_start`), for which `run` answers that the host is not idle and hands nothing, as
- * pi-legion's `runTask` does.
+ * request, and the bound of a take refused `in-turn`. `handed` is the host's answer to each text
+ * the take handed it, in the order of `ran`, which a case rejects where the host dropped that
+ * text. `host` is the host's own idle reading at each hand-over: a case sets `idle` false while
+ * the host sets up a prompt it already took (a card's or a person's, before its `agent_start`),
+ * for which `run` answers that the host is not idle and hands nothing, as pi-legion's `runTask`
+ * does.
  */
 function rig() {
   const calls: Call[] = [];
@@ -1080,7 +1080,7 @@ test("a value that arrives after the run's last tool result gets no note, and is
   expect(take.noteFor()).toBe(4);
 });
 
-test("a take refused in-turn during a run is ended by a delete, during the run or after its end, and an in-turn answer to an idle host sets nothing", async () => {
+test("a take refused in-turn is ended by a delete, during the run or after its end, and one whose refusal meets an idle host stays pending until a run starts", async () => {
   // A delete ends it, during the run or after its end, and nothing is pending.
   const deletedInRun = await refusedInTurnDuringRun();
   expect(deletedInRun.take.pending()).toBe(true);
@@ -1096,8 +1096,10 @@ test("a take refused in-turn during a run is ended by a delete, during the run o
   expect(deleted.take.pending()).toBe(false);
   expect(deleted.routed("take")).toEqual([body(4, 12)]);
 
-  // An in-turn answer that arrives while the host is idle sets nothing: the run that overtook the
-  // take has ended, and the daemon's write at its end follows. The next run finds nothing pending.
+  // An in-turn answer can meet an idle host: the daemon decided the take while it counted the run
+  // that overtook it as going, and writes the value again only once it reads that run's agent_end
+  // frame from the stream, so its write may still be to come. The take stays pending, a callback
+  // held for it is not called, and a run that starts ends the refusal.
   const idle = rig();
   idle.take.ready();
   const answer = Promise.withResolvers<LegionTake>();
@@ -1106,18 +1108,25 @@ test("a take refused in-turn during a run is ended by a delete, during the run o
   await idle.advance(0);
   idle.take.runStarted();
   idle.take.runEnded(false);
+  let calls = 0;
+  expect(
+    idle.take.deferUntilSettled(() => {
+      calls += 1;
+    })
+  ).toBe(4);
   answer.resolve(refused("in-turn"));
   await idle.advance(0);
-  expect(idle.take.pending()).toBe(false);
+  expect(idle.take.pending()).toBe(true);
+  expect(calls).toBe(0);
   idle.take.runStarted();
   expect(idle.take.pending()).toBe(false);
+  expect(calls).toBe(0);
 });
 
 // A stall abort that ends a run whose take was refused `in-turn` holds its restart message for
-// that take. The daemon writes the value again only once it hears the turn's end, from the report
-// `agent_end` sends after `runEnded`, so the take is still pending past the run's end, and asks
-// nothing there: the restart waits for that write, at which the take asks, and a run the take's
-// text starts drops it.
+// that take. The daemon writes the value again only once it reads that run's agent_end frame from
+// the stream, so the take is still pending past the run's end, and asks nothing there: the restart
+// waits for that write, at which the take asks, and a run the take's text starts drops it.
 test("a stall restart held during a run whose take was refused in-turn waits for the daemon's write at that run's end", async () => {
   const { take, takes, routed, ran, advance } = await refusedInTurnDuringRun();
   let calls = 0;
@@ -1133,6 +1142,49 @@ test("a stall restart held during a run whose take was refused in-turn waits for
   expect(routed("take")).toEqual([body(4, 12)]);
 
   // The daemon writes task 4 again at revision 13: the take asks it, and the host runs its text.
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(calls).toBe(0);
+});
+
+// The take that a run's end sends races the agent_end frame the daemon reads from the stream: one
+// that reaches the daemon first is refused `in-turn`, and that answer meets an idle host. The
+// daemon writes the value again once it reads the frame, so the take stays pending, and a stall
+// abort's held restart waits for that write; a run the take's text starts drops it.
+test("a take sent at a run's end and refused in-turn on the idle host, having reached the daemon before that run's end did, stays pending, and a held restart waits for the daemon's write", async () => {
+  const { take, takes, routed, ran, advance } = rig();
+  take.ready();
+  take.runStarted();
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([]);
+  let calls = 0;
+  expect(
+    take.deferUntilSettled(() => {
+      calls += 1;
+    })
+  ).toBe(4);
+
+  // The run's end sends the take, which is in flight.
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  expect(take.runEnded(false)).toBeUndefined();
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(take.pending()).toBe(true);
+
+  // The daemon decided it before it read the run's agent_end frame.
+  answer.resolve(refused("in-turn"));
+  await advance(0);
+  expect(take.pending()).toBe(true);
+  expect(calls).toBe(0);
+
+  // The daemon reads the frame and writes task 4 again at revision 13: the take asks it, and the
+  // host runs its text.
   takes.push({ answer: ACCEPTED });
   take.relayed(put(4, 13));
   await advance(0);
@@ -1167,6 +1219,43 @@ test("a take refused in-turn stays pending at most IN_TURN_REWRITE_BOUND_MS afte
   started.take.runEnded(false);
   started.take.runStarted();
   expect(started.take.pending()).toBe(false);
+});
+
+// A take asked while the host is idle can be overtaken by a short run that ends before the
+// daemon's answer comes back: the refusal `in-turn` then meets an idle host with no race at the
+// run's end. The bound starts at the later of the run's end and the refusal, so here at the
+// refusal.
+test("a take asked while the host is idle, overtaken by a short run and refused in-turn after that run's end, stays pending at most IN_TURN_REWRITE_BOUND_MS after the refusal", async () => {
+  const { take, takes, routed, advance } = rig();
+  take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+
+  // A short run starts and ends before the answer comes back; a restart is held during it.
+  take.runStarted();
+  let calls = 0;
+  expect(
+    take.deferUntilSettled(() => {
+      calls += 1;
+    })
+  ).toBe(4);
+  expect(take.runEnded(false)).toBeUndefined();
+  await advance(1_000);
+  expect(calls).toBe(0);
+
+  answer.resolve(refused("in-turn"));
+  await advance(0);
+  expect(take.pending()).toBe(true);
+  expect(calls).toBe(0);
+  await advance(IN_TURN_REWRITE_BOUND_MS - 1);
+  expect(take.pending()).toBe(true);
+  expect(calls).toBe(0);
+  await advance(1);
+  expect(take.pending()).toBe(false);
+  expect(calls).toBe(1);
 });
 
 test("pending() holds a value the take has not asked about, idle before the ready or busy, and lets it go once refused", async () => {
