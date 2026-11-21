@@ -126,8 +126,8 @@ await start({}, context);
 
 /**
  * This script for `session`, started the way `spawn` names, and what it reported. A child that
- * hangs is killed at 300 s, which is after the row's own limit of 200 s and before this process's
- * own kill, so the row's limit decides a slow run.
+ * hangs is killed at 420 s, which is after the row's own limit of 390 s and before this process's
+ * own kill at 450 s, so the row's limit decides a slow run.
  */
 async function child(
   spawn: "no env" | "process.env",
@@ -135,7 +135,7 @@ async function child(
 ): Promise<Report & { readonly spawn: string }> {
   const report = await runSessionPod({
     session,
-    timeoutMs: 300_000,
+    timeoutMs: 420_000,
     ...(spawn === "process.env" ? { env: process.env } : {}),
   });
   return { spawn, ...report };

@@ -5263,7 +5263,7 @@ describe("envoy OMP extension", () => {
       stderr: "pipe",
       // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
       // The runner kills the process of a row it abandons.
-      timeout: 360_000,
+      timeout: 450_000,
     });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(started.stdout).text(),
@@ -5275,10 +5275,16 @@ describe("envoy OMP extension", () => {
       throw new Error(`the process that loaded the entry reported nothing: ${stderr}`);
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
-    // A hang guard: what can hang is a process that never reports. 200_000. Worst measured cost:
-    // 46 698.73 ms at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
-    // where main's form of this row failed 20 runs of 20 at bun's 5 s default.
-  }, 200_000);
+    // A hang guard: what can hang is a process that never reports. Main's form of this row failed
+    // 20 runs of 20 at bun's 5 s default. Worst measured cost: 80 506.04 ms over 20 runs at the 96
+    // rung in the Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and
+    // 8 GiB (271 busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
+    // 2026-11-21T20:10Z to 20:45Z; 46 698.73 ms at 16 busy loops (the 96 rung) on the two-CPU,
+    // 8 GiB pod of 2026-11-19 18:40Z. Six times the worst is 483 036.23 ms, past the 395 s one
+    // row's hang leaves the pi-envoy job (its 15 minutes less its other steps' 94 s, 5 s of its
+    // clock and its test step's longest 406 s, `.github/workflows/ci-job-pi-envoy.yaml`), so that
+    // ceiling decides 390_000, which is 4.8 times the worst.
+  }, 390_000);
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
   const titledContext = (kind: "main" | "sub", name: () => string | undefined): SessionContext => ({
@@ -6038,7 +6044,12 @@ console.log(JSON.stringify(args));
       } finally {
         jest.useRealTimers();
       }
-    }, 30_000);
+      // A hang guard: what can hang is the session's start or its shutdown, on the fake clock the
+      // row holds. Worst measured cost: 7 596.11 ms over 20 runs at the 96 rung in the Job
+      // infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271 busy
+      // loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
+      // 2026-11-21T22:44Z to 23:00Z. 60_000 is 7.9 times the worst.
+    }, 60_000);
     // The independent review at 6fd926853, item 1: every session start, switch, branch and host
     // move rebinds a session, and the rebind wrote this process's owner file from OMP_ASKGATE
     // alone. A session on block through its experiments arm then read warn on disk until its main
@@ -12499,7 +12510,7 @@ console.log(JSON.stringify(args));
       // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
       // The runner kills the process of a row it abandons, and the children end with it
       // (`runSessionPod`).
-      timeoutMs: 360_000,
+      timeoutMs: 450_000,
     });
     const refusal = (session: string) =>
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
@@ -12522,12 +12533,17 @@ console.log(JSON.stringify(args));
         },
       ],
     });
-    // A hang guard: what can hang is a process that never reports. 200_000. Worst measured cost:
-    // 66 217.75 ms at 15 busy loops (the 48 rung) on a two-CPU, 8 GiB pod. The row's rung is 48,
-    // below this file's: its three processes each load the extension, so at 96 it cost up to
-    // 131 805.62 ms, and at 240 more than 540 s, and three times either is past what the pi-envoy
-    // job's 10 minutes leave one row.
-  }, 200_000);
+    // A hang guard: what can hang is a process that never reports. The row's rung is 48, below this
+    // file's: its three processes each load the extension, so at 96 it cost up to 131 805.62 ms,
+    // and at 240 more than 540 s. Worst measured cost: 78 906.82 ms over 20 runs at the 48 rung in
+    // the Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (135 busy loops, half the 271 at which row A's runs took 51.2 s against the calibration's
+    // 31.2 s at the 96 rung), 2026-11-21T19:39Z to 20:06Z; 66 217.75 ms at 15 busy loops (the 48
+    // rung) on a two-CPU, 8 GiB pod. Six times the worst is 473 440.94 ms, past the 395 s one row's
+    // hang leaves the pi-envoy job (its 15 minutes less its other steps' 94 s, 5 s of its clock and
+    // its test step's longest 406 s, `.github/workflows/ci-job-pi-envoy.yaml`), so that ceiling
+    // decides 390_000, which is 4.9 times the worst.
+  }, 390_000);
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
     const role = "librarian";
@@ -13522,8 +13538,12 @@ console.log(JSON.stringify(args));
       answered.resolve();
       for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
     });
-    // The row's own bound is a hang guard, the file's convention: its work is a handful of ticks.
-  }, 30_000);
+    // The row's own bound is a hang guard, the file's convention: its work is a handful of ticks,
+    // and what can hang is a refresh that never comes (`refreshed`). Worst measured cost: 7 802.57
+    // ms over 20 runs at the 96 rung in the Job infra-1580-krows-j5-sjzwb of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (271 busy loops, at which row A's runs took 51.2 s against the
+    // calibration's 31.2 s), 2026-11-21T23:05Z to 23:21Z. 60_000 is 7.7 times the worst.
+  }, 60_000);
 
   test("a role move that never settles still lets the next tick refresh the registration", async () => {
     // What a wedged envoy_role_set or a wedged Legion claim leaves behind: the role-move queue is
@@ -13824,10 +13844,12 @@ console.log(JSON.stringify(args));
       })
     );
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Worst measured cost: 6 116.87 ms over 20 runs at 16 busy loops (the 96 rung)
-    // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T15:17Z to 15:31Z, so 60_000 is 9.8
-    // times that.
-  }, 60_000);
+    // (`onPassClock`). Worst measured cost: 14 503.68 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
+    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T20:35Z
+    // to 20:54Z; 6 116.87 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
+    // of 2026-11-19 18:40Z, 2026-11-21T15:17Z to 15:31Z. 90_000 is 6.2 times the worst.
+  }, 90_000);
 
   test("a task that answers after its deadline writes nothing over what a newer one settled", async () => {
     // An abandoned task cannot be cancelled, only fenced. When its call finally answers it must
@@ -15531,17 +15553,19 @@ console.log(JSON.stringify(args));
       // this describe, so the rows after it keep the run's own default), so a row added here takes
       // it too: a hang guard, not a bound on work. What can hang is a wait with no deadline of its
       // own, which each row makes after `bootShellSession`: an `until` for a command that never
-      // starts, never writes its pid or never ends, or a reply that never arrives. 120_000. Worst
-      // measured cost: 10 476.19 ms, the row "answers the addressed session's message when the
-      // host leaves as the command ends", over 20 runs of this describe at 16 busy loops (the 96
-      // rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T10:52Z to 11:27Z. One run
-      // of "hands the agent no copy when the host moved on with no session event" alone cost
-      // 25 497.91 ms there, which main's 20_000 cut, and 120_000 is 4.7 times that. The row
-      // "stops a command past its limit and says when, keeping what it printed" runs its limit on
-      // the test's clock (`onPassClock`) and waits for its shell with no bound of its own, and its
-      // worst over 20 runs of it alone at that rung, 2026-11-21T03:41Z to 03:56Z, was
-      // 13 188.07 ms.
-      setDefaultTimeout(120_000);
+      // starts, never writes its pid or never ends, or a reply that never arrives. 200_000. Worst
+      // measured cost: 32 303.12 ms, the row "runs a command for the session the host moved to
+      // while another session's still runs", over 20 runs of it alone at the 96 rung in the Job
+      // infra-1580-krows-j1-rl89g of the cluster's `builds` namespace, two CPUs and 8 GiB (311 busy
+      // loops, at which row A's runs took 35.9 s against the calibration's 31.2 s),
+      // 2026-11-21T20:01Z to 20:14Z, so 200_000 is 6.2 times that. On the two-CPU, 8 GiB pod of
+      // 2026-11-19 18:40Z at that rung, the worst over 20 runs of this describe was 10 476.19 ms,
+      // and one run of "hands the agent no copy when the host moved on with no session event"
+      // alone cost 25 497.91 ms, which main's 20_000 cut. The row "stops a command past its limit
+      // and says when, keeping what it printed" runs its limit on the test's clock (`onPassClock`)
+      // and waits for its shell with no bound of its own: its worst over 20 runs of it alone was
+      // 13 188.07 ms on that pod and 26 893.41 ms in that Job.
+      setDefaultTimeout(200_000);
       // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
       // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
       // describe at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
@@ -18047,9 +18071,13 @@ console.log(JSON.stringify(args));
 
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
       // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
-      // the test's clock, which moves only as the row moves it. 60_000. Worst measured cost:
-      // 8 793.18 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
-    }, 60_000);
+      // the test's clock, which moves only as the row moves it. Worst measured cost: 28 998.26 ms
+      // over 20 runs at the 240 rung in the Job infra-1580-krows-j2-brzs7 of the cluster's `builds`
+      // namespace, two CPUs and 8 GiB (673 busy loops, 2.5 times the 269 at which row A's runs took
+      // 32.1 s against the calibration's 31.2 s at the 96 rung), 2026-11-21T19:05Z to 20:04Z;
+      // 8 793.18 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. 180_000 is 6.2 times
+      // the worst.
+    }, 180_000);
 
     // The reading a turn's last message is owed is held, not dropped: a turn whose last message
     // ends inside the interval - a short reply, a quick tool round - is the last reading of that
@@ -18078,9 +18106,13 @@ console.log(JSON.stringify(args));
       });
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
       // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
-      // the test's clock, which moves only as the row moves it. 60_000. Worst measured cost:
-      // 8 501.09 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
-    }, 60_000);
+      // the test's clock, which moves only as the row moves it. Worst measured cost: 58 794.68 ms
+      // over 20 runs at the 240 rung in the Job infra-1580-krows-j2-brzs7 of the cluster's `builds`
+      // namespace, two CPUs and 8 GiB (673 busy loops, 2.5 times the 269 at which row A's runs took
+      // 32.1 s against the calibration's 31.2 s at the 96 rung), 2026-11-21T20:35Z to 21:07Z;
+      // 8 501.09 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. 360_000 is 6.1 times
+      // the worst.
+    }, 360_000);
 
     // No older reading may follow a newer one. The trailing frame is due at the interval's end,
     // and a message that ends after that time but before the timer's callback runs publishes at
@@ -18115,9 +18147,13 @@ console.log(JSON.stringify(args));
       // Nothing older followed the newer reading, and the last frame a viewer draws is that one.
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
       // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
-      // the test's clock, which moves only as the row moves it. 60_000. Worst measured cost:
-      // 18 701.39 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
-    }, 60_000);
+      // the test's clock, which moves only as the row moves it. Worst measured cost: 39 504.04 ms
+      // over 20 runs at the 240 rung in the Job infra-1580-krows-j2-brzs7 of the cluster's `builds`
+      // namespace, two CPUs and 8 GiB (673 busy loops, 2.5 times the 269 at which row A's runs took
+      // 32.1 s against the calibration's 31.2 s at the 96 rung), 2026-11-21T21:44Z to 22:34Z;
+      // 18 701.39 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. 240_000 is 6.1 times
+      // the worst.
+    }, 240_000);
 
     // A host that reports no window is a session the viewer must draw no ring for, whatever it
     // drew before: a model with no window, or a runner with no breakdown to answer from.
@@ -21306,10 +21342,13 @@ console.log(JSON.stringify(args));
       setNatsConnectForTests(natsStandInConnect);
     }
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Bun's 5 s default failed it 3 runs in 20 at this rung. Worst measured
-    // cost: 6 797.06 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of
-    // 2026-11-19 18:40Z, 2026-11-21T16:22Z to 16:42Z, so 60_000 is 8.8 times that.
-  }, 60_000);
+    // (`onPassClock`). Bun's 5 s default failed it 3 runs in 20 at the 96 rung. Worst measured
+    // cost: 21 492.85 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took
+    // 53.6 s against the calibration's 31.2 s), 2026-11-21T18:47Z to 19:04Z; 6 797.06 ms over 20
+    // runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+    // 2026-11-21T16:22Z to 16:42Z. 150_000 is 7.0 times the worst.
+  }, 150_000);
 
   // A Legion wake after a pod release is a new pod that resumes the session's transcript: its
   // start blocks the event loop as a fresh one does, and its pass also reads the interests the
@@ -21370,10 +21409,13 @@ console.log(JSON.stringify(args));
       setNatsConnectForTests(natsStandInConnect);
     }
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Bun's 5 s default failed it 4 runs in 20 at this rung. Worst measured
-    // cost: 9 881.88 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of
-    // 2026-11-19 18:40Z, 2026-11-21T16:42Z to 17:01Z, so 60_000 is 6.1 times that.
-  }, 60_000);
+    // (`onPassClock`). Bun's 5 s default failed it 4 runs in 20 at the 96 rung. Worst measured
+    // cost: 15 482.87 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took
+    // 53.6 s against the calibration's 31.2 s), 2026-11-21T19:09Z to 19:22Z; 9 881.88 ms over 20
+    // runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+    // 2026-11-21T16:42Z to 17:01Z. 120_000 is 7.8 times the worst.
+  }, 120_000);
 
   // A pod whose first dial the hub closed registers on its next pass seconds later; without a word
   // that it receives again, the session reads the outage notice as its state for its life.
@@ -21822,10 +21864,12 @@ console.log(JSON.stringify(args));
       })
     );
     // A bound on work, not a hang guard: every wait above ends by its own count of turns
-    // (`onPassClock`). 60_000. Worst measured cost: 5 776.74 ms over 20 runs at 16 busy loops (the
-    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T04:11Z to 04:25Z, so
-    // 60_000 is 10.4 times that.
-  }, 60_000);
+    // (`onPassClock`). Worst measured cost: 11 110.50 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace, two CPUs and 8 GiB (226 busy
+    // loops, at which row A's runs took 36.6 s against the calibration's 31.2 s), 2026-11-21T20:38Z
+    // to 20:54Z; 5 776.74 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
+    // of 2026-11-19 18:40Z, 2026-11-21T04:11Z to 04:25Z. 90_000 is 8.1 times the worst.
+  }, 90_000);
 
   for (const { row, error, shown, withheld } of [
     {
@@ -22009,11 +22053,13 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`, `readPass`). 90_000. Worst measured cost: 13 026.49 ms over 20 runs at 16
-    // busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:24Z to
-    // 20:42Z, and 12 273.40 ms over 20 runs there, 2026-11-21T02:55Z to 03:12Z, so 90_000 is 6.9
-    // times the worst.
-  }, 90_000);
+    // (`onPassClock`, `readPass`). Worst measured cost: 19 597.69 ms over 20 runs at the 96 rung in
+    // the Job infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (226 busy loops, at which row A's runs took 36.6 s against the calibration's 31.2 s),
+    // 2026-11-21T19:16Z to 19:34Z; 13 026.49 ms over 20 runs at 16 busy loops (the 96 rung) on the
+    // two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:24Z to 20:42Z, and 12 273.40 ms over
+    // 20 runs there, 2026-11-21T02:55Z to 03:12Z. 120_000 is 6.1 times the worst.
+  }, 120_000);
 
   /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
    *  as `answer(n)` says for its n-th: a 503, or a token it mints for the trade's session. */
@@ -22203,10 +22249,12 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, context);
     // A hang guard, not a bound on work: what can hang is the wait for the start once the broker
     // grants (`clock.wait`), which has no bound of turns, because the token client's DPoP signing
-    // is real work. Worst measured cost: 8 494.35 ms over 20 runs at 16 busy loops (the 96 rung) on
-    // the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T14:32Z to 14:48Z, so 60_000 is 7.1
-    // times that.
-  }, 60_000);
+    // is real work. Worst measured cost: 16 611.29 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
+    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T19:27Z
+    // to 19:46Z; 8 494.35 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
+    // of 2026-11-19 18:40Z, 2026-11-21T14:32Z to 14:48Z. 120_000 is 7.2 times the worst.
+  }, 120_000);
 
   test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
     // The pass's dials share the keeper's count of the token's refusals (`connectNats`'
@@ -22349,10 +22397,12 @@ console.log(JSON.stringify(args));
     ]);
     await fixture.handlers.get("session_shutdown")?.({}, context);
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Worst measured cost: 6 742.65 ms over 20 runs at 16 busy loops (the 96 rung)
-    // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T14:48Z to 15:03Z, so 60_000 is 8.9
-    // times that.
-  }, 60_000);
+    // (`onPassClock`). Worst measured cost: 13 789.10 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
+    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T19:51Z
+    // to 20:10Z; 6 742.65 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
+    // of 2026-11-19 18:40Z, 2026-11-21T14:48Z to 15:03Z. 90_000 is 6.5 times the worst.
+  }, 90_000);
 
   test("a switch whose new token never comes fails inside a short pass, naming the trade", async () => {
     // ENVOY_HEARTBEAT_MS=10000 ENVOY_PASS_DEADLINE_MS=10000: the follow takes at most 8 s of the
@@ -22516,10 +22566,12 @@ console.log(JSON.stringify(args));
     expect(natsState.controls.get(oldControl)?.active()).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, next);
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Worst measured cost: 8 261.56 ms over 20 runs at 16 busy loops (the 96 rung)
-    // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z, so 60_000 is 7.3
-    // times that.
-  }, 60_000);
+    // (`onPassClock`). Worst measured cost: 19 027.39 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
+    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T20:14Z
+    // to 20:31Z; 8 261.56 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
+    // of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z. 120_000 is 6.3 times the worst.
+  }, 120_000);
 
   test("after a rollback with no event, a viewer of the session left is replayed nothing of the one returned to", async () => {
     // Two sessions of one host: it switches from A to B, B's viewer attaches, and the host then
@@ -22607,11 +22659,14 @@ console.log(JSON.stringify(args));
     expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
     expect(minted).toHaveLength(traded);
     // A hang guard, not a bound on work: what can hang is the keeper's reconnect, which `until`
-    // above waits for with no deadline of its own. 90_000. Worst measured cost: 11 803.37 ms over
-    // 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
-    // 2026-11-20T19:53Z to 20:08Z, and 11 270.14 ms over 20 runs there, 2026-11-21T03:56Z to
-    // 04:11Z, so 90_000 is 7.6 times the worst.
-  }, 90_000);
+    // above waits for with no deadline of its own. Worst measured cost: 15 504.87 ms over 20 runs
+    // at the 96 rung in the Job infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace,
+    // two CPUs and 8 GiB (226 busy loops, at which row A's runs took 36.6 s against the
+    // calibration's 31.2 s), 2026-11-21T20:15Z to 20:35Z; 11 803.37 ms over 20 runs at 16 busy
+    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T19:53Z to
+    // 20:08Z, and 11 270.14 ms over 20 runs there, 2026-11-21T03:56Z to 04:11Z. 120_000 is 7.7
+    // times the worst.
+  }, 120_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
@@ -23595,10 +23650,13 @@ console.log(JSON.stringify(args));
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(registrationPendingAtDelete).toBe(false);
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Bun's 5 s default failed it 5 runs in 20 at this rung. Worst measured
-    // cost: 6 641.99 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of
-    // 2026-11-19 18:40Z, 2026-11-21T17:01Z to 17:19Z, so 60_000 is 9.0 times that.
-  }, 60_000);
+    // (`onPassClock`). Bun's 5 s default failed it 5 runs in 20 at the 96 rung. Worst measured
+    // cost: 14 400.50 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took
+    // 53.6 s against the calibration's 31.2 s), 2026-11-21T20:59Z to 21:13Z; 6 641.99 ms over 20
+    // runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+    // 2026-11-21T17:01Z to 17:19Z. 90_000 is 6.2 times the worst.
+  }, 90_000);
 
   // The wait above is bounded on the shutdown path, because Oh My Pi abandons a shutdown handler
   // after 2 s: a registration slower than the wait must not cost the DELETE. One never sent
@@ -25039,8 +25097,8 @@ describe("consumer delivery", () => {
     /** Boots a session following INFRA-370's topic, relays the comment event - cut, or the
      *  stand-in when `omitted` - on the session's own consumer, the one path a frame reaches it
      *  by, and answers the comment read with `read`. Returns the card its agent was prompted
-     *  with. The rows that call it carry a 30 s hang guard, because what can hang is a card that
-     *  is never delivered for the relayed comment event. */
+     *  with. The rows that call it carry a hang guard each, because what can hang is a card
+     *  that is never delivered for the relayed comment event. */
     async function cardForCutComment(
       name: string,
       read: (path: string) => Response | undefined,
@@ -25079,7 +25137,12 @@ describe("consumer delivery", () => {
       // blank lines (one quoted scalar), and no note, because nothing is missing.
       expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
       expect(card).not.toContain("first part only");
-    }, 30_000);
+      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
+      // (`cardForCutComment`). Worst measured cost: 23 198.69 ms over 20 runs at the 96 rung in the
+      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
+      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
+      // 2026-11-21T21:11Z to 21:34Z. 150_000 is 6.5 times the worst.
+    }, 150_000);
 
     test("keeps the part it carried, and the note, when that read fails", async () => {
       const card = await cardForCutComment("cut-comment-read-fails", (path) =>
@@ -25093,7 +25156,12 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `the body is its first part only; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
-    }, 30_000);
+      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
+      // (`cardForCutComment`). Worst measured cost: 14 392.75 ms over 20 runs at the 96 rung in the
+      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
+      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
+      // 2026-11-21T21:38Z to 21:58Z. 90_000 is 6.3 times the worst.
+    }, 90_000);
 
     test("is prompted with that body for a stand-in the bus left with no body at all", async () => {
       const reads: string[] = [];
@@ -25113,7 +25181,12 @@ describe("consumer delivery", () => {
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
       expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
       expect(card).not.toContain("too large for the bus");
-    }, 30_000);
+      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
+      // (`cardForCutComment`). Worst measured cost: 10 003.29 ms over 20 runs at the 96 rung in the
+      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
+      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
+      // 2026-11-21T22:02Z to 22:21Z. 90_000 is 9.0 times the worst.
+    }, 90_000);
 
     test("gives the note for a stand-in whose read fails, having no body to keep", async () => {
       const card = await cardForCutComment(
@@ -25129,7 +25202,12 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
-    }, 30_000);
+      // A hang guard: what can hang is a card that is never delivered for the relayed comment event
+      // (`cardForCutComment`). Worst measured cost: 12 804.12 ms over 20 runs at the 96 rung in the
+      // Job infra-1580-krows-j5-sjzwb of the cluster's `builds` namespace, two CPUs and 8 GiB (271
+      // busy loops, at which row A's runs took 51.2 s against the calibration's 31.2 s),
+      // 2026-11-21T22:25Z to 22:40Z. 90_000 is 7.0 times the worst.
+    }, 90_000);
   });
 });
 
