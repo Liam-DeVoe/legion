@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -40,8 +41,8 @@ func edgeConfirmRequest(ctx context.Context, outside string, projects []string, 
 // list that reads a partial answer as complete. The fault is a cancelled context on the leader read,
 // as the reviewer's probe injects it; the full view, the list and the send route read the cache
 // before it, so only the confirmation does not answer. The registration view reads the bucket itself
-// (bucketSessionEntry) before its confirmation, so its 503 under the fault is that read's rather than
-// the confirmation's; it answers the same bus-unavailable 503 either way, which this table pins too.
+// (bucketSessionEntry) before its confirmation, so it drives the fault through the registry's
+// leader-read seam instead, with a working bucket read, to reach the confirmation's own 503 branch.
 func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, peer = "ses_confirm_fault_outside", "ses_confirm_fault_peer"
@@ -60,11 +61,17 @@ func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 		path    string
 		body    string
 		handler http.Handler
+		// seam drives the fault through the registry's leader-read seam, with a working request
+		// context, rather than through a cancelled context. The registration view reads the bucket
+		// itself (bucketSessionEntry) before its confirmation, so a cancelled context would fail
+		// that read, not the confirmation; the seam fails only the confirmation's leader read
+		// (edgeScope.showsConfirmed), so the row reaches the confirmation's own 503 branch.
+		seam bool
 	}{
-		{"the full registry view", http.MethodGet, "/v1/registry/" + peer, "", sessionEntryHandler(rig.deps)},
-		{"the registration view", http.MethodGet, "/v1/registry/" + peer + "?view=registration", "", sessionEntryHandler(rig.deps)},
-		{"the session list", http.MethodGet, "/v1/sessions", "", sessionsHandler(rig.deps.registry, rig.deps.sessions, rig.deps.repositories)},
-		{"the send route", http.MethodPost, "/v1/messages/send", sendBody, sendHandler(rig.deps, logging.New("test"))},
+		{"the full registry view", http.MethodGet, "/v1/registry/" + peer, "", sessionEntryHandler(rig.deps), false},
+		{"the registration view", http.MethodGet, "/v1/registry/" + peer + "?view=registration", "", sessionEntryHandler(rig.deps), true},
+		{"the session list", http.MethodGet, "/v1/sessions", "", sessionsHandler(rig.deps.registry, rig.deps.sessions, rig.deps.repositories), false},
+		{"the send route", http.MethodPost, "/v1/messages/send", sendBody, sendHandler(rig.deps, logging.New("test")), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A working leader read answers this peer as a session the edge shows: 200, never 503.
@@ -81,7 +88,13 @@ func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 			// the bus's own unanswered wording, not the 404 of a session the server wrote nor a
 			// partial 200.
 			fault := httptest.NewRecorder()
-			tc.handler.ServeHTTP(fault, edgeConfirmRequest(cancelled, outside, []string{"PRIV"}, tc.method, tc.path, tc.body))
+			faultCtx := cancelled
+			if tc.seam {
+				restore := rig.deps.sessions.SetStoredByWriterSeamForTest(peer, session.SessionEntry{}, false, leaderReadUnanswered(peer))
+				defer restore()
+				faultCtx = context.Background()
+			}
+			tc.handler.ServeHTTP(fault, edgeConfirmRequest(faultCtx, outside, []string{"PRIV"}, tc.method, tc.path, tc.body))
 			if fault.Code != http.StatusServiceUnavailable {
 				t.Fatalf("with the leader read failing: status %d (%s), want 503: a bus that did not answer is not a session the edge does not show", fault.Code, fault.Body.String())
 			}
