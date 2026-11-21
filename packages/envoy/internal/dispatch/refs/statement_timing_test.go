@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -290,11 +291,22 @@ var mainsTargetIndex = []string{
 	`create index block_refs_to on block_refs (to_kind, to_id)`,
 }
 
-// requireMainsTargetIndexRead reads the plan of mainEdgesInIssue for the issue under
-// mainsTargetIndex, on the runner's connection in a transaction of its own that it rolls back,
-// and stops the test unless that plan reads block_refs_to. With probe false, at least one scan of
-// block_refs reads it and none reads block_refs sequentially; with probe true, heldByABlock's
-// probe, the scan of block_refs whose conditions name artifact_id, reads it.
+// requireMainsTargetIndexRead reads the analyzed plan of mainEdgesInIssue for the issue under
+// mainsTargetIndex, `explain (analyze, format json)` on the runner's connection in a transaction
+// of its own that it rolls back, and stops the test unless the scans of block_refs that ran read
+// block_refs_to. With probe false, at least one scan of block_refs that ran reads it and none
+// that ran reads block_refs sequentially; with probe true, at least one of heldByABlock's probes,
+// the scans of block_refs whose conditions name artifact_id, ran, and each probe that ran reads
+// it.
+//
+// A scan ran when its Actual Loops is above 0, a Bitmap Heap Scan by its own loops. It judges
+// only the scans that ran, as the Verification document judges every plan: a scan that the
+// executor never ran reads no row and is not judged. A plain plan holds such a scan: PostgreSQL
+// 18 attaches a hashed subplan of block_refs, a Seq Scan, to an arm of graph_edges whose
+// from_kind is a constant other than 'artifact', where the OR short-circuits it, so a plan
+// explained without ANALYZE names a sequential read of block_refs that the executor never runs.
+// The failure and the log list every scan of block_refs with its loops, and mark each scan that
+// never ran as not judged.
 //
 // An index built in the same transaction over a broken HOT chain carries indcheckxmin, and the
 // planner may then not use it in that transaction: a pair under that Setup would time a
@@ -314,7 +326,7 @@ func requireMainsTargetIndexRead(t *testing.T, runner *benchtime.Runner, issue s
 		}
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+mainEdgesInIssue, "issue", issue).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (analyze, format json) "+mainEdgesInIssue, "issue", issue).Scan(&raw); err != nil {
 		t.Fatalf("explain the in read of %s under main's index of targets: %v", issue, err)
 	}
 	var checkXmin bool
@@ -325,43 +337,48 @@ func requireMainsTargetIndexRead(t *testing.T, runner *benchtime.Runner, issue s
 		t.Fatalf("roll back main's index of targets: %v", err)
 	}
 	scans := blockRefsScans(t, explaintest.OnePlan(t, raw))
+	ran := func(scan blockRefsScan) bool { return scan.node.Loops > 0 }
 	readsIt := func(scan blockRefsScan) bool { return slices.Contains(scan.indexes, "block_refs_to") }
 	var failure, judged string
 	if probe {
-		judged = "heldByABlock's probe of block_refs reads block_refs_to"
+		judged = "heldByABlock's probe of block_refs ran, and each probe that ran reads block_refs_to"
 		probes := 0
 		for _, scan := range scans {
-			if !slices.ContainsFunc(scan.conds, namesSourceDocument.MatchString) {
+			if !ran(scan) || !slices.ContainsFunc(scan.conds, namesSourceDocument.MatchString) {
 				continue
 			}
 			probes++
 			if !readsIt(scan) {
-				failure = "heldByABlock's probe, " + scan.String() + ", does not read block_refs_to"
+				failure = "heldByABlock's probe, " + scan.String() + ", ran and does not read block_refs_to"
 			}
 		}
 		if probes == 0 {
-			failure = "no scan of block_refs names artifact_id, so the plan holds no probe of heldByABlock"
+			failure = "no scan of block_refs that names artifact_id ran, so the plan ran no probe of heldByABlock"
 		}
 	} else {
-		judged = "a scan of block_refs reads block_refs_to and none reads block_refs sequentially"
+		judged = "a scan of block_refs that ran reads block_refs_to and none that ran reads block_refs sequentially"
 		for _, scan := range scans {
-			if scan.node.Type == "Seq Scan" {
-				failure = scan.String() + " reads block_refs sequentially"
+			if ran(scan) && scan.node.Type == "Seq Scan" {
+				failure = scan.String() + " ran and reads block_refs sequentially"
 			}
 		}
-		if failure == "" && !slices.ContainsFunc(scans, readsIt) {
-			failure = "no scan of block_refs reads block_refs_to"
+		if failure == "" && !slices.ContainsFunc(scans, func(scan blockRefsScan) bool { return ran(scan) && readsIt(scan) }) {
+			failure = "no scan of block_refs that ran reads block_refs_to"
 		}
 	}
 	described := make([]string, len(scans))
 	for index, scan := range scans {
-		described[index] = "  " + scan.String()
+		loops := fmt.Sprintf("loops %g", scan.node.Loops)
+		if !ran(scan) {
+			loops += ", never ran, not judged"
+		}
+		described[index] = "  " + loops + ": " + scan.String()
 	}
 	if failure != "" {
-		t.Fatalf("main's index of targets, put back for the in read of %s: %s; block_refs_to's indcheckxmin is %t, and a pair under that Setup would time another read in its place. The plan's scans of block_refs:\n%s",
+		t.Fatalf("main's index of targets, put back for the in read of %s: %s; block_refs_to's indcheckxmin is %t, and a pair under that Setup would time another read in its place. The analyzed plan's scans of block_refs:\n%s",
 			issue, failure, checkXmin, strings.Join(described, "\n"))
 	}
-	t.Logf("main's index of targets, put back for the in read of %s: %s (block_refs_to's indcheckxmin is %t). The plan's scans of block_refs:\n%s",
+	t.Logf("main's index of targets, put back for the in read of %s: %s (block_refs_to's indcheckxmin is %t). The analyzed plan's scans of block_refs:\n%s",
 		issue, judged, checkXmin, strings.Join(described, "\n"))
 }
 
