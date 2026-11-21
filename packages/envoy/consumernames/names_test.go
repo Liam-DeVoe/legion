@@ -790,6 +790,22 @@ func TestAMissingCurrentStartsAtItsOwnLastFloorOnThisStream(t *testing.T) {
 	}
 }
 
+// A stream that carries no identity cannot be told from one recreated with its sequences begun
+// again, so a last floor read on it never counts, and the saved start governs.
+func TestALastFloorOnAStreamWithNoIdentityDoesNotCount(t *testing.T) {
+	h := newHarness()
+	h.store.put("ses-1", Record{Current: "session~N", Start: 3, LastFloor: &Floor{Floor: 40, Name: "session~N", StreamID: ""}})
+	names := h.names("p1")
+	names.cfg.StreamID = func(context.Context) (string, error) { return "", nil }
+	sel, err := names.Select(context.Background(), "ses-1", h.server.create("ses-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start := h.server.startOf(sel.Record.Current); start.Seq != 3 {
+		t.Fatalf("created at %d, want the saved 3 over a last floor with no stream identity", start.Seq)
+	}
+}
+
 func TestDeleteRecordsTheFloorBeforeItDeletesAndKeepsTheStart(t *testing.T) {
 	h := newHarness()
 	names := h.names("p1")
