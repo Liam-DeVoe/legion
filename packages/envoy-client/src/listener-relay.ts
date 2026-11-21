@@ -11,9 +11,10 @@
 // a text frame of JSON, and the listener reads a socket's frames one at a time, handling each in
 // full before the next. The client sends `{"op":"sub","sid":<int>,"subject":<s>}`, which the
 // listener grants only for the session's own relay subject (`deliverSubject`) and otherwise answers
-// `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and grants at most four of on one
-// socket, answering a fifth `{"op":"err","sid":<int>,"code":"subscription_limit"}` and keeping the
-// socket open; either refusal ends that subscription alone, logged once. A granted `sub` has no
+// `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and grants one on a socket, answering a
+// second `{"op":"err","sid":<int>,"code":"subscription_limit"}` and keeping the socket open (this
+// client takes one per socket); either refusal ends that subscription alone, logged once. A granted
+// `sub` has no
 // answer, so a `sub` is held once no `err` names its sid. It sends `{"op":"unsub","sid":<int>}`,
 // and `{"op":"pub","subject":<s>,"data":<base64>}`, and nothing more, which the listener takes only
 // on the reply of a frame this socket forwarded in the last 10 minutes and otherwise answers

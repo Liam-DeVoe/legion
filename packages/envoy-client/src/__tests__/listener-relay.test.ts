@@ -6,7 +6,7 @@
 // a frame the host answers `done` goes back on the frame's reply; each close code and each refused
 // upgrade is opened again as the wire says, each cause counting its own run of waits, with a fresh
 // trade only where the token was the cause; an upgrade never answered is dropped and tried again;
-// a subject the socket does not carry, and a fifth subscription, close that subscription alone
+// a subject the socket does not carry, and a second subscription, close that subscription alone
 // and are logged once; a flush is answered only by its own socket; and a refused trade is told as
 // an inbound outage is. The socket with a host's registrations is `./relay-registration.test.ts`,
 // and which settings choose the socket is `./envoy-settings.test.ts`.
@@ -507,14 +507,14 @@ describe("a relay socket", () => {
     expect(next.value?.headers?.get("Envoy-Stream-Seq")).toBe("1");
   });
 
-  test("a fifth subscription the socket refuses (subscription_limit) ends alone, logged once", async () => {
-    // A socket holds at most four subscriptions; the listener answers a fifth `subscription_limit`
-    // and keeps the socket open, so the four go on receiving.
+  test("a second subscription the socket refuses (subscription_limit) ends alone, logged once", async () => {
+    // A socket holds one subscription; the listener answers a second `subscription_limit` and keeps
+    // the socket open, so the first goes on receiving.
     const server = standIn();
     const logs: string[] = [];
     const relay = await opened(server, "ses_a", { logs });
     const subject = standInDeliverSubject("ses_a");
-    const held = [1, 2, 3, 4].map(() => relay.subscribe(subject));
+    const held = [relay.subscribe(subject)];
     const fifth = relay.subscribe(subject);
     await relay.flush();
     const fifthNow = await Promise.race([
@@ -524,7 +524,7 @@ describe("a relay socket", () => {
           (next) => (next.done === true ? "ended with no error" : "yielded a frame"),
           (error: unknown) => (error instanceof Error ? error.message : String(error))
         ),
-      // The listener answered the fifth `sub` before the pong above: a second round trip is past
+      // The listener answered the second `sub` before the pong above: a second round trip is past
       // anything still to come about it.
       relay.flush().then(() => "still open a round trip after the listener refused it"),
     ]);
@@ -535,7 +535,7 @@ describe("a relay socket", () => {
     expect(logs.filter((line) => line.includes("subscription_limit"))).toEqual([
       `the listener's relay socket for ses_a refused the subject ${subject} (subscription_limit); that subscription is closed`,
     ]);
-    // The four others each still receive.
+    // The first still receives.
     expect(server.deliver("ses_a", frame("ses_a", 1))).toBeDefined();
     const seqs = await Promise.all(
       held.map(
@@ -545,7 +545,7 @@ describe("a relay socket", () => {
           ) ?? "nothing"
       )
     );
-    expect(seqs).toEqual(["1", "1", "1", "1"]);
+    expect(seqs).toEqual(["1"]);
   });
 
   test("a flush resolves once the listener has handled every sub sent before it", async () => {
@@ -790,18 +790,18 @@ describe("a relay socket", () => {
     const server = standIn();
     const relay = await opened(server, "ses_a");
     const subject = standInDeliverSubject("ses_a");
-    const subscriptions = [relay.subscribe(subject), relay.subscribe(subject)];
+    const subscriptions = [relay.subscribe(subject)];
     const statuses = relay.status()[Symbol.asyncIterator]();
     await relay.flush();
     await relay.drain();
     expect(relay.isClosed()).toBe(true);
-    expect(server.handled.filter((one) => one.frame.startsWith("unsub "))).toHaveLength(2);
+    expect(server.handled.filter((one) => one.frame.startsWith("unsub "))).toHaveLength(1);
     const ended = await Promise.all(
       subscriptions.map(
         async (subscription) => (await subscription[Symbol.asyncIterator]().next()).done
       )
     );
-    expect(ended).toEqual([true, true]);
+    expect(ended).toEqual([true]);
     expect((await statuses.next()).done).toBe(true);
   });
 });

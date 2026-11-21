@@ -13,7 +13,7 @@
 // included, whose pong Bun sends as it reads it: so a `sub` is held, and every frame before a ping
 // handled, by the time that ping's pong goes out, and a successful `sub` has no answer of its own.
 // A `sub` names exactly the session's relay subject, else `subject_not_granted`, and a socket
-// holds at most four, a fifth answered `subscription_limit` with the socket left open; a `pub`
+// holds one, a second answered `subscription_limit` with the socket left open; a `pub`
 // (`op`, `subject`, `data` alone) names the reply of a frame this socket forwarded in the last 10
 // minutes, else `publish_not_granted`. A frame it cannot read (no JSON, an unknown `op`, a `sub` or
 // `unsub` naming no sid, a `sub` of a sid already held) is answered `bad_frame` and the socket
@@ -49,7 +49,7 @@ const REPLY_WINDOW_MS = 10 * 60_000;
 /** The most sockets one session may hold open. */
 const MOST_SOCKETS = 4;
 /** The most subscriptions one socket may hold. */
-const MOST_SUBSCRIPTIONS = 4;
+const MOST_SUBSCRIPTIONS = 1;
 /** The largest frame a socket takes. */
 const MOST_FRAME_BYTES = 1 << 20;
 /** How often the server pings an open socket. */
