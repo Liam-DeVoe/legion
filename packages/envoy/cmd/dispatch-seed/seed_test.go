@@ -374,6 +374,7 @@ func rowCountsOf(t *testing.T, database *store.Store) map[string]int {
 // columns: a column a trigger or a default fills with now() is left out, because two runs are not
 // at one instant, and so is every transaction-id column, which the queue of a later seam carries.
 // A long text column is compared by its md5, so one checksum is not the whole database again.
+// A table checksumRows names is sampled over the rows it keeps alone.
 var checksums = []struct {
 	table   string
 	columns string
@@ -388,9 +389,11 @@ var checksums = []struct {
 	{"issue_component_members", `issue_key, project_key, component_id`},
 	// The priority node row carries its own attributes and the tuple log carries how each got
 	// there, so both are compared whole; `seq` is in the tuple's sample because the log position
-	// is the order a history reads, as the events table's own `id` is.
-	{"priority_nodes", `kind, id, supertag, visibility, state, attributes::text, made_at, made_by::text, source_event`},
-	{"priority_tuples", `seq, from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted`},
+	// is the order a history reads, as the events table's own `id` is. Both are rows of the node
+	// and tuple store, which holds every other node the run writes beside them, so each sample
+	// reads the priority store's own rows (checksumRows).
+	{"graph_nodes", `kind, id, supertag, visibility, state, attributes::text, made_at, made_by::text, source_event`},
+	{"graph_tuples", `seq, from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted`},
 	{"components", `project_key, id, title, prose, parent, snapshot_id, source_id`},
 	{"component_depends", `project_key, from_id, to_id`},
 	{"artifacts", `id::text, issue_key, project_key, slug, name, kind, is_primary, created_at, ref_key, last_seq`},
@@ -429,13 +432,25 @@ var checksums = []struct {
 	{"search_term_totals", `project_key, items`},
 }
 
+// checksumRows narrows the sample of a table that holds the rows of several writers to the ones
+// a sample compares: the store's tables to the priority store's nodes, and to the tuples out of
+// them and the `advances` tuples into them.
+var checksumRows = map[string]string{
+	"graph_nodes":  `kind = 'priority'`,
+	"graph_tuples": `from_kind = 'priority' or (from_kind = 'issue' and kind = 'advances' and to_kind = 'priority')`,
+}
+
 func assertSameChecksums(t *testing.T, first, second *store.Store) {
 	t.Helper()
 	for _, item := range checksums {
+		rows := ""
+		if keep, narrowed := checksumRows[item.table]; narrowed {
+			rows = " where " + keep
+		}
 		query := fmt.Sprintf(
 			`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
-			 from (select concat_ws(':', %s) as row_text from %s) sample`,
-			item.columns, pgx.Identifier{item.table}.Sanitize())
+			 from (select concat_ws(':', %s) as row_text from %s%s) sample`,
+			item.columns, pgx.Identifier{item.table}.Sanitize(), rows)
 		firstSum := checksumOf(t, first, item.table, query)
 		secondSum := checksumOf(t, second, item.table, query)
 		if firstSum != secondSum {

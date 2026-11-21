@@ -57,13 +57,6 @@ const tables = [
   "issues",
   "projects",
   "people",
-  // The cross-project priority and its tuple log (INFRA-2947, migration
-  // 20261112024320_priority_nodes). No foreign key reaches either table, so the closure below
-  // does not find them and they are named here: a priority a row wrote would otherwise stand
-  // in the next row's rail count, and its id would already be taken, since a priority is ended
-  // by its state and its node row stays.
-  "priority_tuples",
-  "priority_nodes",
   // The step records Legion's daemon writes of an issue, and their tuple log (the
   // `workflow_nodes` migration). No foreign key reaches either table, so the closure below does
   // not find them: a step a row wrote would otherwise stand in the next row's Steps tab, under
@@ -82,6 +75,13 @@ const tables = [
 // of an erase, which a scenario of its own writes. So the three are emptied here instead, by a
 // delete of their own, and locked beside the closure's tables so the reset still holds every
 // table it empties.
+//
+// The store holds the cross-project priorities too (INFRA-2947): each is a `priority` node with
+// its tuples, and an issue's `advances` is a tuple out of the issue's key, which
+// internal/dispatch/prioritystore writes there. These deletes take them, so a priority a row
+// wrote does not stand in the next row's rail count, and its id is free again, since a priority
+// is ended by its state and its node row stays. The priority's own tables of migration
+// 20261112024320, which nothing writes now, are not named.
 //
 // The schema's own nodes stay: migration 20261109051232 seeds one `supertag` node per block type
 // and one `attribute` node per attribute, with their base-attribute and `attribute_of` tuples,

@@ -1,0 +1,5 @@
+kind: Changed
+body: Dispatch writes and reads a priority, its facts and an issue's advances on it in the graph store, through its one writer; an issue's advances revision is now a graph_tuples seq.
+time: 2026-11-21T08:34:29.952118899Z
+custom:
+    Issue: pr3142

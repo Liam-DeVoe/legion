@@ -91,6 +91,12 @@ var storeWriteCallSites = map[string]string{
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies": "outbox#TestAFallbackCopyThePassPublishedIsADelivery",
 	"outbox/publisher.go#recordBatch":         "outbox#TestRecordBatchTakesAPrefixOfTheStoreLockOrder",
+	// A priority's writes (internal/dispatch/prioritystore), every one through its Write: the
+	// order's allocation lock a create and a rank move take before any row, the priority's node
+	// row, which a create makes and a rename, a rank move and a delete read `for no key update`
+	// before the store writes it again, and its tuples after it, or an issue's `advances` tuple
+	// alone, which takes no row. Driven through each of those writes.
+	"prioritystore/write.go#Write": "prioritystore#TestEveryPriorityWriteTakesTheStoreLockOrder",
 	// The block index: its nodes inside the revision fence, queued on the write phase of the
 	// writer that runs it (BlockIndexing.Queue), whose tuples and cause wait for the event that
 	// recorded the version (the sites of QueueCaused above), driven inside the tick and the

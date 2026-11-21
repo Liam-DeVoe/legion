@@ -5,14 +5,15 @@
 // would spend the measurement's own minutes writing them.
 //
 // No row it writes is one a route would not: an issue carries the columns issue_create.go
-// writes, an event the columns the broker appends under its owner (events/broker.go), and a node
-// and a tuple the columns prioritystore.Write writes
-// (store/migrations/20261112024320_priority_nodes.up.sql). Each issue row carries its own
+// writes, an event the columns the broker appends under its owner (events/broker.go), and a
+// priority's node and its `advances` tuples the columns prioritystore.Write writes into the node
+// and tuple store, `graph_nodes` and `graph_tuples`
+// (store/migrations/20261109013400_graph_store.up.sql). Each issue row carries its own
 // `last_seq`, the highest seq of the events written beside it, and each project its
 // `next_number`, so a route writing to a seeded issue or project afterwards continues the
 // numbering rather than colliding with it. What is left out is what the triggers do on every
-// other write — the search vector, the title lexemes and the embedding queue row — which no read
-// here touches.
+// other write — the search vector, the title lexemes and the embedding queue row — and the
+// value tuples a priority's create states beside its node, which no read here touches.
 package api
 
 import (

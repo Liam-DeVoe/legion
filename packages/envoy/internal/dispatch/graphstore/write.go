@@ -710,9 +710,12 @@ const appendedNodeArrays = 8
 type baseAttribute struct{ kind, id, attribute string }
 
 // statedAttributes are the base attributes the write states itself, read off the tuples it
-// handed in (tuple, of which there are tuples). No writer of this tree states one today - each
-// leaves them to the node write - but a writer that did would keep that statement: one write
-// states one fact once.
+// handed in (tuple, of which there are tuples). The priority store states them itself
+// (internal/dispatch/prioritystore): a create states its visibility and state, and a delete or a
+// restore its state, each with the writer and the moment of the write rather than the node's
+// MadeBy and MadeAt, which is what the node write would state them with. Every other writer
+// leaves them to the node write. A writer that states one keeps that statement: one write states
+// one fact once.
 func statedAttributes(tuples int, tuple func(index int) Tuple) map[baseAttribute]struct{} {
 	stated := make(map[baseAttribute]struct{})
 	for index := range tuples {

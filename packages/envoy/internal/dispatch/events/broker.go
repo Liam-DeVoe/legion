@@ -102,11 +102,13 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     update finds the row already settled by the session's committed reply, it only reads the
 //     row, which no transaction writes a receipt for again. A priority's write (api/priorities.go
 //     createPriority, patchPriority, deletePriority) appends `priority.updated` after writing
-//     its priority_nodes row: a create's insert, which a second create of the same id waits on
-//     through the row's (kind, id) key and then finds written, and the update of a rename, a
-//     rank move or a delete, which holds the row locked until the transaction ends. A
-//     per-session or per-priority lock would add no order these row locks do not give, only
-//     deadlock cycles: the accept path would take it before the message row and a pending
+//     its node row, the priority's row of graph_nodes: a create, which a second create of the
+//     same id waits on through the order's allocation lock it takes before reading whether the id
+//     is held (prioritystore.Create), and then finds written, and a rename, a rank move or a
+//     delete, which reads the row `for no key update` before the store writes it again and holds
+//     it locked until the transaction ends (prioritystore's lockedNode). A per-session or
+//     per-priority lock would add no order these row locks and the allocation lock do not give,
+//     only deadlock cycles: the accept path would take it before the message row and a pending
 //     delivery after, and a broadcast one per recipient in no sorted order.
 func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Event, error) {
 	var appended model.Event
@@ -275,10 +277,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 // The key of an ownerless event locks nothing: eventOwnerLock names no owner lock for it, so
 // LockOwners takes none and lockEventOwner takes only the transaction id, and QueueAppend's
 // insert takes sequence 0 for it and advances no owner row. What orders two writes of one
-// priority is the priority_nodes row each wrote before it appended (Append's doc). Two writes of
-// different priorities share no row, so the broker adds no wait between them; they wait on each
-// other only where their own writes do, as a create and a rank move both take the order's
-// allocation lock (prioritystore.RankAt).
+// priority is the priority's graph_nodes row each locked before it appended (Append's doc), and
+// for two creates of one id the order's allocation lock each takes first (prioritystore.Create).
+// Two writes of different priorities share no row, so the broker adds no wait between them; they
+// wait on each other only where their own writes do, as a create and a rank move both take the
+// order's allocation lock (prioritystore.RankAt).
 func eventOwnerKey(e model.Event) (string, error) {
 	owners := 0
 	if e.IssueKey != nil {

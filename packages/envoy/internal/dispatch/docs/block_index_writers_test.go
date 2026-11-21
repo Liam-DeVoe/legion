@@ -607,6 +607,13 @@ var indexPasses = map[string]string{
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
 	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
+	// A priority's writes (internal/dispatch/prioritystore), each through its one call of the
+	// store's writer: the priority's node and the tuples its caller states. A rename, a move and a
+	// delete read the priority's own node row under its lock first and write it again whole, with
+	// what the write moves set over it (lockedNode, SetAttributes): the store's own row read to
+	// state what goes back into it, never one side of a projection read to mend the other, and a
+	// priority has no projection row at all.
+	"prioritystore/write.go#Write": "the priorities and the tuples its caller states, over the priority's own node row where it writes one again",
 	// A version's index pass reads its render (PlanBlocks), and BlockIndexing.Queue writes what
 	// the plan decided. Where another release indexed the document after the store last stated its
 	// blocks, the rows it compares the render with no longer hold the blocks and links that release

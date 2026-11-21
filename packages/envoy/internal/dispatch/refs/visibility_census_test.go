@@ -199,12 +199,12 @@ var readsWithoutAViewer = map[string]string{
 	"SourceText":         serverWork,
 }
 
-// SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
-// the writers of that store make them. A database nobody has written to holds none of them, so
-// the census would otherwise read a store that resolves four kinds fewer than a running
-// deployment's. It names no kind: it writes the rows that address people and agents and runs the
-// writer that states the store from those rows, and the census reads which kinds that made from
-// `graph_nodes` (R10).
+// SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, and
+// a priority, as the writers of that store make them. A database nobody has written to holds none
+// of them, so the census would otherwise read a store that resolves five kinds fewer than a
+// running deployment's. It names no kind: it writes the rows that address people and agents and
+// runs the writer that states the store from those rows, and writes the priority through its own
+// writer, and the census reads which kinds that made from `graph_nodes` (R10).
 //
 // It is set by the external test package (visibility_census_seed_test.go) rather than written
 // here, because that writer, graphcensus's backfill, imports this package, which a test of this

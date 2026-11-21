@@ -77,7 +77,7 @@ var priorityMemberTerms = `stated as (
 		from (
 			` + prioritystore.AdvancesTupleRead(`, t.asserted`, ``) + `
 		) newest
-		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
+		join graph_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
 			and n.state = '` + prioritystore.StateLive + `'
 		where newest.asserted
 	), members_spread as (
@@ -96,13 +96,14 @@ var priorityMemberTerms = `stated as (
 //
 // A priority belongs to no project, so the priorities are written once for the whole corpus and
 // the work of every project relates to them. Every row here is written through prioritystore,
-// the one place in the tree that touches `priority_nodes` and `priority_tuples`: Create writes
-// the node with its visibility, its state and each attribute, each appending its own value tuple,
-// and prioritystore.Write appends a whole batch of relation tuples in the one statement its
-// append is (one round trip a batch rather than one a relation, which is thousands at scale).
-// No statement of this command writes either table, so a corpus holds what a route would have
-// written; where its report reads the `advances` relation back (priorityMemberTerms), it splices
-// the route's own reading of the log, prioritystore.AdvancesTupleRead.
+// the one place in the tree that writes a priority, which it writes into the node and tuple store
+// through that store's one writer: Create writes the node with its visibility, its state and each
+// attribute, each appending its own value tuple, and prioritystore.Write appends a whole batch of
+// relation tuples in the one statement its append is (one round trip a batch rather than one a
+// relation, which is thousands at scale). No statement of this command writes `graph_nodes` or
+// `graph_tuples`, so a corpus holds what a route would have written; where its report reads the
+// `advances` relation back (priorityMemberTerms), it splices the route's own reading of the log,
+// prioritystore.AdvancesTupleRead.
 //
 // A relation is dated at the later of the issue's moment and the priority's: both are spread
 // over the same span, so an issue written before the priority it advances would otherwise state

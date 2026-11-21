@@ -14,8 +14,10 @@ import (
 
 // The order a priority holds is a fractional key, written as the issue board's rank is
 // (api/issue_rank.go), with the project dropped: a priority belongs to none, so the whole store
-// is one order. The helpers below are that file's, reading the key off the node row's attributes
-// rather than off a column of its own.
+// is one order. The helpers below are that file's, reading the key off the attributes of each
+// priority's `graph_nodes` row rather than off a column of its own, and binding the row's kind,
+// the leading column of the table's primary key, so each costs the priorities the store holds
+// and none of the other nodes beside them.
 
 // rankKey is a priority's order key as every read that orders or compares one takes it: ordered
 // as bytes, which is the order rank.Between builds a key in. The `collate "C"` is there because
@@ -94,7 +96,10 @@ func Move(ctx context.Context, tx pgx.Tx, id, before, after string, actor model.
 
 // lockRankAllocation serialises the whole order, as lockProjectRankAllocation serialises one
 // project's board. There is one lock and not one per project, because a priority is in no
-// project: every move reads the same neighbourhood.
+// project: every move reads the same neighbourhood. Every create takes it too (Create), so two
+// creates of one id are ordered by it before either reads whether the id is held. It is a
+// transaction's lock, and a transaction that already holds it takes it again without waiting, so
+// a create after RankAt in one transaction waits on nothing more.
 func lockRankAllocation(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('priority-rank'))`); err != nil {
 		return fmt.Errorf("lock priority rank allocation: %w", err)
@@ -107,7 +112,7 @@ func lockRankAllocation(ctx context.Context, tx pgx.Tx) error {
 func nextRank(ctx context.Context, q Queryer, id, previous, next string) (string, error) {
 	var key string
 	err := q.QueryRow(ctx, `
-		select `+rankKey+` from priority_nodes
+		select `+rankKey+` from graph_nodes
 		where kind = '`+KindPriority+`' and id <> $1
 			and `+rankKey+` > $2::text
 			and ($3::text = '' or `+rankKey+` < $3::text)
@@ -128,7 +133,7 @@ func nextRank(ctx context.Context, q Queryer, id, previous, next string) (string
 func previousRank(ctx context.Context, q Queryer, id, next string) (string, error) {
 	var key string
 	err := q.QueryRow(ctx, `
-		select `+rankKey+` from priority_nodes
+		select `+rankKey+` from graph_nodes
 		where kind = '`+KindPriority+`' and id <> $1
 			and `+rankKey+` < $2::text
 		order by `+rankKey+` desc
@@ -148,7 +153,7 @@ func previousRank(ctx context.Context, q Queryer, id, next string) (string, erro
 func lastRank(ctx context.Context, q Queryer, id string) (string, error) {
 	var key string
 	err := q.QueryRow(ctx, `
-		select `+rankKey+` from priority_nodes
+		select `+rankKey+` from graph_nodes
 		where kind = '`+KindPriority+`' and id <> $1
 			and attributes->>'`+AttributeRank+`' is not null
 		order by `+rankKey+` desc
@@ -178,7 +183,7 @@ func rankBoundary(ctx context.Context, q Queryer, id, neighbor string) (string, 
 	}
 	var key string
 	err := q.QueryRow(ctx, `
-		select coalesce(`+rankKey+`, '') from priority_nodes
+		select coalesce(`+rankKey+`, '') from graph_nodes
 		where kind = '`+KindPriority+`' and id = $1 and state = '`+StateLive+`'
 	`, neighbor).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {

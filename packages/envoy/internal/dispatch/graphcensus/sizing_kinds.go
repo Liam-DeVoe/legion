@@ -18,13 +18,15 @@ import (
 // R20 gives it: this one; the one that moves decisions, readings, asks and their answers; the one
 // that moves the inbox, the messages and the read state; the one that moves interactions, lenses,
 // lens kinds, constraints and risks; and the one that moves issues, their documents, a block's
-// text and rank, results and components.
+// text and rank, results and components. Beside them is the parent change itself, which moves the
+// priority store into the store (its R32).
 const (
 	movedHere       = "this-change"
 	movedWithAsks   = "asks-child"
 	movedWithInbox  = "inbox-child"
 	movedWithLenses = "lenses-child"
 	movedWithBlocks = "blocks-child"
+	movedByParent   = "parent-change"
 )
 
 // StoreKind is one term of the projection: one kind of write the five children of
@@ -112,7 +114,14 @@ const movedParents = "block_parent_moved"
 //     #b-r-decision-node, #b-r-reading);
 //   - the lenses child's interaction and its frames, a lens and its finding blocks, a lens
 //     kind, a constraint and a risk (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
-//     #b-r-constraint-risk), every one of them assumed.
+//     #b-r-constraint-risk), every one of them assumed;
+//   - the parent change's priorities (internal/dispatch/prioritystore): a priority's create, its
+//     node with its visibility, its state and the four attributes a person writes, and each later
+//     fact, an attribute or a state a write moves and an issue's `advances` on a priority or the
+//     retraction that ends it. Both are read off the priority's own tables, priority_nodes and
+//     priority_tuples, which hold every priority write a build before this one made, so a
+//     database the sizing is read on before the priorities move into the store reads their rate
+//     there, as it reads every other kind's off the rows of the build before.
 func storeKinds() []StoreKind {
 	return []StoreKind{{
 		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 2,
@@ -300,6 +309,20 @@ func storeKinds() []StoreKind {
 			" its answered_by",
 		count: `((select count(*) from comment_deliveries where created_at > ` + sizingWindow + `)
 			+ (select count(*) from message_deliveries where created_at > ` + sizingWindow + `))`,
+	}, {
+		Name: "priority", MovedBy: movedByParent, Nodes: 1, Tuples: 6,
+		Driver: "priority_nodes.made_at: the priority's node, its visibility and state, and its title, description," +
+			" owner and rank values",
+		count: `(select count(*) from priority_nodes where kind = 'priority' and made_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "priority_fact", MovedBy: movedByParent, Tuples: 1,
+		Driver: "priority_tuples.at of every tuple the priority's create did not state: a title, description, owner," +
+			" rank or state value a later write moved, and an issue's advances or the retraction that ends it",
+		count: `(select count(*) from priority_tuples t
+			where t.at > ` + sizingWindow + `
+			  and not exists (
+				select 1 from priority_nodes n
+				where n.kind = t.from_kind and n.id = t.from_id and n.made_at = t.at))`,
 	}, {
 		Name: "issue", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
 		Driver: "issues.created_at: the issue's node and its visibility and state",

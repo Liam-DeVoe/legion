@@ -153,8 +153,8 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	copySeededRows(t, database, "projects", seededProjectColumns, projects)
 	copySeededRows(t, database, "issues", seededIssueColumns, issues)
 	copySeededRows(t, database, "events", seededEventColumns, events)
-	copySeededRows(t, database, "priority_nodes", seededNodeColumns, priorities)
-	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
+	copySeededRows(t, database, "graph_nodes", seededNodeColumns, priorities)
+	copySeededRows(t, database, "graph_tuples", seededTupleColumns, tuples)
 	assertSpeedCorpus(t, database)
 
 	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database})
@@ -173,8 +173,8 @@ func assertSpeedCorpus(t *testing.T, database *store.Store) {
 		{"projects", `select count(*) from projects`, speedCorpusProjects},
 		{"open issues", `select count(*) from issues where closed_at is null`, speedCorpusIssues},
 		{"events", `select count(*) from events`, speedCorpusEvents},
-		{"priorities", `select count(*) from priority_nodes`, speedCorpusPriorities},
-		{"advances relations", `select count(*) from priority_tuples`, speedCorpusRelations},
+		{"priorities", `select count(*) from graph_nodes where kind = 'priority'`, speedCorpusPriorities},
+		{"advances relations", `select count(*) from graph_tuples where kind = 'advances' and to_kind = 'priority'`, speedCorpusRelations},
 	} {
 		got := 0
 		if err := database.Pool.QueryRow(context.Background(), counted.query).Scan(&got); err != nil {

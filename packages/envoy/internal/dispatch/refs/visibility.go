@@ -87,6 +87,12 @@ func init() {
 		// a type is reserved for whoever drafted it.
 		"supertag":  nil,
 		"attribute": nil,
+		// A priority (internal/dispatch/prioritystore), which belongs to no project and which
+		// every authenticated caller reads, as the priority routes answer it (api/priorities.go).
+		// No read of references resolves one into a node: the tuple arm of graph_edges renders no
+		// `advances` tuple, and the priority routes read the node themselves. So it has no loader,
+		// and the registry holds it for the predicate a read of its kind would bind.
+		"priority": nil,
 	}
 	nodeKinds = resolvedNodeKinds()
 }

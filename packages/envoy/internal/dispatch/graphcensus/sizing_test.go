@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -385,9 +388,11 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // the listener took, two body blocks of the comment of which one is removed, a link out of the
 // live one, a child issue that waits on its parent, a failed result with two screenshots and its
 // retraction, a Keep, two components of one imported snapshot, one under and depending on the
-// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, and her
+// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, her
 // snooze of an ask the session ses_asker opened before the window, so that inside the window
-// the snooze is the one write of it a term counts.
+// the snooze is the one write of it a term counts, and a priority as a build before the store
+// wrote one into its own tables: its create, with its node and the six tuples it states at the
+// node's moment, a later rename and CORE-1's `advances` on it.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -460,6 +465,27 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 			with chosen as (insert into issue_components (issue_key, mode) values ('CORE-1', 'explicit') returning issue_key)
 			insert into issue_component_members (issue_key, project_key, component_id)
 			select issue_key, 'CORE', 'root' from chosen`, nil},
+		{"write the priority, its rename and CORE-1's advances", `
+			with made as (
+				insert into priority_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+				values ('priority', 'sized-goal', 'priority', 'project', 'live',
+				        '{"title": "Size the store", "description": "", "owner": "alice", "rank": "U"}', now(),
+				        '{"kind":"user","id":"alice"}', 0)
+				returning made_at, made_by
+			)
+			insert into priority_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			select stated.from_kind, stated.from_id, stated.kind, stated.to_kind, stated.to_id,
+			       made.made_at + stated.later, made.made_by, 0, true
+			from made, (values
+				('priority', 'sized-goal', 'visibility', 'value', 'project', interval '0'),
+				('priority', 'sized-goal', 'state', 'value', 'live', interval '0'),
+				('priority', 'sized-goal', 'description', 'value', '', interval '0'),
+				('priority', 'sized-goal', 'owner', 'value', 'alice', interval '0'),
+				('priority', 'sized-goal', 'rank', 'value', 'U', interval '0'),
+				('priority', 'sized-goal', 'title', 'value', 'Size the store', interval '0'),
+				('priority', 'sized-goal', 'title', 'value', 'Size the whole store', interval '1 minute'),
+				('issue', 'CORE-1', 'advances', 'priority', 'sized-goal', interval '2 minutes')
+			) stated (from_kind, from_id, kind, to_kind, to_id, later)`, nil},
 	} {
 		if _, err := database.Pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatalf("%s: %v", step.what, err)
@@ -536,12 +562,14 @@ const (
 	busDeliveryDrive   = "outbox/publisher.go#recordBatch, the bus's delivery of comment.created"
 	receiptDrive       = "outbox/publisher.go#recordBatch, the receipt of the comment's mention"
 	fallbackDrive      = "outbox/mentions.go#recordFallbackCopies"
+	priorityFactsDrive = "prioritystore/write.go#Write, a priority's writes after its create"
 )
 
 // seededDrives are the drives of the store's writers over the history seedSizedHistory wrote, one
 // after another: the block index over the archive (refs.IndexBlocks, then graphstore.Caused, as a
-// writer with no write phase runs it), the backfill's five passes, and the outbox, run whole,
-// publishing the comment's comment.created, then the receipt of its mention, then a held copy.
+// writer with no write phase runs it), the backfill's five passes, the outbox, run whole,
+// publishing the comment's comment.created, then the receipt of its mention, then a held copy, and
+// the writes of a priority after its create (prioritystore), whose create the seed's run drives.
 // The outbox publishes the comment and the receipt in two drives, so the delivered_to each states
 // is read apart: the bus's delivery of the comment to the role sizer, which the term bus_delivery
 // counts, and the delivery the mention's attempt made to ses_sized, which the term delivery counts.
@@ -659,7 +687,66 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
+	}, {
+		// A priority's writes after its create, each a write of its own as a route makes one: a
+		// rename, a rank move, CORE-1's advances on it and the retraction that ends it, and its
+		// delete. Its create is the drive's Ready, so none of the create's tuples are the
+		// drive's: the seed's run states creates (seedRunDrives).
+		Name: priorityFactsDrive, Sites: []string{"prioritystore/write.go#Write", "graphstore/write.go#Write"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			writeAPriority(t, database, func(ctx context.Context, tx pgx.Tx, at time.Time) error {
+				return prioritystore.Create(ctx, tx, "sized-drive", map[string]string{
+					prioritystore.AttributeTitle: "Size the drive", prioritystore.AttributeDescription: "",
+					prioritystore.AttributeOwner: "alice", prioritystore.AttributeRank: "U",
+				}, sizedPriorityWriter, at)
+			})
+		},
+		Drive: func(t *testing.T) {
+			for _, write := range []func(ctx context.Context, tx pgx.Tx, at time.Time) error{
+				func(ctx context.Context, tx pgx.Tx, at time.Time) error {
+					return prioritystore.SetAttributes(ctx, tx, "sized-drive",
+						map[string]string{prioritystore.AttributeTitle: "Size every drive"}, sizedPriorityWriter, at)
+				},
+				func(ctx context.Context, tx pgx.Tx, at time.Time) error {
+					_, err := prioritystore.Move(ctx, tx, "sized-drive", "", "", sizedPriorityWriter, at)
+					return err
+				},
+				func(ctx context.Context, tx pgx.Tx, at time.Time) error {
+					return prioritystore.Advance(ctx, tx, "CORE-1", "sized-drive", sizedPriorityWriter, at)
+				},
+				func(ctx context.Context, tx pgx.Tx, at time.Time) error {
+					return prioritystore.Retract(ctx, tx, "CORE-1", "sized-drive", sizedPriorityWriter, at)
+				},
+				func(ctx context.Context, tx pgx.Tx, at time.Time) error {
+					return prioritystore.SetState(ctx, tx, "sized-drive", prioritystore.StateGone, sizedPriorityWriter, at)
+				},
+			} {
+				writeAPriority(t, database, write)
+			}
+		},
+		Counts: map[StoredKind][]string{
+			{prioritystore.KindPriority, prioritystore.AttributeTitle}: {"priority_fact"},
+			{prioritystore.KindPriority, prioritystore.AttributeRank}:  {"priority_fact"},
+			{prioritystore.KindPriority, prioritystore.AttributeState}: {"priority_fact"},
+			{prioritystore.KindIssue, prioritystore.RelationAdvances}:  {"priority_fact"},
+		},
 	}}
+}
+
+// sizedPriorityWriter is who the priority drive's writes are written by.
+var sizedPriorityWriter = model.Actor{Kind: "user", ID: "alice"}
+
+// writeAPriority runs one write of a priority in a transaction of its own and commits it, as a
+// priority route does, at the moment it runs.
+func writeAPriority(t *testing.T, database *store.Store, write func(ctx context.Context, tx pgx.Tx, at time.Time) error) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return write(ctx, tx, time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("write a priority: %v", err)
+	}
 }
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
@@ -971,6 +1058,9 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"lens_kind":    {tuples: 8, writes: 11, assumed: true},
 		"constraint":   {tuples: 5, writes: 1 * sizingWindowDays, assumed: true},
 		"risk":         {tuples: 4, writes: 11 * sizingWindowDays, assumed: true},
+		// The priority the build before the store wrote: its create, and the rename and CORE-1's
+		// advances after it.
+		"priority": {tuples: 6, writes: 1}, "priority_fact": {tuples: 1, writes: 2},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]

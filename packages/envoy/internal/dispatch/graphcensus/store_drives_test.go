@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -212,7 +213,8 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	}}
 }
 
-// The seed's three sites, each a drive of its own over one run of the seed.
+// The seed's sites, its three of its own and prioritystore's, each in a drive over one run of the
+// seed.
 const (
 	seedDocumentsDrive = "cmd/dispatch-seed/write_docs.go#writeDocument"
 	seedFollowersDrive = "cmd/dispatch-seed/write_items.go#writeFollowerNodes"
@@ -233,22 +235,24 @@ const seedWait = 2 * time.Minute
 // seedStatementSpace is a run of whitespace in a statement, which the seed's waits fold.
 var seedStatementSpace = regexp.MustCompile(`\s+`)
 
-// seedRunDrives are the seed's three sites, each a drive of its own over one run of the seed on
-// an empty database of its own. The seed is package main, which no package can import, so the
-// test builds its binary (cmdtest.BuildCommand) and runs it as `go run ./cmd/dispatch-seed` would,
-// at seedScale with --no-migrate, storetest's database being migrated already.
+// seedRunDrives are the seed's sites, each in a drive over one run of the seed on an empty
+// database of its own. The seed is package main, which no package can import, so the test builds
+// its binary (cmdtest.BuildCommand) and runs it as `go run ./cmd/dispatch-seed` would, at
+// seedScale with --no-migrate, storetest's database being migrated already.
 //
-// One run writes all three, in this order and each in transactions of its own: its documents
-// (writeDocument), then its asks with the session nodes of their followers (writeFollowerNodes),
-// then its comments (writeComments). Before the run starts the test holds the asks and the
-// comments tables in share mode, which no read and no row lock conflicts with and every insert
-// does, so the seed writes its documents and queues at its first insert into asks: what it
-// appended by then is writeDocument's. Let go, it writes its asks and their followers' nodes and
+// One run writes them in this order, each in transactions of its own: its priorities and the
+// `advances` relations its issues state on them (prioritystore, through its Write), then its
+// documents (writeDocument), then its asks with the session nodes of their followers
+// (writeFollowerNodes), then its comments (writeComments). Before the run starts the test holds
+// the asks and the comments tables in share mode, which no read and no row lock conflicts with
+// and every insert does, so the seed writes its priorities and its documents and queues at its
+// first insert into asks: what it appended by then is prioritystore's and writeDocument's, which
+// append no kind of tuple in common. Let go, it writes its asks and their followers' nodes and
 // queues at its first insert into comments, whose batch's store write comes before that insert
 // and has not committed: what it appended by then is writeFollowerNodes'. Let go of that hold, it
 // writes its comments and the rest of its data set, which no other listed site writes, and exits:
-// what it appended since is writeComments'. A scale too small to reach one of the three would
-// leave that drive appending none of what its Counts say it does, and the test fails on it.
+// what it appended since is writeComments'. A scale too small to reach one of them would leave
+// that drive appending none of what its Counts say it does, and the test fails on it.
 func seedRunDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	database := storetest.Open(t)
@@ -296,7 +300,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	}
 	return []StoreDrive{{
 		Name: seedDocumentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "refs/blocks.go#Queue", "graphstore/write.go#Caused",
+			"prioritystore/write.go#Write", "graphstore/write.go#Write"},
 		Ready: func(t *testing.T) {
 			t.Helper()
 			binary = cmdtest.BuildCommand(t, cmdtest.Command{Name: "dispatch-seed", Dir: "../../../cmd/dispatch-seed"})
@@ -308,14 +313,22 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				"--database-url", database.Pool.Config().ConnString(), "--scale", seedScale, "--no-migrate"))
 			queuedAt(t, asks, "asks", "insert into asks")
 		},
-		// Each document's latest version, indexed as its first: the blocks it states afresh and
-		// the references they hold.
+		// The priorities, each created with its node, its visibility and state and its four
+		// attributes, and the `advances` its issues state on them; then each document's latest
+		// version, indexed as its first: the blocks it states afresh and the references they hold.
 		Counts: map[StoredKind][]string{
-			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
-			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
-			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
-			{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
-			{refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
+			{prioritystore.KindPriority, prioritystore.AttributeVisibility}:  {"priority"},
+			{prioritystore.KindPriority, prioritystore.AttributeState}:       {"priority"},
+			{prioritystore.KindPriority, prioritystore.AttributeTitle}:       {"priority"},
+			{prioritystore.KindPriority, prioritystore.AttributeDescription}: {"priority"},
+			{prioritystore.KindPriority, prioritystore.AttributeOwner}:       {"priority"},
+			{prioritystore.KindPriority, prioritystore.AttributeRank}:        {"priority"},
+			{prioritystore.KindIssue, prioritystore.RelationAdvances}:        {"priority_fact"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:             {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:                  {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:                       {"block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:                     {"block"},
+			{refs.BlockNodeKind, "mentions"}:                                 {"block_ref"},
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,

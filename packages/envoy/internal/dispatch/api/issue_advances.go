@@ -1,8 +1,9 @@
 // issue_advances.go is the `advances` relation seen from the issue it is stated on: the field
 // POST /api/v1/issues and PATCH /api/v1/issues/{key} write, the refusals those two answer, and
 // the revision rule a whole-set write passes. The rows belong to
-// internal/dispatch/prioritystore, the one place in the tree that writes `priority_tuples`;
-// nothing here writes a row itself.
+// internal/dispatch/prioritystore, the one place in the tree that writes a priority and its
+// `advances` tuples, which it writes into `graph_tuples` through the store's one writer; nothing
+// here writes a row itself.
 //
 // The field has two shapes under one name. A write carries a list of priority ids, which is the
 // issue's own relations and nothing else. A read answers a list of entries, each an id and
@@ -70,14 +71,14 @@ func ownAdvances(entries []model.IssueAdvance) []string {
 // A write that carries the whole set rather than one act carries the revision the read it is
 // answering returned, and a revision that is not the one the server holds is refused 409 naming
 // the one it has. The test is equality and not "below", because the revision is a seq of
-// `priority_tuples`, one `bigserial` the whole store draws from: a revision read off another
-// issue, or any number above the sequence this issue has reached, is no revision of this issue's
-// own set and would otherwise pass and overwrite a whole set written in between. It is the rule
-// expected_sequence states on the same handler (ISSUE_CHANGED, issue_patch.go), spelled for this
-// field. A writer that sends no revision writes no whole set: it may still assert or retract one
-// relation at a time, which needs none. So a write with no revision that would change two or
-// more relations is refused 409 too, naming the revision the server holds and saying that a
-// whole-set write carries it.
+// `graph_tuples`, one `bigserial` every writer of the store draws from: a revision read off
+// another issue, or any number above the sequence this issue has reached, is no revision of this
+// issue's own set and would otherwise pass and overwrite a whole set written in between. It is
+// the rule expected_sequence states on the same handler (ISSUE_CHANGED, issue_patch.go), spelled
+// for this field. A writer that sends no revision writes no whole set: it may still assert or
+// retract one relation at a time, which needs none. So a write with no revision that would change
+// two or more relations is refused 409 too, naming the revision the server holds and saying that
+// a whole-set write carries it.
 //
 // A create carries no revision and is never refused here: the issue holds no relation yet, so
 // there is no read to be answering.

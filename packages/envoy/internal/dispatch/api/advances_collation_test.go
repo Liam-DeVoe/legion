@@ -42,19 +42,29 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 		t.Skip("a PostgreSQL built with ICU must serve this test: ICU is what holds the priority ids under one known collation weighing punctuation last, an order the Go merge of the advances lists does not follow")
 	}
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
-	// glibc's en_US was measured to follow. The walk orders and groups priority_tuples.to_id and
-	// joins it to priority_nodes.id, so both take the collation: one of them alone would leave the
-	// join comparing two columns of different collations. priority_tuples.from_id is left alone,
+	// glibc's en_US was measured to follow. The walk orders and groups the `advances` tuples'
+	// to_id, a column of graph_tuples, so that column takes the collation. It joins that to_id to
+	// graph_nodes.id, which keeps the database's default: a column of another collation beats the
+	// default one in a comparison of the two, so the join compares under the collation and the
+	// node ids every other read compares stay as a deployment holds them. from_id is left alone,
 	// since it holds issue keys and the walk joins it to issues.key.
+	//
+	// graph_edges reads graph_tuples.to_id, and Postgres alters no column a view reads, so the
+	// view is taken down around the alter and put back as the catalogue states it.
+	var edges string
+	if err := database.Pool.QueryRow(ctx, `select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&edges); err != nil {
+		t.Fatalf("read the graph_edges definition: %v", err)
+	}
 	for _, statement := range []string{
 		`create collation punctuation_last (provider = icu, locale = 'en-US-u-ka-shifted')`,
-		`alter table priority_tuples alter column to_id type text collate punctuation_last`,
-		`alter table priority_nodes alter column id type text collate punctuation_last`,
+		`drop view graph_edges`,
+		`alter table graph_tuples alter column to_id type text collate punctuation_last`,
+		`create view graph_edges as ` + edges,
 	} {
 		// The server has ICU, so a statement it refuses here is a permission or a schema problem
 		// rather than an absence to pass over, and the test says so rather than skips.
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("hold the priority ids under a deployment's own collation (%s): %v", statement, err)
+			t.Fatalf("hold the priority ids under a deployment's own collation (%.200s): %v", statement, err)
 		}
 	}
 	// The case only tells if the collation does put the two ids in the other order; a server
