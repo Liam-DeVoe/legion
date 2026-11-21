@@ -8,15 +8,21 @@ body: |-
   the token's projects: a registration follows the session's own agent subject, the topics of
   those projects, and the GitHub topics of one repository each that the secrets broker's
   `GET /v1/project-repositories` answer names for them, read with the listener's own account at
-  each such registration and every 30 seconds, compared ignoring case. A refused registration is
+  each such registration and every 30 seconds, each project's read on its own, compared ignoring
+  case. The topics the session's interest record already holds are held to the same rule at
+  every registration, and one the rule refuses is removed from the record and the session's
+  consumer and named in the answer's `warnings`. A refused registration is
   `403 {"error","reason","refused"}` naming every refused topic, and a registration whose read
-  fails is `503 repositories_unknown`. At relay a GitHub event reaches the session only while an
-  answer no older than 60 seconds names its repository; one that does not is acknowledged
-  undelivered and counted in `envoy_edge_github_withheld_total{reason}`, the session's interest
-  in a repository that left the answer is removed, and while no answer is fresh the next frame
-  carries `Envoy-Gap: true`. A session at the edge publishes only a role subject of its project,
-  claims and reads only that project's roles, sends only to sessions whose token listed it, and
-  reads only its sessions, roles and Legion agents. Every other listener serves as before.
+  fails is `503 repositories_unknown`, whose text names nothing the broker answered. At relay a
+  GitHub event reaches the session only while an answer no older than 60 seconds names the
+  repository its own payload names; one that does not is acknowledged undelivered and counted in
+  `envoy_edge_github_withheld_total{reason}`, the session's interest in a repository that left
+  the answer is removed, and while no answer is fresh the next frame carries `Envoy-Gap: true`. A
+  session at the edge publishes only a role subject of its project, claims and reads only that
+  project's roles, sends only to sessions whose token listed it, and reads only its sessions,
+  roles, topics and Legion agents; a role read names a holder of no project of its token without
+  the holder's directory, machine, host, title and capabilities. Every other listener serves as
+  before.
 
   Every listener that verifies broker tokens records the registering token's projects on the
   session's `envoy_sessions` entry (`projects`, `[]` for none). No API answer carries it.

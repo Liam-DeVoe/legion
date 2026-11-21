@@ -325,8 +325,8 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			switch {
 			case errors.Is(err, legionagents.ErrNotFound), err == nil && edge && !legionAgentOfProjects(agent, projects), hidden:
 				// At the edge an agent of another project's issue is answered as one the
-				// registry does not hold (E5), and so is one of a project the caller does not see
-				// in the required privacy mode.
+				// registry does not hold (legionAgentOfProjects), and so is one of a project the
+				// caller does not see in the required privacy mode.
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
 			case err != nil:
 				writeLegionAgentError(w, err)
