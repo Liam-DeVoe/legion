@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
@@ -165,7 +166,8 @@ func settlementEnvelope(t *testing.T, id string, payload map[string]any) []byte 
 }
 
 // dropConsumer is the consumer's spec over logs, with a consumer's memory of the drops it logged,
-// as one durable consumer holds them for as long as it runs (consumeConsumer).
+// as one durable consumer holds them for as long as it runs (consumeConsumer), and the context
+// each of the row's handlings runs under.
 //
 // Its AckWait is a hang guard, not the subject. The rows count acknowledgements, lines and
 // transactions, and AckWait bounds the one read a settlement's handling makes before any of them,
@@ -175,19 +177,25 @@ func settlementEnvelope(t *testing.T, id string, payload map[string]any) []byte 
 // a loaded runner's connection outran it, and at one minute a connection made in 61 s did, under
 // a -timeout of 4 minutes, so the read was cut, the delivery naked and the row's verdict was the
 // machine's. The window is what is left of the test binary's deadline less 30 s
-// (testwait.Remaining), so a read however slow is waited out, and only one that never answers is
-// cut, failing the row by its nak (deliveredMessage) before the binary's own timeout would. The
-// progress keeper reports nothing: it ticks at a third of the window (spec.AckWait/3 in
-// consume.go), and each handling here ends long before that.
-func dropConsumer(t *testing.T, logs *lockedBuffer) (ConsumerSpec, *issueNames, *droppedSettlements) {
+// (testwait.Remaining), so a read however slow is waited out. A window is a span from each read's
+// start, though, and a row hands several messages to the consumer one after another: after a read
+// that took most of it, the next read's window would run past the binary's deadline. So the
+// handlings also run under the returned context, whose deadline is that same moment, the
+// binary's deadline less 30 s, fixed when the spec is made: only a read that never answers is
+// cut, there, failing the row by its nak (deliveredMessage) before the binary's own timeout
+// would. The progress keeper reports nothing: it ticks at a third of the window (spec.AckWait/3
+// in consume.go), and each handling here ends long before that.
+func dropConsumer(t *testing.T, logs *lockedBuffer) (context.Context, ConsumerSpec, *issueNames, *droppedSettlements) {
 	t.Helper()
 	spec := consumerSpec(logs)
 	spec.AckWait = testwait.Remaining(t)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(spec.AckWait))
+	t.Cleanup(cancel)
 	spec, err := normalizedSpec(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return spec, &issueNames{}, newDroppedSettlements()
+	return ctx, spec, &issueNames{}, newDroppedSettlements()
 }
 
 // A checks settlement the decoder refuses is acknowledged, as every message of no fact is, and
@@ -200,13 +208,13 @@ func dropConsumer(t *testing.T, logs *lockedBuffer) (ConsumerSpec, *issueNames, 
 // and the consumer acknowledges it with no line.
 func TestAConsumedSettlementTheDecoderRefusesLogsOneLine(t *testing.T) {
 	logs := &lockedBuffer{}
-	spec, names, dropped := dropConsumer(t, logs)
+	ctx, spec, names, dropped := dropConsumer(t, logs)
 	payload := settlementPayload([]record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 2}}, []string{"unit"}, nil)
 	payload["failed"] = map[string]any{"count": 2, "checks": []string{"unit"}}
 	var acks atomic.Int64
 	message := settlementDelivery(t, "checks-refused", payload, &acks)
 	for delivery := 1; delivery <= 3; delivery++ {
-		if !consumeMessage(context.Background(), message, spec, capturedRepositories, nil, nil, names, dropped) {
+		if !consumeMessage(ctx, message, spec, capturedRepositories, nil, nil, names, dropped) {
 			t.Fatalf("delivery %d was not handled, want it acknowledged; the consumer's log:\n%s", delivery, logs)
 		}
 		if got := acks.Load(); got != int64(delivery) {
@@ -223,7 +231,7 @@ func TestAConsumedSettlementTheDecoderRefusesLogsOneLine(t *testing.T) {
 	// by no generation at all.
 	other := settlementPayload([]record.AttemptRun{{Name: "build", ID: 1}}, nil, nil)
 	other["generation"] = "4"
-	if !consumeMessage(context.Background(), settlementDelivery(t, "checks-refused-again", other, &acks), spec, capturedRepositories, nil, nil, names, dropped) {
+	if !consumeMessage(ctx, settlementDelivery(t, "checks-refused-again", other, &acks), spec, capturedRepositories, nil, nil, names, dropped) {
 		t.Fatalf("the second refused settlement was not handled, want it acknowledged; the consumer's log:\n%s", logs)
 	}
 	if got := strings.Count(logs.String(), refusedLine); got != 2 {
@@ -255,7 +263,7 @@ func TestAConsumedSettlementOfAnUnrecordedPullRequestLogsOneLine(t *testing.T) {
 	}
 	t.Cleanup(counted.Close)
 	logs := &lockedBuffer{}
-	spec, names, dropped := dropConsumer(t, logs)
+	ctx, spec, names, dropped := dropConsumer(t, logs)
 	settlement := func(generation int) map[string]any {
 		payload := settlementPayload([]record.AttemptRun{{Name: "build", ID: 1}}, nil, nil)
 		payload["generation"], payload["snapshot"] = generation, fmt.Sprintf("snapshot-%d", generation)
@@ -264,7 +272,7 @@ func TestAConsumedSettlementOfAnUnrecordedPullRequestLogsOneLine(t *testing.T) {
 	var acks atomic.Int64
 	message := settlementDelivery(t, "checks-unrecorded", settlement(3), &acks)
 	for delivery := 1; delivery <= 3; delivery++ {
-		if !consumeMessage(context.Background(), message, spec, capturedRepositories, counted, nil, names, dropped) {
+		if !consumeMessage(ctx, message, spec, capturedRepositories, counted, nil, names, dropped) {
 			t.Fatalf("delivery %d was not handled, want it acknowledged; the consumer's log:\n%s", delivery, logs)
 		}
 		if got := acks.Load(); got != int64(delivery) {
@@ -278,7 +286,7 @@ func TestAConsumedSettlementOfAnUnrecordedPullRequestLogsOneLine(t *testing.T) {
 		"generation=3", "snapshot=snapshot-3", "subject="+statusesSubject)
 
 	next := settlementDelivery(t, "checks-unrecorded-next", settlement(4), &acks)
-	if !consumeMessage(context.Background(), next, spec, capturedRepositories, counted, nil, names, dropped) {
+	if !consumeMessage(ctx, next, spec, capturedRepositories, counted, nil, names, dropped) {
 		t.Fatalf("the next settlement was not handled, want it acknowledged; the consumer's log:\n%s", logs)
 	}
 	if got := strings.Count(logs.String(), NoRecordedPullRequestLine); got != 2 {

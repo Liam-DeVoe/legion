@@ -150,9 +150,11 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// A publish's ack says the stream stored the message; the server counts it into a consumer's
 	// pending afterwards, in a goroutine of its own (nats-server's signalConsumersLoop, which
 	// processStreamSignal's npc++ runs under), so a read right after the last ack can trail it by
-	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once.
+	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once, and
+	// the wait for it is bounded by the test binary's deadline less 30 s (testwait.Remaining)
+	// rather than by a span of its own, which a loaded server could outrun.
 	var waiting uint64
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), 10*time.Millisecond, func() bool {
 		waiting = githubWaiting(t, consumers)
 		return waiting == uint64(len(backlog))
 	}) {
@@ -172,7 +174,11 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	})
 	defer stop()
 
-	if !testwait.Holds(testwait.Bounded(t, 10*time.Minute, 5*time.Second), 20*time.Millisecond, func() bool {
+	// The drain's own time is measured below and judged only when it is asked for
+	// (LEGION_TEST_DRAIN_MEASURE); the wait for it is a hang guard, bounded by the test binary's
+	// deadline less 30 s (testwait.Remaining) and not by a span the handlers' store work must
+	// finish inside.
+	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
 		if githubWaiting(t, consumers) == 0 {
 			return true
 		}
