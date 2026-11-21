@@ -457,7 +457,11 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // NewAccessRequest, which has spent the run token's jti: the library mints nothing, and
 // grantPlaceholder writes the grant and claims the session name until the grant's end, in the
 // same transaction.
-func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
+//
+// trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
+// the library has validated the request, before the exchange decides anything, and a *Refusal it
+// answers is written as that refusal. Nil runs nothing.
+func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade func(context.Context, map[string]any) error) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
 		p.writeError(ctx, w, nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
@@ -475,6 +479,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjectTokenType := request.GetRequestForm().Get(FormSubjectTokenType)
+	if subjectTokenType == tokenTypeAccessToken && trade != nil {
+		if err := trade(ctx, session.GetSubjectToken()); err != nil {
+			var refused *Refusal
+			if errors.As(err, &refused) {
+				WriteRefusal(w, refused)
+				return
+			}
+			p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
+			return
+		}
+	}
 	if subjectTokenType == tokenTypeAccessToken {
 		if _, err := p.decide(ctx, request, session.GetSubjectToken()); err != nil {
 			p.writeError(ctx, w, request, err)
