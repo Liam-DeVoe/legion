@@ -18,7 +18,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/seed"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natscred"
@@ -44,7 +46,14 @@ type env struct {
 	connect func(ctx context.Context, o options) (*nats.Conn, error)
 	// database opens the Postgres store of family: "dispatch", or "daemon/<project key>".
 	database func(ctx context.Context, o options, family string) (Database, error)
-	now      func() time.Time
+	// hub opens the operator's reach of the clustered hub for o (writerhold.Operator): its
+	// Kubernetes objects and each declared server's monitoring port, which convert's meta barrier
+	// reads (writerhold.MetaBarrier) and restore --finish restarts.
+	hub func(ctx context.Context, o options) (*writerhold.Operator, error)
+	// reread, when set, replaces the held re-read (heldReread): nil, as realEnv leaves it, is the
+	// re-read. Only the grant rows, whose hubs of static users have no callout stack, set it.
+	reread func(ctx context.Context, r *run) error
+	now    func() time.Time
 }
 
 // run is one command's reach: its options, its env, and what it opened, each opened once, when
@@ -57,6 +66,10 @@ type run struct {
 	records   *holdrecord.Client
 	nc        *nats.Conn
 	js        jetstream.JetStream
+	operator  *writerhold.Operator
+	// heldStreams are the protected streams the latest held re-read read, which a command's
+	// postcheck compares against (writerhold.Postcheck's step 1).
+	heldStreams []writerhold.StreamReading
 	databases map[string]Database
 	closers   []func()
 }
@@ -105,6 +118,53 @@ func (r *run) conn(ctx context.Context) (*nats.Conn, jetstream.JetStream, error)
 	return r.nc, r.js, nil
 }
 
+// reconnectWithin bounds how long reconnect connects again, while the hub's auth service, itself
+// reconnecting after a server's restart, may refuse the operator.
+const reconnectWithin = time.Minute
+
+// reconnect replaces the run's operator connection with one made now, for a held command after it
+// restarted the hub's servers (writerhold's restart, proof and barrier): nats.go closes a
+// connection whose reconnects the hub refused twice in a row, and a restart refuses every
+// reconnect until the auth service is back. It connects every 250 ms until one connect is
+// admitted, and is UNKNOWN once reconnectWithin passes. What the caller made on the old connection
+// (a store over it, a bucket barrier) it makes again.
+func (r *run) reconnect(ctx context.Context) (*nats.Conn, jetstream.JetStream, error) {
+	if r.nc != nil {
+		r.nc.Close()
+	}
+	r.nc, r.js = nil, nil
+	deadline := time.Now().Add(reconnectWithin)
+	for {
+		nc, js, err := r.conn(ctx)
+		if err == nil {
+			return nc, js, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, nil, unknownf(err, "connect to the hub as the operator again, for %s", reconnectWithin)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, unknownf(ctx.Err(), "connect to the hub as the operator again")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// operatorHub is the run's reach of the clustered hub (env.hub), opened once.
+func (r *run) operatorHub(ctx context.Context) (*writerhold.Operator, error) {
+	if r.operator == nil {
+		if r.e.hub == nil {
+			return nil, errors.New("this run has no reach of the hub's Kubernetes objects")
+		}
+		op, err := r.e.hub(ctx, r.o)
+		if err != nil {
+			return nil, fmt.Errorf("the operator's reach of the hub: %w", err)
+		}
+		r.operator = op
+	}
+	return r.operator, nil
+}
+
 // database is family's Postgres store, opened once.
 func (r *run) database(ctx context.Context, family string) (Database, error) {
 	if db, ok := r.databases[family]; ok {
@@ -123,7 +183,8 @@ func (r *run) database(ctx context.Context, family string) (Database, error) {
 
 // requirePhase reads the hold row and refuses, naming the phase it found, unless it is phase,
 // and, for prepare and held, under the run's hold id: each operator command runs only in the one
-// phase it needs, so a deploy during a hold changes nothing.
+// phase it needs, so a deploy during a hold changes nothing. For held, it then reads the hold's
+// journal and runs the held re-read (heldReread) before the command does anything else.
 func (r *run) requirePhase(ctx context.Context, phase natsgrant.OperatorPhase) (holdrecord.Row, error) {
 	records, err := r.hold(ctx)
 	if err != nil {
@@ -139,7 +200,150 @@ func (r *run) requirePhase(ctx context.Context, phase natsgrant.OperatorPhase) (
 	if phase != natsgrant.OperatorPhaseReleased && row.HoldID != r.o.holdID {
 		return row, fmt.Errorf("the hold row is %s under hold %q, not under --hold %q", row.Phase, row.HoldID, r.o.holdID)
 	}
+	if phase == natsgrant.OperatorPhaseHeld {
+		if err := r.heldReread(ctx); err != nil {
+			return row, err
+		}
+	}
 	return row, nil
+}
+
+// The held re-read's writer census: read again while its answer is not whole, at most
+// heldCensusReadings times, heldCensusPause apart (writerhold's hold set, wholeCensus).
+const (
+	heldCensusReadings = 10
+	heldCensusPause    = 3 * time.Second
+)
+
+// heldReread is the rule every held command keeps when it starts and before its mutation steps
+// (plan §3a, "Every held command"): it reads again step 1's server and stream reads, step 2's
+// writer census and step 6's report, as writerhold's hold set reads them (hold.go Set), on the
+// command's own connection:
+//
+//   - the render's precondition, which names the auth service's user (writerhold.Precondition),
+//     and every declared server, its identity and its routes, leafnodes and gateways
+//     (writerhold.Discover);
+//   - the restart: every declared pod must be one hold set restarted in this hold, by the server
+//     ids its done entry records (server_id.<pod>). A server's id is new at each start, so an id
+//     other than the recorded one is a start since, still inside the hold; a pod hold set did not
+//     restart is UNKNOWN;
+//   - every protected stream by name, absent only where the hold's workflow declares it
+//     (writerhold.ReadProtectedStreams), and the writer census over the ones present
+//     (writerhold.TakeCensus), read again while it is not whole;
+//   - the report: every connection of every declared server is the command's own or the auth
+//     service's (writerhold.Report). Its restart check compares step 1's ids, which the journal
+//     does not keep; the restart is the check above, so the report is given ids no server
+//     answers, and checks the connections, the routes, the leafnodes and the gateways.
+//
+// A refusal or an UNKNOWN of any of them stops the command before it writes anything.
+func (r *run) heldReread(ctx context.Context) error {
+	if r.e.reread != nil {
+		return r.e.reread(ctx, r)
+	}
+	d, _, err := r.records.Journal(ctx, r.o.holdID)
+	if err != nil {
+		return err
+	}
+	op, err := r.operatorHub(ctx)
+	if err != nil {
+		return err
+	}
+	nc, _, err := r.conn(ctx)
+	if err != nil {
+		return unknownf(err, "the operator's connection")
+	}
+	render, err := writerhold.Precondition(ctx, op.Hub)
+	if err != nil {
+		return heldError(err, "the hub's render")
+	}
+	declared, err := writerhold.Discover(ctx, op.Hub)
+	if err != nil {
+		return heldError(err, "the declared servers")
+	}
+	restarted := heldRestarted(d)
+	report := make(writerhold.Declared, len(declared))
+	for i, server := range declared {
+		if _, ok := restarted[server.Pod]; !ok {
+			return unknownf(nil, "declared server %s (%s) is not one hold set restarted in hold %s: its done entry records no server_id.%s",
+				server.Pod, server.Varz.ServerID, r.o.holdID, server.Pod)
+		}
+		report[i] = server
+		report[i].Varz.ServerID = "the process " + server.Pod + " ran before hold set's restart"
+	}
+	streams, err := writerhold.ReadProtectedStreams(ctx, nc, heldExpectedAbsent(d.Workflow))
+	if err != nil {
+		return heldError(err, "the protected streams")
+	}
+	r.heldStreams = streams
+	var present []string
+	for _, stream := range streams {
+		if !stream.Absent {
+			present = append(present, stream.Name)
+		}
+	}
+	for reading := 1; ; reading++ {
+		_, err := writerhold.TakeCensus(ctx, nc, present)
+		var unknown *writerhold.Unknown
+		if err == nil {
+			break
+		}
+		if !errors.As(err, &unknown) || reading == heldCensusReadings {
+			return heldError(err, "the writer census")
+		}
+		timer := time.NewTimer(heldCensusPause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return unknownf(ctx.Err(), "the writer census")
+		case <-timer.C:
+		}
+	}
+	if _, err := (writerhold.Report{Hub: op.Hub, Declared: report, AuthUser: render.AuthUser, Wait: op.Wait}).Run(ctx, nc); err != nil {
+		return heldError(err, "the report")
+	}
+	return nil
+}
+
+// heldRestarted is each pod's server id after hold set's restart, from its latest done entry's
+// outputs (server_id.<pod>).
+func heldRestarted(d holdrecord.Done) map[string]string {
+	ids := map[string]string{}
+	for _, entry := range d.Ops {
+		if entry.Command != holdrecord.CommandSet || entry.State != "done" {
+			continue
+		}
+		ids = map[string]string{}
+		for key, id := range entry.Outputs {
+			if pod, ok := strings.CutPrefix(key, "server_id."); ok {
+				ids[pod] = id
+			}
+		}
+	}
+	return ids
+}
+
+// heldExpectedAbsent are the protected streams w's commands may find absent, as hold set's
+// preflight declares them (writerhold hold.go expectedAbsent): the selection bucket in the
+// cutover, until create-bucket makes it, and in a selection recovery, until create-bucket
+// --after-loss does; every protected stream in streams-update.
+func heldExpectedAbsent(w holdrecord.Workflow) []string {
+	switch w {
+	case holdrecord.WorkflowCutover, holdrecord.WorkflowSelectionRecovery:
+		return []string{"KV_" + selection.SessionBucket}
+	case holdrecord.WorkflowStreamsUpdate:
+		return writerhold.ProtectedStreams()
+	}
+	return nil
+}
+
+// heldError is a reading of writerhold's that failed: its UNKNOWN stays UNKNOWN here (exit 2),
+// and its refusal a refusal, each naming what was read.
+func heldError(err error, what string) error {
+	var unknown *writerhold.Unknown
+	if errors.As(err, &unknown) {
+		return unknownf(err, "the held re-read, %s", what)
+	}
+	return fmt.Errorf("the held re-read, %s: %w", what, err)
 }
 
 // admission is a held command admitted to its hold: its intent entry is written, and it ends
@@ -150,8 +354,9 @@ type admission struct {
 	workflow holdrecord.Workflow
 }
 
-// admit reads the row, which must be held under the run's hold id, and writes command's intent
-// entry with inputs (holdrecord.Client.Admit): the decision and the entry are one write.
+// admit reads the row, which must be held under the run's hold id, runs the held re-read
+// (requirePhase, heldReread), and writes command's intent entry with inputs
+// (holdrecord.Client.Admit): the decision and the entry are one write.
 func (r *run) admit(ctx context.Context, command string, inputs map[string]string) (*admission, error) {
 	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
 		return nil, err
@@ -162,6 +367,11 @@ func (r *run) admit(ctx context.Context, command string, inputs map[string]strin
 	}
 	return &admission{r: r, command: command, workflow: w}, nil
 }
+
+// reread is the held re-read again (heldReread), which an admitted command runs before each of
+// its mutation steps. Its refusal leaves the command's intent pending: the way out is the rerun,
+// once whatever it found is gone.
+func (a *admission) reread(ctx context.Context) error { return a.r.heldReread(ctx) }
 
 // done writes the command's done entry with outputs (holdrecord.Client.AppendDone).
 func (a *admission) done(ctx context.Context, outputs map[string]string) error {
@@ -196,7 +406,12 @@ func realEnv() env {
 				nats.Name("envoy-infra consumer-names"), nats.Timeout(10*time.Second), nats.MaxReconnects(-1))
 		},
 		database: openDatabase,
-		now:      time.Now,
+		// The hub's Kubernetes flags come with writerhold's HubFlags, which this command takes once
+		// that export merges; until then a command that needs the hub refuses, naming it.
+		hub: func(context.Context, options) (*writerhold.Operator, error) {
+			return nil, errors.New("this build takes no flags for the hub's Kubernetes objects yet (writerhold.HubFlags)")
+		},
+		now: time.Now,
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,9 +20,12 @@ import (
 	"github.com/nats-io/nuid"
 	"github.com/stretchr/testify/require"
 
+	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -35,16 +40,57 @@ type stack struct {
 	t *testing.T
 	s *holdtest.Stack
 	e env
+	// op is the operator's reach of the hub's Kubernetes objects over the stack's cluster, as
+	// writerhold's own rows build it: what env.hub answers, and what a row runs writerhold.Set on.
+	op *writerhold.Operator
 
 	mu  sync.Mutex
 	dbs map[string]*pgxpool.Pool
+	// conns are the operator's connections operator opened that are still open: run closes them
+	// before a held command, whose re-read admits no connection but its own and the auth
+	// service's (heldReread's report).
+	conns []*nats.Conn
+}
+
+// stackDisks is compute.disks.get over holdtest's volumes: each claim's disk, by its handle's
+// name, with an id of its own.
+type stackDisks map[string]uint64
+
+func (d stackDisks) DiskID(_ context.Context, disk writerhold.DiskRef) (uint64, error) {
+	id, ok := d[disk.Name]
+	if !ok {
+		return 0, fmt.Errorf("compute.disks.get %s: 404 notFound", disk.Name)
+	}
+	return id, nil
 }
 
 // newStack starts a stack, stopped when t ends.
 func newStack(t *testing.T) *stack {
 	t.Helper()
 	s := holdtest.Start(t)
-	h := &stack{t: t, s: s, dbs: map[string]*pgxpool.Pool{}}
+	disks := stackDisks{}
+	for i := range s.Cluster.Servers {
+		disks["pvc-"+holdtest.Pod(i)] = uint64(7000000000000000000 + i)
+	}
+	op := &writerhold.Operator{
+		Hub: writerhold.KubeHub{Client: s.Kube.Client, Namespace: holdtest.Namespace, StatefulSet: holdtest.StatefulSet,
+			ConfigMap: holdtest.ConfigMap, Forward: s.Kube},
+		Disks: disks,
+		URLs:  s.Cluster.URLs(),
+		Connect: func(context.Context) (*nats.Conn, error) {
+			return nats.Connect(s.Cluster.URL(), append(s.OperatorCredential(), nats.Name("envoy-infra hold"),
+				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
+		},
+		Probe: func(_ context.Context, url string) error {
+			nc, err := nats.Connect(url, s.ProbeCredential(), nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(10*time.Second))
+			if err == nil {
+				nc.Close()
+			}
+			return err
+		},
+		RestartLimit: 3 * time.Minute,
+	}
+	h := &stack{t: t, s: s, op: op, dbs: map[string]*pgxpool.Pool{}}
 	h.e = env{
 		records: func(context.Context, options, bool) (*holdrecord.Client, error) { return s.Broker.Client(t), nil },
 		connect: func(context.Context, options) (*nats.Conn, error) {
@@ -60,6 +106,7 @@ func newStack(t *testing.T) *stack {
 			}
 			return db, nil
 		},
+		hub: func(context.Context, options) (*writerhold.Operator, error) { return op, nil },
 		now: time.Now,
 	}
 	return h
@@ -73,17 +120,33 @@ var commonArgs = []string{"--broker-url", "https://broker.consumernames-test", "
 var writingArgs = []string{"--signing-key-secret", "projects/consumernames-test/secrets/operator-only-envoy-hold-signing"}
 
 // run runs `envoy-infra consumer-names <args>` in the stack, with the common flags, and returns its
-// exit code and output.
+// exit code and output. Before a held command (every word but status and prepare) it closes every
+// connection operator opened (closeOperators): a row connects again after it.
 func (h *stack) run(args ...string) (int, string, string) {
 	h.t.Helper()
 	full := append(append([]string{}, args...), commonArgs...)
 	if args[0] != actionStatus {
 		full = append(full, writingArgs...)
 	}
+	if args[0] != actionStatus && args[0] != actionPrepare {
+		h.closeOperators()
+	}
 	var stdout, stderr bytes.Buffer
 	code := runCommand(context.Background(), full, &stdout, &stderr, h.e)
 	h.t.Logf("envoy-infra consumer-names %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
+}
+
+// closeOperators closes every connection operator opened that is still open, so a held command's
+// re-read finds no connection but its own and the auth service's.
+func (h *stack) closeOperators() {
+	h.mu.Lock()
+	conns := h.conns
+	h.conns = nil
+	h.mu.Unlock()
+	for _, nc := range conns {
+		nc.Close()
+	}
 }
 
 // records is the operator's client of the stack's hold routes.
@@ -114,16 +177,62 @@ func (h *stack) prepared(w holdrecord.Workflow) string {
 
 // held moves a prepared hold to held the way `hold set` writes its journal (its intent with the
 // row prepare, the move, its done entry), without the steps it runs against the hub: a row that
-// tests what comes after a set hold rather than the steps themselves.
+// tests what comes after a set hold rather than the steps themselves. Two of those steps' results
+// a held command's re-read reads (heldReread), and held stands in for them: it makes every
+// protected stream the workflow's rows do not make themselves (protectedStreams), and its done
+// entry records each declared server's id now as the id after hold set's restart
+// (server_id.<pod>), which the skipped restart would have recorded. A connection opened before
+// held stays open, as no restart closed it: a row closes it before a held command.
 func (h *stack) held(id string) {
 	h.t.Helper()
 	ctx := context.Background()
-	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandSet}, nil)
+	w, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandSet}, nil)
 	require.NoError(h.t, err)
 	row := h.row()
 	_, err = h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseHeld, id, "the test's hold")
 	require.NoError(h.t, err)
-	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, holdrecord.CommandSet, nil))
+	h.protectedStreams(w)
+	declared, err := writerhold.Discover(ctx, h.op.Hub)
+	require.NoError(h.t, err, "the declared servers")
+	outputs := map[string]string{}
+	for _, server := range declared {
+		outputs["server_id."+server.Pod] = server.Varz.ServerID
+	}
+	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, holdrecord.CommandSet, outputs))
+}
+
+// protectedStreams makes, under the held grant, every protected stream (writerhold.ProtectedStreams)
+// the hub lacks, with the build's own configuration at one copy (streamset.Declared, the
+// configuration `streams update` compares a deployed stream against), but three kinds: the
+// notification stream and the selection bucket, which rows make with their own configuration, and
+// every stream workflow w declares absent (heldExpectedAbsent). The held re-read refuses a hub that
+// lacks any other.
+func (h *stack) protectedStreams(w holdrecord.Workflow) {
+	h.t.Helper()
+	ctx := context.Background()
+	skip := append([]string{bus.Stream, "KV_" + selection.SessionBucket}, heldExpectedAbsent(w)...)
+	declared := streamset.Declared(streamset.Settings{Replicas: 1})
+	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.OperatorCredential()...)
+	require.NoError(h.t, err)
+	defer nc.Close()
+	for _, name := range writerhold.ProtectedStreams() {
+		if slices.Contains(skip, name) {
+			continue
+		}
+		info, err := streamInfo(ctx, nc, name)
+		var api *jetstream.APIError
+		switch {
+		case err == nil && info != nil:
+			continue
+		case errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeStreamNotFound:
+		default:
+			require.NoError(h.t, err, "STREAM.INFO of %s", name)
+		}
+		stream, ok := streamset.Find(declared, name)
+		require.True(h.t, ok, "the build declares no configuration of the protected stream %s", name)
+		_, err = apiRequest(ctx, nc, "$JS.API.STREAM.CREATE."+name, stream.Config)
+		require.NoError(h.t, err, "make the protected stream %s", name)
+	}
 }
 
 // heldHold is a hold of workflow, prepared and set (held).
@@ -159,13 +268,16 @@ func (h *stack) journal(id string) holdrecord.Done {
 }
 
 // operator connects to the hub as the operator, decided under the row's phase now: a test that
-// changes the phase connects again for the new phase's grant.
+// changes the phase connects again for the new phase's grant. run closes it before a held command.
 func (h *stack) operator() (*nats.Conn, jetstream.JetStream) {
 	h.t.Helper()
 	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.OperatorCredential()...)
 	require.NoError(h.t, err)
 	js, err := jetstream.New(nc)
 	require.NoError(h.t, err)
+	h.mu.Lock()
+	h.conns = append(h.conns, nc)
+	h.mu.Unlock()
 	return nc, js
 }
 
