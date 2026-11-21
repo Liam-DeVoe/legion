@@ -204,8 +204,12 @@ func TestTheKeyRemakeLoopRemakesKeysAfterAChangeWhileItRuns(t *testing.T) {
 // Two remakes at once take disjoint rows. 300 texts rows, three chunks of the 100 the test sets
 // (shrinkRemakeChunk), are on another reading after a change of the reading. Two RemakeKeys calls
 // start together. Their counts add up to 300, and no row stays on another reading. It fails where a
-// remake counts a row that the other remade (an update with no test of the reading), or where the
-// two remakes stop while rows are on another reading.
+// remake counts a row that the other remade: a chunk taken with no lock and updated with no test of
+// the reading (500 of 300, and 5,000 of 3,000 at the earlier size). The update's test of the reading
+// dropped alone changes nothing a test can read: it repeats the chunk's condition on rows the same
+// statement holds locked (`for update ... skip locked`, which PostgreSQL checks again on the row it
+// locks), so no row the chunk took can fail it. It also fails where the two remakes stop while rows
+// are on another reading (a remake of one chunk: 200 of 300).
 func TestTwoRemakesTakeDisjointRows(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	shrinkRemakeChunk(t)

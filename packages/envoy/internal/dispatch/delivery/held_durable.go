@@ -27,8 +27,9 @@ import (
 // it again, Dispatch's standby polls for the life of the process: there is no deadline and no
 // exit. A durable another envoy-dispatch process holds is not a failed start but the ordinary
 // state of every process but one, which has every other thing a Dispatch server does to get on
-// with meanwhile.
-const durableBindInterval = 2 * time.Second
+// with meanwhile. Its value is 2 s in every build. A var, with the hold's three below, so a test of
+// a hold's lapse shrinks all four together (shrinkIntakeHold) and waits out a lapse of seconds.
+var durableBindInterval = 2 * time.Second
 
 // standbyLogEvery bounds how often one intake says it is standing by for its durable. The first
 // refusal is logged as it happens, so an operator sees at once which process stood by and why;
@@ -41,8 +42,10 @@ const standbyLogEvery = 30 * time.Second
 // reports itself lost intakeHoldMargin before it lapses, so the holder stops delivering before any
 // standby can take it. A holder that dies is replaced within intakeHoldTTL plus one
 // durableBindInterval. The holder checks that the durable still delivers to it on the same
-// interval it renews (heldDurable.check).
-const (
+// interval it renews (heldDurable.check). Their values are 15 s, 5 s and 2 s in every build, which
+// duty.TryHold requires to keep Renew under TTL less Margin. Vars so a test of a hold's lapse
+// shrinks them (shrinkIntakeHold), in the same proportion, before it starts an intake.
+var (
 	intakeHoldTTL    = 15 * time.Second
 	intakeHoldRenew  = 5 * time.Second
 	intakeHoldMargin = 2 * time.Second

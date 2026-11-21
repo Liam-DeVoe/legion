@@ -255,9 +255,25 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	t.Run("head_stored", func(t *testing.T) { holdLapseRow(t, true) })
 }
 
+// shrinkIntakeHold sets the hold's TTL, renewal and margin and the standby's poll to a fifth of
+// their values in every build (3 s, 1 s, 400 ms and 400 ms, which duty.TryHold takes: the renewal
+// stays under the TTL less the margin), and puts them back at the test's end, so a test of a
+// hold's lapse waits out 3 s rather than 15. Call it before an intake starts: the cleanups run in
+// reverse, so the values are put back only once the intakes have stopped.
+func shrinkIntakeHold(t *testing.T) {
+	t.Helper()
+	ttl, renew, margin, bind := intakeHoldTTL, intakeHoldRenew, intakeHoldMargin, durableBindInterval
+	intakeHoldTTL, intakeHoldRenew, intakeHoldMargin, durableBindInterval = 3*time.Second, time.Second, 400*time.Millisecond, 400*time.Millisecond
+	t.Cleanup(func() {
+		intakeHoldTTL, intakeHoldRenew, intakeHoldMargin, durableBindInterval = ttl, renew, margin, bind
+	})
+}
+
 // holdLapseRow is one case of the row above: headStored leaves branch_commits and
-// pull_request_reads_owed in place, so the holder's own handling succeeds.
+// pull_request_reads_owed in place, so the holder's own handling succeeds. The hold lapses in 3 s
+// (shrinkIntakeHold), where it lapses in 15 s in every build.
 func holdLapseRow(t *testing.T, headStored bool) {
+	shrinkIntakeHold(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
@@ -307,8 +323,8 @@ func holdLapseRow(t *testing.T, headStored bool) {
 	restoreBranchCommits()
 	restoreOwedReads()
 
-	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s)
-	// and its take-over's delete, subscribe and create under the consumer lease.
+	// 60 s: the hold's lapse (intakeHoldTTL, 3 s here), the keeper's poll (durableBindInterval,
+	// 400 ms here) and its take-over's delete, subscribe and create under the consumer lease.
 	waitFor(t, 60*time.Second, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))
