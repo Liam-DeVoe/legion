@@ -490,8 +490,15 @@ const (
 	// cpuAgentLimit is the GOMEMLIMIT the agent works at the soft limit of: a gigabyte, so the
 	// runner holds it with room to spare.
 	cpuAgentLimit = 1 << 30
-	// cpuReads is how many times the fixed read is timed, idle and busy.
+	// cpuReads is the fewest times the fixed read is timed in a window, idle and busy.
 	cpuReads = 500
+	// cpuWindowLeast is the shortest a window of reads lasts, idle and busy, the reads going on
+	// past cpuReads until it has: time for the agent at its soft limit to make collections, which
+	// the test requires of a window it judges. On a GKE node of 4 CPUs the hook's allocation filled
+	// the heap from its live ~600 MiB to its goal of ~920 MiB in about 300 ms, while 500 reads took
+	// 236 to 288 ms there (INFRA-1588, 2026-11-21), so a window of 500 reads could miss every
+	// collection; a second holds about three, and still one at a third of that allocation rate.
+	cpuWindowLeast = time.Second
 	// cpuLivez is the longest /livez may take to answer while the agent works.
 	cpuLivez = time.Second
 	// cpuAtLimitLow and cpuAtLimitHigh are the memory the agent's runtime counts against its limit,
@@ -507,17 +514,23 @@ type cpuRead struct {
 	took time.Duration
 }
 
-// timedReads is each of count reads of path, one after another as the test's login, each answered
-// 200, with when it started and how long it took.
-func (s agentServer) timedReads(t *testing.T, path string, count int) []cpuRead {
+// timedReads is each read of path, one after another as the test's login, each answered 200, with
+// when it started and how long it took, until it has made count reads and least has passed since
+// the first.
+func (s agentServer) timedReads(t *testing.T, path string, count int, least time.Duration) []cpuRead {
 	t.Helper()
 	reads := make([]cpuRead, 0, count)
-	for range count {
+	for first := time.Now(); len(reads) < count || time.Since(first) < least; {
 		started := time.Now()
 		s.call(t, http.MethodGet, path, "", http.StatusOK)
 		reads = append(reads, cpuRead{at: started, took: time.Since(started)})
 	}
 	return reads
+}
+
+// p99Rank is which of n times, counted from the slowest, percentile gives as their p99.
+func p99Rank(n int) int {
+	return n - max(0, int(math.Ceil(0.99*float64(n)))-1)
 }
 
 // tookOf is how long each of reads took.
@@ -781,8 +794,8 @@ type cpuWindow struct {
 	agentBefore, agentAfter       agentFigures
 }
 
-// watchWindow times count reads of path and reads what went on around them, the agent's runtime
-// figures included.
+// watchWindow times reads of path, at least count of them and over at least cpuWindowLeast
+// (timedReads), and reads what went on around them, the agent's runtime figures included.
 func (s agentServer) watchWindow(t *testing.T, profiler string, agentPid int, path string, count int) cpuWindow {
 	t.Helper()
 	database := processesNamed("postgres")
@@ -790,7 +803,7 @@ func (s agentServer) watchWindow(t *testing.T, profiler string, agentPid int, pa
 	gcBefore := readServerGC(t, profiler)
 	serverBefore, testBefore := readProcFigures(s.Cmd.Process.Pid), readProcFigures(os.Getpid())
 	databaseBefore, agentBefore := readProcFigures(database...), readProcFigures(agentPid)
-	reads := s.timedReads(t, path, count)
+	reads := s.timedReads(t, path, count, cpuWindowLeast)
 	window := cpuWindow{
 		reads:               reads,
 		server:              readProcFigures(s.Cmd.Process.Pid).since(serverBefore),
@@ -939,17 +952,19 @@ const cpuAgentShare = 4
 // hook: allocation without pause on each CPU its runtime schedules on, beside a live heap the hook
 // sizes so the memory its runtime counts against GOMEMLIMIT peaks at the limit); the test does not
 // judge a window at whose start or end the agent used less than 90% or more than 110% of its
-// limit, or in which its collector made no collection. Meanwhile the p99 of one fixed read of the
-// server, an issue, stays under twice its p99 with the agent idle, and /livez, asked every 100 ms,
-// answers each time in under 1 s. Every thread of the agent runs under the SCHED_IDLE policy, idle
-// and at the load. The agent holds production's share of the runner's CPUs, a quarter, 1 at the least
-// (DISPATCH_TEST_AGENT_PROCS), where production gives it 4 of a container's 16: on a runner of 4
-// CPUs the 4 a server gives its agent would be every one. The test logs the CPUs it runs on, the
-// agent's GOMAXPROCS, and the spread of the read and of a round trip to the database, idle and at
-// the load, which says what a slower p99 is made of; and of each window of reads, its 8 slowest
-// reads by their time within it, each beside the server's collector pauses and the /livez requests
-// it met, and what the server's, the test's, the database's and the agent's threads did in it
-// (cpuWindow.describe).
+// limit, or in which its collector made no collection. Each window times the read at least 500
+// times and for at least a second (cpuWindowLeast), long enough to hold a collection of the agent
+// at its soft limit. Meanwhile the p99 of one fixed read of the server, an issue, over all the
+// reads of the window stays under twice its p99 with the agent idle, and /livez, asked every
+// 100 ms, answers each time in under 1 s. Every thread of the agent runs under the SCHED_IDLE
+// policy, idle and at the load. The agent holds production's share of the runner's CPUs, a
+// quarter, 1 at the least (DISPATCH_TEST_AGENT_PROCS), where production gives it 4 of a
+// container's 16: on a runner of 4 CPUs the 4 a server gives its agent would be every one. The test
+// logs the CPUs it runs on, the agent's GOMAXPROCS, and the spread of the read and of a round trip
+// to the database, idle and at the load, which says what a slower p99 is made of; and of each
+// window of reads, its 8 slowest reads by their time within it, each beside the server's collector
+// pauses and the /livez requests it met, and what the server's, the test's, the database's and the
+// agent's threads did in it (cpuWindow.describe).
 //
 // It skips on a kernel built with lazy preemption (preemptLazy). On GitHub's arm64 runners, whose
 // 7.0 kernel is such a build, the read's p99 at the load was 2.0 to 2.6 times its idle p99 in five
@@ -982,7 +997,7 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	server.createProject(t, "CPU", "CPU")
 	key, _ := server.createIssueIn(t, "CPU", "The issue the fixed read reads", "Context.\n")
 	read := "/api/v1/issues/" + key
-	server.timedReads(t, read, 100)
+	server.timedReads(t, read, 100, 0)
 	idleWindow := server.watchWindow(t, profiler, pid, read, cpuReads)
 	idleDatabase := server.databaseTimes(t, cpuReads)
 	idleThreads := threadPolicies(t, pid)
@@ -1041,8 +1056,8 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	slowest := slices.Max(append(tookOf(livez), 0))
 	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) and the agent with GOMAXPROCS=%s; the agent's threads by scheduling policy, idle %v and at its soft limit %v; the kernel: %s",
 		runtime.NumCPU(), runtime.GOMAXPROCS(0), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads, kernelFacts())
-	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times, the p99 of %d reads being the %d-th slowest); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
-		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), cpuReads, cpuReads-int(math.Ceil(0.99*cpuReads))+1,
+	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times; the idle p99 the %d-th slowest of %d reads, the p99 at the soft limit the %d-th slowest of %d); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
+		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), p99Rank(len(idleReads)), len(idleReads), p99Rank(len(busyReads)), len(busyReads),
 		spread(idleDatabase), spread(busyDatabase), len(livez), slowest)
 	t.Logf("the window with the agent idle: %s", idleWindow.describe(2*idle))
 	t.Logf("the window with the agent at its soft limit: %s", busyWindow.describe(2*idle))
