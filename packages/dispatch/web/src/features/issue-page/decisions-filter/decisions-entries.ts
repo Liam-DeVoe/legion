@@ -7,12 +7,13 @@ import { artifactBlocksQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
+import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { wordsOf } from "../../refs/tree-fragment";
 import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { EVENT_FRESH, issueAsksQuery, standsFailed } from "../useIssueTree";
+import { issueAsksQuery } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,

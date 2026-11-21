@@ -16,11 +16,11 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { EVENT_FRESH } from "./useIssueTree";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";

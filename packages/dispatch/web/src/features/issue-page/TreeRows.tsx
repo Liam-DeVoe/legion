@@ -5,6 +5,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
@@ -14,7 +15,6 @@ import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
-import { EVENT_FRESH } from "./useIssueTree";
 import { nodeEditable } from "./useNodeEditing";
 
 /**

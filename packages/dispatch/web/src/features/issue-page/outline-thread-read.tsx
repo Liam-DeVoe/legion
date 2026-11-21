@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 
 import { compareTimestamps } from "../../lib/timestamps";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import type { TreeNode } from "./issue-tree";
 import { conversationItem } from "./outline-writer";
-import { EVENT_FRESH } from "./useIssueTree";
 
 /** Where the outline marks one thread read: the issue it is on, the thread's id, and the time of
  *  the newest write in it the outline draws. */

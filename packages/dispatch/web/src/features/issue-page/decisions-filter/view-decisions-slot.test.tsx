@@ -26,6 +26,7 @@ import { useIsHuman, type WhoAmIReadOptions } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
@@ -36,7 +37,7 @@ import { EMPTY_STATE_LINES, type Preset, STATE_LINES } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { blockNodeId } from "../tree-drafts";
-import { EVENT_FRESH, issueAsksQuery } from "../useIssueTree";
+import { issueAsksQuery } from "../useIssueTree";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
   artifact,

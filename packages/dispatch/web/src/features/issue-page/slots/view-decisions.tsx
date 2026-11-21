@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import { issueAddress } from "../issue-address";
@@ -13,7 +14,6 @@ import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
-import { EVENT_FRESH } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
 import type { ViewSlotProps } from "./stage";
 

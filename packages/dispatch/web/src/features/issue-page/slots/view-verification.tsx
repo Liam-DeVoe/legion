@@ -5,12 +5,12 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
+import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
-import { EVENT_FRESH, standsFailed } from "../useIssueTree";
 import {
   type FailedRead,
   queryTyped,
