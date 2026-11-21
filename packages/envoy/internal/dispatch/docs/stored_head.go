@@ -78,7 +78,7 @@ func (s *Service) readStoredHead(ctx context.Context, artifactID string) (int64,
 // gains updates, so it holds them for every read after this. A room behind head is missing an
 // update another process stored that its catch-up has not applied yet (roomCatchUps), and a read
 // takes the stored document merged with the updates only that room holds (storedWithUpdates,
-// unstoredShare) rather than wait for that catch-up: what it reads is then that room's own text
+// unstoredParts) rather than wait for that catch-up: what it reads is then that room's own text
 // and what another process stored on top of it, so the read is older than neither. A browser's own
 // append is enough to leave a room judged behind - its commit raises the head and its cursor
 // takes that version a moment later (appendUpdate) - and the merge is why such a read answers

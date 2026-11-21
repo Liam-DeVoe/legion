@@ -500,7 +500,11 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
-	// the approval request the version moves, from changing under this transaction.
+	// the approval request the version moves, from changing under this transaction. It is waited
+	// for holding nothing of the pod's load concurrency: rebuildSource gave its grant back with the
+	// decoded history, once it had read the margin records and the tree this rebuild builds from,
+	// since every live write of the owner holds this lock while it waits for its fork's bytes
+	// (joinLiveWrite, coverFork).
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
@@ -536,8 +540,8 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	var tree, stored *pmdoc.Node
 	var margin map[string]any
 	if history != nil {
-		margin = marginRecords(history)
-		current, treeErr := treeOf(history)
+		margin = history.margin
+		current, treeErr := history.tree, history.treeErr
 		switch {
 		case errors.Is(treeErr, ErrDocNewerContent):
 			err = treeErr
@@ -570,7 +574,6 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			tree, margin, err = s.restoredFromRows(ctx, tx, artifactID, tree)
 		}
 	}
-	history = nil
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
@@ -701,15 +704,26 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes}, nil
 }
 
-// rebuildSource is what a rebuild of artifactID starts from: the stored history decoded (nil for
-// one that does not decode), the version that history stood at, which RebuildTx replaces only
-// while the head is still it, why it must be rebuilt - how near a cap it stands (nearACap), the
-// decode's refusal, or the room's cap the history parks past (parkedPastRoomCaps) - and the
-// clients it retires. A history whose runs do not apply in order has no bytes to decode, and
-// carries its version and clients itself (unappliedHistory). decided is why the room this server
-// held stood near a cap, which RebuildDocument judged and closed, or "" where no room decided: a
-// history that loads is judged here only then, and one that stands near no cap is
-// ErrDocumentLoads, which RebuildDocument answers with the latest saved version named.
+// rebuildHistory is what a rebuild builds from out of a stored history that decodes
+// (rebuildSource): its margin records (marginRecords) and its tree (treeOf), or why it has none.
+// They are read while the grant the history's decode took is still held, and the decoded
+// document itself goes with that grant: a rebuild holds nothing of it past them.
+type rebuildHistory struct {
+	margin  map[string]any
+	tree    *pmdoc.Node
+	treeErr error
+}
+
+// rebuildSource is what a rebuild of artifactID starts from: what it builds from out of the
+// stored history decoded (nil for one that does not decode), the version that history stood at,
+// which RebuildTx replaces only while the head is still it, why it must be rebuilt - how near a
+// cap it stands (nearACap), the decode's refusal, or the room's cap the history parks past
+// (parkedPastRoomCaps) - and the clients it retires. A history whose runs do not apply in order
+// has no bytes to decode, and carries its version and clients itself (unappliedHistory). decided
+// is why the room this server held stood near a cap, which RebuildDocument judged and closed, or
+// "" where no room decided: a history that loads is judged here only then, and one that stands
+// near no cap is ErrDocumentLoads, which RebuildDocument answers with the latest saved version
+// named.
 //
 // A history that parks past a room's cap is one no room loads and every read answers as one that
 // cannot load, so it is rebuilt, with that cap and what the history parks as its reason. It
@@ -719,10 +733,16 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 // against the room's caps, this read took such a history as one that loads, and the rebuild was
 // refused ErrDocumentLoads while its room failed every load (dispatch://INFRA-179, round 10).
 //
-// The read's fold, its decode (loadDecodedHistory) and the check's re-scan of it run under one
-// slot of the pod's load concurrency, whose wait ends with ctx, held here rather than by the read,
-// since the check runs inside it, and given back once the history is the rebuild's.
-func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string) (*crdt.Doc, persistence.Version, string, map[crdt.ClientID]uint64, error) {
+// The read's fold, its decode (loadDecodedHistory), the check's re-scan of it and the reads of its
+// margin records and its tree (readRebuildHistory) run under one slot of the pod's load
+// concurrency, whose wait ends with ctx, held here rather than by the read, since the check and
+// those reads run inside it, and given back once they are done, with the decoded document. The
+// reads add no wait: they read the document in memory, and take no lock, no connection and
+// nothing more of the pool. RebuildDocument reads nothing of the document after, and waits for the
+// owner's lock (lockArtifactOwner) holding nothing of the pool; the replacement it makes over the
+// tree there (keptReplacement) reads the tree alone, as a caller of storedWithUpdates reads the
+// tree it hands back once its grant is given back.
+func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string) (*rebuildHistory, persistence.Version, string, map[crdt.ClientID]uint64, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
 	read, err := loadDecodedHistory(ctx, s.persistence, artifactID, s.maxPendingItems, nil)
@@ -743,10 +763,10 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string)
 		history = newCappedDocumentCopy(s.maxPendingItems)
 	}
 	if decided != "" {
-		return history, read.loaded.Version, decided, historyClients(history), nil
+		return s.readRebuildHistory(artifactID, history), read.loaded.Version, decided, historyClients(history), nil
 	}
 	if parked := s.parkedPastRoomCaps(history); parked != nil {
-		return history, read.loaded.Version, parked.Error(), historyClients(history), nil
+		return s.readRebuildHistory(artifactID, history), read.loaded.Version, parked.Error(), historyClients(history), nil
 	}
 	// The grant loadDecodedHistory took on this slot, the stored history's weight - its bytes and
 	// the structs its headers declare (storedCopyWeight) - already covers the check's decode, so
@@ -758,7 +778,18 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string)
 	if !near {
 		return nil, 0, "", nil, ErrDocumentLoads
 	}
-	return history, read.loaded.Version, why, historyClients(history), nil
+	return s.readRebuildHistory(artifactID, history), read.loaded.Version, why, historyClients(history), nil
+}
+
+// readRebuildHistory reads what a rebuild builds from out of history, room's stored history as
+// rebuildSource decoded it, under the grant that decode took: its margin records and its tree.
+func (s *Service) readRebuildHistory(room string, history *crdt.Doc) *rebuildHistory {
+	tree, treeErr := treeOf(history)
+	read := &rebuildHistory{margin: marginRecords(history), tree: tree, treeErr: treeErr}
+	if s.afterRebuildRead != nil {
+		s.afterRebuildRead(room)
+	}
+	return read
 }
 
 // rebuiltSeed writes tree into a fresh document, as encodeDocumentTreeHolding does with held, the

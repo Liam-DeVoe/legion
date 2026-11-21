@@ -1215,11 +1215,7 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 		return nil, false, err
 	}
 	if !s.roomHoldsHead(live, head) {
-		unstored, err := s.unstoredShare(artifactID, live)
-		if err != nil {
-			return nil, false, err
-		}
-		tree, err := s.storedWithUpdates(ctx, artifactID, unstored)
+		tree, err := s.storedWithUpdates(ctx, artifactID, s.unstoredParts(artifactID, live))
 		return tree, true, err
 	}
 	tree, err = s.liveTree(artifactID, live)
@@ -2376,9 +2372,9 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 
 // storedWithUpdates is the tree of artifactID's stored document at its head with unstored merged
 // into it: the updates a resident room behind that head holds that the store may not
-// (unstoredShare), which a read of such a room takes (heldTree, docTree) so that it is older than
+// (unstoredParts), which a read of such a room takes (heldTree, docTree) so that it is older than
 // neither the store nor the room - the store holds what another process committed, and the merge
-// holds the keystroke whose append is still in flight. The caller reads that share before this
+// holds the keystroke whose append is still in flight. The caller reads those updates before this
 // load, so an append landing between the two only repeats here what the store already took. With
 // no such update this is the stored document itself, which is a version's (storedTree).
 //
@@ -2396,21 +2392,26 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // room budget had an opening for the caller's room: a read that loads a room meets the room's own
 // refusal of it.
 //
-// The load, the merge and the tree share one grant of the pod's load concurrency (withLoadSlot):
-// the grant ctx carries, a socket admission's for one (loadTree), or one of its own, given back
-// once the tree is built. The load takes it on the rows it folds and the state it decodes and
-// leaves it held (LoadDocument), so the document it hands back is counted while unstored is
-// merged into it and its tree is built (treeOf). A heavy unstored (heavyUpdateWeight) raises the
-// grant before the merge decodes any of it, by what its decode costs added to what the load left
-// the grant holding, as the room's persistence worker's read-back of a heavy update takes; a
-// lighter one takes nothing, as a keystroke's apply takes nothing. The raise waits within ctx, and
-// a wait ctx ends is ctx's error. It waits holding nothing the load's take did not: by then the
-// load has ended its read transaction and given back its buffered fold's slot (foldRead), and
-// what the caller holds - the connection and the owner's lock of the transaction it is joined to
-// (joinRead), and docTree's opening of the room budget - it held across that take as well. A
-// version's caller, which holds the document's advisory lock, merges nothing and so never raises
-// it.
-func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored []byte) (*pmdoc.Node, error) {
+// The load, the merge, its apply and the tree share one grant of the pod's load concurrency
+// (withLoadSlot): the grant ctx carries, a socket admission's for one (loadTree), or one of its
+// own, given back once the tree is built. The load takes it on the rows it folds and the state it
+// decodes and leaves it held (LoadDocument), so the document it hands back is counted while
+// unstored is merged and applied to it and its tree is built (treeOf). The merge decodes every
+// struct of every update it merges (crdt.MergeUpdatesV1), so where any of them is heavy it first
+// raises the grant by what their decodes cost, summed (mergeWeight), added to what the load left
+// the grant holding; the apply then decodes what the merge made, and where that is heavy
+// (heavyUpdateWeight) - many light updates can merge into one that is not - it raises the grant by
+// what that decode costs past the merge's raise, as the room's persistence worker's read-back of a
+// heavy update takes. Lighter updates take nothing at either, as a keystroke's apply takes nothing.
+// Each raise waits within ctx, and a wait ctx ends is ctx's error. It waits holding nothing the
+// load's take did not: by then the load has ended its read transaction and given back its buffered
+// fold's slot (foldRead), and what the caller holds - the connection and the owner's lock of the
+// transaction it is joined to (joinRead), docTree's opening of the room budget, and a socket
+// admission's count on its room's state (holdForAdmission), which nothing waits for - it held
+// across that take as well. docTree takes unstored inside the room's Apply and calls this only
+// once that Apply has returned, so no wait here holds the room. A version's caller, which holds
+// the document's advisory lock, merges nothing and so never raises it.
+func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored [][]byte) (*pmdoc.Node, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
 	loaded, err := s.persistence.LoadDocument(ctx, artifactID)
@@ -2428,12 +2429,22 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 		doc = newDocumentCopy()
 	}
 	if len(unstored) > 0 {
-		if weight, heavy := heavyUpdateWeight(unstored); heavy {
-			if err := slot.raise(ctx, weight); err != nil {
+		merge := mergeWeight(unstored)
+		if merge > 0 {
+			if err := slot.raise(ctx, merge); err != nil {
 				return nil, err
 			}
 		}
-		if err := crdt.ApplyUpdateV1(doc, unstored, nil); err != nil {
+		merged, err := mergeUpdates(unstored)
+		if err != nil {
+			return nil, err
+		}
+		if apply, heavy := heavyUpdateWeight(merged); heavy && apply > merge {
+			if err := slot.raise(ctx, apply-merge); err != nil {
+				return nil, err
+			}
+		}
+		if err := crdt.ApplyUpdateV1(doc, merged, nil); err != nil {
 			return nil, fmt.Errorf("%w: merge a room's not-yet-stored updates into the stored document: %w", ErrServiceUnavailable, err)
 		}
 	}

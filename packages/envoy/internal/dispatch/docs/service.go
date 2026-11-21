@@ -214,6 +214,10 @@ type Service struct {
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
 	// one window where the copy no longer stands for the room.
 	afterReadCopy func(room string)
+	// afterRebuildRead runs once a rebuild's source has read the margin records and the tree of
+	// the stored history it decoded (readRebuildHistory), before it gives back the grant that
+	// decode took. Nil outside tests; tests use it to read what the pool holds as those reads end.
+	afterRebuildRead func(room string)
 	// afterCaptureAuthorsTake runs after a room-backed version capture has bounded the in-flight
 	// credits it lists and before it reads the room. Nil outside tests; tests use it to edit the
 	// room in that window.

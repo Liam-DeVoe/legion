@@ -293,14 +293,14 @@ func TestACompactedDocumentOfAParkedRowStoredBeforeTheKeystrokesItCoversHoldsThe
 	requireTheKeystrokes(t, "LoadDocument after the compaction ("+path+")", loaded.Doc, writer)
 }
 
-// A share of a room's not-yet-stored updates (unstoredShare) merges them for a reader - a read of
-// a room behind the head (storedWithUpdates) and another process's room query - and it cannot
-// merge a parked row: a commit's parked bytes leave the room's update log in Parked, beside an
-// Update holding only what the commit integrated (classifyDrained), and the commit that parks the
-// row and nothing else lists no update at all. So the share holds the keystrokes, never the
-// parked struct, and the stored document it is applied to reads whole. Here the keystrokes typed
-// past the parked row are held from the store, so the share is all of them: ten, since a room
-// whose appends are held did not take 997 of a browser's frames within the wait.
+// A share of a room's not-yet-stored updates (unstoredShare, unstoredParts) merges them for a
+// reader - a read of a room behind the head (storedWithUpdates) and another process's room query -
+// and it cannot merge a parked row: a commit's parked bytes leave the room's update log in Parked,
+// beside an Update holding only what the commit integrated (classifyDrained), and the commit that
+// parks the row and nothing else lists no update at all. So the share holds the keystrokes, never
+// the parked struct, and the stored document they are applied to reads whole. Here the keystrokes
+// typed past the parked row are held from the store, so the share is all of them: ten, since a
+// room whose appends are held did not take 997 of a browser's frames within the wait.
 func TestAShareOfTheRoomsUnstoredUpdatesCarriesNoParkedRow(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -331,7 +331,7 @@ func TestAShareOfTheRoomsUnstoredUpdatesCarriesNoParkedRow(t *testing.T) {
 		return strings.Count(currentLiveMarkdown(t, service, artifactID), "a") == typed
 	})
 
-	share, err := service.unstoredShare(artifactID, live)
+	share, err := service.unstoredShare(context.Background(), artifactID, live)
 	if err != nil {
 		t.Fatalf("share the room's unstored updates: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestAShareOfTheRoomsUnstoredUpdatesCarriesNoParkedRow(t *testing.T) {
 		t.Fatalf("the share carries the typist's clocks %d to %d, past the %d the typist wrote: it carries the parked struct",
 			from[parkedFirstTypist], to[parkedFirstTypist], typing.writer.StateVector()[parkedFirstTypist])
 	}
-	tree, err := service.storedWithUpdates(context.Background(), artifactID, share)
+	tree, err := service.storedWithUpdates(context.Background(), artifactID, service.unstoredParts(artifactID, live))
 	if err != nil {
 		t.Fatalf("read the stored document with the share: %v", err)
 	}

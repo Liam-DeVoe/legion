@@ -549,8 +549,8 @@ type LoadedDocument struct {
 // whatever Load's encoding of it keeps (stateThrough). A history that does not decode is
 // ErrDocumentUnloadable. Its fold and decode share one grant of the pod's load concurrency,
 // weighed on the rows they fold: the grant ctx carries, which its owner gives back, so a caller
-// that carries one holds the document under it (storedWithUpdates), or one of its own, given back
-// as it returns the document to its caller.
+// that carries one holds the document under it (storedWithUpdates, foldDocument), or one of its
+// own, given back as it returns the document to its caller.
 func (p *PgVersioned) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
 	ctx, _, done := withLoadSlot(ctx)
 	defer done()

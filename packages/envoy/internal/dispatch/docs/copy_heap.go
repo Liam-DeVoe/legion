@@ -27,22 +27,26 @@ import (
 // The first is one whole-document decode, held while it decodes: a room's load (its fold of a
 // history of several updates, the copy LoadDoc decodes, the load hook's decode into the room,
 // bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead) - a
-// read of a room behind the stored head keeps its fold's grant while it merges what that room has
-// not stored into the document and builds its tree, raised where that merge is heavy
-// (storedWithUpdates) - the replica's build from a base (renderedReplica.start), the copy a server
-// write's decode-cap count takes (structsAfter), a rebuild's decodes (its check of a resident room
-// and of the stored history, nearACap, rebuildSource, RebuildTx), the read-back of each heavy
-// update a room's persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit,
-// heavyUpdateWeight), a published write's decode of the stored document it judges the write's
-// text on (lostAtStoredHead) and the append gate's fold of a history replaced under a room and
-// its decode of the run onto the document that fold makes (storedHistoryHolds), which share one
-// grant holding that document from its first row until the run has been judged against it. The
-// replica's build may not wait, so it takes its bytes only where they are free at once and
-// otherwise decodes beside the pool's holders (holdFreeLoad); the read-back of a lighter update
-// takes nothing, as its apply takes nothing, and a read's merge of a lighter one nothing more
-// (heavyUpdateWeight); every other decode waits for its bytes. What each leaves behind is its
-// owner's: a room's two copies are charged by the room budget, a fold's state goes back to its
-// caller, and a read-back's copy and the gate's document are dropped once their decodes are done.
+// cold read keeps its fold's grant while it reads the tree of the document it folded, renders it
+// and walks it (foldDocument, foldLoaded), and a read of a room behind the stored head keeps it
+// while it merges what that room has not stored, applies the merge to the document and builds its
+// tree, raised where that merge or that apply is heavy (storedWithUpdates) - the replica's build
+// from a base (renderedReplica.start), the merge of a room's not-yet-stored updates a share
+// answers another process with (unstoredShare), the copy a server write's decode-cap count takes
+// (structsAfter), a rebuild's decodes (its check of a resident room and of the stored history,
+// nearACap, rebuildSource, which keeps its grant while it reads the history's margin records and
+// tree, RebuildTx), the read-back of each heavy update a room's persistence worker stores
+// (StoreUpdateStored, AppendUpdatesWithCredit, heavyUpdateWeight), a published write's decode of
+// the stored document it judges the write's text on (lostAtStoredHead) and the append gate's fold
+// of a history replaced under a room and its decode of the run onto the document that fold makes
+// (storedHistoryHolds), which share one grant holding that document from its first row until the
+// run has been judged against it. The replica's build may not wait, so it takes its bytes only
+// where they are free at once and otherwise decodes beside the pool's holders (holdFreeLoad); the
+// read-back of a lighter update takes nothing, as its apply takes nothing, and a merge of lighter
+// ones nothing more (heavyUpdateWeight, mergeWeight); every other decode waits for its bytes. What
+// each leaves behind is its owner's: a room's two copies are charged by the room budget, a fold's
+// state goes back to its caller, and a read-back's copy and the gate's document are dropped once
+// their decodes are done.
 //
 // The second is a live write's fork, held for the fork's whole life rather than for a decode
 // alone: from the moment before the fork is built - cloned from the room's replica (warmFork,
@@ -106,12 +110,14 @@ const unslottedApplyStructs = unslottedApplyBytes / bytesOfHeapAStruct
 //
 // Two decodes of a browser's update make this judgement: its apply's, on the frame
 // (Service.weighPeerUpdate), and the room's persistence worker's, on the commit it reads back as
-// it stores it (StoreUpdateStored, AppendUpdatesWithCredit); so does a read's merge of what a room
-// behind the stored head has not stored yet (storedWithUpdates). A keystroke takes nothing at any
-// of them, so its store never waits behind the heavy takers queued for the pool, as its apply
-// never does. The room's replica decodes the commit's update too, and makes no judgement: it
-// applies it to its own document (renderedReplica.applyUpdate) in the room's update observer,
-// which for a heavy apply's commit runs inside that apply's grant and gives it back as it ends
+// it stores it (StoreUpdateStored, AppendUpdatesWithCredit); so do the merges of what a room has
+// not stored yet, on each update they merge (mergeWeight) - a read's of a room behind the stored
+// head (storedWithUpdates), which judges its apply of the merge to the stored document too, and a
+// share's answered to another process (unstoredShare). A keystroke takes nothing at any of them,
+// so its store never waits behind the heavy takers queued for the pool, as its apply never does.
+// The room's replica decodes the commit's update too, and makes no judgement: it applies it to its
+// own document (renderedReplica.applyUpdate) in the room's update observer, which for a heavy
+// apply's commit runs inside that apply's grant and gives it back as it ends
 // (roomApplies.releaseGrant), or in a read at an exact commit position that drains the room's log
 // first (renderedReplica.atPoint), and takes nothing of the pool of its own for it, heavy update
 // or not.
@@ -136,6 +142,25 @@ func holdUpdateLoad(ctx context.Context, update []byte) func() {
 		return holdServerLoad(ctx, weight)
 	}
 	return func() {}
+}
+
+// mergeWeight is what a merge of updates, the ones a resident room holds that the store may not
+// (unstoredParts), takes of the pod's load concurrency: the merge decodes every struct of every
+// one of them (crdt.MergeUpdatesV1), so it takes what each heavy one's decode costs, summed
+// (heavyUpdateWeight), up to one slot, as raise caps a grant, and nothing for a lighter one, whose
+// apply took nothing either. A share of lighter updates alone takes nothing, and so does one of a
+// single update, which mergeUpdates hands back as it is, decoding nothing.
+func mergeWeight(updates [][]byte) int64 {
+	if len(updates) < 2 {
+		return 0
+	}
+	var weight int64
+	for _, update := range updates {
+		if each, heavy := heavyUpdateWeight(update); heavy {
+			weight += each
+		}
+	}
+	return min(weight, loadSlotBytes)
 }
 
 // loadSlotsName is what the slots are logged as (logLoadSlot).

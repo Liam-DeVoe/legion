@@ -1142,12 +1142,15 @@ func (s *Service) docTree(ctx context.Context, artifactID string) (*pmdoc.Node, 
 	}
 	var tree *pmdoc.Node
 	var treeErr error
-	var unstored []byte
+	var unstored [][]byte
 	behind := false
 	err = s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
 		if !s.roomHoldsHead(doc, head) {
+			// The updates are taken here, as of the moment the head was compared, and merged
+			// only once the Apply has returned (storedWithUpdates): the merge may wait for the
+			// pod's load concurrency, and a wait in here would hold the room in use all along.
 			behind = true
-			unstored, treeErr = s.unstoredShare(artifactID, doc)
+			unstored = s.unstoredParts(artifactID, doc)
 			return
 		}
 		tree, treeErr = s.liveTree(artifactID, doc)

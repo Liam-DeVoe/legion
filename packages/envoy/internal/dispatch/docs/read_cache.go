@@ -313,10 +313,11 @@ type coldFold struct {
 //
 // The fold is the document's: it runs on a context no request's end cancels, bounded by the
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
-// the fold to the others. Only the read's own context decides that it ended. A fold that fails
-// fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
-// unless the history does not decode or parks past a room's cap (parkedPastRoomCaps), which is
-// ErrDocumentUnloadable, the state a rebuild repairs.
+// the fold to the others. Only the read's own context decides that it ended. The fold holds one
+// grant of the pod's load concurrency from its load until its rendering is done (foldDocument). A
+// fold that fails fails the room, as a failed room load does, and reaches each read as
+// ErrServiceUnavailable, unless the history does not decode or parks past a room's cap
+// (parkedPastRoomCaps), which is ErrDocumentUnloadable, the state a rebuild repairs.
 func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
 	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
 	if err != nil {
@@ -362,6 +363,14 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 // can load, so it is ErrDocumentUnloadable here as a history ygo refuses the bytes of is, and
 // logged (parkedPastCapReadLine): read under the service's cap alone, every read served it while
 // every socket that opened it met its room's failed load.
+// The load, the read of its tree, the rendering and the walk of it share one grant of the pod's
+// load concurrency (withLoadSlot), held until the fold returns: the load takes it on the rows it
+// folds and the state it decodes and leaves it held (LoadDocument), so the document it hands back
+// is counted while foldLoaded reads, renders and walks it, and cold reads of different documents
+// fold side by side only as far as the pool holds their documents. The one wait for it is the
+// load's own (foldRead), bounded by coldReadTimeout; what runs after the load holds the grant
+// waiting for nothing, takes no connection and nothing more of the pool, and takes the cache's
+// lock only to store the rendering.
 // Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
 // unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
 // panicking on the request's own goroutine would fail that one request.
@@ -374,6 +383,8 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	}()
 	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
 	defer cancel()
+	foldCtx, _, done := withLoadSlot(foldCtx)
+	defer done()
 	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && errors.Is(foldCtx.Err(), context.DeadlineExceeded) {
@@ -393,15 +404,16 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	return fold, nil
 }
 
-// foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone: its
-// tree read once and validated once (pmdoc.ReadUnshared) and rendered without validating it again
-// (buildDocumentRead). A tree the read refuses is the fold's treeErr, the read's error through
-// documentSchemaError as treeOf gives it; a tree the rendering refuses is the fold's tree without
-// a read, and renderErr is the rendering's refusal. A loaded state without a document is the
-// empty fold. A rendered fold also answers whether the state stands near the decode cap
-// (documentRead.nearDecodeCap), from the decoded document's struct total and a floor under its
-// whole-text count, a walk of the tree it rendered (wholeTextWriteFloor), which only the fold
-// holds; it writes nothing and encodes nothing (NearDecodeCap).
+// foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone, still
+// under the grant its load took (foldDocument): its tree read once and validated once
+// (pmdoc.ReadUnshared) and rendered without validating it again (buildDocumentRead). A tree the
+// read refuses is the fold's treeErr, the read's error through documentSchemaError as treeOf gives
+// it; a tree the rendering refuses is the fold's tree without a read, and renderErr is the
+// rendering's refusal. A loaded state without a document is the empty fold. A rendered fold also
+// answers whether the state stands near the decode cap (documentRead.nearDecodeCap), from the
+// decoded document's struct total and a floor under its whole-text count, a walk of the tree it
+// rendered (wholeTextWriteFloor), which only the fold holds; it writes nothing and encodes nothing
+// (NearDecodeCap).
 func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, renderErr error) {
 	if loaded.Doc == nil {
 		return coldFold{}, nil
