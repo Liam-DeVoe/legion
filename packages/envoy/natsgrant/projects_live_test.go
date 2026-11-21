@@ -294,15 +294,14 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 
 // The boundary of WithinProjects, which its doc names: the grant holds a daemon to its consumers
 // by name, not by what they filter. A legion-go-PUB-dispatch durable that already exists on every
-// project's issue events, as today's daemon opens it (packages/daemon/internal/intake/consume.go,
-// which also gives that durable the repository mapping's subject; the issue filter alone shows the
-// same leak), is read whole through PUB's held grant: the held PUB daemon reads the consumer's info
-// and pulls PRIV's issue event through its own consumer, whose info, pull and acknowledgements
-// name the consumer only. Once the held daemon updates that durable in place to PUB's own lane, as
-// the daemon that opens its consumers per project does at boot, it pulls PUB's events alone. This
-// row pins the boundary rather than a protection: a read that refuses to hold a daemon while any
-// of its consumers is wider than its own lane belongs to the step that lists daemon entries held
-// to projects.
+// project's issue events, as today's daemon opens it (packages/daemon/internal/intake/consume.go),
+// is read whole through PUB's held grant: the held PUB daemon reads the consumer's info and pulls
+// PRIV's issue event through its own consumer, whose info, pull and acknowledgements name the
+// consumer only. Once the held daemon updates that durable in place to PUB's own lane, as the
+// daemon that opens its consumers per project does at boot, it pulls PUB's events alone. This row
+// pins the boundary rather than a protection: a read that refuses to hold a daemon while any of
+// its consumers is wider than its own lane belongs to the step that lists daemon entries held to
+// projects.
 func TestWithinProjectsReadsAWideConsumerWhole(t *testing.T) {
 	const identity = "legion-daemon-PUB-wide"
 	consumer := "legion-go-PUB-dispatch"
