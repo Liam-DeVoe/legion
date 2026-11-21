@@ -100,12 +100,14 @@ function take(held: Held, markdown: string, tree: DisplayTree | undefined): void
  * Where a page holds the description in a card of its own (`boxed={false}`), the card is that
  * box: the editor draws no border, only the focus ring, and its words start where the card's do.
  *
- * The stored description a reader who may not write it reads is drawn from the tree the server
- * read it into (`descriptionTree`), as every other stored text is, so no reader's browser parses
- * it: Go's reading holds marks nested past its bound as text, where the browser's parser spends
- * the square of their depth. A writer's editor takes it in as its markdown, since what that
- * editor writes back is its own reading of the markdown with the writer's edits in it (`take`,
- * `save`); so does a reader's where the answer carries no tree.
+ * The stored description is drawn from the tree the server read it into (`descriptionTree`), as
+ * every other stored text is, in a writer's editor as in a reader's who may not write it, so no
+ * reader's browser parses it: Go's reading holds marks nested past its bound as text, where the
+ * browser's parser spends the square of their depth. Another person's text that arrives is taken
+ * in from its tree as well, and what a writer's editor writes back is its own reading of that
+ * tree with the writer's edits in it (`take`, `save`). The editor takes in markdown only where
+ * the answer carries no tree, and for a text of the reader's own the server has not stored (one
+ * put back from beside the editor, `putBack`).
  */
 export function PriorityDescription({
   boxed = true,
@@ -144,11 +146,8 @@ export function PriorityDescription({
   const [ownKept, setOwnKept] = useState(NOTHING_KEPT);
   const kept = keptByPage ?? ownKept;
   const setKept = onKeptChange ?? setOwnKept;
-  // The tree the editor draws the server's text from (`draw`): the server's reading of it for a
-  // reader who may not write it, and none for a writer, whose editor takes in its markdown.
-  const reading = canWrite ? undefined : descriptionTree;
-  const latest = useRef({ canWrite, description, kept, onSave, reading, setKept });
-  latest.current = { canWrite, description, kept, onSave, reading, setKept };
+  const latest = useRef({ canWrite, description, descriptionTree, kept, onSave, setKept });
+  latest.current = { canWrite, description, descriptionTree, kept, onSave, setKept };
   // The handle once the editor holds the description: its name, its access and the references
   // drawn over its text follow it.
   const [editor, setEditor] = useState<EditorHandle | undefined>(undefined);
@@ -203,7 +202,7 @@ export function PriorityDescription({
         return;
       }
       const current: Held = { base: "", handle: created, sent: [], timer: undefined };
-      take(current, latest.current.description, latest.current.reading);
+      take(current, latest.current.description, latest.current.descriptionTree);
       seen.current = latest.current.description;
       held.current = current;
       doc.on("update", onUpdate);
@@ -254,7 +253,7 @@ export function PriorityDescription({
     // text it could not draw as the editor closes. One it takes in is held in its own reading.
     current.base = markdown;
     try {
-      draw(current.handle, description, latest.current.reading);
+      draw(current.handle, description, latest.current.descriptionTree);
       current.base = current.handle.getMarkdown();
     } catch (error) {
       setFailure({
@@ -279,8 +278,9 @@ export function PriorityDescription({
     return () => window.removeEventListener("pagehide", leave);
   }, []);
 
-  // One of the reader's kept texts, put back in the editor and written at once. With no editor
-  // drawn - another person's text it could not draw - it is written as it is.
+  // One of the reader's kept texts, put back in the editor from its markdown, since the server
+  // holds no reading of it, and written at once. With no editor drawn - another person's text it
+  // could not draw - it is written as it is.
   const putBack = (text: string) => {
     setKept(NOTHING_KEPT);
     const current = held.current;

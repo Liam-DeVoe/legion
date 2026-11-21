@@ -336,20 +336,48 @@ function countPageParses(): { parsed: number[]; restore: () => void } {
   };
 }
 
-test("a stored description is drawn from the server's tree, and nothing on the page or in the parse worker parses it", async () => {
+test.each([
+  ["a reader who may not write it, read-only", false],
+  ["a person who may write it, in the editor they write in", true],
+] as const)("a stored description is drawn from the server's tree for %s, and nothing on the page or in the parse worker parses it", async (_reader, canWrite) => {
   const worker = installFakeParseWorker();
   const { parsed, restore } = countPageParses();
   try {
-    const { editor, imports } = described(NESTED, false, NESTED_TREE);
-    // A reader who may not write it reads it in the editor, read-only, which builds the tree it
-    // is given with no parser of its own: its markdown taken in instead is the editor's parse.
-    const { box } = await editor();
+    const { editor, imports, onSave } = described(NESTED, canWrite, NESTED_TREE);
+    // The editor builds the tree it is given with no parser of its own, for a reader who may write
+    // it as for one who may not: its markdown taken in instead is the editor's parse.
+    const { box, handle } = await editor();
+    expect(box.getAttribute("contenteditable")).toBe(String(canWrite));
     expect(box.textContent).toBe(NESTED);
     expect(box.querySelector("em, strong")).toBeNull();
     await act(() => flushTasks());
     expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
     expect(parsed).toEqual([]);
     expect(imports).toEqual([]);
+    // The text it took in is the server's, and no edit of the reader's: leaving writes nothing.
+    act(() => handle.view.dom.blur());
+    expect(onSave).not.toHaveBeenCalled();
+  } finally {
+    restore();
+  }
+});
+
+test("another person's text arrives in a writer's editor from the server's tree, and nothing on the page parses it", async () => {
+  const stored = "Speedruns run again.";
+  const { editor, imports, onSave, rerender } = described(stored, true, displayTree(stored));
+  const { box, handle } = await editor();
+  const { parsed, restore } = countPageParses();
+  try {
+    // Another person writes the nested text, and the server answers with its reading of it.
+    rerender(NESTED, true, NESTED_TREE);
+    await waitFor(() => expect(box.textContent).toBe(NESTED));
+    expect(box.querySelector("em, strong")).toBeNull();
+    expect(parsed).toEqual([]);
+    expect(imports).toEqual([]);
+    // What the editor took in is the server's text, and no edit of the reader's: leaving the
+    // editor writes nothing.
+    act(() => handle.view.dom.blur());
+    expect(onSave).not.toHaveBeenCalled();
   } finally {
     restore();
   }

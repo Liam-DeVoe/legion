@@ -38,6 +38,26 @@ function priorityPlaces(
   return new Map(rows.map((row, index) => [row.id, { place: index + 1, title: row.title }]));
 }
 
+/** The name of the control that places `issueKey` under a priority while the issue advances
+ *  none, as the picker's trigger carries it in a row of the new issue page's Details: the words
+ *  it draws there, the joining word and the issue's key ("Add a priority to CORE-1"). The new
+ *  issue page's one add control finds it by that name. The page's words (`add_priority`,
+ *  `control_name_to`) are written out here as a literal, as `main` writes them, since no control
+ *  imports the page's word list (`components/tooltips.tsx`). */
+export function addPriorityControlName(issueKey: string): string {
+  return `Add a priority to ${issueKey}`;
+}
+
+/** The name of the picker's trigger on `issueKey`'s line: the add name (`addPriorityControlName`)
+ *  where the trigger `adds` - in a row of the new issue page's Details while the issue advances
+ *  none, where it draws "Add a priority" - and "Edit priorities" everywhere else, since there it
+ *  adds and takes off alike, as the labels' trigger is named "Edit labels". That is the page's
+ *  word `edit_priorities` (`shared-writes.test.ts` holds the two equal), written out here for the
+ *  same reason. The hand-offs of Details find the trigger by this name (`usePriorityHandOffs`). */
+export function priorityTriggerName(issueKey: string, adds: boolean): string {
+  return adds ? addPriorityControlName(issueKey) : "Edit priorities";
+}
+
 /** The issue's own set while the picker is open, and the read it was drawn from: the set the
  *  close compares it with, and the revision the close's write carries. */
 interface Draft {
@@ -82,7 +102,7 @@ interface Draft {
  * that it is inherited after it, and the line's own label before them all. There `inRow` draws
  * it as the value of a row of Details, which draws the label: no `Advances` of its own, a line
  * that wraps and cuts no word, and "Add a priority" on the picker's trigger while the issue
- * advances none.
+ * advances none, which is then named by `addPriorityControlName`.
  */
 export function IssuePriorityLine({
   className,
@@ -210,17 +230,10 @@ export function IssuePriorityLine({
   // Its name then begins with the words it draws and ends with the joining word and the issue's
   // key ("Add a priority to CORE-1"), so a voice user says what they read (WCAG 2.5.3 Label in
   // Name). Everywhere else it draws "+" and is named "Edit priorities", as the labels' trigger is
-  // named "Edit labels": inside `NoTooltips` by the page's word (`edit_priorities`), and outside
-  // in the same words as a literal, since no control imports the page's word list
-  // (`components/tooltips.tsx`).
+  // named "Edit labels". `priorityTriggerName` gives both names.
   const addWords =
     page !== null && inRow && advances.length === 0 ? page.CONTROL_LABELS.add_priority : null;
-  const triggerName =
-    page === null
-      ? "Edit priorities"
-      : addWords === null
-        ? page.CONTROL_LABELS.edit_priorities
-        : `${addWords} ${page.CONTROL_LABELS.control_name_to} ${issue.key}`;
+  const triggerName = priorityTriggerName(issue.key, addWords !== null);
 
   const picker = (
     <MultiSelect

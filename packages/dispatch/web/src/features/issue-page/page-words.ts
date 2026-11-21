@@ -799,8 +799,9 @@ export const CONTROL_LABELS = freeze({
    *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
   /** What the priorities' picker trigger draws in a row of Details while the issue advances
-   *  none, and the words its name begins with, which `IssuePriorityLine.tsx` ends with
-   *  `control_name_to` and the issue's key ("Add a priority to CORE-1"). */
+   *  none, and the words its name begins with, which `IssuePriorityLine.tsx`'s
+   *  `addPriorityControlName` writes out with `control_name_to` and the issue's key ("Add a
+   *  priority to CORE-1"). */
   add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
    *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
@@ -852,9 +853,9 @@ export const CONTROL_LABELS = freeze({
   control_name_of: "of",
   /** The word between the labels control's `add_label` and the issue's key, in the name it
    *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
-   *  (`labelsControlName`); and between `add_priority` and the key, in the name of the
-   *  priorities' trigger in a row of Details while the issue advances none
-   *  (`IssuePriorityLine`). */
+   *  (`labelsControlName`). `IssuePriorityLine.tsx`'s `addPriorityControlName` writes this word
+   *  out as a literal in the name of the priorities' trigger in a row of Details while the issue
+   *  advances none ("Add a priority to CORE-1"). */
   control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
@@ -924,9 +925,9 @@ export const CONTROL_LABELS = freeze({
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
   /** The name of the priorities' picker trigger, which adds one and takes one off alike, as the
-   *  labels' control beside it is named "Edit labels". `IssuePriorityLine.tsx` reads it inside
-   *  `NoTooltips` and says the same words outside it; in a row of Details, while the issue
-   *  advances none, the trigger is named by `add_priority` instead. */
+   *  labels' control beside it is named "Edit labels". `IssuePriorityLine.tsx`'s
+   *  `priorityTriggerName` says the same words inside `NoTooltips` and outside it; in a row of
+   *  Details, while the issue advances none, the trigger is named by `add_priority` instead. */
   edit_priorities: "Edit priorities",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",

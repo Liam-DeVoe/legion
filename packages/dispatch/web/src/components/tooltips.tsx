@@ -40,7 +40,6 @@ export interface PageWords {
     | "components_set"
     | "control_name_of"
     | "control_name_to"
-    | "edit_priorities"
     | "external_link_unsafe"
     | "github_checks"
     | "no_repository"

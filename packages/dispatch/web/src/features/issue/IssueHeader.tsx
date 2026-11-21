@@ -29,6 +29,7 @@ import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
   bgTransparent,
@@ -457,6 +458,11 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
+                  // A key that ends an input method's composition - the Enter that takes the word
+                  // composed, the Escape that drops it - is no key of the reader's: it neither
+                  // writes the title nor closes its editor. Safari sends it after its
+                  // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
+                  if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
