@@ -28,6 +28,7 @@ import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../ap
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -349,7 +350,8 @@ export function IssueHeader({
     },
   });
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
+    // The Enter that confirms an input method's word is the input method's, not the save.
+    if (event.key === "Enter" && !inputMethodKey(event)) {
       event.currentTarget.blur();
     }
   };

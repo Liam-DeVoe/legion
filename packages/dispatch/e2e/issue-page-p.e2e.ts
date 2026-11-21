@@ -16,6 +16,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { expectRootFont, LARGE_FONT, setDefaultFont, XL } from "./default-font";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -3739,4 +3740,55 @@ test("an approval entry's a approves its own document when an earlier entry also
       await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     }
   );
+});
+
+// Each action of the header's menu keeps the 44 px touch floor wherever the floor applies. The
+// floor switches at `xl` in rem (`styles.css`), so a reader whose default font is 20 px has it up
+// to 1599 px, and the header's own rule gives each action the classes it draws (`revert-layer`):
+// an action whose class lifted its floor at 1280 px (`min-[1280px]:min-h-0`, as `main` drew it)
+// was 7 px of padding above and below its 25 px line, about 39 px, from 1280 to 1599 px, while
+// every other control kept 44. A button the row adds to the page is the premise: it takes the
+// floor at the same width, so the row reads the floor as applying there.
+// SLOW(>=2s): not yet timed; one seeded header loaded at a 20 px default font and its menu
+// opened, as the 20 px row of `issue-page-g.e2e.ts` loads its issue.
+test("at a 20 px default font just under xl, each action of the header's menu keeps the 44 px floor", async ({
+  browser,
+}) => {
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await setDefaultFont(page, LARGE_FONT);
+    await page.setViewportSize(viewportAt(XL * LARGE_FONT - 1));
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    await expectRootFont(page, LARGE_FONT);
+    const floor = await page.evaluate(() => {
+      const probe = document.createElement("button");
+      document.body.append(probe);
+      const minHeight = getComputedStyle(probe).minHeight;
+      probe.remove();
+      return minHeight;
+    });
+    expect(floor, "a button takes the 44 px floor at 1599 px with a 20 px default font").toBe(
+      "44px"
+    );
+    const control = issueHeader(page).getByRole("button", {
+      exact: true,
+      name: CONTROL_LABELS.issue_actions,
+    });
+    await control.click();
+    await expect(control, "the actions control opened no menu at 1599 px").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    const heights = await control.evaluate((opener) => {
+      const menu = document.getElementById(opener.getAttribute("aria-controls") ?? "");
+      return [...(menu?.querySelectorAll("button") ?? [])].map(
+        (action) => action.getBoundingClientRect().height
+      );
+    });
+    expect(heights.length, "the actions menu draws no action at 1599 px").toBeGreaterThan(0);
+    expect(
+      heights.filter((height) => height < 44 - 0.5),
+      "an action of the actions menu is under 44 px at 1599 px with a 20 px default font"
+    ).toEqual([]);
+  });
 });

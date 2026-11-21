@@ -6,7 +6,8 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the composition row sends
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -535,6 +536,38 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
     await user.keyboard("{ArrowUp}");
     await user.keyboard("{Enter}");
 
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/spec?q=astrolabe"
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It opens nothing; a plain Enter after it opens the
+// highlighted row.
+test("the Enter that confirms an input method's word opens no row, and a plain Enter opens the highlighted one", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const [first] = screen.getAllByRole("option");
+    if (first === undefined) throw new Error("the palette listed no option");
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+    const route = screen.getByTestId("current-route").textContent;
+
+    // Keys user-event cannot mark as an input method's, read by whether the box took them.
+    expect(fireEvent.keyDown(input, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    expect(screen.getByTestId("current-route").textContent).toBe(route);
+
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
     );

@@ -74,9 +74,11 @@ import { asUser } from "./users";
 // worker, one retry), each failing attempt took 22.9 to 59.4 s, the longest the per-frame
 // count's row: its seeding, its whole draw and `theBuildWithinMs`. Twice that, less the 34.5 s
 // that row costs when it passes, is 84.3 s more on one worker. A page that never opens its
-// editor fails six of this file's eight rows, the first and the refused writer's passing: their
+// editor failed six of this file's eight rows, the first and the refused writer's passing: their
 // twelve attempts took 530.9 s, which shared four ways and less the 126.2 s those rows cost
-// passing is about 101 s more per worker.
+// passing is about 101 s more per worker. The first row now lets its socket through at its end
+// and waits `theBuildWithinMs` for the editor's first batch, so such a page fails it too: two
+// more attempts, each its seeding, its draw and 45 s, which no run has measured yet.
 
 /** How long a row waits for the landmark half-way down the smaller document to be drawn. */
 const theLandmarkWithinMs = 30_000;
@@ -104,8 +106,9 @@ const theSyncedEditorWithinMs = 20_000;
 // `large-documents-measured.e2e.ts` reachable at all: the document is drawn from its own
 // markdown, through the read-only headless engine, before the editor exists
 // (`web/src/features/doc/DocumentPreview.tsx`). Each holds the document's socket
-// open-ended (`documentTransport`), so no sync ever reaches the page and no editor is ever
-// built: what is left on the screen is what a reader has while one is being built for them.
+// (`documentTransport`), so no sync reaches the page and no editor is built until the row lets
+// it through: what is on the screen until then is what a reader has while one is being built
+// for them.
 
 test(`${documentNames.small} is on the screen before its editor is @phone`, async ({ browser }) => {
   test.setTimeout(300_000);
@@ -114,7 +117,7 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await documentTransport(page, { holding: true });
+    const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
 
     // The first block the measurement records as `first painted`, drawn with no socket, no sync
@@ -125,8 +128,15 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
     await expect(firstBlock).toContainText(documentTitle(documentDiagrams.small));
     // And the sections below it are drawn too, not only the block the measurement reads.
     await expect(page.getByRole("heading", { name: sectionHeading(0) })).toBeVisible();
-    // And the editor really is not there: the page holds no document textbox at all.
+    // And the editor really is not there: the page holds no document textbox at all, and no
+    // editor is being built behind it (`documentEditor` finds nothing until a build is over).
     await expect(documentEditor(page)).toHaveCount(0);
+    await expect(editorBeingBuilt(page)).toHaveCount(0);
+
+    // Let through, the socket syncs and the editor's first batch lands: the locator that counted
+    // none of it above matches it now, so its none was the hold's doing.
+    await transport.release();
+    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: theBuildWithinMs });
   } finally {
     await alice.close();
   }
@@ -567,6 +577,9 @@ test("the editor is built while the document's socket is still syncing @phone", 
     // The state frame, at last: the editor that was already standing takes the document.
     await transport.release();
     await expect(documentEditor(page)).toBeVisible({ timeout: theSyncedEditorWithinMs });
+    // The editor that counted none above, now that its first batch has landed: the locator
+    // matches it, so its count of none before the sync was an editor with no batch in it.
+    await expect(editorBeingBuilt(page)).toBeAttached();
     await expect(documentEditor(page)).toContainText("The paragraph a reader meets first.");
     // The same selector, now that the document is in the editor: it does find the editor's
     // blocks, so the none it counted above was an editor holding none.
@@ -667,6 +680,12 @@ test(`each decision card of ${documentNames.small} is drawn in a task of its own
       matched: "tasks that drew more than one decision card",
       measured: "tasks of the page that drew a decision card",
     });
+    // Over tasks that did change the editor's blocks: the record holds some, so the half of the
+    // clause below that reads `blocks` is one that could match.
+    expect(
+      drawn.filter((task) => task.blocks > 0).length,
+      "no task the record holds changed the editor's own blocks, so it never saw the build"
+    ).toBeGreaterThan(0);
     expectNoneOf(drawn, {
       amongAtLeast: decisionBlocks,
       are: (task) => task.cards > 0 && task.blocks !== 0,

@@ -20,6 +20,7 @@ import type { Agent, IssueCollaboratorAgent, IssueCollaboratorLegionAgent } from
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderDefault,
   dangerText,
@@ -575,7 +576,9 @@ export function MentionField({
     }
     // A modified Enter is not the picker's: Ctrl/Cmd+Enter is the host's submit and Shift+Enter
     // the reader's newline, picker or no picker. A plain one belongs to the picker while it is
-    // open, and types its newline only where no option is active to take it.
+    // open, and types its newline only where no option is active to take it. The Enter that
+    // confirms an input method's word is the input method's: it picks nothing, and the host
+    // does not see it either.
     if (
       event.key === "Enter" &&
       !event.ctrlKey &&
@@ -584,7 +587,7 @@ export function MentionField({
       !event.shiftKey
     ) {
       event.stopPropagation();
-      if (activeOption === undefined) return;
+      if (activeOption === undefined || inputMethodKey(event)) return;
       event.preventDefault();
       addMention(activeOption);
     }

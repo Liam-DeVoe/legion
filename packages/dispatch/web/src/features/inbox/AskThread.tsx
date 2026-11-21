@@ -107,6 +107,18 @@ interface ReplyUploadDraft {
  *  available; every card renders the shared thread without a duplicate read. */
 export type AskThreadQuery = UseQueryResult<AskRead, Error>;
 
+/** Where a file pasted or dropped into an ask's answer, or into a reply under it, goes: the ask's
+ *  issue, else the project of the document it was asked on (`documentOwner`, the host's, where
+ *  the ask read carries none), else nowhere, and the box takes a paste as text. */
+export function askUploadOwner(
+  ask: Pick<Ask, "anchor_artifact" | "issue_key">,
+  documentOwner: DocumentOwner | undefined
+): ArtifactOwner | undefined {
+  if (ask.issue_key !== null) return { issue: ask.issue_key };
+  const project = (documentOwner ?? ask.anchor_artifact)?.project;
+  return project === undefined ? undefined : { project };
+}
+
 /**
  * Whether an ask's thread takes a reply through the reply composer: every ask that is no longer
  * open, whether it was answered or resolved (resolved, retracted, declined or withdrawn alike),

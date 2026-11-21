@@ -240,6 +240,10 @@ test("the resize row that crosses 1280 px in both directions and reads every ani
     expect(
       frames.filter((frame) => frame.innerWidth !== 1279 && frame.innerWidth !== 1440)
     ).toEqual([]);
+    // And `main` was drawn at both widths: a settled `main` of no width would let a frame whose
+    // `main` is no width either through the `main` half of the clause below.
+    expect(desktop.main, "the settled desktop page draws no main").toBeGreaterThan(0);
+    expect(compact.main, "the settled compact page draws no main").toBeGreaterThan(0);
     const squeezed = frames
       .map((frame, index) => ({ frame, index }))
       .filter(({ frame }) => {

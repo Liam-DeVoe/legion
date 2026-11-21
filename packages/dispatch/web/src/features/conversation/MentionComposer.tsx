@@ -24,6 +24,7 @@ import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
@@ -1134,7 +1135,8 @@ export function MentionComposer({
                     className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
                     onChange={(event) => updateAskOption(index, "label", event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") {
+                      // The Enter that confirms an input method's word adds no option.
+                      if (event.key === "Enter" && !inputMethodKey(event)) {
                         event.preventDefault();
                         addAskOption();
                       }

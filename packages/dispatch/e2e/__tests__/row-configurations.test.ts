@@ -203,13 +203,19 @@ const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>>
   "webkit-alone": { "heavy-bodies.e2e.ts": 16 },
 };
 
-/** How many rows `clockRowsOwned` says the wall-clock projects run in the files `pattern`
- *  matches: the fewest a test over that pattern picks out of their listing. */
-function rowsOwnedIn(pattern: RegExp): number {
-  return Object.values(clockRowsOwned)
-    .flatMap((files) => Object.entries(files))
-    .filter(([file]) => pattern.test(file))
-    .reduce((sum, [, rows]) => sum + rows, 0);
+/** The project whose rows are the phone half of `phoneAloneSpecNames`' files; every other project
+ *  of `clockRowsOwned` runs files of `clockSpecNames` (both e2e/configurations.ts). */
+const phoneLegProject = "iphone-long-build-alone";
+
+/** How many rows `clockRowsOwned` says the projects `counted` keeps run, every file of theirs
+ *  counted: the fewest a test that picks those projects' files out of their listing must find.
+ *  It reads no pattern, so a test whose pattern matches no file is held to those rows and not to
+ *  none. */
+function rowsOwnedBy(counted: (project: string) => boolean): number {
+  return Object.entries(clockRowsOwned)
+    .filter(([project]) => counted(project))
+    .flatMap(([, files]) => Object.values(files))
+    .reduce((sum, rows) => sum + rows, 0);
 }
 
 // What a wall-clock row's quiet machine rests on, now that the file is the selector: that each
@@ -231,11 +237,13 @@ test(
     // out nothing: a pattern that matches no file, or a phone leg the configurations do not
     // hold, which the phone test reads as no row at all. So the listing holds rows, and, where
     // the run declares the wall-clock projects, each test picks out of their own listing at
-    // least the rows `clockRowsOwned` says they run in the files it matches.
+    // least every row `clockRowsOwned` says the projects it stands for run. That bound is counted
+    // by project and not by the test's own pattern, which would hold a pattern that matches no
+    // file to the rows of no file, that is to none.
     const listed = rowsOfListing(await realListing);
     const clockRows = clockListing === undefined ? undefined : rowsOfListing(await clockListing);
     const configurations = projectConfigurations(realConfig, harnessProcessCount);
-    const phoneLeg = configurations.get("iphone-long-build-alone");
+    const phoneLeg = configurations.get(phoneLegProject);
     const inAClockFile = (row: ListedRow) => clockSpecPattern.test(row.file);
     const inThePhoneLeg = (row: ListedRow) =>
       phoneAloneSpecPattern.test(row.file) &&
@@ -246,12 +254,12 @@ test(
       expect(
         clockRows.filter(inAClockFile).length,
         "the wall-clock projects' rows that `clockSpecPattern` picks out of their own listing"
-      ).toBeGreaterThanOrEqual(rowsOwnedIn(clockSpecPattern));
+      ).toBeGreaterThanOrEqual(rowsOwnedBy((project) => project !== phoneLegProject));
       expect(
         clockRows.filter(inThePhoneLeg).length,
         "the rows of `iphone-long-build-alone`'s configuration that the phone-half test picks " +
           "out of the wall-clock listing"
-      ).toBeGreaterThanOrEqual(rowsOwnedIn(phoneAloneSpecPattern));
+      ).toBeGreaterThanOrEqual(rowsOwnedBy((project) => project === phoneLegProject));
     }
 
     // No project of the default selection holds a row of a wall-clock file. This is read of

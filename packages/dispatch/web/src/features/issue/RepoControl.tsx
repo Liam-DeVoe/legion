@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   dangerText,
   focusBorder,
@@ -447,7 +448,9 @@ export function RepoControl({
                   want();
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") {
+                  // The Enter that confirms an input method's word is the input method's, not
+                  // the write.
+                  if (event.key === "Enter" && !inputMethodKey(event)) {
                     event.preventDefault();
                     commit();
                   } else if (event.key === "Escape" && page === null) {

@@ -245,18 +245,23 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
     // Over a chrome that was really drawn rather than over nothing: "every box is above the
     // reader" is met by a renamed test id or a chrome not yet mounted, so the clause says
     // nothing until the boxes it is about are in the page - the tab strip's box and the issue
-    // header, which is the skeleton's own `header` while the socket is held
+    // header's, which is the skeleton's own `header` while the socket is held
     // (dispatch://INFRA-341, the pairing every universal clause of a check takes, as the row
     // above does at its own read).
     //
-    // The strip's box is named before the count and not left to it: this row is `@phone`, where
-    // the shell draws a `header` of its own beside the issue's (`web/src/app.tsx`), so two boxes
-    // are in the page whether or not `issue-tabs-box` is one of them and the floor below is met
-    // by a strip that was renamed or never mounted.
+    // Both boxes are named before the count and read by their test ids alone: this row is
+    // `@phone`, where the shell draws a `header` of its own beside the issue's
+    // (`web/src/app.tsx`), so a count over every `header` met the floor below with the shell's
+    // and the strip's alone, whether or not the issue header's box was among them.
     await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
+    await expect(page.getByTestId("issue-header-box")).toBeAttached();
     const chrome = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-testid="issue-tabs-box"], header')].map((box) => ({
-        name: box.getAttribute("data-testid") ?? box.tagName.toLowerCase(),
+      [
+        ...document.querySelectorAll(
+          '[data-testid="issue-tabs-box"], [data-testid="issue-header-box"]'
+        ),
+      ].map((box) => ({
+        name: box.getAttribute("data-testid"),
         top: Math.round(box.getBoundingClientRect().top),
       }))
     );

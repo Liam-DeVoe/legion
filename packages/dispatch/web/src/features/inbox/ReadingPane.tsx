@@ -23,7 +23,7 @@ import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
-import { AskExchange, askUploadOwner } from "./AskExchange";
+import { AskThread, askUploadOwner } from "./AskThread";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
 import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
@@ -141,11 +141,11 @@ function useMarkedBlocks(content: RefObject<HTMLDivElement | null>): boolean {
 }
 
 /** The replies on an approval request's own ask and the box a reply is written in, which the
- *  column draws under the request's question through the exchange every ask card draws
- *  (`AskExchange`), from the same read of the ask's thread (`useAskThreadRead`), in the reader's
+ *  column draws under the request's question through the inline thread every ask card draws
+ *  (`AskThread`), from the same read of the ask's thread (`useAskThreadRead`), in the reader's
  *  own order. The read is the row's own, seeded as the card the column falls back to seeds it
  *  (`QuestionCard`), so drawing it asks the server for nothing; once it reads the ask settled, it
- *  is the ask the exchange stands under, as a card's is. The reply box stands while the ask is
+ *  is the ask the thread stands under, as a card's is. The reply box stands while the ask is
  *  open too, since nothing else the column draws posts to the thread (`repliesWhileOpen`). No
  *  reply is marked read here, as none is by the Inbox's other cards.
  *
@@ -173,7 +173,7 @@ export function ApprovalExchange({ ask }: { ask: InboxRow }): ReactNode {
     // `flow-root`, so the box measures the whole of what it draws: a margin inside it would
     // otherwise collapse out through it and be counted by no correction.
     <div className={`mb-3 flow-root border-b pb-3 ${borderDefault}`} ref={box}>
-      <AskExchange
+      <AskThread
         ask={current}
         embedded
         order={order}

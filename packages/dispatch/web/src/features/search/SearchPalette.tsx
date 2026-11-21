@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   backdrop50,
   badgeLow,
@@ -702,7 +703,8 @@ function PaletteDialog({
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
-    } else if (event.key === "Enter" && activeRow !== undefined) {
+    } else if (event.key === "Enter" && activeRow !== undefined && !inputMethodKey(event)) {
+      // The Enter that confirms an input method's word is the input method's, not the open.
       event.preventDefault();
       selectRow(activeRow);
     }

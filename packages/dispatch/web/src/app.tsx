@@ -939,23 +939,30 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // so it is in the new issue page's frame, whose navigation is its icon rail.
       when: () => !isCompactViewport && !issueFrame,
     },
-    {
-      // Opening Details puts the focus on its Close, and closing it gives the focus back.
-      effect: detailsDrawer === undefined ? "moves nothing" : "moves the reader",
-      // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width. Its id follows the gate, so that crossing it registers the binding again
-      // and the list of keys reads the label of the shell it is in.
-      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
-      keys: "Shift+M",
-      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
-      run: () =>
-        detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
-          : detailsDrawer.setOpen(!detailsDrawer.open),
-      // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
-      // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
-    },
+    // In the new issue page's frame the margin is Details, which `Shift+M` opens and closes at
+    // every width; elsewhere it toggles the margin. Each is a binding of its own, whose id
+    // follows the gate, so that crossing it registers the binding again and the list of keys
+    // reads the label of the shell it is in.
+    detailsDrawer === undefined
+      ? {
+          effect: "moves nothing",
+          id: "toggle-margin",
+          keys: "Shift+M",
+          label: "Toggle margin",
+          run: () => setMarginHidden(!marginHidden),
+          // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the
+          // preference only from `xl`, so a toggle there would change nothing on screen and flip
+          // it for later.
+          when: () => !isCompactViewport && hasMargin,
+        }
+      : {
+          // Opening Details puts the focus on its Close, and closing it gives the focus back.
+          effect: "moves the reader",
+          id: "toggle-details",
+          keys: "Shift+M",
+          label: "Open or close Details",
+          run: () => detailsDrawer.setOpen(!detailsDrawer.open),
+        },
   ]);
   const login = user.login;
   // Each press signs out the person signed in when it was made, and carries their login: the

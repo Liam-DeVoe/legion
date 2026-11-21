@@ -65,12 +65,12 @@ import {
   type AskFrame,
   OrphanedAnchorNotice,
 } from "./AskCompletionCard";
-import { AskExchange, askUploadOwner } from "./AskExchange";
 import { AskHandOn } from "./AskHandOn";
 import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
-import { UnsentBox } from "./AskThread";
+import { AskThread, askUploadOwner, UnsentBox } from "./AskThread";
+import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
@@ -544,21 +544,34 @@ export function AskCard({
     );
   // A reply's own `dispatch://` reference needs the project document behind a document ask
   // (`askOwner`), which only an Inbox row carries on the ask itself.
-  const threadNode = (
-    <AskExchange
-      ask={currentAsk}
-      collapsed={thread === "collapsed"}
-      createReply={reply}
-      currentReplyId={currentReplyId}
-      embedded={completed === null}
-      markNewest={answerIsNewest ? undefined : markNewest}
-      order={threadOrder}
-      owner={askOwner}
-      thread={threadQuery}
-      unread={unreadReplies}
-      uploadOwner={uploadOwner}
-    />
-  );
+  const threadNode =
+    thread === "collapsed" ? (
+      <AskThreadDisclosure
+        ask={currentAsk}
+        createReply={reply}
+        currentReplyId={currentReplyId}
+        embedded={completed === null}
+        markNewest={answerIsNewest ? undefined : markNewest}
+        order={threadOrder}
+        owner={askOwner}
+        thread={threadQuery}
+        unread={unreadReplies}
+        uploadOwner={uploadOwner}
+      />
+    ) : (
+      <AskThread
+        ask={currentAsk}
+        createReply={reply}
+        currentReplyId={currentReplyId}
+        embedded={completed === null}
+        markNewest={answerIsNewest ? undefined : markNewest}
+        order={threadOrder}
+        owner={askOwner}
+        thread={threadQuery}
+        unread={unreadReplies}
+        uploadOwner={uploadOwner}
+      />
+    );
 
   const answerLabel = changing ? "Save answer" : "Answer";
   /** What Answer says while it is busy: this card's own send, or an upload the draft is waiting

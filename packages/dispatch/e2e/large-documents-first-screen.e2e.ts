@@ -26,6 +26,7 @@
 // listed once, at the head of `large-documents-rows.ts`, which holds what they share.
 import { expect, type Page, test } from "@playwright/test";
 
+import { LONGEST_WAIT_FOR_THE_DOCUMENT_MS } from "../web/src/features/doc/first-batch";
 import { subscribeSession } from "./agents";
 import { createAsk } from "./api";
 import { documentEditor, documentTransport, editorBeingBuilt } from "./editor";
@@ -337,15 +338,17 @@ test("a phone draws the margin's ask cards only once its reader opens the review
       timeout: aDrawWithinMs,
     });
 
-    // The whole page is up, and the shut sheet holds no card: a card behind it is 64 px of
-    // `Review (1)`, and the thread read each card makes is a read the reader never sees the
-    // answer to (dispatch://INFRA-341, R11).
+    // The whole page is up, and the margin's own asks read has landed: the count beside `Review`
+    // is that read, which the margin makes either way, so the shut sheet's cards below are read
+    // after the data they would be drawn from.
     const sheet = page.getByTestId("margin-sheet");
-    await expect(sheet.locator("[data-margin-item]")).toHaveCount(0);
-    expect(asked.filter((what) => /^\/api\/v1\/asks\/[^/]+$/.test(what))).toHaveLength(0);
-    // The count beside `Review` is the margin's own asks read, which it makes either way.
     const review = page.getByRole("button", { name: /^Open review panel/ });
     await expect(review).toHaveAccessibleName("Open review panel (1 open ask)");
+    // And the shut sheet holds no card: a card behind it is 64 px of `Review (1)`, and the thread
+    // read each card makes is a read the reader never sees the answer to (dispatch://INFRA-341,
+    // R11).
+    await expect(sheet.locator("[data-margin-item]")).toHaveCount(0);
+    expect(asked.filter((what) => /^\/api\/v1\/asks\/[^/]+$/.test(what))).toHaveLength(0);
 
     await review.click();
     await expect(sheet.getByText(question)).toBeVisible();
@@ -652,10 +655,24 @@ test("a page with no document on it makes those reads as it always did @phone", 
       .toBe(0);
 
     const made = await readTheReads(page);
-    printTheOrder("no document on the page", made.firstBatchMs, whenEachWentOut(made.reads, paths));
+    const when = whenEachWentOut(made.reads, paths);
+    printTheOrder("no document on the page", made.firstBatchMs, when);
     // Nothing was ever built, so nothing was ever waited for.
     expect(made.firstBatchMs).toBeUndefined();
-    await expect(page.locator('.proof-editor[data-write-path="live"]')).toHaveCount(0);
+    // And nothing held them. This page has no document surface, so "no first batch" is true of
+    // it by construction, and a hold armed here by mistake releases at `LONGEST_HOLD_MS`, 20 s
+    // from the address (`web/src/features/doc/first-batch.ts`): inside the Subscribers wait
+    // above, after which every other clause of this row passes. So each read's first send, read
+    // from the address as the hold's deadline is, is held well inside that deadline: under
+    // `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`, the 10 s the page gives the document's last step. The
+    // poll above saw each of them go out, so every one of them is measured here.
+    expect(
+      [...when]
+        .filter(([, at]) => (at[0] ?? Number.POSITIVE_INFINITY) >= LONGEST_WAIT_FOR_THE_DOCUMENT_MS)
+        .map(([read, at]) => `${read} first went out at ${Math.round(at[0] ?? Number.NaN)} ms`),
+      `a read of a page with no document on it first went out ${LONGEST_WAIT_FOR_THE_DOCUMENT_MS} ms ` +
+        "or more after the address: something held it, as a hold armed on this page would"
+    ).toEqual([]);
     // And its chrome is the chrome it always had, drawn with nothing waited for: the header
     // the Subscribers control stands in, the tab strip itself rather than the box the page
     // keeps for it, and the shell's own inbox peek.

@@ -1145,6 +1145,61 @@ test("the open picker keeps its keys from the page, and a closed one keeps none"
   }
 });
 
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). With the picker open and an option active it picks nothing
+// and still keeps the key from the page; a plain Enter after it picks the option.
+test("the Enter that confirms an input method's word picks no mention, and a plain Enter does", async () => {
+  const seen: string[] = [];
+  const watch = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", watch);
+  const { view } = renderComposer({ agents: [planner, worker] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    // The field's own `change` to open the picker, and keys user-event cannot mark as an input
+    // method's.
+    fireEvent.change(field, { target: { value: "@" } });
+    await screen.findByRole("listbox", { name: "Mention suggestions" });
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    expect(field.getAttribute("aria-activedescendant")).not.toBeNull();
+
+    expect(fireEvent.keyDown(field, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    expect(field.value).toBe("@");
+    expect(screen.getByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
+    expect(seen).toEqual([]);
+
+    expect(fireEvent.keyDown(field, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(field.value).toBe("@legion-planner"));
+  } finally {
+    window.removeEventListener("keydown", watch);
+    view.unmount();
+  }
+});
+
+// The ask builder's option label adds an option on Enter, and not on the Enter that confirms an
+// input method's word in it, marked or sent with keyCode 229 as above.
+test("the Enter that confirms an input method's word in an option's label adds no option, and a plain Enter adds one", () => {
+  const { view } = renderComposer({ kind: "ask" });
+
+  try {
+    const labels = () => screen.getAllByLabelText<HTMLInputElement>(/^Option \d+ label$/);
+    const before = labels().length;
+    const first = labels()[0];
+    if (first === undefined) throw new Error("the ask builder drew no option label");
+    // Keys user-event cannot mark as an input method's.
+    expect(fireEvent.keyDown(first, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(first, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    expect(labels()).toHaveLength(before);
+
+    expect(fireEvent.keyDown(first, { key: "Enter" })).toBe(false);
+    expect(labels()).toHaveLength(before + 1);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** One collaborators answer in the order the server sends it (the contract's: the registry's
  *  agents by role in workflow order and then newest first, then the rest newest first) - the
  *  planner, the reviewer role's newest session and the one it replaced, then a session with no

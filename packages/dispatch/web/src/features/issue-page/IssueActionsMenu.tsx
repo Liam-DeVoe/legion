@@ -123,7 +123,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
           below the panel is fixed at the anchor's height and spans the screen less the page's
           14 px insets, so it never reaches past the right edge; from 761 px it is absolute
           at the anchor, at the prototype's menu width. Each action keeps `main`'s 44 px floor
-          below 1280 px, where that floor applies, as a menu a header control opens does. */}
+          below `xl`, where that floor applies, as a menu a header control opens does. */}
       <div className="absolute top-full left-0">
         <div
           className={`fixed inset-x-3.5 z-30 mt-1 flex flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] min-[761px]:absolute min-[761px]:inset-x-auto min-[761px]:top-0 min-[761px]:left-0 min-[761px]:w-64 ${pageHairBorder} ${pagePaperBg}`}
@@ -134,7 +134,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
             <button
               aria-pressed={action.pressed}
               data-issue-action={action.id}
-              className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium min-[1280px]:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
+              className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium xl:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
               disabled={action.disabled}
               key={action.id}
               onClick={() => {

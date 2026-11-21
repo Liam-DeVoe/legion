@@ -435,7 +435,9 @@ html:has([data-issue-page]) {
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. Below `xl`, the token
    `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`) is built from, as every width query
-   of this sheet is (`first-screen-reservation.test.ts` holds each to it). */
+   at `xl` of this sheet is. The sheet's two other width queries switch at 767 px
+   (`narrow-or-short`, `PHONE_VIEWPORT_QUERY`) and at 760 px (the new issue page's header,
+   `HEADER_SCROLLS_QUERY`); `first-screen-reservation.test.ts` holds each to its query. */
 /* biome-ignore lint/correctness/noUnknownFunction: Tailwind compiles `theme()` in the build. */
 @media (width < theme(--breakpoint-xl)) {
   input,

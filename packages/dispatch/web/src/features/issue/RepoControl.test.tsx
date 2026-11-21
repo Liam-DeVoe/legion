@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, and for an Enter marked as an input method's (`isComposing`, keyCode 229), neither of which user-event has a form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -638,6 +638,36 @@ test("RepoControl draws the pick, and the repository it resolves to, in every co
     );
   } finally {
     notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It writes nothing; a plain Enter after it writes the box.
+test("RepoControl writes nothing on the Enter that confirms an input method's word, and writes on a plain Enter", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/gadgets",
+    resolved_repo: "acme/gadgets",
+    last_seq: 2,
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    // Keys user-event cannot mark as an input method's, read by whether the box took them.
+    expect(fireEvent.keyDown(box(), { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(box(), { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    await act(async () => {});
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    expect(fireEvent.keyDown(box(), { key: "Enter" })).toBe(false);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+  } finally {
     unmount();
     patchIssue.mockRestore();
   }

@@ -26,8 +26,11 @@ import { DEFAULT_MARGIN_WIDTH, MIN_MARGIN_WIDTH } from "./margin-width";
  * stylesheet, a page of HTML the build copies through, the module the shell writes the layout
  * with, and the shell itself. They are held together here, so a renamed key, a renamed property
  * or a moved number fails this rather than silently leaving the server's blocks laid out at a
- * width the document does not keep. The reservation's width is the one every other width query of
- * the stylesheet switches at, and those are held to the shell's here too.
+ * width the document does not keep. The reservation's width is the one every other width query at
+ * `xl` of the stylesheet switches at. The stylesheet's two other width queries switch at 767 px
+ * (`narrow-or-short`, as `PHONE_VIEWPORT_QUERY` writes it) and at 760 px (the new issue page's
+ * header, as `HEADER_SCROLLS_QUERY` writes it), and each of them is held to the page's queries
+ * here too.
  */
 
 const read = (path: string) => readFileSync(join(import.meta.dir, path), "utf8");
@@ -74,7 +77,7 @@ test("the server's draw is reserved for at exactly the widths above the compact 
 // shell's queries are built from; in the variant the broadcast composer compacts under
 // (`narrow-or-short`), at a phone's width, as `PHONE_VIEWPORT_QUERY` writes it; or, for the new
 // issue page's header, at the width its header scrolls away, as `HEADER_SCROLLS_QUERY` writes it
-// (a pixel width by design, paired with the header's `max-[761px]:` classes). A block written in a
+// (a pixel width by design, paired with the header's `min-[761px]:` classes). A block written in a
 // length of its own - `80rem` beside the token, or 1280 px, which a reader whose default font is
 // not 16 px meets at another width than the shell's - fails it.
 test("every width @media of styles.css switches at a width one of the page's queries does", () => {

@@ -161,9 +161,10 @@ test("a reader answers a decision block the server drew, with the editor's socke
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // Held open-ended, so no sync ever reaches the page and no editor is ever built: what the
-    // reader answers is the page's own draw of the document's text.
-    await documentTransport(page, { holding: true });
+    // Held open-ended, so no sync reaches the page and no editor is built while the reader
+    // answers: what they answer is the page's own draw of the document's text. The row lets the
+    // socket through at its end, which shows the hold held and that `editorBeingBuilt` can match.
+    const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
 
     const drawn = page.locator('[aria-label="Document text"]');
@@ -175,8 +176,10 @@ test("a reader answers a decision block the server drew, with the editor's socke
     await card.getByRole("radio", { name: "The next window" }).check();
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect(drawn).toContainText("Answered by alice");
-    // Answered with no editor on the page at all, which is the whole of this row.
+    // Answered with no editor on the page at all, which is the whole of this row: none built,
+    // and none being built (`documentEditor` finds nothing until a build is over).
     await expect(documentEditor(page)).toHaveCount(0);
+    await expect(editorBeingBuilt(page)).toHaveCount(0);
 
     // And the server holds it: the issue's ask for that block reads answered.
     await expect
@@ -191,6 +194,11 @@ test("a reader answers a decision block the server drew, with the editor's socke
         }
       )
       .toBe("answered");
+
+    // Let through, the socket syncs and the editor's first batch lands: the locator above that
+    // counted none of it matches it now, so its none was the hold's doing.
+    await transport.release();
+    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: aDrawWithinMs });
   } finally {
     await alice.close();
   }

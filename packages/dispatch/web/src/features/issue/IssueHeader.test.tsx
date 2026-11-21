@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the title box's composition row sends
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -241,5 +242,31 @@ test("a read of the state asked while the header's pin is out waits for its answ
   } finally {
     view.unmount();
     stopListening();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). In the title's box it ends nothing; a plain Enter after it
+// ends the edit, which leaves the box.
+test("the Enter that confirms an input method's word in the title's box keeps the edit, and a plain Enter ends it", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = renderHeader(client, <Header state={unpinnedState} />);
+  try {
+    await view.user.click(view.q.getByRole("heading", { level: 1 }));
+    const box = view.q.getByRole("textbox", { name: "Issue title" });
+    expect(box).toHaveFocus();
+    // Keys user-event cannot mark as an input method's.
+    fireEvent.keyDown(box, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(box, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(view.q.getByRole("textbox", { name: "Issue title" })).toBe(box);
+    expect(box).toHaveFocus();
+
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+  } finally {
+    view.unmount();
   }
 });

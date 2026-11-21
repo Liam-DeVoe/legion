@@ -23,7 +23,8 @@ interface UseAskThreadReadOptions {
  * pane's approval request (`ApprovalExchange`) both draw from, seeded from the Inbox's own read
  * where the host has one: the replies, the ask as it now stands, and what the card shows beside
  * them. It is shared by every view of the ask's thread - the card, its edit-version history, its
- * collapsed disclosure, its inline thread, and the exchange (`AskExchange`).
+ * collapsed disclosure (`AskThreadDisclosure`), and its inline thread (`AskThread`), which the
+ * approval request draws alone.
  */
 export function useAskThreadRead({
   ask,

@@ -209,21 +209,40 @@ const editedQuestion = [
 /** What one line of that question reads as, every block of it on the one line a quote gets. */
 const editedOnOneLine = "Hold the release until Monday? the nightly build is red bun run verify";
 
+/** The source characters of `editedQuestion`'s bold, its list and its fence, each of which a
+ *  line drawing it as its source would show. */
+const editedSources = ["**", "- the nightly", "`"];
+
+/** The question as it was first asked, which the ask's `asked` line quotes. */
+const askedQuestion = "**Ship** the release tonight?";
+
+/** Its one source character: the bold. It holds no list and no fence. */
+const askedSources = ["**"];
+
 /** An issue holding an ask asked with a bold question and then edited into `editedQuestion`. */
 async function seedEditedAsk(): Promise<string> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Formatted questions" });
-  const ask = await createAsk(issue.key, { question: "**Ship** the release tonight?" }, agent);
+  const ask = await createAsk(issue.key, { question: askedQuestion }, agent);
   await editAsk(ask.id, { question: editedQuestion }, agent);
   return issue.key;
 }
 
-/** No source character of the bold, the list or the fence is anywhere in `where`, and every
- *  quote it holds is the one clamped line the row gives it. */
-async function expectFormattedAtOneLine(where: Locator): Promise<void> {
-  await expect(where).not.toContainText("**");
-  await expect(where).not.toContainText("- the nightly");
-  await expect(where).not.toContainText("`");
+/** No source character of `quoted`'s formatting (`sources`) is anywhere in `where`, and every
+ *  quote it holds is the one clamped line the row gives it. Each of `sources` is first held to
+ *  the text `where` quotes, so each absence read here is one a line drawing that text as its
+ *  source would fail. */
+async function expectFormattedAtOneLine(
+  where: Locator,
+  quoted: string,
+  sources: readonly string[]
+): Promise<void> {
+  expect(sources.length, "no source character to look for").toBeGreaterThan(0);
+  expect(
+    sources.filter((source) => !quoted.includes(source)),
+    "a source character the quoted text does not hold, whose absence could not fail"
+  ).toEqual([]);
+  for (const source of sources) await expect(where).not.toContainText(source);
   // One line, cut by the browser rather than by the words: the quote is a clamped preview.
   await expect(where.locator("[data-markdown-preview]")).toHaveCSS("-webkit-line-clamp", "1");
 }
@@ -249,8 +268,8 @@ test("the activity line formats a quoted question", async ({ browser }, testInfo
     await expect(edited).toContainText(`edited the question "${editedOnOneLine}"`);
     // The fence is a code element holding the command, not three backticks and a language.
     await expect(edited.locator("code")).toHaveText("bun run verify");
-    await expectFormattedAtOneLine(asked);
-    await expectFormattedAtOneLine(edited);
+    await expectFormattedAtOneLine(asked, askedQuestion, askedSources);
+    await expectFormattedAtOneLine(edited, editedQuestion, editedSources);
     await page.screenshot({
       fullPage: true,
       path: testInfo.outputPath(`activity-quoted-question-${testInfo.project.name}.png`),
@@ -285,7 +304,7 @@ test("the margin's pinned event line formats the same quoted question", async ({
     await expect(margin.locator("strong")).toHaveText("Hold");
     await expect(margin).toContainText(`Ask edited: ${editedOnOneLine}`);
     await expect(margin.locator("code")).toHaveText("bun run verify");
-    await expectFormattedAtOneLine(margin);
+    await expectFormattedAtOneLine(margin, editedQuestion, editedSources);
     await page.screenshot({
       fullPage: true,
       path: testInfo.outputPath(`margin-quoted-question-${testInfo.project.name}.png`),

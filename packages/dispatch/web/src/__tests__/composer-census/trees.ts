@@ -47,13 +47,13 @@ import { type Item, type TreeKind, type Walked, walkUp } from "./walk";
  *
  * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
  * ask card (`ASK_CARD`) and not past it, and the reply composer's to the Inbox reading pane's
- * approval request too (`APPROVAL_EXCHANGE`), which draws the ask's exchange alone, with no card
- * around it (`AskExchange`): every host draws an ask in one card, or its exchange in that one
- * box, which holds the fields it draws, and their drafts are the ask's, by its id, in stores that
- * outlive every card (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the card or the
- * box that hides, ends or keys it, or draws it for another ask, does to its fields what its own
- * conditionals do to them, and the card or the box drawn for that ask again holds the ask's
- * drafts. A field drawn outside them is followed up to the routes.
+ * approval request too (`APPROVAL_EXCHANGE`), which draws the ask's inline thread alone
+ * (`AskThread`), with no card around it: every host draws an ask in one card, or its thread in
+ * that one box, which holds the fields it draws, and their drafts are the ask's, by its id, in
+ * stores that outlive every card (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the
+ * card or the box that hides, ends or keys it, or draws it for another ask, does to its fields
+ * what its own conditionals do to them, and the card or the box drawn for that ask again holds
+ * the ask's drafts. A field drawn outside them is followed up to the routes.
  */
 interface FieldBase {
   readonly homes: ReadonlySet<string>;
@@ -73,7 +73,7 @@ type DraftField =
 const ASK_CARD = "features/inbox/AskCard.tsx#AskCard";
 
 /** The Inbox reading pane's approval request, which holds an ask's reply composer, in the
- *  exchange it draws with no card (`AskExchange`). */
+ *  inline thread it draws with no card (`AskThread`). */
 const APPROVAL_EXCHANGE = "features/inbox/ReadingPane.tsx#ApprovalExchange";
 
 const DRAFT_FIELDS: readonly DraftField[] = [

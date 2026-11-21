@@ -4,9 +4,13 @@ import { NavigationType, useLocation, useNavigationType } from "react-router-dom
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
 /** Tailwind's `xl`, `--breakpoint-xl` in its `theme.css`: the length every `xl:` class compiles
- *  from, and every width `@media` of `styles.css`, which names the token itself
- *  (`theme(--breakpoint-xl)`). Both queries below are built from it, so the shell's state, the
- *  classes and the stylesheet switch at one width whatever the reader's default font size
+ *  from, and every width `@media` of `styles.css` at `xl`, which names the token itself
+ *  (`theme(--breakpoint-xl)`). The sheet's other two width queries switch where another query of
+ *  the page does: the `narrow-or-short` variant at 767 px (`PHONE_VIEWPORT_QUERY` below), and
+ *  the new issue page's header at 760 px (`HEADER_SCROLLS_QUERY`,
+ *  `features/issue-page/identity-block.ts`). `COMPACT_VIEWPORT_QUERY` and `READING_PANE_QUERY`
+ *  below are built from it, so the shell's state, the classes and the stylesheet switch at one
+ *  width whatever the reader's default font size
  *  (`features/margin/first-screen-reservation.test.ts` holds the token and the sheet to it). */
 export const XL_BREAKPOINT = "80rem";
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. The exact inverse of the
