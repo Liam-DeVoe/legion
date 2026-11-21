@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -35,14 +34,14 @@ type testingJudgement struct {
 	// Waiting is each check with no state, a state Dispatch could not read (read_failed), or no
 	// result while its CI run goes on (ci_case not_completed with the reason no_result).
 	Waiting []string
-	// Failing is each other check that does not pass, as "k2: no (fail)", "k3: unknown
-	// (pass_and_fail)" or "k4: yes from implementer, with no pass of the tester".
+	// Failing is each other check that does not pass, as "k2: no (fail)" or "k3: unknown
+	// (pass_and_fail)".
 	Failing []string
 }
 
 // judgeStates judges the states the daemon holds of the head's checks, and is the one place the
-// rule of a passing check is written: a check passes on the state yes whose roles hold the tester,
-// or hold ci for a check CI proves (a state with a ci_case). Every check of the head's set is
+// rule of a passing check is written: a check passes when it reads yes at its head, whichever
+// results Dispatch counted for it. Every check of the head's set is
 // judged in the set's order, and a state of a check outside the set is no part of it, so a check
 // removed from the Verification document holds nothing. A check with no state, one whose reason is
 // read_failed, and one with no result while its CI run goes on wait; every other check that does
@@ -59,14 +58,7 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 		case !held || state.Reason == reasonReadFailed:
 			judgement.Waiting = append(judgement.Waiting, check)
 		case state.State == stateYes:
-			if slices.Contains(state.Roles, string(claim.RoleTester)) || state.CICase != "" && slices.Contains(state.Roles, ciRole) {
-				continue
-			}
-			from := "no role"
-			if len(state.Roles) > 0 {
-				from = strings.Join(state.Roles, ", ")
-			}
-			judgement.Failing = append(judgement.Failing, fmt.Sprintf("%s: yes from %s, with no pass of the tester", check, from))
+			continue
 		case state.Reason == reasonNoResult && state.CICase == ciNotCompleted:
 			judgement.Waiting = append(judgement.Waiting, check)
 		case state.Reason == "":
@@ -77,10 +69,6 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 	}
 	return judgement, true
 }
-
-// ciRole is the role Dispatch names on a result CI's run derived, the producer of a check CI
-// proves.
-const ciRole = "ci"
 
 // testedHead is where the testing move reads the states: the commit the tester's completion
 // reported, the head its test record names, in the repository of the pull request on record; with

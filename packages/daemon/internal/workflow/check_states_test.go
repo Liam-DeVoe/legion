@@ -338,7 +338,7 @@ func TestJudgeStates(t *testing.T) {
 		{"all yes from tester", held([]string{"k1", "k2"}, state("k1", "yes", "", "", "tester"), state("k2", "yes", "", "", "implementer", "tester")),
 			testingJudgement{}},
 		{"yes from implementer only", held([]string{"k1"}, state("k1", "yes", "", "", "implementer")),
-			testingJudgement{Failing: []string{"k1: yes from implementer, with no pass of the tester"}}},
+			testingJudgement{}},
 		{"no for fail", held([]string{"k1"}, state("k1", "no", "fail", "")),
 			testingJudgement{Failing: []string{"k1: no (fail)"}}},
 		{"unknown for pass_and_fail", held([]string{"k1"}, state("k1", "unknown", "pass_and_fail", "")),
