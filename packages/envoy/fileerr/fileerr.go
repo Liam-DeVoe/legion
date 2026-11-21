@@ -1,7 +1,7 @@
 // Package fileerr is why a file a setting names could not be read, in fixed words: the class of
 // the filesystem error, never its text. An *fs.PathError quotes the path, and the path a setting
 // holds can be a credential pasted where the path goes, so a refusal names the setting and this
-// class, never the path.
+// class, never the path. It is the envoy module's and the daemon's one reading of such an error.
 package fileerr
 
 import (
@@ -24,3 +24,12 @@ func Class(err error) string {
 	}
 	return "it could not be read"
 }
+
+// Err is err as a refusal wraps it: its text is Class(err), never err's own, and it unwraps to
+// err, so errors.Is(Err(err), fs.ErrNotExist) holds where errors.Is(err, fs.ErrNotExist) does.
+func Err(err error) error { return classed{err} }
+
+type classed struct{ err error }
+
+func (c classed) Error() string { return Class(c.err) }
+func (c classed) Unwrap() error { return c.err }

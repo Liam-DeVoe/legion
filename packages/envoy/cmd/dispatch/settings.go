@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	"github.com/sjawhar/envoy/internal/fileerr"
 )
 
 // setting is one row of envoy-dispatch's settings table: a Dispatch setting, an environment

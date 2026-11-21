@@ -942,7 +942,9 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 		}
 		if path, isFile := strings.CutPrefix(secret, providerKeyFilePrefix); isFile {
 			if !filepath.IsAbs(path) {
-				return nil, fmt.Errorf("%s value %q for %s names a file by a path that is not absolute; write %s/abs/path", key, secret, env, providerKeyFilePrefix)
+				// By the variable alone: a value that is no path can be the provider's key itself,
+				// pasted after the `file:` where its path goes.
+				return nil, fmt.Errorf("%s value for %s names a file by a path that is not absolute; write %s/abs/path", key, env, providerKeyFilePrefix)
 			}
 			keys = append(keys, ProviderKey{Env: env, File: filepath.Clean(path)})
 			continue
@@ -1282,7 +1284,8 @@ func checkProviderKeyFiles(file fileConfig) error {
 	}
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
-			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+			// By the variable alone: the path can be the provider's key itself, pasted after `file:/`.
+			return fmt.Errorf("provider_keys.%s names a file, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env)
 		}
 	}
 	return nil

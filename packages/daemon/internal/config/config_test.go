@@ -1545,7 +1545,14 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "provider_keys naming a file by a relative path",
 			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"file:keys/gemini\"}\n",
-			want: `provider_keys value "file:keys/gemini" for GEMINI_API_KEY names a file by a path that is not absolute; write file:/abs/path`,
+			want: `provider_keys value for GEMINI_API_KEY names a file by a path that is not absolute; write file:/abs/path`,
+		},
+		{
+			// A made-up nkey seed pasted after `file:` where the path goes: the refusal is the
+			// whole text, so it holds none of it.
+			name: "provider_keys with a seed pasted where the file's path goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"file:SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV\"}\n",
+			want: `provider_keys value for GEMINI_API_KEY names a file by a path that is not absolute; write file:/abs/path`,
 		},
 		{
 			name: "provider_keys with a secretsd key that is not a string",

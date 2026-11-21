@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/sjawhar/envoy/internal/fileerr"
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/natsurl"
 )
 

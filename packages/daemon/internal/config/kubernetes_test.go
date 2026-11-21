@@ -827,8 +827,8 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			// A file on the daemon's disk reaches no pod: under kubernetes a provider key is a key of
 			// the providers Secret every pod mounts.
 			name: "a provider key naming a file",
-			body: kubernetesFile + "provider_keys: {GEMINI_API_KEY: \"file:/etc/legion/providers/gemini\"}\n",
-			want: "provider_keys.GEMINI_API_KEY names the file /etc/legion/providers/gemini, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret",
+			body: kubernetesFile + "provider_keys: {GEMINI_API_KEY: \"file:/SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV\"}\n",
+			want: "provider_keys.GEMINI_API_KEY names a file, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret",
 		},
 		{
 			name: "namespace absent",

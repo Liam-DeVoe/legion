@@ -28,6 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/fileerr"
+
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -74,15 +76,17 @@ const undefinedTable = "42P01"
 // ReadDSN is the connection URL a DSN file holds, trimmed as Oh My Pi trims it. Every caller reads
 // the session database's: Connect, which opens it, and the launcher's own resume lookup
 // (launcher.sessionWritten), which reads the file afresh before each attempt so a URL rewritten
-// under it is picked up. Its refusals name the file, never what it holds.
+// under it is picked up. Its refusals name neither what the file holds nor its path, where a URL
+// pasted in place of the path would be: a file that cannot be read is named by why (fileerr.Err),
+// which still unwraps to the read's error.
 func ReadDSN(file string) (string, error) {
 	body, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("read the database URL file %s: %w", file, err)
+		return "", fmt.Errorf("read the database URL file: %w", fileerr.Err(err))
 	}
 	dsn := strings.TrimSpace(string(body))
 	if dsn == "" {
-		return "", fmt.Errorf("the database URL file %s is empty", file)
+		return "", errors.New("the database URL file is empty")
 	}
 	return dsn, nil
 }
