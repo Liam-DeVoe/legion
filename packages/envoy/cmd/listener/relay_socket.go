@@ -32,8 +32,10 @@ package main
 // ping handler on that reader only once every frame read before it is handled; nothing here
 // installs another.
 //
-// A frame's receipt subject is the owning replica's, under bus.RelayReplyPrefix
-// (startSessionRelays in edge mode), which the edge's grant publishes and subscribes: no reply
+// A frame's receipt subject is the owning machine's, under its receipt family
+// (natsgrant.EdgeRelayReplyPrefix; startSessionRelays in edge mode), which the edge's grant
+// publishes for every machine and subscribes for its own: the socket takes a receipt under any
+// machine's family (bus.RelayReplyPrefix), since it answers frames other machines own, and no reply
 // inbox is answered from here. The connection probe (connection_probe.go) is never forwarded and
 // never answered: the subscription itself is what keeps the session connected, and a probe costs
 // its sender at most its one second. A message on the relay subject that is no relay frame (its

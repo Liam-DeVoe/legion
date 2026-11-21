@@ -227,7 +227,7 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
 - **Order**: the socket handles each frame whole, a `sub`'s subscribe and the flush that makes the server hold it included, before it reads the next one.
   The client's `flush()` is a WebSocket ping, so its pong comes only after every frame sent before it is handled.
 
-- **What it carries**: a frame's receipt subject is the owning replica's, under `notifications.envoy.relayreply.` (`bus.RelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on the other replica (`startSessionRelays`).
+- **What it carries**: a frame's receipt subject is the owning machine's, under `notifications.envoy.relayreply.<machine id>.` (`natsgrant.EdgeRelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on another machine (`startSessionRelays`): the edge's grant publishes every machine's receipts and subscribes only its own, so the socket's replica publishes the client's receipt on the owner's subject, which the owner alone reads.
   The owning replica holds at most 16 of a session's frames in flight, awaiting `done` or `nak` (its session consumers' MaxAckPending, `relayEdgeInFlight`), so a client that reads promptly takes any backlog with its socket open.
   The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no relay receipt is not forwarded either.
 

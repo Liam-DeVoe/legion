@@ -1599,8 +1599,9 @@ func main() {
 		os.Exit(1)
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
-	// machine's durable binding (below). An edge listener's relay takes its receipts under
-	// bus.RelayReplyPrefix, which the replica serving the session's relay socket publishes them on.
+	// machine's durable binding (below). An edge listener's relay takes its receipts under its
+	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
+	// session's relay socket publishes them.
 	relays, err := startSessionRelays(delivery, deliveryConfig)
 	if err != nil {
 		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
