@@ -2188,12 +2188,18 @@ BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (the three wall-clock pro
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, whose
 # output every job of dispatch-browser.yaml that starts stacks reads, since none of them sets up
 # Go - the shard and alone jobs' containers have none, and the multiprocess, embedder and visual
-# jobs install none - and the two-build job's own, which sets up Go for its own build. One script;
-# a name per job, since the check finds a step by name across the workflow. Pinned whole, since
-# `go run` is not a form the simple form reduces.
+# jobs install none - and the two-build job's own, which sets up Go for its own build. A name per
+# job, since the check finds a step by name across the workflow, and a script per job: the
+# binaries job's `go run` carries CGO_ENABLED=0 on the line, as that job's build step's go builds
+# do, so it reuses their objects, and the two-build job's runs on the runner's default cgo, as
+# that job's own build does. Pinned whole, since `go run` is not a form the simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
 TWO_BUILDS_CONNECTIONS_STEP = "Read the connections the two-build stack's Postgres must allow"
 BROWSER_CONNECTIONS_SCRIPT = """\
+connections=$(CGO_ENABLED=0 go run ./internal/dispatch/store/cmd/connections)
+[[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
+TWO_BUILDS_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
@@ -3081,11 +3087,13 @@ GATES = [
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read on the host once for the run: every job that starts
-        # stacks takes it from the binaries job's output, since none of them sets up Go.
+        # stacks takes it from the binaries job's output, since none of them sets up Go. The
+        # `go run` pins CGO_ENABLED=0 on the line, as the build step's go builds do, and the Run
+        # carries it for the same reason as the entry above.
         pinned_step(BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
-             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
-             {"mode": "build"}),
+             "CGO_ENABLED=0 go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
@@ -3527,7 +3535,7 @@ GATES = [
         ]),
         # The browser half's stack connection limit, read before its two browser steps, which
         # start the harness's own Postgres rather than using the service.
-        pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+        pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, TWO_BUILDS_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
              "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
              {"mode": "build"}),

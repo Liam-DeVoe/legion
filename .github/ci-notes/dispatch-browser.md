@@ -188,8 +188,8 @@ retry arithmetic rather than its measured maximum.
 go-dispatch-browser, restored only: a family of this job's own, which
 .github/workflows/ci-caches.yaml's dispatch-browser job fills on a push to main, on this job's
 runner, by running this job's go commands as this job runs them: the build step's two `go
-build`s with CGO_ENABLED=0 over the same packages, and the connections step's `go run` on the
-runner's default cgo. No job here saves it.
+build`s over the same packages and the connections step's `go run`, each with CGO_ENABLED=0.
+No job here saves it.
 
 It restored go-envoy-test until dispatch://INFRA-1109 measured what that bought. ci-caches.yaml's
 envoy job fills go-envoy-test with `go test -c -o /dev/null ./...` over the whole envoy module on
@@ -212,9 +212,8 @@ beside them on the same four CPUs, and on a build cache that held none of its ob
 cold build those Jobs time at a minute and more. That job's restore of go-envoy-test read
 723,666,370 bytes, in 19 s.
 
-The connections step's `go run` carries no CGO_ENABLED, so it builds with cgo on, and
-go-envoy-test held its closure, the store package's among it: the step took 1.4 s in job
-136589534717. So the fill runs it too, and the entry holds both builds' objects.
+The connections step's `go run` carries CGO_ENABLED=0 too, so it reuses the build step's
+objects, the store package's closure among them, and the fill runs it as that step does.
 
 go-envoy would serve this job no better: it is filled by a build of ./cmd/listener and
 ./internal/testnats/cmd/natsd alone, so a job that restores it and builds these four

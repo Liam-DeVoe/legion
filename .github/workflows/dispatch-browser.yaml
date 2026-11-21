@@ -73,7 +73,7 @@ jobs:
       - name: Read the connections each stack's Postgres must allow
         id: connections
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          connections=$(CGO_ENABLED=0 go run ./internal/dispatch/store/cmd/connections)
           [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy

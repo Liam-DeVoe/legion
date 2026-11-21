@@ -205,8 +205,8 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // Every size of this tree here but the entry's last was measured with `bun run build:web`
-    // at `b724461b` on 2026-11-17. The largest chunk is ECharts (an `index-*.js` of 1,134,772
+    // Every size of this tree here was measured with `bun run build:web` at `b724461b` on
+    // 2026-11-17. The largest chunk is ECharts (an `index-*.js` of 1,134,772
     // bytes raw), which only the Delivery page loads, and the entry - the one `assets/index-*.js`
     // that dist/index.html names - was 486,627 bytes, down from the 1,056,637 the default branch's
     // own build writes the same day at `a732c7e7`, before dispatch://INFRA-1109 split the
@@ -216,9 +216,7 @@ export default defineConfig({
     // chunk of their own now, and `@legion/contracts`' subpaths keep that package's reference
     // table and zod's schema modules out of a page that reads neither - in the editor's chunk
     // too (`ask-content-*.js`, 470,723 bytes), which imports that package by subpath alone
-    // (`packages/proof-editor/src/block-pointers.ts`). The entry has moved since: it was 496,982
-    // bytes at `381b29ad` on 2026-11-20, 497,475 at `1293f3d9` the same day, and is 497,539 at
-    // `06c1e7b2` on 2026-11-21.
+    // (`packages/proof-editor/src/block-pointers.ts`). The entry has moved since;
     // `web/src/asset-sizes-in-build.ts` holds it to 500,000 bytes and keeps its history, and
     // `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
     // warning and is over the ECharts chunk alone.

@@ -87,6 +87,7 @@ import { documentEditor } from "./editor";
 import { inboxPane } from "./inbox-pane";
 import { seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import { withIssuePage } from "./issue-page-option";
+import { EDITOR_LIBRARY_CHUNK } from "./shell";
 import {
   type Browser,
   type BrowserContext,
@@ -164,10 +165,10 @@ interface Measurement {
 }
 
 /** One chunk of a live document that the entry starts beside the landing read: what the report
- *  calls it, and the file it is asked for at. */
+ *  calls it, and the pattern of the path it is asked for at. */
 interface DocumentChunk {
   readonly name: string;
-  readonly path: RegExp;
+  readonly pattern: RegExp;
 }
 
 /** One page this row lands on cold. */
@@ -362,7 +363,7 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
         routeChunk = { at: performance.now() - from, path: pathname };
       }
       for (const chunk of landing.documentChunks ?? []) {
-        if (!documentChunkAt.has(chunk) && chunk.path.test(pathname)) {
+        if (!documentChunkAt.has(chunk) && chunk.pattern.test(pathname)) {
           documentChunkAt.set(chunk, performance.now() - from);
         }
       }
@@ -420,10 +421,10 @@ async function seedWorld(): Promise<World> {
 
 /** The chunks the two landings that draw a document hold the entry to starting beside their
  *  landing read (`Landing.documentChunks` says why these two): the editor's library
- *  (`@legion/proof-editor`, and not `lib-headless`, whose name begins the same way) and Yjs. */
+ *  (`EDITOR_LIBRARY_CHUNK`) and Yjs. */
 const DOCUMENT_CHUNKS: readonly DocumentChunk[] = [
-  { name: "editor library", path: /\/assets\/lib-[\w-]{8}\.js$/u },
-  { name: "transport", path: /\/assets\/yjs-[\w-]{8}\.js$/u },
+  { name: "editor library", pattern: EDITOR_LIBRARY_CHUNK },
+  { name: "transport", pattern: /\/assets\/yjs-[\w-]{8}\.js$/u },
 ];
 
 /** The new issue page's frame shell (`web/src/features/issue-page/frame-shell.tsx`, loaded

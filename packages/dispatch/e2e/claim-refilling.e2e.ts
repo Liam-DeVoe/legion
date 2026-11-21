@@ -19,14 +19,11 @@ import { asUser } from "./users";
 // timers: the row installs the page's clock before the page loads and moves it until each view
 // says what the row asserts (`spendPageTimeUntil`, `e2e/agents.ts`), rather than waiting them out.
 //
-// Under a refilling list the registry read holds no data, so each of the shell's 15 s polls
-// (`AGENT_REGISTRY_POLL_MS`) sends it back to loading until its retries are refused again, and in
-// that time neither view says the list refills: the chip drops its note and the filter its own. An
-// assertion that the claim does not lapse retries for the whole expect timeout, so on a running
-// clock it could pass in such a window even where a view lapses the claim while the refusal
-// stands. So each view is asserted with the page's clock held still at a moment it says the list
-// refills (`holdPageClockWhen`), where no poll can fire, and every assertion of that view reads
-// the page the refusal drew.
+// Under a refilling list each of the shell's 15 s polls of the registry
+// (`AGENT_REGISTRY_POLL_MS`) makes the chip drop its note and the filter its own until the
+// retries are refused again. So each view is asserted with the page's clock held still at a
+// moment it says the list refills; `holdPageClockWhen` (`e2e/agents.ts`) says why the clock is
+// held.
 
 const holder = { session_id: "claim-refill-session", title: "Claim refill holder" };
 const REFILLING = "The agent list is refilling. Try again in a moment.";

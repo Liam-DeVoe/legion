@@ -241,6 +241,11 @@ export const WRITE_KINDS_CHUNK = /\/assets\/kinds-[\w-]{8}\.js$/u;
  *  draws from, so no landmark shows they came down (`fetchedChunk`). */
 export const writesChunks = [PENDING_WRITES_CHUNK, KEPT_WRITES_CHUNK, WRITE_KINDS_CHUNK] as const;
 
+/** The path of the editor library's own chunk (`@legion/proof-editor`, which
+ *  `web/src/features/doc/document-chunks.ts`'s `loadEditorLibrary` imports), and not
+ *  `lib-headless`, whose name begins the same way. */
+export const EDITOR_LIBRARY_CHUNK = /\/assets\/lib-[\w-]{8}\.js$/u;
+
 /** Waits until the page has fetched a script whose path `chunk` matches: for a chunk the page
  *  starts of its own accord and draws nothing from until a reader needs it, so that no landmark
  *  can show that it came down. It reads the page's own resource timing, which keeps the

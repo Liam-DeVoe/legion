@@ -10,10 +10,8 @@
 #
 # The step "Build the binaries and the dashboard the browser suite runs" of
 # .github/workflows/dispatch-browser.yaml's binaries job starts it in the background beside that
-# step's own two `go build` commands - the Dispatch server, its dev OIDC issuer and the seeding
-# step, then ./cmd/cipherd as broker, chained in one background subshell - and waits on it by
-# process id, as it waits on that subshell, so the bundles' time is spent inside the go builds'
-# rather than after it;
+# step's go builds and waits on it by process id, so the bundles' time is spent inside the go
+# builds' rather than after it;
 # .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static says
 # why, and why the go builds stay in the step rather than here. <lane> is the run's lane, the
 # workflow's own `${{ inputs.lane }}`: `full` builds the second rollout bundle beside the

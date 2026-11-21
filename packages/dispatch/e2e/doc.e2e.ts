@@ -37,6 +37,7 @@ import {
 import { engineParagraphs } from "./read-back";
 import { navigateInApp } from "./sends";
 import {
+  EDITOR_LIBRARY_CHUNK,
   failAssetWhen,
   holdMarginChunk,
   MARGIN_CHUNK,
@@ -1104,10 +1105,7 @@ test("a live document whose editor fails to download ends the hold", async ({ br
     await page.goto("/");
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     const spent = await recordTabReloads(page, [3, 2, 1]);
-    // The editor library's own chunk (`@legion/proof-editor`,
-    // `web/src/features/doc/document-chunks.ts`, `loadEditorLibrary`), and not `lib-headless`,
-    // whose name it begins.
-    const failed = await failAssetWhen(page, /\/assets\/lib-[\w-]{8}\.js$/u, async () => undefined);
+    const failed = await failAssetWhen(page, EDITOR_LIBRARY_CHUNK, async () => undefined);
 
     await page.goto(`/issues/${issue.key}`);
     await expect(

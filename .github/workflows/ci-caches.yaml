@@ -337,9 +337,8 @@ jobs:
   # go-envoy-test entry was saved at (Job infra-1109-gocgo-dv7gl), and 16 s after the same fill
   # made with CGO_ENABLED=0 (Job infra-1109-gobuild-894l9);
   # .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser holds
-  # the rest of the readings. The fill also runs that job's connections step's `go run`, which
-  # carries no CGO_ENABLED and so builds with cgo on: go-envoy-test held that command's closure,
-  # the store package's among it, which an entry of the cgo-off builds alone would not hold.
+  # the rest of the readings. The fill also runs that job's connections step's `go run`, with
+  # CGO_ENABLED=0 as that step runs it, so that step reuses the build step's objects.
   #
   # A job of its own on ubuntu-24.04, the binaries job's runner, and not a step of the envoy job's
   # x86_64 leg: a save takes the machine's whole module cache and build cache, so in that leg, in
@@ -375,10 +374,10 @@ jobs:
           lookup-only: true
 
       # The binaries job's go commands, run as it runs them, in packages/envoy: its build step's
-      # two `go build`s, each with CGO_ENABLED=0, over the same packages into the same outputs,
-      # and its connections step's `go run`, with none. They are copied here rather than run from
-      # one script both jobs call, because that job's go commands stay in its steps' own pinned
-      # text (.github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static).
+      # two `go build`s over the same packages into the same outputs, and its connections step's
+      # `go run`, each with CGO_ENABLED=0. They are copied here rather than run from one script
+      # both jobs call, because that job's go commands stay in its steps' own pinned text
+      # (.github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static).
       # Nothing fails when the two drift apart - the binaries job just builds cold again - so a
       # change to them there is a change here too.
       - name: Build what the binaries job of dispatch-browser.yaml builds
@@ -386,7 +385,7 @@ jobs:
         run: |
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
-          go run ./internal/dispatch/store/cmd/connections
+          CGO_ENABLED=0 go run ./internal/dispatch/store/cmd/connections
         working-directory: packages/envoy
 
       - if: steps.go-dispatch-browser.outputs.cache-hit != 'true'

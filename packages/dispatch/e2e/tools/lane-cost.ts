@@ -2,17 +2,20 @@
  *  `bun e2e/tools/lane-cost.ts base <day> <until>`: the readings INFRA-1109's checks deee9ac4
  *  and e62534dd take of the browser lane - one run's cost, and the day's base set, the green
  *  full lanes of the default branch that a head's cost is held against. It is in the tree so that
- *  the tester and the reviewer read the same base set by the same arithmetic.
+ *  every reading of the base set uses the same arithmetic.
  *
  *    bun e2e/tools/lane-cost.ts run 44823289704
  *    bun e2e/tools/lane-cost.ts run 44823289704 2
  *    bun e2e/tools/lane-cost.ts base 2026-11-20 2026-11-20T22:12:57Z
  *
- *  `run` prints one run's reading as JSON, by verification.md's "How a lane's cost is read". It
- *  reads the run's jobs whose name starts `dispatch-browser`, each at the attempt it last ran in
- *  (`filter=latest`), or the jobs of attempt `<attempt>` where the command names one, and leaves
- *  out a job that was skipped and one that has no `started_at` or no `completed_at`. A run of the
- *  nightly workflow, whose jobs are named `full / …`, is not read: its jobs fail the filter above.
+ *  `run` prints one run's reading as JSON, by "How a lane's cost is read" in
+ *  dispatch://INFRA-1109's verification document. It reads the run's jobs whose name starts
+ *  `dispatch-browser`, each at the attempt it last ran in (`filter=latest`), or the jobs of
+ *  attempt `<attempt>` where the command names one, and leaves out a job that was skipped and one
+ *  that has no `started_at` or no `completed_at`. The run's own fields are read at the same
+ *  attempt: `runs/<id>`, which GitHub answers with the run's latest attempt, or
+ *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow, whose jobs are named `full / …`,
+ *  is not read: its jobs fail the filter above.
  *
  *  - cost: the sum over those jobs of `completed_at` less `started_at`, in seconds. `per_job`
  *    holds each job's, under its name after `dispatch-browser / `;
@@ -21,28 +24,32 @@
  *  - queue: the sum over the jobs of `started_at` less `created_at`;
  *  - notes: the merge job's own `##[notice]` lines. rows: N in the first of them that says
  *    "merged report holds", where it reads "the merged report holds N rows", and null otherwise;
- *  - head, jobs (how many were read), all_success, and the run's event, attempt, conclusion and
- *    updated_at, as GitHub gives them.
+ *  - merge_job: the merge job's id; merge_runner: the first of its labels, and "?" when the job
+ *    has no labels; merge_seconds: its seconds, which are `per_job.merge`;
+ *  - run: the run's id; head, jobs (how many were read), all_success, and the run's event,
+ *    attempt, conclusion and updated_at, as GitHub gives them.
  *
  *  Run 44823289704 reads cost 2,719 s, own 1,223 s, wall 1,229 s, queue 18 s and 1,609 rows.
  *
- *  `base` prints, as JSON and sorted by `updated_at`, the completed runs of ci.yaml created on
- *  `<day>` (UTC) that count for the base set: event merge_group, the merge queue's runs, which
- *  are how ci.yaml runs the full lane on the tree the default branch lands as (ci.yaml runs on
- *  pull_request, merge_group and workflow_dispatch alone, and a dispatch is a run started by
- *  hand); concluded success; updated at or before `<until>`; at least 8 dispatch-browser jobs
- *  that were not skipped, every one of them successful; and a merged report of at least 1,000
- *  rows. Each is printed with its run, event, head, cost, rows, jobs, own and updated_at.
+ *  `base` prints, as JSON and sorted by `updated_at`, the runs of ci.yaml created on `<day>` (UTC)
+ *  that count for the base set: event merge_group, the merge queue's runs, which are how ci.yaml
+ *  runs the full lane on the tree the default branch lands as (ci.yaml runs on pull_request,
+ *  merge_group and workflow_dispatch alone, and a dispatch is a run started by hand); concluded
+ *  success; updated at or before `<until>`; at least 8 dispatch-browser jobs that were not
+ *  skipped, every one of them successful; and a merged report of at least 1,000 rows. Each is
+ *  printed with its run, event, head, cost, rows, jobs, own and updated_at.
  *
  *  THE DAY'S LISTING. GitHub lists at most 1,000 runs for a filtered query and drops the rest
  *  without saying so: ci.yaml had 1,695 completed runs on 2026-11-20, and the listing of that day
- *  lost the oldest of them. verification.md's lane command says how one run is read and nothing
- *  of how the day's runs are listed, which is how a short base set went unnoticed. So the listing
- *  names its event, and its `total_count` is read first. A listing GitHub counts at or over
- *  1,000 runs is refused, naming the event, the day and the count, and so is a
- *  listing whose length differs from its `total_count`. A day refused at the cap is read in
- *  parts: `<day>` also takes a range of GitHub's `created` filter, such as
- *  `2026-11-20T00:00:00Z..2026-11-20T11:59:59Z`, and the parts' base sets are joined.
+ *  lost the oldest of them. The lane command of dispatch://INFRA-1109's verification document
+ *  says how one run is read and nothing of how the day's runs are listed, which is how a short
+ *  base set went unnoticed. So the listing names its event and `status=success`, which GitHub
+ *  answers with the runs that concluded success, and its `total_count` is read first. The cap and
+ *  the length check apply to those successful runs: a listing GitHub counts at or over 1,000 runs
+ *  is refused, naming the event, the day and the count, and so is a listing whose length differs
+ *  from its `total_count`. A day refused at the cap is read in parts: `<day>` also takes a range
+ *  of GitHub's `created` filter, such as `2026-11-20T00:00:00Z..2026-11-20T11:59:59Z`, and the
+ *  parts' base sets are joined.
  *
  *  Every read of GitHub is a `gh api` call that names `repos/cybermonklabs/legion/...` in full,
  *  as the pod's gh, Legion's wrapper, requires. A call that fails stops the reading with the
@@ -67,7 +74,7 @@ const REPO = "cybermonklabs/legion";
 const LISTING_CAP = 1000;
 
 /** The event ci.yaml runs the default branch's full lane on: the merge queue's. */
-const EVENTS: readonly string[] = ["merge_group"];
+const EVENT = "merge_group";
 
 /** The fewest dispatch-browser jobs, not skipped, of a run of the full lane. */
 const FULL_LANE_JOBS = 8;
@@ -104,7 +111,6 @@ interface WorkflowRun {
   readonly id: number;
   readonly event: string;
   readonly conclusion: string | null;
-  readonly head_branch: string | null;
   readonly head_sha: string;
   readonly run_attempt: number;
   readonly updated_at: string;
@@ -189,6 +195,12 @@ function legOf(name: string): string {
   return name.slice(at + " / ".length);
 }
 
+/** The run as GitHub gives it: at its latest attempt, or at `attempt`. */
+function workflowRun(run: string, attempt?: string): WorkflowRun {
+  const where = attempt === undefined ? `runs/${run}` : `runs/${run}/attempts/${attempt}`;
+  return JSON.parse(gh(`repos/${REPO}/actions/${where}`)) as WorkflowRun;
+}
+
 /** The run's dispatch-browser jobs: each at the attempt it last ran in, or those of `attempt`. */
 function jobsOf(run: string, attempt?: string): Job[] {
   const where =
@@ -201,24 +213,23 @@ function jobsOf(run: string, attempt?: string): Job[] {
   );
 }
 
-/** One run's reading. `listed` is the run's jobs where the caller has read them already. */
-function reading(
-  run: string,
-  attempt?: string,
-  listed: readonly Job[] = jobsOf(run, attempt)
-): Reading {
-  const info = JSON.parse(gh(`repos/${REPO}/actions/runs/${run}`)) as WorkflowRun;
+/** The reading of the run `info`, from `listed`, its dispatch-browser jobs at the same attempt. */
+function reading(info: WorkflowRun, listed: readonly Job[]): Reading {
+  const run = String(info.id);
   const jobs = listed.filter(ran);
   if (jobs.length === 0) fail(`run ${run}: no dispatch-browser job started and ended`);
   const perJob = new Map<string, number>();
-  for (const job of jobs) {
-    const seconds = (instant(job.completed_at) - instant(job.started_at)) / 1000;
-    perJob.set(legOf(job.name), Math.trunc(seconds));
-  }
-  const firstStart = Math.min(...jobs.map((job) => instant(job.started_at)));
-  const lastEnd = Math.max(...jobs.map((job) => instant(job.completed_at)));
+  let firstStart = Number.POSITIVE_INFINITY;
+  let lastEnd = Number.NEGATIVE_INFINITY;
   let queue = 0;
-  for (const job of jobs) queue += (instant(job.started_at) - instant(job.created_at)) / 1000;
+  for (const job of jobs) {
+    const started = instant(job.started_at);
+    const completed = instant(job.completed_at);
+    perJob.set(legOf(job.name), Math.trunc((completed - started) / 1000));
+    firstStart = Math.min(firstStart, started);
+    lastEnd = Math.max(lastEnd, completed);
+    queue += (started - instant(job.created_at)) / 1000;
+  }
 
   const merge =
     jobs.find((job) => job.name.endsWith("/ merge")) ?? fail(`run ${run}: no merge job ran`);
@@ -256,7 +267,7 @@ function reading(
     queue: Math.trunc(queue),
     rows: rowsMatch === null ? null : Number(rowsMatch[1]),
     merge_job: merge.id,
-    merge_runner: merge.labels?.length ? merge.labels[0] : "?",
+    merge_runner: merge.labels?.[0] ?? "?",
     merge_seconds: mergeSeconds,
     notes,
   };
@@ -269,25 +280,20 @@ function totalCount(text: string): number {
   return Number(total);
 }
 
-/** The completed runs of ci.yaml created on `day`, of each event the full lane runs on. Each
- *  event is listed on its own, and a listing GitHub may have cut short is refused (see THE DAY'S
- *  LISTING, above). */
+/** The successful runs of ci.yaml created on `day`, of the event the full lane runs on. A
+ *  listing GitHub may have cut short is refused (see THE DAY'S LISTING, above). */
 function dayRuns(day: string): WorkflowRun[] {
-  const runs: WorkflowRun[] = [];
-  for (const event of EVENTS) {
-    const query = `repos/${REPO}/actions/workflows/ci.yaml/runs?created=${day}&status=completed&event=${event}`;
-    const total = totalCount(gh(`${query}&per_page=1`, "--jq", ".total_count"));
-    if (total >= LISTING_CAP) {
-      fail(
-        `${event} runs of ${day}: ${total}, at or over GitHub's cap of ${LISTING_CAP} on one ` +
-          "listing; split the day"
-      );
-    }
-    const listed = listing<WorkflowRun>(`${query}&per_page=100`, ".workflow_runs[]");
-    if (listed.length !== total) {
-      fail(`${event} runs of ${day}: listed ${listed.length}, GitHub counts ${total}`);
-    }
-    runs.push(...listed);
+  const query = `repos/${REPO}/actions/workflows/ci.yaml/runs?created=${day}&status=success&event=${EVENT}`;
+  const total = totalCount(gh(`${query}&per_page=1`, "--jq", ".total_count"));
+  if (total >= LISTING_CAP) {
+    fail(
+      `successful ${EVENT} runs of ${day}: ${total}, at or over GitHub's cap of ${LISTING_CAP} ` +
+        "on one listing; split the day"
+    );
+  }
+  const runs = listing<WorkflowRun>(`${query}&per_page=100`, ".workflow_runs[]");
+  if (runs.length !== total) {
+    fail(`successful ${EVENT} runs of ${day}: listed ${runs.length}, GitHub counts ${total}`);
   }
   return runs;
 }
@@ -301,7 +307,6 @@ function byUpdatedAt(a: BaseRun, b: BaseRun): number {
 function base(day: string, until: string): BaseRun[] {
   const picked: BaseRun[] = [];
   for (const run of dayRuns(day)) {
-    if (!EVENTS.includes(run.event) || run.conclusion !== "success") continue;
     if (run.updated_at > until) continue;
     const jobs = jobsOf(String(run.id));
     const notSkipped = jobs.filter((job) => job.conclusion !== "skipped");
@@ -311,7 +316,7 @@ function base(day: string, until: string): BaseRun[] {
     ) {
       continue;
     }
-    const read = reading(String(run.id), undefined, jobs);
+    const read = reading(run, jobs);
     if (read.rows === null || read.rows < FULL_LANE_ROWS) continue;
     picked.push({
       run: read.run,
@@ -360,7 +365,7 @@ if (import.meta.main) {
   const command = readArguments();
   const result =
     command.name === "run"
-      ? reading(command.run, command.attempt)
+      ? reading(workflowRun(command.run, command.attempt), jobsOf(command.run, command.attempt))
       : base(command.day, command.until);
   console.log(JSON.stringify(result, null, 1));
 }

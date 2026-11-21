@@ -191,8 +191,11 @@ function SheetAroundAField({ field }: { field: "autoFocus" | "effect" }): ReactN
 
 // A field inside the dialog that focuses itself as the dialog opens keeps that focus: one that
 // did so first is left alone, and one that does so after the dialog has moved the focus moves it
-// last.
-test("a field that focuses itself as its dialog opens keeps the focus", async () => {
+// last. Either way, closing gives the focus back to the control the dialog was opened from, as
+// WAI-ARIA's dialog pattern has it, and not to the page's body. So it does after the `autoFocus`
+// field, which takes the focus in the commit that opens the dialog, before any layout effect of
+// the dialog's, and which the dialog's close unmounts.
+test("a field that focuses itself as its dialog opens keeps the focus, and closing gives it back to the opener", async () => {
   for (const field of ["autoFocus", "effect"] as const) {
     const user = userEvent.setup();
     const view = render(
@@ -206,39 +209,16 @@ test("a field that focuses itself as its dialog opens keeps the focus", async ()
       expect(document.activeElement, `the ${field} field lost the focus`).toBe(
         view.getByRole("textbox", { name: "Comment" })
       );
-      if (field === "effect") {
-        // The field's effect runs after the dialog has read what held the focus, so closing
-        // gives the focus back to the opener.
-        await user.keyboard("{Escape}");
-        expect(document.activeElement, "closing left the focus off Open").toBe(opener);
-      }
+      await user.keyboard("{Escape}");
+      expect(
+        view.queryByRole("dialog", { name: "Sheet" }),
+        `the ${field} sheet stayed open`
+      ).toBeNull();
+      expect(document.activeElement, `closing the ${field} sheet left the focus off Open`).toBe(
+        opener
+      );
     } finally {
       view.unmount();
     }
-  }
-});
-
-// A field that takes the focus by `autoFocus` does so in the commit that opens its dialog, before
-// any layout effect of the dialog's; the dialog's close unmounts it. Closing gives the focus back
-// to the control the dialog was opened from all the same, as WAI-ARIA's dialog pattern has it,
-// and not to the page's body.
-test("closing a dialog whose field took the focus by autoFocus gives the focus back to its opener", async () => {
-  const user = userEvent.setup();
-  const view = render(
-    <KeymapProvider>
-      <SheetAroundAField field="autoFocus" />
-    </KeymapProvider>
-  );
-  try {
-    const opener = view.getByRole("button", { name: "Open" });
-    await user.click(opener);
-    expect(document.activeElement, "the autoFocus field lost the focus").toBe(
-      view.getByRole("textbox", { name: "Comment" })
-    );
-    await user.keyboard("{Escape}");
-    expect(view.queryByRole("dialog", { name: "Sheet" })).toBeNull();
-    expect(document.activeElement, "closing left the focus off Open").toBe(opener);
-  } finally {
-    view.unmount();
   }
 });
