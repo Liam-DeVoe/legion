@@ -478,6 +478,31 @@ func encodeTree(t *testing.T, v any) []byte {
 	return data
 }
 
+// encodeTree writes one tree as one text, whatever the order in which Go gives the keys of a map,
+// and the distinct-input check rests on it (inputKey): each of ten encodes of an object of 26
+// members, decoded from a text that names them from z to a, is the text that names them from a to
+// z. An encode in the order in which Go gives the keys of the map writes that text only by chance.
+func TestEncodeTreeWritesOneTreeAsOneText(t *testing.T) {
+	t.Parallel()
+	var backward, forward []string
+	for c := 'z'; c >= 'a'; c-- {
+		backward = append(backward, fmt.Sprintf("%q:%d", string(c), c))
+	}
+	for c := 'a'; c <= 'z'; c++ {
+		forward = append(forward, fmt.Sprintf("%q:%d", string(c), c))
+	}
+	want := "{" + strings.Join(forward, ",") + "}"
+	for i := range 10 {
+		var tree any
+		if err := json.Unmarshal([]byte("{"+strings.Join(backward, ",")+"}"), &tree); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(encodeTree(t, tree)); got != want {
+			t.Fatalf("encode %d of one tree is %s, where it should be %s", i+1, got, want)
+		}
+	}
+}
+
 // jsonCopy is v as encoding/json/v2 decodes its JSON text into any: a copy that shares no object
 // with v, with a number as a float64.
 func jsonCopy(t *testing.T, v any) any {
