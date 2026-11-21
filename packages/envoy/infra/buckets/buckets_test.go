@@ -24,28 +24,26 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// noHold is the env of a run that must reach no hold: a break-glass create or a usage error. A
+// noHold is the Deps of a run that must reach no hold: a break-glass create or a usage error. A
 // call of either opener fails the test.
-func noHold(t *testing.T) env {
-	return env{
-		records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
+func noHold(t *testing.T) writerhold.Deps {
+	return writerhold.Deps{
+		Records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
 			t.Error("the run opened the broker's hold routes")
 			return nil, errors.New("no hold here")
 		},
-		hub: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
+		Operator: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
 			t.Error("the run opened the hub as the operator")
 			return nil, errors.New("no hold here")
 		},
-		now:  time.Now,
-		http: http.DefaultClient,
 	}
 }
 
-// runCommand runs the command in e with args and returns its exit code and output.
-func runCommand(t *testing.T, e env, args ...string) (int, string, string) {
+// runCommand runs the command on d with args and returns its exit code and output.
+func runCommand(t *testing.T, d writerhold.Deps, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := command(context.Background(), args, &stdout, &stderr, e)
+	code := CommandOn(context.Background(), args, &stdout, &stderr, d)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -275,15 +273,14 @@ func TestACreateWithEveryBucketThereNeedsNoHold(t *testing.T) {
 		}
 	}
 	opened := 0
-	e := env{
-		records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
+	d := writerhold.Deps{
+		Records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
 			opened++
 			return nil, errors.New("the hold routes are closed")
 		},
-		hub: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
+		Operator: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
 			return &writerhold.Operator{Connect: func(context.Context) (*natsgo.Conn, error) { return natsgo.Connect(uri) }}, nil
 		},
-		now: time.Now,
 	}
 	args := []string{"create", "--reason", "a deploy", "--broker-url", "https://broker", "--token-file", "/dev/null",
 		"--verify-keys", "k", "--signing-key-secret", "s", "--minters-report", "r", "--probe-token-file", "p", "--nats", uri}
@@ -292,7 +289,7 @@ func TestACreateWithEveryBucketThereNeedsNoHold(t *testing.T) {
 		for _, bucket := range buckets {
 			full = append(full, "--bucket", bucket)
 		}
-		return runCommand(t, e, full...)
+		return runCommand(t, d, full...)
 	}
 	code, stdout, stderr := run(present...)
 	if code != 0 || !strings.Contains(stdout, "nothing to create, so no hold is set") || opened != 0 {

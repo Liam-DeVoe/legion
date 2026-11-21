@@ -77,33 +77,14 @@ type KeyStore interface {
 	Current(ctx context.Context, name string) (version string, value []byte, err error)
 }
 
-// env is what a run reaches outside the process. Command gives the real one (realEnv); a test gives
-// its own.
-type env struct {
-	// records opens the operator's client of the broker's hold routes for o, with the signing key
-	// when signing.
-	records func(ctx context.Context, o options, signing bool) (*holdrecord.Client, error)
-	// keys opens the signing key's store.
-	keys func(ctx context.Context) (KeyStore, error)
-	// hub is the operator's reach of the hub for o: its Kubernetes objects, its NATS connections
-	// and the probe.
-	hub func(ctx context.Context, o options) (*Operator, error)
-	now func() time.Time
-	// stores is the daemon stores' stream-id writer hub-restore's abort reconciles them with
-	// (consumernames.ReconcileDaemonStreamIDs, which cmd/envoy-infra passes in); nil for none.
-	stores StreamIDWriter
-}
-
 // Command runs `envoy-infra hold` with args, the words after "hold", and returns its exit code.
 // readers.Stores is the daemon stores' stream-id writer that hub-restore's abort runs (the census's
 // own, CensusReaders); the other readers are the census's alone.
 func Command(ctx context.Context, args []string, stdout, stderr io.Writer, readers CensusReaders) int {
-	e := realEnv()
-	e.stores = readers.Stores
-	return run(ctx, args, stdout, stderr, e)
+	return CommandOn(ctx, args, stdout, stderr, RealDeps(readers))
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer, e env) int {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, d Deps) int {
 	actions := []string{actionStatus, actionPrepare, actionSet, actionAbort, actionRelease, actionRestore, actionProve, actionKeygen}
 	if len(args) == 0 || !slices.Contains(actions, args[0]) {
 		fmt.Fprint(stderr, usage)
@@ -116,7 +97,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, e env) in
 	if code >= 0 {
 		return code
 	}
-	err := dispatch(ctx, o, stdout, stderr, e)
+	err := dispatch(ctx, o, stdout, stderr, d)
 	return ExitCode(stderr, "envoy-infra hold "+o.action, err)
 }
 
@@ -229,15 +210,15 @@ func workflows() []string {
 	}
 }
 
-func dispatch(ctx context.Context, o options, stdout, stderr io.Writer, e env) error {
+func dispatch(ctx context.Context, o options, stdout, stderr io.Writer, d Deps) error {
 	if o.action == actionKeygen {
-		store, err := e.keys(ctx)
+		store, err := d.keyStore(ctx)
 		if err != nil {
 			return err
 		}
 		return keygen(ctx, store, o.KeySecret, stdout, stderr)
 	}
-	records, err := e.records(ctx, o, o.action != actionStatus)
+	records, err := d.Records(ctx, o.HubFlags, o.action != actionStatus)
 	if err != nil {
 		return err
 	}
@@ -247,31 +228,31 @@ func dispatch(ctx context.Context, o options, stdout, stderr io.Writer, e env) e
 	case actionRestore:
 		return restore(ctx, records, o, stdout)
 	case actionPrepare:
-		op, err := e.hub(ctx, o)
+		op, err := d.Operator(ctx, o.HubFlags)
 		if err != nil {
 			return err
 		}
-		return prepare(ctx, records, op, o, e.now, stdout)
+		return prepare(ctx, records, op, o, d.Clock(), stdout)
 	case actionAbort:
-		op, err := e.hub(ctx, o)
+		op, err := d.Operator(ctx, o.HubFlags)
 		if err != nil {
 			return err
 		}
-		return abort(ctx, records, op, e.stores, o, stdout)
+		return abort(ctx, records, op, d.Readers.Stores, o, stdout)
 	case actionRelease:
-		op, err := e.hub(ctx, o)
+		op, err := d.Operator(ctx, o.HubFlags)
 		if err != nil {
 			return err
 		}
 		return release(ctx, records, op, o, stdout)
 	case actionSet:
-		op, err := e.hub(ctx, o)
+		op, err := d.Operator(ctx, o.HubFlags)
 		if err != nil {
 			return err
 		}
-		return set(ctx, records, op, o, e.now, stdout)
+		return set(ctx, records, op, o, d.Clock(), stdout)
 	case actionProve:
-		op, err := e.hub(ctx, o)
+		op, err := d.Operator(ctx, o.HubFlags)
 		if err != nil {
 			return err
 		}
@@ -425,16 +406,3 @@ func keygen(ctx context.Context, store KeyStore, secret string, stdout, stderr i
 // newHoldID is a fresh hold id: a nuid, one subject token with no '.', so the bucket barrier's key
 // hold.barrier.<hold id> is one key.
 func newHoldID() string { return nuid.Next() }
-
-// realEnv is the env of a real run: the broker's routes with the operator's token and the hold
-// key from Secret Manager, and the hub through HubFlags.Operator.
-func realEnv() env {
-	return env{
-		records: func(ctx context.Context, o options, signing bool) (*holdrecord.Client, error) {
-			return openRecords(ctx, o.HubFlags, signing, openKeys)
-		},
-		keys: openKeys,
-		hub:  func(ctx context.Context, o options) (*Operator, error) { return openOperator(ctx, o.HubFlags) },
-		now:  time.Now,
-	}
-}

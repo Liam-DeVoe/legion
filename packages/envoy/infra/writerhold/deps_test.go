@@ -19,11 +19,11 @@ import (
 // any hold, and `hold keygen` with no key store fails with ErrNoKeyStore.
 func TestCommandOnRunsTheHoldOnTheCallersStack(t *testing.T) {
 	h := newHeldStack(t)
-	deps := HoldDeps{
-		Records:  func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
-		Operator: func(context.Context) (*Operator, error) { return h.op, nil },
+	deps := Deps{
+		Records:  func(context.Context, HubFlags, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
+		Operator: func(context.Context, HubFlags) (*Operator, error) { return h.op, nil },
 	}
-	runOn := func(deps HoldDeps, args ...string) (int, string, string) {
+	runOn := func(deps Deps, args ...string) (int, string, string) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		code := CommandOn(context.Background(), append(args, commonArgs...), &stdout, &stderr, deps)
@@ -42,7 +42,7 @@ func TestCommandOnRunsTheHoldOnTheCallersStack(t *testing.T) {
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
 
 	noHub := deps
-	noHub.Operator = func(context.Context) (*Operator, error) { return nil, errors.New("no hub here") }
+	noHub.Operator = func(context.Context, HubFlags) (*Operator, error) { return nil, errors.New("no hub here") }
 	code, _, stderr := runOn(noHub, prepare...)
 	require.Equal(t, 1, code, "control: prepare with no hub")
 	require.Contains(t, stderr, "no hub here")

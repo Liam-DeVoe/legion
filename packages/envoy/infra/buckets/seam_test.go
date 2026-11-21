@@ -32,14 +32,16 @@ func TestCommandOnRunsABucketsCommandOnTheCallersStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	nc.Close()
-	deps := Deps{
-		Records:  func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
-		Operator: func(context.Context) (*writerhold.Operator, error) { return h.op, nil },
+	deps := writerhold.Deps{
+		Records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
+			return h.s.Broker.Client(t), nil
+		},
+		Operator: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return h.op, nil },
 	}
 	args := []string{"create", "--hold", id, "--bucket", bus.RoleClaimBucket, "--reason", "the seam",
 		"--broker-url", "https://broker.holdtest", "--token-file", "/dev/null", "--verify-keys", "AAAA",
 		"--signing-key-secret", "projects/holdtest/secrets/" + writerhold.SigningKeySecret, "--nats", h.s.Cluster.URL()}
-	runOn := func(deps Deps) (int, string) {
+	runOn := func(deps writerhold.Deps) (int, string) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		code := CommandOn(ctx, args, &stdout, &stderr, deps)
@@ -57,7 +59,9 @@ func TestCommandOnRunsABucketsCommandOnTheCallersStack(t *testing.T) {
 	set := len(ops())
 
 	noHub := deps
-	noHub.Operator = func(context.Context) (*writerhold.Operator, error) { return nil, errors.New("no hub here") }
+	noHub.Operator = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
+		return nil, errors.New("no hub here")
+	}
 	if code, stderr := runOn(noHub); code != 1 || !strings.Contains(stderr, "no hub here") {
 		t.Fatalf("control: a create with no hub = %d, want 1 naming it\n%s", code, stderr)
 	}

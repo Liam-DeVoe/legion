@@ -9,7 +9,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -248,43 +247,17 @@ type CensusReaders struct {
 	Stores     StreamIDWriter
 }
 
-// streamsEnv is what a streams run reaches outside the process.
-type streamsEnv struct {
-	env
-	readers CensusReaders
-}
-
 // StreamsCommand runs `envoy-infra streams update|census` with args, the words after "streams",
 // and returns its exit code. readers are the census's readers and writer. The census is the final
 // command of every workflow that can recreate ENVOY_NOTIFICATIONS (the cutover, hub-restore,
 // streams-update's own and streams-census), so its stream-id reconcile covers each.
 func StreamsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, readers CensusReaders) int {
-	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: realEnv(), readers: readers})
-}
-
-// StreamsDeps are what StreamsCommandOn reaches outside the process, in place of the broker,
-// Secret Manager and the hub its flags name: a test of another package runs the held words on its
-// own stack with them (writerhold/holdtest). The hold's flags are still required and checked, and
-// their values are not read.
-type StreamsDeps struct {
-	// Records opens the operator's client of the broker's hold routes, signing when signing.
-	Records func(ctx context.Context, signing bool) (*holdrecord.Client, error)
-	// Operator is the operator's reach of the hub.
-	Operator func(ctx context.Context) (*Operator, error)
-	// Now is the clock the minter report is checked by; time.Now when nil.
-	Now func() time.Time
-	// CensusReaders are the census's readers and writer, as StreamsCommand takes them.
-	CensusReaders
+	return StreamsCommandOn(ctx, args, stdout, stderr, RealDeps(readers))
 }
 
 // StreamsCommandOn is StreamsCommand with deps in place of the broker, Secret Manager and hub its
-// flags name.
-func StreamsCommandOn(ctx context.Context, args []string, stdout, stderr io.Writer, deps StreamsDeps) int {
-	e := HoldDeps{Records: deps.Records, Operator: deps.Operator, Now: deps.Now}.env()
-	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: e, readers: deps.CensusReaders})
-}
-
-func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e streamsEnv) int {
+// flags name, and deps.Readers as the census's readers and writer.
+func StreamsCommandOn(ctx context.Context, args []string, stdout, stderr io.Writer, d Deps) int {
 	if len(args) == 0 || (args[0] != "update" && args[0] != "census") {
 		fmt.Fprint(stderr, streamsUsage)
 		return 2
@@ -326,7 +299,7 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 		fmt.Fprintf(stderr, "%s: %s\n%s", program, strings.Join(problems, "; "), streamsUsage)
 		return 2
 	}
-	code, err := heldStreams(ctx, o, settings, shapes, stdout, e)
+	code, err := heldStreams(ctx, o, settings, shapes, stdout, d)
 	if err != nil {
 		return ExitCode(stderr, program, err)
 	}
@@ -334,12 +307,12 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 }
 
 // heldStreams runs the word inside its hold (RunHeld), and answers the report's exit code.
-func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Settings, shapes []streams.ConsumerShape, stdout io.Writer, e streamsEnv) (int, error) {
-	records, err := e.records(ctx, options{HubFlags: o.HubFlags}, true)
+func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Settings, shapes []streams.ConsumerShape, stdout io.Writer, d Deps) (int, error) {
+	records, err := d.Records(ctx, o.HubFlags, true)
 	if err != nil {
 		return 0, err
 	}
-	op, err := e.hub(ctx, options{HubFlags: o.HubFlags})
+	op, err := d.Operator(ctx, o.HubFlags)
 	if err != nil {
 		return 0, err
 	}
@@ -413,16 +386,16 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				},
 				Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: o.machineIDs, Daemons: shapes}),
 				RecordedSessionConsumers: func(ctx context.Context) ([]streams.ConsumerShape, error) {
-					if e.readers.Recorded == nil {
+					if d.Readers.Recorded == nil {
 						return nil, ErrNoRecordReader
 					}
-					return e.readers.Recorded(ctx, nc)
+					return d.Readers.Recorded(ctx, nc)
 				},
 				RecordedFreshNames: func(ctx context.Context) (map[string][]string, map[string]string, error) {
-					if e.readers.FreshNames == nil {
+					if d.Readers.FreshNames == nil {
 						return nil, nil, ErrNoFreshNamesReader
 					}
-					fresh, err := e.readers.FreshNames(ctx, nc, deployments, families, o.dispatchDatabaseFile, o.daemonDatabases)
+					fresh, err := d.Readers.FreshNames(ctx, nc, deployments, families, o.dispatchDatabaseFile, o.daemonDatabases)
 					return fresh.Names, fresh.Gone, err
 				},
 			})
@@ -443,11 +416,11 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if refused := streamsRefusal(r, err); refused != nil {
 				return changes, nil, leftBy(r, refused)
 			}
-			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, deployments, families, o.daemonDatabases, stdout)
+			outputs, err := reconcileStreamIDs(ctx, nc, d.Readers.Stores, deployments, families, o.daemonDatabases, stdout)
 			return changes, outputs, leftBy(r, err)
 		}
 	}
-	_, err = RunHeld(ctx, records, op, c, e.now, stdout)
+	_, err = RunHeld(ctx, records, op, c, d.Clock(), stdout)
 	if reported {
 		for _, line := range result.Lines() {
 			fmt.Fprintln(stdout, line)

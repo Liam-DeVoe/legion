@@ -35,12 +35,12 @@ import (
 // heldBuckets is a buckets hold row's surrounding: holdtest's whole stack (the broker's real hold
 // routes on a test Postgres, the callout cluster, the real auth service reading the row, the hub's
 // Kubernetes objects with the chart's render), the Operator the command reaches the hub through,
-// and the env that hands both to the command.
+// and the Deps that hand both to the command.
 type heldBuckets struct {
 	t      *testing.T
 	s      *holdtest.Stack
 	op     *writerhold.Operator
-	e      env
+	d      writerhold.Deps
 	report string
 }
 
@@ -65,12 +65,12 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldBuckets{t: t, s: s, op: op}
-	h.e = env{
-		records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
+	h.d = writerhold.Deps{
+		Records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
 			return s.Broker.Client(t), nil
 		},
-		hub: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return op, nil },
-		now: time.Now,
+		Operator: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return op, nil },
+		Now:      time.Now,
 	}
 	// The accepted minters, none, and a minter report of now with no finding.
 	_, err := s.Kube.Client.CoreV1().ConfigMaps(writerhold.AcceptedMintersNamespace).Create(context.Background(), &corev1.ConfigMap{
@@ -89,7 +89,7 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 	return h
 }
 
-// run runs `envoy-infra buckets <args>` with the hold's flags, which the row's env stands in for.
+// run runs `envoy-infra buckets <args>` with the hold's flags, which the row's Deps stand in for.
 // A restore given no --hold while the row is held runs in that hold: the backup's (backupNow).
 func (h *heldBuckets) run(args ...string) (int, string, string) {
 	h.t.Helper()
@@ -104,7 +104,7 @@ func (h *heldBuckets) run(args ...string) (int, string, string) {
 	if !slices.Contains(full, "--hold") {
 		full = append(full, "--minters-report", h.report, "--probe-token-file", "/dev/null")
 	}
-	code, stdout, stderr := runCommand(h.t, h.e, full...)
+	code, stdout, stderr := runCommand(h.t, h.d, full...)
 	h.t.Logf("envoy-infra buckets %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout, stderr)
 	return code, stdout, stderr
 }
@@ -434,7 +434,7 @@ func TestHoldBypassUnheldRestore(t *testing.T) {
 	}
 	refusedDuring := make(chan error, 1)
 	op := *h.op
-	h.e.hub = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
+	h.d.Operator = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) {
 		o := op
 		connect := o.Connect
 		o.Connect = func(ctx context.Context) (*natsgo.Conn, error) {
@@ -632,7 +632,7 @@ func TestHoldTheRestoresOneRerun(t *testing.T) {
 		return natsgo.Connect(h.s.Cluster.URL(), append(h.s.OperatorCredential(), natsgo.SetCustomDialer(cut),
 			natsgo.MaxReconnects(-1), natsgo.ReconnectWait(100*time.Millisecond), natsgo.Timeout(10*time.Second))...)
 	}
-	h.e.hub = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return &op, nil }
+	h.d.Operator = func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return &op, nil }
 	stream := "KV_" + bus.KnownSessionBucket
 	msgs := func() (uint64, bool) {
 		nc, err := h.s.ConnectOperator(context.Background())

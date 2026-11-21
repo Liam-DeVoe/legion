@@ -49,7 +49,9 @@ func (h *heldStack) streamsRunReaders(readers CensusReaders, args ...string) (in
 		full = append(full, "--reason", "the row's streams "+args[0])
 	}
 	var stdout, stderr bytes.Buffer
-	code := runStreams(context.Background(), full, &stdout, &stderr, streamsEnv{env: h.e, readers: readers})
+	d := h.d
+	d.Readers = readers
+	code := StreamsCommandOn(context.Background(), full, &stdout, &stderr, d)
 	h.t.Logf("envoy-infra streams %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
 }
@@ -366,9 +368,9 @@ func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
 	h.seedProtectedStreams()
 	args := append([]string{"update", "--reason", "the seam", "--replicas", "3", "--minters-report", h.report,
 		"--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null"}, commonArgs...)
-	deps := StreamsDeps{
-		Records:  func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
-		Operator: func(context.Context) (*Operator, error) { return h.op, nil },
+	deps := Deps{
+		Records:  func(context.Context, HubFlags, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
+		Operator: func(context.Context, HubFlags) (*Operator, error) { return h.op, nil },
 	}
 	var stdout, stderr bytes.Buffer
 	require.Zero(t, StreamsCommandOn(context.Background(), args, &stdout, &stderr, deps), "%s%s", stdout.String(), stderr.String())
@@ -377,7 +379,7 @@ func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
 	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "the seam's update is done")
 	require.Zero(t, code)
 
-	deps.Operator = func(context.Context) (*Operator, error) { return nil, errors.New("no hub here") }
+	deps.Operator = func(context.Context, HubFlags) (*Operator, error) { return nil, errors.New("no hub here") }
 	stdout.Reset()
 	stderr.Reset()
 	require.Equal(t, 1, StreamsCommandOn(context.Background(), args, &stdout, &stderr, deps), "control")

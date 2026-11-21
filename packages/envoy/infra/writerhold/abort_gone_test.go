@@ -28,7 +28,7 @@ func TestHoldAbortRecordsTheStoresItFoundGone(t *testing.T) {
 		{Gone: []GoneStore{gone}, Unreconciled: []UnreconciledStore{{Project: "Q", Reason: "its server does not answer"}}},
 		{Gone: []GoneStore{gone}, Changed: []StreamIDChange{{Project: "Q", From: "stream-0", To: "stream-1"}}},
 	}}
-	h.e.stores = stores.write
+	h.d.Readers.Stores = stores.write
 	abort := func(what string) (int, string, string) {
 		return h.run(actionAbort, "--hold", id, "--reason", what, "--daemon-database", "P=/run/daemon-p", "--daemon-database", "Q=/run/daemon-q")
 	}

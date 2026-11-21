@@ -21,17 +21,17 @@ import (
 // `envoy-infra hold streams <word>`, the name of no command.
 func TestTheStreamsWordsRefuseASeedAndNameThemselves(t *testing.T) {
 	seed, _ := testnats.User(t)
-	unreachable := streamsEnv{env: env{
-		records: func(context.Context, options, bool) (*holdrecord.Client, error) {
+	unreachable := Deps{
+		Records: func(context.Context, HubFlags, bool) (*holdrecord.Client, error) {
 			return nil, errors.New("no broker here")
 		},
-		hub: func(context.Context, options) (*Operator, error) { return nil, errors.New("no hub here") },
-	}}
+		Operator: func(context.Context, HubFlags) (*Operator, error) { return nil, errors.New("no hub here") },
+	}
 	run := func(args ...string) (int, string) {
 		full := append(append([]string{}, args...), commonArgs...)
 		full = append(full, "--nats", "nats://127.0.0.1:1", "--minters-report", "/dev/null", "--probe-token-file", "/dev/null", "--replicas", "3")
 		var stdout, stderr bytes.Buffer
-		code := runStreams(context.Background(), full, &stdout, &stderr, unreachable)
+		code := StreamsCommandOn(context.Background(), full, &stdout, &stderr, unreachable)
 		return code, stderr.String()
 	}
 

@@ -41,11 +41,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"slices"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/nats-io/nats.go"
@@ -72,29 +70,17 @@ var backupWorkflows = map[string]holdrecord.Workflow{
 	"restore":  holdrecord.WorkflowBucketsRestore,
 }
 
-// env is what a run reaches outside the process. Command gives the real one; a test gives its own.
-type env struct {
-	records func(ctx context.Context, h writerhold.HubFlags, signing bool) (*holdrecord.Client, error)
-	hub     func(ctx context.Context, h writerhold.HubFlags) (*writerhold.Operator, error)
-	now     func() time.Time
-	http    *http.Client
-}
-
-func realEnv() env {
-	return env{
-		records: func(ctx context.Context, h writerhold.HubFlags, signing bool) (*holdrecord.Client, error) {
-			return h.Records(ctx, signing)
-		},
-		hub:  func(ctx context.Context, h writerhold.HubFlags) (*writerhold.Operator, error) { return h.Operator(ctx) },
-		now:  time.Now,
-		http: &http.Client{Timeout: 10 * time.Second},
-	}
-}
-
 // Command runs `envoy-infra buckets` with args, the words after "buckets", and returns its exit
 // code: 0 done, 1 refused or failed, 2 a usage error or an UNKNOWN reading.
 func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return command(ctx, args, stdout, stderr, realEnv())
+	return CommandOn(ctx, args, stdout, stderr, writerhold.RealDeps(writerhold.CensusReaders{}))
+}
+
+// CommandOn is Command with deps in place of the broker and hub its flags name: a test of another
+// package runs `envoy-infra buckets` on its own stack with them (writerhold/holdtest). The hold's
+// flags are still required and checked. A break-glass create reads --connz as Command does.
+func CommandOn(ctx context.Context, args []string, stdout, stderr io.Writer, deps writerhold.Deps) int {
+	return command(ctx, args, stdout, stderr, deps)
 }
 
 // operatorEnvironment is the environment a break-glass create connects with: the process's own,
@@ -151,7 +137,7 @@ type options struct {
 	replicas                                             int
 }
 
-func command(ctx context.Context, args []string, stdout, stderr io.Writer, e env) int {
+func command(ctx context.Context, args []string, stdout, stderr io.Writer, deps writerhold.Deps) int {
 	actions := []string{"create", "recreate", "restore", "backup"}
 	if len(args) == 0 || !slices.Contains(actions, args[0]) {
 		fmt.Fprint(stderr, usage)
@@ -165,9 +151,9 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, e env
 		return code
 	}
 	if o.breakGlass {
-		return breakGlassCreate(ctx, stdout, stderr, o, e.http)
+		return breakGlassCreate(ctx, stdout, stderr, o)
 	}
-	return writerhold.ExitCode(stderr, "envoy-infra buckets "+o.action, run(ctx, o, stdout, e))
+	return writerhold.ExitCode(stderr, "envoy-infra buckets "+o.action, run(ctx, o, stdout, deps))
 }
 
 // parse reads args into options, or answers the exit code of a usage error or of --help.
@@ -324,7 +310,7 @@ func (o options) usageProblem(given []string) string {
 }
 
 // run runs a held command, or a backup.
-func run(ctx context.Context, o options, stdout io.Writer, e env) error {
+func run(ctx context.Context, o options, stdout io.Writer, deps writerhold.Deps) error {
 	var manifest *Manifest
 	if o.action == "restore" {
 		// The archive is validated before the hold's preflight, so a hold is set only for a
@@ -335,7 +321,7 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 		}
 		manifest = m
 	}
-	op, err := e.hub(ctx, o.HubFlags)
+	op, err := deps.Operator(ctx, o.HubFlags)
 	if err != nil {
 		return err
 	}
@@ -403,11 +389,11 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 			return nil, outputs, err
 		}
 	}
-	records, err = e.records(ctx, o.HubFlags, true)
+	records, err = deps.Records(ctx, o.HubFlags, true)
 	if err != nil {
 		return err
 	}
-	_, err = writerhold.RunHeld(ctx, records, op, c, e.now, stdout)
+	_, err = writerhold.RunHeld(ctx, records, op, c, deps.Clock(), stdout)
 	return err
 }
 

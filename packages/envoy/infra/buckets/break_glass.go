@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -42,7 +43,8 @@ type connz struct {
 // It only creates: each create is bus.CreateMissingCopiedBucket's, which answers
 // bus.ErrBucketExists, opening, raising and updating nothing, for a bucket another client made after
 // the read. The run then stops there, refused, and creates no bucket after it.
-func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options, client *http.Client) int {
+func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options) int {
+	client := &http.Client{Timeout: 10 * time.Second}
 	natsURL := o.NATS[0]
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
 	if err != nil {

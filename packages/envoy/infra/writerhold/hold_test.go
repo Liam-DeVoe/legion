@@ -28,14 +28,14 @@ import (
 // heldStack is a command row's surrounding: holdtest's whole stack (the broker's real hold routes
 // on a test Postgres, the callout cluster, the real auth service reading the row, the hub's
 // Kubernetes objects with the chart's render), the Operator a run of `envoy-infra hold` reaches
-// the hub through, the disks behind the claims, and the env that hands both to run.
+// the hub through, the disks behind the claims, and the Deps that hand both to a run.
 type heldStack struct {
 	t     *testing.T
 	s     *holdtest.Stack
 	op    *Operator
 	disks *holdtest.Disks
 	keys  *memoryKeys
-	e     env
+	d     Deps
 	// report is the minter report's path: a report of now with no finding.
 	report string
 }
@@ -98,11 +98,11 @@ func newHeldStackWith(t *testing.T, opts holdtest.Options) *heldStack {
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldStack{t: t, s: s, op: op, disks: disks, keys: &memoryKeys{versions: map[string][][]byte{}}}
-	h.e = env{
-		records: func(context.Context, options, bool) (*holdrecord.Client, error) { return s.Broker.Client(t), nil },
-		keys:    func(context.Context) (KeyStore, error) { return h.keys, nil },
-		hub:     func(context.Context, options) (*Operator, error) { return op, nil },
-		now:     time.Now,
+	h.d = Deps{
+		Records:  func(context.Context, HubFlags, bool) (*holdrecord.Client, error) { return s.Broker.Client(t), nil },
+		Keys:     func(context.Context) (KeyStore, error) { return h.keys, nil },
+		Operator: func(context.Context, HubFlags) (*Operator, error) { return op, nil },
+		Now:      time.Now,
 	}
 	h.acceptMinters(t)
 	return h
@@ -122,7 +122,7 @@ func (h *heldStack) acceptMinters(t *testing.T) {
 	require.NoError(t, os.WriteFile(h.report, report, 0o600))
 }
 
-// commonArgs are the flags every writing command takes, which the row's env stands in for.
+// commonArgs are the flags every writing command takes, which the row's Deps stand in for.
 var commonArgs = []string{"--broker-url", "https://broker.holdtest", "--token-file", "/dev/null",
 	"--verify-keys", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "--signing-key-secret", "projects/holdtest/secrets/" + SigningKeySecret}
 
@@ -138,7 +138,7 @@ func (h *heldStack) run(args ...string) (int, string, string) {
 		full = append(full, "--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null")
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), full, &stdout, &stderr, h.e)
+	code := run(context.Background(), full, &stdout, &stderr, h.d)
 	h.t.Logf("envoy-infra hold %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
 }

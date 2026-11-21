@@ -80,7 +80,7 @@ func TestHoldAbortReconcilesTheDaemonStores(t *testing.T) {
 		{},
 		{Reconciled: []ReconciledStore{{Project: "P", StreamID: "s-1"}}},
 	}}
-	h.e.stores = stores.write
+	h.d.Readers.Stores = stores.write
 	code, stderr = abort("a store left unreconciled")
 	require.NotZero(t, code)
 	require.Contains(t, stderr, "daemon/P: its database answers nothing")
@@ -115,7 +115,7 @@ func TestHoldACrashedAbortIsRerunWhole(t *testing.T) {
 			id := h.provenHubRestore()
 			ctx := context.Background()
 			stores := &scriptedStores{answers: []StreamIDResult{{Changed: []StreamIDChange{{Project: "P", From: "s-0", To: "s-1"}}}, row.second}}
-			h.e.stores = stores.write
+			h.d.Readers.Stores = stores.write
 			// The crashed run: admitted, its reconcile wrote, then it died before the move.
 			_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil)
 			require.NoError(t, err)
