@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -91,14 +92,8 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	if err != nil {
 		t.Fatalf("encode the created event's payload: %v", err)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'artifact.created', '{"kind":"user","id":"alice"}', $1, false
-		from bumped
-		returning id
-	`, payload).Scan(&event); err != nil {
+	event, err := documentEvent(ctx, tx, "artifact.created", payload)
+	if err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
 	if err := causeInWritePhase(joined, tx, documentNode, event); err != nil {
@@ -687,11 +682,11 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one. The names are graphstore.WriteFunctions, the one list of every function a
-// write of the store from outside that package goes through, which that test and api's scan of
+// the same use as one. The names are graphstoretest.WriteFunctions, the one list of every function
+// a write of the store from outside that package goes through, which that test and api's scan of
 // the projected tables' writers read too, so a writer the store gains is scanned here with no
 // second list to keep.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstore.WriteFunctions(), "|") + `)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstoretest.WriteFunctions(), "|") + `)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

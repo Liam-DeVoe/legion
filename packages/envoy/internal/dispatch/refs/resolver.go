@@ -298,19 +298,18 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 // seenBy is the reader's writer as the visibility predicate binds it (VisibilityArg). A writer
 // the caller resolved carries its viewer, and is used as it is. A writer read from a stored row,
 // the author a source records, carries none, and with no viewer the predicate sees nothing
-// (VisibilityArg's closed viewer), so no short id would resolve: such a writer is the person it
-// records, resolved as that person is at a browser with no list (access.Resolve), which is what
-// every later rebuild of the same text resolves it as too. A session author names its owner, and
-// one that records no person is no person: it sees what a credential naming nobody sees.
+// (VisibilityArg's closed viewer), so no short id would resolve: such a writer is read as the
+// person it records sees now (access.RecordedViewer: their member kind and the projects whose
+// access names them, no credential's list), which is what every later rebuild of the same text
+// resolves it as too. A session author names its owner, and one that records no person is no
+// person: it sees what a credential naming nobody sees.
 func (r *Reader) seenBy() (model.Actor, error) {
 	if r.seer != nil {
 		return *r.seer, nil
 	}
 	writer := r.writer
 	if writer.Viewer == nil {
-		recorded := writer
-		recorded.Credential = &model.Credential{}
-		viewer, err := access.Resolve(r.ctx, r.q, recorded)
+		viewer, err := access.RecordedViewer(r.ctx, r.q, writer)
 		if err != nil {
 			return model.Actor{}, err
 		}
