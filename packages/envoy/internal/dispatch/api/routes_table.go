@@ -468,11 +468,12 @@ type routeScopeSet []string
 // These are the routes Dispatch refused every bearer token on until INFRA-1017, and two scopes
 // decide them now: `person`, "this credential acts as its person", which every row here needs,
 // and `approve`, the right to settle what a person settles, which the rows below that decide a
-// credential, a sign-in, a review, a decision's Keep, a token or who may see a project need as
-// well. A person's browser holds both, and their personal tokens hold the set each token's row
-// names. A broker-issued token that acts for its person holds `person` alone, never `approve`
-// (brokerTokenActor). The shared token, a pod's service-account token, a project-scoped session's
-// token and a broker-issued token that names a service and no person hold neither.
+// credential, a sign-in, a review, a decision's Keep, a token, or who may see a project or where
+// its credentials may post need as well. A person's browser holds both, and their personal tokens
+// hold the set each token's row names. A broker-issued token that acts for its person holds
+// `person` alone, never `approve` (brokerTokenActor). The shared token, a pod's service-account
+// token, a project-scoped session's token and a broker-issued token that names a service and no
+// person hold neither.
 //
 // The scope `read` a read-only token holds is no value of this map: a scope here is one the
 // caller must hold, and no person holds that one. The routes such a token may call are a list of
@@ -555,12 +556,13 @@ var routeScopes = map[string]routeScopeSet{
 	// The review that names the version its caller read settles what the review above settles,
 	// with that version as a guard.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
-	// A project's access list, its visibility and its owner decide who may see the project, and so
-	// does a group a private project's list names: its members are who it admits, its owner who
-	// changes that, and deleting it takes it off every list. A change to any of them settles what
-	// an owner settles, so a credential holding person alone - a personal token its owner minted
-	// or narrowed to person (POST /api/v1/me/agent-tokens, PATCH /api/v1/me/agent-tokens/{id})
-	// among them - reads the lists and groups and changes none of them.
+	// A project's access list, its visibility and its owner decide who may see the project, and its
+	// Slack channels decide where its credentials may post; a group a private project's list names
+	// decides who may see it too: its members are who it admits, its owner who changes that, and
+	// deleting it takes it off every list. A change to any of them settles what an owner settles,
+	// so a credential holding person alone - a personal token its owner minted or narrowed to person
+	// (POST /api/v1/me/agent-tokens, PATCH /api/v1/me/agent-tokens/{id}) among them - reads the
+	// lists and groups and changes none of them.
 	"PATCH /api/v1/projects/{key}/access":                 {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/projects/{key}/access/people/{email}":    {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/projects/{key}/access/people/{email}": {model.ScopePerson, model.ScopeApprove},

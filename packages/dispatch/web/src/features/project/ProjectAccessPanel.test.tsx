@@ -11,7 +11,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 
 /** CORE's access as the server answers it: owned by alice, naming carol and the group crew. */
@@ -347,6 +347,33 @@ test("a stopped Slack channel save says Retry asks under its key, and a panel op
     );
   } finally {
     realClock();
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+// A PATCH whose key ran out ends with SendExpiredError, which leaves no press to make again
+// (retriesUnderItsKey), even in the panel that made it. That panel still says what its Retry is:
+// a new write, which can save the change a second time if the first save landed
+// (expiredRetryNote). Control: with madeHere alone deciding, the panel says it was opened after
+// that save, and the second-save warning is gone.
+test("a Slack channel save whose key ran out warns in its own panel that Retry can save it a second time", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(new SendExpiredError());
+  try {
+    await user.type(await screen.findByLabelText<HTMLInputElement>("Channel ids"), "C012345678");
+    await user.click(screen.getByRole("button", { name: "Save channels" }));
+    const alert = await within(screen.getByRole("region", { name: "Slack channels" })).findByRole(
+      "alert"
+    );
+    expect(alert.querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("CORE's Slack channels", "saved", {
+        method: "PATCH",
+        stopped: new SendExpiredError(),
+      })
+    );
+  } finally {
     panel.restore();
     patch.mockRestore();
   }

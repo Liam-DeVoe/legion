@@ -255,7 +255,12 @@ export function ProjectPage(): ReactNode {
           id="project-architecture-panel"
           role="tabpanel"
         >
-          {activeTab === "architecture" ? <ArchitecturePage project={route.project} /> : null}
+          {/* Keyed by the project, as the list and the board are: a Refresh still out belongs
+              to the project it was pressed on, so another project's pane draws its own sources
+              ready to refresh, and that Refresh settling reloads its own project's architecture. */}
+          {activeTab === "architecture" ? (
+            <ArchitecturePage key={route.project} project={route.project} />
+          ) : null}
         </div>
       ) : null}
       <div

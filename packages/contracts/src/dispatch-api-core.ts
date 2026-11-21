@@ -44,8 +44,8 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
  *  `approve` settles what a person settles — a document review, a decision's Keep, the answer of
  *  an approval ask, a machine-login decision, a credential-grant, machine-login or sign-in revoke,
  *  minting, changing or revoking a personal token, and a change to a project's access list,
- *  visibility or owner or to a group an access list can name. A credential holding `approve` holds
- *  `person` too, and no token the secrets broker issued holds `approve`. */
+ *  visibility, owner or Slack channels or to a group an access list can name. A credential
+ *  holding `approve` holds `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
