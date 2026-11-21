@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,13 +23,65 @@ var joinedRun = regexp.MustCompile(`(?:[A-Za-z0-9.-]+_){17,}`)
 // parserCall is one text the parser was handed and the PL/pgSQL call stack that handed it.
 type parserCall struct{ body, stack string }
 
+// parserEntry is one form of one of pg_catalog's text-search functions that takes text, json or
+// jsonb: its name, its input types in order, each OUT parameter as `name type`, what it answers,
+// whether it answers a set, and whether it is strict.
+type parserEntry struct {
+	name, returns  string
+	inputs, outs   []string
+	retset, strict bool
+}
+
+// parserEntryNames are the entry points of the text-search parser that parserEntries must find:
+// a read that misses one of them has read the wrong catalog.
+var parserEntryNames = []string{"to_tsvector", "json_to_tsvector", "jsonb_to_tsvector", "to_tsquery", "plainto_tsquery",
+	"phraseto_tsquery", "websearch_to_tsquery", "ts_parse", "ts_debug", "ts_headline"}
+
+// parserEntries reads from pg_proc every form of every function of pg_catalog that takes text,
+// json or jsonb and answers a tsvector or a tsquery, or whose name begins ts_: every way a caller
+// hands text to the parser by a function's name, and a few text-search functions that do not
+// parse it (ts_delete, ts_lexize, ts_rewrite, ts_stat, ts_token_type), which no search path calls.
+// It is the one list the parser-input recorder shadows and the shape test refuses calls of.
+func parserEntries(t *testing.T, ctx context.Context, database *store.Store) []parserEntry {
+	t.Helper()
+	rows, err := database.Pool.Query(ctx, `
+		select p.proname::text, format_type(p.prorettype, null), p.proretset, p.proisstrict,
+		       array(select format_type(a.t, null) from unnest(p.proargtypes::oid[]) with ordinality as a(t, n) order by a.n),
+		       coalesce(array(select quote_ident(p.proargnames[a.n]) || ' ' || format_type(a.t, null)
+		                        from unnest(p.proallargtypes, p.proargmodes) with ordinality as a(t, m, n)
+		                       where a.m = 'o' order by a.n), '{}')
+		  from pg_proc p
+		 where p.pronamespace = 'pg_catalog'::regnamespace
+		   and exists (select 1 from unnest(p.proargtypes::oid[]) a(t) where a.t in ('text'::regtype, 'json'::regtype, 'jsonb'::regtype))
+		   and (p.prorettype in ('tsvector'::regtype, 'tsquery'::regtype) or p.proname ~ '^ts_')
+		 order by 1`)
+	if err != nil {
+		t.Fatalf("read the parser's entry points: %v", err)
+	}
+	entries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (parserEntry, error) {
+		var entry parserEntry
+		return entry, row.Scan(&entry.name, &entry.returns, &entry.retset, &entry.strict, &entry.inputs, &entry.outs)
+	})
+	if err != nil {
+		t.Fatalf("read the parser's entry points: %v", err)
+	}
+	for _, name := range parserEntryNames {
+		if !slices.ContainsFunc(entries, func(entry parserEntry) bool { return entry.name == name }) {
+			t.Fatalf("pg_proc answered %d entry points of the parser and no %s: the read cannot see the parser", len(entries), name)
+		}
+	}
+	return entries
+}
+
 // recordParserInput connects to database with a search_path that puts, ahead of pg_catalog, a
-// to_tsvector(regconfig, text) that sends each text it is given, and the PL/pgSQL call stack that
-// gave it, as a notice, then answers pg_catalog.to_tsvector's vector. A notice reaches the client
-// when it is raised, so a call whose subtransaction rolls back, as search_vector's does for a
-// vector too long, is recorded too. Every search function calls to_tsvector by its bare name, so
-// on that connection each of them hands the recorder the text it hands the parser; a path that
-// does not shows as a caller that recorded no text. take answers the calls since its last call.
+// function of the same signature for each of parserEntries. Each sends every text, json or jsonb
+// it is given, and the PL/pgSQL call stack that gave it, as a notice, then answers what
+// pg_catalog's own answers. A notice reaches the client when it is raised, so a call whose
+// subtransaction rolls back, as search_vector's does for a vector too long, is recorded too. A
+// call by a bare name resolves through the search_path, so on that connection every path that
+// hands text to the parser by a bare name hands it to the recorder first; a call qualified with
+// pg_catalog, and text @@ query, an operator, pass it by, which the shape test refuses. take
+// answers the calls since its last call.
 func recordParserInput(t *testing.T, ctx context.Context, database *store.Store) (conn *pgx.Conn, take func() []parserCall) {
 	t.Helper()
 	const hint = "parser input"
@@ -44,19 +97,39 @@ func recordParserInput(t *testing.T, ctx context.Context, database *store.Store)
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { conn.Close(context.Background()) })
-	for _, statement := range []string{
-		`create schema parser_input`,
-		`create function parser_input.to_tsvector(config regconfig, body text) returns tsvector
-		 language plpgsql volatile as $$
+	statements := []string{`create schema parser_input`}
+	for _, entry := range parserEntries(t, ctx, database) {
+		var params, args, records []string
+		for i, input := range entry.inputs {
+			arg := fmt.Sprintf("a%d", i+1)
+			params, args = append(params, arg+" "+input), append(args, arg)
+			if input == "text" || input == "json" || input == "jsonb" {
+				records = append(records, fmt.Sprintf("raise notice using message = %s::text, detail = parser_input_stack, hint = '%s';", arg, hint))
+			}
+		}
+		for _, out := range entry.outs {
+			params = append(params, "out "+out)
+		}
+		returns, answer := entry.returns, fmt.Sprintf("return pg_catalog.%s(%s);", entry.name, strings.Join(args, ", "))
+		if entry.retset {
+			answer = fmt.Sprintf("return query select * from pg_catalog.%s(%s);", entry.name, strings.Join(args, ", "))
+			returns = "setof " + returns
+		}
+		strict := ""
+		if entry.strict {
+			strict = " strict"
+		}
+		statements = append(statements, fmt.Sprintf(`create function parser_input.%s(%s) returns %s language plpgsql volatile%s as $$
 		 declare
-		   stack text;
+		   parser_input_stack text;
 		 begin
-		   get diagnostics stack = pg_context;
-		   raise notice using message = body, detail = stack, hint = '` + hint + `';
-		   return pg_catalog.to_tsvector(config, body);
-		 end $$`,
-		`set search_path = parser_input, public, pg_catalog`,
-	} {
+		   get diagnostics parser_input_stack = pg_context;
+		   %s
+		   %s
+		 end $$`, entry.name, strings.Join(params, ", "), returns, strict, strings.Join(records, "\n\t\t   "), answer))
+	}
+	statements = append(statements, `set search_path = parser_input, public, pg_catalog`)
+	for _, statement := range statements {
 		if _, err := conn.Exec(ctx, statement); err != nil {
 			t.Fatalf("record the parser's input: %s: %v", statement, err)
 		}

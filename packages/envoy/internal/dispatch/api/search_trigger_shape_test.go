@@ -196,13 +196,26 @@ var (
 	assignTarget = regexp.MustCompile(`(?i)\bnew\s*\.\s*(search|title_lexemes)\s*:=`)
 	returnNew    = regexp.MustCompile(`(?i)\breturn\s+new\b`)
 	rowRead      = regexp.MustCompile(`(?i)new(\s*\.\s*\w+)?`)
-	// directParse is a call of any of Postgres's functions that parse text into a vector:
-	// to_tsvector, json_to_tsvector, jsonb_to_tsvector, qualified or not.
-	directParse = regexp.MustCompile(`(?i)\w*to_tsvector\s*\(`)
-	// searchCall is a call that reaches the parser or a normaliser, which makes a trigger function
-	// one this test reads.
-	searchCall = regexp.MustCompile(`(?i)\b(search_vector|issue_search_vector|title_lexemes|search_text|search_document_text)\s*\(|\w*to_tsvector\s*\(`)
+	// callName is any call in masked code, an identifier holding letters, digits, _, $ and any
+	// character past ASCII, and subquery a select in it.
+	callName = regexp.MustCompile(`(?i)((?:[a-z_]|[^\x00-\x7F])(?:[a-z_0-9$]|[^\x00-\x7F])*)\s*\(`)
+	subquery = regexp.MustCompile(`(?i)\bselect\b`)
 )
+
+// argumentCalls are the only calls a trigger may make inside the argument of a normaliser or a
+// vector function: none of them parses text.
+var argumentCalls = []string{"coalesce", "ask_search_suffix", "issue_embedding_spec"}
+
+// callsIn answers the name of each call in code that stands as a whole token, lower case.
+func callsIn(code string) []string {
+	var names []string
+	for _, at := range callName.FindAllStringSubmatchIndex(code, -1) {
+		if standalone(code, at[2], at[3]) {
+			names = append(names, strings.ToLower(code[at[2]:at[3]]))
+		}
+	}
+	return names
+}
 
 // Each search trigger hands Postgres's text-search parser its text only through the shared
 // normalising functions, read from the catalog as the database runs them: search_document_text for
@@ -211,21 +224,30 @@ var (
 // search_text joins underscore runs that search_text broke, which the parser reads in quadratic
 // time (20261121060636), and a text read raw reaches the parser with every run whole.
 //
-// The test reads the source of every trigger function in the database that calls the parser or a
-// normaliser, as maskSQL leaves it: code alone, comments of either kind and string literals of
+// The parser's entry points are read from pg_proc (parserEntries), the list the parser-input test
+// shadows: to_tsvector and its json forms, the tsquery builders, ts_parse, ts_debug, ts_headline
+// and the rest of pg_catalog's text-search functions that take text. The test reads the source
+// of every trigger function in the database that calls one of them, a normaliser or a vector
+// function, as maskSQL leaves it: code alone, comments of either kind and string literals of
 // every kind taken out. The set must be the six it knows, so a new one is read here before it
-// merges. In each: no call of a parsing function (to_tsvector and its json forms, quoted or
-// qualified); each argument of search_vector is a literal or wholly one normalising call;
-// markdown only inside search_document_text; and once the normalising calls and the vector
-// functions read below are removed, no read through `new` is left - new.x, (new).x,
-// row_to_json(new) - but the vector it writes and the artifact_id it looks a row up by. It reads
-// search_document_text's own body too, which must be one search_text call, and each parameter of
-// the two vector functions those triggers call, which must appear only inside its normaliser. A
-// read of the row through another name, such as a variable assigned from new, is beyond it; the
-// parser-input test holds what reaches the parser at run time.
+// merges. In each: no call of an entry point, quoted or qualified; each argument of search_vector
+// a literal or wholly one normalising call; inside the argument of each normaliser and vector
+// function no subquery and no call but coalesce, ask_search_suffix and issue_embedding_spec;
+// markdown only inside search_document_text; and once those calls are removed, no read through
+// `new` - new.x, (new).x, row_to_json(new) - but the vector it writes and the artifact_id it
+// looks a row up by. It reads search_document_text's own body too, which must be one search_text
+// call, and each parameter of the two vector functions those triggers call, which must appear only
+// inside its normaliser. A read of the row through another name, such as a variable assigned from
+// new, is beyond it, and so is text @@ query, an operator; a raw read of new for either still
+// fails here.
 func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
+	entries := map[string]bool{}
+	for _, entry := range parserEntries(t, ctx, database) {
+		entries[entry.name] = true
+	}
+	normalisers := []string{"search_vector", "issue_search_vector", "title_lexemes", "search_text", "search_document_text"}
 	rows, err := database.Pool.Query(ctx, `
 		select distinct p.proname::text, p.prosrc
 		  from pg_trigger t join pg_proc p on p.oid = t.tgfoid
@@ -234,13 +256,18 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 		t.Fatalf("read the trigger functions: %v", err)
 	}
 	triggers := map[string]string{}
+	read := 0
 	for rows.Next() {
 		var name, source string
 		if err := rows.Scan(&name, &source); err != nil {
 			t.Fatalf("read a trigger function: %v", err)
 		}
-		if code := maskSQL(source); searchCall.MatchString(code) {
-			triggers[name] = code
+		read++
+		code := maskSQL(source)
+		for _, call := range callsIn(code) {
+			if entries[call] || slices.Contains(normalisers, call) {
+				triggers[name] = code
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -248,7 +275,7 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	}
 	want := []string{"artifact_versions_issues_search", "artifact_versions_search", "asks_search", "comments_search", "issues_search", "messages_search"}
 	if got := slices.Sorted(maps.Keys(triggers)); !slices.Equal(got, want) {
-		t.Fatalf("the trigger functions that reach the parser are %v, want %v: read a new one here", got, want)
+		t.Fatalf("of the %d trigger functions in the database, those that reach the parser are %v, want %v: read a new one here", read, got, want)
 	}
 
 	source := func(name string) string {
@@ -277,10 +304,25 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 			}
 		}
 	}
-
 	for name, code := range triggers {
-		if parse := directParse.FindString(code); parse != "" {
-			t.Errorf("%s calls the parser itself (%s…): it must build its vector through search_vector or a vector function", name, parse)
+		for _, call := range callsIn(code) {
+			if entries[call] {
+				t.Errorf("%s calls the parser itself (%s): it must build its vector through search_vector or a vector function", name, call)
+			}
+		}
+		for _, wrapper := range []string{"search_text", "search_document_text", "issue_search_vector", "title_lexemes"} {
+			_, args := sqlCalls(code, wrapper)
+			for _, arguments := range args {
+				argument := strings.Join(arguments, ", ")
+				if subquery.MatchString(argument) {
+					t.Errorf("%s hands %s a subquery (%s): its argument may only read the row", name, wrapper, argument)
+				}
+				for _, call := range callsIn(argument) {
+					if !slices.Contains(argumentCalls, call) {
+						t.Errorf("%s calls %s inside %s's argument (%s): only %v may stand there", name, call, wrapper, argument, argumentCalls)
+					}
+				}
+			}
 		}
 		_, args := sqlCalls(code, "search_vector")
 		for _, arguments := range args {
