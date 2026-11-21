@@ -451,7 +451,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Deploy every Legion daemon first, then the listener, then Dispatch.
   A daemon of an earlier release ignores `excluded_check_runs`, so a correction it receives keeps the excluded run's verdict, and nothing publishes that correction again once its head has settled: a later pass of Dispatch over the corrected record changes nothing.
   So no listener may name an excluded run while a daemon of an earlier release reads its settlements; a daemon of this release reads a settlement with no such field by the rule it always had.
+  Before the listener's pins move to a release that names excluded runs, `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>`, with the main commit that brought `excluded_check_runs` to the daemon's intake, prints `GATE OPEN`: every Legion daemon the deployment pins runs a build at or after that commit.
   Dispatch goes after the listener because its writer applies the counting rule to records too, and a listener of an earlier release would publish such a correction without the field.
+  Deploy Dispatch right after the listener: until then a Dispatch writer of the earlier release drops the suite events, the waiting, excluded and superseded runs and each check's suite from each record it writes, so a name can lose the run waiting to stand for it, and the first pass of a Dispatch of this release, which writes every head again, puts them back.
   Roll back in the reverse order: Dispatch, then the listener, then a daemon. An earlier listener drops the events, the excluded runs and the suite of each check from each record it writes, and keeps the newest check run of each name whatever started its run.
 
 - The pass reads the commit statuses of a repository's heads only where the App's token for that repository holds Commit statuses, at read or write (`githubapp.Client.RepositoryTokenWithStatuses`).

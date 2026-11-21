@@ -196,8 +196,8 @@ type boundWrite struct {
 	// bound, zero where it dropped none, and droppedFor the refusal they were dropped for.
 	dropped    int
 	droppedFor error
-	// droppedWaiting is how many waiting check runs (State.Waiting) the record dropped to keep a
-	// check within its bound, keeping the newest of each name, zero where it dropped none, and
+	// droppedWaiting is how many waiting check runs (State.Waiting) that could no longer stand the
+	// record dropped to keep a check within its bound, zero where it dropped none, and
 	// droppedWaitingFor the refusal they were dropped for.
 	droppedWaiting    int
 	droppedWaitingFor error
@@ -225,7 +225,7 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 			append(attrs, slog.Int("statuses", w.dropped), slog.String("error", w.droppedFor.Error()))...)
 	}
 	if w.droppedWaiting > 0 {
-		logger.Warn("ci record dropped all but the newest waiting check run of each name to keep a check within its bound",
+		logger.Warn("ci record dropped waiting check runs that can no longer stand to keep a check within its bound",
 			append(attrs, slog.Int("waiting", w.droppedWaiting), slog.String("error", w.droppedWaitingFor.Error()))...)
 	}
 }
@@ -241,16 +241,16 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 //   - Where the rest still passes a bound and the record holds statuses, the rest is applied once
 //     more, to the record without its statuses: where that fits it is written so, the record's
 //     statuses dropped, with one WARN line naming the head and how many it dropped.
-//   - Where that still passes a bound and the record, the batch applied, holds more than one check
-//     run waiting to stand for a name (State.Waiting), it is applied once more and written with
-//     only the newest waiting run of each name (newestWaiting), its statuses dropped as above,
-//     where that fits, with one WARN line naming the head and how many waiting runs it dropped. A
-//     waiting run is no check of the head and the settlement names none, but the newest one of a
-//     name is what stands for it if the run standing turns out uncounted (standInstead): a
-//     pull_request run's failure behind a dispatched run whose event is not known yet. So that run
-//     is kept, and a record that does not fit with it is written as one with nothing more to give
-//     way, below. An older waiting run of a name stands only if the newest one's suite turns out
-//     uncounted as well.
+//   - Where that still passes a bound and the record, the batch applied, holds check runs waiting
+//     to stand for a name (State.Waiting) that can no longer stand, it is applied once more and
+//     written without them (trimWaiting), its statuses dropped as above, where that fits, with one
+//     WARN line naming the head and how many waiting runs it dropped. Such a run is older than a
+//     counted run waiting for the same name, which stands for good once it stands. Every other
+//     waiting run may still stand for its name if the runs standing and waiting before it turn out
+//     uncounted (standInstead): a pull_request run's failure behind a dispatched run whose event is
+//     not known yet. So it never gives way, and a record that does not fit with it is written as
+//     one with nothing more to give way, below: dropping it could leave its name with no check, and
+//     the daemon then drops the name's failure.
 //   - Otherwise the record is written as it was, marked Overflowed, as a record with no status to
 //     give way always was (one already Overflowed is not written again), and the write answers the
 //     refusal.
@@ -262,8 +262,8 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 func (s *Store) atBounds(key string, stored func() (State, error), existing bool, b *batch, refused error) (boundWrite, error) {
 	bounded := boundWrite{refusedStatuses: b.statuses(), refusedFor: refused}
 	// fit applies b, without the statuses it carries, to the record as read, the record's own
-	// statuses dropped first when drop is set, and of the result's waiting runs only the newest of
-	// each name kept when trimWaiting is set. It answers the record to write, nil where b then
+	// statuses dropped first when drop is set, and the result's waiting runs that can no longer
+	// stand dropped when trimWaiting is set. It answers the record to write, nil where b then
 	// changes nothing, how many waiting runs it dropped, or the bound's refusal (bus.ErrTooLarge)
 	// where the result still passes a bound.
 	fit := func(drop, trimWaiting bool) ([]byte, int, error) {
@@ -280,7 +280,7 @@ func (s *Store) atBounds(key string, stored func() (State, error), existing bool
 		}
 		waiting := 0
 		if trimWaiting {
-			waiting = st.newestWaiting()
+			waiting = st.trimWaiting()
 		}
 		buf, err := sealRecord(key, &st, existing, hash, generation)
 		return buf, waiting, err

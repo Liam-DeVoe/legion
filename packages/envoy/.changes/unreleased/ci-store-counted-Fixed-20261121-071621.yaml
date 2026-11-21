@@ -23,9 +23,11 @@ body: |-
   answered `workflowRun` null, and at INFO (`ci reconcile counts check suites of a head read over
   REST whose workflow run event the CI record does not hold`) for a head read over REST. A record
   written before is corrected at the next pass that reads its head's events. A re-run of a counted
-  run still replaces its check. Deploy every daemon first, then the listener, then Dispatch: a
-  daemon of the earlier release ignores `excluded_check_runs`, and a correction it ignored is not
-  published again once its head has settled.
+  run still replaces its check. Deploy every daemon first, then the listener, then Dispatch right
+  after it: a daemon of the earlier release ignores `excluded_check_runs`, and a correction it
+  ignored is not published again once its head has settled, so the listener's pins move only once
+  `scripts/daemon-release-gate.sh` prints `GATE OPEN` for the commit that brought the field to the
+  daemon.
 time: 2026-11-21T07:16:21Z
 custom:
     Issue: ci-store-counted

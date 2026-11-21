@@ -298,19 +298,23 @@ func (st *State) dropWaiting(name string) bool {
 	return dropped
 }
 
-// newestWaiting keeps, of the runs waiting to stand for their name (State.Waiting), only the newest
-// of each name, the one standInstead would put in place of the run that stands, and reports how
-// many it dropped. It is what a record past its bound gives way (Store.atBounds).
-func (st *State) newestWaiting() int {
-	newest := map[string]checkRunID{}
+// trimWaiting drops each run waiting to stand for its name (State.Waiting) that can no longer come
+// to stand, a run older than a counted run waiting for the same name, and reports how many it
+// dropped. standInstead puts the newest waiting run of a name in place of the run that stands, and
+// a counted run that comes to stand stands for good, so no run older than it ever stands. Every
+// other waiting run may still stand: the newest of a name, and each older one while every run
+// newer than it may still turn out uncounted. It is what a record past its bound gives way
+// (Store.atBounds).
+func (st *State) trimWaiting() int {
+	floor := map[string]checkRunID{}
 	for _, check := range st.Waiting {
-		if check.CheckRunID > newest[check.Name] {
-			newest[check.Name] = check.CheckRunID
+		if check.CheckRunID > floor[check.Name] && st.standingOf(check.AppID, check.SuiteID) == counted {
+			floor[check.Name] = check.CheckRunID
 		}
 	}
 	dropped := 0
 	for id, check := range st.Waiting {
-		if check.CheckRunID != newest[check.Name] {
+		if check.CheckRunID < floor[check.Name] {
 			delete(st.Waiting, id)
 			dropped++
 		}
