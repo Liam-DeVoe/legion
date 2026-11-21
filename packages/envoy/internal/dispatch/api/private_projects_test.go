@@ -383,6 +383,76 @@ func TestThePrivateListAnswersOnlyCommittedRows(t *testing.T) {
 	}
 }
 
+// fullSwitchOf is project key's full_switch_at as committed, nil while it is null.
+func fullSwitchOf(t *testing.T, database *store.Store, key string) *time.Time {
+	t.Helper()
+	var at *time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select full_switch_at from projects where key = $1`, key).Scan(&at); err != nil {
+		t.Fatalf("read %s's full switch: %v", key, err)
+	}
+	return at
+}
+
+// TestAFullSwitchRunsTheWholePathOnceForADayOnePrivateProject: a project can be private before the
+// full switch (a deployment's day one, with no provisioning and no proof), and then it records no
+// full switch. With its key on the list, its owner's switch to private runs the whole path as a
+// switch from public does: a proof that fails answers 409 PRIVATE_PROJECTS_UNAVAILABLE and records
+// nothing, and a proof that passes records the full switch (full_switch_at). The switch of a project
+// the full switch made private is a no-op: no proof, no event, the record as it was. A switch to
+// public clears the record, and a switch from public records it. Controls, each on its own: record
+// nothing at the switch, and the passing row fails naming PRIV; read every private project as
+// switched already, and the day-one row answers 200 with no proof; never read a switch as done, and
+// the re-switch row makes a proof and appends an event.
+func TestAFullSwitchRunsTheWholePathOnceForADayOnePrivateProject(t *testing.T) {
+	private := map[string]string{"visibility": model.ProjectPrivate}
+	admission := &recordingAdmission{proveErr: errors.New("hub nats://hub-b.example:4222 refused the admission proof")}
+	handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: []string{"OTHER", "PRIV"}}, admission)
+	// Day one: PRIV went private with no full switch.
+	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'PRIV'`); err != nil {
+		t.Fatalf("make PRIV private before its full switch: %v", err)
+	}
+
+	before := allEvents(t, database)
+	refused := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	if body := refused.Body.String(); refused.Code != http.StatusConflict || !strings.Contains(body, `"code":"PRIVATE_PROJECTS_UNAVAILABLE"`) {
+		t.Fatalf("day-one PRIV's full switch with a refusing proof = %d %s, want 409 PRIVATE_PROJECTS_UNAVAILABLE", refused.Code, body)
+	}
+	if at, calls, appended := fullSwitchOf(t, database, "PRIV"), len(admission.taken()), allEvents(t, database)-before; at != nil || calls != 1 || appended != 0 {
+		t.Fatalf("day-one PRIV's refused full switch: full switch %v, %d proofs, %d events appended; want none recorded, one proof, nothing appended", at, calls, appended)
+	}
+
+	admission.proveErr = nil
+	switched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	at := fullSwitchOf(t, database, "PRIV")
+	if switched.Code != http.StatusOK || at == nil || len(admission.taken()) != 2 {
+		t.Fatalf("day-one PRIV's full switch with a passing proof = %d %s, full switch %v, %d proofs; want 200, the switch recorded, a second proof",
+			switched.Code, switched.Body.String(), at, len(admission.taken()))
+	}
+
+	before = allEvents(t, database)
+	again := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	if again.Code != http.StatusOK || decodeBody[model.ProjectAccess](t, again).Visibility != model.ProjectPrivate {
+		t.Fatalf("fully switched PRIV's switch to private again = %d %s, want 200 and PRIV private", again.Code, again.Body.String())
+	}
+	if after, calls, appended := fullSwitchOf(t, database, "PRIV"), len(admission.taken()), allEvents(t, database)-before; after == nil || !after.Equal(*at) || calls != 2 || appended != 0 {
+		t.Fatalf("fully switched PRIV's switch to private again: full switch %v (was %v), %d proofs, %d events appended; want a no-op", after, at, calls, appended)
+	}
+
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"visibility": model.ProjectPublic}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("PATCH PRIV public = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if at := fullSwitchOf(t, database, "PRIV"); at != nil {
+		t.Fatalf("PRIV made public still records the full switch %v, want it cleared", at)
+	}
+	admission.project = "OTHER"
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/OTHER/access", private, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("PATCH OTHER private = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if at := fullSwitchOf(t, database, "OTHER"); at == nil {
+		t.Fatal("OTHER's switch from public to private records no full switch")
+	}
+}
+
 // The maintenance sweep logs, on every pass, an error for each private project the list does not
 // name, and, where the list names any, at its first pass and then once an hour, an error naming
 // any row a project owns whose node does not name its project. With an empty list it reads no row

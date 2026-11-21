@@ -236,15 +236,56 @@ func OwnerNotAllowed(login string) error {
 }
 
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.
-// Whether the deployment lets a project be private at all is the caller's to decide first.
+// Whether the deployment lets a project be private at all is the caller's to decide first. A switch
+// to public clears the project's full switch (full_switch_at), so a later private stretch is judged
+// afresh (RecordFullSwitch).
 func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visibility string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	if visibility != model.ProjectPublic && visibility != model.ProjectPrivate {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w, not %q", ErrVisibilityInput, visibility)
 	}
-	if err := updateProject(ctx, tx, key, `update projects set visibility = $2 where key = $1`, visibility); err != nil {
+	if err := updateProject(ctx, tx, key, `
+		update projects set visibility = $2,
+			full_switch_at = case when $2::text = 'public' then null else full_switch_at end
+		where key = $1
+	`, visibility); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessVisibilityChanged, "", by)
+}
+
+// RecordFullSwitch records, in tx, that project key went private by the full switch: the owner's
+// switch through the API, which proves provisioning, completeness, the Slack channels and the hubs'
+// admission. full_switch_at becomes statement_timestamp(). The caller records it before the
+// hub-admission proof, its last step, so a switch whose proof fails rolls it back and records
+// nothing. A project private with no full switch recorded went private some other way.
+func RecordFullSwitch(ctx context.Context, tx pgx.Tx, key string) error {
+	if err := lockProject(ctx, tx, key); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `update projects set full_switch_at = statement_timestamp() where key = $1`, key); err != nil {
+		return fmt.Errorf("record the full switch of project %s: %w", key, lockTimedOut(LockOwnerRow, err))
+	}
+	return nil
+}
+
+// FullSwitchRecorded reports whether project key is private by a full switch already, as tx reads it
+// after the project's owner lock: a switch to private of such a project changes nothing.
+func FullSwitchRecorded(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	var recorded bool
+	err := tx.QueryRow(ctx, `select visibility = 'private' and full_switch_at is not null from projects where key = $1`, key).Scan(&recorded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the full switch of project %s: %w", key, err)
+	}
+	return recorded, nil
+}
+
+// ReadWrittenProject answers project key's access as a write left it in q, for a write of its owner
+// that changed nothing, whose answer is still the project's access.
+func ReadWrittenProject(ctx context.Context, q Querier, key string) (model.ProjectAccess, error) {
+	return readProjectWritten(ctx, q, key)
 }
 
 // MaxSlackChannels is how many Slack channels a project names.
@@ -351,18 +392,17 @@ func RefuseSharedSlackChannels(ctx context.Context, tx pgx.Tx, key string, viewe
 // project's, which the secrets broker's settle time counts from as it does from a change of the
 // list. A project that names none keeps its time. The time is statement_timestamp(), the update's
 // own start, after the owner lock, as SetSlackChannels stamps it, and not the transaction's start.
-// It answers the project's access as the switch leaves it.
-func StartSlackChannelsTime(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
+func StartSlackChannelsTime(ctx context.Context, tx pgx.Tx, key string) error {
 	if err := lockProject(ctx, tx, key); err != nil {
-		return model.ProjectAccess{}, err
+		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		update projects set slack_channels_changed_at = statement_timestamp()
 		where key = $1 and cardinality(slack_channels) > 0
 	`, key); err != nil {
-		return model.ProjectAccess{}, fmt.Errorf("start the Slack channels' time of project %s: %w", key, lockTimedOut(LockOwnerRow, err))
+		return fmt.Errorf("start the Slack channels' time of project %s: %w", key, lockTimedOut(LockOwnerRow, err))
 	}
-	return readProjectWritten(ctx, tx, key)
+	return nil
 }
 
 // lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
