@@ -897,6 +897,25 @@ func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
 	return gate.ahead(apiAuth(auth, gate))
 }
 
+// readyzHandler is the listener's /readyz: 503 {"status":"starting"} until gate opens and 200
+// {"status":"serving"} from then on. It takes no credential and reads nothing but the gate, so it
+// tells a listener whose /v1 serves from one whose /v1 still answers the closed gate's 503, which
+// /healthz does not: that answers 200 "starting" from the listener's first answer
+// (healthzHandler), since the probes that read it must not take a starting listener out of
+// service, and its bus checks answer for delivery rather than for /v1.
+func readyzHandler(gate *startingGate) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if gate.mux.Load() == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "serving"})
+	}
+}
+
 // openWebhooks builds the webhook routes over the publisher they publish through and the CI store
 // (nil without the GitHub route) and opens the webhook gate onto them. A webhook waits on nothing
 // else, not even the interest and session caches /v1 waits on, and GitHub does not redeliver a
@@ -1208,6 +1227,10 @@ func main() {
 	v1Handler := v1API(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
+	// /readyz says whether /v1 serves, and nothing else: it is the path a load balancer's health
+	// check reads (the edge's), so a starting pod takes no request before its /v1 can serve one.
+	// /healthz stays as it is for the probes that read it.
+	mux.HandleFunc("/readyz", readyzHandler(v1Gate))
 
 	// Phase 4: Start HTTP server on the listener Phase 2 holds.
 	server := newHTTPServer(mux)
