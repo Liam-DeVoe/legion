@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  Dispatch's outbox sends every copy on a subject that names its event's project: an issue's events
+  on `notifications.dispatch.issue.<PROJECT>.<KEY>.<type>`, a session's copy on
+  `notifications.agent.<PROJECT>.<session>`, and a role route's forward to its holder's agent subject
+  under the event's project, its topic the role's lane under the project the role works for. Each
+  role is resolved under that project. What Dispatch records of a destination
+  (`published_destinations`, `owed_keys`, `comment_fallback_copies`) keeps the form every release
+  has written. A comment mention's send names the comment's project to the listener. While a hub
+  cannot prove it admits Dispatch to the private projects' subjects, a write of a private project's
+  event answers `503 PRIVATE_PROJECTS_UNAVAILABLE` once the outbox holds 100,000 of them, and
+  `envoy_dispatch_outbox_private_held` counts what it holds.

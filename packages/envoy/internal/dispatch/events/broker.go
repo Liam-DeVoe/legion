@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,10 +25,16 @@ import (
 // stream (api/event_stream_relay.go), which carries the other process's events too.
 type Broker struct {
 	stream *Stream[model.Event]
-	// privateReady and privateLimit are the private-delivery hold the broker refuses events by
-	// (HoldPrivate); a nil privateReady refuses nothing.
-	privateReady func() bool
-	privateLimit int
+	// privateHold is the private-delivery hold the broker refuses events by (HoldPrivate), nil
+	// until it is given one, which refuses nothing. It is atomic because cmd/dispatch hands it
+	// over once the outbox is built, while other loops may already be appending.
+	privateHold atomic.Pointer[privateHold]
+}
+
+// privateHold is what HoldPrivate was given: the outbox's proof and the limit past it.
+type privateHold struct {
+	ready func() bool
+	limit int
 }
 
 // brokerBuffer is how far behind a Broker subscriber may fall before the stream drops it: 64
@@ -59,7 +66,8 @@ var ErrPrivateHeldFull = errors.New("the outbox holds as many events of private 
 // outbox's own proof that every hub admits Dispatch to the private projects' subjects
 // (outbox.Deps.PrivateHubsReady), the hold that keeps those events unpublished. A nil ready
 // refuses nothing, which is what a Dispatch whose hubs prove nothing runs. cmd/dispatch calls it
-// once, with the func it gives the outbox, before the broker appends anything.
+// once, with the func it gives the outbox (outboxDeps); an append before that call refuses
+// nothing, and the outbox still holds what it writes.
 //
 // The refusal is one statement queued before the event's own while ready answers false, and none
 // otherwise: whether the event's owner is private (model.PrivateOwnerSQL), and only then whether
@@ -67,7 +75,11 @@ var ErrPrivateHeldFull = errors.New("the outbox holds as many events of private 
 // appends open at once can each read limit - 1 and both be written, so the bound is the limit
 // plus the appends open beside each other at that moment.
 func (b *Broker) HoldPrivate(ready func() bool, limit int) {
-	b.privateReady, b.privateLimit = ready, limit
+	if ready == nil {
+		b.privateHold.Store(nil)
+		return
+	}
+	b.privateHold.Store(&privateHold{ready: ready, limit: limit})
 }
 
 // privateHeldSQL is the refusal's read: true when the owner $1 to $3 name (an issue key, a
@@ -90,11 +102,12 @@ var privateHeldSQL = `
 // while it is off, for an ownerless event, which belongs to no project, or on a broker no hold was
 // given.
 func (b *Broker) queuePrivateHeld(batch *store.WriteBatch, e model.Event) {
-	if b.privateReady == nil || b.privateReady() || (e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil) {
+	hold := b.privateHold.Load()
+	if hold == nil || hold.ready() || (e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil) {
 		return
 	}
 	batch.Queue("refuse a private project's event past the outbox's held limit", privateHeldSQL,
-		e.IssueKey, e.ArtifactID, e.ProjectKey, b.privateLimit,
+		e.IssueKey, e.ArtifactID, e.ProjectKey, hold.limit,
 	).QueryRow(func(row pgx.Row) error {
 		var full bool
 		if err := row.Scan(&full); err != nil {

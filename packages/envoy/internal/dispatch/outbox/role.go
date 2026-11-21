@@ -93,15 +93,26 @@ type roleResolution struct {
 	err        error
 }
 
+// roleKey is the key a batch resolves role by for an event of project and keeps the resolution
+// under: the claim key of the role under the project it works for there (roleProject,
+// contracts.RoleClaimKey), which resolveRole reads back. A Legion role is keyed by its own
+// project whatever the event's, and a free-form role by the event's, so one role routed from two
+// projects' events is two resolutions - each reads its own project's claim first and the
+// claim under no project only when that project is public (roles.ResolveHolder) - and one role
+// routed from one project's events is one, however many of them name it.
+func roleKey(project, role string) string {
+	return contracts.RoleClaimKey(roleProject(role, project), role)
+}
+
 // resolveRole resolves role's holder as the outbox reads it, within ctx: the role and session
 // buckets directly (Deps.RoleClaims, Deps.Sessions), and the holder judged by the state its own
 // last registration puts it in, with a holder that is not answering logged and its claim left
 // exactly as it is. It is the one resolution a batch's open (resolveRoleHolders) and the handover
 // behind a keep (handOverKept) share, so the liveness rule and that line are written once.
 //
-// role is a route's role, which names the claim it is keyed by (contracts.ParseRoleClaimKey): a
-// bare role resolves under its own project, contracts.RoleProject(role), as every claim was keyed
-// before claims named their project, so no read of the role bucket here moves.
+// role is the claim key of the role a route names under the project it is resolved for
+// (roleKey, contracts.ParseRoleClaimKey): a bare key is a role working for its own project,
+// contracts.RoleProject(role), as every claim was keyed before claims named their project.
 func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution, error) {
 	if deps.RoleClaims == nil || deps.Sessions == nil {
 		return roles.Resolution{}, errNoRoleReaders
@@ -215,12 +226,13 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 			if _, ok := event.delivered[dest.subject]; ok || dest.role == "" {
 				continue
 			}
-			if _, ok := resolved[dest.role]; ok {
+			key := roleKey(event.event.Project, dest.role)
+			if _, ok := resolved[key]; ok {
 				continue
 			}
-			if _, ok := seen[dest.role]; !ok {
-				seen[dest.role] = struct{}{}
-				routed = append(routed, dest.role)
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				routed = append(routed, key)
 			}
 		}
 	}
@@ -237,7 +249,7 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 		// destination.heldAsARow, planChains).
 		for index := range event.destinationsOf {
 			dest := &event.destinationsOf[index]
-			result, ok := resolved[dest.role]
+			result, ok := resolved[roleKey(event.event.Project, dest.role)]
 			if !ok {
 				continue
 			}
@@ -259,20 +271,21 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 	}
 }
 
-// resolveRoles resolves the holder of each of names, once per role and every role at once,
-// within ctx (resolveRole). It is the one resolution a batch runs: of the roles its events route
-// to (resolveRoleHolders) and of the roles the unanswered mentions of its comments name
-// (resolveUnpinnedRoleMentions).
-func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]roleResolution {
-	resolved := make(map[string]roleResolution, len(names))
+// resolveRoles resolves the holder of each of keys, each a role's claim key under the project it
+// is resolved for (roleKey), once per key and every key at once, within ctx (resolveRole), and
+// answers each resolution under its key. It is the one resolution a batch runs: of the roles its
+// events route to (resolveRoleHolders) and of the roles the unanswered mentions of its comments
+// name (resolveUnpinnedRoleMentions).
+func resolveRoles(ctx context.Context, deps Deps, keys []string) map[string]roleResolution {
+	resolved := make(map[string]roleResolution, len(keys))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, role := range names {
+	for _, key := range keys {
 		wg.Go(func() {
 			var result roleResolution
-			result.resolution, result.err = resolveRole(ctx, deps, role)
+			result.resolution, result.err = resolveRole(ctx, deps, key)
 			mu.Lock()
-			resolved[role] = result
+			resolved[key] = result
 			mu.Unlock()
 		})
 	}
@@ -392,11 +405,12 @@ func resolveUnpinnedRoleMentions(ctx context.Context, deps Deps, read ...mention
 			continue
 		}
 		for role := range deliveries.unpinned.roles {
-			if _, ok := seen[role]; ok {
+			key := roleKey(deliveries.unpinned.project, role)
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[role] = struct{}{}
-			names = append(names, role)
+			seen[key] = struct{}{}
+			names = append(names, key)
 		}
 	}
 	if len(names) == 0 {
@@ -408,7 +422,7 @@ func resolveUnpinnedRoleMentions(ctx context.Context, deps Deps, read ...mention
 			continue
 		}
 		for role, unpinned := range deliveries.unpinned.roles {
-			if holder := resolved[role].resolution.Holder; holder != "" {
+			if holder := resolved[roleKey(deliveries.unpinned.project, role)].resolution.Holder; holder != "" {
 				if current, ok := deliveries.unpinned.holders[holder]; !ok || unpinned.state < current {
 					deliveries.unpinned.holders[holder] = unpinned.state
 				}
@@ -642,15 +656,20 @@ func roleFallbackKey(keys, settled map[string]string, unpinned *unpinnedRoleMent
 //
 // The role is read off the destination in either form (contracts.CanonicalRole), as every other
 // reader of a role's name reads it: the form the record names a role's topic in, the role alone,
-// and the form with its project, notifications.role.<P>.<role>, which is the role and not a role
-// named <P>.<role>. project is the project of the event the copy carries (roleForward.project).
+// which is resolved under the project the role works for in the event's (roleKey), and the form
+// with its project, notifications.role.<P>.<role>, which is the role under P and not a role named
+// <P>.<role>. project is the project of the event the copy carries (roleForward.project).
 func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope, destination, project string) *roleForward {
 	named, ok := strings.CutPrefix(destination, contracts.RoleTopicPrefix)
 	if !ok || named == "" {
 		return nil
 	}
-	_, role, _ := contracts.CanonicalRole(named)
-	resolution, err := resolveRole(ctx, deps, role)
+	under, role, legacy := contracts.CanonicalRole(named)
+	key := roleKey(project, role)
+	if !legacy {
+		key = contracts.RoleClaimKey(under, role)
+	}
+	resolution, err := resolveRole(ctx, deps, key)
 	return forwardOf(project, role, item, resolution, err)
 }
 
@@ -940,7 +959,7 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, project
 	if deps.KeptLanes == nil {
 		return nil
 	}
-	resolution, err := resolveRole(ctx, deps, role)
+	resolution, err := resolveRole(ctx, deps, roleKey(project, role))
 	if err != nil {
 		return fmt.Errorf("resolve the holder of role %s, which a copy was just kept for: %w", role, err)
 	}

@@ -4385,6 +4385,7 @@ Each item below names a path with its method and identity, then its purpose.
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
   It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
+  `envoy_dispatch_outbox_private_held` is how many events of private projects the outbox holds unpublished while a hub cannot prove it admits Dispatch to the private projects' subjects (the private-delivery hold), read by the process that holds the publisher hold at most once each 5 s and 0 on every other process; at `events.PrivateHeldLimit` (100,000) a write of another private project's event answers `503 PRIVATE_PROJECTS_UNAVAILABLE` and writes nothing.
   It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
   Nothing scrapes it yet.
 
@@ -5788,6 +5789,16 @@ Each item below names a status and code, then its meaning.
 - `403 NOT_AUTHOR`
 
   Only a comment's author may edit it.
+
+## Private project errors
+
+Each item below names a status and code, then its meaning.
+
+- `503 PRIVATE_PROJECTS_UNAVAILABLE`
+
+  A write would add an event of a private project while a hub cannot prove it admits Dispatch to the private projects' subjects, and the outbox already holds `events.PrivateHeldLimit` (100,000) such events unpublished (`envoy_dispatch_outbox_private_held`).
+  Nothing was written; try again once the hubs are proven.
+  A public project's write is never refused by it.
 
 ## Tests
 

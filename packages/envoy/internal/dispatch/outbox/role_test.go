@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -144,8 +145,9 @@ func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Con
 // deps is the outbox's dependencies as cmd/dispatch wires them: role routes resolved through
 // roles.Buckets on the outbox's own client, judged by the package's own windows, which is what
 // a deployment that sets neither ENVOY_SESSION_LIVE_WINDOW nor ENVOY_SESSION_GONE_HORIZON
-// gives it, and that client the reader of a role's kept lane and its drain cursor, which a
-// keep's handover makes its pass over (Deps.KeptLanes).
+// gives it, each project's privacy read from the rig's own projects rows (committedPrivacy), and
+// that client the reader of a role's kept lane and its drain cursor, which a keep's handover
+// makes its pass over (Deps.KeptLanes).
 func (r *roleRig) deps() Deps {
 	return r.depsJudgedBy(roles.Windows{})
 }
@@ -153,9 +155,25 @@ func (r *roleRig) deps() Deps {
 // depsJudgedBy is deps whose role-route holders are judged by windows, as cmd/dispatch judges
 // them by the two the deployment gave its listeners (roleHolderWindows, cmd/dispatch/main.go).
 func (r *roleRig) depsJudgedBy(windows roles.Windows) Deps {
-	holders := roles.NewBuckets(r.client, windows, nil, roles.AllPublic)
+	holders := roles.NewBuckets(r.client, windows, committedPrivacy(r.database), roles.AllPublic)
 	return Deps{Store: r.database, Publisher: r.client, Broker: r.broker, RoleClaims: holders, Sessions: holders,
 		KeptLanes: r.client}
+}
+
+// committedPrivacy answers a project's privacy from database's projects rows, as cmd/dispatch's
+// reader of its own committed rows does (committedProjectPrivacy): a project with no row is
+// private, so nothing reaches the holder under no project for a project nobody can name. A free-
+// form role routed from an event of a public project resolves its holder under no project when the
+// project has no claim of its own (roles.ResolveHolder), which is every role a rig claims.
+func committedPrivacy(database *store.Store) roles.ProjectPrivacy {
+	return func(ctx context.Context, project string) (bool, error) {
+		var private bool
+		err := database.Pool.QueryRow(ctx, `select visibility = 'private' from projects where key = $1`, project).Scan(&private)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, nil
+		}
+		return private, err
+	}
 }
 
 // claim makes holder role's holder, registered with entry, as a session plugin's registration

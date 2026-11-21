@@ -823,8 +823,9 @@ func (s *server) deliverMessageResuming(
 	held := true
 	err = takeover.retry(ctx,
 		func() string {
+			// A targeted message names no project here: the listener chooses it (listenerSendInput).
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, "", message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},

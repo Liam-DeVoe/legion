@@ -98,7 +98,7 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `update events set `+row.state+` where id = $1`, earlier.ID); err != nil {
 				t.Fatalf("set the earlier event %s: %v", row.state, err)
 			}
-			by, err := copyHolder(ctx, deps, comment.ID, s1, "s1")
+			by, err := copyHolder(ctx, deps, "TT", comment.ID, s1, "s1")
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}
@@ -112,7 +112,7 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 		})
 	}
 	// Control: the rule reads earlier events only - the comment holds no copy of the event before it.
-	if by, err := copyHolder(ctx, deps, earlier.ID, s1, "s1"); err != nil || by != nil {
+	if by, err := copyHolder(ctx, deps, "TT", earlier.ID, s1, "s1"); err != nil || by != nil {
 		t.Fatalf("a copy of the earlier event itself waits behind %+v (%v), want nothing: no event of T-1 comes before it", by, err)
 	}
 }
@@ -164,7 +164,7 @@ func TestTheCopyRuleReadsTheNewestEventOfADocumentOrAProject(t *testing.T) {
 				`, earlier.ID, row.behind); err != nil {
 					t.Fatalf("record the earlier event: %v", err)
 				}
-				by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, contracts.LegacyAgentSubject("s1"), "s1")
+				by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, model.SessionDestinationKey("s1"), "s1")
 				if err != nil {
 					t.Fatalf("read the rule: %v", err)
 				}
@@ -216,7 +216,7 @@ func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testin
 			appendEvent(t, database, broker, model.Event{
 				IssueKey: new("T-1"), Type: "subscription.remove_requested", Actor: model.Actor{Kind: "session", ID: "s9"}, Payload: payload,
 			})
-			by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, contracts.LegacyAgentSubject("s1"), "s1")
+			by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, model.SessionDestinationKey("s1"), "s1")
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}

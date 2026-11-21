@@ -626,6 +626,12 @@ that names the owner, the earlier event and that event's last publish error. The
 earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
 attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
+`envoy_dispatch_outbox_private_held` counts the events of private projects the outbox holds
+unpublished while a hub cannot prove it admits Dispatch to the private projects' subjects. It is
+read at most once every 5 seconds, and is 0 on a process that does not publish. When it reaches
+100,000, a write that would add another private project's event answers
+`503 PRIVATE_PROJECTS_UNAVAILABLE` and writes nothing. Public projects' writes go on.
+
 ## Behind a proxy
 
 A page's live updates ride one WebSocket per tab, `GET /ws/live`. A browser keeps WebSockets apart

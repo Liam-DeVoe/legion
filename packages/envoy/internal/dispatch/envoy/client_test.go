@@ -881,6 +881,41 @@ func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 	}
 }
 
+// TestSendNamesTheMessagesProjectWhenSet (SendInput.Project): a send whose input names a project
+// carries it as the body's project, which the listener takes for the message's own, and a send
+// whose input names none leaves the field out, so the listener chooses it as it did before.
+//
+// Control, in the test: the body's project is read off the bytes the listener received, so a
+// client that dropped the field fails the first row, and one that always wrote it the second.
+func TestSendNamesTheMessagesProjectWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, project string
+	}{
+		{name: "a comment mention of PRIV", project: "PRIV"},
+		{name: "a targeted message, whose project the listener chooses"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode the send: %v", err)
+				}
+				project, present := body["project"]
+				if present != (tc.project != "") || (present && project != tc.project) {
+					t.Errorf("project in the body = %v (present %v), want %q, present only when set", project, present, tc.project)
+				}
+				_, _ = w.Write([]byte(`{"event_id":"e1","recipient":"s1"}`))
+			}))
+			defer listener.Close()
+			if _, err := New(listener.URL).Send(context.Background(), SendInput{
+				TargetSession: "s1", Message: "body", IdempotencyKey: "k", Project: tc.project,
+			}); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		})
+	}
+}
+
 const legionAgentRow = `{"session_id":"ses-old","legion_project":"acme","issue":"ACME-448","role":"reviewer",` +
 	`"role_token":"legion-acme-acme-448-reviewer","title":"Legion reviewer · ACME-448","harness":"omp",` +
 	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +

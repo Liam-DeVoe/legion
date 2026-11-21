@@ -64,7 +64,7 @@ func (s *server) queueForUnknownSession(
 	wanted contracts.ExpectsReply, failure string,
 ) sendOutcome {
 	envelope := queuedEnvelope(listenerSendInput(
-		pending.resolved.attemptSessionID, pending.resolved.Delivery, message.Body, key,
+		pending.resolved.attemptSessionID, pending.resolved.Delivery, "", message.Body, key,
 		pending.urgency, wanted, pending.frame, false,
 	))
 	// The listener refuses to store an envelope that does not validate, and so does this.

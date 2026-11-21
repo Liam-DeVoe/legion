@@ -133,7 +133,7 @@ type sendOutcome struct {
 // the attempt's age, never frozen into the row here. A row written today would otherwise still
 // promise a safe retry next week.
 func (s *server) sendResolvedDelivery(
-	ctx context.Context, target ResolvedMention, body, idempotencyKey string, urgency *string,
+	ctx context.Context, target ResolvedMention, project, body, idempotencyKey string, urgency *string,
 	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
 ) sendOutcome {
 	if target.ResolveError != "" {
@@ -143,7 +143,7 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{failure: noLiveSessionPrefix}
 	}
 	send, err := s.deps.Envoy.Send(ctx, listenerSendInput(
-		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
+		*target.SessionID, target.Delivery, project, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
 	))
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}
@@ -163,10 +163,13 @@ func (s *server) sendResolvedDelivery(
 }
 
 // listenerSendInput is the listener send of one delivery to sessionID in mode delivery, carrying
-// frame. A targeted message Dispatch queues itself, for a session no store of the listener's
-// holds, is the envelope this send would have stored (queuedEnvelope), so both are built here.
+// frame, of project: the comment's project for a comment mention, which the listener takes for the
+// message's own (dispatchenvoy.SendInput.Project), and empty for a targeted message, whose project
+// the listener chooses. A targeted message Dispatch queues itself, for a session no store of the
+// listener's holds, is the envelope this send would have stored (queuedEnvelope), so both are
+// built here.
 func listenerSendInput(
-	sessionID, delivery, body, idempotencyKey string, urgency *string,
+	sessionID, delivery, project, body, idempotencyKey string, urgency *string,
 	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
 ) dispatchenvoy.SendInput {
 	// What the delivered thing wants back, except in btw mode, which interrupts the session it
@@ -190,6 +193,7 @@ func listenerSendInput(
 		Urgency:        deref(urgency),
 		ExpectsReply:   expectsReply,
 		ConnectedOnly:  connectedOnly,
+		Project:        project,
 	}
 }
 
@@ -785,7 +789,7 @@ func (s *server) deliverResolvedCommentMention(
 		}
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
-		outcome = s.sendResolvedDelivery(ctx, target, stored.Body, key, nil, wanted, frame, false)
+		outcome = s.sendResolvedDelivery(ctx, target, created.Project, stored.Body, key, nil, wanted, frame, false)
 		return outcome.failure
 	}
 	if decided && claimed.pending.SessionID == nil {
@@ -995,13 +999,18 @@ func mentionsDecideRoutes(created model.Event) bool {
 // loadCommentCreatedEvent reads comment's comment.created event within the comment's owner, so
 // the read walks that owner's events by its (issue_key, seq) or (artifact_id, seq) index instead
 // of matching the payload id across the whole log. A comment has one comment.created event, and
-// both callers ask about recent comments, so the walk starts from the owner's newest event.
+// both callers ask about recent comments, so the walk starts from the owner's newest event. The
+// event's Project is its owner's project, as the event log gives a written event (an issue's, a
+// document's), which a mention of the comment is sent under (listenerSendInput).
 func (s *server) loadCommentCreatedEvent(ctx context.Context, q queryer, comment model.Comment) (model.Event, error) {
 	ownerColumn, ownerID := commentEventOwner(comment)
 	var event model.Event
 	var actor, payload []byte
 	if err := q.QueryRow(ctx, `
-		select id, issue_key, artifact_id::text, coalesce(project_key, ''), seq, type, actor, notify, created_at, payload
+		select id, issue_key, artifact_id::text,
+		       coalesce(project_key, (select i.project_key from issues i where i.key = events.issue_key),
+		                (select a.project_key from artifacts a where a.id = events.artifact_id), ''),
+		       seq, type, actor, notify, created_at, payload
 		from events
 		where `+ownerColumn+` = $1 and type = 'comment.created' and payload ->> 'id' = $2
 		order by seq desc

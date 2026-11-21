@@ -202,7 +202,7 @@ func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
 			ctx := context.Background()
 			moved := recordAfterARouteMove(t, tc.record)
 			owed, _, _, _ := eventRecord(t, moved.database, moved.earlier)
-			by, err := copyHolder(ctx, moved.deps, moved.comment, moved.s1, "s1")
+			by, err := copyHolder(ctx, moved.deps, "TT", moved.comment, moved.s1, "s1")
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}
@@ -213,7 +213,7 @@ func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
 			if _, err := moved.database.Pool.Exec(ctx, `update events set published_at = now() where id = $1`, moved.earlier); err != nil {
 				t.Fatalf("publish the earlier event: %v", err)
 			}
-			if by, err := copyHolder(ctx, moved.deps, moved.comment, moved.s1, "s1"); err != nil || by != nil {
+			if by, err := copyHolder(ctx, moved.deps, "TT", moved.comment, moved.s1, "s1"); err != nil || by != nil {
 				t.Fatalf("control: with the earlier event published, s1's copy waits behind %s (%v), want nothing", describeHolder(by), err)
 			}
 			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))

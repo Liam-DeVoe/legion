@@ -1115,7 +1115,9 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 		return nil, err
 	}
 	// What the attempts that name no session yet hold back, which the destinations below read
-	// of every session they would send a copy to (unpinnedRoleMentions, mentionHolds).
+	// of every session they would send a copy to (unpinnedRoleMentions, mentionHolds), each role
+	// resolved under its comment's project (lookups.ofProject).
+	found.ofProject(resolvable)
 	resolved := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
 	for _, event := range resolvable {
 		to, err := eventDestinations(ctx, deps, event, found)

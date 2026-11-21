@@ -35,12 +35,17 @@ const projectPrivacyReadTimeout = 2 * time.Second
 // by the windows this deployment gave its listeners (roleHolderWindows), in the privacy mode it
 // gave Dispatch (projectPrivacyMode), and with each project's privacy read from Dispatch's own
 // committed rows.
+//
+// The event log is handed the same proof the outbox holds private events by (PrivateHubsReady),
+// before the broker appends anything: while it answers false, an event of a private project is
+// refused once the outbox holds events.PrivateHeldLimit of them (events.Broker.HoldPrivate). A nil
+// proof, which is what a Dispatch whose hubs prove nothing runs, holds nothing and refuses nothing.
 func outboxDeps(
 	boot bootConfig, pool, outboxPool *store.Pool, natsClient *bus.Client, broker *events.Broker,
 	publishFailures, roleForwardsHeld *metrics.Counter, met *metrics.Registry,
 ) outbox.Deps {
 	holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows, committedProjectPrivacy(pool), boot.ProjectPrivacy)
-	return outbox.Deps{
+	deps := outbox.Deps{
 		Store:            &store.Store{Pool: outboxPool},
 		Publisher:        natsClient,
 		Broker:           broker,
@@ -52,6 +57,10 @@ func outboxDeps(
 		RoleForwardsHeld: roleForwardsHeld,
 		Metrics:          met,
 	}
+	if broker != nil {
+		broker.HoldPrivate(deps.PrivateHubsReady, events.PrivateHeldLimit)
+	}
+	return deps
 }
 
 // projectPrivacyMode is DISPATCH_PROJECT_PRIVACY_REQUIRED, read once at start: `true` is

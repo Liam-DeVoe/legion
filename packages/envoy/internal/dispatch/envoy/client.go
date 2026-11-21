@@ -263,6 +263,11 @@ type SendInput struct {
 	// every send of a message whose agents-route request asked for it. Unset, the field is left
 	// out of the body.
 	ConnectedOnly bool
+	// Project is the project the delivered thing is of, a project key: the comment's project for
+	// a comment mention (api.listenerSendInput). It reaches the listener as the body's project,
+	// which the listener takes for the message's own (listenerwire.SendRequest.Project). Empty,
+	// the field is left out and the listener chooses it, as for every send before the field.
+	Project string
 }
 
 // SendResult identifies the listener envelope emitted for a successful delivery. Duplicate
@@ -732,6 +737,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		},
 		TargetSession: input.TargetSession,
 		ConnectedOnly: input.ConnectedOnly,
+		Project:       input.Project,
 	}
 	if message.Urgency != "" {
 		send.Urgency = &message.Urgency

@@ -220,6 +220,22 @@ func (l *lookups) readings() []mentionDeliveries {
 	return readings
 }
 
+// ofProject writes, beside the reading of each new comment one of events carries, the project of
+// that comment's event, which the roles its attempts that name no session yet target are resolved
+// under (unpinnedRoleMentions.project, resolveUnpinnedRoleMentions). A comment of no event here,
+// or one with no reading, is left as it is.
+func (l *lookups) ofProject(events []*batchEvent) {
+	for _, event := range events {
+		if event.event.Type != "comment.created" {
+			continue
+		}
+		deliveries, ok := l.mentions[canonicalID(payloadString(event.event.Payload, "id"))]
+		if ok && deliveries.unpinned != nil {
+			deliveries.unpinned.project = event.event.Project
+		}
+	}
+}
+
 func decodeAuthor(raw []byte, kind, id string) (model.Actor, bool, error) {
 	var author model.Actor
 	if err := json.Unmarshal(raw, &author); err != nil {

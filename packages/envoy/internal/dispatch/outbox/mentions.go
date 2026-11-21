@@ -472,6 +472,11 @@ func (o mentionOutcomes) state(key string) mentionState {
 type unpinnedRoleMentions struct {
 	roles   map[string]unpinnedRole
 	holders map[string]mentionState
+	// project is the project of the comment these attempts are of, which each role they target is
+	// resolved under (roleKey), as the role routes of the comment's own event are: the batch
+	// writes it beside the comment's reading once that reading is in (lookups.ofProject), and the
+	// fallback pass for the one comment a held row is of (decideFallbackCopy).
+	project string
 	// unnamedLive is that an attempt whose role this reading could name no holder for is live,
 	// unnamedResending that one is past the lease, and unnamedWithinBound that one of either
 	// is within unnamedForwardBound of its creation, which is the wait a role route's forward
@@ -1683,6 +1688,7 @@ func decideFallbackCopy(
 	// Whose copies the comment's attempts that name no session yet hold back, as the batch
 	// reads it for its own events (resolveUnpinnedRoleMentions): this row's destination is one
 	// of those copies when the key it names is such a holder.
+	deliveries.unpinned.project = event.event.Project
 	resolveUnpinnedRoleMentions(ctx, deps, deliveries)
 	holds, keys := deliveries.of(held.kind)
 	state := holds.state(held.key)
@@ -1753,7 +1759,7 @@ func decideFallbackCopy(
 	// and holds nothing of its own back: the owner's later events go on. The pass counts and
 	// reports what it waits on (heldCopies).
 	key := fallbackCopyKey(held.destination, forward)
-	if by, err := copyHolder(ctx, deps, held.eventID, key, strings.TrimPrefix(key, contracts.AgentTopicPrefix)); err != nil {
+	if by, err := copyHolder(ctx, deps, event.event.Project, held.eventID, key, strings.TrimPrefix(key, contracts.AgentTopicPrefix)); err != nil {
 		return 0, fallbackSend{}, err
 	} else if by != nil {
 		return fallbackWaitsForAnEarlierEvent, fallbackSend{heldBy: by}, nil
@@ -1778,22 +1784,26 @@ func fallbackCopyKey(subject string, forward *roleForward) string {
 // kept for the role's next holder, asks no role's holder, and no role route holds it. The API's
 // send of a mention asks copyrule.Holder too (mentionCopyHolderFor in internal/dispatch/api), so
 // both roads a mention's copy takes outside the owner's chains keep the order planChains keeps
-// inside them.
-func copyHolder(ctx context.Context, deps Deps, eventID int64, key, session string) (*model.MentionCopyHolder, error) {
+// inside them. project is the owner's, the project every event of that owner is of, which an
+// earlier event's role route is resolved under (roleKey).
+func copyHolder(ctx context.Context, deps Deps, project string, eventID int64, key, session string) (*model.MentionCopyHolder, error) {
 	var holds func(context.Context, string) bool
 	if session != key {
-		holds = func(ctx context.Context, role string) bool { return copyWaitsForRole(ctx, deps, role, session) }
+		holds = func(ctx context.Context, role string) bool {
+			return copyWaitsForRole(ctx, deps, project, role, session)
+		}
 	}
 	return copyrule.Holder(ctx, deps.Store.Pool, eventID, key, holds)
 }
 
-// copyWaitsForRole is whether a copy bound for session waits for an earlier event's route to role:
-// it does when session holds the role now, as planChains would key that route on session at its
-// next batch (destination.key), and when the role's claim cannot be read, since session may hold
-// it - the row is read again a moment later (mentionPendingDelay). A deployment with no role
-// readers forwards no role route, so its routes hold no copy (errNoRoleReaders).
-func copyWaitsForRole(ctx context.Context, deps Deps, role, session string) bool {
-	resolution, err := resolveRole(ctx, deps, role)
+// copyWaitsForRole is whether a copy bound for session waits for an earlier event's route to role,
+// an event of project: it does when session holds the role there now, as planChains would key
+// that route on session at its next batch (destination.key, resolveRoleHolders), and when the
+// role's claim cannot be read, since session may hold it - the row is read again a moment later
+// (mentionPendingDelay). A deployment with no role readers forwards no role route, so its routes
+// hold no copy (errNoRoleReaders).
+func copyWaitsForRole(ctx context.Context, deps Deps, project, role, session string) bool {
+	resolution, err := resolveRole(ctx, deps, roleKey(project, role))
 	switch {
 	case errors.Is(err, errNoRoleReaders):
 		return false
