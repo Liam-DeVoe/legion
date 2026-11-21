@@ -405,7 +405,8 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string, p
 //   - 401 BROKER_TOKEN_PROOF_INVALID — the proof did not meet RFC 9449 Section 4.3: a bad
 //     signature, a method or target URI that is not this request's, an 'iat' outside the window,
 //     a missing or wrong 'ath', or a proof already spent; or its 'jti' holds a control character,
-//     which the replay store records nothing of (store.ErrUnstorableProof) and the library reports
+//     or its 'jti' and 'htu' together run over the 2,048 bytes the replay store records
+//     (store.ErrUnstorableProof: the store records nothing of either), which the library reports
 //     as its own failure, so it is answered here as the caller's.
 //   - 401 BROKER_TOKEN_KEY_MISMATCH — a sound proof signed by a key that is not the token's
 //     'jkt', which is what makes a stolen token useless.
