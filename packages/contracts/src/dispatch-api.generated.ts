@@ -268,7 +268,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
+    /** @description Test hook: count this process's room failures, lock-waiting compactions, room closes and notified catch-ups (each a catch-up another process's notification asked for) of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
     get: operations["getApiV1ArtifactsByIdTestRoomCounters"];
     put?: never;
     post?: never;
@@ -6330,6 +6330,8 @@ export interface components {
       awareness_clients: number;
       /** Format: int64 */
       lock_waiting_compactions: number;
+      /** Format: int64 */
+      notified_catch_ups: number;
       /** Format: int64 */
       room_closes: number;
       /** Format: int64 */

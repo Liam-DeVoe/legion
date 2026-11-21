@@ -1073,7 +1073,7 @@
     },
     "/api/v1/artifacts/{id}/_test/room-counters": {
       "get": {
-        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
+        "description": "Test hook: count this process's room failures, lock-waiting compactions, room closes and notified catch-ups (each a catch-up another process's notification asked for) of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
         "operationId": "getApiV1ArtifactsByIdTestRoomCounters",
         "parameters": [
           {
@@ -26621,6 +26621,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "notified_catch_ups": {
+            "format": "int64",
+            "type": "integer"
+          },
           "room_closes": {
             "format": "int64",
             "type": "integer"
@@ -26644,6 +26648,7 @@
           "room_failures",
           "lock_waiting_compactions",
           "room_closes",
+          "notified_catch_ups",
           "settlement_resumptions",
           "awareness_clients"
         ],

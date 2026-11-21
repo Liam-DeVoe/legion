@@ -3973,8 +3973,9 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   What this process did with the document since the process started, and what its room holds now:
-  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
-  not ygo's idle retirement), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
+  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "notified_catch_ups": n, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
+  not ygo's idle retirement), the catch-ups of its room of the document it read for because another process's notification asked for one (notifications that coalesce into one catch-up count once;
+  not the sweep after a `LISTEN`, a retry, a room's start or a catch-up asked again after a replaced history), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/hold-persistence` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
