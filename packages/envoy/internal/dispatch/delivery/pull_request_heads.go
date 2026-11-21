@@ -723,8 +723,9 @@ type answerColumns struct {
 
 // answerArray is one array HeadAnswers.args answers: its name, which answeredHeadsRelation gives
 // the parameter, the type of its elements, and, for an array of times an answer may carry none of,
-// present, the name of the boolean array that is false for each answer that carries none: the
-// times and the present of one moments. Such an array holds no null, so a step of
+// present, the name of the boolean array that is false for each answer that carries none.
+// HeadAnswers.args passes the times and the present of each moments as such a pair: event_at with
+// has_event_at, and checked_at with has_checked_at. The times array holds no null, so a step of
 // answeredHeadsRelation finds its element at once by its place, and the step reads the null back
 // from present (at).
 type answerArray struct {

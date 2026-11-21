@@ -644,8 +644,9 @@ const holderProofRefused = "The DPoP-Holder proof was refused: a trade sends one
 // holderKey reads a trade's holder proof (oauthwire.HeaderDPoPHolder) and answers the thumbprint
 // of the key it proves, or "" for a trade that sends none. The proof is verified with the
 // library's own DPoP strategy (Provider.holderProofs) against the request's own method and URL,
-// which the broker's route has already set to BROKER_PUBLIC_URL and the path, as the DPoP proof's
+// which the broker's route has already set to api.Deps.PublicURL and the path, as the DPoP proof's
 // check reads them, with the same skew and replay table, so a holder proof is spent once.
+// api.Deps.PublicURL is BROKER_PUBLIC_URL, or BROKER_EDGE_URL at the edge (api.RegisterEdge).
 //
 // Each refusal is invalid_request naming the header: a holder proof on a trade that does not ask
 // for oauthwire.ScopeRead; a holder proof that does not verify; a holder key that is the DPoP
