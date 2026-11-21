@@ -347,8 +347,11 @@
 # in their files; the mode runs the committed command, reads each sentence in its file in
 # this checkout's own tree, ROOT, and fails a page whose Landed commit or Proven by command
 # differs from the committed entry for its title, and a sentence its file does not carry,
-# naming both. A landed step names either a commit of this pull request or the merge
-# commit on main of another pull request of this tree, as the architect's reading of
+# naming both. The page's Landed commit is the one word after the label, seven to forty
+# lowercase hexadecimal digits, and a word with anything else in it fails, naming the page
+# and the line, rather than being read as the digits it starts with. A landed step names
+# either a commit of this pull request or the merge commit on main of another pull request
+# of this tree, as the architect's reading of
 # c-landed-steps records (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760):
 # an entry of the second kind carries merged_in, "<owner>/<repository>#<n>", and its
 # 40-hex commit, which the mode fetches from our_repository.url into a git directory of
@@ -801,16 +804,16 @@ page-verdict|shape|every candidate page carries exactly one verdict word of vend
 verdict-commitment|shape|a depend names its upstream owner, a port names the change in our code, a reject names its reason|a reject with no reason
 fixed-page|shape|the three pages the specification fixes exist and each answers by name the design already written for it|a fixed page that answers no named design
 front-page|shape|the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read|the paragraph deleted
-question-list|shape|every page's question is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
+question-list|shape|every page's question is one word the gate reads, Q and its number, and is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
-citation-our-code|citations|every citation into our own repository names a path that stands at the commit it names, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
+citation-our-code|citations|every path the file field of a citation into our own repository names stands at the commit it names, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names, read whole, a repository sources.json pins, by its name or the owner and name of its url, every path its file field names is one the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path, a part that starts with a digit being read whole as a line or a line range or failing by name; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
 citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate, and no such sentence writes a number as a fraction or with a decimal comma outside a code span|a figure no row its sentence cites prints
-landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, in engineer-days and with a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes, or, for a step merged in another pull request of this tree, the page names that pull request beside its merge commit, fetched from our repository, whose subject ends with that pull request's number and which carries each sentence the step published; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
+landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, in engineer-days and with a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit, one word of seven to forty hexadecimal digits after its Landed label, and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes, or, for a step merged in another pull request of this tree, the page names that pull request beside its merge commit, fetched from our repository, whose subject ends with that pull request's number and which carries each sentence the step published; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule, or the steps merged in another pull request land in one commit or in commits each an ancestor of the next on main; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
@@ -1720,16 +1723,24 @@ live_read() {
 # pinned commit, by env.sh's one rule, ioc_env_clone, under the clone root this run
 # reads, through live_read: a fetch that fails is a mode that cannot run. It returns 1
 # for a repository sources.json does not pin, which is an answer about the deliverable.
-# clone_dir <repository> prints where that clone stands. A row may name a repository as
-# `scope` or as `ioc-project/scope`; both name the row of sources.json that pins it by its
-# last path element.
+# It reads the repository a row names by repo_named, and the clone stands under CLONES by
+# the name repo_named prints.
 clone_fetch() {
-    local name="${1##*/}"
-    jq -e --arg n "$name" '.repositories[] | select(.name==$n) | .url and .commit' "$EVIDENCE/sources.json" >/dev/null 2>&1 || return 1
+    local name
+    name="$(repo_named "$1")" || return 1
     env_functions || cannot_run gate " --$MODE: env.sh, which holds the rule a clone is made by, did not load."
     IOC_ENV_HERE="$EVIDENCE" IOC_CLONES="$CLONES" live_read "GitHub, the fetch of the clone of $name" "$RUN_SCRATCH/clone-$name.log" ioc_env_clone "$name"
 }
-clone_dir() { printf '%s/%s' "$CLONES" "${1##*/}"; }
+
+# repo_named <repository>; prints the name of the repository of sources.json's list, with
+# its url and its commit, that a row's repository names, read whole: that name itself, as
+# scope, or the owner and the name of the url sources.json pins for it, with or without the
+# host before them, as ioc-project/scope or github.com/ioc-project/scope. Any other word
+# prints nothing and returns 1, so a repository whose owner is mistyped, as
+# ioc-projects/scope, is never read by its last path element alone as the clone of another.
+repo_named() {
+    jq -r --arg r "$1" '.repositories[] | select(.url and .commit) | (.url | sub("^https?://"; "")) as $u | select(.name == $r or $u == $r or ($u | sub("^[^/]*/"; "")) == $r) | .name' "$EVIDENCE/sources.json" 2>/dev/null | grep -m1 .
+}
 
 our_commit() { jq -r '.our_repository.commit' "$EVIDENCE/sources.json"; }
 
@@ -5423,19 +5434,35 @@ shape_fixed_pages() {
 }
 
 shape_questions() {
-    local text="$1" bad=0 number
+    local text="$1" bad=0 number numbered line word
     local listed
     listed="$(grep -c '^## [0-9]*\.' "$EVIDENCE/questions.md" || true)"
     [ "${listed:-0}" -gt 0 ] || {
         bad=$((bad + 1))
         fail question-list "the question list carries no question, so no page is held to one"
     }
-    while IFS= read -r number; do
+    # A page's question is the whole word after the label on its Question line, a word being
+    # what spaces and tabs bound: Q and its number, as Q2, with at most one full stop, comma,
+    # colon or semicolon after it. A word with anything else in it, as Q1/Q3 or Q1.5, names
+    # no question this gate reads, and fails, naming the line and the word, rather than being
+    # read as the number it starts with.
+    local question_word='^Q([0-9]+)[.,:;]?$'
+    while IFS= read -r numbered; do
+        line="${numbered#*:}"
+        word="${line#*\*\*Question:\*\*}"
+        word="${word#"${word%%[![:space:]]*}"}"
+        word="${word%%[[:space:]]*}"
+        if ! [[ "$word" =~ $question_word ]]; then
+            bad=$((bad + 1))
+            fail question-list "line ${numbered%%:*} of the judgement names its question as '$word', which is no question this gate reads: a question is Q and its number, one word of its own after the label, as Q2, and the line reads '${line:0:240}'"
+            continue
+        fi
+        number="${BASH_REMATCH[1]}"
         grep -qE "^## $number\." "$EVIDENCE/questions.md" || {
             bad=$((bad + 1))
             fail question-list "a page answers question $number, which the question list does not carry"
         }
-    done < <(printf '%s\n' "$text" | grep -oE '\*\*Question:\*\*[[:space:]]*Q[0-9]+' | grep -oE '[0-9]+')
+    done < <(printf '%s\n' "$text" | grep -nF -- '**Question:**')
     for number in $(seq 1 "${listed:-0}"); do
         printf '%s\n' "$text" | grep -qE "\*\*Question:\*\*[[:space:]]*Q$number\b" && continue
         printf '%s\n' "$text" | grep -qE "[Qq]uestion $number( |,|\.|:)" || {
@@ -5584,9 +5611,11 @@ PYTHON
 # ending in a line resolves when the file holds that line, and one ending in a line range
 # when the range ends at or after its start and the file holds its last line. Otherwise the
 # symbol is split on commas and on the word "and", and each part is looked for in the
-# paths the citation names: as literal text, as a line, as a file name, as a prefixed
-# name, as a path, as a regular expression where the part holds `|` or `*`, and as the
-# last element of a dotted name. A part written in words that none of those finds names a
+# paths the citation names: as literal text, as a line or a line range, read whole with
+# both ends, as a file name, as a prefixed name, as a path, as a regular expression where
+# the part holds `|` or `*`, and as the last element of a dotted name; a part that starts
+# with a digit and holds no space, and is neither text the paths hold nor a line or a line
+# range, fails by name. A part written in words that none of those finds names a
 # part of the file a reader judges, and this gate does not read it; nor does it read any
 # part of a symbol whose citation writes its file in words. Each such part is written to
 # $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row,
@@ -5653,19 +5682,34 @@ resolve_symbol() {
         if git -C "$root" grep -qF -- "$part" "$commit" -- "${pathspec[@]}" 2>/dev/null; then
             continue
         fi
-        # A part that is a line or a line range, which a citation writes beside the names
-        # it lists, resolves when one of the files it names holds that line.
+        # A part that starts with a digit is a line, digits alone, or a line range, two lines
+        # joined by a hyphen, read whole, with any closing bracket or stop after it, as the
+        # "397-404)" a comma leaves of "(lines 330-349, 397-404)": it resolves when one of the
+        # files it names holds that line, or the range's last line, both ends read, and a range
+        # whose end stands before its start names no lines and fails. Any other part that
+        # starts with a digit and holds no space, as "3–9" written with a dash or "12a", and that
+        # no file it names holds as text, is no line this gate reads, and fails, naming the row
+        # and the part, rather than being read as the line its first digits name.
         case "$part" in
         [0-9]*)
-            local part_line held=1 path
-            part_line="$(printf '%s' "$part" | grep -oE '^[0-9]+')"
-            for path in "${pathspec[@]}"; do
-                # A glob names many files and no line, so a number beside one is a figure
-                # of the prose rather than a line of a file.
-                case "$path" in *'*'*) held=0 ;; esac
-                [ "$(git -C "$root" show "$commit:$path" 2>/dev/null | wc -l)" -ge "$part_line" ] && held=0
-            done
-            [ "$held" -eq 0 ] && continue
+            local part_line part_end held=1 path line_part='^([0-9]+)(-([0-9]+))?[]).,;:]*$'
+            if [[ "$part" =~ $line_part ]]; then
+                part_line="${BASH_REMATCH[1]}" part_end="${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}"
+                if [ "$part_end" -lt "$part_line" ]; then
+                    fail "$family" "$id cites $part, a line range that ends before it starts"
+                    return 1
+                fi
+                for path in "${pathspec[@]}"; do
+                    # A glob names many files and no line, so a number beside one is a figure
+                    # of the prose rather than a line of a file.
+                    case "$path" in *'*'*) held=0 ;; esac
+                    [ "$(git -C "$root" show "$commit:$path" 2>/dev/null | wc -l)" -ge "$part_end" ] && held=0
+                done
+                [ "$held" -eq 0 ] && continue
+            elif [[ "$part" != *[[:space:]]* ]]; then
+                fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $file holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
+                return 1
+            fi
             ;;
         esac
         # A part that is a file name resolves as a path under the paths the citation names.
@@ -5878,7 +5922,8 @@ report_unchecked_parts() {
 #     estimate".
 # A number written in a form this reader does not read is no figure either, and a sentence
 # that cites a row and writes one outside a code span fails, naming the line and the form:
-# a fraction, a token that is digits, a slash and digits, as 1/2, which the rule above
+# a fraction, a token that is a number, a slash and a number, each digits with an optional
+# decimal point and per-cent sign, as 1/2 or 0.72/0.55, which the rule above
 # would read as a place and so as no figure, and a decimal comma, a token of digits whose
 # comma is not followed by exactly three digits, as 0,5, which it would read as 0 and 5.
 # The reader reads a figure as digits with an optional decimal point, or as a number
@@ -5926,7 +5971,7 @@ QUESTION = re.compile(r"\bQuestions?\s+(\d+)\b", re.IGNORECASE)
 TOKEN = re.compile(r"[^\s()\[\]{}\"'`=|<>;\u201c\u201d\u2018\u2019]+")
 PIECES = re.compile(r"[-:\u2013\u2014]|,(?!\d{3}(?!\d))")
 FIGURE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?")
-FRACTION = re.compile(r"\d+/\d+%?")
+FRACTION = re.compile(r"\d+(?:\.\d+)?%?/\d+(?:\.\d+)?%?")
 COMMA_NUMBER = re.compile(r"\d+(?:,\d+)+%?")
 ESTIMATE = re.compile(r"\bby our estimate\b", re.IGNORECASE)
 CLAUSE_END = re.compile(r"[,;](?=\s)")
@@ -6137,10 +6182,12 @@ mode_citations() {
         our-code)
             file="$(printf '%s' "$row" | jq -r '.evidence.file // ""')"
             symbol="$(printf '%s' "$row" | jq -r '.evidence.symbol // ""')"
-            file="${file%%:*}"
             # A path, a directory or a glob: git reads all three as a pathspec, and the
             # citation resolves when the commit holds at least one path it names. A file
             # this pull request adds is read at the head instead, since the base has none.
+            # The field is read whole, every path it names, each with the line after its
+            # colon taken off by paths_at, and never cut at its first colon, which read
+            # "a.md:45 and b.md:50" as a.md alone and left b.md unread.
             if [ -z "$file" ] || ! paths_at "$ROOT" "$commit" "$file"; then
                 if [ -n "$file" ] && paths_at "$ROOT" HEAD "$file"; then
                     :
@@ -6158,14 +6205,16 @@ mode_citations() {
             repo="$(printf '%s' "$row" | jq -r '.evidence.repo // ""')"
             rcommit="$(printf '%s' "$row" | jq -r '.evidence.commit // ""')"
             file="$(printf '%s' "$row" | jq -r '.evidence.file // ""')"
-            file="${file%%:*}"
-            local root
-            if ! jq -e --arg n "${repo##*/}" '.repositories[] | select(.name==$n) | .url and .commit' "$EVIDENCE/sources.json" >/dev/null 2>&1; then
+            # The field is read whole, every path it names, as for our-code above, and so is
+            # the repository, by repo_named: one it does not read, as a repository whose
+            # owner is mistyped, fails by name and is never read by its last path element.
+            local root name
+            if ! name="$(repo_named "$repo")"; then
                 bad_theirs=$((bad_theirs + 1))
-                fail citation-project-code "$id cites the repository $repo, which sources.json pins no clone of"
+                fail citation-project-code "$id cites the repository '$repo', which names no repository sources.json pins a clone of: a repository is written whole, as its name, as scope, or as the owner and the name of the url sources.json pins, as ioc-project/scope"
                 continue
             fi
-            root="$(clone_dir "$repo")"
+            root="$CLONES/$name"
             if ! paths_at "$root" "$rcommit" "$file"; then
                 bad_theirs=$((bad_theirs + 1))
                 fail citation-project-code "$id cites $repo $file at $rcommit, which the clone does not hold"
@@ -6484,7 +6533,21 @@ mode_landed() {
         want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
         want_command="$(printf '%s' "$entry" | jq -r '.command // ""')"
         merged_in="$(printf '%s' "$entry" | jq -r '.merged_in // ""')"
-        commit="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Landed:\*\*[[:space:]]*[0-9a-f]{7,40}' | grep -oE '[0-9a-f]{7,40}')"
+        # The commit is the whole word after the label on the page's one Landed line, a word
+        # being what spaces and tabs bound, and it is read only when it is seven to forty
+        # lowercase hexadecimal digits: a word with anything else in it, as a commit with a
+        # mistyped character or a forty-first digit glued to it, is no commit this gate reads,
+        # and fails, naming the page and the line, rather than being read as the digits it
+        # starts with, which git may resolve to the committed commit.
+        line="$(printf '%s\n' "$page" | grep -m1 -F -- '**Landed:**')"
+        commit="${line#*\*\*Landed:\*\*}"
+        commit="${commit#"${commit%%[![:space:]]*}"}"
+        commit="${commit%%[[:space:]]*}"
+        if ! [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' names its commit as '$commit' on its Landed line, which is no commit this gate reads: a commit is seven to forty lowercase hexadecimal digits, one word of its own after the label, and the line reads '${line:0:240}'"
+            continue
+        fi
         # The page may write the commit abbreviated; it names the committed one when git
         # reads the two as the same commit: in this repository for a commit of this pull
         # request, and in IOC_MERGED_REPO for one another pull request merged.

@@ -4908,6 +4908,136 @@ bound_case "a jq the machine ends by SIGKILL while it lists what a loop reads ma
     "^check\\.sh cannot run --citations: the program 'jq .*project-code.*', which mode_citations ran, was ended by signal 9 \\(SIGKILL\\)\$" \
     "$out" "$((EPOCHSECONDS - jq_list_start))" 150
 
+# 165. The commit a Landed line names is the whole word after its label, and a word the
+# reader cannot read fails (the architect's class of round 46: a reader of what an author
+# writes matches the whole token or fails by name, as cost_read does since case 152). At
+# 63caeeea --landed took as the commit the first run of seven to forty hexadecimal digits
+# after the label (grep -o), so a commit with a mistyped character was read as the digits
+# before it, which git resolves to the committed commit when they are a prefix of it: the
+# fixture's Landed line written as its commit with its thirteenth digit typed as the letter
+# o passed all of --landed. The case writes it so and runs --landed, which must fail
+# landed-proof, naming the page and the word and saying what a commit is.
+dir="$(fresh landed-commit-typo)"
+rows="$(cat "$dir/rows")"
+typo="${rows:0:12}o${rows:13}"
+sed -i "s/^- \*\*Landed:\*\* $rows\$/- **Landed:** $typo/" "$dir/judgement.md"
+grep -qxF -- "- **Landed:** $typo" "$dir/judgement.md" || {
+    printf 'FAIL the Landed line could not be written with a mistyped commit in the fixture judgement\n'
+    exit 1
+}
+case_result "a Landed line whose commit holds a mistyped character fails --landed, naming the page and the word, and is not read as the digits before it" \
+    "landed-proof: the page .An execution record under the gen_ai\\. names. names its commit as .$typo. on its Landed line, which is no commit this gate reads: a commit is seven to forty lowercase hexadecimal digits" \
+    "$(fixture_run "$dir" --landed)"
+
+# 166. A citing sentence that writes a fraction of decimals fails citation-figures, as one of
+# whole numbers does (the architect's class of round 46; the sibling of case 156). The reader
+# read a fraction as digits, a slash and digits alone, so at 63caeeea '0.72/0.55', two
+# thresholds written as one token, held a slash and was read as a place, no figure, and the
+# row its sentence cites was held to none: the sentence passed citation-figures. The case
+# writes after the fixture's one cited sentence 'It holds 0.72/0.55 of them [f-figure-1].',
+# which f-figure-1 does not print, and runs --citations, which must fail citation-figures,
+# naming the line and the form.
+dir="$(fresh citation-form-decimal-fraction)"
+sed -i "s|^The fixture.s count reads 12,617 rows \\[f-figure-1\\]\\.\$|& It holds 0.72/0.55 of them [f-figure-1].|" "$dir/judgement.md"
+grep -qxF "The fixture's count reads 12,617 rows [f-figure-1]. It holds 0.72/0.55 of them [f-figure-1]." "$dir/judgement.md" || {
+    printf 'FAIL the sentence writing 0.72/0.55 could not be planted in the fixture judgement\n'
+    exit 1
+}
+case_result "a sentence citing f-figure-1 that writes 0.72/0.55 fails citation-figures, naming the line and the form" \
+    "citation-figures: line [0-9]+ of the judgement writes 0\\.72/0\\.55, a fraction, in a sentence that cites f-figure-1, and the gate reads a figure as digits with an optional decimal point, or as a thousands-grouped number" \
+    "$(fixture_run "$dir" --citations)"
+
+# 167. A part of a symbol that starts with a digit is read whole, as a line or a line range,
+# and any other such part fails by name (the architect's class of round 46). resolve_symbol
+# read such a part by its first digits (grep -o '^[0-9]+'), so at 63caeeea the range 3-9
+# written beside a name, and 3–9 written with a dash, each read as line 3 of a file of three
+# lines and passed. The case writes the symbol of the fixture's row f-our-1, which cites
+# packages/daemon/internal/api/handoff.go, a file of three lines, as 'TesterVerdictRequired,
+# 3-9' and as 'TesterVerdictRequired, 3–9', and runs --citations over each: the first must
+# fail citation-our-code, naming the part 3-9, whose end the file does not hold; the second
+# must fail it, naming 3–9 as no line or line range the gate reads. The honest form,
+# 'TesterVerdictRequired, 1-3', passes it.
+for form in hyphen dash honest; do
+    case "$form" in
+    hyphen) part='3-9' ;;
+    dash) part='3–9' ;;
+    honest) part='1-3' ;;
+    esac
+    dir="$(fresh "symbol-part-$form")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    sed -i "/\"id\":\"f-our-1\"/s/\"symbol\":\"TesterVerdictRequired\"/\"symbol\":\"TesterVerdictRequired, $part\"/" "$claims_copy"
+    grep -F '"id":"f-our-1"' "$claims_copy" | grep -qF "\"symbol\":\"TesterVerdictRequired, $part\"" || {
+        printf 'FAIL the symbol part %s could not be planted in the fixture row f-our-1\n' "$part"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    hyphen)
+        case_result "a symbol part 3-9 beside a name is read as a line range, both ends, and fails --citations in a file of three lines" \
+            "citation-our-code: f-our-1 cites the symbol 3-9, which packages/daemon/internal/api/handoff\\.go does not hold" "$out"
+        ;;
+    dash)
+        case_result "a symbol part 3–9 written with a dash fails --citations, named as no line or line range the gate reads" \
+            "citation-our-code: f-our-1 cites 3–9, which starts with a digit and is no line or line range this gate reads" "$out"
+        ;;
+    honest) honest_result "a symbol part 1-3 beside a name, a line range inside its file, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 168. Every path a citation's file field names is read, and the field is never cut at its
+# first colon (the architect's class of round 46). mode_citations took the field up to its
+# first colon (${file%%:*}) before it read its paths, so at 63caeeea a field that names a
+# first path with its line and a second path, 'packages/daemon/internal/api/handoff.go:1 and
+# packages/daemon/internal/api/no_such.go', was read as handoff.go alone, and the second
+# path, which the fixture does not hold, passed unread, as the live row s-pair-p6-source's
+# second path was never read. The case writes the file field of the fixture's row f-our-1 so
+# and runs --citations, which must fail citation-our-code, naming the row and the field.
+dir="$(fresh citation-file-two-paths)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i '/"id":"f-our-1"/s#"file":"packages/daemon/internal/api/handoff.go"#"file":"packages/daemon/internal/api/handoff.go:1 and packages/daemon/internal/api/no_such.go"#' "$claims_copy"
+grep -F '"id":"f-our-1"' "$claims_copy" | grep -qF '"file":"packages/daemon/internal/api/handoff.go:1 and packages/daemon/internal/api/no_such.go"' || {
+    printf 'FAIL the file field of two paths could not be planted in the fixture row f-our-1\n'
+    exit 1
+}
+case_result "a citation whose file field names a path after a first path with its line fails --citations when that path is missing" \
+    "citation-our-code: f-our-1 cites packages/daemon/internal/api/handoff\\.go:1 and packages/daemon/internal/api/no_such\\.go, which this repository does not hold" \
+    "$(fixture_run "$dir" --citations)"
+
+# 169. A page's question is the whole word after its label, and a word the reader cannot read
+# fails (the architect's class of round 46). shape_questions took the first Q and digits after
+# the label (grep -o), so at 63caeeea a page whose Question line read 'Q1/Q3', two questions,
+# was read as Q1 alone and passed question-list, Q3 being named on the front page. The case
+# writes the question of the fixture's page 'An execution record under the gen_ai. names' so
+# and runs --shape, which must fail question-list, naming the line and the word.
+dir="$(fresh question-two-words)"
+awk '/^### /{title = substr($0, 5)} title == "An execution record under the gen_ai. names" && /^- \*\*Question:\*\* Q1 /{sub(/ Q1 /, " Q1/Q3 ")} {print}' "$dir/judgement.md" >"$dir/judgement.md.new" &&
+    mv "$dir/judgement.md.new" "$dir/judgement.md"
+[ "$(grep -c '^- \*\*Question:\*\* Q1/Q3 When a role writes' "$dir/judgement.md")" = 1 ] || {
+    printf 'FAIL the question Q1/Q3 could not be planted on the fixture page of the gen_ai. names\n'
+    exit 1
+}
+case_result "a page whose question is Q1/Q3 fails --shape's question-list, naming the line and the word, and is not read as Q1" \
+    "question-list: line [0-9]+ of the judgement names its question as .Q1/Q3., which is no question this gate reads: a question is Q and its number" \
+    "$(fixture_run "$dir" --shape)"
+
+# 170. The repository a project-code row names is read whole, and one the reader cannot read
+# fails by name (the architect's class of round 46). mode_citations read the repository by
+# its last path element (${repo##*/}), so at 63caeeea a row whose repository's owner was
+# mistyped, 'ioc-projects/mas-lab', read as mas-lab, the clone sources.json pins for
+# ioc-project/mas-lab, and passed. The case writes the repository of the fixture's row
+# f-project-1 so and runs --citations, which must fail citation-project-code, naming the row
+# and the repository and saying how a repository is written.
+dir="$(fresh citation-repository-owner)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i '/"id":"f-project-1"/s#"repo":"mas-lab"#"repo":"ioc-projects/mas-lab"#' "$claims_copy"
+grep -F '"id":"f-project-1"' "$claims_copy" | grep -qF '"repo":"ioc-projects/mas-lab"' || {
+    printf 'FAIL the repository ioc-projects/mas-lab could not be planted in the fixture row f-project-1\n'
+    exit 1
+}
+case_result "a project-code row whose repository's owner is mistyped fails --citations, naming the row and the repository, and is not read as the clone of its last path element" \
+    "citation-project-code: f-project-1 cites the repository .ioc-projects/mas-lab., which names no repository sources.json pins a clone of: a repository is written whole" \
+    "$(fixture_run "$dir" --citations)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
