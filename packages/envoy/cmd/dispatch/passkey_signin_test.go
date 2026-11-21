@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The two origins of a deployment whose people from outside sign in with a passkey: the canonical
@@ -559,6 +562,68 @@ func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff(t *testing.T) {
 	if started := call(off, canonicalOrigin, http.MethodGet, "/auth/start", nil); started.Code != http.StatusFound {
 		t.Fatalf("GET /auth/start at the canonical origin with passkeys off answered %d %s, want 302 to Google", started.Code, started.Body.String())
 	}
+}
+
+// TestAGatedAuthRouteLogsOneLine: a request one of the outside origin's gates answers 404 (Google's
+// /auth/start at the outside origin, a passkey ceremony at the tailnet origin) writes one
+// access-log line, its route's own, as every request does: the gate answers the 404 a path no
+// route serves without a second, unmatched, line.
+//
+// Control: answer the gate's 404 through staticHandler, which logs an unmatched line of its own,
+// and each request writes two lines and the row fails naming them.
+func TestAGatedAuthRouteLogsOneLine(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	logged := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+	for _, gated := range []struct {
+		origin, method, path string
+		body                 any
+	}{
+		{passkeyOrigin, http.MethodGet, "/auth/start", nil},
+		{canonicalOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}},
+	} {
+		before := logged.Len()
+		what := gated.method + " " + gated.path + " at " + gated.origin
+		wantCode(t, what, call(r.handler, gated.origin, gated.method, gated.path, gated.body), http.StatusNotFound, "NOT_FOUND")
+		written := logged.String()[before:]
+		if lines := strings.Count(written, `msg="dispatch: request"`); lines != 1 {
+			t.Errorf("%s wrote %d access-log lines, want its route's one:\n%s", what, lines, written)
+		}
+	}
+}
+
+// passkeySettingReachesItsReaders hands DISPATCH_SIGNIN_PASSKEY, through the settings read alone, to
+// each reader: boot, which takes 1 and refuses any other value naming the setting; the sign-in rule,
+// a PasskeyRule with it on and the domain rule with it off (signInRule); and the router, which
+// serves the passkey ceremonies at the outside origin with it on, a sign-in's begin answering 200,
+// and answers that begin 404 with it off, on the same database.
+func passkeySettingReachesItsReaders(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	if !r.boot.SignInPasskey {
+		t.Fatal("DISPATCH_SIGNIN_PASSKEY=1: SignInPasskey false")
+	}
+	if rule, err := signInRule(r.boot, accessLister(r.database)); err != nil {
+		t.Fatalf("signInRule with DISPATCH_SIGNIN_PASSKEY=1: %v", err)
+	} else if _, ok := rule.(identity.PasskeyRule); !ok {
+		t.Errorf("signInRule with DISPATCH_SIGNIN_PASSKEY=1 = %T, want identity.PasskeyRule", rule)
+	}
+	if begun := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}); begun.Code != http.StatusOK {
+		t.Errorf("DISPATCH_SIGNIN_PASSKEY=1: a sign-in's begin at the outside origin answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	off, offBoot := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	if offBoot.SignInPasskey {
+		t.Error("DISPATCH_SIGNIN_PASSKEY unset: SignInPasskey true")
+	}
+	if rule, err := signInRule(offBoot, accessLister(r.database)); err != nil {
+		t.Fatalf("signInRule with DISPATCH_SIGNIN_PASSKEY unset: %v", err)
+	} else if _, ok := rule.(identity.DomainRule); !ok {
+		t.Errorf("signInRule with DISPATCH_SIGNIN_PASSKEY unset = %T, want identity.DomainRule", rule)
+	}
+	wantCode(t, "DISPATCH_SIGNIN_PASSKEY unset: a sign-in's begin at the outside origin", call(off, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}), http.StatusNotFound, "NOT_FOUND")
+	refusedWith(t, map[string]string{
+		"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
+		"DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin, "DISPATCH_SIGNIN_PASSKEY": "true",
+	}, "DISPATCH_SIGNIN_PASSKEY must be 1 or unset")
 }
 
 // TestTheTailnetOriginServesNoPasskeyRoute (R5): at the canonical origin the four passkey routes

@@ -67,12 +67,12 @@ func (r *router) mountPasskeys(mux *http.ServeMux) {
 // atOutsideOrigin serves next only for a request that came to the outside origin (publicOrigin)
 // from a page of that origin: its Origin is the outside origin, or it carries none and the browser
 // says it is same-origin, as enforceCookieOrigin holds a cookie's writes. A request to the canonical
-// origin answers the 404 an unknown path under /auth answers; one from another origin's page is
-// 403, as a cookie's write from it is.
+// origin answers the 404 an unknown path under /auth answers (writeNoRoute, logged once, as its
+// route); one from another origin's page is 403, as a cookie's write from it is.
 func (r *router) atOutsideOrigin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if !r.atOutside(req) {
-			r.staticHandler(w, req)
+			writeNoRoute(w, req)
 			return
 		}
 		origin := req.Header.Get("Origin")
@@ -98,7 +98,7 @@ func (r *router) atOutside(req *http.Request) bool {
 func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if _, outsideGoogle := r.ctx.SignInRule.(identity.OutsideRule); !outsideGoogle && r.atOutside(req) {
-			r.staticHandler(w, req)
+			writeNoRoute(w, req)
 			return
 		}
 		next(w, req)

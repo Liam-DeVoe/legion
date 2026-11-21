@@ -4276,6 +4276,7 @@ Each item below names a field of the line, then what it holds.
 
   The route's own pattern (`/api/v1/issues/{key}`), so one route's requests group together whatever ids their paths carry;
   `unmatched` for a path under `/api`, `/v1`, `/auth`, `/ws` or `/healthz` that no route answers.
+  A route that answers at one origin alone (`/auth/start` and `/auth/callback` at `DISPATCH_OUTSIDE_ORIGIN` without `DISPATCH_SIGNIN_OUTSIDE=1`, the passkey ceremonies at `DISPATCH_SERVER_URL`) answers the other the same `404` and logs that request under its own pattern, once.
 
 - `path`
 
