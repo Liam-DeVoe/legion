@@ -95,8 +95,9 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 // The view relays the session's raw transcript, whose tool results hold whatever the session read,
 // and a read records nothing, where the HTTP read filters each message by its own project. So a
 // viewer that is not open watches only a session its own person's credential proved, and any
-// other viewer, while a project is private, only one whose listener record lists its credential's
-// projects within what the viewer sees (access.SessionContentClause). The rule is asked again on
+// other viewer, while a project is private, only one whose reach it sees: the projects its listener
+// record lists, or with no list the private projects of the people who proved it
+// (access.SessionContentClause). The rule is asked again on
 // each change of a project's access or of a group the event relay carries, on every heartbeat
 // (accessRecheckEvery) and on each re-arm, and a view whose session the caller no longer may read
 // ends (dropped), so its page subscribes again and is answered as above.

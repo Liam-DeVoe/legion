@@ -14,7 +14,8 @@ import (
 
 // The sessions of the agent-view content rows, by the uuids an agent view names. Each acts under a
 // broker-issued token that proves it (asSessionOf): carol is a full member PRIV's list names, bob a
-// restricted member PRIV's list names.
+// restricted member PRIV's list names, and dora (contentDora) a full member PUB's list names and no
+// private project's.
 const (
 	// carol's pod session, its token naming PRIV: it comments on PRIV's issue and reads PUB's, a
 	// read that records nothing. Its listener lists PRIV.
@@ -31,9 +32,17 @@ const (
 	contentPubUnlistedSession = "1c9b4d2f-6a3e-4b8c-8d4f-2e3a4b5c6d76"
 	// carol's, its token naming PUB: it comments on PUB's issue. Its listener lists PUB and PRIV.
 	contentBothListedSession = "1c9b4d2f-6a3e-4b8c-8d4f-2e3a4b5c6d77"
+	// dora's, its token naming PUB: it comments on PUB's issue. Its listener sent no list.
+	contentDoraUnlistedSession = "1c9b4d2f-6a3e-4b8c-8d4f-2e3a4b5c6d78"
+	// nobody's: a session with history in PUB (a session_projects pair written as a stand-in, as no
+	// proved write made it) that no proved write tied to a person. Its listener sent no list.
+	contentUntiedSession = "1c9b4d2f-6a3e-4b8c-8d4f-2e3a4b5c6d79"
 )
 
-// contentAgentRig is a private seed whose listener lists the seven sessions, with the lists their
+// contentDora is the full member PUB's access list names, and no private project's.
+const contentDora = "dora@example.com"
+
+// contentAgentRig is a private seed whose listener lists the nine sessions, with the lists their
 // constants name, and whose agent stream holds a replay for each, which it also answers for.
 type contentAgentRig struct {
 	seed   privateSeed
@@ -44,22 +53,26 @@ type contentAgentRig struct {
 func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig {
 	t.Helper()
 	roster := `[
-		{"session_id":"` + contentCarolPodSession + `","title":"Carol's pod","capabilities":["btw"],"last_seen":700,"projects":["PRIV"]},
-		{"session_id":"` + contentBobSession + `","title":"Bob's","capabilities":["btw"],"last_seen":600,"projects":["PRIV"]},
-		{"session_id":"` + contentBobUnlistedSession + `","title":"Bob's, no list","capabilities":["btw"],"last_seen":500},
-		{"session_id":"` + contentSharedSession + `","title":"Shared","capabilities":["btw"],"last_seen":400,"projects":["PRIV"]},
-		{"session_id":"` + contentPubListedSession + `","title":"PUB, listed","capabilities":["btw"],"last_seen":300,"projects":["PUB"]},
-		{"session_id":"` + contentPubUnlistedSession + `","title":"PUB, no list","capabilities":["btw"],"last_seen":200},
-		{"session_id":"` + contentBothListedSession + `","title":"Lists both","capabilities":["btw"],"last_seen":100,"projects":["PUB","PRIV"]}
+		{"session_id":"` + contentCarolPodSession + `","title":"Carol's pod","capabilities":["btw"],"last_seen":900,"projects":["PRIV"]},
+		{"session_id":"` + contentBobSession + `","title":"Bob's","capabilities":["btw"],"last_seen":800,"projects":["PRIV"]},
+		{"session_id":"` + contentBobUnlistedSession + `","title":"Bob's, no list","capabilities":["btw"],"last_seen":700},
+		{"session_id":"` + contentSharedSession + `","title":"Shared","capabilities":["btw"],"last_seen":600,"projects":["PRIV"]},
+		{"session_id":"` + contentPubListedSession + `","title":"PUB, listed","capabilities":["btw"],"last_seen":500,"projects":["PUB"]},
+		{"session_id":"` + contentPubUnlistedSession + `","title":"PUB, no list","capabilities":["btw"],"last_seen":400},
+		{"session_id":"` + contentBothListedSession + `","title":"Lists both","capabilities":["btw"],"last_seen":300,"projects":["PUB","PRIV"]},
+		{"session_id":"` + contentDoraUnlistedSession + `","title":"Dora's, no list","capabilities":["btw"],"last_seen":200},
+		{"session_id":"` + contentUntiedSession + `","title":"Nobody's, no list","capabilities":["btw"],"last_seen":100}
 	]`
 	listener, _ := newBroadcastListener(t, roster)
 	stream := agentstream.NewMemory()
 	for _, session := range []string{contentCarolPodSession, contentBobSession, contentBobUnlistedSession, contentSharedSession,
-		contentPubListedSession, contentPubUnlistedSession, contentBothListedSession} {
+		contentPubListedSession, contentPubUnlistedSession, contentBothListedSession, contentDoraUnlistedSession, contentUntiedSession} {
 		stream.SetReplay(session, agentstream.Frame(`{"v":1,"kind":"replay","session":"`+session+`"}`))
 	}
 	options.envoyURL, options.agentStream = listener.URL, stream
 	seed := seedPrivateProjectWith(t, options)
+	seedPeople(t, seed.database, contentDora)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+contentDora, nil, http.StatusOK)
 	for _, acted := range []struct{ person, session, project string }{
 		{seedCarol, contentCarolPodSession, seedPrivate},
 		{seedBob, contentBobSession, seedPrivate},
@@ -69,6 +82,7 @@ func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig
 		{seedCarol, contentPubListedSession, seedPublic},
 		{seedCarol, contentPubUnlistedSession, seedPublic},
 		{seedCarol, contentBothListedSession, seedPublic},
+		{contentDora, contentDoraUnlistedSession, seedPublic},
 	} {
 		seed.asSessionOf(t, acted.person, acted.session, acted.project, http.MethodPost,
 			"/api/v1/issues/"+seed.issue[acted.project]+"/comments",
@@ -78,13 +92,18 @@ func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig
 	// token names: the read records nothing, so no project the session wrote in says it.
 	seed.asSessionOf(t, seedCarol, contentCarolPodSession, seedPrivate, http.MethodGet,
 		"/api/v1/issues/"+seed.issue[seedPublic], nil, http.StatusOK)
-	// The listener's records, as the stored roster's projection holds them.
+	// The listener's records, as the stored roster's projection holds them, and the untied
+	// session's history in PUB.
 	if _, err := seed.database.Pool.Exec(context.Background(), `
 		insert into route_roster (answered, sessions, sent_at, expires_at)
 		values (true, $1::jsonb, now(), now() + interval '1 hour')
 		on conflict (id) do update set sessions = excluded.sessions, sent_at = excluded.sent_at, expires_at = excluded.expires_at`,
 		roster); err != nil {
 		t.Fatalf("store the listener's sessions: %v", err)
+	}
+	if _, err := seed.database.Pool.Exec(context.Background(), `insert into session_projects (session_id, project_key) values ($1, $2)`,
+		contentUntiedSession, seedPublic); err != nil {
+		t.Fatalf("record the untied session's history in PUB: %v", err)
 	}
 	return contentAgentRig{seed: seed, url: liveURLOf(t, seed.handler), stream: stream}
 }
@@ -195,26 +214,37 @@ func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 	rig.watch(t, "with every project public", contentView{callerCarol, contentCarolPodSession, agentViewResponding, "carol is open and nothing is private"})
 }
 
-// TestASessionWithNoListenerListReachesNoOtherViewerWhileAProjectIsPrivate: while PRIV is
-// private, a session whose listener sent no list is one whose reach Dispatch does not know, so it
-// answers every viewer but itself and the server the no-responder verdict, an open one included:
-// alice, an open viewer PRIV's list does not name, is relayed the session that commented on PUB and
-// lists PUB, and not the one that commented on PUB with no list, nor one that lists PRIV beside
-// PUB, nor carol's pod session; carol, who sees PRIV, is relayed her pod session, which lists PRIV,
-// and not the session with no list. With no project private alice is relayed the session with no
-// list, as before (R9).
+// TestAnOpenViewerWatchesAnUnlistedSessionOnlyWhereItSeesWhatItsPeopleSee: while PRIV is private,
+// an open viewer is relayed a session whose listener lists projects only when it sees each one,
+// and a session whose listener sent no list (every listener today) only when it sees every private
+// project of each person whose credential proved the session (session_owners), so:
 //
-// Control: a missing list read as an empty one (the clause's coalesce to '[]'), under which alice
-// is relayed the session with no list while PRIV is private, and the test fails.
-func TestASessionWithNoListenerListReachesNoOtherViewerWhileAProjectIsPrivate(t *testing.T) {
+//   - alice, an open viewer PRIV's list does not name, is relayed dora's session with no list, since
+//     dora is on no private project's list, and the session that lists PUB; she is not relayed
+//     carol's session with no list (carol sees PRIV), the session that lists PUB and PRIV, carol's
+//     pod session, which lists PRIV, or the session with no list that no proved write tied to
+//     anybody;
+//   - carol, and carol's token that lists PRIV, are relayed carol's session with no list, since
+//     they see PRIV, and not the untied one.
+//
+// With no project private alice is relayed carol's session with no list, as before (R9).
+//
+// Controls: the person-tie test dropped (a session with no list passes every open viewer), under
+// which alice is relayed carol's session with no list; the tie itself not required, under which
+// alice is relayed the untied session. Each fails the test.
+func TestAnOpenViewerWatchesAnUnlistedSessionOnlyWhereItSeesWhatItsPeopleSee(t *testing.T) {
 	rig := newContentAgentRig(t, testServerOptions{})
 	for _, v := range []contentView{
-		{callerAlice, contentPubUnlistedSession, agentViewHidden, "commented on PUB, its listener sent no list"},
-		{callerAlice, contentBothListedSession, agentViewHidden, "commented on PUB, lists PUB and PRIV"},
-		{callerAlice, contentCarolPodSession, agentViewHidden, "commented on PRIV, lists PRIV"},
-		{callerCarol, contentPubUnlistedSession, agentViewHidden, "commented on PUB, its listener sent no list"},
-		{callerAlice, contentPubListedSession, agentViewResponding, "commented on PUB, lists PUB"},
-		{callerCarol, contentCarolPodSession, agentViewResponding, "carol sees PRIV, which it lists"},
+		{callerAlice, contentPubUnlistedSession, agentViewHidden, "carol's, no list, and carol sees PRIV"},
+		{callerAlice, contentUntiedSession, agentViewHidden, "no list, tied to nobody"},
+		{callerAlice, contentBothListedSession, agentViewHidden, "lists PUB and PRIV"},
+		{callerAlice, contentCarolPodSession, agentViewHidden, "lists PRIV"},
+		{callerCarol, contentUntiedSession, agentViewHidden, "no list, tied to nobody"},
+		{callerAlice, contentDoraUnlistedSession, agentViewResponding, "dora's, no list, and dora is on no private project"},
+		{callerAlice, contentPubListedSession, agentViewResponding, "lists PUB"},
+		{callerCarol, contentPubUnlistedSession, agentViewResponding, "carol's, no list, and carol sees PRIV"},
+		{callerCarolPrivToken, contentPubUnlistedSession, agentViewResponding, "carol's, no list, and the token sees PRIV"},
+		{callerCarol, contentCarolPodSession, agentViewResponding, "lists PRIV, which carol sees"},
 	} {
 		rig.watch(t, "while PRIV is private", v)
 	}

@@ -257,40 +257,55 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     the viewer does not see and at least one: a restricted member's credential reads only the
 //     projects its list names, so the list bounds what the transcript holds for a viewer whose own
 //     credential lists fewer.
-//   - An open viewer, while a project is private, is relayed a session whose listener record lists
-//     the credential's projects ([] included), each one the viewer sees, that wrote in no project
-//     the viewer does not see, and that wrote in a project or lists one, once
-//     `envoy-dispatch backfill-session-projects` has filled the pairs (session_projects_filled).
-//
-// A session whose listener sent no list (route_roster_session_projects does not hold it) is one
-// whose reach Dispatch does not know: it passes no viewer but itself and the server while a project
-// is private, and no viewer that is not open in any state.
+//   - An open viewer, while a project is private, is relayed a session that wrote in no project
+//     the viewer does not see, once `envoy-dispatch backfill-session-projects` has filled the pairs
+//     (session_projects_filled). Where the listener record lists the session's credential's
+//     projects, each must be one the viewer sees ([] included), and the session must have written
+//     in a project or list one. Where it lists none (the listener sent no list, as every listener
+//     does until it learns each session's projects), the session's people bound what its
+//     credential could read: a proved write must have tied it to somebody (session_owners), and
+//     every private project each person tied to it sees (PersonSeesProjectSQL) must be one the
+//     viewer sees. So a session only people on no private project proved is watched as before, one
+//     a private project's person proved only by a viewer who sees that project too, and one with
+//     neither a list nor a tie by nobody.
 func SessionContentClause(sessionExpr, viewerParam string) string {
 	held := `(select listener.projects from route_roster_session_projects listener where listener.id = true)`
 	return clause("SessionContentClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
 		or (%[4]s and not %[5]s)
-		or (coalesce(%[6]s ? (%[1]s), false)
-			and (%[6]s->(%[1]s)) <@ (%[2]s::jsonb->'sees')
-			and not exists (
+		or (not exists (
 				select 1 from session_projects unseen
 				where unseen.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? unseen.project_key)
 				offset 0)
-			and ((%[4]s
-					and exists (select 1 from session_projects_filled offset 0)
-					and (jsonb_array_length(%[6]s->(%[1]s)) > 0
-						or exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)))
-				or (not %[4]s
-					and jsonb_array_length(%[6]s->(%[1]s)) > 0
-					and exists (
-						select 1 from session_owners tied
-						where tied.session_id = (%[1]s) and tied.login = %[7]s
-						offset 0)
-					and not exists (
-						select 1 from session_owners tied
-						where tied.session_id = (%[1]s) and tied.login is distinct from %[7]s
-						offset 0)))))`,
+			and case when coalesce(%[6]s ? (%[1]s), false) then
+				(%[6]s->(%[1]s)) <@ (%[2]s::jsonb->'sees')
+				and ((%[4]s
+						and exists (select 1 from session_projects_filled offset 0)
+						and (jsonb_array_length(%[6]s->(%[1]s)) > 0
+							or exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)))
+					or (not %[4]s
+						and jsonb_array_length(%[6]s->(%[1]s)) > 0
+						and exists (
+							select 1 from session_owners tied
+							where tied.session_id = (%[1]s) and tied.login = %[7]s
+							offset 0)
+						and not exists (
+							select 1 from session_owners tied
+							where tied.session_id = (%[1]s) and tied.login is distinct from %[7]s
+							offset 0)))
+			else
+				%[4]s
+				and exists (select 1 from session_projects_filled offset 0)
+				and exists (select 1 from session_owners tied where tied.session_id = (%[1]s) offset 0)
+				and not exists (
+					select 1 from session_owners tied
+					join projects hidden on hidden.visibility = 'private' and not ((%[2]s::jsonb->'sees') ? hidden.key)
+					left join people tied_person on tied_person.email = tied.login
+					where tied.session_id = (%[1]s) and %[8]s
+					offset 0)
+			end))`,
 		sessionExpr, viewerParam, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"),
-		ViewerFlag(viewerParam, "private"), held, ViewerPerson(viewerParam)))
+		ViewerFlag(viewerParam, "private"), held, ViewerPerson(viewerParam),
+		PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden")))
 }
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
