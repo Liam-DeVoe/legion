@@ -33,6 +33,7 @@ import {
 import { ProvidersSlot } from "../slots/providers";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../tree-drafts";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswerNode } from "../tree-read/tree-read";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
@@ -638,19 +639,9 @@ function issueRead(verification?: Artifact): IssueDetails {
 
 /** A plan task of the plan document as the tree read answers it, at `position` in it. */
 function taskBlock(id: string, position: number): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
+  return treeNode(id, "plan_task", KEY, {
     document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag: "plan_task",
-    text: "",
-    visibility: "project",
-  };
+  });
 }
 
 /** A query client holding every read the issue's tree is built from (`useIssueTree.ts`), each
@@ -676,14 +667,10 @@ function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClie
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
   for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   if (specHeld) {
-    client.setQueryData(issueTreeQuery(KEY).queryKey, {
-      converted: false,
-      cursor: null,
-      nodes: [taskBlock("t1", 0), taskBlock("t2", 1)],
-      tree: null,
-      tuples: [],
-      view_of: null,
-    });
+    client.setQueryData(
+      issueTreeQuery(KEY).queryKey,
+      treeAnswer([taskBlock("t1", 0), taskBlock("t2", 1)])
+    );
   }
   return client;
 }

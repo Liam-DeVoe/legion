@@ -40,7 +40,7 @@ import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
-import type { TreeAnswerNode } from "./tree-read/tree-read";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 
 /**
  * The header's cases of `features/issue/IssuePage.test.tsx` at the new page's checkpoint, each
@@ -428,20 +428,6 @@ test("the header counts a Change under the decision whose block of the spec hold
     suggestion: null,
     turn: null,
   };
-  // The tree read's answer, which the header reads in place of the spec's blocks: each decision a
-  // node of the issue, and the Change under the node of the decision it was written in.
-  const node = (id: string, supertag: string, parent: string | null): TreeAnswerNode => ({
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-  });
   const restore = stubHeader(issue);
   const reads = [
     spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([listed, untied])),
@@ -463,23 +449,19 @@ test("the header counts a Change under the decision whose block of the spec hold
     }),
     spyOn(api, "listComments").mockResolvedValue([change]),
   ];
-  const tree = spyOn(api, "getIssueTree").mockResolvedValue({
-    converted: false,
-    cursor: null,
-    nodes: [
-      node("CORE-1", "issue", null),
-      node("listed", "decision", "CORE-1"),
-      node("untied", "decision", "CORE-1"),
-      {
-        ...node(change.id, "comment", "untied"),
+  // The tree read's answer, which the header reads in place of the spec's blocks: each decision a
+  // node of the issue, and the Change under the node of the decision it was written in.
+  const tree = spyOn(api, "getIssueTree").mockResolvedValue(
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      treeNode("listed", "decision", "CORE-1"),
+      treeNode("untied", "decision", "CORE-1"),
+      treeNode(change.id, "comment", "untied", {
         author: [change.author],
         made_at: change.created_at,
-      },
-    ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  });
+      }),
+    ])
+  );
   const queryClient = headerClient();
   // The comments are held before the header mounts, as the outline's read of them leaves them, so
   // no count is drawn from the decisions and the coverage before the Change is read: that count

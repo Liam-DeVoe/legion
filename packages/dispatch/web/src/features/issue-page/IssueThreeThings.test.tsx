@@ -22,6 +22,7 @@ import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
 import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
+import { treeNode as answerNode, treeAnswer } from "./tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -584,20 +585,11 @@ const decision: Decision = {
 
 /** A typed block of the spec as the tree read answers it, under the issue, at `position`. */
 function block(id: string, type: string, position: number, text: string): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
+  return answerNode(id, type, KEY, {
     document: { artifact_id: specDocument.id, position, slug: "spec" },
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag: type,
     text,
     text_tree: displayTree(text),
-    visibility: "project",
-  };
+  });
 }
 
 /** The spec's summary as the batched reference read names it: the block's stored excerpt, and
@@ -643,22 +635,10 @@ function fullyReadIssue(): TreeNode {
       entries: [],
       open_questions: [],
     },
-    tree: {
-      converted: false,
-      cursor: null,
-      nodes: [
-        block(
-          "summary",
-          "callout",
-          0,
-          "What this is. Why it matters. What is different when done."
-        ),
-        block("r1", "requirement", 1, "The page draws the whole issue in one reading."),
-      ],
-      tree: null,
-      tuples: [],
-      view_of: null,
-    },
+    tree: treeAnswer([
+      block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
+      block("r1", "requirement", 1, "The page draws the whole issue in one reading."),
+    ]),
     issue: issueDetails(),
     targets: [summaryTarget()],
   });
@@ -692,16 +672,12 @@ test("the Contents pane draws the three sentences though the plan's blocks could
   client.setQueryData(["issue-messages", KEY], []);
   // The tree read holds the spec's summary, and the plan's blocks are no read of their own: a
   // blocks read of any document is refused.
-  client.setQueryData(issueTreeQuery(KEY).queryKey, {
-    converted: false,
-    cursor: null,
-    nodes: [
+  client.setQueryData(
+    issueTreeQuery(KEY).queryKey,
+    treeAnswer([
       block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
-    ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  });
+    ])
+  );
   const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
     targets: [summaryTarget()],

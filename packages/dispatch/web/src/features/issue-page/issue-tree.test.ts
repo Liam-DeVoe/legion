@@ -62,7 +62,13 @@ import {
 } from "./tree-drafts";
 import { treeRows } from "./tree-fold";
 import { decisionBehind, nodesInOrder } from "./tree-keys";
-import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read/tree-read";
+import {
+  treeNode as answerNode,
+  treeAnswer,
+  treeParent,
+  treeTuple,
+} from "./tree-read/tree-fixtures";
+import type { TreeAnswerNode } from "./tree-read/tree-read";
 import {
   statementCounts,
   statementStandings,
@@ -510,28 +516,6 @@ interface Fixture extends IssueTreeReads {
   readonly parents?: Readonly<Record<string, string>>;
 }
 
-/** One node of the answer, with no words, author or attribute unless the case gives one. */
-function answerNode(
-  id: string,
-  supertag: string,
-  parent: string | null,
-  extra: Partial<TreeAnswerNode> = {}
-): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...extra,
-  };
-}
-
 /** A node of the answer being written, with its place among its siblings: the place the outline
  *  drew it in, for a node the read ranks, and none for an ask, a comment or a message, which the
  *  read orders after its ranked siblings by when it was made and then by id. */
@@ -540,17 +524,22 @@ interface Written {
   readonly place?: number;
 }
 
-/** The read's order of two siblings: ranked ones by their place, then by id; a ranked one before
- *  one with no rank; and two with none by when each was made, then by id. */
+/** A node's name in the case: its block id, else its own id (`tree-fixtures.ts`). */
+function nameOf(node: TreeAnswerNode): string {
+  return node.block_id ?? node.id;
+}
+
+/** The read's order of two siblings: ranked ones by their place, then by name; a ranked one
+ *  before one with no rank; and two with none by when each was made, then by name. */
 function siblingOrder(one: Written, other: Written): number {
   if (one.place !== undefined && other.place !== undefined) {
-    return one.place - other.place || one.node.id.localeCompare(other.node.id);
+    return one.place - other.place || nameOf(one.node).localeCompare(nameOf(other.node));
   }
   if (one.place !== undefined) return -1;
   if (other.place !== undefined) return 1;
   return (
-    compareTimestamps(one.node.made_at, other.node.made_at) ||
-    one.node.id.localeCompare(other.node.id)
+    compareTimestamps(one.node.made_at ?? "", other.node.made_at ?? "") ||
+    nameOf(one.node).localeCompare(nameOf(other.node))
   );
 }
 
@@ -706,7 +695,7 @@ function answered(fixture: Fixture): IssueTreeReads {
   for (const node of added ?? []) written.push({ node });
   const history = agentsOnlyIds(reads.comments, messages, [...asks.values()]);
   const blocks = new Map(
-    written.flatMap(({ node }) => (node.document === undefined ? [] : [[node.id, node]]))
+    written.flatMap(({ node }) => (node.document === undefined ? [] : [[nameOf(node), node]]))
   );
   for (const comment of reads.comments ?? []) {
     if (history.has(comment.id)) continue;
@@ -715,7 +704,9 @@ function answered(fixture: Fixture): IssueTreeReads {
       comment.answers ??
       comment.reply_to ??
       (comment.ask_id === null ? undefined : (asBlock.get(comment.ask_id) ?? comment.ask_id)) ??
-      (anchored?.document?.artifact_id === comment.anchor?.artifact_id ? anchored?.id : undefined);
+      (anchored?.document?.artifact_id === comment.anchor?.artifact_id
+        ? anchored?.block_id
+        : undefined);
     written.push({
       node: answerNode(comment.id, "comment", parent ?? key, {
         author: [comment.author],
@@ -736,30 +727,34 @@ function answered(fixture: Fixture): IssueTreeReads {
       }),
     });
   }
-  // The read answers each node once, by its own id, so a case whose ids meet is no answer.
-  const held = new Map(written.map((one) => [one.node.id, one]));
+  // The read answers each node once, by its own id, so a case whose names meet is no answer.
+  const held = new Map(written.map((one) => [nameOf(one.node), one]));
   if (held.size !== written.length) throw new Error("the answer holds two nodes of one id");
   // A check or a plan task stands under the first requirement its `serves` names.
   const placed = written.map((one): Written => {
     const node = one.node;
     if (node.supertag !== "check" && node.supertag !== "plan_task") return one;
-    if (given?.[node.id] !== undefined) return one;
+    if (given?.[nameOf(node)] !== undefined) return one;
     const served = pointers
-      .filter((pointer) => pointer.from === node.id && pointer.name === "serves")
+      .filter((pointer) => pointer.from === nameOf(node) && pointer.name === "serves")
       .flatMap((pointer) => pointer.refs)
       .map((ref) => byId.get(nodeIdOf(ref) ?? ""))
       .find((id) => {
         const target = id === undefined ? undefined : held.get(id)?.node;
         return target?.supertag === "requirement" && target.document?.slug === specSlug;
       });
-    return served === undefined ? one : { ...one, node: { ...node, parent: served } };
+    return served === undefined ? one : { ...one, node: { ...node, parent: treeParent(served) } };
   });
   // A parent the answer does not hold is no parent: the read answers the issue at worst.
-  const ids = new Set([key, ...placed.map((one) => one.node.id)]);
+  const ids = new Set([key, ...placed.map((one) => nameOf(one.node))]);
   const below = new Map<string, Written[]>();
   for (const one of placed) {
-    const parent = one.node.parent !== null && ids.has(one.node.parent) ? one.node.parent : key;
-    below.set(parent, [...(below.get(parent) ?? []), { ...one, node: { ...one.node, parent } }]);
+    const named = one.node.parent?.id;
+    const parent = named !== undefined && ids.has(named) ? named : key;
+    below.set(parent, [
+      ...(below.get(parent) ?? []),
+      { ...one, node: { ...one.node, parent: treeParent(parent) } },
+    ]);
   }
   const walk: TreeAnswerNode[] = [answerNode(key, "issue", null, { text: issue.title })];
   const visit = (id: string): void => {
@@ -769,7 +764,7 @@ function answered(fixture: Fixture): IssueTreeReads {
         ...one.node,
         rank: one.place === undefined ? null : String(at).padStart(4, "0"),
       });
-      visit(one.node.id);
+      visit(nameOf(one.node));
     });
   };
   visit(key);
@@ -781,22 +776,16 @@ function answered(fixture: Fixture): IssueTreeReads {
         ("version" in route && route.version !== undefined))
     );
   };
-  const tuples: TreeTuple[] = pointers.flatMap((pointer) =>
-    pointer.refs.map((ref) => ({
-      from: pointer.from,
-      kind: pointer.name,
-      to: (pinned(ref) ? undefined : byId.get(nodeIdOf(ref) ?? "")) ?? ref,
-    }))
+  const tuples = pointers.flatMap((pointer) =>
+    pointer.refs.map((ref) =>
+      treeTuple(
+        pointer.name,
+        pointer.from,
+        (pinned(ref) ? undefined : byId.get(nodeIdOf(ref) ?? "")) ?? ref
+      )
+    )
   );
-  const tree: TreeAnswer = {
-    converted: false,
-    cursor: null,
-    nodes: walk,
-    tree: null,
-    tuples,
-    view_of: null,
-  };
-  return { ...reads, tree };
+  return { ...reads, tree: treeAnswer(walk, tuples, { issue: key }) };
 }
 
 /** The issue's tree as `buildIssueTree` draws it from the case's reads and the tree read's
@@ -2910,18 +2899,13 @@ test("a Change anchored in one decision is drawn under it, though another decisi
       version: 1,
     },
   };
-  // Each decision as the tree read answers its node: a block of the spec, with the members the
+  // Each decision as the tree read answers its node: a block of the spec, carrying the object the
   // decisions read answers for it.
   const answeredAs = (row: Decision, position: number): TreeAnswerNode =>
     answerNode(row.block_id, "decision", KEY, {
-      changed_at: row.changed_at,
+      decision: row,
       document: { artifact_id: spec.id, position, slug: SPEC },
-      kept: row.kept,
-      links: row.links,
-      replaced: row.replaced,
       text: row.text,
-      unsure: row.unsure,
-      waiting_review: row.waiting_review,
     });
   const root = treeOf({
     comments: [change],
@@ -3886,8 +3870,8 @@ test("an issue addresses a node as its tree does, from the issue alone", () => {
 // that reading to the result's node, so its line is the reading's first block and the page parses
 // no result's stored text; the node names no source, since a result is no record the reference
 // graph indexes. A result whose read sends none - a server of the build before - keeps its stored
-// text's line. Under the tree read the reading reaches the node as its `text_tree`, which the
-// model's tree route is to send for a result; until it does, this test fails.
+// text's line. Under the tree read the reading reaches the node as its `text_tree`, as the
+// model's tree route sends it (`TestTheTreeReadAnswersAResultsObservedTextAsItsReading`).
 test("a result node holds the server's reading of its observed text where the read sends one", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");

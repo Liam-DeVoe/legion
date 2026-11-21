@@ -159,13 +159,13 @@ export function decisionBlockId(
 
 /**
  * The decision node of the tree read each decision of the decisions read is, by the decision's
- * address (`DecisionEntry.ref`): a decision node of this issue whose id is the decision's block
- * (`decisionBlockId`), in the document the entry names (`DecisionEntry.document`), or the one
- * its address names where it names none, wherever the node names its document. Two documents can
- * each hold a decision block of one id, and each is a decision of its own, so the other
- * document's is not this decision's node. A decision no node is is not held: a section of the
- * decisions document a server of the release before answers, or a person's decision, which is
- * the answered ask.
+ * address (`DecisionEntry.ref`): a decision node of this issue whose block id (`block_id`) is the
+ * decision's block (`decisionBlockId`), in the document the entry names
+ * (`DecisionEntry.document`), or the one its address names where it names none, wherever the node
+ * names its document. Two documents can each hold a decision block of one id, and each is a
+ * decision of its own, so the other document's is not this decision's node. A decision no node is
+ * is not held: a section of the decisions document a server of the release before answers, or a
+ * person's decision, which is the answered ask.
  */
 export function decisionNodes(
   decisions: readonly Pick<DecisionEntry, "document" | "ref">[],
@@ -174,8 +174,9 @@ export function decisionNodes(
   const nodes = new Map<string, TreeAnswerNode[]>();
   for (const node of tree?.nodes ?? []) {
     if (node.supertag !== "decision" || node.issue !== undefined) continue;
-    const same = nodes.get(node.id);
-    if (same === undefined) nodes.set(node.id, [node]);
+    const block = node.block_id ?? node.id;
+    const same = nodes.get(block);
+    if (same === undefined) nodes.set(block, [node]);
     else same.push(node);
   }
   const held = new Map<string, TreeAnswerNode>();
@@ -203,20 +204,21 @@ export function decisionNodes(
  * Each Change of a decision node, by the comment's node, to the decision node it changes: every
  * comment whose first maker - the first of the authors the read lists for it - is a person, that
  * the read hangs under a decision node that was not replaced, made after the decision last
- * changed and after it was last kept. The node a comment hangs under is the one its `parent`
- * names by the outline's rule (`parentsIn`), so a comment on a block of another document that
- * shares the decision's block id is no Change of it. An agent's comment under it is no Change,
- * and neither is one older than its words, which asked for a change the words have since had.
+ * changed and after it was last kept, as the node's `decision` answers both. The node a comment
+ * hangs under is the one its `parent` names by the outline's rule (`parentsIn`). An agent's
+ * comment under it is no Change, and neither is one older than its words, which asked for a
+ * change the words have since had, nor one the read records no time for.
  */
 function nodeChangeComments(tree: TreeAnswer | undefined): Map<TreeAnswerNode, TreeAnswerNode> {
   const changes = new Map<TreeAnswerNode, TreeAnswerNode>();
   for (const [node, parent] of parentsIn(tree?.nodes ?? [])) {
     if (
       parent.supertag === "decision" &&
-      parent.replaced !== true &&
+      parent.decision?.replaced !== true &&
       node.supertag === "comment" &&
-      node.author[0]?.kind === "user" &&
-      after(node.made_at, parent)
+      node.author?.[0]?.kind === "user" &&
+      node.made_at !== null &&
+      after(node.made_at, parent.decision ?? {})
     ) {
       changes.set(node, parent);
     }
@@ -226,10 +228,9 @@ function nodeChangeComments(tree: TreeAnswer | undefined): Map<TreeAnswerNode, T
 
 /**
  * The node each node of the read hangs under: the nearest node before it in the read's order that
- * its `parent` names, since a parent comes before its children and two nodes - blocks of two
- * documents - can share an id; else the first node of that id. The outline places a node by the
- * same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a Change is the comment the outline
- * draws under its decision.
+ * its `parent` names, since a parent comes before its children; else the first node of that id.
+ * The outline places a node by the same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a
+ * Change is the comment the outline draws under its decision.
  */
 function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAnswerNode> {
   const first = new Map<string, TreeAnswerNode>();
@@ -240,7 +241,7 @@ function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAn
   const latest = new Map<string, TreeAnswerNode>();
   for (const node of nodes) {
     const parent =
-      node.parent === null ? undefined : (latest.get(node.parent) ?? first.get(node.parent));
+      node.parent === null ? undefined : (latest.get(node.parent.id) ?? first.get(node.parent.id));
     if (parent !== undefined) parents.set(node, parent);
     latest.set(node.id, node);
   }
@@ -263,7 +264,8 @@ export function decisionNodeChanges(
   for (const [comment, decision] of nodeChangeComments(answer)) {
     const id = idOf(decision);
     const held = changes.get(id);
-    if (held === undefined || compareTimestamps(comment.made_at, held.made_at) > 0) {
+    // Every Change holds a time (`nodeChangeComments`).
+    if (held === undefined || compareTimestamps(comment.made_at ?? "", held.made_at ?? "") > 0) {
       changes.set(id, comment);
     }
   }
@@ -585,7 +587,7 @@ function flat(text: string): string {
 }
 
 /** Whether a comment made at `at` is newer than the decision's words and its last Keep: a row of
- *  the decisions read, or a decision node, which answers both by the same names. */
+ *  the decisions read, or a decision node's `decision`, which answers both by the same names. */
 function after(at: string, row: Partial<Pick<DecisionEntry, "changed_at" | "kept">>): boolean {
   const since = [row.changed_at, row.kept?.kept_at].filter(
     (moment): moment is string => typeof moment === "string"

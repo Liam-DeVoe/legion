@@ -42,7 +42,8 @@ import {
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { decisionBehind } from "../tree-keys";
-import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -128,14 +129,7 @@ function resultsOf(checks: readonly CheckBlock[]): IssueCheckResults {
 
 /** The tree read's answer with no node in it: each case draws the tree it is given, and the body
  *  reads from this read only whether the documents' blocks are in. */
-const NO_NODES: TreeAnswer = {
-  converted: false,
-  cursor: null,
-  nodes: [],
-  tree: null,
-  tuples: [],
-  view_of: null,
-};
+const NO_NODES: TreeAnswer = treeAnswer([]);
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -1053,43 +1047,19 @@ test("w on a statement goes to the cell beside it, whichever decision the tree's
   ];
   // The tree read's answer: the spec's two statements, and the question the person's decision
   // answers, each under the issue.
-  const answered = (
-    id: string,
-    supertag: string,
-    extra: Partial<TreeAnswerNode> = {}
-  ): TreeAnswerNode => ({
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...extra,
-  });
   const tree = buildIssueTree({
     asks: [askRead("ask-1", "Keep both statements.")],
     coverage: coverageRead(["r3", "r4"]),
     decisions: decisionsRead(made),
     issue: issueDetails(),
-    tree: {
-      converted: false,
-      cursor: null,
-      nodes: [
-        ...["r3", "r4"].map((id, position) =>
-          answered(id, "requirement", {
-            document: { artifact_id: "artifact-spec", position, slug: "spec" },
-          })
-        ),
-        answered("ask-1", "ask"),
-      ],
-      tree: null,
-      tuples: [],
-      view_of: null,
-    },
+    tree: treeAnswer([
+      ...["r3", "r4"].map((id, position) =>
+        treeNode(id, "requirement", KEY, {
+          document: { artifact_id: "artifact-spec", position, slug: "spec" },
+        })
+      ),
+      treeNode("ask-1", "ask", KEY),
+    ]),
   });
   expect(decisionBehind(tree, "spec#b-r4")?.id).toBe("decisions-md#b-d5");
   const user = userEvent.setup();

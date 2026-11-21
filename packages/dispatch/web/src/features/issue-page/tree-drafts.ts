@@ -276,7 +276,10 @@ export function treeContext(
   const kinds = new Map<string, NodeType>();
   for (const node of reads.tree?.nodes ?? []) {
     if (node.document !== undefined && node.issue === undefined && types.includes(node.supertag)) {
-      kinds.set(blockNodeId(node.document.slug, node.id), node.supertag as NodeType);
+      kinds.set(
+        blockNodeId(node.document.slug, node.block_id ?? node.id),
+        node.supertag as NodeType
+      );
     }
   }
   const nodeIdOfReference = nodeIdOf(reads.issue);

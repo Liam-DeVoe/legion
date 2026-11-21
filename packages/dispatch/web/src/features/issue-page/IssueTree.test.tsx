@@ -87,7 +87,8 @@ import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "./tree-read/tree-read";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
 import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
@@ -8722,40 +8723,14 @@ function treeReadOf(comments: readonly Comment[]): TreeAnswer {
   const agentsOnly = agentsOnlyIds(comments, undefined, []);
   const turns = comments
     .filter((comment) => !agentsOnly.has(comment.id))
-    .map(
-      (comment): TreeAnswerNode => ({
-        attributes: {},
+    .map((comment) =>
+      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
         author: [comment.author],
-        id: comment.id,
         made_at: comment.created_at,
-        parent: comment.reply_to ?? KEY,
-        rank: null,
-        state: "live",
-        supertag: "comment",
         text: comment.body,
-        visibility: "project",
       })
     );
-  const issueNode: TreeAnswerNode = {
-    attributes: {},
-    author: [],
-    id: KEY,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: null,
-    rank: null,
-    state: "live",
-    supertag: "issue",
-    text: "",
-    visibility: "project",
-  };
-  return {
-    converted: false,
-    cursor: null,
-    nodes: turns.length === 0 ? [] : [issueNode, ...turns],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+  return treeAnswer(turns.length === 0 ? [] : [treeNode(KEY, "issue", null), ...turns]);
 }
 
 // The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads

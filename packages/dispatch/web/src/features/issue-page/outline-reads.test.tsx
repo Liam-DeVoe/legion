@@ -14,7 +14,8 @@ import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
-import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
  * The outline's reads (`useOutlineReads`) called from two places of one page: the body, and a
@@ -55,34 +56,20 @@ function bodyReads(held: Held): typeof useOutlineReadsItself {
  *  comment it replies to, else under the issue. The outline draws its turns from it. */
 function treeOf(comments: readonly Comment[]): TreeAnswer {
   const key = issueDetails().key;
-  const node = (id: string, supertag: string, parent: string | null): TreeAnswerNode => ({
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-  });
-  return {
-    converted: false,
-    cursor: null,
-    nodes: [
-      node(key, "issue", null),
-      ...comments.map((comment) => ({
-        ...node(comment.id, "comment", comment.reply_to ?? key),
-        author: [comment.author],
-        made_at: comment.created_at,
-        text: comment.body,
-      })),
+  return treeAnswer(
+    [
+      treeNode(key, "issue", null),
+      ...comments.map((comment) =>
+        treeNode(comment.id, "comment", comment.reply_to ?? key, {
+          author: [comment.author],
+          made_at: comment.created_at,
+          text: comment.body,
+        })
+      ),
     ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+    [],
+    { issue: key }
+  );
 }
 
 /** Each of the outline's six reads, and the tree read the outline draws its turns from, sent

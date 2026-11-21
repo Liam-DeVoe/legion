@@ -16,6 +16,7 @@ import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-re
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
+import { treeNode as fixtureNode, type TreeNodeExtra, treeAnswer } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -290,33 +291,14 @@ const change: Comment = {
 function treeNode(
   id: string,
   supertag: string,
-  extra: Partial<TreeAnswerNode> = {}
+  { parent = KEY, ...extra }: TreeNodeExtra & { readonly parent?: string | null } = {}
 ): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...extra,
-  };
+  return fixtureNode(id, supertag, parent, extra);
 }
 
 /** The tree read's answer for the issue: its own node, then `nodes` in the read's order. */
 function answerOf(nodes: readonly TreeAnswerNode[]): TreeAnswer {
-  return {
-    converted: false,
-    cursor: null,
-    nodes: [treeNode(KEY, "issue", { parent: null }), ...nodes],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+  return treeAnswer([treeNode(KEY, "issue", { parent: null }), ...nodes]);
 }
 
 /** The spec's statement `r1` as the tree read answers it, a typed block of the spec. */
@@ -335,25 +317,20 @@ function commentNode(comment: Comment, parent: string): TreeAnswerNode {
   });
 }
 
-/** A decision as the tree read answers its node, with the members the decisions read answers
+/** A decision as the tree read answers its node, carrying the object the decisions read answers
  *  for it; a block of the document `at.document` at `at.position` where it is one. */
 function decisionTreeNode(
   row: Decision,
   at?: { readonly document: Artifact; readonly position: number }
 ): TreeAnswerNode {
   return treeNode(row.block_id, "decision", {
-    changed_at: row.changed_at,
+    decision: row,
     ...(at === undefined
       ? {}
       : {
           document: { artifact_id: at.document.id, position: at.position, slug: at.document.slug },
         }),
-    kept: row.kept,
-    links: row.links,
-    replaced: row.replaced,
     text: row.text,
-    unsure: row.unsure,
-    waiting_review: row.waiting_review,
   });
 }
 
@@ -890,11 +867,8 @@ test("a Change of a decision node is no Change of another document's decision of
   const read = readIn(row, made);
   const asked: Comment = { ...change, anchor: null, id: "c-on-decision" };
   const other = treeNode("d1", "decision", {
-    changed_at: row.changed_at,
+    decision: { changed_at: row.changed_at, kept: null, replaced: false, waiting_review: true },
     document: { artifact_id: spec.id, position: 1, slug: "spec" },
-    kept: null,
-    replaced: false,
-    waiting_review: true,
   });
   const tree = answerOf([
     statement,
