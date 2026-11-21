@@ -106,9 +106,9 @@ func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
 // drop the service clause alone, and the row of the service's login naming erin fails; drop the
 // kind clause alone, and the row of her own secret's request fails; let any credential of a
 // restricted member past withinProjectScope (atBrowser answering true), and the rows of her
-// personal token fail, and those of her broker token where it holds the approve scope; drop the
-// refusal of a decision that carries no code (restrictedDecisionAllowed), and the code-less rows
-// fail.
+// personal token fail; drop the own-login refusal (restrictedOwnLoginRefusal), and the personal
+// token's rows fail on its text, as refuseDeploymentWrite answers the same code; drop the refusal
+// of a decision that carries no code, and the code-less rows fail.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := brokertokentest.NewStubBroker(t)
@@ -187,7 +187,11 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	for _, action := range []string{"approve", "deny"} {
 		path := "/api/v1/credential-requests/rec-erin/" + action
 		before := rig.decisions()
-		refused(agentRequest(t, served, http.MethodPost, path, code, personal), action+" of her own login with her personal token", before)
+		byToken := agentRequest(t, served, http.MethodPost, path, code, personal)
+		refused(byToken, action+" of her own login with her personal token", before)
+		if !strings.Contains(byToken.Body.String(), "at their browser alone") {
+			t.Errorf("%s of her own login with her personal token answered %s, want the own-login refusal naming the browser", action, byToken.Body.String())
+		}
 		byBroker := httptest.NewRecorder()
 		served.ServeHTTP(byBroker, caller.presenting(t, http.MethodPost, path, erinsBrokerToken, code))
 		refusedWith(byBroker, action+" of her own login with a broker token acting as her", before,

@@ -265,14 +265,14 @@ func TestAMachineTradeOfAPersonNotRestrictedKeepsThePersonScope(t *testing.T) {
 	}
 }
 
-// TestARestrictedMembersTradeIsRefusedWhileDispatchCannotBeAsked: the trade of a machine login
-// asks Dispatch what kind of member its approver is before it decides the token's scope. A refusal
-// of the broker's own account token, and a member kind the broker does not know, are refused
-// server_error, and none of those trades stores a token. The outage itself, a trade refused
-// temporarily_unavailable while Dispatch cannot be asked whoever approved the login, is the K3
-// table's cannot-be-reached cells (TestK3TradesByDispatchState) and
+// TestARestrictedMembersTradeIsRefusedWhenDispatchRefusesOrNamesAnUnknownKind: the trade of a
+// machine login asks Dispatch what kind of member its approver is before it decides the token's
+// scope. A refusal of the broker's own account token, and a member kind the broker does not know,
+// are refused server_error, and none of those trades stores a token. The outage itself, a trade
+// refused temporarily_unavailable while Dispatch cannot be asked whoever approved the login, is the
+// K3 table's cannot-be-reached cells (TestK3TradesByDispatchState) and
 // TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt.
-func TestARestrictedMembersTradeIsRefusedWhileDispatchCannotBeAsked(t *testing.T) {
+func TestARestrictedMembersTradeIsRefusedWhenDispatchRefusesOrNamesAnUnknownKind(t *testing.T) {
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberRestricted
 	f := newExchangeFixture(t, func(cfg *oauth.Config) { cfg.Exchange.Projects = access })

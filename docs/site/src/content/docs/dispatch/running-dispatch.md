@@ -1158,10 +1158,11 @@ is theirs, listing their own machine logins alone: there they approve, at their 
 login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
 ends for them no other credential. The API refuses them, and every token they make, every read of
 the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
-except that they revoke their own credential grants and end their own sign-ins, as a full member
-does: the secrets broker decides whose each one is. The machine-login calls are theirs at their
-browser alone: through a token of theirs each one, the list `GET /api/v1/machine-logins` included,
-is `403 OAUTH_SCOPE_REQUIRED` where the token lacks the call's scopes, as their agent's token does,
+but for the machine-login calls at their browser, and except that they revoke their own credential
+grants and end their own sign-ins, as a full member does: the secrets broker decides whose each one
+is. The machine-login calls are theirs at their browser alone: through a token of theirs each one,
+the list `GET /api/v1/machine-logins` included, is `403 OAUTH_SCOPE_REQUIRED` where the token lacks
+the call's scopes, as their agent's token does,
 and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
 project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
 their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
