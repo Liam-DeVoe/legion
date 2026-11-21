@@ -123,7 +123,9 @@ func faultOnce(fault func(http.ResponseWriter)) http.Handler {
 	})
 }
 
-func newEdgeLBRig(t *testing.T) *edgeLBRig {
+// newEdgeLBRig is the rig as an edge listener of edgeLBProject, or with edge false, as a listener
+// of no edge that takes broker tokens beside no bearer.
+func newEdgeLBRig(t *testing.T, edge bool) *edgeLBRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	caller := ciphertokentest.NewCaller(t)
@@ -144,7 +146,12 @@ func newEdgeLBRig(t *testing.T) *edgeLBRig {
 	routes.Handle("GET /v1/registry/{session}", noContent)
 	gate := newStartingGate("v1", logging.NewWithWriter("test-machine", io.Discard))
 	gate.open(routes)
-	return &edgeLBRig{handler: v1API(edgeLBAuth(tokens, logging.NewWithWriter("test-machine", io.Discard)), gate), caller: caller}
+	logger := logging.NewWithWriter("test-machine", io.Discard)
+	auth := listenerAPIAuth{brokers: tokens, logger: logger}
+	if edge {
+		auth = edgeLBAuth(tokens, logger)
+	}
+	return &edgeLBRig{handler: v1API(auth, gate), caller: caller}
 }
 
 // send is p as Google's balancer delivers it, through the proxy peer.
@@ -155,15 +162,17 @@ func (r *edgeLBRig) send(p edgeLBPresentation, peer string) *httptest.ResponseRe
 }
 
 // A route's 503 after the proof was spent - a fault before anything was served - gives a
-// body-less request its proof back, so the balancer's one retry of it, with that proof, is
-// served, and a proof reused after a request it served is still refused: the refilling list, the
-// bus that did not answer a DELETE. A request that carries a body keeps its proof spent, since a
-// proof signs the method, the URL and the token and not the body, and the balancer does not retry
-// it; its client sends it again with a fresh proof. A request served first keeps its proof spent
-// too. The record is the bucket every replica shares, so the retry reaches the other replica's
-// proxy.
+// body-less request its proof back on the edge, so the balancer's one retry of it, with that
+// proof, is served, and a proof reused after a request it served is still refused: the refilling
+// list, the bus that did not answer a DELETE. A proof signs the method and the path and the
+// token, and not the query or the body: a request that carries a body keeps its proof spent,
+// since a given-back proof would carry another body, and the balancer does not retry it; its
+// client sends it again with a fresh proof. A given-back proof can be presented once more with
+// another query on the same method and path, which needs the token and the proof in plaintext,
+// and the edge is reached over TLS. A request served first keeps its proof spent too. The record
+// is the bucket every replica shares, so the retry reaches the other replica's proxy.
 func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
-	rig := newEdgeLBRig(t)
+	rig := newEdgeLBRig(t, true)
 	for _, tc := range []struct {
 		name, method, path, body string
 		first                    int
@@ -186,6 +195,21 @@ func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
 				t.Fatalf("the same proof once more: status %d body %s, want 401", got.Code, got.Body.String())
 			}
 		})
+	}
+}
+
+// A listener that is no edge gives no proof back: no load balancer in front of it sends a retry
+// with the same proof, so a release there would gain nothing and would leave a proof good for one
+// more request. Its route's 503 keeps the proof spent, and its client sends the request again with
+// a fresh proof.
+func TestEdgeAloneGivesAProofBackOnA503(t *testing.T) {
+	rig := newEdgeLBRig(t, false)
+	p := presentEdgeLB(t, rig.caller, http.MethodGet, "/v1/sessions", edgeLBToken, "")
+	if got := rig.send(p, "35.191.7.7:40001"); got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the first presentation: status %d body %s, want 503", got.Code, got.Body.String())
+	}
+	if got := rig.send(p, "130.211.1.2:40002"); got.Code != http.StatusUnauthorized {
+		t.Fatalf("the same proof again at a listener of no edge: status %d body %s, want 401", got.Code, got.Body.String())
 	}
 }
 

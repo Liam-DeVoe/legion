@@ -347,35 +347,52 @@ func (s *proofSpend) release(ctx context.Context) error {
 	return err
 }
 
-// proofReleasingWriter is the writer a body-less request admitted on a broker token is served
-// through. The first status it writes, when that status is 503, releases the request's proof
-// (proofSpend.release) before the status is written, so the balancer in front of an edge listener
-// cannot send its retry before the record is gone. Every other status keeps the proof spent: the
-// request was served, or refused, and a proof reused after that is a replay.
+// proofReleasingWriter is the writer a body-less request an edge listener admitted on a broker
+// token is served through. The first status it writes, when that status is 503, releases the
+// request's proof (proofSpend.release) before the status is written, so the balancer in front of
+// the edge cannot send its retry before the record is gone. Every other status keeps the proof
+// spent: the request was served, or refused, and a proof reused after that is a replay. No other
+// listener has that balancer in front of it, so no other listener releases a proof: there a
+// release would gain nothing and would leave the proof good for one more request.
 //
-// A 503 from this listener says nothing of the request was served: a route answers it for a fault
-// it met before it served the request (a list copy refilling, a bus that did not answer, a broker
-// answer it could not get, a replica with no room for a relay socket), and the client sends the
-// request again on it (packages/envoy-client/src/transport.ts retries every status at or past
-// 500). Google's load balancer sends such a request again too, once, after a 502, 503 or 504, when
-// it carries no body, and it sends the same headers, the proof among them. A body-less request is
-// all a proof signs: its method, its URL and its token, and nothing else that request could carry,
-// so the retry the release admits is the request its client signed, and a proof presented once
-// more after the retry was served is refused as a replay. A request that carries a body keeps its
-// proof spent whatever its status, since a proof does not sign the body: a proof given back there
-// would let whoever holds it send another body under it. Its client sends it again with a fresh
-// proof, and the balancer does not retry it.
+// A 503 says the listener cannot tell whether it acted, and a client may ask again: a route
+// answers it for a fault it met before it served the request (a list copy refilling, a bus that
+// did not answer, a broker answer it could not get, a replica with no room for a relay socket),
+// or for a write whose answer was lost after it may have landed (writeStoreError), and the
+// body-less routes are idempotent, so the retry the release admits has the outcome the client's
+// own retry with a fresh proof would have (packages/envoy-client/src/transport.ts retries every
+// status at or past 500). Google's load balancer sends such a request again, once, after a 502,
+// 503 or 504, when it carries no body, with the same headers, the proof among them.
 //
-// What a release cannot give back is a proof whose 503 came from the spent-proof store itself
-// (refuseBrokerToken's check_failed), whose create did not answer and so recorded nothing this
-// request can prove it wrote, or a proof whose release did not reach the bucket. The balancer's
-// retry of either is the 401 of a replay. The status stays 503 all the same, the status every
-// route documents for a fault it can be asked again about, rather than one Google's balancer
-// would not retry. The relay socket's client reads an upgrade refused 401 as a refused token and
-// opens again after a second with a fresh token and a fresh proof (envoy-client's listener relay).
-// A plain /v1 call gets the generic 401 every refused credential gets, which names nothing to the
-// caller, and this listener logs it as `listener: broker token rejected` with the reason
-// proof_invalid, the class a replay is logged under; the client sends no request again on a 401.
+// A proof signs the method, the path and the token, and not the query, the body or any other
+// header (RFC 9449 Section 4.2's htu carries no query). So a given-back proof can be presented
+// once more on the same method and path with another query, a DELETE of a session without the
+// conditions its query carried among them. That is accepted: it takes the token and the proof in
+// plaintext, inside the proof's window, and the edge is reached over TLS. A request that carries a
+// body keeps its proof spent whatever its status, since a proof given back there would let whoever
+// holds it send another body under it; its client sends it again with a fresh proof, and the
+// balancer does not retry it. A proof presented once more after the retry was served is refused
+// as a replay.
+//
+// The balancer's retry is still the 401 of a replay in four cases, and the status stays 503 in
+// each, the status every route documents for a fault it can be asked again about:
+//   - the 503 came from the spent-proof store itself (refuseBrokerToken's check_failed): its create
+//     did not answer, so nothing this request can prove it wrote is there to release, though the
+//     create may have landed;
+//   - the release did not reach the bucket within proofReleaseBudget, which a bus that did not
+//     answer the route makes likely, and which logs a WARN;
+//   - on a replicated bucket, the retry's create meets the delete marker and reads the key again
+//     by direct get, which a copy that has not applied the marker answers with the released record
+//     (bus.KeyValue.Get says why a copy can answer behind the leader), and that reads as a replay;
+//   - the balancer wrote the 502 or 504 itself after the proof was recorded: the pod dropped the
+//     connection (a killed pod, a handler that panicked, a shutdown that ended with the request in
+//     flight) or the request ran past the backend timeout, so no 503 of this listener released it.
+//
+// The relay socket's client reads an upgrade refused 401 as a refused token and opens again after
+// a second with a fresh token and a fresh proof (envoy-client's listener relay). A plain /v1 call
+// gets the generic 401 every refused credential gets, which names nothing to the caller, and this
+// listener logs it as `listener: broker token rejected` with the reason proof_invalid, the class a
+// replay is logged under; the client sends no request again on a 401.
 //
 // It passes Hijack through, which the relay socket's WebSocket upgrade takes the connection by,
 // and Unwrap, which http.ResponseController reads.

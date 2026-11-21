@@ -356,10 +356,11 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			}
 		}
 		if _, presented := ciphertoken.Presented(r); auth.brokers != nil && presented {
-			// A body-less request gets its proof back on a 503 (proofReleasingWriter), so the one
-			// retry Google's load balancer sends of it is not refused as a replay.
+			// An edge listener gives a body-less request its proof back on a 503
+			// (proofReleasingWriter), so the one retry Google's load balancer sends of it is not
+			// refused as a replay. No other listener has that balancer in front of it.
 			var spend *proofSpend
-			if r.ContentLength == 0 {
+			if r.ContentLength == 0 && len(auth.edgeProjects) > 0 {
 				spend = &proofSpend{}
 				r = r.WithContext(withProofSpend(r.Context(), spend))
 			}
