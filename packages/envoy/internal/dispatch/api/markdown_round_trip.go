@@ -21,14 +21,17 @@ import (
 //     too, and contracts.TextRefusalNewDocument for one a replacement, judged against the document
 //     it replaces (docs' ReplaceText), relaxes.
 //
-// A refusal scoped contracts.TextRefusalNewDocument is made only with newDocument. Without it, the
-// text is answered rather than refused, with storedMarkdown's answer for it: the text itself where
-// the parse or the render fails, and the rendering otherwise. So a client that does not ask for a
-// new document's refusals, and refuses its upload on any failure of the round trip but the route's
-// absence, is not refused a replacement the store takes.
-//
-// A text none of these refuses is answered with the rendering the seed stores, with newDocument or
-// without it.
+// With newDocument the answer is a new document's: its seed's rendering, or its seed's refusal.
+// Without it, the answer is the most permissive replacement's (docs.SeedRendering): the rendering
+// a replacement stores over a document that already holds what the text holds, or the refusal
+// every replacement makes of the text - the parse's own, the ask refusal the parse's read-back
+// names instead (askRefusalInstead), and a render that fails - each scoped
+// contracts.TextRefusalUpload. So a client that does not ask for a new document's refusals, and
+// refuses its upload on any failure of the round trip but the route's absence, is refused no
+// replacement the store takes, and compares the spelling that replacement stores. For a text
+// main's parse takes, that rendering is main's answer, storedMarkdown's; for one it refused, a
+// block id named twice or an element this build cannot create yet, main answered the text itself,
+// and this answers the rendering.
 //
 // Text `strings.TrimSpace` empties is answered "", as the near-copy gate's storedMarkdown answers
 // it, once nothing has refused it. That answer is not always what the upload stores: the seed
@@ -42,12 +45,12 @@ func markdownRoundTrip[T string | []byte](content T, file, newDocument bool) (st
 		return "", contracts.TextRefusalUpload, refusal
 	}
 	text := string(content)
-	seeded, scope, err := docs.SeedRendering(text)
+	seeded, newDocumentOnly, err := docs.SeedRendering(text, newDocument)
 	if err != nil {
-		if scope == contracts.TextRefusalNewDocument && !newDocument {
-			return storedMarkdown(text), "", nil
+		if newDocumentOnly {
+			return "", contracts.TextRefusalNewDocument, err
 		}
-		return "", scope, err
+		return "", contracts.TextRefusalUpload, err
 	}
 	if strings.TrimSpace(text) == "" {
 		return "", "", nil
@@ -108,9 +111,9 @@ var (
 // markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: Markdown, the text a
 // caller is about to store as a Markdown document, as an inline upload sends it as `content`, and
 // NewDocument, which asks for the refusals only a new document's seed makes of it
-// (markdownRoundTrip). A body without NewDocument is answered for a text only that seed refuses;
-// it is the body this route took before it made any refusal. A body naming no markdown asks about
-// the empty text.
+// (markdownRoundTrip). A body without NewDocument is answered as the most permissive replacement
+// of a document takes the text; it is the body this route took before it made any refusal. A body
+// naming no markdown asks about the empty text.
 type markdownRoundTripInput struct {
 	Markdown    string `json:"markdown" required:"true"`
 	NewDocument bool   `json:"new_document,omitempty"`
@@ -133,28 +136,31 @@ type markdownRoundTripResponse struct {
 
 // postMarkdownRoundTrip answers POST /api/v1/markdown/round-trip, and postFileRoundTrip POST
 // /api/v1/markdown/file-round-trip. Neither writes anything or reads a row: each checks the text
-// as an upload of a markdown document checks it, parses it and renders it, as a new document's
-// seed does, and answers what that seed would store (markdownRoundTrip). A caller compares the two
-// and refuses its own call where they differ.
+// as an upload of a markdown document checks it, parses it and renders it, as that upload's write
+// does, and answers what that write would store (markdownRoundTrip): a new document's seed for a
+// body with new_document true, and otherwise the most permissive replacement. A caller compares
+// the two and refuses its own call where they differ.
 //
 // Text every upload of a markdown document refuses for the text alone is refused here with that
-// upload's own status, code and words, whatever the body asks: inline text holding U+0000, a file
-// holding U+0000 or a byte that is not UTF-8, text past maxDocumentMarkdownBytes, markdown the
-// parse refuses (its element budget, its schema, a rendering no reader reads back, an ask written
-// with its options and no question) and a render that fails. For a body with new_document true, so
-// is text only an upload of a new markdown document refuses for the text alone: a block id named on
-// two blocks, an element this build cannot create yet, an ask that breaks its content rule, a
-// rendering past the bytes or the elements one document holds, and a check CI proves that breaks
-// one of the rules its attributes keep. A body without it is answered for such a text with
-// storedMarkdown's answer. Each refusal, whatever its status, carries contracts.TextRefusalHeader,
-// valued with its scope (markdownRoundTrip): TextRefusalUpload for a refusal every upload makes,
-// TextRefusalNewDocument for one only a new document's seed makes. No other answer of either route
-// carries it. `dispatch artifact` and its dry run ask for a new document's refusals where the call
-// makes a new document, without --force, and take an answer carrying the header as the call's
-// refusal, so they refuse such text as the upload would, inline or from a markdown file, and a
-// check the upload makes of the text alone before its write (documentTextRefusal) or in the steps
-// of its seed that read the text alone (docs.SeedRendering) reaches them with no change to the
-// client.
+// upload's own status, code and words: inline text holding U+0000, a file holding U+0000 or a byte
+// that is not UTF-8, text past maxDocumentMarkdownBytes, markdown the parse refuses (its element
+// budget, its schema, a rendering no reader reads back, and an ask that breaks its content rule in
+// a text whose rendering no reader reads back, which that refusal names instead) and a render that
+// fails. For a body with new_document true, so is text only an upload of a new markdown document
+// refuses for the text alone: a block id named on two blocks, an element this build cannot create
+// yet, an ask that breaks its content rule, a rendering past the bytes or the elements one
+// document holds, and a check CI proves that breaks one of the rules its attributes keep. Both are
+// made in the seed's order, so such a body is refused a text that breaks two rules with the first.
+// A body without it is answered with the rendering the most permissive replacement stores, or
+// with the first refusal every upload makes of the text. Each refusal, whatever its status,
+// carries contracts.TextRefusalHeader, valued with its scope (markdownRoundTrip):
+// TextRefusalUpload for a refusal every upload makes, TextRefusalNewDocument for one only a new
+// document's seed makes. No other answer of either route carries it. `dispatch artifact` and its
+// dry run ask for a new document's refusals where the call makes a new document, without --force,
+// and take an answer carrying the header as the call's refusal, so they refuse such text as the
+// upload would, inline or from a markdown file, and a check the upload makes of the text alone
+// before its write (documentTextRefusal) or in the steps of its seed that read the text alone
+// (docs.SeedRendering) reaches them with no change to the client.
 //
 // The inline body is decoded without the JSON routes' own refusal of U+0000 (decodeJSONBody): the
 // text it carries is checked as the upload checks its own, under the upload's name for it,
@@ -168,7 +174,7 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	// The JSON upload's decode refuses U+0000 in its `content` before anything else of the text
 	// (unstorableJSON), so this route makes that refusal first, in those words; a JSON string
 	// holds no byte that is not UTF-8, since decoding writes each as U+FFFD.
-	if refusal := unstorableDocumentText("content", input.Markdown); refusal != nil {
+	if refusal := unstorableText("content", input.Markdown); refusal != nil {
 		s.writeTextRefusal(w, contracts.TextRefusalUpload, refusal)
 		return
 	}

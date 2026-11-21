@@ -1024,17 +1024,23 @@ upload, every check that upload makes of the text alone, and marks each refusal 
 `upload` marks the checks every upload makes, a replacement included: a NUL character
 (`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the parse's own
 refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads back otherwise
-(`INVALID_MARKDOWN`), an ask written with its options and no question (`INVALID_ASK_BLOCK`).
+(`INVALID_MARKDOWN`), and an ask that breaks its content rule in markdown whose rendering does not
+read back, which that refusal names instead (`INVALID_ASK_BLOCK`).
 `new-document` marks the checks only a new document's seed makes, which a replacement relaxes: a
 block id written twice and an element this build cannot create yet (`INVALID_MARKDOWN`), an ask
 block that breaks its content rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the
 elements (`CAP_EXCEEDED`), and a check proved by CI that breaks the rules its attributes keep
 (`INVALID_CI_CHECK`). The route makes those only for a request that asks for them
-(`new_document: true`), and answers any other with the text's rendering. The check asks for them
-where the call makes a new document, without `--force`; with `--force` the upload may replace a
-document, judged by those looser rules, so the check asks for none of them and compares the
-rendering Dispatch answers as for any text, and every marked refusal it gets is the call's. A
-check Dispatch adds to the upload reaches the dry run with no change here. An unmarked answer says
+(`new_document: true`). It answers any other as the most permissive replacement takes the text,
+one over a document already holding what the text holds: with the rendering that replacement
+stores, or with a refusal every replacement makes, the parse's own, the ask refusal it names
+instead and a render that fails. The check asks for them where the call makes a new document,
+without `--force`; with `--force` the upload may replace a document, judged by those looser
+rules, so the check asks for none of them and compares the rendering Dispatch answers as for any
+text, and every marked refusal it gets is the call's. Under a name the owner does not hold,
+`--force` uploads a new document, so its dry run passes, with no warning, a text that upload then
+refuses for one of a new document's checks. A check Dispatch adds to the upload reaches the dry
+run with no change here. An unmarked answer says
 nothing of the text, whatever its status. A `--path` file Dispatch stores as a Markdown document
 (a path ending in .md or .markdown, which the upload carries as `text/markdown`) is held to the
 same size: it is read once, as the call reads it (`documentFileBytes`), which refuses a file past

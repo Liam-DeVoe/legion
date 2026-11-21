@@ -156,8 +156,9 @@ export class DispatchServiceError extends Error {
     readonly mismatches?: DispatchServiceErrorShape["mismatches"],
     /**
      * The scope Dispatch marked the answer with as its refusal of a text for the text alone
-     * (`TEXT_REFUSAL_HEADER`), whatever its status: the markdown round trip's refusals, which are
-     * an upload's refusals of the same text. Undefined for any other answer.
+     * (`TEXT_REFUSAL_HEADER`), whatever its status: the refusals of the two markdown round trips,
+     * inline and of a file, which are an upload's refusals of the same text. Undefined for any
+     * other answer.
      */
     readonly textRefusal?: TextRefusalScope
   ) {
@@ -1188,13 +1189,13 @@ export class DispatchClient {
    *  again, as that upload's write does, so a caller compares the answer with the text it holds
    *  and refuses a text the store would change. A text every upload refuses for the text alone is
    *  refused here in the upload's own words. With `newDocument`, the request asks for the
-   *  refusals only a new document's seed makes too (`new_document`); without it, which is the body
-   *  every Dispatch with the route takes, Dispatch answers such a text with its rendering. */
+   *  refusals only a new document's seed makes too (`new_document`), and the answer is a new
+   *  document's; without it, which is the body every Dispatch with the route takes, Dispatch
+   *  answers as the most permissive replacement takes the text: with the rendering a replacement
+   *  over a document already holding what the text holds stores, or with a refusal every
+   *  replacement makes. */
   async markdownRoundTrip(markdown: string, newDocument: boolean): Promise<string> {
-    return this.#roundTrip<MarkdownRoundTripInput>(
-      ["api", "v1", "markdown", "round-trip"],
-      newDocument ? { markdown, new_document: true } : { markdown }
-    );
+    return this.#roundTrip(["api", "v1", "markdown", "round-trip"], { markdown }, newDocument);
   }
 
   /** `POST /api/v1/markdown/file-round-trip`: `markdownRoundTrip` of a file's bytes, sent as
@@ -1203,17 +1204,23 @@ export class DispatchClient {
    *  not UTF-8 is refused as its upload is. A Dispatch without this route answers 404 or 405. */
   async fileRoundTrip(bytes: Uint8Array, newDocument: boolean): Promise<string> {
     const file = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-    return this.#roundTrip<FileRoundTripInput>(
-      ["api", "v1", "markdown", "file-round-trip"],
-      newDocument ? { file, new_document: true } : { file }
-    );
+    return this.#roundTrip(["api", "v1", "markdown", "file-round-trip"], { file }, newDocument);
   }
 
-  /** The round trip at `path` of `body`, which writes nothing (`writes: false`). */
-  async #roundTrip<Body extends object>(path: string[], body: Body): Promise<string> {
-    const { payload } = await this.#jsonAnswer<MarkdownRoundTripResponse>("POST", path, body, {
-      writes: false,
-    });
+  /** The round trip at `path` of `body`, which writes nothing (`writes: false`), asking for a new
+   *  document's refusals too where `newDocument` (`new_document`). The member is left out
+   *  otherwise, so the body is the one a Dispatch before the member takes. */
+  async #roundTrip(
+    path: string[],
+    body: MarkdownRoundTripInput | FileRoundTripInput,
+    newDocument: boolean
+  ): Promise<string> {
+    const { payload } = await this.#jsonAnswer<MarkdownRoundTripResponse>(
+      "POST",
+      path,
+      newDocument ? { ...body, new_document: true } : body,
+      { writes: false }
+    );
     return payload.markdown;
   }
 

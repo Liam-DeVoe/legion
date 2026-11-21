@@ -8,7 +8,9 @@ body: |-
   call refuses for the text alone; that for a Markdown file it refuses a file past the document
   limit and sends Dispatch the file's bytes, refusing what Dispatch refuses of them but never
   their spelling; and that with force it asks for none of a new document's refusals and checks
-  the spelling Dispatch answers as for any text.
+  the spelling Dispatch answers as for any text, so under a name the owner does not hold, which
+  the call uploads as a new document, it passes with no warning a text that upload then refuses
+  for one of them.
   `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of
   markdown one document may hold and the text of Dispatch's `413 CAP_EXCEEDED` for an upload past
   it, generated into Go for the server. `TEXT_REFUSAL_HEADER` (`Dispatch-Text-Refusal`) is the

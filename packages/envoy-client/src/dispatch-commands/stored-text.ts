@@ -112,10 +112,7 @@ const FILE_ROUND_TRIP = "POST /api/v1/markdown/file-round-trip";
  * Dispatch refused, its answer marked as a refusal of the text (`TEXT_REFUSAL_HEADER`), is no such
  * failure: the check answers it with Dispatch's own refusal (`askRoundTrip`).
  */
-export function storedTextCheckFailed(failed: {
-  readonly failure: string;
-  readonly error: unknown;
-}): Error {
+export function storedTextCheckFailed(failed: Extract<StoredTextCheck, { kind: "failed" }>): Error {
   return new Error(
     `Dispatch could not say how it would store this text, so nothing was uploaded: ${failed.failure}. Send the upload again once that call is answered.`,
     { cause: failed.error }
@@ -238,6 +235,12 @@ type RoundTripAnswer =
       readonly routeAbsent: boolean;
     };
 
+/** The check of a text whose round trip gave no answer about it, which the call uploads
+ *  unchecked: what the round trip failed with, and whether the route is absent. */
+function unchecked(answer: Extract<RoundTripAnswer, { kind: "unanswered" }>): StoredTextCheck {
+  return { kind: "unchecked", failure: answer.failure, routeAbsent: answer.routeAbsent };
+}
+
 /**
  * Asks `route`, a round trip, which writes nothing, through `ask`: the text inline
  * (`markdownRoundTrip`) or a file's bytes (`fileRoundTrip`). `client` is called once, for the
@@ -289,8 +292,9 @@ async function askRoundTrip(
  * text is stored as Markdown: Dispatch parses it and stores its rendering, so a text it would write
  * under another spelling is refused rather than stored changed, and a text Dispatch refuses is
  * refused with its refusal (`askRoundTrip`). Without `force` the call makes a new document, so the
- * round trip is asked for a new document's refusals; with it, it is not, and Dispatch answers a
- * text only a new document's seed refuses with its rendering, which is compared as any other.
+ * round trip is asked for a new document's refusals; with it, it is not, and Dispatch answers as
+ * the most permissive replacement takes the text: with the rendering that replacement stores,
+ * which is compared as any other, or with a refusal every replacement makes, which is the call's.
  *
  * Text past MARKDOWN_DOCUMENT_MAX_BYTES is `refused` (`documentTooLarge`) without calling
  * `client`, since the server refuses an upload of such text whatever it holds, so nothing is asked
@@ -326,7 +330,7 @@ export async function storedTextCheck(
       return answer;
     case "unanswered":
       return blank || answer.routeAbsent
-        ? { kind: "unchecked", failure: answer.failure, routeAbsent: answer.routeAbsent }
+        ? unchecked(answer)
         : { kind: "failed", failure: answer.failure, error: answer.error };
     case "stored":
       // The store ends a document with a line feed the writer's own text need not carry, and
@@ -368,6 +372,6 @@ export async function storedFileCheck(
     case "refused":
       return answer;
     case "unanswered":
-      return { kind: "unchecked", failure: answer.failure, routeAbsent: answer.routeAbsent };
+      return unchecked(answer);
   }
 }

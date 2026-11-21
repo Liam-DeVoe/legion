@@ -216,18 +216,20 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		// Supplied markdown is a caller's write, so a block pointer or a check block it introduces
 		// over the latest version is checked: the rules that read a check block alone first, then
 		// those that read the database. That version is read back as the tree before the write;
-		// one that does not read back holds no pointer and no check block.
+		// one that does not read back holds no pointer and no check block. The check blocks the
+		// write introduces are found once, for both refusals that read them.
 		var prior *pmdoc.Node
 		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
 			prior = latestTree
 		}
-		if err := refuseCICheckText(tree, prior); err != nil {
+		introduced := introducedCIChecks(tree, prior)
+		if err := refuseCICheckText(introduced); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 		if err := refuseBlockPointers(ctx, tx, artifactID, tree, prior, offsets); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, prior); err != nil {
+		if err := refuseCICheckBlocks(ctx, tx, artifactID, introduced); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}

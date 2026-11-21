@@ -763,11 +763,14 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // did not run, since that check says nothing about what the store would write (storedTextCheck,
   // which decides what each answer means for the call). Without --force the check asks for the
   // refusals of a new document, which this call makes; with it, the upload may replace a document,
-  // which is judged by looser rules, so it asks for none of them, and Dispatch answers such a text
-  // with its rendering, which the check compares as any other. A text the check leaves unchecked -
-  // a Dispatch without the route, or blank text whose check did not run - goes up, and the upload
-  // makes its own refusal. A file is asked nothing: the store keeps a Markdown file as it spells
-  // it, and its upload is refused for everything the round trip would refuse its bytes for.
+  // which is judged by looser rules, so it asks for none of them, and Dispatch answers as the most
+  // permissive replacement takes the text: with the rendering it stores, which the check compares
+  // as any other, or with a refusal every replacement makes. Under a name the owner does not hold,
+  // --force uploads a new document, and its upload makes the refusals the check did not ask for. A
+  // text the check leaves unchecked - a Dispatch without the route, or blank text whose check did
+  // not run - goes up, and the upload makes its own refusal. A file is asked nothing: the store
+  // keeps a Markdown file as it spells it, and its upload is refused for everything the round trip
+  // would refuse its bytes for.
   if (content !== undefined) {
     const stored = await storedTextCheck(() => client, input.tool, name, content, force);
     if (stored.kind === "refused") throw stored.refusal;
@@ -839,10 +842,12 @@ function endedSentence(text: string): string {
  * round trip nothing about a file, and the round trip refuses, in the upload's own words, what the
  * upload of that file is refused for. Any other file, and a name alone, is asked nothing. Both
  * checks ask for a new document's refusals only without `--force`, as the call's does, so every
- * refusal the dry run gets is the call's. It reads nothing else the call reads: not whether the
- * owner holds the name, and none of the server's other refusals. A check that cannot run passes,
- * with a warning that says why and what the call does, as the check's kind says it: an
- * `unchecked` text the call uploads unchecked, and a `failed` one it refuses until Dispatch
+ * refusal the dry run gets is the call's. With `--force` they ask for none of them, so a dry run
+ * under a name the owner does not hold passes, with no warning, a text the call's upload, which
+ * makes a new document, refuses for one of them. It reads nothing else the call reads: not
+ * whether the owner holds the name, and none of the server's other refusals. A check that cannot
+ * run passes, with a warning that says why and what the call does, as the check's kind says it:
+ * an `unchecked` text the call uploads unchecked, and a `failed` one it refuses until Dispatch
  * answers. A dry run that failed there would let an AskGate older than DISPATCH_DRY_RUN_LOCAL,
  * which runs the call after a failed dry run, post this write unreviewed; AskGate now sets that
  * variable, under which this step does not run.

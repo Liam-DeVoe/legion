@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -90,9 +91,7 @@ func TestMarkdownRoundTripAnswersWhatTheStoreWouldHold(t *testing.T) {
 		mint("write")
 		stored, storeErr := replaceDocumentText(database, documentService, artifactID, string(source), alice)
 		mint("write")
-		answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
-			"markdown": string(source), "new_document": true,
-		}, "alice")
+		answered := roundTripOf(t, handler, "inline", string(source), true)
 		if answered.Code != http.StatusOK {
 			// A text the round trip refuses, asked as `dispatch artifact` asks it, for a new
 			// document's refusals, as an upload of it as a new document does. The upload must refuse
@@ -236,15 +235,50 @@ func TestMarkdownRoundTripTakesTheLargestTextAnInlineUploadStores(t *testing.T) 
 const askAfterOptions = ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich database?\n\n" +
 	"- Postgres\n- SQLite\n\nPick one by Friday.\n:::\n"
 
+// misreadRendering is markdown whose rendering no reader reads back, which every upload refuses,
+// a replacement included (pmdoc.ErrRenderingRefused).
+const misreadRendering = "2. [^N]:\n       12. *\n       --\n"
+
+// repeatedCheckID is two check blocks naming one block id, c1, written as the store renders them
+// (renderedCheck), which only a new document's seed refuses: a replacement over a document that
+// names c1 on two blocks already takes it, keeping c1 for the first block and minting the second
+// another id (pmdoc.EnsureBlockIDs), and mintedCheckID is the rendering it stores, that minted id
+// written "minted" (mintedBlockIDs). The id is all the store changes.
+var (
+	repeatedCheckID = ciCheckBlock("c1", renderedCheck) + "\n" + ciCheckBlock("c1", renderedCheck)
+	mintedCheckID   = ciCheckBlock("c1", renderedCheck) + "\n" + ciCheckBlock("minted", renderedCheck)
+)
+
+// renderedCheck is ciCheckOrdinary as the store renders a check block's attributes, its `when`
+// written out.
+const renderedCheck = `when="before_merge" ` + ciCheckOrdinary
+
+// mintedBlockIDs matches a block id the parse mints (pmdoc's newBlockID, a version 4 UUID), which
+// is random, so a rendering holding one is compared with each written "minted".
+var mintedBlockIDs = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`)
+
 // roundTripRefusal is a text an upload refuses for the text alone, how the round trip is sent it
 // (sent: "inline", in the markdown round trip's markdown, and "file", as base64 in the file round
-// trip's file), and the status, code, words and scope (contracts.TextRefusalHeader's value) of that
-// refusal.
+// trip's file), the status, code, words and scope (contracts.TextRefusalHeader's value) of that
+// refusal, and replaced, the answer to a body without new_document where it is not that refusal.
 type roundTripRefusal struct {
 	name, text         string
 	sent               []string
 	status             int
 	code, words, scope string
+	replaced           roundTripReplaced
+}
+
+// roundTripReplaced is the answer to a body without new_document for a text whose refusal is
+// scoped new-document, the most permissive replacement's (markdownRoundTrip), where it is not
+// storedMarkdown's, main's answer: the refusal every replacement makes of the text, scoped upload
+// (status, code and words), or, for a text main's parse refused, the rendering that replacement
+// stores, each id its parse minted written "minted" (mintedBlockIDs). The zero value is
+// storedMarkdown's answer, the rendering of a text main's parse takes.
+type roundTripReplaced struct {
+	status      int
+	code, words string
+	rendering   string
 }
 
 // roundTripRefusals is every text of TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText,
@@ -252,12 +286,14 @@ type roundTripRefusal struct {
 // Scoped upload: text past the bytes one document holds; text holding U+0000; a file holding a
 // byte that is not UTF-8, which no JSON string carries; and the parse's refusals, which a
 // replacement's parse makes alike - 12,000 list items and text Go's strings.TrimSpace empties,
-// each past the elements one write may make, markdown the parser refuses, and markdown whose
-// rendering no reader reads back. Scoped new-document, which a replacement relaxes where the
-// document it replaces holds the same or leaves the block unchanged: text within the bytes whose
-// rendering, which the seed weighs, passes them, twice; an ask block that breaks its content rule;
-// a block id named on two blocks; and a check CI proves breaking each of the three rules its
-// attributes keep.
+// each past the elements one write may make, markdown the parser refuses, markdown whose
+// rendering no reader reads back, and an ask that breaks its content rule in such markdown, which
+// that refusal names instead (askRefusalInstead). Scoped new-document, which a replacement relaxes
+// where the document it replaces holds the same or leaves the block unchanged: text within the
+// bytes whose rendering, which the seed weighs, passes them, twice; an ask block that breaks its
+// content rule; a block id named on two blocks, alone, beside a list the store respells, and in
+// markdown whose rendering no reader reads back, which the most permissive replacement refuses for
+// that read-back; and a check CI proves breaking each of the three rules its attributes keep.
 func roundTripRefusals(t *testing.T) []roundTripRefusal {
 	t.Helper()
 	words := strings.Repeat("word ", maxDocumentMarkdownBytes/len("word "))
@@ -286,32 +322,46 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 	both, fileOnly := []string{"inline", "file"}, []string{"file"}
 	upload, newDocument := contracts.TextRefusalUpload, contracts.TextRefusalNewDocument
 	refusals := []roundTripRefusal{
-		{"text past the bytes one document holds", pastBytes, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", contracts.MarkdownDocumentTooLarge, upload},
-		{"12,000 list items, past the elements one write may make", strings.Repeat("- a\n", 12_000), both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "more than 65536 elements", upload},
-		{"text at the bytes whose rendering adds a final line feed", unended, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "this change would make the document's markdown", newDocument},
-		{"text whose rendering escapes 1,100 backticks past the bytes", escaped, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "this change would make the document's markdown", newDocument},
-		{"text strings.TrimSpace empties, past the elements one write may make", blank, both,
-			http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "more than 65536 elements", upload},
-		{"text holding U+0000", "# Notes\n\nA\x00B\n", both,
-			http.StatusBadRequest, "NUL_CHARACTER", "holds a NUL character (U+0000) at character 11", upload},
-		{"a file holding a byte that is not UTF-8", "# Notes\n\nA\xffB\n", fileOnly,
-			http.StatusBadRequest, "INVALID_UTF8", "file holds a byte that is not UTF-8 (0xFF) at character 11", upload},
-		{"an ask block that breaks its content rule", askAfterOptions, both,
-			http.StatusBadRequest, "INVALID_ASK_BLOCK", "holds a paragraph after its options", newDocument},
-		{"markdown the parser refuses", "<details>x</details>", both,
-			http.StatusBadRequest, "INVALID_MARKDOWN", "", upload},
-		{"markdown whose rendering no reader reads back", "2. [^N]:\n       12. *\n       --\n", both,
-			http.StatusBadRequest, "INVALID_MARKDOWN", "cannot be read back", upload},
-		{"a block id named on two blocks", ciCheckBlock("c1", ciCheckOrdinary) + "\n" + ciCheckBlock("c1", ciCheckOrdinary), both,
-			http.StatusBadRequest, "INVALID_MARKDOWN", `block id "c1" would name two blocks`, newDocument},
+		{name: "text past the bytes one document holds", text: pastBytes, sent: both,
+			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: contracts.MarkdownDocumentTooLarge, scope: upload},
+		{name: "12,000 list items, past the elements one write may make", text: strings.Repeat("- a\n", 12_000), sent: both,
+			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "more than 65536 elements", scope: upload},
+		{name: "text at the bytes whose rendering adds a final line feed", text: unended, sent: both,
+			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "this change would make the document's markdown", scope: newDocument},
+		{name: "text whose rendering escapes 1,100 backticks past the bytes", text: escaped, sent: both,
+			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "this change would make the document's markdown", scope: newDocument},
+		{name: "text strings.TrimSpace empties, past the elements one write may make", text: blank, sent: both,
+			status: http.StatusRequestEntityTooLarge, code: "CAP_EXCEEDED", words: "more than 65536 elements", scope: upload},
+		{name: "text holding U+0000", text: "# Notes\n\nA\x00B\n", sent: both,
+			status: http.StatusBadRequest, code: "NUL_CHARACTER", words: "holds a NUL character (U+0000) at character 11", scope: upload},
+		{name: "a file holding a byte that is not UTF-8", text: "# Notes\n\nA\xffB\n", sent: fileOnly,
+			status: http.StatusBadRequest, code: "INVALID_UTF8", words: "file holds a byte that is not UTF-8 (0xFF) at character 11", scope: upload},
+		{name: "an ask block that breaks its content rule", text: askAfterOptions, sent: both,
+			status: http.StatusBadRequest, code: "INVALID_ASK_BLOCK", words: "holds a paragraph after its options", scope: newDocument},
+		{name: "markdown the parser refuses", text: "<details>x</details>", sent: both,
+			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", scope: upload},
+		{name: "markdown whose rendering no reader reads back", text: misreadRendering, sent: both,
+			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: "cannot be read back", scope: upload},
+		// The ask's content rule is a new document's, but where the rendering does not read back
+		// the parse's own refusal names the ask instead, which every upload makes.
+		{name: "an ask that breaks its content rule in markdown whose rendering no reader reads back", text: askAfterOptions + "\n" + misreadRendering, sent: both,
+			status: http.StatusBadRequest, code: "INVALID_ASK_BLOCK", words: "holds a paragraph after its options", scope: upload},
+		{name: "a block id named on two blocks", text: repeatedCheckID, sent: both,
+			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: `block id "c1" would name two blocks`, scope: newDocument,
+			replaced: roundTripReplaced{rendering: mintedCheckID}},
+		// The store respells the list beside the repeat as well, which main answered unchanged.
+		{name: "a block id named on two blocks beside a list the store respells", text: "* a\n\n" + repeatedCheckID, sent: both,
+			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: `block id "c1" would name two blocks`, scope: newDocument,
+			replaced: roundTripReplaced{rendering: "- a\n\n" + mintedCheckID}},
+		// The repeat is refused before the read-back, which main's parse and a new document's seed
+		// never reach; the most permissive replacement reaches it and is refused it.
+		{name: "a block id named on two blocks in markdown whose rendering no reader reads back", text: repeatedCheckID + "\n" + misreadRendering, sent: both,
+			status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: `block id "c1" would name two blocks`, scope: newDocument,
+			replaced: roundTripReplaced{status: http.StatusBadRequest, code: "INVALID_MARKDOWN", words: "cannot be read back"}},
 	}
 	for _, rule := range ciCheckBreaks {
-		refusals = append(refusals, roundTripRefusal{"a check proved by CI with " + rule.name, "Intro.\n\n" + ciCheckBlock("c2", rule.markdown), both,
-			http.StatusBadRequest, "INVALID_CI_CHECK", ciCheckRefusal("c2", rule.rule), newDocument})
+		refusals = append(refusals, roundTripRefusal{name: "a check proved by CI with " + rule.name, text: "Intro.\n\n" + ciCheckBlock("c2", rule.markdown), sent: both,
+			status: http.StatusBadRequest, code: "INVALID_CI_CHECK", words: ciCheckRefusal("c2", rule.rule), scope: newDocument})
 	}
 	return refusals
 }
@@ -338,10 +388,18 @@ func roundTripOf(t *testing.T, handler http.Handler, kind, text string, newDocum
 // document refuses it with, inline (the markdown round trip against a JSON upload's content) and
 // as a file (the file round trip against a multipart upload's file part), and carries the mark of
 // a refusal of the text (contracts.TextRefusalHeader) with its scope. `dispatch artifact` and its
-// dry run take a marked answer as the call's refusal, so they refuse it as the upload does. A body
-// naming no text asks about the empty text, on both routes, and is answered "" with no mark. A
-// text within the limits - 9,000 list items, close below the element limit, in a spelling the
-// store changes - is answered with the markdown the store holds for it, with new_document or
+// dry run take a marked answer as the call's refusal, so they refuse it as the upload does.
+//
+// Each text is asked without new_document too, as a client asks that does not ask for a new
+// document's refusals: `dispatch artifact --force`, and a client that does not know the member.
+// That body is answered as the most permissive replacement takes the text (markdownRoundTrip),
+// since a replacement, judged against the document it replaces, need not make a new document's
+// refusals (requireReplacementAnswer). A client that refuses its upload on any failure of the
+// round trip but the route's absence is then refused no replacement the store takes.
+//
+// A body naming no text asks about the empty text, on both routes, and is answered "" with no
+// mark. A text within the limits - 9,000 list items, close below the element limit, in a spelling
+// the store changes - is answered with the markdown the store holds for it, with new_document or
 // without it, which the upload then stores, and text of whitespace alone that the seed takes is
 // answered "" either way.
 func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
@@ -374,6 +432,7 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 					t.Fatalf("the %s upload answers %d %s %.200q, want the round trip's %d %s %.200q",
 						kind, uploaded.Code, uploadCode, uploadMessage, roundTrip.Code, code, message)
 				}
+				requireReplacementAnswer(t, kind, test, roundTrip, roundTripOf(t, handler, kind, test.text, false))
 			}
 		})
 	}
@@ -428,50 +487,47 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 	}
 }
 
-// TestMarkdownRoundTripMakesANewDocumentsRefusalsOnlyWhenAsked is the round trip's answer to each
-// text of roundTripRefusals for a body without new_document, as a client sends it that does not
-// ask for a new document's refusals: `dispatch artifact --force`, and a client that does not know
-// the member. A text only a new document's seed refuses - its rendering past the bytes, an ask
-// that breaks its content rule, a block id named twice, a check CI proves that breaks a rule - is
-// answered 200, with no mark, with storedMarkdown's answer for it - the text itself where the
-// parse or the render fails, the rendering otherwise - since a replacement, judged against the
-// document it replaces, need not make those refusals: a client that refuses its upload on any
-// failure of the round trip but the route's absence is then not refused a replacement the store
-// takes. A text every upload refuses, a replacement included - its encoding, its bytes, the
-// parse's refusals - is refused alike with the member and without it, with the same status, code,
-// words and mark.
-func TestMarkdownRoundTripMakesANewDocumentsRefusalsOnlyWhenAsked(t *testing.T) {
-	handler := newTestHandler(t)
-	for _, test := range roundTripRefusals(t) {
-		t.Run(test.name, func(t *testing.T) {
-			for _, kind := range test.sent {
-				asked := roundTripOf(t, handler, kind, test.text, true)
-				unasked := roundTripOf(t, handler, kind, test.text, false)
-				mark := unasked.Header().Get(contracts.TextRefusalHeader)
-				if test.scope == contracts.TextRefusalUpload {
-					askedCode, askedMessage := refusalOf(t, asked)
-					code, message := refusalOf(t, unasked)
-					if asked.Code != test.status || askedCode != test.code || unasked.Code != asked.Code || code != askedCode ||
-						message != askedMessage || mark != test.scope {
-						t.Fatalf("the round trip of the %s without new_document: status=%d %s=%q body=%.300s, want the refusal with it, %d %s %.200q, marked %q",
-							kind, unasked.Code, contracts.TextRefusalHeader, mark, unasked.Body.String(), asked.Code, askedCode, askedMessage, test.scope)
-					}
-					continue
-				}
-				if asked.Code != test.status || asked.Header().Get(contracts.TextRefusalHeader) != test.scope {
-					t.Fatalf("the round trip of the %s with new_document: status=%d body=%.300s, want %d marked %q",
-						kind, asked.Code, asked.Body.String(), test.status, test.scope)
-				}
-				if unasked.Code != http.StatusOK || mark != "" {
-					t.Fatalf("the round trip of the %s without new_document: status=%d %s=%q body=%.300s, want 200 and no mark",
-						kind, unasked.Code, contracts.TextRefusalHeader, mark, unasked.Body.String())
-				}
-				if answered, want := decodeBody[markdownRoundTripResponse](t, unasked).Markdown, storedMarkdown(test.text); answered != want {
-					t.Fatalf("the round trip of the %s without new_document answers %d bytes %.80q, want storedMarkdown's %d bytes %.80q",
-						kind, len(answered), answered, len(want), want)
-				}
-			}
-		})
+// requireReplacementAnswer fails t unless unasked, the round trip of test's text sent as kind
+// without new_document, is the most permissive replacement's answer (markdownRoundTrip), where
+// asked is the round trip with new_document. A text whose refusal is scoped upload, which every
+// upload makes, a replacement included - its encoding, its bytes, the parse's refusals - is
+// refused alike with the member and without it, with the same status, code, words and mark. A
+// text whose refusal is scoped new-document is answered as test.replaced says: refused, marked
+// upload, for a refusal that replacement makes too, which the new document's refusal came before;
+// or else answered 200, with no mark, with the rendering that replacement stores - for a text
+// main's parse takes, storedMarkdown's answer, main's, and for one it refused, a block id named
+// twice, the rendering with the second block's id minted, where main answered the text itself.
+func requireReplacementAnswer(t *testing.T, kind string, test roundTripRefusal, asked, unasked *httptest.ResponseRecorder) {
+	t.Helper()
+	mark := unasked.Header().Get(contracts.TextRefusalHeader)
+	code, message := refusalOf(t, unasked)
+	switch {
+	case test.scope == contracts.TextRefusalUpload:
+		askedCode, askedMessage := refusalOf(t, asked)
+		if unasked.Code != asked.Code || code != askedCode || message != askedMessage || mark != test.scope {
+			t.Fatalf("the round trip of the %s without new_document: status=%d %s=%q body=%.300s, want the refusal with it, %d %s %.200q, marked %q",
+				kind, unasked.Code, contracts.TextRefusalHeader, mark, unasked.Body.String(), asked.Code, askedCode, askedMessage, test.scope)
+		}
+	case test.replaced.status != 0:
+		if unasked.Code != test.replaced.status || code != test.replaced.code || !strings.Contains(message, test.replaced.words) ||
+			mark != contracts.TextRefusalUpload {
+			t.Fatalf("the round trip of the %s without new_document: status=%d %s=%q body=%.300s, want %d %s naming %q, marked %q",
+				kind, unasked.Code, contracts.TextRefusalHeader, mark, unasked.Body.String(),
+				test.replaced.status, test.replaced.code, test.replaced.words, contracts.TextRefusalUpload)
+		}
+	default:
+		if unasked.Code != http.StatusOK || mark != "" {
+			t.Fatalf("the round trip of the %s without new_document: status=%d %s=%q body=%.300s, want 200 and no mark",
+				kind, unasked.Code, contracts.TextRefusalHeader, mark, unasked.Body.String())
+		}
+		answered, want := decodeBody[markdownRoundTripResponse](t, unasked).Markdown, storedMarkdown(test.text)
+		if test.replaced.rendering != "" {
+			answered, want = mintedBlockIDs.ReplaceAllString(answered, "minted"), test.replaced.rendering
+		}
+		if answered != want {
+			t.Fatalf("the round trip of the %s without new_document answers %d bytes %.200q, want %d bytes %.200q",
+				kind, len(answered), answered, len(want), want)
+		}
 	}
 }
 
@@ -485,8 +541,10 @@ func TestMarkdownRoundTripMakesANewDocumentsRefusalsOnlyWhenAsked(t *testing.T) 
 // document holds it. A new document's seed refuses that text - the round trip asked with
 // new_document refuses it marked new-document, and an upload under a new name refuses it alike -
 // and a replacement takes it, since a write is held to an ask's content rule only where it
-// changes the ask. Without new_document the round trip answers the text itself, which that client
-// compares with what it holds and sends, and the upload naming the document's token stores it.
+// changes the ask. Without new_document the round trip answers the rendering that replacement
+// stores, which is the text itself here, the document's own rendering with one paragraph changed:
+// that client compares it with what it holds and sends it, and the upload naming the document's
+// token stores it.
 func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t *testing.T) {
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A replacement over a browser's ask", "The spec.\n")
@@ -517,7 +575,7 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 			unasked.Code, unasked.Header(), unasked.Body.String())
 	}
 	if answered := decodeBody[markdownRoundTripResponse](t, unasked).Markdown; answered != replacement {
-		t.Fatalf("the round trip without new_document answers %q, want the text it was given, %q", answered, replacement)
+		t.Fatalf("the round trip without new_document answers %q, want its rendering, the text it was given, %q", answered, replacement)
 	}
 
 	uploaded := postUpload(t, handler, issue.Key, map[string]any{
@@ -528,5 +586,143 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 	}
 	if stored := documentMarkdown(t, handler, artifactID); stored != replacement {
 		t.Fatalf("the store holds %q after the replacement, want %q", stored, replacement)
+	}
+}
+
+// TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementOverARepeatedBlockID is the replacement
+// `dispatch artifact --force` uploads over a document that names one block id, c1, on two check
+// blocks, as a browser editor can leave it until settlement repairs it. A replacement naming c1 on
+// two blocks too is not refused the repeat, which the document holds already, and the round trip
+// without new_document answers as that replacement does. Markdown whose rendering no reader reads
+// back beside the repeat is refused that read-back by both, in the same status, code and words,
+// which the replacement's refusal prefixes with its own, where the round trip with new_document
+// refuses the repeat (roundTripRefusals). The repeat alone is stored, the second block under an
+// id the store mints (pmdoc.EnsureBlockIDs), which is the rendering the round trip answers: the
+// store keeps no text naming one id on two blocks as it is written, so a client that compares the
+// round trip's answer with its text refuses every such replacement for its spelling, where main
+// answered the text itself and the store respelled it.
+func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementOverARepeatedBlockID(t *testing.T) {
+	documentService, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A replacement over a repeated block id", "The spec.\n")
+	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "Intro.\n")
+	repeated, err := pmdoc.Parse(ciCheckBlock("c1", renderedCheck) + "\n" + ciCheckBlock("c2", renderedCheck))
+	if err != nil {
+		t.Fatalf("parse the browser's document: %v", err)
+	}
+	repeated.Children[1].Attrs[pmdoc.BlockIDAttr] = "c1"
+	peer := connectBrowserPeer(t, documentService, artifactID)
+	t.Cleanup(peer.close)
+	peer.edit(t, func(tree *pmdoc.Node) error {
+		tree.Children = repeated.Children
+		return nil
+	})
+	waitForLiveText(t, documentService, artifactID, repeatedCheckID)
+	replace := func(text string) *httptest.ResponseRecorder {
+		return postUpload(t, handler, issue.Key, map[string]any{
+			"name": "notes.md", "content": text, "precondition": uploadBase(t, handler, artifactID),
+		})
+	}
+
+	misread := repeatedCheckID + "\n" + misreadRendering
+	unasked := roundTripOf(t, handler, "inline", misread, false)
+	code, message := refusalOf(t, unasked)
+	if unasked.Code != http.StatusBadRequest || code != "INVALID_MARKDOWN" || !strings.Contains(message, "cannot be read back") ||
+		unasked.Header().Get(contracts.TextRefusalHeader) != contracts.TextRefusalUpload {
+		t.Fatalf("the round trip of the repeat beside a rendering no reader reads back, without new_document: status=%d %s=%q body=%.300s, want 400 INVALID_MARKDOWN naming the read-back, marked %q",
+			unasked.Code, contracts.TextRefusalHeader, unasked.Header().Get(contracts.TextRefusalHeader), unasked.Body.String(), contracts.TextRefusalUpload)
+	}
+	// A replacement's refusal carries the round trip's words after its own "replace live
+	// document: " (ReplaceText).
+	refused := replace(misread)
+	if replacedCode, replacedMessage := refusalOf(t, refused); refused.Code != unasked.Code || replacedCode != code ||
+		!strings.HasSuffix(replacedMessage, ": "+message) {
+		t.Fatalf("the replacement over the repeat answers %d %s %q, want the round trip's %d %s %q",
+			refused.Code, replacedCode, replacedMessage, unasked.Code, code, message)
+	}
+
+	unasked = roundTripOf(t, handler, "inline", repeatedCheckID, false)
+	if unasked.Code != http.StatusOK || unasked.Header().Get(contracts.TextRefusalHeader) != "" {
+		t.Fatalf("the round trip of the repeat without new_document: status=%d headers=%v body=%.300s, want 200 and no mark",
+			unasked.Code, unasked.Header(), unasked.Body.String())
+	}
+	answered := decodeBody[markdownRoundTripResponse](t, unasked).Markdown
+	if answered == repeatedCheckID || mintedBlockIDs.ReplaceAllString(answered, "minted") != mintedCheckID {
+		t.Fatalf("the round trip of the repeat without new_document answers %q, want its rendering, the second block's id minted: %q", answered, mintedCheckID)
+	}
+	if stored := replace(repeatedCheckID); stored.Code != http.StatusCreated {
+		t.Fatalf("the replacement over the repeat: status=%d body=%s", stored.Code, stored.Body.String())
+	}
+	if held := documentMarkdown(t, handler, artifactID); mintedBlockIDs.ReplaceAllString(held, "minted") != mintedCheckID {
+		t.Fatalf("the store holds %q after the replacement, want the round trip's rendering, the second block's id minted: %q", held, mintedCheckID)
+	}
+}
+
+// TestMarkdownRoundTripWithoutNewDocumentAnswersTheRenderingOfAnElementThisBuildCannotCreate is the
+// round trip of a text holding an element this build reads and cannot create yet: a typed block a
+// newer build writes (pmdoc.UseStagedBlockForTest). Only a new document's seed refuses it; a
+// replacement over a document holding the element already keeps it, and a document comes to hold
+// it through a rebuild from a version that stored it (TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds).
+// With new_document the round trip refuses the text, marked new-document, as the upload of a new
+// document does. Without it, it answers the rendering that replacement stores, where main answered
+// the text itself: a text the store keeps as written is answered with itself, which a client
+// comparing the two passes, and the replacement stores it as written; a text the store respells
+// is answered respelled, which such a client refuses, and the replacement stores that spelling.
+func TestMarkdownRoundTripWithoutNewDocumentAnswersTheRenderingOfAnElementThisBuildCannotCreate(t *testing.T) {
+	restore, err := pmdoc.UseStagedBlockForTest("staged", false)
+	if err != nil {
+		t.Fatalf("stage a typed block this build reads and may not create: %v", err)
+	}
+	t.Cleanup(restore)
+	handler, database, broken := newBrokenTestServer(t)
+	issue := createArtifactIssue(t, handler)
+	const kept = "before\n\n:::staged{#staged-1}\nBody.\n:::\n"
+	artifactID := seedUploadedDocument(t, handler, issue.Key, "staged.md", "before\n")
+	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $2 where artifact_id = $1`, artifactID, kept); err != nil {
+		t.Fatalf("store the latest version: %v", err)
+	}
+	broken.failNextLoad(artifactID)
+	if rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/rebuild", map[string]any{}, "alice"); rebuilt.Code != http.StatusOK {
+		t.Fatalf("rebuild from the version holding the staged block: status=%d body=%s", rebuilt.Code, rebuilt.Body.String())
+	}
+	if held := documentMarkdown(t, handler, artifactID); held != kept {
+		t.Fatalf("the rebuilt document holds %q, want %q", held, kept)
+	}
+
+	for index, test := range []struct{ name, text, rendering string }{
+		{"a text the store keeps as written", kept, kept},
+		{"a text the store respells", strings.Replace(kept, "Body.", "* a", 1), strings.Replace(kept, "Body.", "- a", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			asked := roundTripOf(t, handler, "inline", test.text, true)
+			code, message := refusalOf(t, asked)
+			if asked.Code != http.StatusBadRequest || code != "INVALID_MARKDOWN" || !strings.Contains(message, "cannot write it yet") ||
+				asked.Header().Get(contracts.TextRefusalHeader) != contracts.TextRefusalNewDocument {
+				t.Fatalf("the round trip with new_document: status=%d %s=%q body=%.300s, want 400 INVALID_MARKDOWN naming the staged block, marked %q",
+					asked.Code, contracts.TextRefusalHeader, asked.Header().Get(contracts.TextRefusalHeader), asked.Body.String(), contracts.TextRefusalNewDocument)
+			}
+			asNew := postUpload(t, handler, issue.Key, map[string]any{"name": fmt.Sprintf("new-%d.md", index), "content": test.text})
+			if newCode, newMessage := refusalOf(t, asNew); asNew.Code != asked.Code || newCode != code || newMessage != message {
+				t.Fatalf("the upload as a new document answers %d %s %q, want the round trip's %d %s %q",
+					asNew.Code, newCode, newMessage, asked.Code, code, message)
+			}
+
+			unasked := roundTripOf(t, handler, "inline", test.text, false)
+			if unasked.Code != http.StatusOK || unasked.Header().Get(contracts.TextRefusalHeader) != "" {
+				t.Fatalf("the round trip without new_document: status=%d headers=%v body=%.300s, want 200 and no mark",
+					unasked.Code, unasked.Header(), unasked.Body.String())
+			}
+			if answered := decodeBody[markdownRoundTripResponse](t, unasked).Markdown; answered != test.rendering {
+				t.Fatalf("the round trip without new_document answers %q, want its rendering %q", answered, test.rendering)
+			}
+			replaced := postUpload(t, handler, issue.Key, map[string]any{
+				"name": "staged.md", "content": test.text, "precondition": uploadBase(t, handler, artifactID),
+			})
+			if replaced.Code != http.StatusCreated {
+				t.Fatalf("the replacement over the staged block: status=%d body=%s", replaced.Code, replaced.Body.String())
+			}
+			if held := documentMarkdown(t, handler, artifactID); held != test.rendering {
+				t.Fatalf("the store holds %q after the replacement, want the round trip's answer %q", held, test.rendering)
+			}
+		})
 	}
 }

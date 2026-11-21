@@ -202,35 +202,36 @@ func introducedCIChecks(tree, prior *pmdoc.Node) []introducedCICheck {
 	return introduced
 }
 
-// refuseCICheckText refuses tree, the tree an agent's or API write leaves, when a check block the
-// write introduces over prior (introducedCIChecks) breaks one of the three rules that read its
-// attributes alone (CICheckRule), naming the first such block in document order
-// (ErrInvalidCICheck). It reads nothing but the two trees, so every write runs it among its checks
-// of the text alone, before any check that reads the database: a new document's seed in
-// seedRendering, which the markdown round trip shares, and applyLive and a rebuild from markdown
-// ahead of refuseBlockPointers.
-func refuseCICheckText(tree, prior *pmdoc.Node) error {
-	for _, introduced := range introducedCIChecks(tree, prior) {
-		if rule := CICheckRule(introduced.check); rule != "" {
-			return &ErrInvalidCICheck{BlockID: introduced.blockID, CICheck: introduced.check.CICheck, Rule: rule}
+// refuseCICheckText refuses a write whose introduced check blocks (introducedCIChecks: those it
+// introduces carrying `ci_check`, over the tree before it) hold one that breaks one of the three
+// rules that read its attributes alone (CICheckRule), naming the first such block in document
+// order (ErrInvalidCICheck). It reads nothing but those blocks, so every write runs it among its
+// checks of the text alone, before any check that reads the database: a new document's seed in
+// seedRendering, which a markdown round trip asked for a new document's refusals shares, and
+// applyLive and a rebuild from markdown ahead of refuseBlockPointers. A write finds its introduced
+// blocks once, for this and for refuseCICheckBlocks.
+func refuseCICheckText(introduced []introducedCICheck) error {
+	for _, block := range introduced {
+		if rule := CICheckRule(block.check); rule != "" {
+			return &ErrInvalidCICheck{BlockID: block.blockID, CICheck: block.check.CICheck, Rule: rule}
 		}
 	}
 	return nil
 }
 
-// refuseCICheckBlocks refuses tree, the tree an agent's or API write to artifactID leaves, when a
-// check block the write introduces over prior (introducedCIChecks) holds a recorded result, the
-// fourth rule of a check CI proves, naming the first such block in document order
-// (ErrInvalidCICheck). The other three were held already, before every check that reads the
-// database (refuseCICheckText). Whether a result is recorded is read in the write's transaction.
-func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node) error {
-	for _, introduced := range introducedCIChecks(tree, prior) {
-		recorded, err := ciCheckRecorded(ctx, tx, artifactID, introduced.blockID)
+// refuseCICheckBlocks refuses a write to artifactID whose introduced check blocks
+// (introducedCIChecks) hold one with a recorded result, the fourth rule of a check CI proves,
+// naming the first such block in document order (ErrInvalidCICheck). The other three were held
+// already, before every check that reads the database (refuseCICheckText). Whether a result is
+// recorded is read in the write's transaction.
+func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, introduced []introducedCICheck) error {
+	for _, block := range introduced {
+		recorded, err := ciCheckRecorded(ctx, tx, artifactID, block.blockID)
 		if err != nil {
 			return err
 		}
 		if recorded {
-			return &ErrInvalidCICheck{BlockID: introduced.blockID, CICheck: introduced.check.CICheck, Rule: ciCheckRuleRecorded}
+			return &ErrInvalidCICheck{BlockID: block.blockID, CICheck: block.check.CICheck, Rule: ciCheckRuleRecorded}
 		}
 	}
 	return nil

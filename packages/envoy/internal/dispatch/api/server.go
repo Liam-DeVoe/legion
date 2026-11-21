@@ -1756,9 +1756,11 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 	return body, nil
 }
 
-// decodeJSONBody is readJSONBody without its refusal of U+0000, for the one route that checks the
-// text its body carries as another route checks it, under that route's name for it: the markdown
-// round trip (postMarkdownRoundTrip, documentTextRefusal).
+// decodeJSONBody is readJSONBody without its refusal of U+0000, for the two routes that check
+// what their body carries as another route checks it, under that route's name for it: the markdown
+// round trips (decodeRoundTrip), the inline one refusing its text's U+0000 as the upload refuses
+// its content's (postMarkdownRoundTrip) and the file one its bytes' as the upload refuses its file
+// part's (documentTextRefusal).
 func decodeJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {

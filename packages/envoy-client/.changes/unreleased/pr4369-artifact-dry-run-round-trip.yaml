@@ -16,9 +16,12 @@ body: |-
   block id written twice, a check proved by CI that breaks its rules. Without `--force` the call
   makes a new document, so the round trip asks for the refusals only a new document's seed makes
   (`new_document: true`); with `--force`, which may replace a document judged by looser rules, it
-  asks for none of them, and Dispatch answers such a text with its rendering, whose spelling the
-  call and its dry run check as for any text. An answer it does not mark is no answer about the
-  text. Blank inline text, other than the empty string, is asked too, for a refusal alone and
+  asks for none of them, and Dispatch answers as the most permissive replacement takes the text:
+  with the rendering that replacement stores, whose spelling the call and its dry run check as for
+  any text, or with a refusal every replacement makes. Under a name the owner does not hold,
+  `--force` uploads a new document, so its dry run passes, with no warning, a text that upload
+  then refuses for one of a new document's checks. An answer it does not mark is no answer about
+  the text. Blank inline text, other than the empty string, is asked too, for a refusal alone and
   never for its spelling. The dry run of such a Markdown file sends the file's bytes to their own
   round trip (`POST /api/v1/markdown/file-round-trip`), so a byte that is not UTF-8 is refused as
   the upload refuses it, and takes its refusal alone, never a spelling, since the call stores a

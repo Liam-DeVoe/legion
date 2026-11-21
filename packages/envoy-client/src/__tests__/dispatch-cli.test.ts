@@ -347,10 +347,10 @@ const server = Bun.serve({
     requests.push({ method: request.method, path: pathname, body });
     // Inline text travels as `markdown` to its round trip, a file's bytes as base64 in `file` to
     // the file round trip.
-    if (pathname === "/api/v1/markdown/round-trip" && request.method === "POST") {
+    if (pathname === ROUND_TRIP && request.method === "POST") {
       return roundTrip(body.markdown, body);
     }
-    if (pathname === "/api/v1/markdown/file-round-trip" && request.method === "POST") {
+    if (pathname === FILE_ROUND_TRIP && request.method === "POST") {
       return roundTrip(Buffer.from(body.file as string, "base64").toString("utf8"), body);
     }
     if (pathname === "/api/v1/issues/DSP-2" && request.method === "GET") {
@@ -1521,13 +1521,14 @@ describe("the dispatch CLI", () => {
     });
   }
 
-  // INFRA-4224 R3 (spec v25): under --force the upload may replace a document the owner holds, and
+  // INFRA-4224 R3 (spec v26): under --force the upload may replace a document the owner holds, and
   // a replacement is judged against the document it replaces, by looser rules than a new
   // document's seed: an ask the write leaves unchanged is not held to its content rule. So under
   // --force the round trip asks for none of a new document's refusals (no `new_document`), and
-  // Dispatch answers the text with its rendering, as it answers every client that does not ask:
-  // the call checks that spelling and uploads the text, and the dry run passes with no warning,
-  // inline and for a --path file alike. This fake refuses the text only where the request asks.
+  // Dispatch answers the text as the most permissive replacement takes it, with the rendering that
+  // replacement stores, as it answers every client that does not ask: the call checks that
+  // spelling and uploads the text, and the dry run passes with no warning, inline and for a --path
+  // file alike. This fake refuses the text only where the request asks.
   test("under --force the round trip asks for no new document's refusals: the call uploads and the dry run passes", async () => {
     roundTrip = (markdown, body) =>
       body.new_document === true
@@ -1699,6 +1700,36 @@ describe("the dispatch CLI", () => {
       stderr: routeAbsent(`NOT_FOUND: no route for POST ${ROUND_TRIP}`),
     });
     expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) }]);
+  });
+
+  // A Dispatch that has the inline round trip and not the file one - main's server, and the old
+  // pods of a rolling deploy - answers the file's check 404, as its own JSON. The dry run of a
+  // markdown --path file then passes, saying this Dispatch cannot check the file, and the call,
+  // which asks the round trip nothing about a file, uploads it.
+  test("a markdown --path file's dry run against a Dispatch with no file round trip passes, saying it cannot check the file, and the call uploads", async () => {
+    roundTrip = (markdown, body) =>
+      "file" in body
+        ? Response.json(
+            { code: "NOT_FOUND", error: `no route for POST ${FILE_ROUND_TRIP}` },
+            { status: 404 }
+          )
+        : keptText(markdown);
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "notes.md"];
+
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", path: "notes.md" }, null, 2)}\n`,
+      stderr: `dispatch: warning: this Dispatch cannot check the file: POST ${FILE_ROUND_TRIP} failed with NOT_FOUND: no route for POST ${FILE_ROUND_TRIP}. The call uploads the file unchecked.\n`,
+    });
+    expect(requests).toEqual([{ method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) }]);
+    requests.length = 0;
+    const call = await run(argv, omp);
+    expect(call.code, call.stdout).toBe(0);
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
+    ]);
   });
 
   // A dry run whose round trip cannot run passes and says why on stderr: an AskGate that runs the

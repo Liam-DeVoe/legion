@@ -6,21 +6,27 @@ body: |-
   refuses for the text alone, a replacement included, with that upload's own status, code and
   words: a text past the 1 MiB one document holds or making more than 65,536 elements
   (`413 CAP_EXCEEDED`), markdown the parser refuses or whose rendering no reader reads back
-  (`400 INVALID_MARKDOWN`), an ask written with its options and no question
-  (`400 INVALID_ASK_BLOCK`), and a render that fails. It refused a NUL character before too, as
-  `400 NUL_CHARACTER` in the words `markdown holds …`; it now refuses it in the upload's words,
-  `content holds …`. A body with `new_document: true` asks too for the refusals only a new
-  document's seed makes, which a replacement, judged against the document it replaces, relaxes: a
-  block id named on two blocks or an element this build cannot create yet
+  (`400 INVALID_MARKDOWN`), an ask that breaks its content rule in markdown whose rendering no
+  reader reads back, which that refusal names instead (`400 INVALID_ASK_BLOCK`), and a render that
+  fails. It refused a NUL character before too, as `400 NUL_CHARACTER` in the words
+  `markdown holds …`; it now refuses it in the upload's words, `content holds …`. A body with
+  `new_document: true` is answered as the upload of a new document: it asks too for the refusals
+  only a new document's seed makes, which a replacement, judged against the document it replaces,
+  relaxes: a block id named on two blocks or an element this build cannot create yet
   (`400 INVALID_MARKDOWN`), an ask that breaks its content rule (`400 INVALID_ASK_BLOCK`), a
   rendering past the bytes or the elements one document holds (`413 CAP_EXCEEDED`), and a check
   proved by CI that carries a run, takes a `when` other than `before_merge` or names no negative
-  control (`400 INVALID_CI_CHECK`). A body without the member is answered for such a text, as
-  before, with the markdown its parse and render make, or with the text itself where either fails,
-  so a client that refuses its upload on any failure of the round trip is not refused a
-  replacement the store takes; a Dispatch that does not know the member ignores it. Each refusal,
-  whatever its status, carries the response header `Dispatch-Text-Refusal`, valued with its scope:
-  `upload` for one every upload makes, and `new-document` for one only a new document's seed makes.
+  control (`400 INVALID_CI_CHECK`). A body without the member is answered as the most permissive
+  replacement takes the text, one over a document already holding what the text holds: with the
+  markdown that replacement stores, or with the first refusal every upload makes of the text. For
+  a text the parse took before, that markdown is the one this route answered before; for a block
+  id named on two blocks or an element this build cannot create yet, which it answered with the
+  text itself, it is now the rendering, and such a text whose rendering no reader reads back is
+  now refused for that. So a client that refuses its upload on any failure of the round trip is
+  not refused a replacement the store takes, and compares the spelling that replacement stores; a
+  Dispatch that does not know the member ignores it. Each refusal, whatever its status, carries
+  the response header `Dispatch-Text-Refusal`, valued with its scope: `upload` for one every
+  upload makes, and `new-document` for one only a new document's seed makes.
   No other answer of the route carries it. Its body is `{markdown, new_document}`; a body naming no
   markdown asks about the empty text and is answered `""`, as before.
 

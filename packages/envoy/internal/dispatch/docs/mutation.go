@@ -21,7 +21,6 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -407,14 +406,16 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	// schema: every pointer and every check block of a repair is introduced). The rules that read
 	// the check block alone run first, with the write's other checks of its text, and then those
 	// that read the database: the pointers' targets and a check's recorded result, in the order a
-	// new document's seed runs them (SeedText).
-	if err := refuseCICheckText(tree.Node(), weighedFrom); err != nil {
+	// new document's seed runs them (SeedText). The check blocks the write introduces are found
+	// once, for both refusals that read them.
+	introduced := introducedCIChecks(tree.Node(), weighedFrom)
+	if err := refuseCICheckText(introduced); err != nil {
 		return err
 	}
 	if err := refuseBlockPointers(ctx, op.tx, artifactID, tree.Node(), weighedFrom, offsets); err != nil {
 		return err
 	}
-	if err := refuseCICheckBlocks(ctx, op.tx, artifactID, tree.Node(), weighedFrom); err != nil {
+	if err := refuseCICheckBlocks(ctx, op.tx, artifactID, introduced); err != nil {
 		return err
 	}
 	// The tree before the write has served every use it has, so it is let go before the record's
@@ -650,59 +651,77 @@ func mergeUpdates(updates [][]byte) ([]byte, error) {
 }
 
 // SeedRendering is the markdown a new document's seed of markdown stores, or the refusal that seed
-// makes of the text before it writes anything (SeedText), with the scope that refusal holds for
-// (contracts.TextRefusalHeader's value): the steps of the seed that read nothing but the text - its
-// parse, its asks' content rule, its render, the weigh of that rendering against the limits one
-// document holds (weighRendering), and the three rules of a check CI proves that read its
-// attributes alone (refuseCICheckText). It reads and writes nothing. The markdown round trip
-// answers from it, so every refusal the seed makes of a text alone is the round trip's too, in the
-// same words, and the seed makes these before any check that reads the database.
+// makes of the text before it writes anything (SeedText), with whether only a new document makes
+// that refusal: the steps of the seed that read nothing but the text - its parse, its asks'
+// content rule, its render, the weigh of that rendering against the limits one document holds
+// (weighRendering), and the three rules of a check CI proves that read its attributes alone
+// (refuseCICheckText). It reads and writes nothing. The markdown round trip answers from it, so
+// every refusal the seed makes of a text alone is the round trip's too, in the same words, and the
+// seed makes these before any check that reads the database.
 //
-// The scope says whether a replacement makes the refusal too. contracts.TextRefusalUpload is a
-// rule ReplaceText keeps whatever document it replaces: the parse's element budget, its schema and
-// its read-back, an ask written with its options and no question (askRefusalInstead), and a render
-// that fails. contracts.TextRefusalNewDocument is one a replacement relaxes where the document it
-// replaces holds the same already, which a new document never does: a block id named on two
-// blocks and an element this build cannot create yet (pmdoc.RefusedUnlessLiveHolds), an ask that
-// breaks its content rule and a check CI proves that breaks one of the three rules, each of which
-// a replacement holds only where it changes the block, and a rendering past the limits, which a
-// replacement weighs against the rendering before it.
-func SeedRendering(markdown string) (stored, scope string, err error) {
-	seeded, _, scope, err := seedRendering(markdown)
-	return seeded.markdown, scope, err
+// newDocumentOnly says whether a replacement makes the refusal too. False is a rule ReplaceText
+// keeps whatever document it replaces: the parse's element budget, its schema and its read-back,
+// the refusal of an ask that breaks its content rule in a text whose rendering does not read back,
+// which that read-back's refusal names instead (askRefusalInstead), and a render that fails. True
+// is one a replacement relaxes where the document it replaces holds the same already, which a new
+// document never does: a block id named on two blocks and an element this build cannot create yet
+// (pmdoc.RefusedUnlessLiveHolds), an ask that breaks its content rule and a check CI proves that
+// breaks one of the three rules, each of which a replacement holds only where it changes the
+// block, and a rendering past the limits, which a replacement weighs against the rendering before
+// it.
+//
+// Without newDocument, the text is taken as the most permissive replacement of a document takes
+// it, one over a document that already holds what the text holds, so that it relaxes every rule a
+// replacement relaxes: the text is parsed as that replacement parses it
+// (pmdoc.ParseWrittenAsReplacement), and none of the steps only a new document makes is run. The
+// answer is then that replacement's rendering, or a refusal every replacement makes too, so
+// newDocumentOnly is false.
+func SeedRendering(markdown string, newDocument bool) (stored string, newDocumentOnly bool, err error) {
+	seeded, _, newDocumentOnly, err := seedRendering(markdown, newDocument)
+	return seeded.markdown, newDocumentOnly, err
 }
 
 // seedRendering is the part of SeedText that reads the text alone: its parse over no live
 // document, as an upload is taken, with the read-back that parse made (writtenInput), its asks
 // held to their content rule, its render with each block's offsets, that rendering weighed against
 // the limits one document holds, against no rendering before it, and its check blocks held to the
-// three rules of a check CI proves that read the block alone. A refusal comes with its scope
-// (SeedRendering). SeedText and SeedRendering share it, so the two refuse a text alike and store
-// the same rendering of it, and the text is parsed once and rendered once.
-func seedRendering(markdown string) (renderedTree, pmdoc.WrittenReadBack, string, error) {
-	parsed, read, parseErr := pmdoc.ParseWritten(markdown, nil)
+// three rules of a check CI proves that read the block alone. A refusal comes with whether only a
+// new document makes it (SeedRendering). Without newDocument it is the most permissive
+// replacement's part instead: that replacement's parse, with its read-back, and its render, and
+// none of the steps only a new document makes. SeedText and SeedRendering share it, so the two
+// refuse a text alike and store the same rendering of it, and the text is parsed once and
+// rendered once.
+func seedRendering(markdown string, newDocument bool) (renderedTree, pmdoc.WrittenReadBack, bool, error) {
+	var parsed *pmdoc.Node
+	var read pmdoc.WrittenReadBack
+	var parseErr error
+	if newDocument {
+		parsed, read, parseErr = pmdoc.ParseWritten(markdown, nil)
+	} else {
+		parsed, read, parseErr = pmdoc.ParseWrittenAsReplacement(markdown)
+	}
 	tree, err := writtenInput(markdown, parsed, parseErr)
 	if err != nil {
-		scope := contracts.TextRefusalUpload
-		if pmdoc.RefusedUnlessLiveHolds(parseErr) {
-			scope = contracts.TextRefusalNewDocument
-		}
-		return renderedTree{}, pmdoc.WrittenReadBack{}, scope, err
+		return renderedTree{}, pmdoc.WrittenReadBack{}, pmdoc.RefusedUnlessLiveHolds(parseErr), err
 	}
-	if err := validateWrittenAskBlocks(tree); err != nil {
-		return renderedTree{}, pmdoc.WrittenReadBack{}, contracts.TextRefusalNewDocument, &ErrInvalidAskBlock{Reason: err}
+	if newDocument {
+		if err := validateWrittenAskBlocks(tree); err != nil {
+			return renderedTree{}, pmdoc.WrittenReadBack{}, true, &ErrInvalidAskBlock{Reason: err}
+		}
 	}
 	canonical, offsets, err := renderTreeWithOffsets(tree)
 	if err != nil {
-		return renderedTree{}, pmdoc.WrittenReadBack{}, contracts.TextRefusalUpload, err
+		return renderedTree{}, pmdoc.WrittenReadBack{}, false, err
 	}
-	if err := weighRendering("", canonical); err != nil {
-		return renderedTree{}, pmdoc.WrittenReadBack{}, contracts.TextRefusalNewDocument, err
+	if newDocument {
+		if err := weighRendering("", canonical); err != nil {
+			return renderedTree{}, pmdoc.WrittenReadBack{}, true, err
+		}
+		if err := refuseCICheckText(introducedCIChecks(tree, nil)); err != nil {
+			return renderedTree{}, pmdoc.WrittenReadBack{}, true, err
+		}
 	}
-	if err := refuseCICheckText(tree, nil); err != nil {
-		return renderedTree{}, pmdoc.WrittenReadBack{}, contracts.TextRefusalNewDocument, err
-	}
-	return renderedTree{tree: tree, markdown: canonical, offsets: offsets}, read, "", nil
+	return renderedTree{tree: tree, markdown: canonical, offsets: offsets}, read, false, nil
 }
 
 // SeedText writes a new room's first Yjs update inside the caller's artifact
@@ -714,17 +733,17 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	}
 	// Every check of the text alone runs first (seedRendering), so a text that breaks one of them
 	// and a rule below as well is refused for the text, as the markdown round trip refuses it.
-	seeded, read, _, err := seedRendering(markdown)
+	seeded, read, _, err := seedRendering(markdown, true)
 	if err != nil {
 		return "", err
 	}
 	// A new document holds no pointer and no check block before this write, so every one it
 	// seeds is checked: a pointer's target and a check's recorded result, which the database
-	// holds.
+	// holds. The check blocks are found again for the recorded result, which a create pays once.
 	if err := refuseBlockPointers(ctx, tx, artifactID, seeded.tree, nil, seeded.offsets); err != nil {
 		return "", err
 	}
-	if err := refuseCICheckBlocks(ctx, tx, artifactID, seeded.tree, nil); err != nil {
+	if err := refuseCICheckBlocks(ctx, tx, artifactID, introducedCIChecks(seeded.tree, nil)); err != nil {
 		return "", err
 	}
 	update, err := encodeDocumentTree(seeded.tree)
