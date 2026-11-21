@@ -33,7 +33,7 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
 	label := "legion-testnats-" + rand.Text()
-	created, err := start(Image,
+	created, err := start(Image, "",
 		testcontainers.WithLabels(map[string]string{"legion.test": label}),
 		testcontainers.WithWaitStrategy(wait.ForLog("a line NATS never prints").WithStartupTimeout(3*time.Second)),
 	)

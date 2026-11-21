@@ -133,7 +133,7 @@ func URL(t testing.TB) string {
 		if startErr != nil || serverURL != "" {
 			return
 		}
-		started, err := start(Image)
+		started, err := start(Image, "")
 		if err != nil {
 			startErr = err
 			return
@@ -527,31 +527,30 @@ func hostConfig(host string, client, monitoring int) testcontainers.CustomizeReq
 // refuses to publish a port because something took the probed one first (loopbackPorts).
 const startTries = 5
 
-// start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
-// monitoring ports on a loopback address of its own and ports the kernel chose there
-// (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
-// this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
-// refuses the publish because a probed port was taken in between; an error names every refusal
-// before it as well as its own failure. It waits for the line nats-server logs once its listeners
-// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
-// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
-// client reaches the server. A container Docker created and never saw ready (a readiness wait that
-// timed out under load, or a refused publish) comes back beside the error, and is removed before
-// start returns: no test's end would remove a container the package shares.
-func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+// start runs a NATS container, with its monitoring endpoint on 8222, on config when it is not ""
+// (the module's own command line otherwise), with options. It publishes the client and monitoring
+// ports on a loopback address of its own and ports the kernel chose there (choosePorts), so a
+// client another test left dialing an earlier container's port cannot reach this one, and tries
+// again on a fresh address and ports, up to startTries starts, when Docker refuses the publish
+// because a probed port was taken in between; an error names every refusal before it as well as
+// its own failure. It waits for the line nats-server logs once its listeners are up, in place of
+// the NATS module's own wait, a dial of the client port at localhost, where the port is not
+// published; each caller's own connect (connect, ready, answering) is the proof a client reaches
+// the server. A container Docker created and never saw ready (a readiness wait that timed out
+// under load, or a refused publish) comes back beside the error, and is removed before start
+// returns: no test's end would remove a container the package shares.
+//
+// Every start is given options again, so none of them may hold state a start uses up; the
+// configuration comes as text for that reason, and each start reads it anew (run).
+func start(image, config string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
-		host, ports, err := loopbackPorts(2)
+		host, ports, err := choosePorts(2)
 		if err != nil {
 			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
-		attempt := append([]testcontainers.ContainerCustomizer{
-			tcnats.WithArgument("http_port", monitorPort.Port()),
-			hostConfig(host, ports[0], ports[1]),
-			testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
-		}, options...)
-		started, err = tcnats.Run(context.Background(), image, attempt...)
+		started, err = run(image, config, hostConfig(host, ports[0], ports[1]), options)
 		if err == nil {
 			return started, nil
 		}
@@ -562,6 +561,27 @@ func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats
 		refused = append(refused, err)
 	}
 	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
+}
+
+// choosePorts is the address and ports each start publishes on: loopbackPorts, which a row of
+// this package's tests replaces to have Docker refuse a start's publish.
+var choosePorts = loopbackPorts
+
+// run is one start of start's container, published as publish says. Its configuration file is a
+// reader of config made for this start alone: the copy into the container drains the reader it is
+// given, so a start handed the reader of an earlier one, which Docker had refused, wrote an empty
+// configuration, and nats-server ran on it with no users, admitting a client with no credential
+// (TestARefusedStartIsStartedAgainOnItsOwnConfiguration).
+func run(image, config string, publish testcontainers.CustomizeRequestOption, options []testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+	attempt := []testcontainers.ContainerCustomizer{
+		tcnats.WithArgument("http_port", monitorPort.Port()),
+		publish,
+		testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
+	}
+	if config != "" {
+		attempt = append(attempt, tcnats.WithConfigFile(strings.NewReader(config)))
+	}
+	return tcnats.Run(context.Background(), image, append(attempt, options...)...)
 }
 
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
@@ -593,7 +613,7 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 		entries = append(entries, entry+" }")
 	}
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ %s ]\n}\n", strings.Join(entries, ", "))
-	container, err := start(image, tcnats.WithConfigFile(strings.NewReader(config)))
+	container, err := start(image, config)
 	if err != nil {
 		t.Fatalf("start nkey-authorized NATS: %v", err)
 	}
@@ -612,7 +632,7 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 // every other test shares the package's server through URL.
 func StartImage(t testing.TB, image string) string {
 	t.Helper()
-	container, err := start(image)
+	container, err := start(image, "")
 	if err != nil {
 		t.Fatalf("start NATS of %s: %v", image, err)
 	}
