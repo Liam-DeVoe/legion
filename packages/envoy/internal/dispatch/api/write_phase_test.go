@@ -123,8 +123,9 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 		// method, path and body are the second writer's request, and written its answer once the
 		// lock is free. The path's {key} is the issue's key and its {doc} the spec's id, and the
 		// body's {base} is the token the spec stands at before the lock is taken: an upload that
-		// replaces the spec names it (docs.ErrPreconditionRequired), so both of its sends are
-		// answered for the lock and the write, not for a missing token.
+		// replaces the spec names it, so the write checks it under the document's own lock
+		// (docs.Service.ReplaceText) rather than taking it unchecked and counting it
+		// (noteUnguardedReplacement), and both of its sends are answered for the lock and the write.
 		method, path, body string
 		written            int
 		// unchanged, when it is true, holds the refused write to having changed no row anywhere.

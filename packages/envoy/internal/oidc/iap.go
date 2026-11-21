@@ -72,12 +72,13 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 	}, keys: keys}
 }
 
-// WouldReadKeySet reports whether Verify of raw, asked now, would read IAP's key set
-// (Keys.WouldRead for the key id and algorithm raw's header names): the first assertion, the first
-// once the set's Lifetime is up, and a key id the set does not hold. It reads the header without
-// verifying it, and nothing else, so it costs no round trip. It answers true where it cannot read
-// that header, so a caller that holds something across Verify only where this answers false holds
-// it across no read.
+// WouldReadKeySet reports whether Verify of raw, asked now, would read IAP's key set or wait for a
+// read of it under way (Keys.WouldRead for the key id and algorithm raw's header names, which
+// keySet.VerifySignature asks Keys.Key for): the first assertion, the first once the set's Lifetime
+// is up, and a key id the set does not hold while the miss window is open or a read is under way.
+// It reads the header without verifying it, and nothing else, so it costs no round trip. It answers
+// true where it cannot read that header, so a caller that holds something across Verify only where
+// this answers false holds it across no read and no wait for one.
 func (v *IAPVerifier) WouldReadKeySet(raw string) bool {
 	signed, err := jose.ParseSignedCompact(stripSpaces(raw), keySetAlgorithms)
 	if err != nil || len(signed.Signatures) != 1 {

@@ -60,8 +60,9 @@ type IAPIdentity struct {
 // (admission.PlaceFrom: a document socket's admission, a heartbeat check) is needed for the
 // person's record alone. The verification reads no pool, and it may wait on IAP's key set -
 // oidc.Keys reads it for the first assertion, once the set's Lifetime is up, and for a key id the
-// set does not hold, a round trip of up to its FetchTimeout - so where the verifier says it will
-// read the set (oidc.IAPVerifier.WouldReadKeySet), Login gives the place back before it verifies,
+// set does not hold, or waits for another assertion's read of it under way, a round trip of up to
+// its FetchTimeout - so where the verifier says it will read the set or wait for a read of it
+// (oidc.IAPVerifier.WouldReadKeySet), Login gives the place back before it verifies,
 // as Membership.Confirm does before the sign-in issuer, and takes it again for the record
 // (retake), answered as a busy pool (store.ErrPoolBusy) where none comes free; a refusal then
 // returns with the place given back. Every other verification - the set already read and fresh,
