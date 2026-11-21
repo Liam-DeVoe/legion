@@ -20,8 +20,8 @@ import (
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
 // be given again, and an issue that started its work before Legion took plans takes none. A new
 // version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
-// upload that names none (envoy's PRECONDITION_REQUIRED), and a parked or done child takes a new
-// plan only after its rerun, since a version for its done or left task is refused TASK_DONE
+// upload that names none (envoy's PRECONDITION_REQUIRED), and a child out of the workflow takes a
+// new plan only after its rerun, since a version for its done or left task is refused TASK_DONE
 // (workflow.planGiven): the rerun, then stop_task, then register_plan. Each is held by its terms:
 // a term alone where the term is the rule (a code, an operation, a role), and otherwise the terms
 // of the clause that states the rule, in their order. Both architect compositions share that
@@ -99,8 +99,8 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"no notice", "200", "`stop_task`"},
 				// A new version of plan.md names the token of the text it replaces.
 				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
-				// A parked or done child takes a new plan after its rerun: stop, then give it.
-				{"parked or done child", "only after `rerun_child`", "`TASK_DONE`"},
+				// A child out of the workflow takes a new plan after its rerun: stop, then give it.
+				{"child out of the workflow", "only after `rerun_child`", "`TASK_DONE`"},
 				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
 			} {
 				if !clauseHolds(composed, terms...) {

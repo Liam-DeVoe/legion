@@ -32,7 +32,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
@@ -168,7 +168,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 	built := map[StatusRowKind]StatusWrite{
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusRow:       HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}
@@ -1106,7 +1106,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "plan-not-taken", Role: claim.RoleArchitect,
 			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
-			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."},
+			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+				StatusNotTakenYet + " " + EndChildRule},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
