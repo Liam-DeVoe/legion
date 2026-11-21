@@ -185,8 +185,6 @@ var attributeRemovalCase = carryCase{
 // the same words in other bytes, than the approved ones is a difference no case carries. It holds
 // for the restore's own write alone (decisionStepCases.restore): an agent's write that makes the
 // same change carries nothing by it.
-//
-// kept for one release: decisions-step
 var restoreCase = carryCase{
 	change: "the ask blocks its Decisions part holds again, which changed where they stand and not their words",
 	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
@@ -215,8 +213,6 @@ var restoreCase = carryCase{
 // nothing else; a heading A held stays in both. It holds for the
 // conversion's own write alone (decisionStepCases.conversion): an agent's upload that adds the
 // same `shaped` pointers to an answered ask supersedes the approval as any other change does.
-//
-// kept for one release: decisions-step
 var conversionCase = carryCase{
 	change: "the decisions its Decisions part holds in place of the pointer line to the issue's decisions document, " +
 		"and the spec nodes its answered asks shaped, which an approval of a spec does not cover",
@@ -243,8 +239,6 @@ var conversionCase = carryCase{
 // of the release before wrote as one after the approval, which the step's blocks replace. Where A
 // holds a `## Decisions` part, empty or not, its heading stays in both versions, so a write that
 // leaves N without the heading a person approved is a difference no case carries.
-//
-// kept for one release: decisions-step
 func (input carryInput) stepsOwnHeading() bool {
 	return !hasDecisionsPart(input.approved) && (input.steps.headingAdded || len(input.steps.pointerLines) > 0)
 }
@@ -260,12 +254,10 @@ var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, 
 // (shaped), whether it added the `## Decisions` heading to a document that held no such part
 // (headingAdded), and the markdown of each pointer line the write took out of the document's
 // `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
-// approved version. Only the step sets it, through a mark on its write's context no route can put
-// there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
-// (versionWrite.steps); every other version write leaves it zero, and its carry weighs the reading
-// case and the attribute-removal case alone.
-//
-// kept for one release: decisions-step
+// approved version. Only the decisions step of an earlier release set it, through a mark on its
+// write's context no route can put there, which SnapshotVersion carries on the version's write
+// (versionWrite.steps); this build sets no mark, so every version write leaves it zero, and its
+// carry weighs the reading case and the attribute-removal case alone.
 type decisionStepCases struct {
 	restore, conversion bool
 	restored, decisions map[string]bool
@@ -279,16 +271,9 @@ func (steps decisionStepCases) any() bool {
 	return steps.restore || steps.conversion
 }
 
-// decisionStepWriteKey marks a context as the decisions step's own write (withDecisionStepWrite).
+// decisionStepWriteKey marks a context as the decisions step's own write, which this build never
+// marks.
 type decisionStepWriteKey struct{}
-
-// withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names and
-// with what it added.
-//
-// kept for one release: decisions-step
-func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context.Context {
-	return context.WithValue(ctx, decisionStepWriteKey{}, steps)
-}
 
 // decisionStepCasesOf is the phases ctx's mark names, and what their write added, zero for a
 // context the step did not mark.
@@ -325,7 +310,7 @@ type carryInput struct {
 // the two of them (pointersLeft), however many paragraphs of A are that line; of N, none, since
 // the write left none of them there. A paragraph a person approved that the write did not take
 // out - one citing the decisions document among other words or citing a block of it, which the
-// restore keeps (isPointerLine), or a second copy of the pointer line - stays in A. The answer is
+// restore kept, or a second copy of the pointer line - stays in A. The answer is
 // a drop for one call of withoutDecisionsPartBlocks, which it walks in order.
 func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
 	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {

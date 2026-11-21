@@ -2,13 +2,11 @@ package docs
 
 import (
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // decisionsPartTitle is the title of a spec's `## Decisions` part, the part its decisions and its
@@ -272,43 +270,4 @@ func askBytes(node *pmdoc.Node) (string, error) {
 // paragraph.
 func blockMarkdown(node *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
-}
-
-// pointerLineLead is the words a spec's pointer line to its issue's decisions document holds
-// before the citation, case folded and its whitespace collapsed, and nothing else: none, `see`,
-// `see the decisions in` (or `at`, or with no `the`), or `the decisions are in` (or `live`, or
-// `at`, or with no `the`), as the release before's spec skill had an agent write the line ("The
-// decisions are in" and the decisions document's dispatch:// address), and `the decisions this
-// spec rests on are in`, the line the tests and the e2e seeds write for it. A paragraph whose
-// words before the citation say anything more, such as "The decisions the board rejected twice
-// are in", is a person's prose, which the step keeps.
-//
-// kept for one release: decisions-step
-var pointerLineLead = regexp.MustCompile(`^(see|see (the )?decisions (in|at)|(the )?decisions( this spec rests on)? (are|live) (in|at))?$`)
-
-// isPointerLine reports whether node is the pointer line of a spec's `## Decisions` part to the
-// issue's decisions document, one of documents by ref_key: a paragraph whose one content is the
-// citation of the document itself (a reference to one of its blocks is not one), read from the
-// paragraph's markdown as every reader of a citation reads it (text.Extract). That citation is the
-// paragraph's one reference and its last word, with nothing after it but a full stop and nothing
-// before it but a lead naming the decisions (pointerLineLead). Every other paragraph is a person's
-// prose, which the step keeps: one that cites the document among other words, or that cites a
-// section of it.
-func isPointerLine(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
-	if node.Type != "paragraph" || len(documents) == 0 {
-		return false
-	}
-	markdown, err := blockMarkdown(node)
-	if err != nil {
-		return false
-	}
-	cited := text.Extract(markdown, serverURL)
-	if len(cited) != 1 || cited[0].Kind != "artifact" || !documents[text.TargetID(cited[0])] {
-		return false
-	}
-	words := strings.Fields(strings.TrimSuffix(strings.TrimSpace(markdown), "."))
-	if len(words) == 0 || len(text.Extract(words[len(words)-1], serverURL)) != 1 {
-		return false
-	}
-	return pointerLineLead.MatchString(strings.ToLower(strings.Join(words[:len(words)-1], " ")))
 }

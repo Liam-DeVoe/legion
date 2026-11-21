@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -427,9 +428,9 @@ func (r *docsWriterRig) settledCarry() docsWriter {
 }
 
 // openMarkedApprovalRequest stores an open approval request by agent over version of document,
-// waiting on the person, as the approval route writes one, and states it on its node as the boot
-// step's backfill states a row written before the store (graphcensus.BackfillAsks), so the
-// request's row names its node and the carry's answer is stated there. It answers the request.
+// waiting on the person, as the approval route writes one, and states it on its node as the
+// backfill states a row written before the store (graphcensus.Backfill), so the request's row
+// names its node and the carry's answer is stated there. It answers the request.
 func (r *docsWriterRig) openMarkedApprovalRequest(t *testing.T, ctx context.Context, document, name string, agent model.Actor, version int) string {
 	t.Helper()
 	documents := []model.AskApprovalDocument{{ArtifactID: document, Name: name, Version: version, RequestedVersion: version}}
@@ -446,7 +447,7 @@ func (r *docsWriterRig) openMarkedApprovalRequest(t *testing.T, ctx context.Cont
 	`, coreIssue, agent.ID, ApprovalQuestion(documents, "Ships it."), approval).Scan(&request); err != nil {
 		t.Fatalf("store the approval request of %s: %v", name, err)
 	}
-	if _, err := graphcensus.BackfillAsks(ctx, r.database); err != nil {
+	if _, err := graphcensus.Backfill(ctx, r.database, io.Discard); err != nil {
 		t.Fatalf("state the approval request of %s on its node: %v", name, err)
 	}
 	return request

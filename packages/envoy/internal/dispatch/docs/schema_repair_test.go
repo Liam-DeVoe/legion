@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -163,12 +165,12 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 // q-kept alone, and one keeping q-kept is taken.
 func TestAnAgentsRepairIsRefusedOnlyForTheAnsweredAsksTheDocumentStillHeld(t *testing.T) {
 	const head = "# Spec\n\nThe corpus is written once.\n\n"
-	kept := removedRestoreAsk("q-kept", "Which build writes the corpus?")
-	issue := newRestoreIssue(t, head+removedRestoreAsk("q-gone", "Which store holds the corpus?")+kept)
-	issue.answer(issue.spec, "q-gone", "The database we run.")
-	issue.answer(issue.spec, "q-kept", "The base release.")
-	issue.replaceAsPerson(issue.spec, head+kept)
-	if removals := heldRemovalsOf(t, issue, blockAskOn(t, issue.service, issue.spec, "q-gone").ID); len(removals) != 1 || removals[0].ToID != "alice" {
+	kept := answerableAskBlock("q-kept", "Which build writes the corpus?")
+	issue := newSpecIssue(t, head+answerableAskBlock("q-gone", "Which store holds the corpus?")+kept)
+	issue.answer("q-gone", "The database we run.")
+	issue.answer("q-kept", "The base release.")
+	issue.replaceAsPerson(head + kept)
+	if removals := issue.removalsOf(blockAskOn(t, issue.service, issue.spec, "q-gone").ID); len(removals) != 1 || removals[0].ToID != "alice" {
 		t.Fatalf("alice's removal of q-gone left the removals %+v, want one to alice", removals)
 	}
 	writeSchemaInvalidElement(t, issue.service, issue.spec)
@@ -185,6 +187,113 @@ func TestAnAgentsRepairIsRefusedOnlyForTheAnsweredAsksTheDocumentStillHeld(t *te
 	if text, err := issue.service.Text(context.Background(), issue.spec); err != nil || !strings.Contains(text, "Repaired.") {
 		t.Fatalf("the repaired spec reads %q (%v), want the agent's repair", text, err)
 	}
+}
+
+// answerableAskBlock is an ask block of question under id, for a person to answer.
+func answerableAskBlock(id, question string) string {
+	return ":::ask{#" + id + " urgency=\"med\" multiple=\"false\"}\n" + question + "\n:::\n\n"
+}
+
+// specIssue is issue DOC-1 of a test database and its spec, written through the document service
+// and settled, so each ask block of the spec holds its ask.
+type specIssue struct {
+	t        *testing.T
+	database *store.Store
+	service  *Service
+	spec     string
+}
+
+// newSpecIssue creates project DOC, issue DOC-1 and its spec holding markdown as its version 1,
+// written by alice and indexed as an upload of a new document is, and settles it.
+func newSpecIssue(t *testing.T, markdown string) *specIssue {
+	t.Helper()
+	ctx := context.Background()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('DOC', 'Documents', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('DOC-1', 'DOC', 1, 'Document', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("create the issue: %v", err)
+	}
+	service := newTestServiceOn(t, database)
+	service.settle = time.Hour
+	var spec string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('DOC-1', 'DOC', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`).Scan(&spec); err != nil {
+		t.Fatalf("create the spec: %v", err)
+	}
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		written, err := service.SeedText(ctx, spec, markdown, model.Actor{Kind: "user", ID: "alice"})
+		if err != nil {
+			return err
+		}
+		tx, _ := txFromContext(ctx)
+		if _, err := tx.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
+		`, spec, written); err != nil {
+			return err
+		}
+		_, write, err := service.IndexDocumentReferences(ctx, spec, 1, written)
+		if err != nil {
+			return err
+		}
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
+	}); err != nil {
+		t.Fatalf("write the spec: %v", err)
+	}
+	settleCurrentGeneration(t, service, spec)
+	return &specIssue{t: t, database: database, service: service, spec: spec}
+}
+
+// replaceAsPerson writes markdown over the spec as alice, a person, with its version, whose facts
+// it appends with no event, and settles it. The upload names the token the spec stands at, read
+// before the write as a caller reads it.
+func (issue *specIssue) replaceAsPerson(markdown string) {
+	t := issue.t
+	t.Helper()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	base := liveDocumentToken(t, issue.service, issue.spec)
+	if err := joinedWrite(issue.service, func(ctx context.Context) error {
+		if _, err := issue.service.ReplaceText(ctx, issue.spec, markdown, alice, base); err != nil {
+			return err
+		}
+		written, err := issue.service.SnapshotVersion(ctx, issue.spec, alice)
+		if err != nil {
+			return err
+		}
+		tx, _ := txFromContext(ctx)
+		return causeInWritePhase(ctx, tx, written.Blocks, graphstore.NoEvent)
+	}); err != nil {
+		t.Fatalf("replace the spec: %v", err)
+	}
+	settleCurrentGeneration(t, issue.service, issue.spec)
+}
+
+// answer has alice answer the ask of the spec's block blockID in text.
+func (issue *specIssue) answer(blockID, text string) {
+	t := issue.t
+	t.Helper()
+	ask := blockAskOn(t, issue.service, issue.spec, blockID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	at := time.Now().UTC()
+	change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{}, Text: &text, At: at})
+	change.Who, change.At = alice, at
+	settleAskAs(t, issue.service, issue.spec, blockID, ask.ID, alice, change)
+}
+
+// removalsOf is every removed_by tuple of ask's node, in the order they were appended.
+func (issue *specIssue) removalsOf(ask string) []graphstore.Tuple {
+	issue.t.Helper()
+	held, err := graphstore.History(context.Background(), issue.database.Pool, graphstore.KindAsk, ask, graphstore.TupleRemovedBy)
+	if err != nil {
+		issue.t.Fatalf("read the removals of ask %s: %v", ask, err)
+	}
+	return held
 }
 
 // A repair's markdown is a whole new document, so every ask block it holds is held to the ask

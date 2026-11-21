@@ -168,13 +168,12 @@ var decisionProjections = []projection{
 
 // decisionBackfills are the backfill's passes over the asks and their followers
 // (dispatch://INFRA-1150, backfillPasses), after the object pass wrote the node of every ask
-// (backfillObjectNodes): the rest of the boot step's first phase (BackfillAsks), so a database the
-// command fills reads as one the boot fills.
+// (backfillObjectNodes), so every ask row the release before the store wrote is stated on its node.
 var decisionBackfills = []backfillPass{kindSoFar(backfillAsks), kindSoFar(backfillAskFollowers)}
 
 // kindSoFar is the backfillPass of a pass over one kind that reports what it did beside its
 // error when it fails: every batch of an asks or follower pass committed before a failure stays,
-// and the report says how far it got, as BackfillAsks does.
+// and the report says how far it got.
 func kindSoFar(write func(context.Context, *store.Store) (KindBackfill, error)) backfillPass {
 	return func(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 		done, err := write(ctx, database)

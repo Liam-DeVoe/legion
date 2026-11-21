@@ -34,13 +34,14 @@ import (
 // still holds. document and decisions are the members the release before answers, and they
 // answer from the store (R11, ruling F4): decisions is each decision node and each answered ask
 // in model.Decision's shape, in the order of entries, and document is the address of the issue's
-// decisions document while it stands (decisions_documents()), null once it is retired or where
+// decisions document while it stands (standingDecisionsDocument), null once it is retired or where
 // the issue holds none. A link of an entry's shaped and of a decision's links is one value
 // (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
 // after the tie and the spec node has not changed since they did, which the page of the release
 // before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
 // entries and open_questions stay. document and decisions go once no page of the release before
-// reads them (compat-objects).
+// reads them (compat-objects): the route and those members stay until every caller reads the
+// tree read's `?view=decisions` instead.
 type issueDecisions struct {
 	Entries []decisionEntry `json:"entries"`
 	// kept for one release: compat-objects
@@ -87,9 +88,11 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 }
 
 // standingDecisionsDocument is the dispatch:// address of issue key's decisions document while it
-// stands (decisions_documents()), and nil once it is retired or where the issue holds none: the
-// Decisions read's old `document` member. Nothing reads
-// the document's text.
+// stands, and nil once it is retired or where the issue holds none: the Decisions read's old
+// `document` member. It reads through refs.DecisionsDocumentOf, which reads the rule
+// refs.DecisionsDocumentSQL writes rather than the function decisions_documents(), which the
+// boot's retirement drops once that function answers no document. Nothing reads the document's
+// text.
 //
 // kept for one release: compat-objects
 func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*string, error) {
@@ -757,15 +760,13 @@ type keepDecisionInput struct {
 // keepDecision is POST /api/v1/artifacts/{id}/blocks/{block_id}/keep {"text_sha256": "<sum>"}:
 // the caller agrees with a decision, as the text they read it at. The block is an agent's
 // decision, a `decision` block of any document of the issue, whose node the Keep acts on
-// (keepDecisionNode); or, until the decisions step retires it, the heading block a section of the
-// issue's decisions document opens with, kept on the decision_keeps row alone, which the
-// conversion carries onto the section's decision node. The
-// sum is the `text_sha256` the read served them, and a decision whose text has changed since is
-// 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
-// exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
-// block - one that is neither, a heading of a retired decisions document, or a decision marked
-// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route is the `person`
-// scope's (routeScopes): a Keep is a person's.
+// (keepDecisionNode). The sum is the `text_sha256` the read served them, and a decision whose text
+// has changed since is 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is
+// the one thing Keep exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was
+// given on. Any other block - one that holds no decision node, a heading of a decisions document
+// an earlier release stored among them, or a decision marked replaced, which is no longer the
+// design - is 404 TARGET_NOT_FOUND. The route is the `person` scope's (routeScopes): a Keep is a
+// person's.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -787,7 +788,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockID := r.PathValue("block_id")
-	decision, onNode, err := s.keptDecision(r.Context(), actor, document, blockID)
+	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -803,13 +804,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var keep model.DecisionKeep
-	var event model.Event
-	if onNode {
-		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
-	} else {
-		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
-	}
+	keep, event, err := s.keepDecisionNode(r.Context(), tx, actor, document, decision)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -820,55 +815,6 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, keep)
-}
-
-// keepDecisionHeading is the Keep of decision, a section of the issue's decisions document opened
-// by its heading block, in tx: the decision_keeps row of that block, which no node projects, and
-// the decision.kept that records it. It takes the issue's owner row first, as keepDecisionNode does
-// and as the decisions step takes it for the whole of its write of the issue, and reads the
-// heading's section again under it, as keptDecision read it (docs' DecisionHeading): a Keep that
-// waited behind the step's conversion of the section, or of the whole document and its
-// retirement, would otherwise write its row on a heading the step carried onto no node, and
-// answer 200. Such a Keep - the heading opening no section of a decisions document that stands -
-// is 404 TARGET_NOT_FOUND, with nothing written, as a Keep of a heading of a retired document is
-// too; one whose section's text changed while it waited is 409
-// DECISION_CHANGED, as keepDecision answers one posted over text that changed before.
-// kept for one release: heading-keep
-func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
-	own := issueOwner(*document.IssueKey)
-	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	heading, found, err := s.deps.Docs.DecisionHeading(ctx, tx, document.ID, decision.BlockID)
-	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	if !found {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
-	}
-	if heading.TextSHA256 != decision.TextSHA256 {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusConflict, "DECISION_CHANGED",
-			"the decision changed since it was read; read it again and keep what it says now")
-	}
-	keep := model.DecisionKeep{ArtifactID: document.ID}
-	if err := tx.QueryRow(ctx, `
-		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
-		values ($1::uuid, $2, $3, $4, $5)
-		on conflict (artifact_id, block_id) do update
-			set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
-				kept_by = excluded.kept_by, kept_at = now()
-		returning block_id, text_sha256, changed_version, kept_by, kept_at
-	`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion,
-		model.CanonicalLogin(actor.ID)).
-		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	event, err := s.appendEvent(ctx, tx, own.event("decision.kept", actor, map[string]any{
-		"artifact_id":     document.ID,
-		"block_id":        decision.BlockID,
-		"changed_version": keep.ChangedVersion,
-	}))
-	return keep, event, err
 }
 
 // keepDecisionNode is the Keep of decision, an agent's decision node of document (readDecisionNode),
@@ -890,7 +836,7 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // keepDecision read decision on the pool, holding no lock, and an agent's write of the document
 // takes the same owner lock: one that committed while the Keep waited for it would leave the Keep
 // recording a sum the decision no longer has, or keeping a decision now replaced. So the decision
-// is read again under the lock, as keepDecisionHeading reads its section: one the store no longer
+// is read again under the lock: one the store no longer
 // holds, or holds replaced, is 404 TARGET_NOT_FOUND, and one whose text sum is no longer the one
 // it was read at is 409 DECISION_CHANGED, each with nothing written.
 func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
@@ -968,39 +914,22 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	return keep, event, nil
 }
 
-// keptDecision is the decision Keep acts on at blockID of document, and whether it is a node's:
-// an agent's decision node of a document of the issue (readDecisionNode), else the section a
-// heading block of the issue's decisions document opens while that document stands, read through
-// the decisions step's section reader (docs' DecisionHeading over decisions_documents()).
-// A decision marked replaced, a heading under `## Replaced`
-// among them, and a heading of a retired decisions document are no decision Keep acts on.
-func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, bool, error) {
+// keptDecision is the decision Keep acts on at blockID of document: an agent's decision node of a
+// document of the issue (readDecisionNode). A decision marked replaced is none, and neither is any
+// block that holds no decision node.
+func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, error) {
 	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
-		return model.Decision{}, false, notFound
+		return model.Decision{}, notFound
 	}
 	node, found, err := s.readDecisionNode(ctx, s.deps.Store.Pool, who, document, blockID)
 	if err != nil {
-		return model.Decision{}, false, err
+		return model.Decision{}, err
 	}
-	if found {
-		if node.Replaced {
-			return model.Decision{}, false, notFound
-		}
-		return node, true, nil
+	if !found || node.Replaced {
+		return model.Decision{}, notFound
 	}
-	// kept for one release: heading-keep
-	heading, found, err := s.deps.Docs.DecisionHeading(ctx, s.deps.Store.Pool, document.ID, blockID)
-	if err != nil {
-		return model.Decision{}, false, err
-	}
-	if !found {
-		return model.Decision{}, false, notFound
-	}
-	return model.Decision{
-		BlockID: blockID, Text: heading.Text, TextSHA256: heading.TextSHA256,
-		ChangedVersion: heading.ChangedVersion, Kind: "agent",
-	}, false, nil
+	return node, nil
 }
 
 // decisionNodeAddress is the address of the node of block blockID of document, as the block
