@@ -1237,12 +1237,21 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // an issue GitHub failed for before another issue's preparation got GitHub's answer in the same
 // pass, or an event that fell silent meanwhile. That issue is in the next pass's scope, which
 // readAnswered's request runs at once.
+//
+// The listing is read before GitHub answers for a repository still unread as the pass takes its
+// set, so the pass records none of its unrecorded issues there: it reads GitHub for them and leaves
+// them to the next pass, whose listing is read after the answer (deferUnreadIssues).
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
 	maps.Copy(repos, w.recovering)
+	// unread is each repository GitHub has not answered for as the pass takes its set: the pass
+	// lists Dispatch before any answer for it, so the resolution its listing shows may be one
+	// Dispatch no longer gives once GitHub answers (deferUnreadIssues).
+	unread := make(map[string]bool, len(w.unread))
 	for repo := range w.unread {
 		repos[repo] = true
+		unread[repo] = true
 	}
 	taken := make(map[string]map[string]bool, len(repos))
 	silenced := map[string]bool{}
@@ -1278,14 +1287,30 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	// keep is asked of every summary of the listing, against every record, which is where the
 	// records that say unrecorded are read.
 	todo := map[string]bool{}
+	// deferred is each issue of the listing that the pass reads GitHub for and does not record:
+	// unrecorded, in scope, one admission would record (admissionBound), and resolved to a
+	// repository still unread as the pass took its set. An issue admission would not record reads
+	// GitHub for nothing (prepareUnrecorded), so it is reconciled as before: noted silent, it would
+	// keep its repository listed for ever, since nothing would ever record it.
+	var deferred []dispatch.IssueSummary
 	if err == nil {
 		scope := recoveredOn(repos, silenced, issues)
 		err = w.reconcileListing(attempt, issues, func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
 			if records[summary.Key] == nil && admissionBound(intake.ListedIssue(summary)) {
 				todo[strings.ToLower(summary.ResolvedRepo)] = true
 			}
-			return scope(records, summary)
+			if !scope(records, summary) {
+				return false
+			}
+			if records[summary.Key] == nil && admissionBound(intake.ListedIssue(summary)) && unread[strings.ToLower(summary.ResolvedRepo)] {
+				deferred = append(deferred, summary)
+				return false
+			}
+			return true
 		}, false)
+	}
+	if err == nil {
+		w.deferUnreadIssues(attempt, deferred)
 	}
 	if err != nil {
 		w.putBackSilenced(taken)
@@ -1363,6 +1388,29 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Unlock()
 	if len(answered) != 0 {
 		w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again", "repositories", answered)
+	}
+}
+
+// deferUnreadIssues reads GitHub for the repository each of issues resolves to and records none of
+// them: each is an unrecorded issue of a recovery's listing whose repository GitHub had not
+// answered for when the pass took its set (recoverRepositories), so the listing was read before any
+// answer, and the resolution it shows is Dispatch's from before GitHub answered. The preparation
+// is still this pass's, since it is what reads GitHub for such a repository (prepareRead): an
+// answer moves the repository to the repositories to recover and wakes the next pass
+// (readAnswered), and a failure leaves it unread for the refresher's backoff (leaveUnread). Each
+// issue is noted silent for the repository its listing showed (noteUnread), so it stays in the
+// scope of the pass after this one (recoveredOn), whose listing is read after the answer and takes
+// the issue wherever Dispatch resolves it then; and since something fell silent for the
+// repository, this pass does not count it recovered (settleRecovery). Before, this pass recorded
+// the issue on the repository its listing showed when its own preparation got GitHub's answer,
+// though Dispatch might resolve the issue elsewhere by then, with no event of the issue to say so.
+func (w *workflowRuntime) deferUnreadIssues(ctx context.Context, issues []dispatch.IssueSummary) {
+	for _, summary := range issues {
+		if _, err := w.prepareUnrecorded(ctx, intake.ListedIssue(summary), false); err != nil {
+			w.log.Warn("workflow: the recovery did not read GitHub for the repository an unrecorded issue names; the next pass reads it again",
+				"issue", summary.Key, "repo", summary.ResolvedRepo, "error", err)
+		}
+		w.noteUnread(summary.Key, summary.ResolvedRepo)
 	}
 }
 

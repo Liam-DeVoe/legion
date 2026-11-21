@@ -1291,6 +1291,82 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	}
 }
 
+// A recovery that lists Dispatch while GitHub has not answered for zeta/tools, the repository the
+// listing resolves a labelled todo root to, and whose own preparation then gets GitHub's answer,
+// records nothing from that listing: Dispatch resolves the issue to acme/widgets by then, with no
+// event of the issue to say so, and the pass after the answer reads that resolution and records the
+// issue there. Here the pass is held right after its listing is read, the issue moves and GitHub
+// answers while it is held, and the pass then runs on. Before, the held pass recorded the issue on
+// zeta/tools, where its listing, read before the answer, showed it: the interleaving
+// TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen met about once in five.
+func TestARecoveryListedBeforeGitHubAnswersRecordsTheIssueWhereItResolvesAfter(t *testing.T) {
+	quickInstallReads(t)
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	const key = "LEGION-1510"
+	listing := &heldListing{key: key, repo: "zeta/tools", held: make(chan struct{}), release: make(chan struct{})}
+	w, client, installs, _ := repositoryRigWith(t, installs, func(w *workflowRuntime) {
+		listing.repositoryDispatch = w.dispatch.(*repositoryDispatch)
+		w.dispatch = listing
+	})
+	release := sync.OnceFunc(func() { close(listing.release) })
+	t.Cleanup(release)
+	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
+	if recordedIssue(t, w, key) != nil {
+		t.Fatalf("%s recorded while zeta/tools' read fails", key)
+	}
+	listing.armed.Store(true)
+	select {
+	case <-listing.held:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("no recovery listed %s on zeta/tools while GitHub failed for it", key)
+	}
+	// The project's default moves to acme/widgets, and GitHub answers for zeta/tools, both after
+	// the held pass read its listing and before its preparation reads GitHub.
+	client.show(issue(key, "acme/widgets", "todo", true, "", 1))
+	installs.setFailing(nil, "implement zeta/tools")
+	release()
+	var got *record.Issue
+	testwait.Eventually(t, key+" recorded once GitHub answers for zeta/tools", func() bool {
+		got = recordedIssue(t, w, key)
+		return got != nil
+	})
+	if got.Repo != "acme/widgets" {
+		t.Fatalf("%s recorded on %s, want it on acme/widgets, where Dispatch resolves it once GitHub answers, and never on zeta/tools, where the listing read before the answer showed it", key, got.Repo)
+	}
+	testwait.Eventually(t, "zeta/tools recorded on and recovered", func() bool {
+		return recordsOn(w, "zeta/tools") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	})
+}
+
+// heldListing is the rig's Dispatch with one project listing held: once armed, the next listing
+// that shows key resolved to repo is read, held is closed, and the listing is handed to the
+// recovery that asked for it only once release is closed (or that recovery's attempt ends). Every
+// other listing passes as the rig's own does, and only a test that wraps the rig's Dispatch in one
+// holds any.
+type heldListing struct {
+	*repositoryDispatch
+	key, repo     string
+	armed         atomic.Bool
+	held, release chan struct{}
+}
+
+func (d *heldListing) ListIssues(ctx context.Context, project string, statuses []string) ([]dispatch.IssueSummary, error) {
+	issues, err := d.repositoryDispatch.ListIssues(ctx, project, statuses)
+	shows := slices.ContainsFunc(issues, func(summary dispatch.IssueSummary) bool {
+		return summary.Key == d.key && summary.ResolvedRepo == d.repo
+	})
+	if err != nil || !shows || !d.armed.CompareAndSwap(true, false) {
+		return issues, err
+	}
+	close(d.held)
+	select {
+	case <-d.release:
+	case <-ctx.Done():
+	}
+	return issues, nil
+}
+
 // A repository's recovery tells the architect that owns each child's parent, else the tree root's
 // architect, once, which children a release_children left for the repository the recovery still
 // did not record, with what to release: here C, todo under a backlog parent P, which the recovery
