@@ -1,8 +1,9 @@
 //go:build e2e
 
-// The rig of dispatch://INFRA-4425's checks K2, K3 and K4: every Dispatch client a Legion
-// deployment runs, writing with a credential the secrets broker issued, against a real broker, a
-// real Dispatch and the real clients. scripts/e2e/dispatch-broker.sh runs it.
+// The rig of dispatch://INFRA-4425's checks K2, K3 and K4, and of dispatch://INFRA-4799's C2:
+// every Dispatch client a Legion deployment runs, writing with a credential the secrets broker
+// issued, and a tool's reads through `dispatch proxy`, against a real broker, a real Dispatch and
+// the real clients. scripts/e2e/dispatch-broker.sh runs it.
 //
 // Nothing of the credential path is stood in for. The broker is packages/envoy's own
 // (ciphertest.NewRig, its real handlers on a real Postgres), with the exchange accounts that rig
@@ -34,7 +35,8 @@
 // with the rig's values, so the rig and the launch cannot drift apart. The `dispatch` command is
 // packages/envoy-client/bin/dispatch.ts under bun in that environment, and the long-lived clients
 // are scripts/e2e/dispatch-broker-clients.ts: one process holding the client the `dispatch`
-// command builds and the client the pi-envoy plugin builds.
+// command builds and the client the pi-envoy plugin builds. C2's tool is a Python standard-library
+// client the test writes (proxyClient), which `dispatch proxy` runs as its command.
 //
 // Each test writes its tables to TMPDIR and logs the file's path.
 package daemon
@@ -67,6 +69,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,6 +88,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // The rig's two projects: P, which every account of the rig's exchange names but one, and Q, the
@@ -1084,6 +1088,20 @@ func (p *rigReport) quote(text string) {
 	fmt.Fprintf(&p.text, "```\n%s\n```\n\n", strings.TrimRight(text, "\n"))
 }
 
+// table adds a table under heading: its columns, then one row for each of rows, each cell
+// escaped as writes escapes one.
+func (p *rigReport) table(heading string, columns []string, rows [][]string) {
+	fmt.Fprintf(&p.text, "## %s\n\n| %s |\n|%s\n", heading, strings.Join(columns, " | "), strings.Repeat(" --- |", len(columns)))
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, cell := range row {
+			cells[i] = strings.ReplaceAll(strings.ReplaceAll(cell, "|", `\|`), "\n", " ")
+		}
+		fmt.Fprintf(&p.text, "| %s |\n", strings.Join(cells, " | "))
+	}
+	p.text.WriteString("\n")
+}
+
 // writes adds a table of writes under heading: one row for each request, beside the write that
 // made it; a write that sent nothing is one row naming no route. start, when it is not the zero
 // time, adds the column of each write's time since it.
@@ -1924,6 +1942,464 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	}
 	if len(scoped.records) != 1 || scoped.records[0].Status != http.StatusForbidden || scoped.records[0].Code != "SESSION_SCOPE" {
 		t.Errorf("a token of the session %s uploading to the conversation of %s = %s, the proxy recorded %+v; want 403 SESSION_SCOPE", other.session, role.session, scoped.outcome, scoped.records)
+	}
+}
+
+// proxyLifetime is how long an access token of C2's broker lives: L in C2's bound.
+const proxyLifetime = 420 * time.Second
+
+// proxyRenewBefore is how long before its token's expiry the proxy's one client trades again:
+// DEFAULT_RENEW_BEFORE_MS of packages/cipher-client/src/token-client.ts, the rule
+// dispatch://INFRA-4799's R4 holds the proxy to. Each token serves the proxy for proxyLifetime
+// less this, 120 s, which is one renewal period.
+const proxyRenewBefore = 300 * time.Second
+
+// proxyReads is how long C2's client reads, from its own start: more than two renewal periods, so
+// the run outlives the token the proxy traded first and the token it renewed that one with.
+const proxyReads = 255 * time.Second
+
+// proxyPace is the least time between the starts of two requests of C2's client: in proxyReads
+// it sends at most 2,550, so it makes the 2,000 C2 asks for while the proxy and Dispatch answer
+// each request within 127 ms.
+const proxyPace = 100 * time.Millisecond
+
+// proxyExitPattern is the last line `dispatch proxy` writes on standard error (proxyExitLine in
+// packages/envoy-client/src/dispatch-proxy-command.ts): the requests it sent to Dispatch, the
+// trades that gave it a token, and those of them that followed a BROKER_TOKEN_NOT_ACTIVE answer.
+var proxyExitPattern = regexp.MustCompile(`^dispatch proxy: (\d+) requests, (\d+) trades, (\d+) after BROKER_TOKEN_NOT_ACTIVE$`)
+
+// proxyClient is the tool C2 runs under `dispatch proxy`: a Python script of the standard library
+// alone, as INFRA-4430's tools are, whose one connection is the proxy's unix socket. It reads its
+// orders from input.json beside it and writes what it was answered to output.json beside it
+// (proxyClientRun). The routes and bodies are Dispatch's own: GET /api/v1/issues pages with limit
+// and offset and answers {issues, total, limit, offset} (issue_page.go, parseIssuePage); GET
+// /api/v1/issues/{key}/events pages with after and limit and answers an array of events, each
+// with its seq (events.go, parseEventListOptions); GET /api/v1/artifacts/{id}/versions/{number}
+// answers a file's version as its bytes (artifacts.go, getArtifactVersion); and POST
+// /api/v1/issues/{key}/comments takes {body}, whose actor the session a broker token proves
+// decides (server.go, bearerSessionActor), and answers a repeat under its Idempotency-Key with the
+// first answer and Idempotency-Replayed: ?1 (request_keys.go).
+const proxyClient = `# The tool run of TestTheProxyServesAToolRunWithOneTradeForEachRenewal
+# (packages/daemon/internal/daemon/dispatch_broker_live_test.go), the command dispatch proxy runs.
+# It holds no credential and imports nothing past Python's standard library: its one connection
+# is an http.client.HTTPConnection whose connect opens an AF_UNIX socket at DISPATCH_PROXY_SOCKET,
+# as dispatch proxy --help shows a tool doing.
+#
+# It reads its orders from input.json beside it and writes what it was answered to output.json
+# beside it. In order: one read of a file's version 1, whose bytes it hashes; one comment POST,
+# sent twice under one Idempotency-Key; then pages of GET /api/v1/issues?project=<project> and of
+# GET /api/v1/issues/<key>/events for each issue those pages list, over and over, until the
+# orders' seconds have passed since its start. It starts at most one request each pace seconds.
+# A request the socket fails is written with status 0 and its error, and is not sent again.
+import hashlib
+import http.client
+import json
+import os
+import socket
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+class ProxyConnection(http.client.HTTPConnection):
+    """A connection to the proxy's unix socket. The host it names is not read: the proxy sends
+    each request to the Dispatch server a dispatch command resolves."""
+
+    def __init__(self):
+        super().__init__("dispatch", timeout=120)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(os.environ["DISPATCH_PROXY_SOCKET"])
+
+
+def main():
+    with open(os.path.join(HERE, "input.json")) as orders_file:
+        orders = json.load(orders_file)
+    connection = ProxyConnection()
+    started = time.monotonic()
+    deadline = started + orders["seconds"]
+    out = {"answers": [], "version": None, "comments": [], "error": None}
+
+    def send(method, path, body=None, headers=None):
+        """Sends one request in its turn, and answers its status, its answer and its body."""
+        wait = started + len(out["answers"]) * orders["pace"] - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            answer = connection.getresponse()
+            data = answer.read()
+        except (OSError, http.client.HTTPException) as error:
+            connection.close()
+            out["answers"].append({"method": method, "path": path, "status": 0, "error": repr(error)})
+            return 0, None, b""
+        out["answers"].append({"method": method, "path": path, "status": answer.status})
+        return answer.status, answer, data
+
+    try:
+        status, answer, data = send("GET", "/api/v1/artifacts/%s/versions/1" % orders["artifact"])
+        out["version"] = {
+            "status": status,
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "content_type": answer.getheader("Content-Type") if answer else None,
+        }
+        comment = json.dumps({"body": orders["comment"]}).encode()
+        for _ in range(2):
+            status, answer, data = send(
+                "POST",
+                "/api/v1/issues/%s/comments" % orders["issue"],
+                body=comment,
+                headers={"Content-Type": "application/json", "Idempotency-Key": orders["key"]},
+            )
+            out["comments"].append({
+                "status": status,
+                "replayed": answer.getheader("Idempotency-Replayed") if answer else None,
+                "id": json.loads(data).get("id") if status == 201 else None,
+            })
+        while time.monotonic() < deadline:
+            keys = []
+            offset = 0
+            while time.monotonic() < deadline:
+                status, _, data = send(
+                    "GET",
+                    "/api/v1/issues?project=%s&limit=%d&offset=%d" % (orders["project"], orders["issue_page"], offset),
+                )
+                if status != 200:
+                    break
+                page = json.loads(data)
+                keys.extend(issue["key"] for issue in page["issues"])
+                offset += len(page["issues"])
+                if not page["issues"] or offset >= page["total"]:
+                    break
+            for key in keys:
+                after = 0
+                while time.monotonic() < deadline:
+                    status, _, data = send(
+                        "GET", "/api/v1/issues/%s/events?after=%d&limit=%d" % (key, after, orders["event_page"])
+                    )
+                    if status != 200:
+                        break
+                    events = json.loads(data)
+                    if events:
+                        after = events[-1]["seq"]
+                    if len(events) < orders["event_page"]:
+                        break
+    except Exception as error:
+        out["error"] = repr(error)
+    out["seconds"] = time.monotonic() - started
+    with open(os.path.join(HERE, "output.json"), "w") as written:
+        json.dump(out, written)
+    return 1 if out["error"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+`
+
+// proxyClientRun is what proxyClient wrote to output.json: each request it sent with the status
+// it was answered (0, with the error, for one the socket failed), the file's version it read, its
+// two comment POSTs, how long it ran, and the exception that ended it early, if one did.
+type proxyClientRun struct {
+	Answers []struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Status int    `json:"status"`
+		Error  string `json:"error"`
+	} `json:"answers"`
+	Version struct {
+		Status      int    `json:"status"`
+		Bytes       int    `json:"bytes"`
+		SHA256      string `json:"sha256"`
+		ContentType string `json:"content_type"`
+	} `json:"version"`
+	Comments []struct {
+		Status   int    `json:"status"`
+		Replayed string `json:"replayed"`
+		ID       string `json:"id"`
+	} `json:"comments"`
+	Seconds float64 `json:"seconds"`
+	Error   string  `json:"error"`
+}
+
+// TestTheProxyServesAToolRunWithOneTradeForEachRenewal is dispatch://INFRA-4799's C2. With the
+// broker's access tokens living 420 s, `dispatch proxy` runs in a role's environment of P with
+// proxyClient as its command, which reaches Dispatch through the proxy's unix socket alone. The
+// client reads back 64 KiB of random bytes the role uploaded to P's issue as a file, at GET
+// /api/v1/artifacts/<id>/versions/1; posts one comment on that issue twice under one
+// Idempotency-Key; and for 255 s, more than two renewal periods of that lifetime, reads pages of
+// P's issues and of each issue's events, the reads INFRA-4430's work-cost makes, starting one
+// request each 100 ms at most. The result is a table: T, the proxy run's wall time; L, the
+// lifetime; the proxy's exit line; the client's requests and their answers; the requests the
+// recording proxy holds of the role's session from the mark on; and each token presented from the
+// mark on, by its digest, with its session, when it was first and last presented and when it
+// expired. It prints no token.
+//
+// Controls: the run exits 0; every read answers 200 and the client makes at least 2,000
+// requests; the bytes read back hash as the bytes uploaded; both comment POSTs answer 201, the
+// second replayed (Idempotency-Replayed: ?1), and the issue holds the comment once; the distinct
+// tokens the role's session presented from the mark on, m′, are at least 2, so the proxy renewed,
+// and at most 1 + T / (L - 300 s), so it traded once for each renewal and never once for each
+// request, and each was presented only before its own expiry; and the exit line's m is m′, its n
+// the requests the recording proxy holds of that session from the mark on, and its r 0. The same
+// proxy in the role's environment without dispatch_token_broker, where DISPATCH_TOKEN_FILE stands
+// in place of DISPATCH_TOKEN_BROKER, exits 2 naming DISPATCH_TOKEN_BROKER, runs no command (touch
+// <marker>), and sends Dispatch nothing.
+//
+// It takes about five minutes past the rig's start, so it runs only when LEGION_E2E_PROXY=1.
+func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
+	if os.Getenv("LEGION_E2E_PROXY") != "1" {
+		t.Skip("LEGION_E2E_PROXY is not 1: this check reads through the proxy for more than two renewal periods of a 420 s token, about five minutes, so it runs only when that variable asks for it")
+	}
+	r := newDispatchBrokerRig(t, proxyLifetime)
+	role := r.registeredRole("proxy")
+	env := r.environment(role, "")
+	// The pages the client reads: P's two issues and 30 more, so a listing of P takes four pages.
+	for i := range 30 {
+		r.createIssue(rigP, fmt.Sprintf("Issue %d of the pages the proxy's client reads", i+1), "")
+	}
+
+	// The file the client reads back: 64 KiB of random bytes the role uploads itself, stored as
+	// its bytes, since its name does not end in .md.
+	uploaded := make([]byte, 64<<10)
+	if _, err := rand.Read(uploaded); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(r.dir, "rig-proxy.bin")
+	if err := os.WriteFile(file, uploaded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if upload := r.command(role, env, "artifact", "--issue", r.pIssue, "--name", "rig-proxy.bin", "--path", file); upload.code != 0 {
+		t.Fatalf("dispatch artifact of rig-proxy.bin in the role's environment = %s, want the file uploaded", upload.outcome())
+	}
+	artifact := r.artifacts(r.pIssue)["rig-proxy.bin"]
+	if artifact == "" {
+		t.Fatalf("%s holds no artifact named rig-proxy.bin after its upload", r.pIssue)
+	}
+	sum := sha256.Sum256(uploaded)
+	uploadedSHA := hex.EncodeToString(sum[:])
+
+	// The client and its orders, in a directory of their own, where it writes what it was answered.
+	clientDir := filepath.Join(r.dir, "proxy-client")
+	if err := os.MkdirAll(clientDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client := filepath.Join(clientDir, "client.py")
+	if err := os.WriteFile(client, []byte(proxyClient), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := "rig-proxy-" + uuid.NewString()
+	comment := "The proxy run's one comment, posted twice under the Idempotency-Key " + key + "."
+	orders, err := json.Marshal(map[string]any{
+		"project": rigP, "issue": r.pIssue, "artifact": artifact, "comment": comment, "key": key,
+		"seconds": proxyReads.Seconds(), "pace": proxyPace.Seconds(), "issue_page": 10, "event_page": 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clientDir, "input.json"), orders, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mark := r.proxy.count()
+	start := time.Now()
+	run := r.command(role, env, "proxy", "--socket", testtmp.Socket(t, "d.sock"), "--", "python3", client)
+	wall := time.Since(start)
+	after := r.proxy.since(mark)
+
+	var got proxyClientRun
+	if written, err := os.ReadFile(filepath.Join(clientDir, "output.json")); err != nil {
+		t.Errorf("the client wrote no output.json (%v); the proxy run = %s", err, run.outcome())
+	} else if err := json.Unmarshal(written, &got); err != nil {
+		t.Errorf("decode the client's output.json: %v", err)
+	}
+
+	// Each token presented from the mark on, in the order it was first presented, read back at the
+	// broker's introspection now, while it is still live: the first was traded as the run began,
+	// T ago, and lives L. sessionTokens are those of the role's session, whose requests are the
+	// ones they carried.
+	var tokens, sessionTokens []string
+	presented := map[string][]proxyRecord{}
+	for _, record := range after {
+		if record.Scheme != "DPoP" {
+			continue
+		}
+		if presented[record.Token] == nil {
+			tokens = append(tokens, record.Token)
+		}
+		presented[record.Token] = append(presented[record.Token], record)
+	}
+	requestsOfSession := 0
+	for _, digest := range tokens {
+		if r.introspect(digest).Session == role.session {
+			sessionTokens = append(sessionTokens, digest)
+			requestsOfSession += len(presented[digest])
+		}
+	}
+	bound := 1 + wall.Seconds()/(proxyLifetime-proxyRenewBefore).Seconds()
+
+	stderrLines := strings.Split(strings.TrimRight(run.stderr, "\n"), "\n")
+	exitLine := stderrLines[len(stderrLines)-1]
+	exit := proxyExitPattern.FindStringSubmatch(exitLine)
+	var requests, trades, renewed int
+	if exit != nil {
+		requests, _ = strconv.Atoi(exit[1])
+		trades, _ = strconv.Atoi(exit[2])
+		renewed, _ = strconv.Atoi(exit[3])
+	}
+
+	reads := 0
+	var unread []string
+	for _, answer := range got.Answers {
+		if answer.Method != http.MethodGet {
+			continue
+		}
+		reads++
+		if answer.Status != http.StatusOK {
+			unread = append(unread, strings.TrimSpace(fmt.Sprintf("GET %s = %d %s", answer.Path, answer.Status, answer.Error)))
+		}
+	}
+	posts := make([]string, len(got.Comments))
+	for i, post := range got.Comments {
+		replayed := post.Replayed
+		if replayed == "" {
+			replayed = "absent"
+		}
+		posts[i] = fmt.Sprintf("%d with Idempotency-Replayed %s, comment %s", post.Status, replayed, post.ID)
+	}
+	var onIssue []struct {
+		Body string `json:"body"`
+	}
+	r.call(http.MethodGet, "/api/v1/issues/"+r.pIssue+"/comments", false, nil, http.StatusOK, &onIssue)
+	held := 0
+	for _, each := range onIssue {
+		if strings.TrimSpace(each.Body) == comment {
+			held++
+		}
+	}
+
+	// The control: the same proxy in the role's environment without the setting, with a command
+	// that leaves a marker behind if it runs at all.
+	shared := r.file("dispatch-shared-token", r.dispatch.token)
+	marker := filepath.Join(r.dir, "proxy-control-ran")
+	controlMark := r.proxy.count()
+	control := r.command(role, r.environment(role, shared), "proxy", "--socket", testtmp.Socket(t, "d.sock"), "--", "touch", marker)
+	controlRecords := r.proxy.since(controlMark)
+	_, markerErr := os.Stat(marker)
+	controlRan := !errors.Is(markerErr, os.ErrNotExist)
+
+	report := r.report("C2: a tool run's reads through dispatch proxy, with one trade for each renewal")
+	report.say("`dispatch proxy` ran in the environment of the role %s, a registered session of an ExchangeRolesAccount pod of %s, with `python3 %s` as its command (proxyClient): a Python standard-library client that reaches Dispatch over the proxy's unix socket alone. The broker's access tokens live %.0f s, and the proxy's one client trades again once its token has less than %.0f s to live. The client read back rig-proxy.bin, a file of %d random bytes the role uploaded to %s, posted one comment on %s twice under one Idempotency-Key, and for %.0f s read pages of %s's issues and of each issue's events, starting one request each %d ms at most.",
+		role.session, rigP, client, proxyLifetime.Seconds(), proxyRenewBefore.Seconds(), len(uploaded), r.pIssue, r.pIssue, proxyReads.Seconds(), rigP, proxyPace.Milliseconds())
+	exitCell := exitLine
+	if exit == nil {
+		exitCell = "none: the last line on standard error is " + strconv.Quote(exitLine)
+	}
+	stopped := got.Error
+	if stopped == "" {
+		stopped = "none"
+	}
+	report.table("The run", []string{"quantity", "value"}, [][]string{
+		{"T, the proxy run's wall time", fmt.Sprintf("%.1f s", wall.Seconds())},
+		{"L, an access token's lifetime", fmt.Sprintf("%.0f s", proxyLifetime.Seconds())},
+		{"1 + T / (L - 300 s), the most trades the run may make", fmt.Sprintf("%.2f", bound)},
+		{"the proxy's exit status", strconv.Itoa(run.code)},
+		{"the proxy's exit line", exitCell},
+		{"the client's requests", fmt.Sprintf("%d in %.1f s: %d reads, %d of them answered 200, and %d comment POSTs", len(got.Answers), got.Seconds, reads, reads-len(unread), len(got.Comments))},
+		{"the exception that stopped the client", stopped},
+		{"the recording proxy's requests from the mark on", fmt.Sprintf("%d, %d of them of the session %s", len(after), requestsOfSession, role.session)},
+		{"m′, the distinct tokens that session presented from the mark on", strconv.Itoa(len(sessionTokens))},
+		{"the file's version 1", fmt.Sprintf("%d, %d bytes of %s with SHA-256 %s; the upload's SHA-256 %s", got.Version.Status, got.Version.Bytes, got.Version.ContentType, got.Version.SHA256, uploadedSHA)},
+		{"the comment POSTs", strings.Join(posts, "; ")},
+		{"the comments on " + r.pIssue + " with the client's body", strconv.Itoa(held)},
+	})
+	var tokenRows [][]string
+	for _, digest := range tokens {
+		token, records := r.tokens[digest], presented[digest]
+		expiry := "none named"
+		if at := token.expiry(); !at.IsZero() {
+			expiry = fmt.Sprintf("%s (%.1f s)", at.UTC().Format(time.RFC3339), at.Sub(start).Seconds())
+		}
+		tokenRows = append(tokenRows, []string{
+			digest, token.Session, strconv.FormatBool(token.Active),
+			fmt.Sprintf("%.1f s", records[0].At.Sub(start).Seconds()), fmt.Sprintf("%.1f s", records[len(records)-1].At.Sub(start).Seconds()),
+			strconv.Itoa(len(records)), expiry,
+		})
+	}
+	report.table("Each token presented from the mark on, its times in seconds after the proxy run started",
+		[]string{"token (digest)", "session", "active when read", "first presented", "last presented", "requests", "expiry"}, tokenRows)
+	report.say("The proxy run printed (%s):", run.outcome())
+	report.quote(run.stdout + run.stderr)
+	markerState := "was not made"
+	if controlRan {
+		markerState = "exists"
+	}
+	report.say("The control: the same `dispatch proxy` in the role's environment without the setting, DISPATCH_TOKEN_FILE in place of DISPATCH_TOKEN_BROKER, with `touch %s` as its command. It exited %d; the marker %s; the recording proxy holds %d requests from its mark. It printed:", marker, control.code, markerState, len(controlRecords))
+	report.quote(control.stdout + control.stderr)
+	report.write("c2")
+
+	if run.code != 0 {
+		t.Errorf("dispatch proxy with the client = %s, want exit 0, the client's own status", run.outcome())
+	}
+	if got.Error != "" {
+		t.Errorf("the client stopped early: %s", got.Error)
+	}
+	if len(got.Answers) < 2000 {
+		t.Errorf("the client made %d requests in %.1f s, want at least 2,000", len(got.Answers), got.Seconds)
+	}
+	if periods := 2 * (proxyLifetime - proxyRenewBefore); wall <= periods {
+		t.Errorf("the proxy run took %s, want more than two renewal periods, %s", wall, periods)
+	}
+	if reads == 0 || len(unread) > 0 {
+		t.Errorf("%d of the client's %d reads were not answered 200, want every one answered 200; the first: %s", len(unread), reads, strings.Join(unread[:min(5, len(unread))], "; "))
+	}
+	if got.Version.Status != http.StatusOK || got.Version.SHA256 != uploadedSHA {
+		t.Errorf("the client's read of version 1 of rig-proxy.bin = %d, %d bytes with SHA-256 %s; want 200 and the %d bytes uploaded, SHA-256 %s", got.Version.Status, got.Version.Bytes, got.Version.SHA256, len(uploaded), uploadedSHA)
+	}
+	if len(got.Comments) != 2 || got.Comments[0].Status != http.StatusCreated || got.Comments[0].Replayed != "" ||
+		got.Comments[1].Status != http.StatusCreated || got.Comments[1].Replayed != "?1" {
+		t.Errorf("the client's two comment POSTs under one Idempotency-Key = %s; want 201, then 201 with Idempotency-Replayed: ?1", strings.Join(posts, "; "))
+	}
+	if held != 1 {
+		t.Errorf("%s holds %d comments with the body the client posted, want exactly 1", r.pIssue, held)
+	}
+	if len(sessionTokens) < 2 {
+		t.Errorf("the session %s presented %d distinct tokens from the mark on, want at least 2: the proxy renewed none", role.session, len(sessionTokens))
+	}
+	if float64(len(sessionTokens)) > bound {
+		t.Errorf("the session %s presented %d distinct tokens in a run of %.1f s, want at most 1 + T / (L - 300 s) = %.2f", role.session, len(sessionTokens), wall.Seconds(), bound)
+	}
+	for _, digest := range sessionTokens {
+		expiry := r.tokens[digest].expiry()
+		if expiry.IsZero() {
+			t.Errorf("the broker's introspection named no expiry for token %s", digest)
+			continue
+		}
+		for _, record := range presented[digest] {
+			if !record.At.Before(expiry) {
+				t.Errorf("token %s was presented at %s, on %s %s, at or after its expiry %s", digest, record.At.UTC().Format(time.RFC3339Nano), record.Method, record.Route, expiry.UTC().Format(time.RFC3339))
+				break
+			}
+		}
+	}
+	switch {
+	case exit == nil:
+		t.Errorf("the last line dispatch proxy wrote on standard error is %q, want its exit line", exitLine)
+	case trades != len(sessionTokens) || requests != requestsOfSession || renewed != 0:
+		t.Errorf("the exit line %q names %d requests, %d trades and %d after BROKER_TOKEN_NOT_ACTIVE; want %d requests, the recording proxy's of %s from the mark on, %d trades, the distinct tokens that session presented, and 0",
+			exitLine, requests, trades, renewed, requestsOfSession, role.session, len(sessionTokens))
+	}
+	if control.code != 2 || !strings.Contains(control.stderr, "DISPATCH_TOKEN_BROKER") {
+		t.Errorf("dispatch proxy without the setting = %s, want exit 2 naming DISPATCH_TOKEN_BROKER, the cause it cannot start for", control.outcome())
+	}
+	if controlRan {
+		t.Errorf("dispatch proxy without the setting ran its command: %s exists (%v)", marker, markerErr)
+	}
+	if len(controlRecords) != 0 {
+		t.Errorf("the recording proxy holds %d requests from the control's mark, want none: %+v", len(controlRecords), controlRecords)
 	}
 }
 
