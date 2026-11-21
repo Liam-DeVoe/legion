@@ -75,7 +75,7 @@ type execer interface { // want "an interface a driver handle implements"
 }
 
 func throughInterface(ctx context.Context, conn *pgx.Conn) error {
-	var e execer = conn
+	var e execer = conn // want "conn (a *pgx.Conn held as execer)"
 	_, err := e.Exec(ctx, "SELECT 1")
 	return err
 }
@@ -99,4 +99,18 @@ func forged(ctx context.Context, caller pgx.Tx) error {
 
 func largeObject(object *pgx.LargeObject) error {
 	return object.Close() // want "object.Close (a method of *pgx.LargeObject)"
+}
+
+func zeroValue(ctx context.Context, caller pgx.Tx) error {
+	var p pinned
+	p.tx = caller // want "p.tx (the transaction a pinned holds, reached outside pinned's methods)"
+	_, err := p.exec(ctx, "SELECT 1")
+	return err
+}
+
+func allocated(ctx context.Context, caller pgx.Tx) error {
+	p := new(pinned)
+	p.tx = caller // want "p.tx (the transaction a pinned holds, reached outside pinned's methods)"
+	_, err := p.exec(ctx, "SELECT 1")
+	return err
 }

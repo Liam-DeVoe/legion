@@ -90,17 +90,31 @@ type place struct {
 //     own body and the bodies of pinned's methods;
 //   - a pinned built, by a composite literal or a conversion, outside the helper's body, since
 //     only the transaction the helper pinned may be one;
+//   - a field of pinned reached outside pinned's methods, which is how a pinned made from its
+//     zero value or by new would be given a transaction the helper did not pin;
 //   - an interface, declared or written as a constraint anywhere in the files, that a type of a
 //     driver package implements: a driver handle held in one runs its statements through methods
-//     no driver package declares, which the first rule cannot see.
+//     no driver package declares, which the first rule cannot see;
+//   - a driver handle (handleName) that leaves the package's own code outside those bodies:
+//     handed to a function or a method of another package that is no driver package's (whose
+//     calls the first rule reads), or held as an interface, by a conversion, an argument, an
+//     assignment, a variable's declaration or a return. Another package's code runs statements on
+//     it that no line of these files shows.
 //
 // Inside is a watched call in the helper's body or a method of pinned. With no helper every place
-// is outside.
+// is outside. What the last rule does not read is a handle stored in a composite literal, a map or
+// a channel; nothing in the package does either.
 func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) (outside []string, inside int) {
 	helper := helperOf(pkg)
 	pinnedType, _ := pkg.Scope().Lookup(pinnedName).(*types.TypeName)
 	var helperBody *ast.BlockStmt
-	var bodies []*ast.BlockStmt
+	var bodies, methodBodies []*ast.BlockStmt
+	// scopes are the package's functions, each body with its signature, for a return's results.
+	type scope struct {
+		body      *ast.BlockStmt
+		signature *types.Signature
+	}
+	var scopes []scope
 	for _, file := range files {
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
@@ -118,18 +132,50 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 				}
 				if named, ok := receiver.(*types.Named); ok && named.Obj() == pinnedType {
 					bodies = append(bodies, function.Body)
+					methodBodies = append(methodBodies, function.Body)
 				}
 			}
 		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.FuncDecl:
+				if node.Body != nil {
+					if function, ok := info.Defs[node.Name].(*types.Func); ok {
+						scopes = append(scopes, scope{node.Body, function.Type().(*types.Signature)})
+					}
+				}
+			case *ast.FuncLit:
+				if signature, ok := info.Types[node].Type.(*types.Signature); ok {
+					scopes = append(scopes, scope{node.Body, signature})
+				}
+			}
+			return true
+		})
 	}
 	within := func(body *ast.BlockStmt, pos token.Pos) bool {
 		return body != nil && body.Pos() <= pos && pos < body.End()
 	}
-	inBodies := func(pos token.Pos) bool {
-		return slices.ContainsFunc(bodies, func(body *ast.BlockStmt) bool { return within(body, pos) })
+	inAny := func(list []*ast.BlockStmt, pos token.Pos) bool {
+		return slices.ContainsFunc(list, func(body *ast.BlockStmt) bool { return within(body, pos) })
+	}
+	inBodies := func(pos token.Pos) bool { return inAny(bodies, pos) }
+	var pinnedFields []*types.Var
+	if pinnedType != nil {
+		if fields, ok := pinnedType.Type().Underlying().(*types.Struct); ok {
+			for i := range fields.NumFields() {
+				pinnedFields = append(pinnedFields, fields.Field(i))
+			}
+		}
 	}
 	var places []place
 	for selector, selection := range info.Selections {
+		if field, ok := selection.Obj().(*types.Var); ok && slices.Contains(pinnedFields, field) {
+			if !inAny(methodBodies, selector.Pos()) {
+				places = append(places, place{selector.Pos(), fmt.Sprintf("%s (the transaction a %s holds, reached outside %s's methods)",
+					types.ExprString(selector), pinnedName, pinnedName)})
+			}
+			continue
+		}
 		method, ok := selection.Obj().(*types.Func)
 		if !ok || method.Pkg() == nil || !driverPackage(method.Pkg().Path()) {
 			continue
@@ -158,20 +204,84 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		}
 		places = append(places, place{ident.Pos(), fmt.Sprintf("%s.%s (a function of %s)", function.Pkg().Name(), function.Name(), function.Pkg().Name())})
 	}
+	qualify := func(other *types.Package) string {
+		if other == pkg {
+			return ""
+		}
+		return other.Name()
+	}
+	// held reports a handle the expression value is, held as the type target: an interface, and not
+	// the handle's own type.
+	held := func(value ast.Expr, target types.Type) {
+		name, ok := handleName(info.Types[value].Type)
+		if !ok || target == nil || !types.IsInterface(target) || types.Identical(target, info.Types[value].Type) || inBodies(value.Pos()) {
+			return
+		}
+		places = append(places, place{value.Pos(), fmt.Sprintf("%s (a %s held as %s)", types.ExprString(value), name, types.TypeString(target, qualify))})
+	}
 	handles := driverTypes(pkg)
 	for _, file := range files {
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
-			case *ast.CompositeLit, *ast.CallExpr:
-				expression := node.(ast.Expr)
-				built := info.Types[expression].Type
-				if call, ok := node.(*ast.CallExpr); ok {
-					if !info.Types[call.Fun].IsType() {
-						return true
+			case *ast.CompositeLit:
+				built := info.Types[node].Type
+				if named, ok := built.(*types.Named); ok && pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, node.Pos()) {
+					places = append(places, place{node.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(node), pinnedName, helperName)})
+				}
+			case *ast.CallExpr:
+				if info.Types[node.Fun].IsType() {
+					built := info.Types[node].Type
+					if named, ok := built.(*types.Named); ok && pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, node.Pos()) {
+						places = append(places, place{node.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(node), pinnedName, helperName)})
+					}
+					if len(node.Args) == 1 {
+						held(node.Args[0], built)
+					}
+					return true
+				}
+				signature, ok := info.Types[node.Fun].Type.Underlying().(*types.Signature)
+				if !ok {
+					return true
+				}
+				callee := calledFunc(info, node)
+				if callee != nil && callee.Pkg() != nil && driverPackage(callee.Pkg().Path()) {
+					return true
+				}
+				foreign := callee != nil && callee.Pkg() != nil && callee.Pkg() != pkg
+				for i, argument := range node.Args {
+					name, isHandle := handleName(info.Types[argument].Type)
+					if !isHandle || inBodies(argument.Pos()) {
+						continue
+					}
+					if foreign {
+						places = append(places, place{argument.Pos(), fmt.Sprintf("%s (a %s handed to %s)", types.ExprString(argument), name, types.ExprString(node.Fun))})
+						continue
+					}
+					held(argument, parameterType(signature, i, node.Ellipsis.IsValid()))
+				}
+			case *ast.AssignStmt:
+				if len(node.Lhs) == len(node.Rhs) {
+					for i, value := range node.Rhs {
+						held(value, info.Types[node.Lhs[i]].Type)
 					}
 				}
-				if named, ok := built.(*types.Named); ok && pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, node.Pos()) {
-					places = append(places, place{node.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(expression), pinnedName, helperName)})
+			case *ast.ValueSpec:
+				if node.Type != nil && len(node.Values) == len(node.Names) {
+					for _, value := range node.Values {
+						held(value, info.Types[node.Type].Type)
+					}
+				}
+			case *ast.ReturnStmt:
+				var innermost *scope
+				for i := range scopes {
+					if within(scopes[i].body, node.Pos()) && (innermost == nil || scopes[i].body.Pos() > innermost.body.Pos()) {
+						innermost = &scopes[i]
+					}
+				}
+				if innermost != nil && innermost.signature.Results().Len() == len(node.Results) {
+					for i, value := range node.Results {
+						held(value, innermost.signature.Results().At(i).Type())
+					}
 				}
 			case *ast.InterfaceType:
 				iface, ok := info.Types[node].Type.Underlying().(*types.Interface)
@@ -190,6 +300,71 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		outside = append(outside, describePlace(fset.Position(p.pos), p.what, helperName))
 	}
 	return outside, inside
+}
+
+// calledFunc is the function or method call names, or nil where it names none (a function value).
+func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
+	var ident *ast.Ident
+	switch fun := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		ident = fun
+	case *ast.SelectorExpr:
+		ident = fun.Sel
+	case *ast.IndexExpr:
+		if selector, ok := fun.X.(*ast.SelectorExpr); ok {
+			ident = selector.Sel
+		} else {
+			ident, _ = fun.X.(*ast.Ident)
+		}
+	default:
+		return nil
+	}
+	if ident == nil {
+		return nil
+	}
+	function, _ := info.Uses[ident].(*types.Func)
+	return function
+}
+
+// errorType is the universe's error interface.
+var errorType = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+
+// handleName is how a reader writes the driver handle t is (*pgx.Conn, pgx.Tx), and whether t is
+// one: a type a driver package declares, or a pointer to one, that is no error. An error of the
+// driver's carries no connection, and goes where any error goes.
+func handleName(t types.Type) (string, bool) {
+	if t == nil || types.Implements(t, errorType) {
+		return "", false
+	}
+	base, pointer := t, ""
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		base, pointer = p.Elem(), "*"
+	}
+	named, ok := types.Unalias(base).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil || !driverPackage(named.Obj().Pkg().Path()) {
+		return "", false
+	}
+	return pointer + named.Obj().Pkg().Name() + "." + named.Obj().Name(), true
+}
+
+// parameterType is the type signature gives its argument i, the element of a variadic last
+// parameter unless the call spreads a slice into it (ellipsis).
+func parameterType(signature *types.Signature, i int, ellipsis bool) types.Type {
+	parameters := signature.Params()
+	if parameters.Len() == 0 {
+		return nil
+	}
+	if signature.Variadic() && i >= parameters.Len()-1 {
+		last := parameters.At(parameters.Len() - 1).Type()
+		if ellipsis {
+			return last
+		}
+		return last.(*types.Slice).Elem()
+	}
+	if i >= parameters.Len() {
+		return nil
+	}
+	return parameters.At(i).Type()
 }
 
 // driverTypes is every named type the driver packages pkg imports, directly or not, declare, and
@@ -380,7 +555,7 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	for _, fixture := range fixtures {
 		t.Run("control "+filepath.Base(fixture), func(t *testing.T) {
 			fset, parsed, info, pkg := typeCheck(t, "fixture", []string{fixture},
-				"github.com/jackc/pgx/v5/pgxpool", "database/sql")
+				"github.com/jackc/pgx/v5/pgxpool", "database/sql", "github.com/sjawhar/legion/daemon/internal/record")
 			if helperOf(pkg) == nil {
 				t.Fatalf("the fixture declares no function %s", helperName)
 			}

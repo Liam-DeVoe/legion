@@ -475,4 +475,64 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			}
 		})
 	}
+
+	// A call of the package run inside another call's transaction, on the same connection, would
+	// send a second begin, which the server ignores inside a transaction, and its commit would end
+	// the outer transaction, and every SET LOCAL with it: the outer function's next statement would
+	// run alone, under the login's own search_path. inTransaction refuses a connection already in a
+	// transaction. The control is the same nesting with today's helper as it was before that
+	// refusal (unchecked): the outer statement after the inner read runs public.right.
+	// The outer statement is FindByID's compare in text of its own: pgx keeps each statement it
+	// prepared on the connection, with the types its parameters were given then, and FindByID's own
+	// text was prepared under the pin, where $1 took pg_catalog.right's integer.
+	suffix := "_" + podSessionID + ".jsonl"
+	findByID := "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 LIMIT 1"
+	nested := t.Run("control: a read inside another transaction ends it, and the next statement runs unpinned", func(t *testing.T) {
+		err := unchecked(ctx, db.conn, false, func(outer pgx.Tx) error {
+			if err := unchecked(ctx, db.conn, true, func(inner pgx.Tx) error {
+				var mtime int64
+				return inner.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
+			}); err != nil {
+				return err
+			}
+			var path string
+			return outer.QueryRow(ctx, findByID, utf8.RuneCountInString(suffix), suffix).Scan(&path)
+		})
+		if ranPlant(err) != plantedRight {
+			t.Errorf("the nested transactions = %v; want the outer statement to fail naming %s", err, plantedRight)
+		}
+		t.Logf("control: %v", err)
+	})
+	if !nested {
+		t.Fatal("a nesting that runs no plant shows nothing: the row below would pass whatever the helper does")
+	}
+	t.Run("a call inside another call's transaction is refused, and runs no plant", func(t *testing.T) {
+		err := inTransaction(ctx, db.conn, false, func(p pinned) error {
+			if _, _, err := Written(ctx, db.conn, podSessionFile); err != nil {
+				return err
+			}
+			var path string
+			return p.queryRow(ctx, findByID, utf8.RuneCountInString(suffix), suffix).Scan(&path)
+		})
+		if err == nil || ranPlant(err) != "" || !strings.Contains(err.Error(), "already in a transaction") {
+			t.Errorf("Written inside inTransaction's function = %v; want it refused, the connection being already in a transaction", err)
+		}
+	})
+}
+
+// unchecked is inTransaction as it was before it refused a connection already in a transaction:
+// the begin, the three settings, then fn. It is the nested-call control's helper.
+func unchecked(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pgx.Tx) error) error {
+	access, settings := pgx.ReadWrite, []string{pinSearchPath, restrictRelationKinds}
+	if readOnly {
+		access, settings = pgx.ReadOnly, []string{pinSearchPath, refuseRowSecurity, restrictRelationKinds}
+	}
+	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
+		for _, statement := range settings {
+			if _, err := tx.Exec(ctx, statement); err != nil {
+				return err
+			}
+		}
+		return fn(tx)
+	})
 }

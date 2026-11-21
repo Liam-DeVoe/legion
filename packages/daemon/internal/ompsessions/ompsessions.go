@@ -89,8 +89,10 @@ const refuseRowSecurity = "SET LOCAL row_security = off"
 // runs in each statement that names the table, as whoever runs the statement: no search_path
 // reaches it, and a view carries no row-security policy. With restrict_nonsystem_relation_kind
 // naming views and foreign tables, a statement that would read or write one fails instead
-// (`access to non-system view "…" is restricted`), and none of its code runs. PostgreSQL has the
-// setting from 16.4 and 17.0 on, and any login may set it.
+// (`access to non-system view "…" is restricted`), and none of its code runs. Any login may set
+// it, and PostgreSQL has it from the minor releases of August 2024 on: 16.4, 15.8, 14.13, 13.16
+// and 12.20, and every 17 and later. On an older server every transaction of the package fails
+// with `unrecognized configuration parameter`, and no session is read or written.
 const restrictRelationKinds = "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'"
 
 // pinned is a transaction inTransaction opened and pinned, and the only thing in the package that
@@ -119,8 +121,15 @@ func (p pinned) query(ctx context.Context, sql string, arguments ...any) (pgx.Ro
 // restrictRelationKinds (TestEveryTransactionPinsBeforeItsWork holds that order). It is the one
 // place the package opens a transaction, and it hands fn the pinned that runs fn's statements. The
 // transaction commits when fn returns nil and rolls back otherwise, and fn's error is returned as
-// it is.
+// it is. It refuses a connection already in a transaction, a call of the package made inside
+// another's fn on the same connection: pgx would send a second begin, which the server ignores
+// there, and its commit would end the outer transaction and every SET LOCAL of it, so the outer
+// fn's next statement would run alone under the login's own search_path.
 func inTransaction(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pinned) error) error {
+	if status := conn.PgConn().TxStatus(); status != 'I' {
+		return fmt.Errorf("open a transaction on a connection already in a transaction (status %q): "+
+			"a call of the package runs on a connection of its own", status)
+	}
 	access := pgx.ReadWrite
 	if readOnly {
 		access = pgx.ReadOnly
