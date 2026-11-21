@@ -1036,15 +1036,19 @@ test("a priority row opens its description, its title its page, and what is writ
     await expect(editor).toHaveClass(/\bProseMirror\b/);
     await expect(editor).toHaveAttribute("contenteditable", "true");
     // The row's column wraps the paragraph over several lines, and End and Shift+Home select one
-    // of them: a run of the paragraph's words, which is what a selection here is.
-    await editor.getByText(finished).click();
-    await page.keyboard.press("End");
-    await page.keyboard.press("Shift+Home");
+    // of them: a run of the paragraph's words, which is what a selection here is. The click does
+    // not wait for ProseMirror to place its caret, so the gesture is retried until the caret is
+    // placed and the run selected.
+    await expect(async () => {
+      await editor.getByText(finished).click();
+      await page.keyboard.press("End");
+      await page.keyboard.press("Shift+Home");
+      expect(
+        await page.evaluate(() => String(window.getSelection()).trim().length)
+      ).toBeGreaterThan(0);
+    }).toPass();
     const paragraph =
       "It is finished when no machine is left on the old build and nothing is waiting on one.";
-    await expect
-      .poll(() => page.evaluate(() => String(window.getSelection()).trim().length))
-      .toBeGreaterThan(0);
     expect(paragraph).toContain((await page.evaluate(() => String(window.getSelection()))).trim());
     await expect(actionBar(page)).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^(Comment|Suggest|Ask)$/ })).toHaveCount(0);
