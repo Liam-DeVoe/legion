@@ -412,7 +412,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_decision_answered_200",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -421,7 +421,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_decision_refused",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -430,7 +430,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_lookup_answered_200",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -439,7 +439,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_lookup_refused",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -448,7 +448,7 @@
       },
       {
         "row": "leak-brokertest-client.go_AskForAgentSecret_answered_200",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -457,7 +457,7 @@
       },
       {
         "row": "leak-brokertest-client.go_DeviceLogin_refused",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -466,7 +466,7 @@
       },
       {
         "row": "leak-brokertest-client.go_EnrollSession_answered_201",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -475,7 +475,7 @@
       },
       {
         "row": "leak-brokertest-client.go_EnrollSession_refused",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -484,7 +484,7 @@
       },
       {
         "row": "leak-brokertest-client.go_GrantValues_answered_200",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -493,7 +493,7 @@
       },
       {
         "row": "leak-brokertest-client.go_GrantValues_refused",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -502,7 +502,7 @@
       },
       {
         "row": "leak-brokertest-client.go_RequestAgentSecret_refused",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -511,7 +511,7 @@
       },
       {
         "row": "leak-brokertest-client.go_Refresh",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1803,7 +1803,7 @@
       },
       {
         "row": "agentsecrets-answer-echo-body",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1812,7 +1812,7 @@
       },
       {
         "row": "agentsecrets-answer-echo-proof",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1821,7 +1821,7 @@
       },
       {
         "row": "agentsecrets-answer-echo-terminal-proof",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1830,7 +1830,7 @@
       },
       {
         "row": "devrelay-answer-echo-words",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher-devrelay/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1839,7 +1839,7 @@
       },
       {
         "row": "devrelay-answer-echo-code",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher-devrelay/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1920,7 +1920,7 @@
       },
       {
         "row": "agentsecrets-page-references",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1929,7 +1929,7 @@
       },
       {
         "row": "helper-decode-echo",
-        "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/cipher/helper/decode_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1938,7 +1938,7 @@
       },
       {
         "row": "agentsecrets-decode-echo",
-        "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -1947,7 +1947,7 @@
       },
       {
         "row": "dispatch-agentsecrets-answer-echo",
-        "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
+        "base": "8a9540682d8a1c4c63a7c66a299555a881233dee",
         "files": [
           "packages/envoy/internal/dispatch/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
