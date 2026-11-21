@@ -404,3 +404,37 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	viewer.Open = !viewer.Restricted
 	return viewer, nil
 }
+
+// RecordedViewer answers what the person a stored row records as its author may see now, in one
+// read of VisibleProjectsSQL: the person a user author names, or a session author's owner, read as
+// that person's credential naming no list (their member kind and every project access names them
+// on, restricted or full, as Resolve reads them). It is not Resolve, which takes the request's own
+// caller with its credential: it is the viewer refs.Reader resolves the short ids of a stored text
+// for, at a write and at every rebuild of that text alike (refs.Reader.seenBy), so it reads no
+// credential and sees no more than the person does. An author that records no person sees what a
+// credential naming nobody sees.
+func RecordedViewer(ctx context.Context, q Querier, recorded model.Actor) (model.Viewer, error) {
+	login := ""
+	switch {
+	case recorded.Kind == "user":
+		login = model.CanonicalLogin(recorded.ID)
+	case recorded.Owner != nil:
+		login = model.CanonicalLogin(*recorded.Owner)
+	}
+	var person *string
+	if login != "" {
+		person = &login
+	}
+	viewer := model.Viewer{Person: login}
+	if recorded.Kind == "session" {
+		viewer.Session = recorded.ID
+	}
+	agent := recorded.Kind != "user" || recorded.Act != nil
+	var held bool
+	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, false, agent, []string(nil)).
+		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate, &held); err != nil {
+		return model.Viewer{}, fmt.Errorf("resolve what a recorded author sees: %w", err)
+	}
+	viewer.Open = !viewer.Restricted
+	return viewer, nil
+}

@@ -208,8 +208,9 @@ var markVersionedDocuments = `
 // leaves them when it holds every period of the lease; and on each process's first tick and once
 // objectPassInterval has passed since the process's last pass finished: a conversation's file such
 // a build uploads appends no event, and a process that starts may follow a release that wrote while
-// none of this build's ran. Where a cursor row stands that tick sets the time in it, in the
-// statement that moves the cursor, and a debt an earlier tick left stands until a pass
+// none of this build's ran. Where the tick has a cursor it sets the time in that cursor's row, in
+// the statement that moves the cursor (inserting the row where the tick starts from the horizon or
+// from another build's row), and a debt an earlier tick left stands until a pass
 // clears it, so whichever process of the build holds the lease next runs it. It answers owed only
 // once its transaction has committed, and nil where it fails. Before a horizon is proven the
 // cursor holds no row, so no debt can be recorded and no event is read: such a tick owes the pass

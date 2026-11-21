@@ -143,6 +143,23 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	moved := previous != nil && previous.Project != input.Project
+	isDefault := previous != nil && !moved && previous.Default
+	if input.Default != nil {
+		isDefault = *input.Default
+	}
+	// A project's default is the repository each of its issues that names none resolves to, so a
+	// mapping this write leaves as a default is held to the rule an issue's own repository is
+	// (refuseRepoHidden), under the mapping's locks and before anything is written, and so is a
+	// write that moves or clears the default its project held: that takes the repository from the
+	// project's issues, which can show it to a reader the proxy hid it from. It is asked first, of
+	// the repository the path names, so a write naming a repository the proxy hides answers that
+	// refusal whether or not a hidden project's mapping holds it.
+	if isDefault || (previous != nil && previous.Default && (moved || !isDefault)) {
+		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// A mapping of a project the writer does not see is one the write cannot move: it is answered
 	// exactly as a project no row holds, as the target above is (projectSeenBy).
 	if moved {
@@ -153,21 +170,6 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		}
 		if !seen {
 			s.writeHandlerError(w, pgx.ErrNoRows)
-			return
-		}
-	}
-	isDefault := previous != nil && !moved && previous.Default
-	if input.Default != nil {
-		isDefault = *input.Default
-	}
-	// A project's default is the repository each of its issues that names none resolves to, so a
-	// mapping this write leaves as a default is held to the rule an issue's own repository is
-	// (refuseRepoHidden), under the mapping's locks and before anything is written, and so is a
-	// write that moves or clears the default its project held: that takes the repository from the
-	// project's issues, which can show it to a reader the proxy hid it from.
-	if isDefault || (previous != nil && previous.Default && (moved || !isDefault)) {
-		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
-			s.writeHandlerError(w, err)
 			return
 		}
 	}
