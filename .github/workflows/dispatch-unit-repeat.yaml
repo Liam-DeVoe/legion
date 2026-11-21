@@ -155,9 +155,11 @@ jobs:
     # The test step's budget is the matrix's step_minutes. The steps without one, measured together
     # over every completed leg of the runs the test step's comment names, took at most 34 s in a
     # web leg (run 44500465080, round 1), 29 s in a web-cold leg (run 44622961898, round 2) and
-    # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
-    # 3 minutes: 14 + 1 = 15 minutes for a web leg, 4 + 1 = 5 for a web-cold leg and 30 + 3 = 33
-    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 707 s for a web leg
+    # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1 and 1
+    # minutes: 14 + 1 = 15 minutes for a web leg and 4 + 1 = 5 for a web-cold leg. A harness leg's
+    # step and job are the open #4629's numbers (the test step's comment says why): 64 and 72
+    # minutes, the job's margin over the step covering other steps that #4629 read at 28 to 229 s,
+    # most of it the zsh install. The slowest whole jobs took 707 s for a web leg
     # (run 44749684592, round 3, shard 1/2), 192 s for a web-cold leg (run 44749684592, round 3)
     # and 1,575 s for a harness leg (run 44389203951, round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
@@ -195,8 +197,8 @@ jobs:
           - lane: harness
             shards: 1
             reruns: 20
-            step_minutes: 30
-            job_minutes: 33
+            step_minutes: 64
+            job_minutes: 72
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -263,15 +265,23 @@ jobs:
       # 19-minute limit, 961 s of its 1,148 s the sweep's 20 reruns; its shard 2/2 legs took 469 to
       # 633 s.
       #
-      # Harness: 66 legs took 967 to 1,529 s, the most in run 44389203951, round 1, so
-      # 1,529 x 1.15 = 1,758 s, 30 minutes.
+      # Harness: the open #4629's numbers, which it reads from CI and which replace these lines when
+      # it lands, at the harness maximum since main's #4659. 66 legs took 967 to 1,529 s up to
+      # 2026-11-19 (run 44389203951, round 1), for which the rule above gave 30 minutes. #4659 then
+      # added the outside-agent rows of e2e/__tests__/outside-agent-*.test.ts, 10 to 12 s each, run 20
+      # times a leg: run 44941119180 at 1eace347 took up to 1,767 s (round 1, job 136958329043), and
+      # run 44961469504 at 530be4de had all three legs stopped at the 30 minutes, after 1,812 and
+      # 1,813 s, with no row failing and 19,045 to 19,075 of their 19,300 results written. So the
+      # maximum is 1,812 x 19,300 / 19,045 = 1,836 s, a floor that takes the results to come at an
+      # even rate, and #4629's rule, twice the maximum, gives a deadline of 3,720 s: a step of 64
+      # minutes and a job of 72.
       #
       # Web-cold: the legs of the three runs since the lane's last derivation took 97 to 161 s,
       # the most in run 44749684592, round 3, so 161 x 1.15 = 186 s, 4 minutes. The 78 legs before
       # them took 66 to 133 s.
       #
       # The web and web-cold limits are derived from the suite's size on 2026-11-20 and the harness
-      # limit from its size on 2026-11-19: a step that is stopped on a leg whose rows were passing
+      # limit from its size on 2026-11-21: a step that is stopped on a leg whose rows were passing
       # is the signal to derive them again.
       #
       # The seed. A leg's seed is the first 32 bits of the SHA-256 of the run's id and the lane,
