@@ -5228,7 +5228,7 @@ It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inp
 It makes [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run twice, each with its own broker:
 first the control, a test binary of `TestPlanGuidanceControlLive`, then the proof, one of `TestPlanGuidanceLive` (both in `internal/daemon/plan_guidance_live_test.go`, `-tags e2e`).
 
-The rig is `step-records.sh`'s (`newStepRecordsRigWith`, in `internal/daemon/step_records_test.go`):
+The rig is `step-records.sh`'s (`newStepRecordsRigWith`, in `internal/daemon/step_records_rig_test.go`):
 the real Dispatch server on a database of its own, a project of the run's own (`SR<6 hex>`) with one issue a person creates, in progress with the `legion` label, seeded in the daemon's store at `admitted` with its design gate approved, and the whole daemon booted through `run` with `dispatch_url` at that server.
 The boot launches the issue's architect and the admission pass its planner, the agent of the issue's first step.
 The runtime is the package's fake one, which records each launch's spec, and each check composes the launch's prompt from that spec with `runtime.ComposePrompt`, the function every runtime writes an agent's prompt file with.
@@ -5241,7 +5241,9 @@ The runtime is the package's fake one, which records each launch's spec, and eac
 | `check-config-names-it` | `legion config check`, built from this checkout, on a `legion.yaml` that names the same file, exits 0 and prints `plan_guidance: <path> — each owner's system prompt carries this guidance after its addressing; Legion requires none of it` |
 
 The control prints each step as `control-<step>`:
-with `plan_guidance` unset, `owner-has-guidance`, `settings-serve-the-key` and `check-config-names-it` must fail and `worker-has-none` must hold, so a check that holds whatever the deployment sets fails the control.
+with `plan_guidance` unset, `owner-has-guidance`, `settings-serve-the-key` and `check-config-names-it` must fail and `worker-has-none` must hold, so each of the three checks that need the key fails the control when it would hold whatever the deployment sets.
+The live proof cannot show `worker-has-none` failing, since no deployment it runs gives a worker the guidance:
+the unit test `TestOnlyAnOwnersPromptHoldsThePlanGuidance` holds that fault.
 What the proof stands in for:
 the broker is a native `nats-server`; GitHub, the Apps' tokens and Envoy's listener are `step-records.sh`'s stand-ins;
 and no agent runs, so the proof reads the prompt each launch was given, not what an agent did with it.
