@@ -380,7 +380,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			{name: "a claim the work hold stopped", root: "LEGION-590", key: "LEGION-591", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByHold,
 				taskGeneration: 1, confirmed: true,
-				why: "this row changes suspended_by alone, to the work hold's stop: the hold's end starts the worker with its one task, so a start here would wait on the hold and give it a second (row H23 of the work hold's design)"},
+				why: "this row changes suspended_by alone, to the work hold's stop: the hold's end starts the worker with its one task, so a start here would wait on the hold and give it a second"},
 		}
 		pool := migratedPool(t)
 		before := make(map[string][]midPhaseStart, len(rows))

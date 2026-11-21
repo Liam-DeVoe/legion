@@ -78,11 +78,10 @@ func (m *Machine) awaitsTurn(request RequestSuspend) bool {
 //     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
 //     the same hold, under one rule: a request can only move the deadline earlier, and the
 //     operator's also takes the hold over, from then on the operator's. The work hold's stop
-//     names its own deadline, 2 minutes after its close message reached the claim, and the same
-//     rule of rank holds as for a suspended claim (suspensionRank): the hold's takes over a held
-//     release's — the idle release's or a pause's, whose pause it drops, as the operator's does —
-//     and the daemon's takes over the hold's. Until the deadline the agent keeps its process and
-//     its capability.
+//     names its own deadline, 2 minutes after its close message reached the claim. It takes over
+//     a held release's — the idle release's or a pause's, whose pause it drops, as the operator's
+//     does — and the daemon's takes the hold's over. Until the deadline the agent keeps its
+//     process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
 //     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
@@ -91,10 +90,10 @@ func (m *Machine) awaitsTurn(request RequestSuspend) bool {
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself
 //     (suspendHeld), charged nothing.
 //   - A start run against the claim drops a daemon's hold (StartedBy); one the operator's
-//     suspension or the work hold's stop holds waits instead, and a project pause's hold whose
-//     pause is still the open one stays (decision 5 of the project pause's plan). The work
-//     hold's end drops the hold's stop (Machine.EndHold). Every other end of the process drops it
-//     with the process (letGo).
+//     suspension or the work hold's stop holds waits instead (the work hold's end drops the
+//     hold's stop, Machine.EndHold), and a project pause's hold whose pause is still the open
+//     one stays (decision 5 of dispatch://INFRA-3759's plan). Every other end of the process
+//     drops it with the process (letGo).
 //   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped at the start
 //     of the claim's next decision instead of run (dropEndedPauseHold), the resume's event
 //     (ResumePause) among them. A pause's request that reaches a claim whose suspension is already

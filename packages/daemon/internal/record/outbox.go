@@ -1366,19 +1366,18 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // Published, the message would meet a released role as one nobody holds: the listener answers
 // holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
 // beside either, so the pod would come back for a message the row had already dropped. Two
-// exceptions stand. A row a project's pause held for a role a pause stopped: without the pause the
-// role would have had the message, so the row is published to the role after the resume, and that
-// publish wakes it (internal/daemon's outbox.roleMessage, the project pause's R4). And a row
-// marked Wake, the design gate's close message to a merger whose claim was released when the gate
-// closed (workflow's tellGateMoved).
+// exceptions stand. One is a row marked Wake, the design gate's close message to a merger whose
+// claim was released when the gate closed (workflow's tellGateMoved). The other is a row a
+// project's pause held for a role a pause stopped: without the pause the role
+// would have had the message, so the row is published to the role after the resume, and that
+// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
 	// Wake marks the design gate's close message to a merger whose claim was released when the
 	// gate closed, under either hold: the outbox wakes the released merger for the message rather
-	// than dropping it, so the merger can take its pull request out of GitHub's merge queue
-	// (decision 13 of the work hold's design). It is the one start of a merger the closed gate
-	// lets through, and every other message carries none.
+	// than dropping it, so the merger can take its pull request out of GitHub's merge queue. It is
+	// the one start of a merger the closed gate lets through, and every other message carries none.
 	Wake bool `json:"wake,omitempty"`
 	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:
 	// work`, workflow's workHoldClose): a suspend of the source hold that names no deadline and no
@@ -2697,7 +2696,7 @@ func validateWorkHoldRequest(value SuperviseRequest) error {
 	if value.Opening != "" && value.Op != "start" {
 		return fmt.Errorf("a supervise %s carries the work hold's opening sentences; only a start of the hold's opening carries them", value.Op)
 	}
-	if value.Opening != "" && !strings.HasPrefix(value.Task, value.Opening+"\n\n") {
+	if value.Opening != "" && !strings.HasPrefix(value.Task, supervise.OpeningTask(value.Opening, "")) {
 		return fmt.Errorf("a start carries the work hold's opening sentences, and its task does not begin with them: the one task the opening gives is those sentences and then the work")
 	}
 	return nil

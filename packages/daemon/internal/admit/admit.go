@@ -1547,11 +1547,14 @@ func (a *Admission) recordSpecApproval(ctx context.Context, tx pgx.Tx, key strin
 	if row == nil {
 		return nil
 	}
+	if !row.PersonApproved() {
+		return a.store.DeleteClearedSpecApproval(ctx, tx, key)
+	}
 	handed, err := a.store.HandedOverRoot(ctx, tx, key)
 	if err != nil {
 		return fmt.Errorf("read the hand-over of re-admitted %s: %w", key, err)
 	}
-	if row.ApprovedVersion == nil || row.ApprovedMark.IsZero() || handed.GateCarriedAt(generation) {
+	if handed.GateCarriedAt(generation) {
 		return a.store.DeleteClearedSpecApproval(ctx, tx, key)
 	}
 	return a.store.PutClearedSpecApproval(ctx, tx, record.ClearedSpecApproval{Issue: key, ArtifactID: row.ArtifactID,
@@ -3127,11 +3130,10 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// A claim an operator suspended is passed over whatever entry it stands on: `legion
 		// claims suspend` suspended that worker, and an operator's suspension holds against every
 		// rule of the daemon's (supervise's RuleHolds, which no start the daemon queues gets
-		// past). So is a claim the work hold stopped (supervise.SuspendedByHold, row H23 of
-		// the work hold's design): the hold's end starts it with its one task, and a repair
-		// written now would wait on the hold and give it a second. A claim the daemon itself
-		// suspended is repaired, which is what the idle rule's release and the daemon's own
-		// suspend both leave behind.
+		// past). So is a claim the work hold stopped (supervise.SuspendedByHold): the hold's end
+		// starts it with its one task, and a repair written now would wait on the hold and give it
+		// a second. A claim the daemon itself suspended is repaired, which is what the idle rule's
+		// release and the daemon's own suspend both leave behind.
 		if c := run.Claim; c != nil && c.State == supervise.StateSuspended &&
 			(c.SuspendedBy == supervise.SuspendedByOperator || c.SuspendedBy == supervise.SuspendedByHold) {
 			continue

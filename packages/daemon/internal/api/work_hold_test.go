@@ -61,7 +61,6 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 		t.Fatalf("workHoldContract = %d, want 210, the contract whose entry in version.go added `why: held`, at or below DaemonAPIVersion %d",
 			workHoldContract, DaemonAPIVersion)
 	}
-	const dropped = droppedWhy
 	full := issueViews(t, stateFrom(t, workHeldState(t), "192.0.2.1:41000", podClaims(shapedAnswersContract-1)))
 	if held, _ := full["LEGION-214"]["why"].(map[string]any); held["state"] != string(WhyHeld) {
 		t.Fatalf("the fixture's held issue carries %v; this test proves nothing", full["LEGION-214"])
@@ -78,9 +77,9 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 		lines   []string
 	}{
 		{name: "a plugin stating the contract before", remote: statePodAddr + ":41000", claims: DaemonAPIVersion,
-			stated: workHoldContract - 1, answers: true, lines: []string{dropped}},
+			stated: workHoldContract - 1, answers: true, lines: []string{droppedWhy}},
 		{name: "a pod whose plugin states no contract", remote: statePodAddr + ":41000", claims: shapedAnswersContract - 1,
-			answers: true, lines: []string{dropped}},
+			answers: true, lines: []string{droppedWhy}},
 		{name: "a pod below the contract that added why", remote: statePodAddr + ":41000", claims: whyAndLineFieldsContract - 1},
 		{name: "a plugin stating the contract", remote: statePodAddr + ":41000", claims: DaemonAPIVersion, stated: workHoldContract,
 			held: true, answers: true},
@@ -109,7 +108,7 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 			}
 			var told []string
 			for _, line := range narrowings {
-				if line.Dropped == dropped {
+				if line.Dropped == droppedWhy {
 					told = append(told, line.Dropped)
 				}
 			}

@@ -68,14 +68,12 @@ func (w holdWords) closed(version int) string {
 
 // mergeClose is today's close message, which `merge` keeps word for word (H1).
 func (w holdWords) mergeClose(version int) string {
-	return w.closed(version) + " Your phase goes on; the merge waits until every gated step stands open again."
+	return gateMovedBodyOf(w.tree, w.step, w.document, version, false)
 }
 
 // opened is today's open message, which both modes send at the opening.
 func (w holdWords) opened(version int) string {
-	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-		"A merge the closed gate held is released.", w.tree, version, w.step, w.document)
+	return gateMovedBodyOf(w.tree, w.step, w.document, version, true)
 }
 
 // workerClose is the close message under `work` to a phase worker (spec step 2).
@@ -218,25 +216,34 @@ func seedHoldClaim(t *testing.T, pool *pgxpool.Pool, project, tree, issue string
 	}
 }
 
+// heldClaim is one claim of a rig, named by its issue and its role.
+type heldClaim struct {
+	issue string
+	role  claim.Role
+}
+
 // stopsMade is the outbox having made the hold's stops the close asked for: each claim it
 // stopped stands suspended by the hold.
-func (r holdRig) stopsMade(project string, claims ...[2]string) {
+func (r holdRig) stopsMade(claims ...heldClaim) {
 	r.t.Helper()
 	for _, c := range claims {
-		token, err := claim.NewToken(project, c[0], claim.Role(c[1]))
-		if err != nil {
-			r.t.Fatalf("the %s token of %s: %v", c[1], c[0], err)
-		}
-		if _, err := r.pool.Exec(r.t.Context(), `update claims set state = 'suspended', suspended_by = 'hold' where token = $1`, string(token)); err != nil {
-			r.t.Fatalf("stop %s by the hold: %v", token, err)
-		}
+		stopByTheHold(r.t, r.pool, treeRoleToken(r.t, c.issue, c.role))
+	}
+}
+
+// stopByTheHold is the outbox having made the hold's stop of the claim token: it stands
+// suspended by the hold.
+func stopByTheHold(t *testing.T, pool *pgxpool.Pool, token string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `update claims set state = 'suspended', suspended_by = 'hold' where token = $1`, token); err != nil {
+		t.Fatalf("stop %s by the hold: %v", token, err)
 	}
 }
 
 // legionStops is every claim of the rig the hold stops: the live phase workers and the two
 // released ones.
-var legionStops = [][2]string{
-	{"LEGION-209", "planner"}, {"LEGION-209", "implementer"}, {"LEGION-209", "tester"}, {"LEGION-210", "merger"},
+var legionStops = []heldClaim{
+	{"LEGION-209", claim.RolePlanner}, {"LEGION-209", claim.RoleImplementer}, {"LEGION-209", claim.RoleTester}, {"LEGION-210", claim.RoleMerger},
 }
 
 // close writes version of LEGION-208's spec, which closes its standing gate.
@@ -256,16 +263,6 @@ func (r holdRig) open(engine *Engine, version int) {
 func (r holdRig) boot(engine *Engine) {
 	r.t.Helper()
 	applyMirrored(r.t, r.pool, engine, "boot-"+randomSuffix(r.t), intake.DaemonBooted{})
-}
-
-// holdToken is the role token of issue's role in project, the address a role message carries.
-func holdToken(t *testing.T, project, issue string, role claim.Role) string {
-	t.Helper()
-	token, err := claim.NewToken(project, issue, role)
-	if err != nil {
-		t.Fatalf("the %s token of %s: %v", role, issue, err)
-	}
-	return string(token)
 }
 
 // roleMessagesOf is every role message the outbox holds for issue, oldest first, whole.
@@ -332,21 +329,6 @@ func legionRecord(version int) record.WorkHold {
 		ArtifactID: "artifact-208", Version: version, ClosedAt: holdNow}
 }
 
-// issueOf is the record of key.
-func issueOf(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
-	t.Helper()
-	var issue *record.Issue
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		var err error
-		issue, err = record.NewStore().Issue(t.Context(), tx, key)
-		return err
-	})
-	if issue == nil {
-		t.Fatalf("no record of %s", key)
-	}
-	return *issue
-}
-
 // phaseOpening is the opening start of the claim of issue's role that holds its phase: the one
 // task, the opening's sentences and then the phase work as the boot builds it (ResumePhaseTask),
 // with the opening sentences carried apart for supervise's EndHold.
@@ -370,15 +352,14 @@ func legionCloseMessages(t *testing.T, version int) map[string][]record.RoleMess
 		return &request
 	}
 	return map[string][]record.RoleMessage{
-		"LEGION-208": {{Role: holdToken(t, "legion", "LEGION-208", claim.RoleArchitect), Body: legionHold.architectClose(version)}},
+		"LEGION-208": {{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.architectClose(version)}},
 		"LEGION-209": {
-			{Role: holdToken(t, "legion", "LEGION-209", claim.RoleArchitect), Body: legionHold.architectClose(version)},
-			{Role: holdToken(t, "legion", "LEGION-209", claim.RolePlanner), Body: legionHold.workerClose(version), Stop: stop(claim.RolePlanner)},
-			{Role: holdToken(t, "legion", "LEGION-209", claim.RoleImplementer), Body: legionHold.workerClose(version), Stop: stop(claim.RoleImplementer)},
+			{Role: treeRoleToken(t, "LEGION-209", claim.RoleArchitect), Body: legionHold.architectClose(version)},
+			{Role: treeRoleToken(t, "LEGION-209", claim.RolePlanner), Body: legionHold.workerClose(version), Stop: stop(claim.RolePlanner)},
+			{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: legionHold.workerClose(version), Stop: stop(claim.RoleImplementer)},
 		},
-		"LEGION-210": {{Role: holdToken(t, "legion", "LEGION-210", claim.RoleMerger), Body: legionHold.workerClose(version), Wake: true,
-			Stop: &record.SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4,
-				SuspendedBy: supervise.SuspendedByHold, Reason: legionHold.stop(claim.RoleMerger, 4, version).Reason}}},
+		"LEGION-210": {{Role: treeRoleToken(t, "LEGION-210", claim.RoleMerger), Body: legionHold.workerClose(version), Wake: true,
+			Stop: stop(claim.RoleMerger)}},
 		"LEGION-211": nil,
 		"LEGION-212": nil,
 	}
@@ -435,7 +416,7 @@ func TestWorkHoldHoldsForEveryGatedStep(t *testing.T) {
 					if opening == "a person's approval" {
 						rig.apply("approved-46", stepApproval(carriedRoot, carriedDocument, 46, record.EventMark{Seq: 1457}))
 					} else {
-						rig.apply("carried-46", f3(t))
+						rig.apply("carried-46", CarriedApprovalCapture(t))
 					}
 					if hold == config.HoldWork {
 						rig.wantWorkOpening()
@@ -454,6 +435,33 @@ const (
 	carriedRoot     = "ACME-2694"
 	carriedDocument = "aec8fb48-fd46-458a-99a3-a1b199a46b38"
 )
+
+// CarriedApprovalCapture is F3, Dispatch's carried approval of version 46 after an exact undo, as
+// its events route served it (testdata/dispatch-carried-approval.json), decoded as the daemon's
+// live consumer decodes it. It is the one decoder of the capture in this package's tests, exported
+// for the rows of the external test package (approval_route_paths_test.go).
+func CarriedApprovalCapture(t *testing.T) intake.Fact {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/dispatch-carried-approval.json")
+	if err != nil {
+		t.Fatalf("read the captured carried approval: %v", err)
+	}
+	var captured struct {
+		Event json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal(raw, &captured); err != nil {
+		t.Fatalf("decode the captured carried approval: %v", err)
+	}
+	fact, unread, err := intake.DecodeDispatchEvent("ACME", carriedRoot, captured.Event)
+	if err != nil || len(unread) > 0 {
+		t.Fatalf("decode the captured carried approval's event = %v, unread %v", err, unread)
+	}
+	artifact, ok := fact.(intake.DispatchArtifact)
+	if !ok || !artifact.CarriedApproval() || artifact.Version != 46 || artifact.ArtifactID != carriedDocument || artifact.Mark.Seq != 1457 {
+		t.Fatalf("the captured event decodes to %#v, want the carried approval of version 46 of %s at sequence 1457", fact, carriedDocument)
+	}
+	return fact
+}
 
 // carriedRig is F3's root at work: ACME-2694 implementing, its implementer and its architect at
 // work, and step gated alone on F3's document, approved at version 24.
@@ -504,7 +512,14 @@ func (r carriedRig) close() {
 	}
 }
 
-func (r carriedRig) token(role claim.Role) string { return holdToken(r.t, "acme", carriedRoot, role) }
+func (r carriedRig) token(role claim.Role) string {
+	r.t.Helper()
+	token, err := claim.NewToken("acme", carriedRoot, role)
+	if err != nil {
+		r.t.Fatalf("the %s token of %s: %v", role, carriedRoot, err)
+	}
+	return string(token)
+}
 
 func (r carriedRig) wantWorkClose() {
 	r.t.Helper()
@@ -535,10 +550,7 @@ func (r carriedRig) wantMergeClose() {
 // stopped is the outbox having made the implementer's stop.
 func (r carriedRig) stopped() {
 	r.t.Helper()
-	if _, err := r.pool.Exec(r.t.Context(), `update claims set state = 'suspended', suspended_by = 'hold' where token = $1`,
-		r.token(claim.RoleImplementer)); err != nil {
-		r.t.Fatalf("stop the implementer: %v", err)
-	}
+	stopByTheHold(r.t, r.pool, r.token(claim.RoleImplementer))
 }
 
 func (r carriedRig) wantWorkOpening() {
@@ -567,31 +579,6 @@ func (r carriedRig) wantMergeOpening() {
 	wantSupervise(r.t, r.pool, carriedRoot, "start", nil)
 }
 
-// f3 is F3, Dispatch's carried approval after an exact undo as its events route served it,
-// decoded as the daemon's catch-up decodes it.
-func f3(t *testing.T) intake.Fact {
-	t.Helper()
-	raw, err := os.ReadFile("testdata/dispatch-carried-approval.json")
-	if err != nil {
-		t.Fatalf("read F3: %v", err)
-	}
-	var captured struct {
-		Event json.RawMessage `json:"event"`
-	}
-	if err := json.Unmarshal(raw, &captured); err != nil {
-		t.Fatalf("decode F3: %v", err)
-	}
-	fact, unread, err := intake.DecodeDispatchEvent("ACME", carriedRoot, captured.Event)
-	if err != nil || len(unread) > 0 {
-		t.Fatalf("decode F3's event = %v, unread %v", err, unread)
-	}
-	artifact, ok := fact.(intake.DispatchArtifact)
-	if !ok || !artifact.CarriedApproval() || artifact.Version != 46 || artifact.ArtifactID != carriedDocument {
-		t.Fatalf("F3 decodes to %#v, want the carried approval of version 46", fact)
-	}
-	return fact
-}
-
 // H1, H16: under `merge` the close is today's, word for word, to each phase holder and the root's
 // architect, and stops nothing; the one change is the released merger's message, marked to wake
 // it, so it can take its pull request out of the merge queue (decision 13). The opening is
@@ -601,9 +588,9 @@ func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 	engine := rig.engine(config.HoldMerge)
 	rig.close(engine, 4)
 	closed := map[string][]record.RoleMessage{
-		"LEGION-208": {{Role: holdToken(t, "legion", "LEGION-208", claim.RoleArchitect), Body: legionHold.mergeClose(4)}},
-		"LEGION-209": {{Role: holdToken(t, "legion", "LEGION-209", claim.RoleImplementer), Body: legionHold.mergeClose(4)}},
-		"LEGION-210": {{Role: holdToken(t, "legion", "LEGION-210", claim.RoleMerger), Body: legionHold.mergeClose(4), Wake: true}},
+		"LEGION-208": {{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.mergeClose(4)}},
+		"LEGION-209": {{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: legionHold.mergeClose(4)}},
+		"LEGION-210": {{Role: treeRoleToken(t, "LEGION-210", claim.RoleMerger), Body: legionHold.mergeClose(4), Wake: true}},
 	}
 	for issue, want := range closed {
 		wantMessages(t, rig.pool, issue, want)
@@ -617,9 +604,9 @@ func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 
 	rig.open(engine, 4)
 	opened := map[string][]record.RoleMessage{
-		"LEGION-208": append(closed["LEGION-208"], record.RoleMessage{Role: holdToken(t, "legion", "LEGION-208", claim.RoleArchitect), Body: legionHold.opened(4)}),
-		"LEGION-209": append(closed["LEGION-209"], record.RoleMessage{Role: holdToken(t, "legion", "LEGION-209", claim.RoleImplementer), Body: legionHold.opened(4)}),
-		"LEGION-210": append(closed["LEGION-210"], record.RoleMessage{Role: holdToken(t, "legion", "LEGION-210", claim.RoleMerger), Body: legionHold.opened(4)}),
+		"LEGION-208": append(closed["LEGION-208"], record.RoleMessage{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.opened(4)}),
+		"LEGION-209": append(closed["LEGION-209"], record.RoleMessage{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: legionHold.opened(4)}),
+		"LEGION-210": append(closed["LEGION-210"], record.RoleMessage{Role: treeRoleToken(t, "LEGION-210", claim.RoleMerger), Body: legionHold.opened(4)}),
 	}
 	for issue, want := range opened {
 		wantMessages(t, rig.pool, issue, want)
@@ -651,12 +638,11 @@ func TestWorkHoldStopsEveryPhaseWorkerOfTheTree(t *testing.T) {
 	}
 	want := map[string]bool{}
 	for _, c := range legionStops {
-		want[c[0]+"/"+c[1]] = true
+		want[c.issue+"/"+string(c.role)] = true
 	}
 	if !reflect.DeepEqual(stopped, want) {
 		t.Fatalf("the close stops %v, want every live or released phase worker of an in-workflow member, %v", stopped, want)
 	}
-	wantLegionClose(t, rig.pool, 4)
 }
 
 // H9: no architect is stopped. The root's architect and a child's own are told the close with the
@@ -668,7 +654,7 @@ func TestWorkHoldStopsNoArchitect(t *testing.T) {
 	told := 0
 	for _, issue := range []string{"LEGION-208", "LEGION-209", "LEGION-210", "LEGION-211", "LEGION-212"} {
 		for _, message := range roleMessagesOf(t, rig.pool, issue) {
-			if message.Role != holdToken(t, "legion", issue, claim.RoleArchitect) {
+			if message.Role != treeRoleToken(t, issue, claim.RoleArchitect) {
 				continue
 			}
 			told++
@@ -740,7 +726,7 @@ func TestWorkHoldHoldsAReleasedWorkerUntilTheOpening(t *testing.T) {
 
 	apply("approved-4", stepApproval("LEGION-208", "artifact-208", 4, record.EventMark{Seq: 12}))
 	wantSupervise(t, pool, "LEGION-208", "start", []record.SuperviseRequest{
-		phaseOpening(issueOf(t, pool, "LEGION-208"), claim.RoleImplementer, legionHold.opening(4, 4))})
+		phaseOpening(storedIssue(t, pool, "LEGION-208"), claim.RoleImplementer, legionHold.opening(4, 4))})
 }
 
 // H4: a gated Verification document holds the work as the spec does. A deployment gating the
@@ -765,10 +751,10 @@ func TestWorkHoldOverAGatedVerificationDocument(t *testing.T) {
 			engine := holdEngine("LEGION", config.HoldWork, twoSteps(), nil)
 			applyMirrored(t, rig.pool, engine, "criteria-2", tc.close)
 			wantMessages(t, rig.pool, "LEGION-208", []record.RoleMessage{
-				{Role: holdToken(t, "legion", "LEGION-208", claim.RoleArchitect), Body: criteria.architectClose(2)}})
+				{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: criteria.architectClose(2)}})
 			stop := criteria.stop(claim.RoleImplementer, 4, 2)
 			if got := roleMessagesOf(t, rig.pool, "LEGION-209"); len(got) != 3 || !reflect.DeepEqual(got[2],
-				record.RoleMessage{Role: holdToken(t, "legion", "LEGION-209", claim.RoleImplementer), Body: criteria.workerClose(2), Stop: &stop}) {
+				record.RoleMessage{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: criteria.workerClose(2), Stop: &stop}) {
 				t.Fatalf("LEGION-209's messages are %s, want the criteria's close with the implementer's stop last", asJSON(got))
 			}
 			want := record.WorkHold{Project: "LEGION", Tree: "LEGION-208", RootGeneration: 4, Step: record.DesignStepCriteria,
@@ -777,9 +763,9 @@ func TestWorkHoldOverAGatedVerificationDocument(t *testing.T) {
 				t.Fatalf("the record holds %+v, want %+v", hold, want)
 			}
 
-			rig.stopsMade("legion", legionStops...)
+			rig.stopsMade(legionStops...)
 			applyMirrored(t, rig.pool, engine, "criteria-approved-2", stepApproval("LEGION-208", criteriaDoc, 2, record.EventMark{Seq: 12}))
-			implementing := issueOf(t, rig.pool, "LEGION-209")
+			implementing := storedIssue(t, rig.pool, "LEGION-209")
 			wantSupervise(t, rig.pool, "LEGION-209", "start", legionOpeningStarts(implementing, criteria.opening(2, 2)))
 		})
 	}
@@ -793,7 +779,7 @@ func TestWorkHoldStartsItsClaimsWhenAPersonApproves(t *testing.T) {
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	rig.open(engine, 4)
 	wantLegionOpening(t, rig, legionHold.opening(4, 4), true)
 }
@@ -814,7 +800,7 @@ func legionOpeningStarts(implementing record.Issue, opening string) []record.Sup
 // and no record.
 func wantLegionOpening(t *testing.T, rig holdRig, opening string, told bool) {
 	t.Helper()
-	implementing, merging := issueOf(t, rig.pool, "LEGION-209"), issueOf(t, rig.pool, "LEGION-210")
+	implementing, merging := storedIssue(t, rig.pool, "LEGION-209"), storedIssue(t, rig.pool, "LEGION-210")
 	wantSupervise(t, rig.pool, "LEGION-209", "start", legionOpeningStarts(implementing, opening))
 	wantSupervise(t, rig.pool, "LEGION-210", "start", []record.SuperviseRequest{phaseOpening(merging, claim.RoleMerger, opening)})
 	if starts := holdStartsOf(t, rig.pool, "LEGION-208"); len(starts) != 0 {
@@ -831,9 +817,9 @@ func wantLegionOpening(t *testing.T, rig holdRig, opening string, told bool) {
 	}
 	closeMessages := legionCloseMessages(t, 4)
 	wantMessages(t, rig.pool, "LEGION-208", append(closeMessages["LEGION-208"],
-		record.RoleMessage{Role: holdToken(t, "legion", "LEGION-208", claim.RoleArchitect), Body: legionHold.opened(4)}))
+		record.RoleMessage{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.opened(4)}))
 	wantMessages(t, rig.pool, "LEGION-209", append(closeMessages["LEGION-209"],
-		record.RoleMessage{Role: holdToken(t, "legion", "LEGION-209", claim.RoleArchitect), Body: legionHold.opened(4)}))
+		record.RoleMessage{Role: treeRoleToken(t, "LEGION-209", claim.RoleArchitect), Body: legionHold.opened(4)}))
 	wantMessages(t, rig.pool, "LEGION-210", closeMessages["LEGION-210"])
 }
 
@@ -845,11 +831,8 @@ func TestWorkHoldStartsItsClaimsWhenTheChangeIsUndone(t *testing.T) {
 	rig.close()
 	rig.wantWorkClose()
 	rig.stopped()
-	rig.apply("carried-46", f3(t))
+	rig.apply("carried-46", CarriedApprovalCapture(t))
 	rig.wantWorkOpening()
-	if starts := holdStartsOf(t, rig.pool, carriedRoot); !strings.HasPrefix(starts[0].Task, rig.words.closed(45)+" "+workHoldWords+" The work hold stopped your turn.") {
-		t.Fatalf("the opening task is %q, want it to start with the close message's sentences", starts[0].Task)
-	}
 }
 
 // H32: a gate that opens before the outbox made a stop makes none: the opening writes no stop and
@@ -868,7 +851,7 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 	wantSupervise(t, rig.pool, "LEGION-209", "suspend", []record.SuperviseRequest{legionHold.stop(claim.RoleTester, 4, 4)})
 	closeMessages := legionCloseMessages(t, 4)
 	opened := func(issue string, role claim.Role) record.RoleMessage {
-		return record.RoleMessage{Role: holdToken(t, "legion", issue, role), Body: legionHold.opened(4)}
+		return record.RoleMessage{Role: treeRoleToken(t, issue, role), Body: legionHold.opened(4)}
 	}
 	wantMessages(t, rig.pool, "LEGION-208", append(closeMessages["LEGION-208"], opened("LEGION-208", claim.RoleArchitect)))
 	wantMessages(t, rig.pool, "LEGION-209", append(closeMessages["LEGION-209"], opened("LEGION-209", claim.RoleArchitect),
@@ -904,7 +887,7 @@ func TestWorkHoldSendsEachStoppedClaimOneTask(t *testing.T) {
 	rig := holdRig{t: t, pool: pool}
 
 	rig.close(engine, 4)
-	rig.stopsMade("legion", [2]string{"LEGION-208", "tester"}, [2]string{"LEGION-208", "implementer"})
+	rig.stopsMade(heldClaim{"LEGION-208", claim.RoleTester}, heldClaim{"LEGION-208", claim.RoleImplementer})
 	result, err := intake.ApplyFact(context.Background(), pool, "api", "back", intake.BackwardMove{Issue: "LEGION-208",
 		Requester: claim.RoleTester, To: phase.Implementing, Reason: "the fix does not cover the empty list"}, engine, admissionStub{})
 	if err != nil || result.Refusal != nil {
@@ -916,7 +899,7 @@ func TestWorkHoldSendsEachStoppedClaimOneTask(t *testing.T) {
 	}
 
 	rig.open(engine, 4)
-	implementing := issueOf(t, pool, "LEGION-208")
+	implementing := storedIssue(t, pool, "LEGION-208")
 	row := phaseRowOf(t, pool, claim.RoleImplementer)
 	opening := legionHold.opening(4, 4)
 	want := []record.SuperviseRequest{
@@ -948,7 +931,7 @@ func TestWorkHoldAppliesAtTheBoot(t *testing.T) {
 func TestWorkHoldStartsNothingAtTheBoot(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		stops [][2]string
+		stops []heldClaim
 	}{
 		{name: "during the drain", stops: legionStops[1:2]},
 		{name: "after it", stops: legionStops},
@@ -957,7 +940,7 @@ func TestWorkHoldStartsNothingAtTheBoot(t *testing.T) {
 			rig := newHoldRig(t)
 			engine := rig.engine(config.HoldWork)
 			rig.close(engine, 4)
-			rig.stopsMade("legion", tc.stops...)
+			rig.stopsMade(tc.stops...)
 			rig.boot(engine)
 			wantLegionClose(t, rig.pool, 4)
 			for _, issue := range []string{"LEGION-208", "LEGION-209", "LEGION-210", "LEGION-211", "LEGION-212"} {
@@ -985,11 +968,11 @@ func TestWorkHoldEndsUnderMergeAtTheBoot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newHoldRig(t)
 			rig.close(rig.engine(config.HoldWork), 4)
-			rig.stopsMade("legion", legionStops...)
+			rig.stopsMade(legionStops...)
 			rig.boot(holdEngine("LEGION", tc.hold, tc.steps, nil))
 			wantLegionOpening(t, rig, legionHold.bootOpening(4), false)
 			told := func(issue string, role claim.Role) record.RoleMessage {
-				return record.RoleMessage{Role: holdToken(t, "legion", issue, role), Body: legionHold.bootOpened()}
+				return record.RoleMessage{Role: treeRoleToken(t, issue, role), Body: legionHold.bootOpened()}
 			}
 			closeMessages := legionCloseMessages(t, 4)
 			wantMessages(t, rig.pool, "LEGION-208", append(closeMessages["LEGION-208"], told("LEGION-208", claim.RoleArchitect)))
@@ -1002,7 +985,7 @@ func TestWorkHoldEndsUnderMergeAtTheBoot(t *testing.T) {
 // then closes nothing, stops nothing and records no hold, and a boot does nothing to it.
 func TestWorkHoldLeavesALingeringTreeAlone(t *testing.T) {
 	rig := newHoldRig(t)
-	root := issueOf(t, rig.pool, "LEGION-208")
+	root := storedIssue(t, rig.pool, "LEGION-208")
 	lingerUntil := holdNow.Add(time.Hour)
 	root.LingerUntil = &lingerUntil
 	seedIssue(t, rig.pool, root)
@@ -1028,7 +1011,7 @@ func TestWorkHoldLeavesAClosedMembersCheckLookAlone(t *testing.T) {
 	rig.close(engine, 4)
 	wantMessages(t, rig.pool, "LEGION-212", nil)
 	wantSupervise(t, rig.pool, "LEGION-212", "suspend", nil)
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	rig.open(engine, 4)
 	wantSupervise(t, rig.pool, "LEGION-212", "start", look)
 	if len(look) != 1 || look[0].CheckLook != 1 {
@@ -1055,7 +1038,7 @@ func TestWorkHoldGivesWayToANewerGeneration(t *testing.T) {
 		rig := newHoldRig(t)
 		engine := rig.engine(config.HoldWork)
 		rig.close(engine, 4)
-		root := issueOf(t, rig.pool, "LEGION-208")
+		root := storedIssue(t, rig.pool, "LEGION-208")
 		root.Generation = 5
 		seedIssue(t, rig.pool, root)
 		seedGate(t, rig.pool, record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact-208",
@@ -1071,13 +1054,13 @@ func TestWorkHoldGivesWayToANewerGeneration(t *testing.T) {
 	})
 }
 
-// H17 of the slot rules, decision 17: a held issue keeps its admission slot. The hold moves no
+// Decision 17: a held issue keeps its admission slot. The hold moves no
 // phase, so admission's pass over the held tree takes no slot back.
 func TestWorkHoldKeepsTheIssuesSlot(t *testing.T) {
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	admissionPass(t, rig.pool, engine)
 	var slots []record.Slot
 	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
@@ -1121,11 +1104,11 @@ func TestWorkHoldIsPassedOverByTheStrandedReport(t *testing.T) {
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	claims := []supervise.Claim{
-		{Token: claim.Token(holdToken(t, "legion", "LEGION-209", claim.RoleImplementer)), Project: "legion", Tree: "LEGION-208",
+		{Token: claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleImplementer)), Project: "legion", Tree: "LEGION-208",
 			Issue: "LEGION-209", Role: claim.RoleImplementer, Generation: 4, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByHold},
-		{Token: claim.Token(holdToken(t, "legion", "LEGION-210", claim.RoleMerger)), Project: "legion", Tree: "LEGION-208",
+		{Token: claim.Token(treeRoleToken(t, "LEGION-210", claim.RoleMerger)), Project: "legion", Tree: "LEGION-208",
 			Issue: "LEGION-210", Role: claim.RoleMerger, Generation: 4, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator},
 	}
 	var stranded []supervise.Claim
@@ -1147,14 +1130,14 @@ func TestWorkHoldLogsEachStopAndStart(t *testing.T) {
 	rig.close(engine, 4)
 	wantLines(t, rig.logged.String(), "workflow: the work hold stops a phase worker of the tree", legionStops)
 	rig.logged.Reset()
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	rig.open(engine, 4)
 	wantLines(t, rig.logged.String(), "workflow: the work hold's opening starts a claim it stopped", legionStops)
 }
 
 // wantLines holds the log to one line of msg for each claim, naming its issue, its role and the
 // version 4 that closed the gate, and no other line of msg.
-func wantLines(t *testing.T, logged, msg string, claims [][2]string) {
+func wantLines(t *testing.T, logged, msg string, claims []heldClaim) {
 	t.Helper()
 	var lines []string
 	for line := range strings.SplitSeq(logged, "\n") {
@@ -1167,9 +1150,9 @@ func wantLines(t *testing.T, logged, msg string, claims [][2]string) {
 	}
 	for _, c := range claims {
 		if !slices.ContainsFunc(lines, func(line string) bool {
-			return strings.Contains(line, " issue="+c[0]+" ") && strings.Contains(line, " role="+c[1]+" ") && strings.Contains(line, " version=4")
+			return strings.Contains(line, " issue="+c.issue+" ") && strings.Contains(line, " role="+string(c.role)+" ") && strings.Contains(line, " version=4")
 		}) {
-			t.Fatalf("no line of %q names %s's %s and version 4:\n%s", msg, c[0], c[1], strings.Join(lines, "\n"))
+			t.Fatalf("no line of %q names %s's %s and version 4:\n%s", msg, c.issue, c.role, strings.Join(lines, "\n"))
 		}
 	}
 }
@@ -1200,7 +1183,7 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	state := projectHeld(t, rig.pool)
 	for key, want := range map[string]*api.WhyView{"LEGION-209": heldWhy(phase.Implementing), "LEGION-210": heldWhy(phase.Merging)} {
 		if got := state.Issues[key].Why; !reflect.DeepEqual(got, want) {
@@ -1218,6 +1201,12 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	}
 }
 
+// beforeTheWorkHold is the contract before api's workHoldContract (210), the contract whose entry
+// added `why: held`. It is pinned rather than read from api.DaemonAPIVersion, as api's own test of
+// the strip pins it, so the next contract does not make this row read a contract that is served
+// the word.
+const beforeTheWorkHold = 209
+
 // H36: a caller whose plugin is below the contract that added `why: held` reads the state without
 // it, through the state route's own narrowing, while a caller at the contract is served it. The
 // state is the one the record projects, served by the route the daemon serves it from. A plugin
@@ -1227,7 +1216,7 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)
-	rig.stopsMade("legion", legionStops...)
+	rig.stopsMade(legionStops...)
 	const podAddr, podUID = "10.1.24.6", "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"
 	for _, tc := range []struct {
 		name     string
@@ -1236,12 +1225,12 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 		remote   string
 		held     bool
 	}{
-		{name: "a pod whose plugin is the contract before", contract: api.DaemonAPIVersion - 1, stated: true, remote: podAddr + ":41000"},
+		{name: "a pod whose plugin is the contract before", contract: beforeTheWorkHold, stated: true, remote: podAddr + ":41000"},
 		{name: "a pod at the contract", contract: api.DaemonAPIVersion, stated: true, remote: podAddr + ":41000", held: true},
-		{name: "a caller in no pod", contract: api.DaemonAPIVersion - 1, remote: "192.0.2.1:41000", held: true},
+		{name: "a caller in no pod", contract: beforeTheWorkHold, remote: "192.0.2.1:41000", held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token := claim.Token(holdToken(t, "legion", "LEGION-209", claim.RoleArchitect))
+			token := claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 			claims := []supervise.Claim{{Token: token, State: supervise.StateIdle, PluginContract: tc.contract, Locator: &runtime.Locator{
 				Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: podUID + "/1",
 				Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-legion-209", PodUID: podUID, Container: "roles", Generation: 1}}}}

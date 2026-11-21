@@ -987,12 +987,11 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
 // What the move does beyond telling is the deployment's hold (Config.Hold, `gates.hold`). Under
-// `merge`, the default, it is what this comment says, word for word as it always was (row H1 of
-// the work hold's design), with one fix: the close message to a merger whose claim the idle
-// release suspended is marked to wake it (record.RoleMessage.Wake), so it can take its pull request
-// out of GitHub's merge queue rather than leave it to merge a head the gate holds (decision 13,
-// row H16). Under `work` the move is the work hold's close or its opening, with recipients and
-// texts of their own (workHoldClose, workHoldOpen).
+// `merge`, the default, it is what this comment says, word for word as it always was, with one
+// fix: the close message to a merger whose claim the idle release suspended is marked to wake it
+// (record.RoleMessage.Wake), so it can take its pull request out of GitHub's merge queue rather
+// than leave it to merge a head the gate holds. Under `work` the move is the work hold's close or
+// its opening, with recipients and texts of their own (workHoldClose, workHoldOpen).
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -1008,10 +1007,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
 		return err
 	}
-	if e.holdsWork() && open {
+	if e.holdIsWork() && open {
 		return e.workHoldOpen(ctx, tx, *root, step, document, version)
 	}
-	if e.holdsWork() {
+	if e.holdIsWork() {
 		return e.workHoldClose(ctx, tx, *root, step, document, version)
 	}
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
@@ -1039,7 +1038,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	var woken map[claim.Token]bool
 	if !open {
 		body = mergeCloseMessage(root.Tree, step, document, version)
-		if woken, err = e.releasedMergers(ctx, tx, root.Project, recipients); err != nil {
+		if woken, err = e.releasedMergers(ctx, tx, told); err != nil {
 			return err
 		}
 	}
@@ -1057,27 +1056,19 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	return nil
 }
 
-// releasedMergers is the claim token of each merger of recipients whose claim is released, the
-// mergers the close message wakes (record.RoleMessage.Wake). Only a merger is woken for it, and
-// only from its release: a live merger reads the message as it is, and one an operator or the
-// daemon suspended is not woken by any message.
-func (e *Engine) releasedMergers(ctx context.Context, tx pgx.Tx, project string, recipients []roleRecipient) (map[claim.Token]bool, error) {
-	var mergers []roleRecipient
-	for _, recipient := range recipients {
-		if recipient.role == claim.RoleMerger {
-			mergers = append(mergers, recipient)
+// releasedMergers is the claim token of each merger of told whose claim is released, the mergers
+// the close message wakes (record.RoleMessage.Wake). Only a merger is woken for it, and only from
+// its release: a live merger reads the message as it is, and one an operator or the daemon
+// suspended is not woken by any message.
+func (e *Engine) releasedMergers(ctx context.Context, tx pgx.Tx, told []addressedRole) (map[claim.Token]bool, error) {
+	var tokens []claim.Token
+	for _, to := range told {
+		if role, _ := to.token.Role(); role == claim.RoleMerger {
+			tokens = append(tokens, to.token)
 		}
 	}
-	if len(mergers) == 0 {
+	if len(tokens) == 0 {
 		return nil, nil
-	}
-	addressed, err := e.addressRoles(project, mergers, func(roleRecipient, error) error { return nil })
-	if err != nil {
-		return nil, err
-	}
-	tokens := make([]claim.Token, len(addressed))
-	for i, merger := range addressed {
-		tokens[i] = merger.token
 	}
 	claims, err := e.store.RoleClaims(ctx, tx, tokens)
 	if err != nil {

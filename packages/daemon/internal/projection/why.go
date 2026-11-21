@@ -224,7 +224,7 @@ func claimStoppedReason(issue record.Issue, stopped supervise.Claim) string {
 // heldTrees is the trees the work hold holds now, by root, each with the record of its hold: the
 // records holds names (record.Store.WorkHolds) whose root is one of own at the generation the
 // record was written at. A record of an older generation of its root is of a run that has ended,
-// whose hold the newer run is not held by (row H28 of the work hold's design).
+// whose hold the newer run is not held by.
 func heldTrees(own []record.Issue, holds []record.WorkHold) map[string]record.WorkHold {
 	if len(holds) == 0 {
 		return nil
@@ -244,7 +244,7 @@ func heldTrees(own []record.Issue, holds []record.WorkHold) map[string]record.Wo
 	return held
 }
 
-// workHeld is whether the work hold holds issue's work (api.WhyHeld, row H36): its tree runs and
+// workHeld is whether the work hold holds issue's work (api.WhyHeld): its tree runs and
 // the hold holds it (heldTrees), and its phase is a phase worker's, whom the hold stops. An issue
 // whose phase is its architect's — a root writing its design, a member in accepting — or that has
 // not started is no issue the hold stops, and is answered as it would be without the hold.

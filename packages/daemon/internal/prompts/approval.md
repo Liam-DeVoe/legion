@@ -3,11 +3,11 @@ The approval message: the words that POST /legion/v1/claims/approval answers to 
 a tree root while a person's approval of a spec stands (record.StandingSpecApproval). The architect's
 plugin adds the message to each model request as it is, and adds no words to it.
 
-Each form is one paragraph. Its first sentence names the version and the document. The rest is R1's
-text, word for word. A tree that carries a copy of another root's gate gets the carried form: its
-first sentence names the other root's spec and says that this tree carries its work, and "deliver it
-and no other" becomes "deliver what it asks of this tree, and no other". Where the hand-over's row
-names no root, the carried form names the document by its id.
+Each form is one paragraph. Its first sentence names the version and the document. The rest is the
+same in every form, word for word. A tree that carries a copy of another root's gate gets the
+carried form: its first sentence names the other root's spec and says that this tree carries its
+work, and "deliver it and no other" becomes "deliver what it asks of this tree, and no other".
+Where the hand-over's row names no root, the carried form names the document by its id.
 
 The fields are prompts.Approval's: .Tree, .Spec, .Document and .Version.
 */ -}}

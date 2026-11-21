@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -32,8 +34,8 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, workHoldsVersion-1)
-	if _, err := store.Pool().Exec(ctx, `select 1 from work_holds`); err == nil {
-		t.Fatal("the database the release before left holds a work_holds table, want none: the migration would prove nothing")
+	if _, err := store.Pool().Exec(ctx, `select 1 from work_holds`); !undefinedTable(err) {
+		t.Fatalf("the database the release before left read work_holds = %v, want no such table (42P01): the migration would prove nothing", err)
 	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the work hold's record: %v", err)
@@ -108,4 +110,11 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 	if holds := rowsAsText(t, store, `select tree from work_holds`); len(holds) != 0 {
 		t.Fatalf("after the roll-forward work_holds holds %v, want it empty", holds)
 	}
+}
+
+// undefinedTable is whether err is Postgres refusing a statement over a table it does not hold
+// (42P01, undefined_table).
+func undefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }

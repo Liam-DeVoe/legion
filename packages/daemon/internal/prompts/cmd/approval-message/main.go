@@ -1,8 +1,9 @@
 // Command approval-message prints the daemon's approval message for each approval it reads: the
 // words POST /legion/v1/claims/approval answers, filled by prompts.ApprovalMessage from
-// approval.md. The capture of check e4b07a29 (scripts/e2e/approval-message.sh) and its CI copy
-// (packages/pi-legion/test/approval-message-omp.test.ts) answer their stand-in for that route with
-// these words, so the words a session is given are the daemon's own and never a copy of them.
+// approval.md. The end-to-end capture of the approval message (scripts/e2e/approval-message.sh)
+// and its CI copy (packages/pi-legion/test/approval-message-omp.test.ts) answer their stand-in for
+// that route with these words, so the words a session is given are the daemon's own and never a
+// copy of them.
 //
 // It reads one JSON array on stdin, each element prompts.Approval's fields
 // ({"tree", "spec", "document", "version", "carried"}), and writes one JSON array on stdout, the

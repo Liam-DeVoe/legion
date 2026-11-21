@@ -20,20 +20,19 @@ import (
 // each mode, and for the shapes the standing gate has always passed over: a step nobody has
 // registered, and a deployment that gates no step.
 func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
-	approved := func(version int) *int { return &version }
 	row := func(step DesignStep, latest int, approvedAt *int) DesignGate {
 		return DesignGate{Issue: "LEGION-208", Step: step, ArtifactID: "artifact-" + string(step), LatestVersion: latest, ApprovedVersion: approvedAt}
 	}
 	for _, step := range DesignSteps {
 		t.Run(string(step), func(t *testing.T) {
 			steps := []DesignStep{step}
-			closed := row(step, 4, approved(3))
+			closed := row(step, 4, new(3))
 			for _, tc := range []struct {
 				name  string
 				rows  map[DesignStep]DesignGate
 				holds bool
 			}{
-				{name: "the step stands open", rows: map[DesignStep]DesignGate{step: row(step, 3, approved(3))}},
+				{name: "the step stands open", rows: map[DesignStep]DesignGate{step: row(step, 3, new(3))}},
 				{name: "a new version stands with its reviewer", rows: map[DesignStep]DesignGate{step: closed}, holds: true},
 				{name: "a version nobody approved yet", rows: map[DesignStep]DesignGate{step: row(step, 1, nil)}, holds: true},
 				// A step nobody has registered names no document, so the standing gate passes it
@@ -62,24 +61,24 @@ func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
 	}
 
 	t.Run("the first closed step of several, in the configured order", func(t *testing.T) {
-		criteria, spec := row(DesignStepCriteria, 2, approved(1)), row(DesignStepSpec, 4, approved(3))
+		criteria, spec := row(DesignStepCriteria, 2, new(1)), row(DesignStepSpec, 4, new(3))
 		gate := TreeGate{Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}, Rows: map[DesignStep]DesignGate{
 			DesignStepCriteria: criteria, DesignStepSpec: spec}}
 		if held, holds := gate.HoldsWork(true); !holds || !reflect.DeepEqual(held, criteria) {
 			t.Fatalf("HoldsWork = %+v, %v; want the criteria row, the first closed step", held, holds)
 		}
-		gate.Rows[DesignStepCriteria] = row(DesignStepCriteria, 2, approved(2))
+		gate.Rows[DesignStepCriteria] = row(DesignStepCriteria, 2, new(2))
 		if held, holds := gate.HoldsWork(true); !holds || !reflect.DeepEqual(held, spec) {
 			t.Fatalf("HoldsWork with the criteria open = %+v, %v; want the spec row", held, holds)
 		}
-		gate.Rows[DesignStepSpec] = row(DesignStepSpec, 4, approved(4))
+		gate.Rows[DesignStepSpec] = row(DesignStepSpec, 4, new(4))
 		if held, holds := gate.HoldsWork(true); holds {
 			t.Fatalf("HoldsWork with every step open = %+v, want nothing", held)
 		}
 	})
 
 	t.Run("a deployment that gates no step holds nothing", func(t *testing.T) {
-		gate := TreeGate{Steps: []DesignStep{}, Rows: map[DesignStep]DesignGate{DesignStepSpec: row(DesignStepSpec, 4, approved(3))}}
+		gate := TreeGate{Steps: []DesignStep{}, Rows: map[DesignStep]DesignGate{DesignStepSpec: row(DesignStepSpec, 4, new(3))}}
 		if held, holds := gate.HoldsWork(true); holds {
 			t.Fatalf("HoldsWork under `gates.design: off` = %+v, want nothing", held)
 		}

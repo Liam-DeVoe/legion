@@ -297,22 +297,24 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // would hold the notice and the hook prompt behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
 //
-// The work hold holds the wake (step 4 of its spec): a claim the hold holds
-// (supervise.Claim.WorkHeld) — stopped by it, or with its stop held for its agent's turn — is
-// woken by nothing and told nothing, and the row waits, a routine wait the hold's opening ends;
-// the opening starts the claim, and the row's next attempt after that start publishes. A released
-// claim whose start the hold's fence holds (startWaitsForTheHold) — the merger under either hold,
-// and under `work` every phase worker of a tree whose standing gate is closed, released before
-// the hold's stop took it over — is not woken either, and the row waits for the gate. The one
-// wake the fence lets through is the design gate's close message to a released merger
-// (wakeForTheClose), which calls wakeReleasedFor with closeWake set.
+// The work hold holds the wake: a claim the hold holds (supervise.Claim.WorkHeld) — stopped by
+// it, or with its stop held for its agent's turn — is woken by nothing and told nothing, and the
+// row waits, a routine wait the hold's opening ends; the opening starts the claim, and the row's
+// next attempt after that start publishes. A released claim whose start the hold's fence holds
+// (startWaitsForTheHold) — the merger under either hold, and under `work` every phase worker of a
+// tree whose standing gate is closed, released before the hold's stop took it over — is not
+// woken either, and the row waits for the gate. The one wake the fence lets through is the design
+// gate's close message to a released merger (wakeForTheClose), which calls wakeReleasedFor with
+// fenced set.
 func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string, mark int64) (waits bool, turn time.Time, err error) {
 	return r.wakeReleasedFor(ctx, token, detail, mark, false)
 }
 
-// wakeReleasedFor is wakeForDelivery, and the close message's wake of a released merger where
-// closeWake is set: that wake alone passes the hold's fence (startWaitsForTheHold).
-func (r *outbox) wakeReleasedFor(ctx context.Context, token claim.Token, detail string, mark int64, closeWake bool) (waits bool, turn time.Time, err error) {
+// wakeReleasedFor is wakeForDelivery, with the hold's fence (startWaitsForTheHold) left out where
+// fenced is set: the close message's wake of a released merger, the one wake that fence lets
+// through, and a delivery that waited on the standing gate itself in this attempt before it asked
+// for the wake (deliverHeld), so the gate is read once per attempt.
+func (r *outbox) wakeReleasedFor(ctx context.Context, token claim.Token, detail string, mark int64, fenced bool) (waits bool, turn time.Time, err error) {
 	if r.supervisor == nil {
 		return false, time.Time{}, nil
 	}
@@ -338,8 +340,8 @@ func (r *outbox) wakeReleasedFor(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	if !closeWake {
-		if err := r.startWaitsForTheHold(ctx, issue, held.Role, 0); err != nil {
+	if !fenced {
+		if _, err := r.startWaitsForTheHold(ctx, issue, held.Role, 0); err != nil {
 			return false, time.Time{}, fmt.Errorf("%s does not wake the released %s: %w", detail, held.Role, err)
 		}
 	}

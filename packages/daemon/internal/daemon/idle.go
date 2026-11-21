@@ -322,9 +322,9 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 // is the sharpest one here: each names a pod that stands, past the quiet period, with no live
 // claim in it, and such a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that
 // sees one of the four every tick is reading capacity held by something that is not work: an
-// operator's suspension, or the work hold of a tree whose standing design gate stays closed
-// (decision 17 of the work hold's design), keeps the pod for its claim's session and
-// unpushed work, which a release would take with the disk.
+// operator's suspension, or the work hold of a tree whose standing design gate stays closed,
+// keeps the pod for its claim's session and unpushed work, which a release would take with the
+// disk.
 //
 // A project's pause's three holds are recorded too (IdleHoldPaused, IdleHoldPauseHeld,
 // IdleHoldUnownedPauseHeld, decision 12 of dispatch://INFRA-3759): each is a pod release would

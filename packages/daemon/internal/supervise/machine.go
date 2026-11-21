@@ -824,7 +824,7 @@ type Event interface{ door() turnDoor }
 
 // turnDoor is whether an event can start or resume a turn of its claim's agent, and whose act it
 // is when it can (Event.door). It is the one list of those doors, which the work hold reads to
-// hold a claim it stopped (Machine.fence; inventory test I2 of the work hold's design).
+// hold a claim it stopped (Machine.fence).
 type turnDoor int
 
 const (
@@ -838,7 +838,7 @@ const (
 	ruleDoor
 	// ownerDoor is the operator's own resume or retry of this claim (the operator route's and
 	// fresh_session's RequestResume, RequestOperatorRetry): an operator's act on a claim overrides
-	// the work hold (step 5 of its spec), so it starts a claim the hold stopped.
+	// the work hold, so it starts a claim the hold stopped.
 	ownerDoor
 )
 

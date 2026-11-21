@@ -257,7 +257,7 @@ var approvalPaths = []approvalPath{
 		r.reviewAt(ownRoot, ownDocument, intake.DispatchArtifactApproved, 24, 1300)
 		r.reviewAt(ownRoot, ownDocument, intake.DispatchArtifactVersion, 45, 1440)
 		r.reviewAt(ownRoot, ownDocument, intake.DispatchArtifactVersion, 46, 1456)
-		r.apply(carriedApproval(r.t))
+		r.apply(workflow.CarriedApprovalCapture(r.t))
 		r.wantOwn(ownRoot, ownDocument, 46)
 		return r.noticeEntry(ownRoot, "design-approved")
 	}},
@@ -993,31 +993,4 @@ func dispatchApproval(key, document string, version int, mark record.EventMark) 
 		panic(err)
 	}
 	return event
-}
-
-// carriedApproval is F3, Dispatch's carried approval after an exact undo as its events route
-// served it, decoded as the daemon's live consumer decodes it.
-func carriedApproval(t *testing.T) intake.Fact {
-	t.Helper()
-	raw, err := os.ReadFile("testdata/dispatch-carried-approval.json")
-	if err != nil {
-		t.Fatalf("read F3: %v", err)
-	}
-	var captured struct {
-		Command  string          `json:"command"`
-		Captured string          `json:"captured"`
-		Event    json.RawMessage `json:"event"`
-	}
-	if err := json.Unmarshal(raw, &captured); err != nil {
-		t.Fatalf("decode F3: %v", err)
-	}
-	fact, unread, err := intake.DecodeDispatchEvent(pathProject, ownRoot, captured.Event)
-	if err != nil || len(unread) > 0 {
-		t.Fatalf("decode F3's event = %v, unread %v", err, unread)
-	}
-	artifact, ok := fact.(intake.DispatchArtifact)
-	if !ok || !artifact.CarriedApproval() || artifact.Version != 46 || artifact.Mark.Seq != 1457 {
-		t.Fatalf("F3's event decodes to %#v, want the carried approval of version 46 at sequence 1457", fact)
-	}
-	return fact
 }

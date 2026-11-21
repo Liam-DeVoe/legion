@@ -1027,3 +1027,98 @@ func TestWorkHoldStopsAndStartsAClaudeCodeWorker(t *testing.T) {
 		t.Fatalf("the Claude Code worker was sent %q, want the opening's task", prompts[sent].Message)
 	}
 }
+
+// The hold's end asks of a claim the hold stopped what a resume asks of a suspended claim
+// (resumeRefusal): one recording a session another claim holds is refused its start before
+// anything of it changes — a RefusedError naming the forget-session to run, nothing launched or
+// charged, and the claim left stopped by the hold with the task it kept — rather than launched
+// into the session hold's refusal at start, which charges each try to its launch budget until the
+// claim fails. Settled for this claim, the hold's end starts it with its one task.
+func TestWorkHoldEndRefusesAClaimRecordingASessionItDoesNotHold(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	h.stoppedByTheHold()
+	h.store.setHold(sessionID(session), other)
+	h.restart()
+	resumes := len(h.calls("Resume"))
+	start := openingStart(h)
+
+	resumed, err := h.m.EndHold(h.ctx, holdOpening, &start)
+	var refused *RefusedError
+	if resumed || !errors.As(err, &refused) {
+		t.Fatalf("the hold's end of a claim recording %s, which %s holds = %v, %v; want a refusal", session, other, resumed, err)
+	}
+	if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
+		t.Fatalf("the refusal %q does not name %q", err, want)
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
+	}
+	h.wantHeld()
+	if c := h.claim(); c.Budgets.LaunchFailures != 0 || c.Session != session {
+		t.Fatalf("the refused claim has %d launch failures and records %q, want none and %s", c.Budgets.LaunchFailures, c.Session, session)
+	}
+	h.wantPendingTask(laterTask)
+
+	h.store.setHold(sessionID(session), h.token)
+	if resumed, err := h.m.EndHold(h.ctx, holdOpening, &start); !resumed || err != nil {
+		t.Fatalf("the hold's end of a claim holding its session = %v, %v; want the claim started", resumed, err)
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 {
+		t.Fatalf("the hold's end asked the runtime to resume %d times, want once", len(calls))
+	}
+	h.wantPendingTask(holdOpening + "\n\n" + laterTask)
+}
+
+// The hold's stop meeting a tree that no longer holds work is decided in one call of the claim's
+// machine (DropHoldStop), so the outbox acts on what the claim is when it asks: a stop held for the
+// agent's turn is dropped and the turn goes on; a claim the stop already stopped — its turn ended
+// before the outbox's row asked — is left stopped, with the task it kept and nothing launched, for
+// the hold's opening to start with the opening's sentences; and a claim the hold never reached is
+// left as it is.
+func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
+	t.Run("a stop held for the turn", func(t *testing.T) {
+		h := newHarness(t)
+		h.inPhaseTurn()
+		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the hold's stop answered %v, want it held", err)
+		}
+
+		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); !dropped || stopped || err != nil {
+			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want the held stop dropped", dropped, stopped, err)
+		}
+
+		if c := h.claim(); c.WorkHeld() || c.SuspensionHeld {
+			t.Fatalf("the claim reads WorkHeld %v, a stop held %v; want the stop dropped", c.WorkHeld(), c.SuspensionHeld)
+		}
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.advance(holdGrace)
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
+	})
+	t.Run("a claim the stop already stopped", func(t *testing.T) {
+		h := newHarness(t)
+		h.stoppedByTheHold()
+		resumes := len(h.calls("Resume"))
+
+		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); dropped || !stopped || err != nil {
+			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want the stopped claim reported and left", dropped, stopped, err)
+		}
+
+		h.wantHeld()
+		h.wantPendingTask(laterTask)
+		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+			t.Fatalf("the runtime was asked to resume %d times, want none: the opening starts the claim with its sentences", len(calls))
+		}
+	})
+	t.Run("a claim the hold never reached", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateIdle)
+
+		if dropped, stopped, err := h.m.DropHoldStop(h.ctx); dropped || stopped || err != nil {
+			t.Fatalf("the stop's drop = dropped %v, stopped %v, %v; want nothing", dropped, stopped, err)
+		}
+
+		h.wantState(StateIdle)
+	})
+}

@@ -115,7 +115,7 @@ const (
 	// IdleHoldUnownedWorkHeld: the work hold stopped a claim of the pod (pods.IdleClaim.WorkHeld,
 	// `gates.hold: work`), which keeps its session, its phase and its pending task until the hold's
 	// opening starts it again in this pod. A release would take the disk with no bundle, and the
-	// worker's unpushed work with it (decision 17 of the work hold's design).
+	// worker's unpushed work with it.
 	IdleHoldUnownedWorkHeld
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
@@ -408,7 +408,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - no claim is stopped by the work hold (pods.IdleClaim.WorkHeld, `gates.hold: work`). The hold
 //     keeps the claim's session, its phase and its pending task, and its opening starts the role
 //     again in this pod; a release would take the disk with no bundle, and the worker's unpushed
-//     work with it (IdleHoldUnownedWorkHeld, decision 17 of the work hold's design);
+//     work with it (IdleHoldUnownedWorkHeld);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a

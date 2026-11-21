@@ -57,7 +57,7 @@ func StandingSpecApproval(ctx context.Context, tx pgx.Tx, store Store, steps []D
 		}
 		return &StandingApproval{Root: key, Spec: key, ArtifactID: cleared.ArtifactID, Version: cleared.Version}, nil
 	}
-	if row.ApprovedVersion == nil || row.ApprovedMark.IsZero() {
+	if !row.PersonApproved() {
 		return nil, nil
 	}
 	standing := &StandingApproval{Root: key, Spec: key, ArtifactID: row.ArtifactID, Version: *row.ApprovedVersion}

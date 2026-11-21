@@ -194,14 +194,19 @@ func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
 // gateMovedBody is the whole message a role is sent for one move of LEGION-208's design gate
 // (workflow's tellGateMoved).
 func gateMovedBody(step record.DesignStep, document string, version int, open bool) string {
+	return gateMovedBodyOf("LEGION-208", step, document, version, open)
+}
+
+// gateMovedBodyOf is gateMovedBody for the design gate of tree.
+func gateMovedBodyOf(tree string, step record.DesignStep, document string, version int, open bool) string {
 	if open {
-		return fmt.Sprintf("The design gate of LEGION-208 opened: a person approved version %d of its %s document (%s), "+
+		return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", version, step, document)
+			"A merge the closed gate held is released.", tree, version, step, document)
 	}
-	return fmt.Sprintf("The design gate of LEGION-208 closed: version %d of its %s document (%s) is with its reviewer, "+
+	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-		"stands open again.", version, step, document)
+		"stands open again.", tree, version, step, document)
 }
 
 // treeRoleToken is the Envoy role token of one issue's role, the address a role message carries.

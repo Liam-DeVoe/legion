@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -34,8 +37,12 @@ func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOpera
 	}
 	held := suspended("legion-LEGION-209-implementer", claim.RoleImplementer, supervise.SuspendedByHold)
 	closed := suspended("legion-LEGION-209-tester", claim.RoleTester, supervise.SuspendedByDaemon)
-	if err := store.PutClaim(ctx, held); err == nil {
-		t.Fatal("the database the release before left stored a claim suspended by the hold, want its check to refuse the source")
+	refusedByTheCheck := func(err error) bool {
+		var pgErr *pgconn.PgError
+		return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "claims_suspended_by_check"
+	}
+	if err := store.PutClaim(ctx, held); !refusedByTheCheck(err) {
+		t.Fatalf("the database the release before left stored a claim suspended by the hold = %v, want its source check to refuse it (23514)", err)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {
@@ -58,8 +65,8 @@ func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOpera
 	if got, want := rowsAsText(t, store, sources), []string{"(implementer,operator)", "(tester,daemon)"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the sources after the way back = %v, want %v: the held claim the operator's, the daemon's as it was", got, want)
 	}
-	if err := store.PutClaim(ctx, held); err == nil {
-		t.Fatal("after the way back the database stored a claim suspended by the hold, want the release before's check")
+	if err := store.PutClaim(ctx, held); !refusedByTheCheck(err) {
+		t.Fatalf("after the way back a claim suspended by the hold = %v, want the release before's source check to refuse it (23514)", err)
 	}
 	var recorded bool
 	if err := store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`,

@@ -174,7 +174,7 @@ type heldMessage struct {
 // the row until a session of that role takes it: the delivery a merge-queue removal and a
 // merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each has read what
 // ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops nothing. A
-// released role is woken (wakeForDelivery), and the row waits on its backoff until the woken
+// released role is woken (wakeReleasedFor), and the row waits on its backoff until the woken
 // session holds the role, or, while the wake pacing holds that resume, for its turn, reading the
 // claim again at most parkedWakeBound apart (parkedWait), as it waits while the listener answers
 // that nobody holds the role (notify.ErrNoHolder) or that its holder is unresponsive
@@ -188,7 +188,7 @@ type heldMessage struct {
 // row waits for the gate to open: a role the gate holds may not know the gate closed, and woken
 // by this message it would work against the gate. Nor is a role the work hold holds
 // (supervise.Claim.WorkHeld): the row waits for the hold's opening, which starts the role
-// (wakeForDelivery). The one start the closed gate lets through, a released merger's wake for the
+// (wakeReleasedFor). The one start the closed gate lets through, a released merger's wake for the
 // close message, is the close message's own (roleMessage), never this row's. A role whose session
 // holds it, and that the work hold does not hold, is told at once, gate or none, and m.delivered
 // is logged. The three other answers of the confirmed publish route keep the ordinary retry, as
@@ -213,8 +213,9 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
 	// role on every attempt and wait for a session nothing brings back. A launch the wake pacing
 	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
-	// whichever comes first (parkedWait).
-	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
+	// whichever comes first (parkedWait). A released role's wake skips the hold's fence where the
+	// gate was read above in this attempt (wakeReleasedFor).
+	if waits, turn, err := r.wakeReleasedFor(ctx, m.token, m.what, row.HeldByPause, held.Released()); err != nil {
 		return err
 	} else if !turn.IsZero() {
 		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",

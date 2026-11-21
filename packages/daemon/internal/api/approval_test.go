@@ -85,7 +85,6 @@ func keylessWords(document, tree string, version int) string {
 // ACME's, with the API serving the claims of that tree, as heldChildHarness builds it.
 type approvalRig struct {
 	*harness
-	t        *testing.T
 	records  record.Store
 	handlers []intake.Handler
 	// seq is the newest Dispatch event sequence a fact has carried.
@@ -101,7 +100,7 @@ func newApprovalRig(t *testing.T, steps []record.DesignStep) *approvalRig {
 	records := record.NewStore()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(records, workflow.Config{Project: approvalProject, Repositories: testRepositories, Steps: steps}, log)
-	r := &approvalRig{harness: h, t: t, records: records, seq: 100,
+	r := &approvalRig{harness: h, records: records, seq: 100,
 		handlers: []intake.Handler{blockers.NewMirror(records, approvalProject), engine, admit.New(records, engine, 4, approvalProject, log)}}
 	r.serve(steps)
 	return r
@@ -155,13 +154,22 @@ func (r *approvalRig) read(read func(tx pgx.Tx) error) {
 	}
 }
 
-// write runs write in a transaction: the fixture's own records, never a row the route reads that
-// re-admission writes.
+// write runs write in a transaction: the fixture's own records.
 func (r *approvalRig) write(write func(tx pgx.Tx) error) {
 	r.t.Helper()
 	if err := r.store.Tx(context.Background(), write); err != nil {
 		r.t.Fatalf("seed the records: %v", err)
 	}
+}
+
+// unnamedFromRoot writes key's hand-over row as a release before from_root wrote it: the
+// migration gave such a row the column's default, so it names no root.
+func (r *approvalRig) unnamedFromRoot(key string) {
+	r.t.Helper()
+	r.write(func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), "update handed_over_roots set from_root = default where issue = $1", key)
+		return err
+	})
 }
 
 // root records key as an admitted root of its own live tree whose architect registered version of
@@ -346,23 +354,11 @@ func TestApprovalRouteCarriesR1sWords(t *testing.T) {
 		want  string
 	}{
 		{"the own first sentence", prompts.Approval{Tree: "ACME-2694", Spec: "ACME-2694", Document: ownDocument, Version: 24},
-			"A person has approved version 24 of the spec of ACME-2694 (dispatch://ACME-2694/spec@v24). " +
-				"Your top responsibility is now to deliver it and no other, at the highest standard. " +
-				"The team will bring reasons to change it. " +
-				"Be prepared to refuse them, and to help find a way to keep the goal and the spec whole. " +
-				"A change to what the spec delivers goes to the person as one decision before any work on it, and a requirement the work missed goes back to the work."},
+			ownWords("ACME-2694", 24)},
 		{"the carried first sentence and wording", prompts.Approval{Tree: "ACME-950", Spec: "ACME-900", Document: otherDocument, Version: 12, Carried: true},
-			"A person has approved version 12 of the spec of ACME-900 (dispatch://ACME-900/spec@v12), whose work this tree, ACME-950, carries. " +
-				"Your top responsibility is now to deliver what it asks of this tree, and no other, at the highest standard. " +
-				"The team will bring reasons to change it. " +
-				"Be prepared to refuse them, and to help find a way to keep the goal and the spec whole. " +
-				"A change to what the spec delivers goes to the person as one decision before any work on it, and a requirement the work missed goes back to the work."},
+			carriedWords("ACME-900", "ACME-950", 12)},
 		{"the carried wording with no key", prompts.Approval{Tree: "ACME-950", Document: otherDocument, Version: 12, Carried: true},
-			"A person has approved version 12 of the spec document " + otherDocument + ", whose work this tree, ACME-950, carries. " +
-				"Your top responsibility is now to deliver what it asks of this tree, and no other, at the highest standard. " +
-				"The team will bring reasons to change it. " +
-				"Be prepared to refuse them, and to help find a way to keep the goal and the spec whole. " +
-				"A change to what the spec delivers goes to the person as one decision before any work on it, and a requirement the work missed goes back to the work."},
+			keylessWords(otherDocument, "ACME-950", 12)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := prompts.ApprovalMessage(tc.words)
@@ -457,13 +453,9 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 		r.recordIssue(record.Issue{Key: ownChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: ownRoot, Project: approvalProject,
 			Title: ownChild, Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
 		r.wantApproval(r.architect(ownRoot), "dispatch://ACME-2694/spec", 3, ownWords(ownRoot, 3))
-		t.Run("the child's architect", func(t *testing.T) {
-			r.wantNone(newLiveClaimIn(t, r.harness, ownRoot, ownChild, claim.RoleArchitect))
-		})
+		r.wantNone(newLiveClaimIn(t, r.harness, ownRoot, ownChild, claim.RoleArchitect))
 		for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-			t.Run("the root's "+string(role), func(t *testing.T) {
-				r.wantNone(newLiveClaimIn(t, r.harness, ownRoot, ownRoot, role))
-			})
+			r.wantNone(newLiveClaimIn(t, r.harness, ownRoot, ownRoot, role))
 		}
 	})
 	t.Run("A9 a carried root whose copy a person's approval of the other root's spec opened", func(t *testing.T) {
@@ -489,11 +481,7 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	t.Run("A9c a carried root whose hand-over row names no root", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
 		r.carried(record.DesignGate{LatestVersion: 12, ApprovedVersion: new(12), ApprovedMark: mark(r.next())})
-		// The row as a release before from_root wrote it: the migration gave it the default.
-		r.write(func(tx pgx.Tx) error {
-			_, err := tx.Exec(context.Background(), "update handed_over_roots set from_root = default where issue = $1", carriedRoot)
-			return err
-		})
+		r.unnamedFromRoot(carriedRoot)
 		architect := r.architect(carriedRoot)
 		r.wantApproval(architect, otherDocument, 12, keylessWords(otherDocument, carriedRoot, 12))
 		if lines := r.serverLog.lines("api: the approval route names a carried spec by its document", carriedRoot, otherDocument); len(lines) != 1 {
@@ -567,12 +555,7 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 // the outbox delivers a start, lets that turn end, and has its session compacted.
 func (r *approvalRig) tellStartAndCompact(c liveClaim) {
 	r.t.Helper()
-	var task string
-	if err := r.store.Pool().QueryRow(context.Background(), `select coalesce(max(payload->>'task'), '') from outbox
-		where kind = 'supervise' and payload->>'op' = 'start' and issue = $1 and payload->>'role' = $2`,
-		c.issue, string(claim.RoleArchitect)).Scan(&task); err != nil {
-		r.t.Fatalf("read the architect's start of %s: %v", c.issue, err)
-	}
+	task := startedTask(r.t, r.harness, c.issue, claim.RoleArchitect)
 	if task == "" {
 		r.t.Fatalf("the re-admission of %s queued no start task for its architect", c.issue)
 	}
@@ -594,28 +577,26 @@ func (r *approvalRig) tellStartAndCompact(c liveClaim) {
 	}
 }
 
-// carriedApproval is F3 decoded as the daemon's live consumer decodes it.
+// carriedApproval is F3 (carriedApprovalFixture) decoded as the daemon's live consumer decodes it.
 func carriedApproval(t *testing.T) intake.Fact {
 	t.Helper()
 	raw, err := os.ReadFile(carriedApprovalFixture)
 	if err != nil {
-		t.Fatalf("read F3: %v", err)
+		t.Fatalf("read the captured carried approval: %v", err)
 	}
 	var captured struct {
-		Command  string          `json:"command"`
-		Captured string          `json:"captured"`
-		Event    json.RawMessage `json:"event"`
+		Event json.RawMessage `json:"event"`
 	}
 	if err := json.Unmarshal(raw, &captured); err != nil {
-		t.Fatalf("decode F3: %v", err)
+		t.Fatalf("decode the captured carried approval: %v", err)
 	}
 	fact, unread, err := intake.DecodeDispatchEvent(approvalProject, ownRoot, captured.Event)
 	if err != nil || len(unread) > 0 {
-		t.Fatalf("decode F3's event = %v, unread %v", err, unread)
+		t.Fatalf("decode the captured carried approval's event = %v, unread %v", err, unread)
 	}
 	artifact, ok := fact.(intake.DispatchArtifact)
 	if !ok || !artifact.CarriedApproval() || artifact.Version != 46 || artifact.Mark.Seq != 1457 {
-		t.Fatalf("F3's event decodes to %#v, want the carried approval of version 46 at sequence 1457", fact)
+		t.Fatalf("the captured event decodes to %#v, want the carried approval of version 46 at sequence 1457", fact)
 	}
 	return fact
 }
@@ -695,10 +676,7 @@ func TestApprovalRouteCarryRecordsTheOtherRoot(t *testing.T) {
 	t.Run("a chain through a row that names no root", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
 		r.carried(approved)
-		r.write(func(tx pgx.Tx) error {
-			_, err := tx.Exec(context.Background(), "update handed_over_roots set from_root = default where issue = $1", carriedRoot)
-			return err
-		})
+		r.unnamedFromRoot(carriedRoot)
 		r.lingering(carriedRoot, "done")
 		r.handOver(carriedRoot, chainedRoot)
 		r.wantHandedOver(chainedRoot, record.HandedOverRoot{Issue: chainedRoot, Generation: 2, GateCarried: true})

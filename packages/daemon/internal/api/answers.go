@@ -49,12 +49,11 @@ const ServingFloor = 46
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares. 202 is
-// repositoriesLiveContract rather than its number for the same reason: it is the contract of the
-// change that made the state's `repositories` block the repositories the live records name, and a
-// renumber of that change moves the constant and this list with it. The last is
-// approvalRouteContract for the same reason too: it is this daemon's own contract, and a renumber
-// of the entry that added the approval route and the work hold's `held` moves
-// approvalRouteContract, and this list with it.
+// repositoriesLiveContract rather than its number for the same reason: it is the live repositories'
+// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
+// list with it. The last is approvalRouteContract for the same reason too: it is this daemon's own
+// contract, and a renumber of the entry that added the approval route and the work hold's `held`
+// moves approvalRouteContract, and this list with it.
 var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, approvalRouteContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes

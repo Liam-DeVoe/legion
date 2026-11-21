@@ -1516,6 +1516,16 @@ type DesignGate struct {
 	EverOpened bool
 }
 
+// PersonApproved is whether a person's approval stands on the row: an approved version with the
+// place Dispatch recorded that approval at (ApprovedMark). A registration of an ungated step
+// approves its row with no mark, so the mark is what says a person's approval set the version.
+// Re-admission's record of the spec row it clears (admit's recordSpecApproval) and the approval
+// route (StandingSpecApproval) both read it, so the route answers from what admission recorded by
+// the same rule.
+func (g DesignGate) PersonApproved() bool {
+	return g.ApprovedVersion != nil && !g.ApprovedMark.IsZero()
+}
+
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that
 // still asks one question of one gate takes this entry: a deployment resolves `root-issues` to the
 // single step spec, so that row is the gate those readers mean.
@@ -1722,8 +1732,8 @@ type ClearedSpecApproval struct {
 // hold was applied at, and the gate row that closed it, by its step, its document and the version
 // that closed it, with the moment of the close (ClosedAt). The close writes it
 // (workflow's workHoldClose), and the opening deletes it, as does a new generation of the tree
-// (Store.ClearTreeGeneration). It is how the daemon's record holds the hold across a restart (spec
-// step 4): the boot tells a tree whose close has not been applied, which holds no record, from
+// (Store.ClearTreeGeneration). It is how the daemon's record holds the hold across a restart: the
+// boot tells a tree whose close has not been applied, which holds no record, from
 // one whose drain is under way, which does (workflow's workHoldBooted), and the opening's task and
 // the state's `why: held` name the version that closed the gate from it.
 type WorkHold struct {
@@ -2063,6 +2073,12 @@ type Store interface {
 	WorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
 	WorkHolds(ctx context.Context, tx pgx.Tx, project string) ([]WorkHold, error)
 	DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) error
+	// WorkHeldTrees is every tree of project, by the tree its issue stands in, that holds a claim
+	// stored suspended by the work hold (supervise.SuspendedByHold), in one read whatever the number
+	// of trees: the trees whose claims the boot's reconcile of the hold may start (workflow's
+	// workHoldBooted), which reads nothing more of a tree outside it. project is the Dispatch
+	// project key the issue records carry.
+	WorkHeldTrees(ctx context.Context, tx pgx.Tx, project string) (map[string]struct{}, error)
 	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
 	// generation of tree, that the issue's own first phase waits for the Dispatch children under
 	// it, and reports whether this call is the telling. That architect is the root's own for a

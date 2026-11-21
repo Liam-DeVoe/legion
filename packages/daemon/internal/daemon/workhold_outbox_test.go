@@ -127,12 +127,15 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 		t.Fatalf("read the pod records: %v", err)
 	}
 	clock := &heldClock{at: time.Now().UTC().Truncate(time.Second)}
+	// The engine reads the rig's clock, as the runner does, so the clock a restart puts in its
+	// place (restart) is the one every later fact reads.
+	var r *workHoldRig
 	engine := workflow.New(records, workflow.Config{Project: tree.project, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Hold: tree.hold, Pods: podRecords, Linger: time.Hour, Clock: func() time.Time { return clock.Now() },
+		Steps: config.DesignGateRootIssues.Steps(), Hold: tree.hold, Pods: podRecords, Linger: time.Hour, Clock: func() time.Time { return r.clock.Now() },
 		Hooks: []workflow.Hook{{Name: "back-to-implementing", On: workflow.HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer},
 			Prompt: "Read the tester's report before you write anything."}}}, quietLogger())
 	admission := admit.New(records, engine, 2, tree.project, quietLogger())
-	r := &workHoldRig{t: t, ctx: ctx, tree: tree, tokenProject: tokenProject, pool: pool, records: records, trees: trees,
+	r = &workHoldRig{t: t, ctx: ctx, tree: tree, tokenProject: tokenProject, pool: pool, records: records, trees: trees,
 		engine: engine, admission: admission, publisher: &holderPublisher{}, conns: map[claim.Role]*fake.Conn{}}
 	r.supervise(clock)
 	r.runner = &outbox{
@@ -291,25 +294,26 @@ func (r *workHoldRig) approve(version int, seq int64) {
 }
 
 // carriedApproval is F3, Dispatch's carried approval of version 46 after an exact undo, as its
-// events route served it, decoded as the daemon's catch-up decodes it.
+// events route served it (../workflow/testdata/dispatch-carried-approval.json), decoded as the
+// daemon's catch-up decodes it.
 func (r *workHoldRig) carriedApproval() intake.Fact {
 	r.t.Helper()
 	raw, err := os.ReadFile("../workflow/testdata/dispatch-carried-approval.json")
 	if err != nil {
-		r.t.Fatalf("read F3: %v", err)
+		r.t.Fatalf("read the captured carried approval: %v", err)
 	}
 	var captured struct {
 		Event json.RawMessage `json:"event"`
 	}
 	if err := json.Unmarshal(raw, &captured); err != nil {
-		r.t.Fatalf("decode F3: %v", err)
+		r.t.Fatalf("decode the captured carried approval: %v", err)
 	}
 	fact, unread, err := intake.DecodeDispatchEvent(r.tree.project, r.tree.key, captured.Event)
 	if err != nil || len(unread) > 0 {
-		r.t.Fatalf("decode F3's event = %v, unread %v", err, unread)
+		r.t.Fatalf("decode the captured carried approval's event = %v, unread %v", err, unread)
 	}
 	if artifact, ok := fact.(intake.DispatchArtifact); !ok || !artifact.CarriedApproval() || artifact.Version != 46 {
-		r.t.Fatalf("F3 decodes to %#v, want the carried approval of version 46", fact)
+		r.t.Fatalf("the captured event decodes to %#v, want the carried approval of version 46", fact)
 	}
 	return fact
 }
@@ -333,17 +337,9 @@ func (r *workHoldRig) drain() {
 	}
 }
 
-// launches is how often the runtime started role's agent: its spawns and its resumes.
+// launches is how often the runtime started role's agent: its spawns and its resumes (launchesOf).
 func (r *workHoldRig) launches(role claim.Role) int {
-	token, launched := r.token(role), 0
-	for _, method := range []string{"Spawn", "Resume"} {
-		for _, call := range r.rt.CallsOf(method) {
-			if call.Spec.Claim == token || call.Locator.Claim == token {
-				launched++
-			}
-		}
-	}
-	return launched
+	return len(launchesOf(r.rt, r.token(role)))
 }
 
 // stored is role's claim as the store holds it: its state and its suspension's source.
@@ -471,7 +467,7 @@ func (r *workHoldRig) rows(kind record.OutboxKind, op string, role claim.Role) i
 func (r *workHoldRig) holdStops(role claim.Role) []record.SuperviseRequest {
 	r.t.Helper()
 	var stops []record.SuperviseRequest
-	for _, request := range startRequestsOfOp(r.t, r.pool, r.tree.key, "suspend") {
+	for _, request := range startRequestsOf(r.t, r.pool, r.tree.key, "suspend") {
 		if request.Role == role && request.SuspendedBy == supervise.SuspendedByHold {
 			stops = append(stops, request)
 		}
@@ -479,25 +475,50 @@ func (r *workHoldRig) holdStops(role claim.Role) []record.SuperviseRequest {
 	return stops
 }
 
-// startRequestsOfOp is every supervise request of op the outbox holds for issue, oldest first.
-func startRequestsOfOp(t *testing.T, pool *store.Pool, issue, op string) []record.SuperviseRequest {
+// newestRow is the id of the newest row the outbox holds, 0 for none.
+func (r *workHoldRig) newestRow() int64 {
+	r.t.Helper()
+	var id int64
+	if err := r.pool.QueryRow(r.ctx, `select coalesce(max(id), 0) from outbox`).Scan(&id); err != nil {
+		r.t.Fatalf("read the newest outbox row: %v", err)
+	}
+	return id
+}
+
+// startsSince is how many starts of role, a wake's among them, the outbox holds for the root
+// above the row id since.
+func (r *workHoldRig) startsSince(role claim.Role, since int64) int {
+	r.t.Helper()
+	var n int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = $2 and id > $3`, r.tree.key, string(role), since).Scan(&n); err != nil {
+		r.t.Fatalf("count the %s's starts: %v", role, err)
+	}
+	return n
+}
+
+// armBackstop arms the release backstop of role, due a minute ago, and answers its id.
+func (r *workHoldRig) armBackstop(role claim.Role) int64 {
+	r.t.Helper()
+	var id int64
+	if err := r.pool.QueryRow(r.ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
+		values ($1, $2, $3, 0, $4) returning id`, r.tokenProject, r.tree.key, string(role), r.clock.Now().Add(-time.Minute)).Scan(&id); err != nil {
+		r.t.Fatalf("arm the %s's backstop: %v", role, err)
+	}
+	return id
+}
+
+// awaitDrained waits until token's machine has handled every event posted to it
+// (supervisor.drained), and fails t naming what after 30 seconds.
+func awaitDrained(t *testing.T, sup *supervisor, token claim.Token, what string) {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
-		and payload->>'op' = $2 order by id`, issue, op)
-	if err != nil {
-		t.Fatalf("read the %s rows of %s: %v", op, issue, err)
+	done := make(chan struct{})
+	sup.drained(token, done)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the machine of %s did not handle %s", token, what)
 	}
-	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
-	if err != nil {
-		t.Fatalf("read the %s rows of %s: %v", op, issue, err)
-	}
-	requests := make([]record.SuperviseRequest, len(payloads))
-	for i, payload := range payloads {
-		if err := json.Unmarshal(payload, &requests[i]); err != nil {
-			t.Fatalf("decode a %s row of %s: %v", op, issue, err)
-		}
-	}
-	return requests
 }
 
 // published is every message delivered to role's topic, in order.
@@ -514,9 +535,9 @@ func (r *workHoldRig) published(role claim.Role) []string {
 	return messages
 }
 
-// heldAtTheClose is a tree under `work` whose gate the close at version 4 closed and whose
-// released workers the hold took over: the root's architect is at work, its tester holds its
-// phase and its implementer works no phase, both released when the gate closed.
+// heldAtTheClose is a tree under `work` whose gate the close at version 4 has just closed: the
+// root's architect is at work, its tester holds its phase and its implementer works no phase, both
+// released before the close, whose stops of them are queued and not made yet.
 func heldAtTheClose(t *testing.T) *workHoldRig {
 	t.Helper()
 	r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
@@ -526,6 +547,7 @@ func heldAtTheClose(t *testing.T) *workHoldRig {
 	r.inTx(func(tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleTester, Claim: r.token(claim.RoleTester), Entry: 1})
 	})
+	r.close(4)
 	return r
 }
 
@@ -541,6 +563,14 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		name  string
 		early bool
 		act   func(r *workHoldRig)
+		// starts is the role whose start, or wake, the writer's act queues itself, which a writer
+		// that queued none would leave nothing to hold: empty for a writer whose row the test
+		// queues by hand, one whose rows are left's, and one that queues no row at all.
+		starts claim.Role
+		// writesNone is the role whose start the writer's act writes no row of at all, because it
+		// reads that role's claim stopped by the hold: admission's repair and sweep pass such a claim
+		// over, and so does the task of a worker's ready. The opening's start is the role's one task.
+		writesNone claim.Role
 		// left are the rows the writer queued that wait for the gate, by kind, which must all have
 		// run once it opens.
 		left []record.OutboxKind
@@ -550,18 +580,18 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			r.apply("back", intake.BackwardMove{Issue: r.tree.key, Requester: claim.RoleTester, To: phase.Implementing,
 				Reason: "the empty list is not covered"})
 			if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleImplementer); got != 1 {
-				t.Fatalf("the move back queued %d starts of the implementer, want its one", got)
+				r.t.Fatalf("the move back queued %d starts of the implementer, want its one", got)
 			}
 			if got := r.rows(record.OutboxKindHookPrompt, "", ""); got != 1 {
-				t.Fatalf("the move back queued %d hook prompts, want the hook's one", got)
+				r.t.Fatalf("the move back queued %d hook prompts, want the hook's one", got)
 			}
 		}, left: []record.OutboxKind{record.OutboxKindHookPrompt}},
-		{name: "StartPromotedWorker", act: func(r *workHoldRig) {
+		{name: "StartPromotedWorker", starts: claim.RoleTester, act: func(r *workHoldRig) {
 			r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
 				return r.engine.StartPromotedWorker(ctx, tx, r.issue(), claim.RoleTester)
 			})
 		}},
-		{name: "SendOwedEntry", act: func(r *workHoldRig) {
+		{name: "SendOwedEntry", starts: claim.RoleTester, act: func(r *workHoldRig) {
 			row := record.PhaseRow{Issue: r.tree.key, Role: claim.RoleTester, Claim: r.token(claim.RoleTester), Entry: 2,
 				EntryTask: "Test entry 2 of LEGION-208."}
 			r.inTx(func(tx pgx.Tx) error { return r.records.PutPhase(r.ctx, tx, row) })
@@ -569,11 +599,11 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 				return r.engine.SendOwedEntry(ctx, tx, r.issue(), claim.RoleTester, row)
 			})
 		}},
-		{name: "the held phase's retry", act: func(r *workHoldRig) {
+		{name: "the held phase's retry", starts: claim.RoleTester, act: func(r *workHoldRig) {
 			r.apply("restart", intake.RestartPhase{Issue: r.tree.key, Role: claim.RoleTester})
 		}},
 		{name: "the boot", act: func(r *workHoldRig) { r.apply("boot", intake.DaemonBooted{}) }},
-		{name: "admission's pass: owed entries and slotted workers", act: func(r *workHoldRig) {
+		{name: "admission's pass: owed entries and slotted workers", writesNone: claim.RoleTester, act: func(r *workHoldRig) {
 			r.inTx(func(tx pgx.Tx) error {
 				return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleTester, Claim: r.token(claim.RoleTester),
 					Entry: 2, EntryTask: "Test entry 2 of LEGION-208."})
@@ -583,19 +613,14 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		{name: "startMidPhaseMembers' start of a role that works no phase", act: func(r *workHoldRig) {
 			r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleImplementer, Generation: 1})
 		}},
-		{name: "a CI settlement's wake", early: true, act: func(r *workHoldRig) {
+		{name: "a CI settlement's wake", early: true, starts: claim.RoleTester, act: func(r *workHoldRig) {
 			r.apply("settled", intake.PullRequestChecks{Repo: "acme/widgets", Number: 42, HeadSHA: "head1", Generation: 1,
 				Snapshot: "head1-snapshot", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}}})
 		}},
-		{name: "the release backstop's wake", early: true, act: func(r *workHoldRig) {
-			var id int64
-			if err := r.pool.QueryRow(r.ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
-				values ($1, $2, $3, 0, $4) returning id`, r.tokenProject, r.tree.key, string(claim.RoleTester), r.clock.Now().Add(-time.Minute)).Scan(&id); err != nil {
-				t.Fatalf("arm the tester's backstop: %v", err)
-			}
-			r.apply("backstop", intake.PodBackstopDue{ID: id, Issue: r.tree.key, Role: claim.RoleTester})
+		{name: "the release backstop's wake", early: true, starts: claim.RoleTester, act: func(r *workHoldRig) {
+			r.apply("backstop", intake.PodBackstopDue{ID: r.armBackstop(claim.RoleTester), Issue: r.tree.key, Role: claim.RoleTester})
 		}},
-		{name: "a listener's wake", early: true, act: func(r *workHoldRig) {
+		{name: "a listener's wake", early: true, starts: claim.RoleTester, act: func(r *workHoldRig) {
 			r.apply("listener", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(r.token(claim.RoleTester)),
 				At: r.clock.Now(), Report: "report-1"})
 		}},
@@ -616,33 +641,39 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			r.enqueue(record.HookPrompt{Hook: "back-to-testing", Role: claim.RoleTester, From: phase.Reviewing, To: phase.Testing, Count: 1,
 				Counts: map[string]int{"reviewing-testing": 1}, PullRequest: "acme/widgets#42", Prompt: "Test the empty list first."})
 		}, left: []record.OutboxKind{record.OutboxKindHookPrompt}},
-		{name: "readyWorkerTask", act: func(r *workHoldRig) {
+		{name: "readyWorkerTask", writesNone: claim.RoleTester, act: func(r *workHoldRig) {
 			r.apply("ready", intake.ClaimReady{Issue: r.tree.key, Role: claim.RoleTester, Launch: r.machine(claim.RoleTester).Claim().Generation})
 		}},
 		{name: "a pause's resume of a spawn it owed", act: func(r *workHoldRig) {
 			pauses := &projectPause{supervisor: r.sup, log: quietLogger()}
 			for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
 				pauses.resumeOwedSpawn(r.token(role), 7)
-				done := make(chan struct{})
-				r.sup.drained(r.token(role), done)
-				select {
-				case <-done:
-				case <-time.After(30 * time.Second):
-					t.Fatalf("the %s's machine did not handle the pause's resume", role)
-				}
+				awaitDrained(r.t, r.sup, r.token(role), "the pause's resume")
 			}
 		}},
 	}
 	for _, w := range writers {
 		t.Run(w.name, func(t *testing.T) {
 			r := heldAtTheClose(t)
-			r.close(4)
-			if w.early {
+			act := func() {
+				t.Helper()
+				since := r.newestRow()
 				w.act(r)
+				if w.starts != "" && r.startsSince(w.starts, since) == 0 {
+					t.Fatalf("the writer queued no start of the %s, want the one it writes", w.starts)
+				}
+				if w.writesNone != "" {
+					if got := r.startsSince(w.writesNone, since); got != 0 {
+						t.Fatalf("the writer queued %d starts of the %s, want none: the hold has its claim stopped", got, w.writesNone)
+					}
+				}
+			}
+			if w.early {
+				act()
 			}
 			r.drain()
 			if !w.early {
-				w.act(r)
+				act()
 				r.drain()
 			}
 			for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
@@ -827,7 +858,7 @@ func TestWorkHoldWakesAReleasedMerger(t *testing.T) {
 	}
 }
 
-// Spec step 4, H22: a project's pause and its resume end no work hold. The resume posts the end of
+// Spec step 4: a project's pause and its resume end no work hold. The resume posts the end of
 // the pause to every machine, resumes each spawn the pause owed, wakes every lane and applies an
 // admission pass; the claims the hold stopped stay stopped through all of it, and the opening
 // starts each of them.
@@ -874,13 +905,7 @@ func TestWorkHoldIsNotEndedByAPauseResume(t *testing.T) {
 	}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		pauses.resumeOwedSpawn(r.token(role), ended.ID)
-		done := make(chan struct{})
-		r.sup.drained(r.token(role), done)
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the %s's machine did not handle the resume", role)
-		}
+		awaitDrained(t, r.sup, r.token(role), "the resume")
 	}
 	r.drain()
 	r.wantHeld(claim.RoleImplementer, 1, "after the pause's resume")
@@ -923,11 +948,7 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	r.publisher.setAbsent(notify.RoleTopicPrefix + string(r.token(claim.RoleImplementer)))
 	r.apply("settled", intake.PullRequestChecks{Repo: "acme/widgets", Number: 42, HeadSHA: "head1", Generation: 1,
 		Snapshot: "head1-snapshot", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}}})
-	var backstop int64
-	if err := r.pool.QueryRow(r.ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
-		values ($1, $2, $3, 0, $4) returning id`, r.tokenProject, r.tree.key, string(claim.RoleImplementer), r.clock.Now().Add(-time.Minute)).Scan(&backstop); err != nil {
-		t.Fatalf("arm the backstop: %v", err)
-	}
+	backstop := r.armBackstop(claim.RoleImplementer)
 	r.apply("backstop", intake.PodBackstopDue{ID: backstop, Issue: r.tree.key, Role: claim.RoleImplementer})
 	r.enqueue(firedHook)
 	r.drain()
@@ -947,9 +968,6 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 	r.approve(4, 12)
 	r.drain()
 	r.wantStarted(claim.RoleImplementer, launched, r.opening(4, 4)+"\n\n"+keptTask)
-	if task := r.machine(claim.RoleImplementer).Claim().Pending.Task; !strings.HasPrefix(task, r.closedSentence(4)+" "+holdSentence) {
-		t.Fatalf("the opening task is %q, want it to start with the close message's sentences", task)
-	}
 	if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != firedHook.Message(r.tree.key) {
 		t.Fatalf("the implementer was told %q once the gate opened, want the hook's prompt", got)
 	}
@@ -1121,15 +1139,16 @@ func TestWorkHoldLeavesEveryHeldClaimStopped(t *testing.T) {
 		deadline := r.holdStops(claim.RoleImplementer)[0].Deadline
 		r.clock.advance(30 * time.Second)
 		r.restart()
-		r.passThenDrain(func() {
-			left := deadline.Sub(r.clock.Now())
-			if live, _ := r.clock.armed(left); live != 1 {
-				t.Fatalf("after the restart %d timers are armed for the %s left of the stored deadline, want the stop's one", live, left)
-			}
-			if fired := r.clock.fire(left); fired != 1 {
-				t.Fatalf("fired %d timers at the stored deadline, want the stop's one", fired)
-			}
-		})
+		// One pass posts the stops again after the restart, before the clock moves on.
+		r.runOnce()
+		left := deadline.Sub(r.clock.Now())
+		if live, _ := r.clock.armed(left); live != 1 {
+			t.Fatalf("after the restart %d timers are armed for the %s left of the stored deadline, want the stop's one", live, left)
+		}
+		if fired := r.clock.fire(left); fired != 1 {
+			t.Fatalf("fired %d timers at the stored deadline, want the stop's one", fired)
+		}
+		r.drain()
 		r.wantHeld(claim.RoleTester, 0, "after the restart")
 		r.wantHeld(claim.RoleImplementer, 0, "after the restart and the stored deadline")
 	})
@@ -1159,15 +1178,6 @@ func (r *workHoldRig) restart() {
 	}
 	r.runner.supervisor = r.sup
 	r.apply("boot", intake.DaemonBooted{})
-}
-
-// passThenDrain is one pass of the outbox, then check, then drain: the pass that posts the stops
-// again after a restart, before the clock moves on.
-func (r *workHoldRig) passThenDrain(check func()) {
-	r.t.Helper()
-	r.runOnce()
-	check()
-	r.drain()
 }
 
 // Spec step 7, H10, H11, H17, decision 18, check a3d61f8e: the opening — a person's approval, or

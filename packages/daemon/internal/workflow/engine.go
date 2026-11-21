@@ -65,8 +65,9 @@ type Config struct {
 	// Hold is what a closed standing gate holds of its tree (`gates.hold`, config.Gates.Holds):
 	// config.HoldMerge, the merger's start and the first phase of each member that has not
 	// started, which today's hold has always been; or config.HoldWork, the tree's running work as
-	// well, which the close stops and the opening starts again (work_hold.go). The empty word, an
-	// engine built without it, is HoldMerge (New).
+	// well, which the close stops and the opening starts again (work_hold.go). Every word but
+	// HoldWork holds what HoldMerge holds, the empty word of an engine built without it among them
+	// (holdIsWork).
 	Hold           config.Hold
 	ReviewRoundCap int
 	Linger         time.Duration
@@ -172,17 +173,14 @@ type Engine struct {
 
 var _ intake.Handler = (*Engine)(nil)
 
-// New constructs a workflow engine, taking the shipped review round cap, production check bound,
-// hold and clock for every one of them a caller omits.
+// New constructs a workflow engine, taking the shipped review round cap, production check bound
+// and clock for every one of them a caller omits.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
 	}
 	if cfg.ProductionCheckBound <= 0 {
 		cfg.ProductionCheckBound = 336 * time.Hour
-	}
-	if cfg.Hold == "" {
-		cfg.Hold = config.HoldMerge
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now

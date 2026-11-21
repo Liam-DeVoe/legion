@@ -740,7 +740,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
-	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
+	if !claim.IsPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
 		return 0, "", false
 	}
 	if stopping := s.stopRefusal("retry"); stopping != "" {

@@ -1240,7 +1240,7 @@ func fillTable(t *builder) {
 	// The work hold's stop is the one suspension the operator's retry ends, since an operator's
 	// act on a claim overrides the hold (operatorRetryHeld); every other suspended claim is
 	// resumed, not retried.
-	t.row(onOperatorRetry, "the operator's retry of a claim the work hold stopped: fresh budgets and the same session relaunched; any other suspended claim is resumed, not retried", operatorRetryHeld,
+	t.row(onOperatorRetry, "the operator's retry of a claim the work hold stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it; any other suspended claim is resumed, not retried", operatorRetryHeld,
 		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 
 	t.row(onForgetSession, "drop the session so the next launch is fresh", forgetSession, nil,
@@ -2736,11 +2736,11 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // operatorRetryHeld is the operator's retry of a suspended claim. The work hold's suspension is
-// the one it ends: an operator's own act on a claim overrides the hold (step 5 of the work hold's
-// spec), so a claim the hold stopped is retried as a stopped one is
-// (operatorRetry), its session relaunched with the task it kept. Every other suspended claim is
-// refused in the words the row of that state gave before the hold existed: it is resumed, not
-// retried.
+// the one it ends: an operator's own act on a claim overrides the hold, so a claim the hold
+// stopped is retried as a stopped one is (operatorRetry), with the task it kept: its session is
+// relaunched unless the retry asks for a new one, the provider refused it out of the launch
+// budget, or no store holds it. Every other suspended claim is refused in the words the row of
+// that state gave before the hold existed: it is resumed, not retried.
 func operatorRetryHeld(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.SuspendedBy != SuspendedByHold {
 		return &RefusedError{State: m.claim.State, Request: "retry", Reason: "a suspended claim is resumed, not retried"}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // workHoldColumns is the columns of a work_holds row in WorkHold's order, as each read scans them.
@@ -64,6 +66,28 @@ func (s *Postgres) DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) e
 		return fmt.Errorf("delete the work hold of %s: %w", tree, err)
 	}
 	return nil
+}
+
+func (s *Postgres) WorkHeldTrees(ctx context.Context, tx pgx.Tx, project string) (map[string]struct{}, error) {
+	rows, err := tx.Query(ctx, `select distinct issues.tree from claims join issues on issues.key = claims.issue
+		where issues.project = $1 and claims.state = $2 and claims.suspended_by = $3`,
+		project, string(supervise.StateSuspended), string(supervise.SuspendedByHold))
+	if err != nil {
+		return nil, fmt.Errorf("list the trees of %s holding a claim the work hold stopped: %w", project, err)
+	}
+	defer rows.Close()
+	trees := map[string]struct{}{}
+	for rows.Next() {
+		var tree string
+		if err := rows.Scan(&tree); err != nil {
+			return nil, fmt.Errorf("list the trees of %s holding a claim the work hold stopped: %w", project, err)
+		}
+		trees[tree] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the trees of %s holding a claim the work hold stopped: %w", project, err)
+	}
+	return trees, nil
 }
 
 // scanWorkHold reads one row of workHoldColumns.

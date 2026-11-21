@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -91,12 +90,8 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // strip writes its own.
 func narrowingState(t *testing.T) State {
 	t.Helper()
-	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+2)
-	maps.Copy(issues, state.Issues)
-	issues["LEGION-213"] = waitingOnIssueMember()
-	issues["LEGION-214"] = workHeldIssue()
-	state.Issues = issues
+	state := workHeldState(t)
+	state.Issues["LEGION-213"] = waitingOnIssueMember()
 	return state
 }
 

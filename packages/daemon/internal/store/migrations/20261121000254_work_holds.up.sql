@@ -32,8 +32,8 @@
 --
 -- begin;
 -- delete from outbox where kind = 'supervise' and payload->>'suspendedBy' = 'hold';
--- update outbox set payload = payload - 'suspendedBy' - 'deadline' - 'turnAfter' - 'opening' where kind = 'supervise';
--- update outbox set payload = payload - 'wake' - 'stop' where kind = 'role_message';
+-- update outbox set payload = payload - 'suspendedBy' - 'deadline' - 'turnAfter' - 'opening' where kind = 'supervise' and payload ?| array['suspendedBy', 'deadline', 'turnAfter', 'opening'];
+-- update outbox set payload = payload - 'wake' - 'stop' where kind = 'role_message' and payload ?| array['wake', 'stop'];
 -- drop table if exists work_holds;
 -- delete from schema_version where version = 20261121000254;
 -- commit;

@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -32,19 +31,24 @@ func TestWorkHoldLogsNoErrorForARuleDoorOnAHeldClaim(t *testing.T) {
 	rig.sup.post(implementer, supervise.ResumePause{Claim: implementer, Pause: 7})
 	rig.sup.post(implementer, supervise.RequestRuleResume{Claim: implementer,
 		Reason: "the project's resume: pause 7 stopped it with a launch owed"})
-	done := make(chan struct{})
-	rig.sup.drained(implementer, done)
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the machine did not handle the two posted events")
-	}
+	awaitDrained(t, rig.sup, implementer, "the two posted events")
 
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Fatalf("the daemon logged an error for a request the work hold holds:\n%s", logs.String())
 	}
-	if got := strings.Count(logs.String(), "supervise: the work hold holds the claim; the event waits for the hold's end"); got != 2 {
-		t.Fatalf("the daemon logged the hold's wait %d times, want once per posted event:\n%s", got, logs.String())
+	var waits []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, "supervise: the work hold holds the claim; the event waits for the hold's end") {
+			waits = append(waits, line)
+		}
+	}
+	if len(waits) != 2 {
+		t.Fatalf("the daemon logged the hold's wait %d times, want once per posted event:\n%s", len(waits), logs.String())
+	}
+	for _, line := range waits {
+		if !strings.Contains(line, "level=INFO") {
+			t.Fatalf("the daemon logged the hold's wait as %q, want it at Info", line)
+		}
 	}
 	if c := machine.Claim(); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
 		t.Fatalf("the claim is %s suspended by %q, want it still the hold's", c.State, c.SuspendedBy)
