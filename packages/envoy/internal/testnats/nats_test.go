@@ -422,18 +422,19 @@ const directGetReloads = 25
 
 // directGetForm is one way a client's direct get reaches a stream: config is the server's
 // configuration, and getter opens the bucket "direct" on conn, creating it with key "k" when
-// create is set, and returns one direct get of that key.
+// create is set, and returns one direct get of that key. Each request may wait as long as a
+// reload's hold may last (reloadWait).
 type directGetForm struct {
 	name   string
 	config string
-	getter func(conn *natsgo.Conn, create bool) (func() error, error)
+	getter func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error)
 }
 
 // kvGetter is the getter of a KV get, through a JetStream context with opts: nats.go gets a key of
 // a bucket that allows direct gets, as every bucket it creates does, by a direct get.
-func kvGetter(opts ...natsgo.JSOpt) func(*natsgo.Conn, bool) (func() error, error) {
-	return func(conn *natsgo.Conn, create bool) (func() error, error) {
-		js, err := conn.JetStream(append(opts, natsgo.MaxWait(30*time.Second))...)
+func kvGetter(opts ...natsgo.JSOpt) func(testing.TB, *natsgo.Conn, bool) (func() error, error) {
+	return func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error) {
+		js, err := conn.JetStream(append(opts, natsgo.MaxWait(reloadWait(t)))...)
 		if err != nil {
 			return nil, err
 		}
@@ -464,14 +465,14 @@ func kvGetter(opts ...natsgo.JSOpt) func(*natsgo.Conn, bool) (func() error, erro
 var directGetForms = []directGetForm{
 	{name: "kv", config: hostOnlyConfig, getter: kvGetter()},
 	{name: "domain", config: "jetstream { domain: hub }\n", getter: kvGetter(natsgo.Domain("hub"))},
-	{name: "mapped", config: "mappings { \"dg.>\": \"$JS.API.DIRECT.GET.>\" }\n", getter: func(conn *natsgo.Conn, create bool) (func() error, error) {
+	{name: "mapped", config: "mappings { \"dg.>\": \"$JS.API.DIRECT.GET.>\" }\n", getter: func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error) {
 		if create {
-			if _, err := kvGetter()(conn, true); err != nil {
+			if _, err := kvGetter()(t, conn, true); err != nil {
 				return nil, err
 			}
 		}
 		return func() error {
-			reply, err := conn.Request("dg.KV_direct.$KV.direct.k", nil, 30*time.Second)
+			reply, err := conn.Request("dg.KV_direct.$KV.direct.k", nil, reloadWait(t))
 			if err != nil {
 				return err
 			}
@@ -495,7 +496,7 @@ func TestAReloadUnderDirectGetsAnswersEveryOne(t *testing.T) {
 			server, uri := StartConfig(t, form.config, []string{"-js"}, true)
 			first := Connect(t, uri)
 			t.Cleanup(first.Close)
-			if _, err := form.getter(first, true); err != nil {
+			if _, err := form.getter(t, first, true); err != nil {
 				t.Fatalf("create the bucket: %v", err)
 			}
 			stop := make(chan struct{})
@@ -510,7 +511,7 @@ func TestAReloadUnderDirectGetsAnswersEveryOne(t *testing.T) {
 			for range reloadConnections {
 				conn := Connect(t, uri)
 				t.Cleanup(conn.Close)
-				get, err := form.getter(conn, false)
+				get, err := form.getter(t, conn, false)
 				if err != nil {
 					t.Fatalf("open the bucket: %v", err)
 				}
@@ -617,9 +618,10 @@ func TestAReloadUnderStreamCreatesAnswersEveryOne(t *testing.T) {
 }
 
 // createInBursts sends stream creates on one connection of client c in bursts of
-// streamCreateBurst, each burst's answers read before the next, until stop.
+// streamCreateBurst, each burst's answers read before the next, until stop. Its connect and each
+// answer may wait as long as a reload's hold may last (reloadWait).
 func createInBursts(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
-	conn, err := natsgo.Connect(uri, natsgo.NoReconnect())
+	conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), natsgo.Timeout(reloadWait(t)))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -643,33 +645,36 @@ func createInBursts(t *testing.T, uri string, c int, stop <-chan struct{}, creat
 			}
 		}
 		for range streamCreateBurst {
+			wait := reloadWait(t)
 			select {
 			case reply := <-replies:
 				if strings.Contains(string(reply.Data), `"error"`) {
 					return fmt.Errorf("a create was answered %s", reply.Data)
 				}
 				created.Add(1)
-			case <-time.After(boundOf(t).step(connectTimeout)):
-				return fmt.Errorf("a burst's create went unanswered for %s", connectTimeout)
+			case <-time.After(wait):
+				return fmt.Errorf("a burst's create went unanswered for %s", wait)
 			}
 		}
 	}
 }
 
 // createOnFreshClients connects client c afresh for each stream create, its first request, until
-// stop.
-func createOnFreshClients(_ *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
+// stop. Each connect and create may wait as long as a reload's hold may last (reloadWait): a
+// connect made while a hold stands has its CONNECT and PING held, and its handshake waits out the
+// hold.
+func createOnFreshClients(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
 	for n := 0; ; n++ {
 		select {
 		case <-stop:
 			return nil
 		default:
 		}
-		conn, err := natsgo.Connect(uri, natsgo.NoReconnect())
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), natsgo.Timeout(reloadWait(t)))
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
-		js, err := conn.JetStream(natsgo.MaxWait(30 * time.Second))
+		js, err := conn.JetStream(natsgo.MaxWait(reloadWait(t)))
 		if err == nil {
 			name := fmt.Sprintf("C%d_%d", c, n)
 			_, err = js.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"created." + name}})
@@ -681,6 +686,12 @@ func createOnFreshClients(_ *testing.T, uri string, c int, stop <-chan struct{},
 		created.Add(1)
 	}
 }
+
+// reloadWait is how long one connect or request of a row that reloads under clients may wait: a
+// reload's hold keeps it back for as long as each step of the hold may take (connectTimeout, as
+// the barrier allows), cut to what is left of the test's deadline (boundOf). nats.go's own
+// defaults, a 2 s connect timeout among them, are shorter than a hold a loaded machine makes.
+func reloadWait(t testing.TB) time.Duration { return boundOf(t).step(connectTimeout) }
 
 // A Reload of a server that a client reached around the relay, at the server's own port, and sent
 // a message fails the test naming that client, and the server does not reload: the hold cannot stop

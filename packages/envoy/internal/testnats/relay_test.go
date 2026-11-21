@@ -1,9 +1,40 @@
 package testnats
 
 import (
+	"maps"
+	"net"
 	"strings"
 	"testing"
 )
+
+// The relay keeps the address of a connection it holds, and of one it has let go while the server
+// still lists it, and forgets one it has let go that the server no longer lists: a client that
+// later reaches the server around the relay from that local port is then not taken for one the
+// relay held (Server.ordered).
+func TestTheRelayForgetsALetGoConnectionTheServerNoLongerLists(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	joinedNow := conn.LocalAddr().String()
+	const listedLetGo, unlistedLetGo = "127.0.0.1:1", "127.0.0.1:2"
+	r := &relay{
+		joins:         map[*joined]struct{}{{upstream: conn}: {}},
+		upstreamsHeld: map[string]bool{joinedNow: true, listedLetGo: true, unlistedLetGo: true},
+	}
+	if got, want := r.upstreams(map[string]bool{listedLetGo: true}), map[string]bool{joinedNow: true, listedLetGo: true}; !maps.Equal(got, want) {
+		t.Fatalf("with the server listing %s: the relay holds %v, want %v", listedLetGo, got, want)
+	}
+	if got, want := r.upstreams(map[string]bool{}), map[string]bool{joinedNow: true}; !maps.Equal(got, want) {
+		t.Fatalf("with the server listing none: the relay holds %v, want %v, the connection it still holds", got, want)
+	}
+}
 
 // clientStream is a client's stream to the server with the operations the relay must see in it:
 // its CONNECT, two PINGs, and payloads that hold a whole PUB line, a PING line and a CRLF, which

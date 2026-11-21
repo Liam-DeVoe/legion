@@ -42,7 +42,7 @@ type relay struct {
 	moved  *sync.Cond
 	// joins are the connections of a client port's relay that the server has not yet closed, and
 	// upstreamsHeld the address at the relay's end of every connection to the server it has
-	// joined, kept after the connection ends (upstreams).
+	// joined, kept after the connection ends until the server no longer lists it (upstreams).
 	joins         map[*joined]struct{}
 	upstreamsHeld map[string]bool
 }
@@ -72,11 +72,22 @@ func (j *joined) port() int { return j.upstream.LocalAddr().(*net.TCPAddr).Port 
 
 // upstreams is the address at the relay's end of every connection to the server the relay has
 // held, "ip:port", as the server reports that client (Server.ordered). It keeps the address of a
-// connection the relay has let go: the server can still list a client whose connection it has
-// closed, as the client of a connection that ended just before.
-func (r *relay) upstreams() map[string]bool {
+// connection the relay has let go for as long as the server lists it (listed), since the server
+// can still list a client whose connection it has closed; it forgets every other one, so a client
+// that later reaches the server around the relay from the same local port is not taken for one the
+// relay held.
+func (r *relay) upstreams(listed map[string]bool) map[string]bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	joined := make(map[string]bool, len(r.joins))
+	for j := range r.joins {
+		joined[j.upstream.LocalAddr().String()] = true
+	}
+	for address := range r.upstreamsHeld {
+		if !joined[address] && !listed[address] {
+			delete(r.upstreamsHeld, address)
+		}
+	}
 	return maps.Clone(r.upstreamsHeld)
 }
 

@@ -516,7 +516,7 @@ func (s *Server) Freeze(t testing.TB) func() {
 // too: without that order, TestAReloadUnderDirectGetsAnswersEveryOne drew the race in every run.
 // A JetStream API request (a stream create among them, which reads the options' stream limits
 // without the lock, stream.go:1013 in v2.15.1) is answered on the API's own goroutines instead,
-// which can still be serving it after the barrier: so Reload first waits until the server serves
+// which can still be serving it after the barrier: so Reload then waits until the server serves
 // none (apiSettled), which orders their reads before the reload as well.
 // That covers only what the relay holds and the goroutines named above run. A server whose
 // configuration, the one it runs or the one it is given, names routes, leafnodes or a gateway
@@ -524,9 +524,12 @@ func (s *Server) Freeze(t testing.TB) func() {
 // stream.go:6143 and 6206 in v2.15.1), so it refuses the reload and fails t, whether or not such a
 // link is up yet; so does one that a client reached around the relay and sent a message (a
 // message Connz counts). Not seen: a client that first reaches the server around the relay during
-// the reload, and one around the relay whose first message the server is still reading, which
-// Connz counts only once the server has read it. A server that hands JetStream accounts to many
-// tests (accountServer) refuses every reload: it would hold every test's clients.
+// the reload; one around the relay whose first message the server is still reading, which Connz
+// counts only once the server has read it; and a stream restore, whose API handler returns at once
+// and whose restore reaches the same read on a goroutine of its own, outside the count apiSettled
+// waits on (jsStreamRestoreRequest, jetstream_api.go:4439 in v2.15.1). A server that hands
+// JetStream accounts to many tests (accountServer) refuses every reload: it would hold every
+// test's clients.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	if s.shared {
@@ -569,11 +572,13 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
 	}
-	if err := apiSettled(t, srv); err != nil {
+	// ordered first: a client around the relay that keeps sending API requests would keep
+	// apiSettled's count up to the test's deadline, and the failure would name the count, not it.
+	if err := s.ordered(srv); err != nil {
 		release()
 		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
 	}
-	if err := s.ordered(srv); err != nil {
+	if err := apiSettled(t, srv); err != nil {
 		release()
 		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
 	}
@@ -599,8 +604,9 @@ func (s *Server) Reload(t testing.TB, config string) error {
 // (Inflight). With the clients held past the barrier no request joins it, so a count of 0 means
 // every handler is done, and the race detector orders what each did before the read that saw the
 // count fall: a stream create's unlocked read of the options among them
-// (addStreamWithAssignmentAndMode, stream.go:1013 in v2.15.1). It returns why the count did not
-// fall in time.
+// (addStreamWithAssignmentAndMode, stream.go:1013 in v2.15.1). A stream restore is the exception:
+// its handler returns before the restore runs, on a goroutine of its own the count does not cover
+// (Server.Reload). It returns why the count did not fall in time.
 func apiSettled(t testing.TB, srv *natsserver.Server) error {
 	bound := boundOf(t)
 	for {
@@ -629,7 +635,11 @@ func (s *Server) ordered(srv *natsserver.Server) error {
 	if err != nil {
 		return fmt.Errorf("list its connections: %w", err)
 	}
-	held := s.relay.upstreams()
+	listed := make(map[string]bool, len(connz.Conns))
+	for _, conn := range connz.Conns {
+		listed[net.JoinHostPort(conn.IP, strconv.Itoa(conn.Port))] = true
+	}
+	held := s.relay.upstreams(listed)
 	for _, conn := range connz.Conns {
 		if address := net.JoinHostPort(conn.IP, strconv.Itoa(conn.Port)); !held[address] && conn.InMsgs > 0 {
 			return fmt.Errorf("a client at %s reached it around the relay and sent it %d messages, which no hold reaches", address, conn.InMsgs)
