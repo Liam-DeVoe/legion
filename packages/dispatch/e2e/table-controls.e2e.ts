@@ -7212,3 +7212,165 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): an epic of 44 issues seeded, and at two widths two of them taken out of it from the
+// List's selection bar.
+// INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p5-h2 and -p5-b2 at
+// da0804df and a1c78223): the project List, narrowed by its Epic filter to one epic, lists the
+// epic and its 44 issues. The reader scrolls the table's box half way, marks two adjacent rows in
+// sight with Space, and presses the bar's Take out of epic with Enter, which takes both rows out
+// of the view. At da0804df the bar goes once the writes land, before the list drops the two rows.
+// So its hand-off finds the row marked last still listed and focuses its checkbox. That row goes
+// 30 to 60 ms later, and the focus with it: onto the body in Chromium, at 1440 px and 390 px in 2
+// of 2 runs, and onto the pager's Rows per page in WebKit, 2 of 2 at each width, and in Firefox,
+// 2 of 2 at 390 px and 1 of 2 at 1440 px, the other run ending on the body. At 390 px the pager's
+// landing also scrolls the window by 22 px. At a1c78223 the same: the body or Rows per page. The
+// focus never reaches the row now at the marked rows' place. The architect's ruling of 2026-11-21
+// 06:0xZ (open-items.md, "The selection bar's return"): after a bulk action takes away the row
+// marked last, the focus goes to the row that now stands at that row's place when it is in sight,
+// else to the nearest row in sight before it, else to the list's own stop. It never scrolls and
+// never goes to the body. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
+// row (e2e/playwright.config.ts).
+test("a bulk action that takes the marked rows out of the project List's view hands the focus to the row now at their place, never the body or the pager @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 44; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  // The Epic filter on that epic: its value is the epic's key and title, as the column shows them.
+  const view = `/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`;
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const markOf = (key: string) =>
+    page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+  /** The issues the table draws, top to bottom, and of them those whose checkbox the reader sees:
+   *  inside the window and the table's box, with nothing, such as the sticky head, drawn over its
+   *  centre. */
+  const drawn = () =>
+    page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      const frame = scroller?.getBoundingClientRect();
+      const listed = [...document.querySelectorAll<HTMLElement>("[data-issue-row]")];
+      const topOf = (row: HTMLElement) => row.getBoundingClientRect().top;
+      listed.sort((one, other) => topOf(one) - topOf(other));
+      const seen = (row: HTMLElement) => {
+        const mark = row.querySelector('input[type="checkbox"]');
+        if (mark === null || frame === undefined) return false;
+        const own = mark.getBoundingClientRect();
+        const above = Math.max(0, frame.top);
+        const below = Math.min(window.innerHeight, frame.bottom);
+        if (own.top < above || own.bottom > below) return false;
+        const hit = document.elementFromPoint(own.left + own.width / 2, own.top + own.height / 2);
+        return hit !== null && row.contains(hit);
+      };
+      return {
+        order: listed.map((row) => row.getAttribute("data-issue-row") ?? ""),
+        shown: listed.filter(seen).map((row) => row.getAttribute("data-issue-row") ?? ""),
+      };
+    });
+  /** Where the window and the table's box stand, and what holds the focus: its name, the row it
+   *  is in, its top, and whether its box is inside the window and inside the table's box. */
+  const landing = () =>
+    page.evaluate(() => {
+      const frame = document.querySelector<HTMLElement>('[data-testid="issues-table-scroll"]');
+      const scrollTop = Math.round(frame?.scrollTop ?? 0);
+      const scrollY = Math.round(window.scrollY);
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { inSight: false, name: "the body", row: null, scrollTop, scrollY, top: null };
+      }
+      const own = focused.getBoundingClientRect();
+      const clip = frame?.getBoundingClientRect();
+      const top = Math.max(0, clip?.top ?? 0);
+      const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
+      const label =
+        focused instanceof HTMLInputElement || focused instanceof HTMLSelectElement
+          ? focused.labels?.[0]?.textContent?.trim()
+          : undefined;
+      return {
+        inSight:
+          own.top >= top - 1 &&
+          own.bottom <= bottom + 1 &&
+          own.left >= -1 &&
+          own.right <= window.innerWidth + 1,
+        name:
+          focused.getAttribute("aria-label") ||
+          label ||
+          focused.textContent?.trim().slice(0, 40) ||
+          focused.tagName.toLowerCase(),
+        row: focused.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? null,
+        scrollTop,
+        scrollY,
+        top: Math.round(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const where = `project List at ${size.width}x${size.height}, two rows taken out of the epic`;
+    await page.setViewportSize(size);
+    await page.goto(view);
+    await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(6);
+    // The window brings the table's box to just below the app's 56 px header, so its rows are in
+    // the window at either width, and the box scrolls half way down its rows.
+    await box.evaluate((node) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - 60);
+      node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+    });
+    await settledScrollTop(page);
+    await settledScrollTop(box);
+    await expect.poll(async () => (await drawn()).shown.length).toBeGreaterThanOrEqual(3);
+    const { order, shown } = await drawn();
+    // Two adjacent rows in the middle of what the reader sees, and the row after them.
+    const at = order.indexOf(shown[Math.floor(shown.length / 2) - 1] ?? "");
+    expect(
+      at !== -1 && shown.includes(order[at + 1] ?? "") && at + 2 < order.length,
+      `${where}: no two adjacent rows in sight mid-list (${shown.join(", ")})`
+    ).toBe(true);
+    const taken = [order[at] as string, order[at + 1] as string];
+    const after = order[at + 2] as string;
+    // The lower row first, so the row marked last is the upper one, whose place the focus takes.
+    for (const key of [...taken].reverse()) {
+      await markOf(key).focus();
+      await page.keyboard.press("Space");
+      await expect(markOf(key)).toBeChecked();
+    }
+    await expect(bar).toContainText("2 selected");
+    await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+    await nextFrames(page);
+    const before = await landing();
+    await page.keyboard.press("Enter");
+    await expect(bar).toHaveCount(0);
+    for (const key of taken) await expect(markOf(key)).toHaveCount(0);
+    // The bar's hand-off runs with the commit that took the bar away, and the page's rescue a
+    // frame and a task after the rows' going, so both are done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the press has run, and nothing else moves.
+    const now = await landing();
+    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY}, table scrollTop ${before.scrollTop} -> ${now.scrollTop}`;
+    if (now.row === null || taken.includes(now.row)) {
+      wrong.push(`${where}: the focus is on ${now.name}, in no listed row (${numbers})`);
+    } else if (!now.inSight) {
+      wrong.push(
+        `${where}: the focus is on ${now.name}, out of sight at ${now.top} px (${numbers})`
+      );
+    } else if (now.row !== after) {
+      wrong.push(
+        `${where}: the focus is on ${now.name}, not on "Select ${after}", the row now at the marked rows' place (${numbers})`
+      );
+    }
+    if (now.scrollY !== before.scrollY || now.scrollTop !== before.scrollTop) {
+      wrong.push(`${where}: the press scrolled, with the focus on ${now.name}: ${numbers}`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});

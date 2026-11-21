@@ -364,8 +364,10 @@ const parallelProjects = [
   // the Session groups dialog, whose card the live update takes away, its row that clear brush
   // window pressed with the Window select scrolled out of sight scrolls the Delivery page
   // nothing, whose button the cleared brush takes away and whose landing each engine scrolls into
-  // view its own way, and its row that a bulk Dismiss deep in the Inbox's list hands the focus
-  // to the row now at the marked row's place in sight, whose bar and rows the Dismiss takes away.
+  // view its own way, its row that a bulk Dismiss deep in the Inbox's list hands the focus to
+  // the row now at the marked row's place in sight, whose bar and rows the Dismiss takes away,
+  // and its row that a bulk action that takes the marked rows out of the project List's view
+  // hands the focus to the row now at their place, whose bar and rows the action takes away.
   // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
