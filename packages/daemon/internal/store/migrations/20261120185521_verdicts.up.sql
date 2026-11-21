@@ -1,20 +1,22 @@
 -- 20261120185521_verdicts.up.sql — the records of the daemon's writes of the required check
 -- legion-verdict: the pull requests of a verdict repository that no Legion issue owns, with their
--- heads and their reviews; the reviewer session a controller names for such a pull request at a
--- head; the verdicts reviewers give on a head; and each check run and commit status named
--- legion-verdict that the daemon writes. store/verdicts.go reads and writes each table.
+-- heads; the reviews of a verdict repository's pull requests; the reviewer session a controller
+-- names for such a pull request at a head; the verdicts reviewers give on a head; and each check
+-- run and commit status named legion-verdict that the daemon writes. store/verdicts.go reads and
+-- writes each table.
 --
 -- outside_pull_requests records each sighting of such a pull request at a head, from webhook
 -- events. pull_requests cannot hold it, because its primary key is the Legion issue that owns the
--- pull request (0004_record). outside_reviews records each review of such a pull request: the head
--- it read, its author, whether GitHub gives the author write access, its state, and when GitHub
--- says it was submitted (null when the event did not say). side_reviewers records each naming of a
--- reviewer session for a pull request at a head. verdicts records each verdict, approve or
--- changes, with the session that gave it and the commit of the tester's pass it carries to the
--- head (tested_commit, empty for none); issue is the Legion issue whose head it is, empty for a
--- pull request no Legion issue owns. verdict_writes records each check run (kind check_run) and
--- commit status (kind status) the daemon wrote on a head: GitHub's id of it, its conclusion, the
--- id of the run or status of another writer it went over (foreign_id, 0 for none) and when it was
+-- pull request (0004_record). verdict_reviews records each review of a verdict repository's pull
+-- request at a head, delivered by webhook, of a Legion head or an outside one: the head it read,
+-- its author, whether GitHub gives the author write access, its state, and when GitHub says it was
+-- submitted (null when the event did not say). side_reviewers records each naming of a reviewer
+-- session for a pull request at a head. verdicts records each verdict, approve or changes, with
+-- the session that gave it and the commit of the tester's pass it carries to the head
+-- (tested_commit, empty for none); issue is the Legion issue whose head it is, empty for a pull
+-- request no Legion issue owns. verdict_writes records each check run (kind check_run) and commit
+-- status (kind status) the daemon wrote on a head: GitHub's id of it, its conclusion, the id of
+-- the run or status of another writer it went over (foreign_id, 0 for none) and when it was
 -- written.
 --
 -- A row is a record that nothing changes after its insert, and a read of the newest row of a key
@@ -41,7 +43,7 @@ create table outside_pull_requests (
   recorded_at timestamptz not null default now());
 create index outside_pull_requests_number on outside_pull_requests (lower(repository), number, id);
 
-create table outside_reviews (
+create table verdict_reviews (
   id bigserial,
   repository text not null default '',
   number integer not null default 0,
@@ -52,7 +54,7 @@ create table outside_reviews (
   state text not null default '',
   submitted_at timestamptz,
   recorded_at timestamptz not null default now());
-create index outside_reviews_number on outside_reviews (lower(repository), number, id);
+create index verdict_reviews_number on verdict_reviews (lower(repository), number, id);
 
 create table side_reviewers (
   id bigserial,

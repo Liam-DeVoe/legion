@@ -560,8 +560,7 @@ func (r *conflictNoTakeoverLive) published(issue string) {
 // (readBaseRules): the rules of the branch, one ruleset requiring ci whose rule does not require a
 // pull request to be current with the branch, and the branch itself unprotected otherwise, which a
 // 404 would make rules the daemon could not read, and act on at once (record.ConflictRulesUnread).
-// Then the control's pull request, which GitHub answers conflicting with that base from the start,
-// and its reviews, as none.
+// Then the control's pull request, which GitHub answers conflicting with that base from the start.
 func (r *conflictNoTakeoverLive) conflictGitHub() map[string]any {
 	return map[string]any{
 		"/rules/branches/" + conflictBase: []map[string]any{
@@ -576,6 +575,5 @@ func (r *conflictNoTakeoverLive) conflictGitHub() map[string]any {
 			"base": map[string]string{"ref": conflictBase},
 			"head": map[string]string{"ref": claim.IssueBranch(r.control), "sha": conflictControlHead},
 		},
-		fmt.Sprintf("/pulls/%d/reviews", r.controlNumber): []any{},
 	}
 }

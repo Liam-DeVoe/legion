@@ -51,6 +51,43 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 	}
 }
 
+// Patch sends its body as JSON with GitHub's PATCH and the installation token, as an update of a
+// check run is sent, reads a 2xx answer, and gives any other answer back as an *Answer naming
+// PATCH, the path and the status.
+func TestPatchSendsJSONWithThePatchMethod(t *testing.T) {
+	const token = "patch-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var sent struct {
+			Conclusion string `json:"conclusion"`
+		}
+		if r.Method != http.MethodPatch || r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Content-Type") != "application/json" ||
+			json.NewDecoder(r.Body).Decode(&sent) != nil {
+			http.Error(w, `{"message":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path != "/repos/acme/widgets/check-runs/7" {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		w.Write([]byte(`{"id":7,"conclusion":"` + sent.Conclusion + `"}`))
+	}))
+	defer server.Close()
+	client := Client{Token: token, API: server.URL + "/repos/acme/widgets"}
+
+	var updated struct {
+		ID         int64  `json:"id"`
+		Conclusion string `json:"conclusion"`
+	}
+	if err := client.Patch(context.Background(), "/check-runs/7", map[string]string{"conclusion": "failure"}, &updated); err != nil || updated.ID != 7 || updated.Conclusion != "failure" {
+		t.Fatalf("Patch = %+v, %v; want the answer read", updated, err)
+	}
+	err := client.Patch(context.Background(), "/check-runs/8", map[string]string{"conclusion": "failure"}, nil)
+	var answer *Answer
+	if !errors.As(err, &answer) || answer.Method != http.MethodPatch || answer.Path != "/check-runs/8" || answer.Status != http.StatusNotFound {
+		t.Fatalf("Patch of a run GitHub does not hold = %v, want an *Answer for PATCH /check-runs/8 with 404", err)
+	}
+}
+
 // RetryAfter reads GitHub's rate limit from the error a call returns, wrapped or not: an *Answer
 // for an answer other than 2xx. It names how long GitHub asks the caller to wait and the budget
 // the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose

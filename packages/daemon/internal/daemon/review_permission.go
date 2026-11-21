@@ -46,9 +46,11 @@ type permissionKey struct{ repository, login string }
 // the author (GitHub resolves some logins to another user) is not either, and logged.
 //
 // GitHub is not asked about the one App's own reviews, which decide nothing (workflow's
-// RefusesRound), nor about a review on a pull request the daemon does not record, which the
-// workflow drops; both are answered false. An account answered no write access stands so for
-// reviewPermissionTTL; write access is never kept (reviewPermissionTTL's comment).
+// RefusesRound), nor about a review on a pull request the daemon does not record on a repository no
+// verdict entry names, which the workflow drops; both are answered false. A review of an
+// unrecorded pull request on a verdict repository is an outside review, and its author is read
+// (reviewedRepository). An account answered no write access stands so for reviewPermissionTTL;
+// write access is never kept (reviewPermissionTTL's comment).
 //
 // An account GitHub does not know on the repository is answered `404`: no write access, logged,
 // and the review decides nothing. A `403` that is not GitHub's rate limit is no write access too,
@@ -99,8 +101,9 @@ func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.Pu
 // names it (ghrepo.Under, repositories.renames): a pull request already open when its repository
 // was transferred is recorded under the name it moved from, while the review names the one it
 // moved to. A review on a pull request neither name finds answers recorded=false, which the caller
-// takes as nothing left to do: the workflow drops such a review unread, so no permission of it is
-// ever read.
+// takes as nothing left to do, unless its repository is a verdict repository: there the review is
+// an outside review (intake.OutsideReview), which the daemon records and writes legion-verdict
+// from, so its author's permission is read.
 func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.PullRequestReview) (repository ghrepo.Repository, recorded bool, err error) {
 	var pr *record.PullRequest
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -113,7 +116,9 @@ func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.
 		return ghrepo.Repository{}, false, fmt.Errorf("read the record of pull request %s#%d: %w", review.Repo, review.Number, err)
 	}
 	if pr == nil {
-		return ghrepo.Repository{}, false, nil
+		if _, verdicts := w.verdicts.entry(review.Repo); !verdicts {
+			return ghrepo.Repository{}, false, nil
+		}
 	}
 	repository, err = ghrepo.Parse("the review's repository", review.Repo)
 	if err != nil {

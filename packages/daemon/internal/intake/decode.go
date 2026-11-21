@@ -727,21 +727,26 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	return fact, unread, refused, err
 }
 
-// decodePullRequest decodes a pull request's lifecycle event on an issue's branch
-// (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
-// event, so it is acknowledged without a transaction: the workflow records a pull request only on
-// an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
-// mapped repository whose other pull requests open and move many times a minute would otherwise
-// cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of them
-// changing nothing. Every action carries head_ref.
+// decodePullRequest decodes a pull request's lifecycle event. On an issue's branch
+// (claim.BranchIssue) it is the fact of that action. On any other branch it is the sighting of an
+// outside pull request at its head (OutsidePullRequest) when it opens, reopens or moves, and no
+// fact for every other action: the daemon records such a pull request only to write legion-verdict
+// on it. The consumer acknowledges that sighting with no transaction on every repository but a
+// verdict repository (ConsumerSpec.VerdictRepositories), so a mapped repository whose other pull
+// requests open and move many times a minute costs the daemon no transaction under the fact lock
+// (ApplyFact) for them. Every action carries head_ref.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
-	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
-		return nil, nil
-	}
 	number, action, ok := githubIdentity(raw)
 	if !ok {
 		return nil, nil
+	}
+	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+		sha, _ := rawString(raw, "head_sha")
+		if sha == "" || (action != "opened" && action != "reopened" && action != "synchronize") {
+			return nil, nil
+		}
+		return OutsidePullRequest{Repo: repository.String(), Number: number, Branch: branch, HeadSHA: sha}, nil
 	}
 	repo := repository.String()
 	sha, _ := rawString(raw, "head_sha")

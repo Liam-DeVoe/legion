@@ -5,6 +5,6 @@ body: |-
   review never saw — an approval of one head has been seen listing, as its `commit_id`, a merge
   pushed two days later. The reviewer's verdict names the head it read in its own words instead,
   the commit its completion of reviewing carries, and that is the head the round is decided at.
-  A review the daemon reads from GitHub's list, where that id has moved, decides nothing. A
-  person's request for changes still refuses the head by its webhook, on the `commit_id` that
-  event carried.
+  The daemon no longer reads GitHub's list of a pull request's reviews, where that id has moved,
+  so no listed review reaches a round. A person's request for changes refuses the head only by its
+  webhook, on the `commit_id` that event carried.

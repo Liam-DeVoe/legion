@@ -28,8 +28,8 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 }
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com.
+// (RepositoryAPI), which Get, Post, Patch, GetPages and GetListPages take paths under; an empty
+// endpoint is api.github.com.
 type Client struct {
 	Token string
 	API   string
@@ -45,6 +45,12 @@ func (c Client) Get(ctx context.Context, path string, into any) error {
 // when into is not nil. An answer other than 2xx is an *Answer.
 func (c Client) Post(ctx context.Context, path string, body, into any) error {
 	return c.send(ctx, http.MethodPost, path, body, into)
+}
+
+// Patch sends body, as JSON, to path under the client's API, as Post does, with GitHub's PATCH:
+// what updates a check run (`PATCH /repos/{owner}/{repo}/check-runs/{id}`).
+func (c Client) Patch(ctx context.Context, path string, body, into any) error {
+	return c.send(ctx, http.MethodPatch, path, body, into)
 }
 
 // send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer

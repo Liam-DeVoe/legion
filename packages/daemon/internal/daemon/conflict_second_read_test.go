@@ -266,8 +266,8 @@ func secondReadRow(t *testing.T, pool *store.Pool) (due time.Time, attempts int,
 }
 
 // readRig is CAPTURE-1 as seed leaves it, on its pull request 86 at head code, GitHub answering
-// its nth read of the pull request as answer says and counting the reads, listing no review on it,
-// the base main requiring lint (green nowhere) and pr-checks-result; the runtime that reads it, its
+// its nth read of the pull request as answer says and counting the reads, the base main requiring
+// lint (green nowhere) and pr-checks-result; the runtime that reads it, its
 // waits cut to readRigWait through its own seam (mergeStateRetry) and its log kept; and the runner
 // of its second read (secondReadRunner). The second read's tests and the merge-state reads' share
 // it, so a read of either kind meets the same GitHub.
@@ -297,8 +297,6 @@ func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(re
 				w.WriteHeader(got.status)
 			}
 			_, _ = io.WriteString(w, got.body)
-		case "/repos/acme/widgets/pulls/86/reviews":
-			_, _ = io.WriteString(w, `[]`)
 		case "/repos/acme/widgets/rules/branches/main":
 			_, _ = io.WriteString(w, `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"},{"context":"pr-checks-result"}]}}]`)
 		case "/repos/acme/widgets/branches/main":

@@ -1582,42 +1582,18 @@ func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
 	}
 }
 
-// A person's request for changes refuses the head by the commit_id its webhook carried; the same
-// person's review read from GitHub's list of the pull request's reviews decides nothing, since the
-// list answers with GitHub's own commit_id for every review it holds and that id moves with the
-// pull request (intake.PullRequestReview.ReadFromList, dispatch://INFRA-1557). The refusal records
-// nothing on the reviewer's row, and it is logged naming its author.
-func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		readFromList bool
-		want         phase.Phase
-	}{
-		{name: "by its webhook", want: phase.Implementing},
-		{name: "read from the list", readFromList: true, want: phase.Reviewing},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedReviewOf(t, pool, headOne, "green")
-			var logs bytes.Buffer
-			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
-			apply("request-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "changes_requested", CommitID: headOne,
-				Author: "a-writer", AuthorCanWrite: true, ReadFromList: tc.readFromList, Body: "rename the widget",
-				SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
-			if got := issuePhase(t, pool); got != tc.want {
-				t.Fatalf("after the writer's request for changes the issue is in %s, want %s", got, tc.want)
-			}
-			if !tc.readFromList {
-				return
-			}
-			if got := reviewerDecision(t, pool); got != nil {
-				t.Fatalf("the reviewer's decision = %+v, want nothing recorded", got)
-			}
-			if got := logs.String(); !strings.Contains(got, "a review decides nothing: a person's review read from the list") ||
-				!strings.Contains(got, "author=a-writer") {
-				t.Fatalf("logs = %s, want the refusal naming the author", got)
-			}
-		})
+// A person's request for changes refuses the head by the commit_id its webhook carried, and the
+// round goes back to implementing. The daemon reads no list of a pull request's reviews, whose
+// commit_id GitHub moves with the pull request, so the webhook is the one way a person's review
+// reaches a round.
+func TestAPersonsRequestForChangesByWebhookRefusesTheHead(t *testing.T) {
+	pool := migratedPool(t)
+	seedReviewOf(t, pool, headOne, "green")
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	apply("request-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "changes_requested", CommitID: headOne,
+		Author: "a-writer", AuthorCanWrite: true, Body: "rename the widget", SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after the writer's request for changes the issue is in %s, want implementing", got)
 	}
 }
 

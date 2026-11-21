@@ -113,6 +113,18 @@ type Config struct {
 	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
 	// is the API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
+	// WriteVerdict is asked, on the commit of a fact that can change the verdict of a head of one
+	// of the project's open pull requests (askMergeState, through askMergeStateFor), to write the
+	// required check legion-verdict on that head: the tester's completion with its verdict, the
+	// reviewer's verdict, and a webhook's approval or request for changes. It is registered before
+	// ReadMergeState on the same commit, because GitHub answers `blocked` until the required check
+	// exists, so a round that waited on the read before the write would wait on itself (spec R4).
+	// issue is the pull request's issue, whose merge-state reads the daemon holds until this write
+	// ends; repo and number name the pull request as the record keeps it, and head is the commit
+	// the fact's verdict is of, which need not be the pull request's head. The daemon answers it
+	// with a queued write (workflowRuntime.queueVerdictWrite); nil writes nothing, which is the
+	// API-only daemon and a test that reads no check.
+	WriteVerdict func(issue, repo string, number int, head string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
 	// in internal/daemon), which paces every wake the daemon causes together — the role processes
@@ -248,6 +260,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.BasePush:
 		return e.basePush(ctx, tx, fact)
 	case intake.PullRequestChecks:
+		// The daemon's own legion-verdict is no CI: a settlement that names nothing else wakes and
+		// tells nobody, and one that names more is applied without it (withoutVerdictCheck).
+		fact, onlyVerdict := withoutVerdictCheck(fact)
+		if onlyVerdict {
+			return intake.Result{}, nil
+		}
 		// A settlement on the head of a released pod's pull request wakes that pod before the
 		// settlement is applied, so the woken role's task names the settlement this very
 		// transaction records (wakeOnSettlement).
@@ -968,12 +986,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// while the round is open writes either: one the issue has left moves nothing (leftItsPhase),
 	// and its round was ended by something else. A completion with no verdict, which a reviewer
 	// before the verdict sent, leaves the decision as it stands, and a round it completes with none
-	// is stuck (stuckUndecided).
+	// is stuck (stuckUndecided). The verdict is recorded as the head's too (recordVerdict), which
+	// the writer of legion-verdict reads and no person's review of the round overwrites.
 	if current && issue.Phase == phase.Reviewing && fact.Role == claim.RoleReviewer {
 		if decision := decisionOf(fact); decision != nil {
 			row.Decision = decision
 			if row.EntryTask != "" {
 				row.ReviewedHead = fact.Commit
+			}
+			if err := e.recordVerdict(ctx, tx, issue.Key, pr, fact.Claim, fact.Verdict, fact.Commit, fact.TestedCommit); err != nil {
+				return intake.Result{}, err
 			}
 		}
 	}

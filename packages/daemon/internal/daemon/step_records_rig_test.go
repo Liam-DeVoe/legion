@@ -1007,7 +1007,7 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 	g := &stepRecordsGitHub{t: t}
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo)
-		pull, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")
+		pull := strings.TrimPrefix(rest, "/pulls/")
 		answer, known := "", false
 		if number, err := strconv.Atoi(pull); err == nil && strings.HasPrefix(rest, "/pulls/") {
 			answer, known = g.pullRequest(number)
@@ -1025,10 +1025,8 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 			_, _ = io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && isRepository && rest == "/pulls":
 			_, _ = fmt.Fprintf(w, "[%s]", strings.Join(g.pullRequests(), ","))
-		case r.Method == http.MethodGet && isRepository && known && !reviews:
+		case r.Method == http.MethodGet && isRepository && known:
 			_, _ = io.WriteString(w, answer)
-		case r.Method == http.MethodGet && isRepository && known && reviews:
-			_, _ = io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && isRepository && rest == "/collaborators/"+stepRecordsPerson+"/permission":
 			_, _ = io.WriteString(w, `{"permission":"write","user":{"login":"`+stepRecordsPerson+`","type":"User"}}`)
 		default:

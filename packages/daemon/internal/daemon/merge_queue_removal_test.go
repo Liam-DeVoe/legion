@@ -620,7 +620,7 @@ func (r *dequeueRig) boot(t *testing.T) {
 			t.Logf("the end of the daemon's log:\n%s", log[max(0, len(log)-idleRigLogTailBytes):])
 		}
 	})
-	r.await(t, "the start read of every issue's pull request and its reviews (readIssuesAtStart)", func() bool {
+	r.await(t, "the start read of every issue's pull request (readIssuesAtStart)", func() bool {
 		for _, issue := range r.issues {
 			if !r.github.startRead(issue.number) {
 				return false

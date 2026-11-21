@@ -253,17 +253,12 @@ type workflowRuntime struct {
 	permissions   map[permissionKey]time.Time
 	permissionTTL time.Duration
 	limitedUntil  time.Time
-	// refusedReviews is every review, by GitHub's review id, whose author a read of a pull
-	// request's reviews found the workflow does not let decide (reviewToApply), so this process
-	// judges each such review once, as a webhook's review is judged once when it is delivered: an
-	// account given write access later never turns a review the read refused into a decision. It is
-	// held in memory only, so a restart's first read judges again with the permission GitHub gives
-	// then.
-	//
-	// readMemoMu guards it: the per-issue read (readIssuePullRequest) judges reviews on a
-	// goroutine of its own (reviewRefused).
-	readMemoMu     sync.Mutex
-	refusedReviews map[int64]bool
+	// verdicts is the writer of the required check legion-verdict (verdictWriter): the
+	// repositories `verdict_repositories` names, the writes the engine's Config.WriteVerdict and
+	// the outside facts queued (queueVerdictWrite), which writeVerdicts makes, and what each
+	// issue's merge-state reads wait on (readMergeState). nil, in a runtime a test builds by hand,
+	// writes nothing and holds no read.
+	verdicts *verdictWriter
 	// failed carries the first supervision terminal fact that could not be applied. serve stops
 	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
 	// the fact the failed callback lost.
@@ -450,6 +445,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
+		verdicts:                newVerdictWriter(cfg.VerdictRepositories),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
@@ -502,6 +498,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	// A fact that can change a head's verdict asks for legion-verdict on its commit, before the
+	// merge-state read the same commit asks for, which waits for the write (readMergeState).
+	engineCfg.WriteVerdict = w.queueVerdictWrite
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
@@ -531,8 +530,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// transaction, from the mirror's rows, so the row an event carries must already be written
 	// when they look. Neither could write it itself: the engine returns early on an event whose
 	// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
-	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
-	w.handlers, w.appLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, appLogin
+	// blocked-by-only edit this mirror exists for, and admission runs second in any case. The
+	// verdict facts run last: they record what the workflow does not, the outside pull requests
+	// and every review a verdict reads, in the same transaction (verdictFacts).
+	w.handlers, w.appLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission, w.verdictFacts()}, appLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
@@ -848,7 +849,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
-		ReviewPermission:  w.reviewerCanWrite,
+		ReviewPermission: w.reviewerCanWrite, VerdictRepositories: w.verdicts.repositories(),
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
 	if err != nil {
@@ -1706,6 +1707,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.readMergeStates(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		w.writeVerdicts(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {

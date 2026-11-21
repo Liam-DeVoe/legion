@@ -167,7 +167,8 @@ type ConsumerSpec struct {
 	// repository, which is what lets a person's request for changes decide a review round
 	// (PullRequestReview.AuthorCanWrite). The workflow decides inside a transaction and performs no
 	// I/O, so the answer is read here, before the fact is applied, only for a review that decides
-	// (PullRequestReview.Decides) and has an author, and within AckWait, which bounds this one read
+	// (PullRequestReview.Decides), or for an outside review's approval too (OutsideReview), and has
+	// an author, and within AckWait, which bounds this one read
 	// and not the delivery (the delivery mechanism: HandlerLimit's comment above), and
 	// HandlerLimit is what ends a handling that never returns. The bound here is what keeps one
 	// slow GitHub answer from holding the fact. An author GitHub gives no write access is false;
@@ -176,6 +177,13 @@ type ConsumerSpec struct {
 	// resolver (a test, or a daemon without one) leaves every review's AuthorCanWrite false, so no
 	// review decides a round.
 	ReviewPermission func(ctx context.Context, review PullRequestReview) (bool, error)
+	// VerdictRepositories are the repositories the daemon writes the required check
+	// legion-verdict on (config.Config.VerdictRepositories). On them alone a pull request no
+	// recorded issue owns is a fact: its sighting at a head (OutsidePullRequest), and each review of
+	// it (OutsideReview), which recordedPullRequest would otherwise acknowledge unread
+	// (outsideFact). Every other repository's are acknowledged with no transaction, as before. Each
+	// is matched without case, as GitHub matches names.
+	VerdictRepositories []ghrepo.Repository
 	// RepositoryMapping reads the project's repository mapping again, for Dispatch's
 	// settings.repo_project.updated on the project (RepoMappingChanged): it runs before the event
 	// is acknowledged, within AckWait, which bounds this read alone (ReviewPermission), and in no
@@ -968,7 +976,9 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 	if err != nil {
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
-	if !recorded {
+	if outside, ok := outsideFact(spec, decoded.Fact); !recorded && ok {
+		decoded.Fact = outside
+	} else if !recorded {
 		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
 			"event_id", decoded.EventID)
 		// Each checks settlement of a pull request the daemon does not record is named once at
@@ -1056,7 +1066,8 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 
 // recordedPullRequest says whether the daemon records the pull request a review or a checks
 // settlement names (PullRequestReview, PullRequestChecks), by repository and number as the workflow
-// looks it up (record.PullRequestRecorded), and is true for every other fact. It asks under the
+// looks it up (record.PullRequestRecorded), false for an outside pull request's sighting
+// (OutsidePullRequest), whose pull request no issue records, and true for every other fact. It asks under the
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
@@ -1065,8 +1076,9 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // (resolveReviewPermission): the workflow applies either fact only to a
 // recorded pull request, so one of any other pull request is acknowledged with no transaction
 // under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a mapped repository reviews and checks. A pull request recorded after this read, by a later
-// opened, gets its checks and reviews from their next event.
+// a mapped repository reviews and checks, but for the outside facts of a verdict repository
+// (outsideFact). A pull request recorded after this read, by a later opened, gets its checks and
+// reviews from their next event.
 func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
 	var repo string
 	var number int
@@ -1075,6 +1087,8 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 		repo, number = fact.Repo, fact.Number
 	case PullRequestChecks:
 		repo, number = fact.Repo, fact.Number
+	case OutsidePullRequest:
+		return false, nil
 	default:
 		return true, nil
 	}
@@ -1083,6 +1097,23 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
 		return record.PullRequestRecorded(read, pool, name, number)
 	})
+}
+
+// outsideFact is the fact to apply for fact of a pull request the daemon does not record, and
+// whether there is one: on a verdict repository (ConsumerSpec.VerdictRepositories), an outside
+// pull request's sighting as it is, and a review as an OutsideReview; nothing on any other
+// repository, and nothing for a checks settlement anywhere, since no verdict reads one.
+func outsideFact(spec ConsumerSpec, fact Fact) (Fact, bool) {
+	verdicts := func(repo string) bool {
+		return slices.ContainsFunc(spec.VerdictRepositories, func(r ghrepo.Repository) bool { return strings.EqualFold(r.String(), repo) })
+	}
+	switch fact := fact.(type) {
+	case OutsidePullRequest:
+		return fact, verdicts(fact.Repo)
+	case PullRequestReview:
+		return OutsideReview{PullRequestReview: fact}, verdicts(fact.Repo)
+	}
+	return nil, false
 }
 
 // readMapping runs ConsumerSpec.RepositoryMapping within AckWait; no reader reads nothing.
@@ -1120,32 +1151,39 @@ func prepareArtifact(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact, e
 }
 
 // resolveReviewPermission fills a review's AuthorCanWrite from ConsumerSpec.ReviewPermission
-// (ResolveAuthorCanWrite), before the fact enters its transaction, within AckWait. Every other fact
-// passes through untouched.
+// (resolveAuthorCanWrite), before the fact enters its transaction, within AckWait: a
+// PullRequestReview's for a review that decides a round (Decides), an OutsideReview's for one a
+// verdict reads (Deciding), since a person's approval is the verdict of a head no Legion issue
+// owns. Every other fact passes through untouched.
 func resolveReviewPermission(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact, error) {
-	review, ok := fact.(PullRequestReview)
-	if !ok {
+	var review PullRequestReview
+	var asked bool
+	switch fact := fact.(type) {
+	case PullRequestReview:
+		review, asked = fact, fact.Decides()
+	case OutsideReview:
+		review, asked = fact.PullRequestReview, fact.Deciding()
+	default:
 		return fact, nil
 	}
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
-	review, err := ResolveAuthorCanWrite(read, review, spec.ReviewPermission)
+	resolved, err := resolveAuthorCanWrite(read, review, asked, spec.ReviewPermission)
 	if err != nil {
 		return nil, err
 	}
-	return review, nil
+	if _, outside := fact.(OutsideReview); outside {
+		return OutsideReview{PullRequestReview: resolved}, nil
+	}
+	return resolved, nil
 }
 
-// ResolveAuthorCanWrite fills review's AuthorCanWrite from permission, the daemon's reader of the
-// author's repository permission, for a webhook's review (resolveReviewPermission) and the daemon's
-// own read of a pull request's reviews alike, so the workflow's RefusesRound judges both on the
-// same answer. Only a review that decides (Decides: a request for changes), names its author and
-// came by its webhook is looked up: any other review decides nothing whoever writes it - a listed
-// one is refused for the list (PullRequestReview.ReadFromList) - so it costs no GitHub call. No
-// reader (a test, or a daemon without one) leaves AuthorCanWrite false. A failed read is returned
-// with the review unchanged.
-func ResolveAuthorCanWrite(ctx context.Context, review PullRequestReview, permission func(context.Context, PullRequestReview) (bool, error)) (PullRequestReview, error) {
-	if permission == nil || review.Author == "" || review.ReadFromList || !review.Decides() {
+// resolveAuthorCanWrite fills review's AuthorCanWrite from permission, the daemon's reader of the
+// author's repository permission, when asked: a review asked for that names its author is looked
+// up, and any other costs no GitHub call. No reader (a test, or a daemon without one) leaves
+// AuthorCanWrite false. A failed read is returned, and the delivery is retried.
+func resolveAuthorCanWrite(ctx context.Context, review PullRequestReview, asked bool, permission func(context.Context, PullRequestReview) (bool, error)) (PullRequestReview, error) {
+	if permission == nil || review.Author == "" || !asked {
 		return review, nil
 	}
 	canWrite, err := permission(ctx, review)
