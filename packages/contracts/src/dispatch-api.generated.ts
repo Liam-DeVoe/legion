@@ -2678,7 +2678,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included). */
+    /** @description Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included). A source whose repository the GitHub proxy would not show the caller is not imported for that caller: its row is answered as it stands. */
     post: operations["postApiV1ProjectsByKeyArchitectureSourcesSync"];
     delete?: never;
     options?: never;
@@ -2694,7 +2694,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Add a repository as an architecture source of a project, or change the branch of the source it is {branch}, after proving the GitHub App can read it and that branch is the name of a branch it has; a missing branch, a commit SHA, a relative ref (main~1, HEAD) or a refs/ path is 409 SOURCE_ACCESS naming the value and the repository, as a credential problem is, and nothing is written. A re-save resets the source's sync bookkeeping and keeps its components. */
+    /** @description Add a repository as an architecture source of a project, or change the branch of the source it is {branch}, after proving the GitHub App can read it and that branch is the name of a branch it has; a missing branch, a commit SHA, a relative ref (main~1, HEAD) or a refs/ path is 409 SOURCE_ACCESS naming the value and the repository, as a credential problem is, and nothing is written. A re-save resets the source's sync bookkeeping and keeps its components. A repository the GitHub proxy would not show the caller answers exactly as one the App is not installed on (409 SOURCE_ACCESS, or the held rate limit's answer), and GitHub is not asked. */
     put: operations["putApiV1ProjectsByKeyArchitectureSourcesByOwnerByRepo"];
     post?: never;
     /** @description Remove one architecture source of a project and the components it projected; every other source's components stay. */
@@ -2713,7 +2713,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem. */
+    /** @description Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem. A source whose repository the GitHub proxy would not show the caller answers as a source of a repository the App is not installed on, and nothing is imported or written for it. */
     post: operations["postApiV1ProjectsByKeyArchitectureSourcesByOwnerByRepoSync"];
     delete?: never;
     options?: never;
