@@ -122,7 +122,7 @@ TRUST_PROBE_HOSTS="example.com,.example.com,we-have-a-problem.com,.we-have-a-pro
 # only ever spent under --mode stall, where spending it whole is the reading: a stalled request
 # ends with no answer at all after the client's own bound, where a bypassed one is answered in
 # about no time. Both requests are bounded, so a probe costs at most 2 x this, and that is the
-# term each site's --budget in ci.yaml carries for it.
+# term each site's --budget in .github/workflows/ci-job-download-retry.yaml carries for it.
 PROBE_BOUND=10
 
 # RFC 2606's reserved suffix, which the probe hangs on a faulted host to make its unfaulted one.

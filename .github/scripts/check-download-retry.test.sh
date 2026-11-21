@@ -6417,6 +6417,49 @@ check "refuses the sleeping function defined in the loop by name, for the calls 
 check "passes the quiet script, the quiet library function, the quiet function defined in the loop and the script sleeping in its own loop around a fetch" \
   "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
+# A script a priced loop runs whose own sleep sits in a loop of that script that holds no fetch,
+# beside the fetch it makes: bash runs that loop, its sleeps among them, at each run of the
+# script, and this check charges a run the fetches it makes, each with the sleeps of a loop
+# around it there, so that loop's sleeps are no fetch's, and the run is refused by name
+# (script_sleep, charged_where_written; dispatch://INFRA-1545, round 47). pf.sh retries at 30 s,
+# 5 x 30 + 150 = 300 s, then sleeps in `for i in 1 2; do sleep 100; done`, 200 s, and the step
+# runs it in three passes: bash waits 3 x (300 + 200) = 1500 s, which `timeout-minutes: 16`,
+# 960 s, does not exceed, where the fetches alone, 3 x 300 = 900 s, are under it. Review round
+# 31's mutant M16, charged_where_written without its `holds_fetch` test, reads that loop of pf.sh
+# as one charging its sleep where it is written, so it refuses nothing and charges the step
+# 900 s, and the review found the sleep and loop cases above miss it.
+echo "case: r47 a script a priced loop runs, sleeping in a loop of its own that holds no fetch, is refused by name"
+root=$(fixture r47-fetchless-loop-sleep)
+cat > "$root/.github/scripts/pf.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+for i in 1 2; do
+  sleep 100
+done
+SH
+chmod +x "$root/.github/scripts/pf.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a script whose sleep is in a loop of its own that holds no fetch
+        timeout-minutes: 16
+        run: |
+          for p in 1 2 3; do
+            .github/scripts/pf.sh
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the run of pf.sh by name, naming the sleep of its fetchless loop" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Run a script whose sleep is in a loop of its own that holds no fetch' of job 'build' runs .\.github/scripts/pf\.sh. in the loop opened on line 10, and a fetch, or a call of a script that fetches, is in that loop; \.github/scripts/pf\.sh writes .sleep 100. on its line 6, outside every loop of that file whose passes this check reads around a fetch\.")"
+
 # A source in a pass of a priced loop runs the file's own commands at each pass, and the sleeps
 # they reach are refused by name (script_sleep with `sourced`, SLEEP_SOURCE_REFUSAL;
 # dispatch://INFRA-1545, round 46): a sleep written at the file's top level, one in the body of a

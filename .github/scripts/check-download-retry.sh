@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Every download this repository's CI makes retries, and one rule holds that retry
+# Every download this repository's CI makes retries, but the sites THE EXCEPTIONS below name, and
+# one rule holds that retry
 # (dispatch://INFRA-1545, R2). This check is the enforcement half: nothing else refuses a fetch
 # added with no retry, a retry below the floor, an attempt with no time bound, a second copy of
 # the retry loop, or a fetch whose failure the pipeline around it swallows.
@@ -50,24 +51,29 @@
 #      no new file above a layer whose order its own comments set on purpose, and a COPY of a
 #      helper there would throw that layer's cache away on every edit of the helper.
 #
-# WHAT IT READS: every file under .github/workflows/, every action.yml (or action.yaml) under
-# .github/actions/, every `<name>.sh` directly in .github/scripts/ but the `.test.sh` harnesses,
-# and the four Dockerfiles a CI job builds (DOCKERFILES below; a missing one fails this check, so
-# a rename is seen, and a step building a Dockerfile it does not name is refused, so a fifth is
-# seen too: rule 10). Every other file under .github/scripts/, at any depth and whatever it
-# holds, is refused by name, but that directory's top-level `.py` and `.jq` files and the
+# WHAT IT READS: every `.yml` or `.yaml` file directly in .github/workflows/, every action.yml
+# (or action.yaml) under .github/actions/, every `<name>.sh` directly in .github/scripts/ but the
+# `.test.sh` harnesses and their `-test-lib.sh` libraries, and the four Dockerfiles a CI job
+# builds (DOCKERFILES below; a missing one fails this check, so a rename is seen, and a step
+# building a Dockerfile it does not name is refused, so a fifth is seen too: rule 10). Every
+# other file under .github/scripts/, at any depth and whatever it holds, is refused by name, but
+# those harnesses and libraries, that directory's top-level `.py` and `.jq` files and the
 # bytecode Python writes for them: a file there this check would not read is refused where it
 # stands rather than passed with its fetches unread and a step running it charged nothing for
 # it. So is a top-level `.py` whose `#!` line names any program but `python3` or `python`, a
 # `.jq` whose `#!` line names any but `jq`, and a `.pyc` that opens `#!`, each a program of
 # another interpreter this check does not read; and a directory there the walk below does not
 # enter, a symbolic link or one of the names it skips. A file there this check does not read as a
-# script, a direct `*.test.sh` harness excepted, appears in a step's, an action's or a script's
-# command only where this tree writes one: what `python3` or `python` runs, the filter `jq -f`
-# reads, a command word whose `#!` line names that interpreter, an argument of `echo`, `printf`
-# or `grep`, and the pattern `pkill` matches; any other place, after any wrapper, as any
+# script, a direct `*.test.sh` harness excepted, named by its literal path, by its name or by a
+# name built from data that ends as its does (unread_named), appears in a step's, an action's or
+# a script's command only where this tree writes one: what `python3` or `python` runs, the filter
+# `jq -f` reads, a command word whose `#!` line names that interpreter, an argument of `echo`,
+# `printf` or `grep`, and the pattern `pkill` matches; any other place, after any wrapper, as any
 # program's argument, as a redirect's file or in the text of a shell's `-c`, is refused by name
-# (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37 and 38).
+# (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37 and 38). One named
+# through a pattern is read as the reach under item 1 reads a pattern, at a run's target or where
+# its literal text holds `.github/`, and passes in any other form, as `cd .github/scripts && cat
+# zz-x.p?` does: a stated limit (THE REACH OF THIS CHECK ENDS below).
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally. Workflows and actions are parsed as YAML, never grepped, and only a step's
 # `run:` is read for its fetches. This check reads its own file like any other script, which is
@@ -130,14 +136,17 @@
 #      named as lowercase letters, digits and `-` before `.sh` (SCRIPT_CALL), and a script under
 #      .github/scripts/ named otherwise is refused by name where it fetches, since no call of it
 #      is found (dispatch://INFRA-1545, round 37). Every other file under that directory, a
-#      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level `.py` or `.jq`, is
-#      refused by name whatever it holds, as WHAT IT READS says, and so is a top-level `.py` or
+#      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level `.py` or `.jq` and
+#      the bytecode Python writes for them, is refused by name whatever it holds, as WHAT IT
+#      READS says, and so is a top-level `.py` or
 #      `.jq` whose `#!` line names another interpreter than its own, so no run of one stands to
 #      be charged. And a word naming any file there this check does not read as a script, a `.py`,
-#      a `.jq` or a `.pyc` among them, is refused by name at its command wherever it is written
-#      but in the places WHAT IT READS lists, which are every place this tree writes one, so
-#      every route from such a file to a shell, the ones round 38 found and the ones it did not,
-#      is refused by its place rather than by its shape (unread_uses). Such a file is named by
+#      a `.jq` or a `.pyc` among them, in a form unread_named reads, is refused by name at its
+#      command wherever it is written but in the places WHAT IT READS lists, which are every
+#      place this tree writes one, so every route from such a file to a shell through a word of
+#      that form, the ones round 38 found and the ones it did not, is refused by its place rather
+#      than by its shape (unread_uses); a pattern naming one is read as the reach below reads it.
+#      Such a file is named by
 #      its path from the repository's root, and where a `cd` or a `pushd` in the text, or a
 #      `working-directory` the step or its job's or workflow's defaults set, may move the shell
 #      away from there, a literal path that names no file of the tree is read by its name, as a
@@ -167,7 +176,8 @@
 #      as commands of their own, are no targets, but a command inside a `$( … )` is a run
 #      wherever it stands, and a `[[` in quotes opens no test (globs_in, run_globs,
 #      pattern_place; dispatch://INFRA-1545, round 38). And A NON-LITERAL WORD THAT COULD NAME
-#      A CI SCRIPT THAT FETCHES OR A FILE THIS CHECK DOES NOT READ IS REFUSED WHEREVER IT STANDS,
+#      A CI SCRIPT THAT FETCHES OR A FILE THIS CHECK DOES NOT READ IS REFUSED IN TWO FORMS, AT A
+#      RUN'S TARGET AND WHERE ITS LITERAL TEXT HOLDS `.github/`,
 #      its globs, braces and expansions read as bash fills them in, every expansion a wildcard:
 #      at a run's target it is read by its last element, whatever its directory, so `bash
 #      .github/scr*/x.s[h]`, `"$d"/x.s?` and `. .github/*/x.s*` are refused where x.sh fetches;
@@ -187,7 +197,10 @@
 #      file's literal path, `s=.github/scripts/x.sh`, or through a name SCRIPT_CALL reads, `cd
 #      .github && bash scripts/x.sh`; a variable built from data and handed to a program this
 #      check does not read as a run, `s=$(printf …); flock /tmp/l "$s"`, is read by no rule
-#      here. A run's target, the text of a shell's `-c` too, is read as bash runs it, its quotes
+#      here, and neither is a pattern outside a run's target whose literal text holds no
+#      `.github/`, `cd .github/scripts && cat zz-x.p?`: stated limits under THE REACH OF THIS
+#      CHECK ENDS below. A run's target, the text of a shell's `-c` too, is read as bash runs
+#      it, its quotes
 #      and backslashes removed and a `$'…'`'s escapes read, so the path matched against the
 #      scripts and the files under .github/scripts/ is the one that runs:
 #      `.github/scripts/x."sh"` is a run of x.sh and is charged for it, and `bash
@@ -259,7 +272,8 @@
 #      key. And a route
 #      from text to a program is refused whatever the text: `eval`; a shell reading its program
 #      from its standard input, a here-string, a file redirected into it or a process
-#      substitution, and a `.` or `source` of a process substitution; output piped into a shell
+#      substitution, a heredoc aside, which item 7 reads, and a `.` or `source` of a process
+#      substitution; output piped into a shell
 #      reading its standard input; and `find -exec` and `xargs` where what they run on what they
 #      read could run such a script: a shell, `eval`, `.` or `source`, a wrapper and nothing
 #      else (`xargs env`), or the placeholder itself (`-exec {} \;`). Round 37's probe at
@@ -350,14 +364,14 @@
 #      the variable. An entry keyed any other way matches nothing and fails this check, so two
 #      steps of one action cannot be priced by two entries of one library, and one entry cannot
 #      be charged to one of two steps of one name.
-#   5. A LOOP'S PASSES: a `for x in <literal words>`, 19, of which dequeued.yaml's seven-pass
-#      timeline poll is the one around a priced call, with each sleep of that loop's body as its
-#      waits, priced and charged as rule 8 says (sleep_form, sleep_of). A `$(seq …)` list, a
-#      `for ((…))`, a `while`, and a `for` over anything else is a loop whose passes this check
-#      does not read, refused where it holds a priced call unless a DECLARED_LOOPS entry writes
-#      its seconds;
-#      the tree's four `$(seq …)` loops and its one `for ((…))`, over check-pr-text.sh's `lists`,
-#      enter no figure. A loop runs from a
+#   5. A LOOP'S PASSES: a `for x in <literal words>`, 31 measured at 5f28ecdc, 23 in steps and
+#      scripts and eight in Dockerfile RUN lines, which sit in no step's budget; dequeued.yaml's
+#      seven-pass timeline poll is the one around a priced call, with each sleep of that loop's
+#      body as its waits, priced and charged as rule 8 says (sleep_form, sleep_of). A `$(seq …)`
+#      list, a `for ((…))`, a `while`, and a `for` over anything else is a loop whose passes this
+#      check does not read, refused where it holds a priced call unless a DECLARED_LOOPS entry
+#      writes its seconds; the tree's five `$(seq …)` loops and its four `for ((…))`, one of them
+#      over check-pr-text.sh's `lists`, enter no figure. A loop runs from a
 #      bare `for`, `while`, `until` or `select` opening a command to a bare `done` opening one,
 #      and such a word in quotes or after a backslash, or a `case` pattern or an extglob
 #      alternative that opens a command, `done)` on a line of its own or after `;;`, `(done)` or
@@ -436,14 +450,16 @@
 #     `}` that bash reads as a word of its command (in quotes, after a backslash, or after a
 #     word that is no reserved word), and a loop's own word bash reads as another word, each
 #     refused where the text fetches anywhere (whole_text);
-#   - a sleep rule 8 prices written after a test of an `&&` or an `||` in the body of a loop that
-#     holds a fetch, where every loop around it writes its passes, but `[ "$x" = <last> ] ||
-#     sleep <n>`, the loop's own variable against the last word of its list, in a body that sets
-#     no `x`: rule 8 charges a sleep at every pass, and every pass but the last behind that one
-#     test, and reads no other test's passes; and a loop whose passes this check does not read
-#     and whose body sleeps, in any form, in the body of a loop whose passes it reads and that
-#     holds a fetch beside it, since each pass of that loop waits for every run of this one
-#     (sleep_of, close_loop; dispatch://INFRA-1545, round 44);
+#   - a sleep rule 8 prices written directly after the `&&` or the `||` of a test, in the body of
+#     a loop that holds a fetch, where every loop around it writes its passes, but `[ "$x" =
+#     <last> ] || sleep <n>`, the loop's own variable against the last word of its list, in a
+#     body that sets no `x`: rule 8 charges a sleep at every pass, and every pass but the last
+#     behind that one test, and reads no other test's passes; and a loop whose passes this check
+#     does not read and whose body sleeps, in any form, in the body of a loop whose passes it
+#     reads and that holds a fetch beside it, since each pass of that loop waits for every run of
+#     this one (sleep_of, close_loop; dispatch://INFRA-1545, round 44). A sleep that a `{`, a
+#     `(`, `time` or `!` opens after the test's operator, `[ "$x" = 2 ] && { sleep 300; }`, is
+#     not refused: rule 8 charges it at every pass, which is no less than bash waits for it;
 #   - a sleep rule 8 does not price (sleep_form) in a loop's body, where every loop around it
 #     writes its passes and the outermost of them holds a fetch: a `sleep` behind `command`,
 #     `env`, `timeout`, `nice`, `exec`, `builtin` or any other wrapper, by its path, or in a
@@ -452,7 +468,7 @@
 #     literal number with an optional `s`, `m`, `h` or `d`, and one with no argument; and a
 #     sleep of any form that a pass of such a loop reaches elsewhere, where no loop of the file
 #     writing it whose passes this check reads holds both it and a fetch (charged_where_written),
-#     by each route by which a pass reaches a fetch: one in the body of a function of the text,
+#     by each of these routes: one in the body of a function of the text,
 #     since a loop's passes are charged only the sleeps written between its `do` and its `done`,
 #     and one of a function defined inside the loop is read as a command of its body, once a
 #     pass, however many calls a pass makes; one a run of a script reaches, in its own text, in a
@@ -479,12 +495,12 @@
 #     until round 46 each that round added, so three passes of a 300 s fetch each sourcing a
 #     file whose own commands `sleep 300` waited 1800 s under that key, charged 900 s
 #     (dispatch://INFRA-1545, the tester's round 46).
-#     A sleep outside every loop that holds a fetch is neither charged nor refused, whatever its
-#     form, and this tree writes none of these: its one loop around a fetch whose passes this
-#     check reads is dequeued.yaml's, whose one sleep is `[ "$attempt" = 7 ] || sleep 10`, which
-#     names no file, sources none, feeds no heredoc, sets no trap and calls no function but the
-#     helper's `retry_fetch`, and neither of the two scripts the tree runs in a loop whose passes
-#     this check reads sleeps;
+#     A sleep outside every loop that holds a fetch, and that no pass of one reaches by those
+#     routes, is neither charged nor refused, whatever its form, and this tree writes none of
+#     these: its one loop around a fetch whose passes this check reads is dequeued.yaml's, whose
+#     one sleep is `[ "$attempt" = 7 ] || sleep 10`, which names no file, sources none, feeds no
+#     heredoc, sets no trap and calls no function but the helper's `retry_fetch`, and neither of
+#     the two scripts the tree runs in a loop whose passes this check reads sleeps;
 #   - a command after the `}` that closes a function, on a line its body holds a command of,
 #     which is read as the function's;
 #   - a definition of a function named `retry_fetch` anywhere but in .github/scripts/ci-retry.sh,
@@ -597,7 +613,8 @@
 # dispatch://INFRA-1310/artifact/decisions-md decides under "The download gate's reach ends at
 # the forms the tree writes". A program that reads shell text cannot know every route by which
 # that text runs a program, so the guarantee is this: the check holds every form that a line of
-# the tree writes, every form on its read list, and every route that it refuses by name (round
+# the files it reads writes, the implicit pull of a `docker run` or a `docker create` aside
+# (exception (a)), every form on its read list, and every route that it refuses by name (round
 # 42 refuses wrappers by their basename, a source that is not a literal file of the tree, a
 # `GITHUB_ENV` write that it cannot read as literal lines, and `BASH_ENV` and `ENV`). An
 # undercount is a finding when a line of the tree, at the head under test, writes its form, or
@@ -922,13 +939,15 @@
 #      the last pass, read literally as dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10` is, the
 #      loop's own variable tested against the last word of its list in a body that sets it
 #      nowhere, is charged once for each pass but the last: the poll's six 10 s waits above. A
-#      sleep behind any other test of an `&&` or an `||`, or behind that one where the body sets
-#      its variable, is refused by name where its loop holds a fetch (REFUSED BY NAME above). A
+#      sleep written directly after the `&&` or the `||` of any other test, or of that one where
+#      the body sets its variable, is refused by name where its loop holds a fetch (REFUSED BY
+#      NAME above); one that a `{`, a `(`, `time` or `!` opens there, `[ "$x" = 2 ] && { sleep
+#      300; }`, is charged at every pass and not refused, no less than bash waits for it. A
 #      sleep in any other form — behind a wrapper, by its path, or with an argument written with
 #      a sign, as an expansion, as `infinity` or as any other word — is charged nothing and
 #      refused by name where every loop around it writes its passes and the outermost holds a
 #      fetch, and so is a sleep of any form that a pass of such a loop reaches elsewhere, by each
-#      route by which a pass reaches a fetch: in the body of a function, the text's own or a
+#      of these routes: in the body of a function, the text's own or a
 #      library's, and in a script the loop runs (round 45); and in a file a pass sources or names
 #      in a place this check does not read as a call, a heredoc it may run, and a trap's action
 #      (round 46) (REFUSED BY NAME above). Until round 45 only `sleep <digits>` was priced, and
@@ -1039,8 +1058,8 @@
 #      assignment prefix such as `GH_HOST=x`, and a loop written on its own line inside an
 #      `if`, are each multiplied by their loop. A `for` over anything but literal words, an
 #      array's `"${name[@]}"` and a `$(seq 1 7)` included, and every `for ((…))`, are loops whose
-#      passes this check cannot read, and are refused, as the paragraph below that begins "A
-#      step whose budget reaches a loop" says.
+#      passes this check cannot read, and a step whose budget reaches one is refused, as the
+#      paragraph below that begins "A step whose budget reaches a loop" says.
 #
 #      The rest goes the other way, and is accepted: each prices a step at or above its real
 #      cost, or refuses a step that is right. A script call and a loop written on one line are
@@ -1070,7 +1089,7 @@
 #      in two loops fails as well, because it writes one figure and the second loop would take
 #      it without anybody writing it one. A loop in a script no step runs is nobody's
 #      arithmetic and is left alone, and so is a Dockerfile's, whose RUN lines sit in no step's
-#      budget; rule 2 is what reads a loop wherever it sits.
+#      budget; rule 2 is what reads a loop wherever it sits in a step, an action or a script.
 #
 #   9. In a step whose shell leaves `pipefail` off, a fetch that is not the last command of its
 #      pipeline is refused. A workflow `run:` that names no shell runs under GitHub's own
@@ -1090,7 +1109,7 @@
 #      a custom command line writing `pipefail` itself takes that step out of the rule. So it
 #      reaches every workflow `run:` of this tree but main-bypass-check.yaml's one step, which
 #      names `shell: bash` on purpose and whose own test holds it to that shell, and it reaches
-#      no composite action's step: GitHub requires one to name a shell, and all eleven here name
+#      no composite action's step: GitHub requires one to name a shell, and all sixteen here name
 #      `bash`. A *.sh under .github/scripts/ is outside it as well, each setting its own `-o
 #      pipefail`, and so is a Dockerfile RUN, which names no step's shell and whose pipelines
 #      are rule 3's business. Measured in run 42386541065's job logs: 63 steps at
@@ -1100,8 +1119,10 @@
 #      limit is written here rather than left for a reader to find: this rule asks its question
 #      of a step's shell, and a script sets its own flags, so a piped fetch inside a *.sh under
 #      .github/scripts/ is a hole this rule has no step to read. The hole is unreachable today,
-#      and that is a measurement rather than a habit: all 70 scripts under .github/scripts/ set
-#      `pipefail`, so `grep -L pipefail .github/scripts/*.sh` prints nothing. A script that
+#      and that is a measurement rather than a habit: measured at 5f28ecdc, `grep -L pipefail
+#      .github/scripts/*.sh` prints runner-shutdown.sh alone, a library that sets no option of
+#      its own and runs in the shell of ci-ok.sh or ci-ok-report.sh, the two scripts that source
+#      it, each setting `pipefail`, and the other 73 scripts this check reads set it. A script that
 #      stops setting it would carry the fault this rule refuses in a step, and nothing here
 #      would say so. What closes the hole is reading each script's own `set` line, and the day a
 #      script leaves `pipefail` off is the day to write that reading.
@@ -1177,6 +1198,14 @@
 #      multiprocess and embedder jobs hold one each, their pulls of that same Postgres digest,
 #      made before their timed browser steps since main's #4486 moved their Postgres from a
 #      `services:` container to the harness's own (dispatch://INFRA-1545, round 41).
+#      Main's two actionlint steps make two more, each a `docker run` of the pinned actionlint
+#      copy, ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5…, which pulls it where the runner
+#      does not hold it: 'Check every workflow file with actionlint' in ci-job-ci-filters.yaml's
+#      `ci-filters` job (:63) and in workflow-files.yaml's `workflow-files` job (:40). EXEMPTIONS
+#      names neither, since neither is a site here (dispatch://INFRA-1545, round 47). A STATED
+#      LIMIT: this check reads no `docker run` and no `docker create` as a fetch, so an own-image
+#      pull made that way is read by no rule and is named only in this text; a `docker pull` is
+#      a fetch, and one of this package is left unretried only where EXEMPTIONS names it.
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
 #      step's `run:` is read for its fetches, and no third-party action's source is in this tree.
 #      A composite action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun
@@ -1359,9 +1388,11 @@ SCRIPTS = Path(".github/scripts")
 # The files of .github/scripts/ that are no script, and that this check leaves unread where they
 # sit directly in that directory: its Python programs and its jq filter, but one whose `#!` line
 # names another interpreter than its own (OWN_INTERPRETERS), which is refused as the program of
-# that interpreter it is. Every other file under that directory that it does not read is refused
-# where it stands, and a word naming any of them is refused in a command anywhere but where this
-# tree writes one (the reading set, unread_uses; dispatch://INFRA-1545, round 38).
+# that interpreter it is. Every other file under that directory that it does not read, but a
+# top-level harness, a harness's library and Python's bytecode for those programs, is refused
+# where it stands, and a word naming any file there it does not read but a harness, in a form
+# unread_named reads, is refused in a command anywhere but where this tree writes one (the
+# reading set, unread_uses; dispatch://INFRA-1545, round 38).
 SCRIPT_DATA = (".py", ".jq")
 # What a word naming such a file through a name built from data may end as: a top-level `.py` or
 # `.jq`, or the bytecode Python writes for one under __pycache__, the unread files the reading
@@ -1403,7 +1434,8 @@ HARNESS_LIBRARY = "-test-lib.sh"
 # `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
 # `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
 # a name SCRIPTS holds is followed, SCRIPTS being the `.sh` names directly in .github/scripts/
-# alone, where every other file under that directory is refused by name (the reading set below;
+# alone, where every other file under that directory is refused by name but the harnesses, their
+# libraries, the `.py` and `.jq` files and Python's bytecode for them (the reading set below;
 # dispatch://INFRA-1545, round 37). The path a call writes in front of the name is one of half a
 # dozen ways of reaching the same file, so reading the name rather than the path is what makes
 # those spellings one script. It is read off the text as written, and off each run's target as
@@ -2344,10 +2376,10 @@ class Loops:
         self.function_loop: dict[str, int] = {}
         self.passes: dict[int, int | None] = {}
         self.waits: dict[int, int] = {}
-        # Each sleep of a loop's body written after a test of an `&&` or an `||` other than the
-        # one guard this check reads, as (its line, the loop's line, the operator, the sleep as
-        # written, the loop's variable, the last word of its list, the line the body sets that
-        # variable on where it writes the guard this check reads but sets the variable it
+        # Each sleep of a loop's body written directly after the `&&` or the `||` of a test other
+        # than the one guard this check reads, as (its line, the loop's line, the operator, the
+        # sleep as written, the loop's variable, the last word of its list, the line the body
+        # sets that variable on where it writes the guard this check reads but sets the variable it
         # tests), refused by name where the loop holds a fetch (sleep_of; dispatch://INFRA-1545,
         # round 44; the sleep as written, in place of its seconds, since round 45).
         self.guarded_sleeps: list[tuple[int, int, str, str, str, str, int | None]] = []
@@ -2740,10 +2772,11 @@ def sleep_of(command: Command, previous: Command | None, frames: list[SleepFrame
     branch at every pass; one in the test of an `if` or an `elif` is charged as a command of the
     part holding the construct. The one sleep charged at every pass but the last is one the text
     skips on the last pass, `[ "$attempt" = 7 ] || sleep 10` (last_pass_guard), where the body
-    sets the variable it tests nowhere (sets_variable). A sleep after any other test of an `&&`
-    or an `||`, or after that test where the body sets its variable, is charged at every pass,
-    and refused by name where every loop around it writes its passes and its own loop holds a
-    fetch (guarded_sleeps). A sleep sleep_form does not price adds nothing, and is refused by
+    sets the variable it tests nowhere (sets_variable). A sleep directly after the `&&` or the
+    `||` of any other test, or of that test where the body sets its variable, is charged at every
+    pass, and refused by name where every loop around it writes its passes and its own loop holds
+    a fetch (guarded_sleeps); one a `{`, a `(`, `time` or `!` opens there is charged at every
+    pass and not refused. A sleep sleep_form does not price adds nothing, and is refused by
     name where every loop around it writes its passes and the outermost of them holds a fetch
     (odd_sleeps; dispatch://INFRA-1545, round 45), as is one of a function's body where a loop
     that holds a fetch calls the function (function_sleeps): this returns the sleep as written,
@@ -2869,10 +2902,11 @@ LOOP_AFTER_WORD = ("a loop after a reserved word on its line, such as `then for 
 LOOP_REFUSAL = ("writes {shape}, and a fetch, or a call of a script that fetches, is written in "
                 "the same text. This check reads a loop by the line it opens on, and finds one "
                 "only where its word opens a command. {why}. {cure}")
-# A sleep of a loop's body that this check prices, written after a test of an `&&` or an `||`
-# other than the one guard this check reads, or after that guard where the body sets the variable
-# it tests, refused by name where every loop around it writes its passes and its own loop holds a
-# fetch, or a call of a script that fetches (sleep_of; dispatch://INFRA-1545, round 44). Its cure
+# A sleep of a loop's body that this check prices, written directly after the `&&` or the `||` of
+# a test other than the one guard this check reads, or of that guard where the body sets the
+# variable it tests, refused by name where every loop around it writes its passes and its own loop
+# holds a fetch, or a call of a script that fetches (sleep_of; dispatch://INFRA-1545, round 44).
+# One that a `{`, a `(`, `time` or `!` opens there is charged at every pass, not refused. Its cure
 # for an `&&`, and with `!` for an `||`, is the `if` that sleeps at the same passes, whose sleep
 # this check charges at every pass; none is written in this tree, whose one guarded sleep in a
 # loop around a fetch is dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10`, whose body sets no
@@ -3070,10 +3104,15 @@ SLEEP_HEREDOC_REFUSAL = (
 SLEEP_TRAP_REFUSAL = (
     "sets a trap on {signals} {where}; its action, `{action}`, {reaches}; and a fetch, or a call "
     "of a script that fetches, is in that loop. Bash runs a trap's action each time its "
-    "signal fires once the trap is set, a DEBUG trap's before each command, a RETURN trap's at "
-    "the end of each function call and each source, an ERR trap's at each command that fails "
-    "and any other's at each signal of that name, so at passes of that loop too, and this check "
-    "reads no count of those, so it charges the passes of that loop nothing for this sleep. "
+    "signal fires once the trap is set: a DEBUG trap's before each simple command and each "
+    "`for`, `case` and `select`, a RETURN trap's as each shell function or each `.` or `source` "
+    "ends, an ERR trap's as a command, a pipeline, a list or a compound command returns a status "
+    "other than 0, and any other's at each signal of that name. A DEBUG or a RETURN trap is not "
+    "inherited by a shell function, a command substitution or a subshell unless `functrace` "
+    "(`set -T`) is set, nor an ERR trap unless `errtrace` (`set -E`) is, and an ERR trap does "
+    "not fire for a command in an `if`, `while` or `until` test, in a `&&` or `||` list but its "
+    "last command, or negated with `!`. So such a trap can run at passes of that loop, and this "
+    "check reads no count of those, so it charges the passes of that loop nothing for this sleep. "
     "Write the wait in that loop's body as the bare word `sleep` and literal seconds, such as "
     "`sleep 300`, which this check charges at every pass, and take it out of the trap's action; "
     "or set the trap before that loop on EXIT alone, whose action runs once, as the shell ends "
@@ -3097,9 +3136,14 @@ FIRES_ONCE = {"EXIT", "SIGEXIT", "0"}
 TRAP_FETCH_REFUSAL = (
     "sets a trap on {signals}{where} whose action, `{action}`, holds a fetch or calls a function "
     "that fetches. Bash runs a trap's action each time its signal fires once the trap is set: an "
-    "EXIT trap's once, as the shell ends, a DEBUG trap's before each command, a RETURN trap's at "
-    "the end of each function call and each source, an ERR trap's at each command that fails and "
-    "any other's at each signal of that name. This check charges what a trap's action fetches "
+    "EXIT trap's once, as the shell ends, a DEBUG trap's before each simple command and each "
+    "`for`, `case` and `select`, a RETURN trap's as each shell function or each `.` or `source` "
+    "ends, an ERR trap's as a command, a pipeline, a list or a compound command returns a status "
+    "other than 0, and any other's at each signal of that name. A DEBUG or a RETURN trap is not "
+    "inherited by a shell function, a command substitution or a subshell unless `functrace` "
+    "(`set -T`) is set, nor an ERR trap unless `errtrace` (`set -E`) is, and an ERR trap does "
+    "not fire for a command in an `if`, `while` or `until` test, in a `&&` or `||` list but its "
+    "last command, or negated with `!`. This check charges what a trap's action fetches "
     "once, to the text that sets it, for a trap on EXIT alone set by a command of the text "
     "outside every loop and every function's body; {why} Set the trap that way, or write the "
     "fetch as a command of its own where it is to run, which this check charges each time it "
@@ -5538,7 +5582,8 @@ scripts = [
 # `lib/x.sh` (the tester's round-37 battery, W1, W2, W6 and W9). Telling which of those files is
 # a shell program would be one more model to fall short, so every file under that directory, at
 # any depth, is refused by name at its line 1, whatever its name, its first line or its text, but
-# the files this check reads, a top-level harness, and a top-level `.py` or `.jq`, the
+# the files this check reads, a top-level harness, a harness's top-level `-test-lib.sh` library,
+# and a top-level `.py` or `.jq`, the
 # directory's Python programs and its jq filter. Python's bytecode for those, a `.pyc` in the
 # `__pycache__` directly under .github/scripts/, is left alone too: every gate, harness and step
 # importing them sets PYTHONDONTWRITEBYTECODE, but go-test-step-expansion.py, the by-hand tool
@@ -7056,8 +7101,9 @@ UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its lit
 # gets the rewrite that passes (dispatch://INFRA-1545, round 37).
 HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, and this check "
                  "follows neither to the program they name")
-# A word naming a file under .github/scripts/ this check does not read as a script, written in a
-# command anywhere but where this tree writes one (unread_uses; dispatch://INFRA-1545, round 38).
+# A word naming a file under .github/scripts/ this check does not read as a script, by its literal
+# path, by its name or by a name built from data that ends as its does (unread_named), written in
+# a command anywhere but where this tree writes one (unread_uses; dispatch://INFRA-1545, round 38).
 # Until round 38 each route from such a file to a shell was refused as its own shape, a shell's
 # operand, a command word with no `#!` line, a `bash -c` text, and each round's class search found
 # the next: a wrapper this check does not know, `flock … bash x.py`, a redirect, `bash /dev/stdin
@@ -7302,7 +7348,7 @@ EXPANSION_LETTERS = {letter: name for name, letter in EXPANSION_SET.items() if l
 # which every non-interactive bash runs, the runner's own `bash --noprofile --norc -eo pipefail
 # {0}` among them, and ENV, the same file for an interactive sh, bash started as sh among them.
 # What that file holds runs before any line this check reads, a setting that changes how bash
-# expands a word among it, so each is refused by name through every route that sets one of the
+# expands a word among it, so each is refused by name through these routes that set one of the
 # list: a word assigning it before a command, alone or after `env`, a declaration, an `env:` key
 # of the file, a job or a step, and a line written into `$GITHUB_ENV` (env_file_writes;
 # dispatch://INFRA-1545, round 42). Until round 42 a step's `BASH_ENV: ${{ runner.temp }}/settings`
@@ -8310,7 +8356,8 @@ def expansion_settings(text: str, first_line: int, within: str = "",
     a variable of EXPANSION_VARIABLES (variable_settings). Each is read once the wrappers
     reduce_words strips are gone, `builtin shopt`, `env bash -f` and `/usr/bin/env bash -f`
     included, in the step, in the text of a shell's `-c` and in a `trap`'s action, text the shell
-    runs when the trap fires, a DEBUG trap's before every command, in turn. A shell reading its
+    runs when the trap fires, a DEBUG trap's before each simple command, inside a function's body
+    only under `functrace`, in turn. A shell reading its
     program from its standard input is left to the refusals of that route, since this check reads
     no pattern there: a heredoc's body is data, refused by name where it fetches
     (unread_heredocs), and a pipe, a here-string, a file or a process substitution is refused
@@ -9545,15 +9592,17 @@ for path, name, (who, loops, found, called), owner in body_reads:
         if not any(earlier.startswith(named_at) for earlier in problems):
             problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why, cure=cure)
                     + " (dispatch://INFRA-1545, round 37).")
-    # A file under .github/scripts/ this check does not read as a script, written anywhere but
-    # where this tree writes one, is refused by name at each place (unread_uses;
+    # A file under .github/scripts/ this check does not read as a script, named as unread_named
+    # reads a name, anywhere but where this tree writes one, is refused by name at each place
+    # (unread_uses;
     # dispatch://INFRA-1545, round 38).
     action = str(Path(path).parent) if path in actions else None
     for line, sentence in unread_uses(without_arithmetic(loops.text), loops.first_line, action,
                                       loops.elsewhere):
         problem(path, line, f"{who} {sentence} (dispatch://INFRA-1545, round 38).")
     # A word that is no literal path and could name a CI script that fetches, or a file this
-    # check does not read, is refused by name wherever it stands (pattern_words;
+    # check does not read, is refused by name at a run's target, and anywhere else where its
+    # literal text holds `.github/` (pattern_words;
     # dispatch://INFRA-1545, round 38), and so is one whose pattern this check cannot turn into a
     # match (UNREADABLE_PATTERN; round 39), where no refusal above names its command already. A
     # heredoc body a shell runs as its program, `bash <<'EOF'` or `cat <<'EOF' | bash`, is shell

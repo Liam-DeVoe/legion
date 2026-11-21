@@ -71,8 +71,12 @@ one added step whose cost a reader can see, and the item above allows for it. Th
 itself is a sampler beside the job rather than a step of it, so those two steps are its
 whole cost to this budget (dispatch://INFRA-2605).
 
-EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-and the twenty-four installs whose control accepts a failure are timed as well, against
+EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES A `timeout-minutes` OF ITS
+OWN: in this job the merge base's seven `base-*` installs 11 and its other twenty-five
+installs their retry arithmetic, 29, 57 or 65 minutes (the key section below), and in
+tool-fallback-arm each half's five installs theirs, setup-bun 57, install-crane 29,
+install-changie 29, install-jj 65 and install-elan 29. The twenty-four installs whose
+control accepts a failure are timed as well, against
 the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
 runner ends at its own bound leaves `outcome=failure` behind it, which those controls
 accept, so the wall time is the only reading that tells a hang from the refusal the case
