@@ -775,6 +775,54 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "",
     ]);
   });
+
+  // A reparent is refused for the parent the call names, which the issue is not under yet: a
+  // status change of that issue with --include-parent moves the issues above it now and leaves
+  // the reparent refused, and issue-update refuses --include-parent beside --parent. So the
+  // caller is told to move the named parent first, then to send the reparent again.
+  test("a refused reparent says to move the parent it names first, then to send the reparent again", async () => {
+    const moveParentFirst = (parent: string) =>
+      expect.stringMatching(
+        new RegExp(
+          `dispatch issue-update --issue ${parent} --status\\b.*\\bdispatch issue-update\\b.*--parent\\b`
+        )
+      );
+
+    // Under a done parent: ACME-8, under ACME-7, to ACME-4.
+    const doneRefusal = doneParentRefusal("ACME-8");
+    patchAnswer = doneRefusal;
+    const underDone = await run(["issue-update", "--issue", "ACME-8", "--parent", "ACME-4"]);
+    expect(underDone.code).toBe(1);
+    expect(underDone.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(doneRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      moveParentFirst("ACME-4"),
+      "",
+    ]);
+
+    // Under a parent out of work: ACME-6, in work, to ACME-1 on the backlog, in the words
+    // Dispatch answers such a reparent with.
+    const outOfWork: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. ACME-1 (backlog) is the parent of ACME-6 and is not in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [
+          { key: "ACME-1", title: "Epic on the backlog", status: "backlog", relation: "parent" },
+        ],
+      },
+    };
+    patchAnswer = outOfWork;
+    const underBacklog = await run(["issue-update", "--issue", "ACME-6", "--parent", "ACME-1"]);
+    expect(underBacklog.code).toBe(1);
+    expect(underBacklog.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(outOfWork)}`,
+      "ACME-1 [backlog] Epic on the backlog",
+      moveParentFirst("ACME-1"),
+      "",
+    ]);
+  });
 });
 
 describe("dispatch issues --json", () => {
