@@ -12,15 +12,18 @@ body: |-
   (`no_exchange_entry`), an entry naming no project (`no_exchange_projects`), a project Dispatch
   has not yet answered about (`project_access_unknown`, which the client retries), Dispatch
   refusing the broker's own account token (a 401 or 403) on any question of a refresh, until a
-  refresh that Dispatch answers with no such refusal, a refresh that cannot reach Dispatch keeping
-  it (`project_access_refused`, logged at error once a refresh, as the token exchange refuses
-  every trade then), a project Dispatch does not hold (`project_not_found`), one the entry's person
-  cannot see (`project_not_visible`), and a grant that cannot be held to projects
+  refresh in which Dispatch itself answers with no such refusal; a refresh that cannot reach
+  Dispatch keeps it, and so does one whose only answers are ones the broker kept from before it
+  (answers are kept 30 seconds, and the token exchange's own questions fill that store) or
+  not-founds (`project_access_refused`, logged at error once a refresh, as the token exchange
+  refuses every trade then), a project Dispatch does not hold (`project_not_found`), one the
+  entry's person cannot see (`project_not_visible`), and a grant that cannot be held to projects
   (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
   measurement entry's is. A daemon entry with `*` is also granted its account's own reply prefix.
   List a Legion daemon with `*` until every reading of the release gate holds for a daemon that
-  opens its consumers per project: `daemon-release-gate.sh`'s listener and daemon legs, the
-  stored-wake read, the running-daemon read (`daemon-running-gate.sh` printing that every running
-  daemon is at or after that release; the pin gates alone read the repository, not the daemons
-  running) and the consumer-filter read (each daemon durable on its own kind's filter): `-` names
-  consumers today's daemon does not open, and reads a wider durable whole.
+  opens its consumers per project: `daemon-release-gate.sh`'s listener and daemon legs (each with
+  `--deployment <owner/repo>`, which the script requires), the stored-wake read, the
+  running-daemon read (`daemon-running-gate.sh`, which comes with that daemon, printing that every
+  running daemon is at or after that release; the release gate's legs read the repository alone)
+  and the consumer-filter read (each daemon durable on its own kind's filter): `-` names consumers
+  today's daemon does not open, and reads a wider durable whole.

@@ -42,7 +42,8 @@ import (
 //
 //	Held until `daemon-release-gate.sh --listeners <the commit that landed [the daemon that
 //	opens its consumers per project]>` and `daemon-release-gate.sh <the commit that landed [the
-//	daemon that opens its consumers per project]>` both print `GATE OPEN`, each read once and
+//	daemon that opens its consumers per project]>` [each with `--deployment <owner/repo>`, which
+//	the script requires] both print `GATE OPEN`, each read once and
 //	quoted where this step is turned on, and the stored-wake read below finds nothing a
 //	`legion-go-<P>-ready` consumer created then would deliver but `listener_ready`. The step
 //	also waits on `daemon-running-gate.sh --deployment <owner/repo> <the deploy-4 commit>`
@@ -108,11 +109,14 @@ const accessFetchTimeout = 10 * time.Second
 // Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
 // on any question of a refresh refuses every held connection until a later refresh is answered
 // with no such refusal, since the token exchange refuses every trade that asks Dispatch then; it
-// is logged at error once a refresh. A refresh no question of which was answered (Dispatch
-// unreachable) shows nothing about the broker's token, so it keeps such a refusal. While Dispatch
-// answers, an answer held is at most about a minute old: the 30 s (projectaccess.CacheTTL) the
-// Dispatch client may have kept it, the accessRefresh to the next refresh, and the
-// accessFetchTimeout its question may take.
+// is logged at error once a refresh. Only Dispatch answering a question during a refresh shows
+// that it no longer refuses the broker's token, so a refresh keeps such a refusal when no question
+// of it was answered (Dispatch unreachable), and when its only answers are ones the Dispatch
+// client kept from before the refresh began (projectaccess.CacheTTL; cmd/cipherd shares that
+// client with the token exchange, so a person's trade can fill its cache) or not-founds, whose
+// age the client does not report. While Dispatch answers, an answer held is at most about a minute
+// old: the 30 s (projectaccess.CacheTTL) the Dispatch client may have kept it, the accessRefresh to
+// the next refresh, and the accessFetchTimeout its question may take.
 type heldAccess struct {
 	access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	asks   []heldKey
@@ -122,7 +126,7 @@ type heldAccess struct {
 	answers map[heldKey]heldAnswer
 	// brokerRefused is whether the last refresh that decided it found Dispatch refusing the
 	// broker's own account token. A refresh decides it when Dispatch refused the token on one of
-	// its questions or answered one of them.
+	// its questions, or answered one of them during the refresh (asked).
 	brokerRefused bool
 }
 
@@ -187,15 +191,18 @@ func (h *heldAccess) run(ctx context.Context) {
 // refresh asks Dispatch every held question, all at once, each bounded by accessFetchTimeout, and
 // holds each answer it gets in place of the one held about its question, whatever its other
 // questions did, a refusal of the broker's token among them. It decides whether Dispatch refuses
-// the broker's own account token when it got a refusal or an answer. It holds all of that before
-// it writes any log line, since a write can block (report.go). It logs a refusal at error, naming
-// the project whose question Dispatch refused, since every held connection is then refused; else
-// each failed question at warn, since the answer held about it is kept. refresh is not safe to run
-// beside itself; run calls it one at a time.
+// the broker's own account token when it got a refusal, or an answer Dispatch gave during this
+// refresh (asked). It holds all of that before it writes any log line, since a write can block
+// (report.go). It logs a refusal at error, naming the project whose question Dispatch refused,
+// since every held connection is then refused; else each failed question at warn, since the answer
+// held about it is kept. refresh is not safe to run beside itself; run calls it one at a time.
 func (h *heldAccess) refresh(ctx context.Context) {
+	began := time.Now()
 	answers := make([]heldAnswer, len(h.asks))
-	// errs is each question's failure, nil for one answered.
+	// errs is each question's failure, nil for one answered; fresh is whether Dispatch gave that
+	// answer during this refresh (asked).
 	errs := make([]error, len(h.asks))
+	fresh := make([]bool, len(h.asks))
 	var wait sync.WaitGroup
 	for i, ask := range h.asks {
 		wait.Go(func() {
@@ -208,13 +215,13 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			case err != nil:
 				errs[i] = err
 			default:
-				answers[i] = heldAnswer{visible: answer.Visible}
+				answers[i], fresh[i] = heldAnswer{visible: answer.Visible}, asked(answer, began)
 			}
 		})
 	}
 	wait.Wait()
 	refused := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, projectaccess.ErrBrokerRefused) })
-	answered := slices.Contains(errs, nil)
+	answered := slices.Contains(fresh, true)
 	h.mu.Lock()
 	for i, ask := range h.asks {
 		if errs[i] == nil {
@@ -274,14 +281,10 @@ func (h *heldAccess) refusal(entry ServiceEntry, person string, projects []strin
 	return nil
 }
 
-// known reports whether a refresh has answered whether person may see project: false on a nil
-// heldAccess.
-func (h *heldAccess) known(project, person string) bool {
-	if h == nil {
-		return false
-	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	_, ok := h.answers[heldKey{project: project, person: person}]
-	return ok
+// asked reports whether Dispatch gave answer during a refresh that began at began: its question
+// was asked at or after began, or it comes from a source that keeps no clock (a zero AskedAt,
+// which projectaccess.Visible also takes as fresh). An answer the Dispatch client kept from
+// before began is not, since it says nothing about whether Dispatch refuses the broker's token now.
+func asked(answer projectaccess.Answer, began time.Time) bool {
+	return answer.AskedAt.IsZero() || !answer.AskedAt.Before(began)
 }
