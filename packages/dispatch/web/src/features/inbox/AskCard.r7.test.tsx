@@ -471,6 +471,7 @@ test("Ctrl+Enter or Cmd+Enter in the reply box sends neither the reply nor the c
     const reply = card().getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     await user.click(reply);
     await user.paste("See the picture");
+    // user-event's paste carries text, never the file this row uploads.
     fireEvent.paste(reply, {
       clipboardData: {
         files: [new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" })],
