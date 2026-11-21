@@ -51,8 +51,12 @@ export async function readLast(
     stopTimer = () => clearTimeout(timer);
   });
   let messages: ConsumerMessages | undefined;
+  // The JetStream API request that makes the consumer has a timeout of its own, 5 s by default,
+  // which bounded a read whatever its budget: a server slower than that failed the read with
+  // TIMEOUT before the budget ran out. It ends a second after the budget, so the read's own
+  // deadline is what ends it, and the request's late rejection is caught below.
   const nextMessage = nc
-    .jetstream()
+    .jetstream({ timeout: timeoutMilliseconds + 1_000 })
     .consumers.get(stream, {
       filterSubjects: [subjectFilter],
       deliver_policy: DeliverPolicy.Last,
