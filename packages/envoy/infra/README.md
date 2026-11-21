@@ -3956,16 +3956,18 @@ bucket.
 The daemon's `ready` consumer reads the wake lane every daemon shares, where the listener also puts
 every project's role and agent wake reports. So a daemon is held to its projects only once it opens
 its consumers per project, every listener publishes each project's role and agent wakes on that
-project's own lane, and each `legion-go-<project>-*` durable filters on its own kind's lane only
-(`-dispatch` and `-wake` on the project's own lane, `-ready` on the shared wake lane's
-`listener_ready`, `-github` on `notifications.github.>`): the held grant names its consumers, not
-their filters, so it reads a wider durable whole.
+project's own lane, each `legion-go-<project>-*` durable filters on its own kind's lane only
+(`-dispatch` and `-wake` on the project's own lane, `-ready` on the shared wake subject
+`notifications.legion.wake` itself, which carries only `listener_ready` once the second condition
+holds, `-github` on `notifications.github.>`), and no daemon on today's static grant is left to
+widen one again: the held grant's info, pull and acknowledgements name a consumer, not its filter,
+so it reads a wider durable whole.
 `natsgrant/projects_live_test.go`, under the `natslive` tag, checks the held grant on the hub's
 image behind a stand-in auth callout: `DaemonPermissions` receives another project's pulls on
-`_INBOX.>`, the held grant receives none through its own consumers, and its GitHub consumer
-receives every repository's events, one only another project's issues resolve to among them. A
-pre-existing wide `legion-go-PUB-dispatch` is read whole through the held grant, PRIV's events
-among them, until it is narrowed in place to PUB's lane.
+`_INBOX.>`, the held grant receives none through the consumers it opens with their own filters,
+and its GitHub consumer receives every repository's events, one only another project's issues
+resolve to among them. A pre-existing wide `legion-go-PUB-dispatch` is read whole through the held
+grant, PRIV's events among them, until it is narrowed in place to PUB's lane.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
