@@ -23,7 +23,8 @@ import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
-import { COMPACT_VIEWPORT_QUERY } from "./features/shell/useDialog";
+import { COMPACT_VIEWPORT_QUERY, MD_VIEWPORT_QUERY } from "./features/shell/useDialog";
+import { userPreferenceStorageKey } from "./features/shell/userPreference";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -1122,12 +1123,14 @@ const BOB_RESTRICTED: AuthenticatedUser = {
   member_kind: "restricted",
 };
 
-/** The shell at `path`, signed in as `user`, on a phone-sized screen when `compact` is set and a
- *  wide one otherwise; returns the priorities read, to count, and the teardown. */
+/** The shell at `path`, signed in as `user`, on a phone-sized screen when `compact` is set, from
+ *  the md width up when `wide` is, and on a wide one otherwise (matching neither query); returns
+ *  the priorities read, to count, and the teardown. */
 function renderShellAt(
   user: AuthenticatedUser,
   path: string,
-  compact = false
+  compact = false,
+  wide = false
 ): { listPriorities: Mock<typeof api.listPriorities>; teardown: () => void } {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) =>
@@ -1135,7 +1138,8 @@ function renderShellAt(
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches: compact && query === COMPACT_VIEWPORT_QUERY,
+      matches:
+        (compact && query === COMPACT_VIEWPORT_QUERY) || (wide && query === MD_VIEWPORT_QUERY),
       media: query,
       onchange: null,
       removeEventListener: () => {},
@@ -1208,6 +1212,43 @@ test("a restricted member's Priorities and Pipeline addresses answer Page not fo
     expect(await screen.findByRole("heading", { name: "Priorities" })).toBeTruthy();
   } finally {
     teardown();
+  }
+});
+
+// The issue page's icon rail (the outline page, from the md width up) offers what the sidebar
+// does: a restricted member's names neither Priorities nor Pipeline, whose addresses answer them
+// Page not found, and keeps Delivery; a full member's names all three.
+test("a restricted member's icon rail on an issue page offers neither Priorities nor Pipeline", async () => {
+  // Nothing here is about the issue, and no Dispatch answers its reads, so they are answered at
+  // the client with the failure the page has always seen rather than reaching the network.
+  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+  const issueReads = [
+    spyOn(api, "getIssue").mockRejectedValue(unread),
+    spyOn(api, "listComments").mockRejectedValue(unread),
+    spyOn(api, "listIssueAsks").mockRejectedValue(unread),
+  ];
+  try {
+    for (const [person, offered] of [
+      [BOB_RESTRICTED, false],
+      [{ event_head: "0", kind: "user", login: "alice" }, true],
+    ] as const) {
+      const choice = userPreferenceStorageKey(person.login, "issue.page");
+      window.localStorage.setItem(choice, "outline");
+      const shell = renderShellAt(person, "/issues/CORE-1", false, true);
+      try {
+        const rail = await screen.findByTestId("icon-rail");
+        expect(within(rail).getByRole("link", { name: "Delivery" })).toBeTruthy();
+        for (const name of ["Priorities", "Pipeline"]) {
+          expect(within(rail).queryByRole("link", { name }) !== null).toBe(offered);
+        }
+        expect(shell.listPriorities).not.toHaveBeenCalled();
+      } finally {
+        shell.teardown();
+        window.localStorage.removeItem(choice);
+      }
+    }
+  } finally {
+    for (const read of issueReads) read.mockRestore();
   }
 });
 
