@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -204,7 +204,7 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const brokerToken = "alice-broker-token-listing-no-project"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
 	for _, row := range []struct {
 		who  string
@@ -214,8 +214,9 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 		{"alice at her browser", func() *httptest.ResponseRecorder {
 			return dispatchRequest(t, rig.handler, http.MethodPatch, path, body, "alice")
 		}, "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project"},
+		// The access writes need the person and approve scopes (#4156), so the token holds both.
 		{"alice's dsp_ token listing no project", func() *httptest.ResponseRecorder {
-			return agentRequest(t, rig.handler, http.MethodPatch, path, body, personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson))
+			return agentRequest(t, rig.handler, http.MethodPatch, path, body, personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson, model.ScopeApprove))
 		}, "C0SHARED001 is listed by a private project you cannot see"},
 		{"alice's broker token listing no project", func() *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, http.MethodPatch, path, brokerToken, body))
