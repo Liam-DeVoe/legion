@@ -1284,7 +1284,7 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	standIn := func(name, firstRun, refusal string) string {
 		path := filepath.Join(stubs, name)
 		script := "#!/bin/sh\n" +
-			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; " + firstRun + "; fi\n" +
+			"if [ ! -e " + shellprefix.Literal(path+".ran") + " ]; then : >" + shellprefix.Literal(path+".ran") + "; " + firstRun + "; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || exit 0\n" +
 			"echo '" + refusal + "' >&2\nexit 1\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -1334,8 +1334,8 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	t.Run("the positive controls get no second run", func(t *testing.T) {
 		path := filepath.Join(stubs, "positive-control")
 		script := "#!/bin/sh\n" +
-			"printf '%s\\n' \"$LEGION_TLS_URL\" >>'" + path + ".runs'\n" +
-			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; exec sleep 30; fi\n" +
+			"printf '%s\\n' \"$LEGION_TLS_URL\" >>" + shellprefix.Literal(path+".runs") + "\n" +
+			"if [ ! -e " + shellprefix.Literal(path+".ran") + " ]; then : >" + shellprefix.Literal(path+".ran") + "; exec sleep 30; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + isolationTLSSite.url + "' ] || { echo 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2; exit 60; }\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -1488,7 +1488,7 @@ func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	runs := filepath.Join(t.TempDir(), "runs")
-	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>'"+runs+"'\nexec sleep 30\n")
+	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>"+shellprefix.Literal(runs)+"\nexec sleep 30\n")
 	previous := tlsPositiveControlSpec.timeout
 	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
 	tlsPositiveControlSpec.timeout = time.Second

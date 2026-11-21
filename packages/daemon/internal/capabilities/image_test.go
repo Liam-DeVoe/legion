@@ -518,12 +518,12 @@ func TestEveryImageRowHasACheck(t *testing.T) {
 func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T) {
 	s := newStubs(t)
 	ran := filepath.Join(t.TempDir(), "ran")
-	record := "#!/bin/sh\n: >'" + ran + "'\n"
+	record := "#!/bin/sh\n: >" + shellprefix.Literal(ran) + "\n"
 	for _, name := range []string{"chromium", "go"} {
 		s.install(name, record)
 	}
 	img := s.image()
-	img.Launch = "sh -c ': >\"$0\"' " + ran
+	img.Launch = "sh -c ': >\"$0\"' " + shellprefix.Literal(ran)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -598,7 +598,7 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	limit := commandTimeout
 	s := newStubs(t)
 	marker := filepath.Join(t.TempDir(), "started")
-	s.install("chromium", "#!/bin/sh\n: >'"+marker+"'\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
+	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(marker)+"\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// seen says whether the marker appeared; once it has, the context ends 0.4 s after the timeout
