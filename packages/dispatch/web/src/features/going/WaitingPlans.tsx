@@ -65,7 +65,10 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
       }
       void queryClient.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey });
     },
-    request: (waiting) => goingPlanApproveRequest(waiting.run, { plan: waiting.plan }),
+    // The approval names the version of the plan the list read, and Dispatch refuses it once the
+    // plan has changed since (409 GOING_PLAN_CHANGED), which the row says under that plan.
+    request: (waiting) =>
+      goingPlanApproveRequest(waiting.run, { plan: waiting.plan, version: waiting.version }),
     target: (waiting) => planTarget(waiting.run),
   });
   return (
