@@ -377,8 +377,8 @@ type holdRestoreBody struct {
 	// The gen to restore at: one above every gen nats_hold_log holds, 1 for an empty log.
 	Gen int64 `json:"gen"`
 	// held, which only after a verified prepare or held log entry of its hold id, or released,
-	// which only after a verified released or prepare entry, or a held one whose hold's journal
-	// shows it ended (restoreAdmitted).
+	// which only after a verified released entry, a prepare entry of the hold id it names, or a held
+	// one whose hold's journal shows it ended (restoreAdmitted).
 	Phase string `json:"phase"`
 	// The hold's id, which a held row names.
 	HoldID string `json:"hold_id"`
@@ -428,6 +428,9 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 	case errors.Is(err, natshold.ErrBadTransition):
 		s.writeHoldConflict(w, http.StatusBadRequest, "bad_transition", err.Error(), conflict)
 		return
+	case errors.Is(err, natshold.ErrHoldMismatch):
+		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
+		return
 	case errors.Is(err, natshold.ErrRowExists):
 		s.writeHoldConflict(w, http.StatusConflict, "row_exists", err.Error(), conflict)
 		return
@@ -469,15 +472,18 @@ func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 
 // restoreAdmitted is whether next may be restored after the log's latest entry, which verified
 // (restoreTrusted). An empty log takes only the first row's released. Released follows a released
-// or prepare entry, since a prepare row refuses no client, or a held one whose hold's journal, the
-// done record, verifies and shows the hold ended (a done hold release or hold abort), as when the
-// row was lost between that done entry and the row's move; after any other held entry it would
-// free every client mid-hold. A released row naming a hold is refused, whatever the log shows,
-// while that hold's journal verifies and shows hold set done and no end: the hold is held by its
-// own record, and a log a database writer cut back to its prepare entry, on a replica whose floor
-// started again, would otherwise free every client mid-hold. Held follows only a prepare or held
-// entry of its own hold id, so a hold the log shows ended, by a release or by abort from prepare,
-// which leaves no journal entry, is not held again.
+// entry; a prepare entry, since a prepare row refuses no client, only with that entry's hold id
+// (409 hold_mismatch otherwise, no hold id included): a released row under another id leaves the
+// prepared hold's cohort and journal where no command reaches them, since Admit and the cohort
+// delete need its id on the row and it cannot be prepared again; or a held one whose hold's
+// journal, the done record, verifies and shows the hold ended (a done hold release or hold abort),
+// as when the row was lost between that done entry and the row's move; after any other held entry
+// it would free every client mid-hold. A released row naming a hold is refused, whatever the log
+// shows, while that hold's journal verifies and shows hold set done and no end: the hold is held by
+// its own record, and a log a database writer cut back to its prepare entry, on a replica whose
+// floor started again, would otherwise free every client mid-hold. Held follows only a prepare or
+// held entry of its own hold id, so a hold the log shows ended, by a release or by abort from
+// prepare, which leaves no journal entry, is not held again.
 func (s *server) restoreAdmitted(latest *natshold.LogEntry, journalOf func(holdID string) (*natshold.Record, error), next natshold.Row) error {
 	refuse := func(why string) error {
 		return &natshold.Conflict{Err: fmt.Errorf("%w: %s", natshold.ErrBadTransition, why)}
@@ -505,7 +511,14 @@ func (s *server) restoreAdmitted(latest *natshold.LogEntry, journalOf func(holdI
 		}
 		return refuse(fmt.Sprintf("the log's latest entry is %s with hold id %q, and a held row is restored only after a prepare or held entry of its own hold", latest.Phase, latest.HoldID))
 	}
-	if latest.Phase != string(natsgrant.OperatorPhaseHeld) {
+	switch latest.Phase {
+	case string(natsgrant.OperatorPhasePrepare):
+		if next.HoldID != latest.HoldID {
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the log's latest entry is prepare with hold id %q, and a released row after it names that hold, or the prepared hold's cohort and journal are left where no command reaches them", natshold.ErrHoldMismatch, latest.HoldID)}
+		}
+		return nil
+	case string(natsgrant.OperatorPhaseHeld):
+	default:
 		return nil
 	}
 	journal, err := journalOf(latest.HoldID)
