@@ -37,7 +37,12 @@ body: |-
   next page on another origin is refused naming the origin the token is sent to, and a later
   page's failure names the page by its number under the read's path. The read of a conflicting
   head's base rules names the base branch GitHub answers, on its line and in why the rules could
-  not be read, as the rule reads it, and reads the rules of that branch as it came.
+  not be read, as the rule reads it, and reads the rules of that branch as it came. A Dispatch
+  artifact's approval time that does not parse is refused naming the field and none of its
+  value. `legion`'s diagnostics print a parser's or decoder's error of the daemon's answer
+  without the value it quotes, name the daemon's and GitHub's words in a line only in a shape that
+  holds no credential, and decide the controller credential's refusal on its code as it came. The
+  engine's line for a merge-state read dropped for another head names that head only as a commit.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

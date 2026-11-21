@@ -22,7 +22,12 @@ body: |-
   carried, every value under a name `public-request-names.ts` does not declare public (of an
   `Authorization` or a `Proxy-Authorization`, only the part after its scheme, as Go's
   `requestTokens` reads it), and changes no answer, and a `LibraryError` prints the error's words
-  with them redacted while its code compares as the answer gave it.
+  with them redacted while its code compares as the answer gave it. `callLibrary` is the one way
+  to call openid-client: what a call throws, or its promise rejects with, is a `LibraryError`,
+  Go's `redact.OAuth2`. `requestCredentials` is the list of credentials a request carries as
+  `refusalFetch` records them. `RemoteText.knownReading` is the rule's reading of a field where a
+  caller's test accepts it as one of a closed set of shapes, with the box's credentials redacted,
+  and nothing otherwise.
 time: 2026-11-18T05:15:23Z
 custom:
     Issue: pr4368
