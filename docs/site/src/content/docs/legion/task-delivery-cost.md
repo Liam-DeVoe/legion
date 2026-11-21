@@ -135,6 +135,7 @@ So each figure that names a task names its claim too.
     A take that the daemon accepted before the restart is put back the same way, unless the daemon before the restart saw the end of the turn it gave that take: the daemon after it cannot tell then whether the take's own turn also ran before the restart, and that take's report puts nothing back.
     When that report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
     The command counts that turn as a turn with no cause, since its lines name no task.
+    A take that the daemon accepted before the restart is not put back either when the worker's first hello after the restart does not say that its shim dropped no frame while no daemon was connected, or when the worker does not answer on that connection: frames lost in the restart could hide the take's own turn, and the daemon writes `supervise: the first hello after the daemon start does not show its connection carries every frame its shim held; no report gives the restored take its turn back`.
 
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
   A turn that the daemon put back does not count.
