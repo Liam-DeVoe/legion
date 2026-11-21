@@ -273,41 +273,91 @@ func readGoingPlan(ctx context.Context, q goingQuerier, run string, number int) 
 		return nil, fmt.Errorf("read the run's plan: %w", err)
 	}
 	rows, err := q.Query(ctx, `
-		select row, coalesce(change->>'tool', ''), coalesce(change->'arguments', '{}'::jsonb), needs, state,
-		  coalesce(shown, '{}'::jsonb), approval, result
-		from going_plan_rows where run_id = $1::uuid and plan = $2 order by row
+		select `+goingPlanRowColumns+` from going_plan_rows where run_id = $1::uuid and plan = $2 order by row
 	`, run, plan.plan)
 	if err != nil {
 		return nil, fmt.Errorf("read the plan's rows: %w", err)
 	}
 	plan.rows, err = pgx.CollectRows(rows, func(scanned pgx.CollectableRow) (goingPlanRowStored, error) {
-		var row goingPlanRowStored
-		var arguments, shown, approval, result []byte
-		if err := scanned.Scan(&row.row, &row.tool, &arguments, &row.needs, &row.state, &shown, &approval, &result); err != nil {
-			return row, err
-		}
-		row.arguments = arguments
-		if err := json.Unmarshal(shown, &row.shown); err != nil {
-			return row, fmt.Errorf("decode row %d's shown: %w", row.row, err)
-		}
-		if approval != nil {
-			row.approval = &goingRowApproval{}
-			if err := json.Unmarshal(approval, row.approval); err != nil {
-				return row, fmt.Errorf("decode row %d's approval: %w", row.row, err)
-			}
-		}
-		if result != nil {
-			row.result = &goingRowRecord{}
-			if err := json.Unmarshal(result, row.result); err != nil {
-				return row, fmt.Errorf("decode row %d's result: %w", row.row, err)
-			}
-		}
-		return row, nil
+		return scanGoingPlanRow(scanned)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the plan's rows: %w", err)
 	}
 	return &plan, nil
+}
+
+// goingPlanRowColumns is the columns of a plan's row as scanGoingPlanRow decodes them.
+const goingPlanRowColumns = `row, coalesce(change->>'tool', ''), coalesce(change->'arguments', '{}'::jsonb), needs, state,
+	coalesce(shown, '{}'::jsonb), approval, result`
+
+// scanGoingPlanRow decodes one plan row read as goingPlanRowColumns, after the columns lead holds,
+// which the statement selects before them.
+func scanGoingPlanRow(scanned pgx.Row, lead ...any) (goingPlanRowStored, error) {
+	var row goingPlanRowStored
+	var arguments, shown, approval, result []byte
+	if err := scanned.Scan(append(lead, &row.row, &row.tool, &arguments, &row.needs, &row.state, &shown, &approval, &result)...); err != nil {
+		return row, err
+	}
+	row.arguments = arguments
+	if err := json.Unmarshal(shown, &row.shown); err != nil {
+		return row, fmt.Errorf("decode row %d's shown: %w", row.row, err)
+	}
+	if approval != nil {
+		row.approval = &goingRowApproval{}
+		if err := json.Unmarshal(approval, row.approval); err != nil {
+			return row, fmt.Errorf("decode row %d's approval: %w", row.row, err)
+		}
+	}
+	if result != nil {
+		row.result = &goingRowRecord{}
+		if err := json.Unmarshal(result, row.result); err != nil {
+			return row, fmt.Errorf("decode row %d's result: %w", row.row, err)
+		}
+	}
+	return row, nil
+}
+
+// goingPlanKey names one plan: its run and its number within the run.
+type goingPlanKey struct {
+	run  string
+	plan int
+}
+
+// readGoingPlanRows is the rows of each plan keys names, in one read, each plan's in row order: a
+// page of plans (listMyGoingPlans) reads every plan's rows in one round trip, as readGoingPlan
+// reads one plan's.
+func readGoingPlanRows(ctx context.Context, q goingQuerier, keys []goingPlanKey) (map[goingPlanKey][]goingPlanRowStored, error) {
+	byPlan := make(map[goingPlanKey][]goingPlanRowStored, len(keys))
+	if len(keys) == 0 {
+		return byPlan, nil
+	}
+	runs, plans := make([]string, 0, len(keys)), make([]int, 0, len(keys))
+	for _, key := range keys {
+		runs, plans = append(runs, key.run), append(plans, key.plan)
+	}
+	rows, err := q.Query(ctx, `
+		select p.run_id::text, p.plan, `+goingPlanRowColumns+`
+		from unnest($1::uuid[], $2::int[]) k (run_id, plan)
+		join going_plan_rows p on p.run_id = k.run_id and p.plan = k.plan
+		order by p.run_id, p.plan, p.row
+	`, runs, plans)
+	if err != nil {
+		return nil, fmt.Errorf("read the plans' rows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key goingPlanKey
+		row, err := scanGoingPlanRow(rows, &key.run, &key.plan)
+		if err != nil {
+			return nil, fmt.Errorf("read the plans' rows: %w", err)
+		}
+		byPlan[key] = append(byPlan[key], row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the plans' rows: %w", err)
+	}
+	return byPlan, nil
 }
 
 // goingPlanStateSQL sets the state of plan $2 of run $1 from its rows, and answers it: rejected

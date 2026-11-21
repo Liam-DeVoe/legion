@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // conversationRun records an ended run of login's, started age ago, following continues in its
@@ -318,4 +320,64 @@ func TestTheRunStreamResumes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestTheInboxReadsAPageOfWaitingPlansInTwoRoundTrips: GET /api/v1/me/going-plans reads a page of
+// the person's waiting plans, each with its version, in two round trips however many plans the
+// page holds: the list, and every listed plan's rows in one read.
+func TestTheInboxReadsAPageOfWaitingPlansInTwoRoundTrips(t *testing.T) {
+	database := storetest.Open(t)
+	counter := &roundTrips{}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	// The caller is named on the untraced pool, so the count is the read's own statements.
+	handler, _, _ := newTestServer(t, testServerOptions{store: traced, identity: headerIdentity(database)})
+	waiting := func(t *testing.T, rows int) {
+		t.Helper()
+		id := uuid.NewString()
+		for _, write := range []struct {
+			statement string
+			arguments []any
+		}{
+			{`insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape, created_at)
+			  values ($1::uuid, 'alice', 'a plan to approve', $1::uuid, 'standard', 'ask', 'waiting', $2, now())`, []any{id, goingRunShape}},
+			{`insert into going_plans (run_id, plan, state, summary) values ($1::uuid, 1, 'waiting', 'The changes the words ask for.')`, []any{id}},
+			{`insert into going_plan_rows (run_id, plan, row, change, state)
+			  select $1::uuid, 1, n, jsonb_build_object('tool', 'dispatch_issue_update', 'arguments', jsonb_build_object('issue', 'DEMO-' || n)), 'waiting'
+			  from generate_series(0, $2::int - 1) n`, []any{id, rows}},
+		} {
+			if _, err := database.Pool.Exec(context.Background(), write.statement, write.arguments...); err != nil {
+				t.Fatalf("record a waiting plan: %v", err)
+			}
+		}
+	}
+	read := func(t *testing.T) (goingWaitingPlansPage, []string) {
+		t.Helper()
+		ctx := context.WithValue(context.Background(), countedRead{}, true)
+		request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/me/going-plans", nil)
+		request.Header.Set("X-Dispatch-User", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		trips := counter.take()
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/me/going-plans answered %d %s", response.Code, response.Body.String())
+		}
+		return decodeBody[goingWaitingPlansPage](t, response), trips
+	}
+	waiting(t, 2)
+	one, oneTrips := read(t)
+	waiting(t, 1)
+	waiting(t, 3)
+	three, threeTrips := read(t)
+	if len(one.Rows) != 1 || len(three.Rows) != 3 {
+		t.Fatalf("the Inbox lists %d and then %d waiting plans, want 1 and then 3", len(one.Rows), len(three.Rows))
+	}
+	for _, row := range three.Rows {
+		if row.Version == "" {
+			t.Fatalf("the Inbox lists run %s's plan with no version", row.Run)
+		}
+	}
+	if len(oneTrips) != 2 || len(threeTrips) != 2 {
+		t.Fatalf("a page of one plan made %d round trips and one of three %d, want 2 each: %v, then %v",
+			len(oneTrips), len(threeTrips), oneTrips, threeTrips)
+	}
 }
