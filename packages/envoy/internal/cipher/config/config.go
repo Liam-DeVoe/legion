@@ -726,11 +726,11 @@ type Config struct {
 	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
 	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
 	// start, naming the key, and so does any key without BROKER_PROJECT_ACCESS_URL: a broker that
-	// holds a private project checks every project against Dispatch. A declared key turns on the
-	// airlock's public Slack fence from the first release after a start, before any answer of
-	// Dispatch's has called a project private (requests.Machine.PrivateDeclared); every token
+	// holds a private project checks every project against Dispatch. Beyond that refusal this
+	// build acts on none of it: the airlock's public Slack fence reads Dispatch's list of private
+	// projects whenever BROKER_PROJECT_ACCESS_URL is set, declared or not, and every token
 	// exchange, enrollment and exchange entry is decided as with the setting unset. Unset or
-	// blank, no project is private.
+	// blank, no project is declared private.
 	PrivateProjects exchange.PrivateProjects
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing. Needs

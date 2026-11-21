@@ -33,7 +33,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -227,9 +226,8 @@ type PrivateProject struct {
 	SlackChannelsChangedAt time.Time
 }
 
-// PrivateLister is the broker's read of every private project at once, and whether any answer
-// this process read called a project private. It sits beside Access rather than in it, so Access
-// and every fake of it are unchanged; *Client answers both.
+// PrivateLister is the broker's read of every private project at once. It sits beside Access
+// rather than in it, so Access and every fake of it are unchanged; *Client answers both.
 type PrivateLister interface {
 	// PrivateProjects is every private project, from the cache while it is younger than CacheTTL.
 	PrivateProjects(ctx context.Context) ([]PrivateProject, error)
@@ -241,8 +239,6 @@ type PrivateLister interface {
 	// PrivateProjectsFresh is every private project as Dispatch answers now: it neither reads nor
 	// writes the cache, and keeps no last good answer to fall back on.
 	PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, error)
-	// SawPrivate reports whether any answer this process read called a project private.
-	SawPrivate() bool
 }
 
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
@@ -257,10 +253,6 @@ type Client struct {
 	kinds   map[string]cachedKind
 	// private is the last list of private projects PrivateProjects kept, nil before the first.
 	private *cachedPrivate
-
-	// sawPrivate is SawPrivate's answer: set once, by the first answer that calls a project
-	// private, and never cleared.
-	sawPrivate atomic.Bool
 }
 
 type accessKey struct{ project, person string }
@@ -358,9 +350,6 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	// read it as public, which is what a missing field would otherwise decode to beside Private.
 	if !answer.Public() && !answer.Private() {
 		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
-	}
-	if answer.Private() {
-		c.sawPrivate.Store(true)
 	}
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
@@ -505,11 +494,6 @@ func (c *Client) PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, er
 	return projects, nil
 }
 
-// SawPrivate reports whether any answer this process read from Dispatch called a project
-// private: an Access answer whose visibility is private, or a PrivateProjects or
-// PrivateProjectsFresh answer that lists one. It is never cleared, and a restart starts it false.
-func (c *Client) SawPrivate() bool { return c.sawPrivate.Load() }
-
 // readPrivateProjects asks Dispatch's private-projects route once. The answer is decoded with
 // projects held raw, and refused unless that value opens a JSON array before the array itself is
 // decoded: a missing key and a null would otherwise decode to the same nil a [] does, and a list
@@ -553,9 +537,6 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 			project.SlackChannels, project.SlackChannelsPresent = *entry.SlackChannels, true
 		}
 		projects = append(projects, project)
-	}
-	if len(projects) > 0 {
-		c.sawPrivate.Store(true)
 	}
 	return projects, nil
 }

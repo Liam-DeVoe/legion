@@ -1,10 +1,10 @@
 // packages/envoy/internal/cipher/requests/project_access.go
-// project_access.go is the request machine's half of a private project's secrets
-// (dispatch://INFRA-3862, R11): what a credential names, and what Dispatch holds of each project a
-// requested secret is tagged with, resolved on the pool before any transaction begins and handed
-// to policy.Set.Evaluate as plain data. No call to Dispatch is made inside a transaction, under a
-// row lock or under an advisory lock, and none at all for a request, release or airlock
-// connection that holds no tagged secret.
+// project_access.go is the request machine's half of a private project's secrets (R11 of the
+// private projects' specification): what a credential names, and what Dispatch holds of each
+// project a requested secret is tagged with, resolved on the pool before any transaction begins
+// and handed to policy.Set.Evaluate as plain data. No call to Dispatch is made inside a
+// transaction, under a row lock or under an advisory lock, and none at all for a request, release
+// or airlock connection that holds no tagged secret.
 package requests
 
 import (
@@ -456,24 +456,16 @@ type privateFence struct {
 
 // privateChannels is the public fence: the channels a credential that names no private project
 // may not name with a project-channels secret, read from Dispatch's list of every private project
-// (PrivateList) with the broker's own token. It is read only once this broker knows a project is
-// private, from its own settings (PrivateDeclared) or from an answer of Dispatch's in this process
-// (projectaccess.PrivateLister.SawPrivate); until then it is empty and asks Dispatch nothing, so a
-// deployment with no private project is served as before (R9). A list that fails, or that names a
-// project with no slack_channels key, is unread: the proxy refuses every request on the name until
-// a read answers, rather than take a list it could not read as one naming no channel. So is a
-// machine that declares a private project and holds no PrivateList, which cipherd never builds:
-// config.Load refuses BROKER_PRIVATE_PROJECTS without BROKER_PROJECT_ACCESS_URL at boot.
+// (PrivateList) with the broker's own token. A broker with a PrivateList reads it at every call,
+// through the list's CacheTTL cache, whatever this process has read before and whatever its
+// settings declare, so a project Dispatch holds private is fenced from the first release on a pod
+// that has just started. While the list names no private project with a channel the fence is
+// empty, and the proxy reads no body. A broker with no PrivateList (no BROKER_PROJECT_ACCESS_URL)
+// reads nothing and fences nothing (R9). A list that fails, or that names a project with no
+// slack_channels key, is unread: the proxy refuses every request on the name until a read
+// answers, rather than take a list it could not read as one naming no channel.
 func (m *Machine) privateChannels(ctx context.Context) privateFence {
-	declared := m.PrivateDeclared != nil && len(m.PrivateDeclared()) > 0
 	if m.PrivateList == nil {
-		if declared {
-			m.logPrivateUnread("", errors.New("a private project is declared and the broker holds no client of Dispatch's project access"))
-			return privateFence{unread: true}
-		}
-		return privateFence{}
-	}
-	if !declared && !m.PrivateList.SawPrivate() {
 		return privateFence{}
 	}
 	projects, asked, err := m.PrivateList.PrivateProjectsAsOf(ctx)

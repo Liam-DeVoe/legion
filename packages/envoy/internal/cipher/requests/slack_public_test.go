@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -129,10 +130,8 @@ func (f *agedFence) PrivateProjectsFresh(ctx context.Context) ([]projectaccess.P
 	return f.PrivateProjects(ctx)
 }
 
-func (f *agedFence) SawPrivate() bool { return true }
-
-// outsideBroker is a broker whose rules give the Slack token no airlock entry, whose settings
-// declare PRIV and SYNTH private, and whose session names no project.
+// outsideBroker is a broker whose rules give the Slack token no airlock entry, and whose session
+// names no project.
 type outsideBroker struct {
 	m        *Machine
 	enr      string
@@ -143,7 +142,6 @@ type outsideBroker struct {
 func newOutsideBroker(t *testing.T, rows map[string]projectaccesstest.Row) *outsideBroker {
 	t.Helper()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	m.PrivateDeclared = func() []string { return []string{privProject, synthProject} }
 	b := &outsideBroker{m: m, enr: enr, key: key}
 	b.serve(t, rows)
 	return b
@@ -186,20 +184,11 @@ func fenceRows() map[string]projectaccesstest.Row {
 
 // publicRelease is one release of the Slack token to the fixture's session, which names named, as
 // the proxy reads it: on a broker whose client of Dispatch is new, as a broker's is after a
-// restart, asking a stand-in that holds rows, and whose settings declare declared private. It
-// answers the token's value, the stand-in, and the time before the read.
-func publicRelease(t *testing.T, rows map[string]projectaccesstest.Row, declared []string, named ...string) (AirlockSecret, *projectaccesstest.Server, time.Time) {
+// restart, asking a stand-in that holds rows. It answers the token's value, the stand-in, and the
+// time before the read.
+func publicRelease(t *testing.T, rows map[string]projectaccesstest.Row, named ...string) (AirlockSecret, *projectaccesstest.Server, time.Time) {
 	t.Helper()
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
-	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-	nameProjects(t, m, enr, named...)
-	dispatch := projectaccesstest.NewServer(t, rows, nil)
-	client := projectaccess.New(dispatch.URL, dispatch.Account, nil)
-	m.Projects, m.PrivateList = client, client
-	if declared != nil {
-		m.PrivateDeclared = func() []string { return declared }
-	}
-	_, grantID := grantOf(t, m, enr, key, "post the release notes", slackToken)
+	m, grantID, dispatch := publicGrant(t, rows, true, named...)
 	read := time.Now()
 	values, _, err := m.AirlockValues(t.Context(), grantID)
 	if err != nil {
@@ -208,12 +197,33 @@ func publicRelease(t *testing.T, rows map[string]projectaccesstest.Row, declared
 	return values[slackToken], dispatch, read
 }
 
+// publicGrant is the fixture's grant of the Slack token, behind the airlock, to its session, which
+// names named, beside a stand-in Dispatch holding rows: on a broker whose client of that Dispatch
+// is new when access is true, and on one with no project-access client otherwise. It answers the
+// broker's machine, the grant and the stand-in.
+func publicGrant(t *testing.T, rows map[string]projectaccesstest.Row, access bool, named ...string) (*Machine, string, *projectaccesstest.Server) {
+	t.Helper()
+	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
+	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
+	nameProjects(t, m, enr, named...)
+	dispatch := projectaccesstest.NewServer(t, rows, nil)
+	m.Projects, m.PrivateList = nil, nil
+	if access {
+		client := projectaccess.New(dispatch.URL, dispatch.Account, nil)
+		m.Projects, m.PrivateList = client, client
+	}
+	_, grantID := grantOf(t, m, enr, key, "post the release notes", slackToken)
+	return m, grantID, dispatch
+}
+
 // TestAPublicSlackGrantCarriesEveryPrivateChannel: the Slack token released to a credential that
 // names no private project carries Excluded, the sorted union of every private project's channels
-// in Dispatch's list, bounded to airlockProjectRecheck; after a restart the first release reads
-// that list from the broker's declared private projects alone, with no answer of Dispatch's before
-// it; with no private project known, it carries nothing and Dispatch is asked nothing; a list it
-// cannot read is ExcludedUnread, read again within a minute; and a credential that names a private
+// in Dispatch's list, bounded to airlockProjectRecheck. A fresh pod, which declares no key and has
+// read no private answer since it started, reads that list at its first release, so a project
+// Dispatch holds private is fenced from then on whatever the broker's settings declare. With
+// project access and no private project, the list's cached read is all Dispatch is asked and
+// nothing is fenced; with no project-access client, Dispatch is asked nothing; a list it cannot
+// read is ExcludedUnread, read again within a minute; and a credential that names a private
 // project is Limited instead.
 func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 	union := []string{privChannel, sharedChannel, synthChannel}
@@ -226,48 +236,62 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 			t.Fatalf("%s: %s expires %v; want the read time plus %v", what, slackToken, got.Expires, airlockProjectRecheck)
 		}
 	}
+	unfenced := func(t *testing.T, what string, got AirlockSecret, read time.Time) {
+		t.Helper()
+		if got.Limited || got.Channels != nil || got.Excluded != nil || got.ExcludedUnread {
+			t.Fatalf("%s: %s = Limited %v Channels %#v Excluded %#v ExcludedUnread %v; want unlimited and unfenced", what, slackToken, got.Limited, got.Channels, got.Excluded, got.ExcludedUnread)
+		}
+		if got.Expires.Before(read.Add(airlockProjectRecheck)) || got.Expires.After(time.Now().Add(airlockProjectRecheck)) {
+			t.Fatalf("%s: %s expires %v; want the read time plus %v, so the value learns of the first private project", what, slackToken, got.Expires, airlockProjectRecheck)
+		}
+	}
 
-	t.Run("after a restart, the declared projects seed the fence from the list with no earlier trade", func(t *testing.T) {
-		got, dispatch, read := publicRelease(t, fenceRows(), []string{privProject, synthProject})
-		fenced(t, "a session naming no project", got, read)
+	t.Run("a fresh pod with no key declared fences every private project's channel from its first release", func(t *testing.T) {
+		got, dispatch, read := publicRelease(t, fenceRows())
+		fenced(t, "a session naming no project, on a pod that has read no private answer", got, read)
 		if calls, list := dispatch.Calls(), dispatch.PrivateProjectsCalls(); calls != 1 || list != 1 {
 			t.Fatalf("the release asked Dispatch %d time(s), %d of them for the list; want the list once and nothing else", calls, list)
 		}
 	})
 
 	t.Run("a credential naming a public project is fenced the same", func(t *testing.T) {
-		got, _, read := publicRelease(t, fenceRows(), []string{privProject, synthProject}, teamProject)
+		got, _, read := publicRelease(t, fenceRows(), teamProject)
 		fenced(t, "a session naming TEAM", got, read)
 	})
 
-	t.Run("an answer of Dispatch's that called a project private turns the fence on", func(t *testing.T) {
-		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
-		m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-		dispatch := projectaccesstest.NewServer(t, fenceRows(), nil)
-		client := projectaccess.New(dispatch.URL, dispatch.Account, nil)
-		m.Projects, m.PrivateList = client, client
-		if _, err := client.Access(t.Context(), privProject, insider); err != nil || !client.SawPrivate() {
-			t.Fatalf("Access(%s) = %v, SawPrivate %v; want a private answer seen", privProject, err, client.SawPrivate())
+	t.Run("with project access and no private project, the list's cached read alone and nothing fenced", func(t *testing.T) {
+		public := fenceRows()
+		for _, key := range []string{privProject, synthProject} {
+			row := public[key]
+			row.Visibility = "public"
+			public[key] = row
 		}
-		_, grantID := grantOf(t, m, enr, key, "post the release notes", slackToken)
+		m, grantID, dispatch := publicGrant(t, public, true)
+		// Two releases on one pod inside projectaccess.CacheTTL, as the proxy's reads of two
+		// grants come: the second is answered from the list the first kept.
+		for release := 1; release <= 2; release++ {
+			read := time.Now()
+			values, _, err := m.AirlockValues(t.Context(), grantID)
+			if err != nil {
+				t.Fatalf("AirlockValues(%s), release %d: %v", slackToken, release, err)
+			}
+			unfenced(t, fmt.Sprintf("release %d with no private project", release), values[slackToken], read)
+		}
+		if calls, list := dispatch.Calls(), dispatch.PrivateProjectsCalls(); calls != 1 || list != 1 {
+			t.Fatalf("two releases inside CacheTTL asked Dispatch %d time(s), %d of them for the list; want the list once, kept for the second, and nothing else", calls, list)
+		}
+	})
+
+	t.Run("with no project-access client, nothing is fenced and Dispatch is asked nothing", func(t *testing.T) {
+		m, grantID, dispatch := publicGrant(t, fenceRows(), false)
 		read := time.Now()
 		values, _, err := m.AirlockValues(t.Context(), grantID)
 		if err != nil {
 			t.Fatalf("AirlockValues(%s): %v", slackToken, err)
 		}
-		fenced(t, "a session naming no project, on a broker that has seen PRIV private", values[slackToken], read)
-	})
-
-	t.Run("with no private project known, nothing is fenced and Dispatch is asked nothing", func(t *testing.T) {
-		got, dispatch, read := publicRelease(t, fenceRows(), nil)
-		if got.Limited || got.Channels != nil || got.Excluded != nil || got.ExcludedUnread {
-			t.Fatalf("%s = Limited %v Channels %#v Excluded %#v ExcludedUnread %v; want unlimited and unfenced, as before any project is private", slackToken, got.Limited, got.Channels, got.Excluded, got.ExcludedUnread)
-		}
-		if got.Expires.Before(read.Add(airlockProjectRecheck)) || got.Expires.After(time.Now().Add(airlockProjectRecheck)) {
-			t.Fatalf("%s expires %v; want the read time plus %v, so the value learns of the first private project", slackToken, got.Expires, airlockProjectRecheck)
-		}
+		unfenced(t, "a broker with no project-access client", values[slackToken], read)
 		if calls := dispatch.Calls(); calls != 0 {
-			t.Fatalf("a release with no private project known asked Dispatch %d time(s); want none", calls)
+			t.Fatalf("a broker with no project-access client asked Dispatch %d time(s); want none", calls)
 		}
 	})
 
@@ -286,16 +310,10 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 		}()},
 	} {
 		t.Run("unread: "+c.name, func(t *testing.T) {
-			rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
-			m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-			dispatch := projectaccesstest.NewServer(t, c.rows, nil)
+			m, grantID, dispatch := publicGrant(t, c.rows, true)
 			if c.fail != nil {
 				c.fail(dispatch)
 			}
-			client := projectaccess.New(dispatch.URL, dispatch.Account, nil)
-			m.Projects, m.PrivateList = client, client
-			m.PrivateDeclared = func() []string { return []string{privProject, synthProject} }
-			_, grantID := grantOf(t, m, enr, key, "post the release notes", slackToken)
 			read := time.Now()
 			values, _, err := m.AirlockValues(t.Context(), grantID)
 			if err != nil {
@@ -314,7 +332,7 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 	}
 
 	t.Run("a credential naming a private project is Limited, not fenced", func(t *testing.T) {
-		got, _, _ := publicRelease(t, fenceRows(), []string{privProject, synthProject}, privProject)
+		got, _, _ := publicRelease(t, fenceRows(), privProject)
 		if !got.Limited || got.Excluded != nil || got.ExcludedUnread {
 			t.Fatalf("%s for a session naming PRIV = Limited %v Excluded %#v ExcludedUnread %v; want Limited, with no fence of its own", slackToken, got.Limited, got.Excluded, got.ExcludedUnread)
 		}

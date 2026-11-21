@@ -118,8 +118,8 @@ func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 
 // TestThePrivateProjectsListReadsEveryPrivateRow: the list Dispatch answers reaches
 // PrivateProject field by field, private rows alone and in key order, with a row that carries no
-// slack_channels marked so, and the time each list changed; and SawPrivate turns true at the
-// first answer that calls a project private, an Access answer or a list's, and never before.
+// slack_channels marked so, and the time each list changed; and a bearer Dispatch refuses is
+// ErrBrokerRefused.
 func TestThePrivateProjectsListReadsEveryPrivateRow(t *testing.T) {
 	changed := time.Date(2026, 11, 20, 9, 30, 0, 0, time.UTC)
 	server := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
@@ -129,12 +129,6 @@ func TestThePrivateProjectsListReadsEveryPrivateRow(t *testing.T) {
 		"PUB":   {Visibility: "public", Owner: "carol@example.com", SlackChannels: []string{"C0PUB000001"}},
 	}, nil)
 	client := projectaccess.New(server.URL, server.Account, nil)
-	if _, err := client.Access(t.Context(), "PUB", ""); err != nil {
-		t.Fatal(err)
-	}
-	if client.SawPrivate() {
-		t.Fatal("SawPrivate after a public answer alone = true, want false")
-	}
 	projects, err := client.PrivateProjects(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -146,17 +140,6 @@ func TestThePrivateProjectsListReadsEveryPrivateRow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(projects, want) {
 		t.Fatalf("PrivateProjects = %#v, want %#v", projects, want)
-	}
-	if !client.SawPrivate() {
-		t.Fatal("SawPrivate after a list naming three private projects = false, want true")
-	}
-
-	other := projectaccess.New(server.URL, server.Account, nil)
-	if _, err := other.Access(t.Context(), "PRIV", ""); err != nil {
-		t.Fatal(err)
-	}
-	if !other.SawPrivate() {
-		t.Fatal("SawPrivate after Access answered PRIV private = false, want true")
 	}
 	stranger := projectaccess.New(server.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
 	if _, err := stranger.PrivateProjects(t.Context()); !errors.Is(err, projectaccess.ErrBrokerRefused) {

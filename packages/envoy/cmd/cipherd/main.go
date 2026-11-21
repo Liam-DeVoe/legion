@@ -485,14 +485,10 @@ func main() {
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
-	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
-	// The public Slack fence reads the private projects' channels once this broker knows a
-	// project is private: from its own declaration (BROKER_PRIVATE_PROJECTS), which a restart
-	// keeps, or from an answer of Dispatch's in this process (PrivateList.SawPrivate). config.Load
-	// refuses a declaration without BROKER_PROJECT_ACCESS_URL, so a declared key always has a list
-	// to read.
-	declared := cfg.PrivateProjects.Keys()
-	reqMachine.PrivateList, reqMachine.PrivateDeclared = privateList, func() []string { return declared }
+	// The public Slack fence reads the private projects' channels through the same client, at
+	// every release of a project-channels name, so it needs no declaration and no earlier answer
+	// to fence a project Dispatch holds private (requests.Machine.privateChannels).
+	reqMachine.Projects, reqMachine.PrivateList, reqMachine.Exchange = projectAccess, privateList, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.

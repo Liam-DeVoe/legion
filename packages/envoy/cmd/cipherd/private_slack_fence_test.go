@@ -1,9 +1,9 @@
 // cmd/cipherd/private_slack_fence_test.go
 // The airlock's public Slack fence on a broker that has just started, against the REAL compiled
-// broker: BROKER_PRIVATE_PROJECTS declares PRIV private, and the broker's project-access client is
-// pointed at a Dispatch stand-in that holds PRIV private with a Slack channel. No answer this
-// process has read from Dispatch has called a project private yet, as on every pod after a
-// rollout, so the declaration alone has to turn the fence on before the first call is carried.
+// broker: its project-access client is pointed at a Dispatch stand-in that holds PRIV private with
+// a Slack channel. No answer this process has read from Dispatch has called a project private yet,
+// as on every pod after a rollout, so the fence must read Dispatch's list at the first release,
+// whether or not BROKER_PRIVATE_PROJECTS names PRIV.
 package main
 
 import (
@@ -33,13 +33,22 @@ const boundCallMessage = "airlock proxy: a call to a bound host"
 
 // TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer: a pod of a service, whose
 // session names no project, is granted the Slack bot token, tagged project-channels=slack, behind
-// the airlock. Its first read of PRIV's channel through the proxy is refused PRIVATE_CHANNEL and
-// nothing is carried towards Slack: the release that read was fenced from PRIV's channel from the
-// start. The only call the broker made to Dispatch was the list of private projects, which the
-// declaration asked for: it asked no project's or person's access, so no answer had called a
-// project private before the fence was read. Run with Machine.PrivateDeclared left unwired in
-// main, the same read is carried towards Slack, and the test names the channel.
+// the airlock, on a broker that declares PRIV private (BROKER_PRIVATE_PROJECTS=PRIV), and on one
+// that declares no key while Dispatch holds PRIV private. On each, the pod's first read of PRIV's
+// channel through the proxy is refused PRIVATE_CHANNEL and nothing is carried towards Slack: the
+// release that read was fenced from PRIV's channel from the start. The only call the broker made
+// to Dispatch was the list of private projects: it asked no project's or person's access, so no
+// answer had called a project private before the fence was read. Run with the fence's read
+// waiting for a declaration or an answer that called a project private, the read is carried
+// towards Slack on the broker that declares no key, and the test names the channel.
 func TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer(t *testing.T) {
+	t.Run("PRIV declared in BROKER_PRIVATE_PROJECTS", func(t *testing.T) { freshPodFirstRead(t, true) })
+	t.Run("no key declared, PRIV private in Dispatch alone", func(t *testing.T) { freshPodFirstRead(t, false) })
+}
+
+// freshPodFirstRead is one row of that test: a broker that declares PRIV private when declare is
+// true, and no key otherwise.
+func freshPodFirstRead(t *testing.T, declare bool) {
 	const (
 		podAudience  = "example-broker-pod"
 		service      = "example-service"
@@ -70,7 +79,7 @@ func TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer(t *tes
 	}}
 	store.write(t)
 	certFile, keyFile := airlockCAFiles(t)
-	broker := startBroker(t, brokerOptions{Env: []string{
+	env := []string{
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
@@ -81,7 +90,6 @@ func TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer(t *tes
 		"BROKER_SERVICES=" + service + "=" + podAccount,
 		"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
 		"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
-		"BROKER_PRIVATE_PROJECTS=" + privProject,
 		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
@@ -90,7 +98,11 @@ func TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer(t *tes
 		"BROKER_AIRLOCK_RULES_FILE=" + airlockRulesFile(t,
 			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+slackHost+`"], "headers": ["authorization"]}]}`),
 		"BROKER_DRAIN_SECONDS=0",
-	}})
+	}
+	if declare {
+		env = append(env, "BROKER_PRIVATE_PROJECTS="+privProject)
+	}
+	broker := startBroker(t, brokerOptions{Env: env})
 	requireHealthy(t, broker.Addr)
 	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
 	if strings.Contains(broker.Boot, "agent secret policy refused") {
@@ -142,15 +154,14 @@ func TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer(t *tes
 	reply.Body.Close()
 	carried := recordsWith(broker.Log(), boundCallMessage, nil)
 	if reply.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "this Slack channel belongs to a private project") || len(carried) != 0 {
-		t.Fatalf("the pod's first read of %s through the airlock = %d %q, with %d call(s) carried towards Slack (%v); want 403 PRIVATE_CHANNEL and none: the declared PRIV fences its channel before any answer of Dispatch's has called it private",
+		t.Fatalf("the pod's first read of %s through the airlock = %d %q, with %d call(s) carried towards Slack (%v); want 403 PRIVATE_CHANNEL and none: PRIV, private in Dispatch, fences its channel before any answer of Dispatch's has called it private",
 			privChannel, reply.StatusCode, body, len(carried), carried)
 	}
 	if refusals := recordsWith(broker.Log(), answer.RefusalMessage, map[string]any{"code": "PRIVATE_CHANNEL"}); len(refusals) != 1 {
 		t.Fatalf("the broker logged %d PRIVATE_CHANNEL refusal(s) for the read of %s; want 1:\n%s", len(refusals), privChannel, broker.Log())
 	}
-	// The fence was read from Dispatch's list alone, which only the declaration could have asked
-	// for: the broker asked no project's and no person's access, so nothing it read before the
-	// list had called a project private.
+	// The fence was read from Dispatch's list alone: the broker asked no project's and no
+	// person's access, so nothing it read before the list had called a project private.
 	if lists, calls := dispatch.PrivateProjectsCalls(), dispatch.Calls(); lists == 0 || calls != lists {
 		t.Fatalf("the broker asked Dispatch %d time(s), %d of them for the list of private projects; want the list alone, at least once", calls, lists)
 	}
