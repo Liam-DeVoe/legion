@@ -68,7 +68,10 @@ func madeUpSeed(t *testing.T, prefix nkeys.PrefixByte, words string) (seed, publ
 // holds none of them either: the seed no server admits, refused until the connection closes; a
 // subscription and a publish the server refuses the admitted seed; a slow consumer's asynchronous
 // error; and a connection whose server URL names the token as its user, lost and restored, and
-// lost and closed.
+// lost and closed. A server URL whose userinfo url.Parse cannot read as userinfo is refused naming
+// none of it: one that does not parse, ones whose password holds a "/", "?", "#" or space (which
+// url.Parse reads as a port it quotes, or which end a URL rule's authority or URL early), and one
+// naming a token that holds a "/" as its user (which parses, the token's head its host).
 func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 	seed, public := madeUpSeed(t, nkeys.PrefixByteUser, "a made-up user seed")
 	stranger, _ := madeUpSeed(t, nkeys.PrefixByteUser, "a made-up user seed no server admits")
@@ -80,9 +83,20 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 	mistyped := seed[:20] + string(letter) + seed[21:]
 	tokenHash := sha256.Sum256([]byte("a made-up NATS token"))
 	token := "made-up-nats-token-" + hex.EncodeToString(tokenHash[:16])
+	// Passwords that hold a "/", "?", "#", space or comma, which end url.Parse's authority or its
+	// URL early or split the list nats.go reads (about four in ten base64 credentials hold a "/"),
+	// and a token holding a "/".
+	tail := hex.EncodeToString(tokenHash[16:])
+	slashedPassword, queryPassword := "madeUpNatsPassword/"+tail, "madeUpNatsPassword?"+tail
+	fragmentPassword, spacedPassword := "madeUpNatsPassword#"+tail, "madeUpNatsPassword "+tail
+	commaPassword := "madeUpNatsPassword," + tail
+	slashedToken := "madeUpNatsToken/" + tail
 	credentials := []printedCredential{
 		{"the made-up seed", seed}, {"the made-up seed no server admits", stranger}, {"the made-up account seed", account},
 		{"the mistyped seed", mistyped}, {"the made-up NATS token", token},
+		{"the made-up password holding a /", slashedPassword}, {"the made-up password holding a ?", queryPassword},
+		{"the made-up password holding a #", fragmentPassword}, {"the made-up password holding a space", spacedPassword},
+		{"the made-up password holding a comma", commaPassword}, {"the made-up token holding a /", slashedToken},
 	}
 
 	dir := t.TempDir()
@@ -111,6 +125,17 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 		daemonSeedOf := func(file string, values map[string]string) func() error {
 			return func() error { _, err := natsauth.DaemonSeed(file, env(values)); return err }
 		}
+		// connectTo is Connect handed server, refused before any dial, and its error.
+		connectTo := func(server string) func() error {
+			return func() error {
+				conn, err := natsauth.Connect([]string{server}, "", t.Name())
+				if err == nil {
+					conn.Close()
+				}
+				return err
+			}
+		}
+		unparsed := []string{"the NATS server URL 1 of 1 cannot be read", "does not parse as a URL"}
 		for _, row := range []struct {
 			name       string
 			printed    func() error
@@ -164,13 +189,24 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 				}
 				return err
 			}, names: []string{"the NATS nkey seed", "does not hold a valid nkey seed"}},
-			{name: "Connect handed a server URL naming the token as its user that does not parse", printed: func() error {
-				conn, err := natsauth.Connect([]string{"nats://" + token + "%zz@127.0.0.1:1"}, "", t.Name())
-				if err == nil {
-					conn.Close()
-				}
-				return err
-			}, names: []string{"the NATS server URL nats://127.0.0.1:1", "cannot be read", "invalid URL escape"}},
+			{name: "Connect handed a server URL naming the token as its user that does not parse",
+				printed: connectTo("nats://" + token + "%zz@127.0.0.1:1"), names: unparsed},
+			{name: "Connect handed a server URL whose password holds a /",
+				printed: connectTo("nats://legion:" + slashedPassword + "@127.0.0.1:1"), names: unparsed},
+			{name: "Connect handed a server URL whose password holds a ?",
+				printed: connectTo("nats://legion:" + queryPassword + "@127.0.0.1:1"), names: unparsed},
+			{name: "Connect handed a server URL whose password holds a #",
+				printed: connectTo("nats://legion:" + fragmentPassword + "@127.0.0.1:1"), names: unparsed},
+			{name: "Connect handed a server URL whose password holds a space",
+				printed: connectTo("nats://legion:" + spacedPassword + "@127.0.0.1:1"), names: unparsed},
+			{name: "Connect handed a server URL whose password holds a comma",
+				printed: connectTo("nats://legion:" + commaPassword + "@127.0.0.1:1"),
+				names:   []string{"the NATS server URL 1 of 1 cannot be read", "it holds a comma"}},
+			{name: "Connect handed a server URL naming a token that holds a / as its user",
+				printed: connectTo("nats://" + slashedToken + "@127.0.0.1:1"),
+				names:   []string{"the NATS server URL 1 of 1 cannot be read", `an "@" stands after its host`}},
+			{name: "Connect handed a server URL that does not parse with the token in its query",
+				printed: connectTo("nats://127.0.0.1:1/%zz?token=" + token), names: unparsed},
 			{name: "PublicKey of the token", printed: func() error { _, err := natsauth.PublicKey(token); return err },
 				names: []string{"the NATS nkey seed", "does not hold a valid nkey seed"}},
 			{name: "PublicKey of an account's seed", printed: func() error { _, err := natsauth.PublicKey(account); return err },

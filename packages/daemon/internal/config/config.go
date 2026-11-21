@@ -685,16 +685,28 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. An entry holding a comma, where the
+// NATS client splits its list, and one with an "@" after its host (NATSUserinfoPastHost) are
+// refused too, and every refusal names its entry by its position alone (`nats_urls entry 2`),
+// never by any of its text: a credential holding a "/", "?", "#", space or comma ends url.Parse's
+// authority early, so the entry does not parse, or parses with a part of the credential as its
+// host, and nothing that reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
 		return read, err
 	}
 	urls := make([]string, 0, len(read))
-	for _, raw := range read {
-		if _, err := endpointURL(raw, key); err != nil {
-			return nil, fmt.Errorf("%s entry %q%s", key, raw, strings.TrimPrefix(err.Error(), key))
+	for index, raw := range read {
+		if strings.Contains(raw, ",") {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, NATSCommaReason)
+		}
+		parsed, err := endpointURL(raw, key)
+		if err != nil {
+			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
+		}
+		if NATSUserinfoPastHost(parsed) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, NATSUserinfoPastHostReason)
 		}
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
@@ -954,6 +966,25 @@ func noQueryOrFragment(parsed *url.URL, key string) error {
 		return fmt.Errorf("%s must not include a query string or fragment", key)
 	}
 	return nil
+}
+
+// The reasons a NATS server URL is refused for, by readNatsURLs and by natsauth.Connect, each of
+// which names the URL by its position alone. They are fixed words, never url.Parse's, whose text
+// quotes the part of the URL it could not read (`invalid port ":abcdefghijKLMN" after host` for a
+// password holding a "/").
+const (
+	NATSUnparsedReason         = `it does not parse as a URL; write a credential in it percent-encoded`
+	NATSCommaReason            = `it holds a comma, where the NATS client splits its list of servers, so it can never connect; write a comma in a credential percent-encoded (%2C)`
+	NATSUserinfoPastHostReason = `an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`
+)
+
+// NATSUserinfoPastHost reports whether parsed, a NATS server URL that parsed, holds an "@" after
+// its host, in its path, query or fragment. That is where a credential holding a "/", "?" or "#"
+// ends url.Parse's authority before its "@": `nats://abcdefghijKLMN/opq@host:4222`, a token
+// written as the user, parses with abcdefghijKLMN as the host, so the URL's host is a part of the
+// credential and every line that names the host names it.
+func NATSUserinfoPastHost(parsed *url.URL) bool {
+	return strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@")
 }
 
 // baseURL is the shipped `normalizeBaseUrl` (config.ts): a URL a path is appended to, so

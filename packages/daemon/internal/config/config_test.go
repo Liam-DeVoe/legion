@@ -162,6 +162,17 @@ func writeConfigFile(t *testing.T, body string) string {
 	return path
 }
 
+// withNATSPassword is a nats_urls line holding before and then a URL at host whose user legion has
+// password, a made-up value, built here so that no source line holds a URL with a password.
+func withNATSPassword(password, host string, before ...string) string {
+	last := "nats://legion:" + password + "@" + host
+	quoted := make([]string, 0, len(before)+1)
+	for _, entry := range append(before, last) {
+		quoted = append(quoted, fmt.Sprintf("%q", entry))
+	}
+	return "nats_urls: [" + strings.Join(quoted, ", ") + "]\n"
+}
+
 func noEnv(string) string { return "" }
 
 func envMap(pairs map[string]string) func(string) string {
@@ -1091,17 +1102,58 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "daemon_url: http://127.0.0.1:13370/?x=1\n",
 			want: "daemon_url must not include a query string or fragment",
 		},
+		// Every refusal of a nats_urls entry names it by its position alone, never by any of its
+		// text: a query can hold a token, and a credential holding a "/", "?", "#", space or comma
+		// ends url.Parse's authority early or is no userinfo it reads, so its password's head reads
+		// as the port, a token written as the user parses with its head as the host, and nothing
+		// that removes a URL's userinfo finds the credential to cut.
 		{
 			name: "nats_urls entry with a query string",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
-				`nats_urls: ["nats://127.0.0.1:4222?token=token"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222?token=token" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+				`nats_urls: ["nats://127.0.0.1:4222?token=madeUpNatsQueryToken"]`+"\n", 1),
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
 		},
 		{
 			name: "nats_urls entry with a fragment",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222#fragment"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222#fragment" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+		},
+		{
+			name: "nats_urls entry whose password holds a /, second in the list",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword/abc", "127.0.0.1:4222", "nats://127.0.0.1:4222"), 1),
+			want: `nats_urls entry 2 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a ?",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword?abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a #",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword#abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a space",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword,abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, where the NATS client splits its list of servers, so it can never connect; write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			name: "nats_urls entry naming a token that holds a / as its user",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://madeUpNatsToken/abc@127.0.0.1:4222"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
 		},
 		{
 			name: "envoy_url with a query string",
@@ -1239,7 +1291,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "nats_urls holding something that is not a URL",
 			body: minimalFile + "nats_urls: [nats://127.0.0.1:4222, nats-host]\n",
-			want: `nats_urls entry "nats-host" must be a valid URL`,
+			want: `nats_urls entry 2 must be a valid URL`,
 		},
 		{
 			name: "envoy_token_file blank",

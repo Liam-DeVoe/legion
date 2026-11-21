@@ -158,13 +158,13 @@ func (s source) seed() (string, error) {
 // an operator reading /connz on the Envoy NATS sees which process holds each connection, and a
 // test fixture reporting a connection a test left open can say which client it was. It is
 // appended after the caller's own options, beside detectSilentCuts, so a caller's own nats.Name
-// does not win here. A server URL that does not parse is refused naming it without its userinfo
-// or its query (unreadableURL), before any dial.
+// does not win here. A server URL whose userinfo cannot be read as userinfo is refused naming it
+// by its position in urls alone (unreadableURL), before any dial.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
-	servers := strings.Join(urls, ",")
-	if err := unreadableURL(servers); err != nil {
+	if err := unreadableURL(urls); err != nil {
 		return nil, err
 	}
+	servers := strings.Join(urls, ",")
 	if seed != "" {
 		user, err := userKey(seed, "the NATS nkey seed")
 		if err != nil {
@@ -181,23 +181,37 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 	return nats.Connect(servers, options...)
 }
 
-// unreadableURL refuses the first server of servers, nats.go's comma-separated list, that does not
-// parse as nats.go parses one (split on commas and trimmed, a scheme added where it has none),
-// naming it through redact.URLCredentials, without its userinfo and its query, with url.Parse's
-// reason alone: nats.go refuses such a server with url.Parse's own error, which quotes the URL
-// whole, a token in its userinfo included.
-func unreadableURL(servers string) error {
-	for _, server := range strings.Split(servers, ",") {
-		server = strings.TrimSpace(server)
+// unreadableURL refuses the first of urls whose userinfo url.Parse cannot read as the URL's
+// userinfo, read as nats.go reads it (trimmed, a scheme added where it has none): one holding a
+// comma, where nats.go splits the list Connect joins, so its parts can never connect; one that
+// does not parse; and one that parses with an "@" after its host, in its path, query or fragment.
+// A credential that holds a "/", "?", "#", space or comma ends url.Parse's authority early, is no
+// userinfo it reads, or is split from the rest of the URL: `nats://user:abcdefghijKLMN/opq@host:
+// 4222` reads abcdefghijKLMN as a port, which does not parse, and `nats://abcdefghijKLMN/opq@host:
+// 4222`, a token written as the user, parses with abcdefghijKLMN as the host. nats.go would refuse
+// the first with url.Parse's error, which quotes the URL whole, and dial the second, naming the
+// token's head as its host.
+//
+// The refusal names the URL by its position in urls alone, as the configuration's refusal of a
+// nats_urls entry does (config.readNatsURLs), and gives a reason of fixed words: any text of such
+// a URL can be a part of the credential, and url.Parse's reason quotes the part it could not read
+// (`invalid port ":abcdefghijKLMN" after host`). A path, a query or a fragment with no "@" is
+// kept: nats.go sends a websocket URL's path and query in its handshake (ws.go), and the
+// configuration takes a path (config.endpointURL).
+func unreadableURL(urls []string) error {
+	for index, raw := range urls {
+		server := strings.TrimSpace(raw)
 		if !strings.Contains(server, "://") {
 			server = "nats://" + server
 		}
-		if _, err := url.Parse(server); err != nil {
-			var unread *url.Error
-			if errors.As(err, &unread) {
-				err = unread.Err
-			}
-			return fmt.Errorf("the NATS server URL %s cannot be read: %w", redact.URLCredentials(server), err)
+		parsed, err := url.Parse(server)
+		switch {
+		case strings.Contains(server, ","):
+			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSCommaReason)
+		case err != nil:
+			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSUnparsedReason)
+		case config.NATSUserinfoPastHost(parsed):
+			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), config.NATSUserinfoPastHostReason)
 		}
 	}
 	return nil
