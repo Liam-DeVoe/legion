@@ -88,8 +88,11 @@ type statusChangeEntry struct {
 	Issue           *model.Issue `json:"issue,omitempty"`
 }
 
-// statusChangeRefusal is every refusal of the route but 409 PARENT_STATUS_CONFLICT: its code and
-// its message, and the entries of the writes that committed before it ([] when none did).
+// statusChangeRefusal is every refusal of the route but 409 PARENT_STATUS_CONFLICT, the handler's
+// and its request key's (refuseStatusChangeKey): its code and its message, and the entries of the
+// writes that committed before it ([] when none did; for a 409 KEY_IN_FLIGHT, those the run that
+// holds the key had committed when the key was read, and for an ANSWER_NOT_KEPT, those the first
+// run committed).
 type statusChangeRefusal struct {
 	Code    string              `json:"code"`
 	Error   string              `json:"error"`
@@ -617,6 +620,24 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 	}
 	maps.Copy(w.Header(), refused.header)
 	WriteJSON(w, refused.status, statusChangeRefusal{Code: body.Code, Error: body.Error, Changed: changed})
+}
+
+// refuseStatusChangeKey is the route's keyedRoute.refuse: a refusal the request-key layer decides
+// itself, err, answered as writeStatusChangeRefusal answers one, with changed the entries recovery
+// holds - the recovery point of this request's run, which a 409 KEY_IN_FLIGHT names while that run
+// holds the key and an ANSWER_NOT_KEPT names after it - and [] where recovery is nil: a point not
+// yet written, and every other refusal of the key, under which nothing ran.
+func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recovery json.RawMessage) {
+	changed := []statusChangeEntry{}
+	if recovery != nil {
+		var point statusChangeRecovery
+		if decodeErr := json.Unmarshal(recovery, &point); decodeErr != nil {
+			s.writeStatusChangeRefusal(w, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), changed)
+			return
+		}
+		changed = append(changed, point.Changed...)
+	}
+	s.writeStatusChangeRefusal(w, err, changed)
 }
 
 // statusChangeRecovery is the recovery point of a keyed status change (request_keys.go): what

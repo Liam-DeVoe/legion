@@ -841,10 +841,11 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 // TestAStatusChangeRefusedByItsRequestKeyAnswersChanged: every refusal of the route carries
 // changed beside its code, [] when no step committed before it (plan v19, "The contract"; the
 // check c-route-fence: "a call refused before its first step answers an empty changed"). The
-// refusals of the call's request key come before its first step too: a repeat while the first
-// holder runs (409 KEY_IN_FLIGHT, a 409 whose declared body, StatusChangeRefusal, requires
-// changed), the key sent again with another body (422 KEY_REUSED), and a malformed key (400
-// KEY_INVALID). Each answers changed [].
+// refusals of the call's request key carry it too. A repeat while the first holder runs (409
+// KEY_IN_FLIGHT, a 409 whose declared body, StatusChangeRefusal, requires changed) names the
+// entries the running call has committed: here its step 0, the named issue's own move into work.
+// The key sent again with another body (422 KEY_REUSED) and a malformed key (400 KEY_INVALID),
+// under which nothing ran, answer changed [].
 func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
 	rig := newRepeatRig(t)
 	named := rig.file(t, "Issue whose key is refused", "backlog", "")
@@ -864,8 +865,23 @@ func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
 	}
 
 	resume := rig.stopAfterStep(t, write, key, 0)
-	requireEmptyChanged(t, write.String()+" again while the first holder runs", rig.keyedStatusChange(t, write, key),
-		http.StatusConflict, contracts.IdempotencyKeyInFlight)
+	held := write.String() + " again while the first holder runs"
+	inFlight := rig.keyedStatusChange(t, write, key)
+	var body map[string]any
+	if err := json.Unmarshal(inFlight.Body.Bytes(), &body); err != nil {
+		t.Fatalf("%s: decode the answer %s: %v", held, inFlight.Body.String(), err)
+	}
+	changed, _ := body["changed"].([]any)
+	var entry map[string]any
+	if len(changed) == 1 {
+		entry, _ = changed[0].(map[string]any)
+	}
+	parent, hasParent := entry["parent"]
+	if inFlight.Code != http.StatusConflict || body["code"] != contracts.IdempotencyKeyInFlight || len(changed) != 1 ||
+		entry["key"] != named || entry["status"] != "todo" || !hasParent || parent != nil {
+		t.Errorf("%s answered %d %s, want %d %s with changed the one entry of %s's own step, at todo with parent null",
+			held, inFlight.Code, inFlight.Body.String(), http.StatusConflict, contracts.IdempotencyKeyInFlight, named)
+	}
 	if first := resume(); first.Code != http.StatusOK {
 		t.Fatalf("the first run answered %d %s once it went on, want 200", first.Code, first.Body.String())
 	}
