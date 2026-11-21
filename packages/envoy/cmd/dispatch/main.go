@@ -2340,7 +2340,8 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // and then `private_before_full_switch` while it holds a project private before its full switch
 // (privateProjectsState.BeforeFullSwitch), each as the last read, cached 30 s, found it. Each is a
 // fixed code: /healthz answers a caller with no credential, so it names no key and gives no count
-// (R2); the operator reads the keys in reportPrivateProjects' lines. Neither decides ok: such a
+// (R2); the operator reads the keys in reportPrivateProjects' lines, which the boot writes, so a
+// project made private after the boot is named at the next one. Neither decides ok: such a
 // project stays private, and a probe that failed for it would take every project out of service.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string

@@ -871,12 +871,13 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 }
 
 // /healthz says that the service is degraded while the database holds a private project that
-// DISPATCH_PRIVATE_PROJECTS does not name, with one fixed reason code and nothing else: no key and
-// no count, since a probe answers a caller with no credential, and a key or a count tells it of a
-// project it cannot see (R2). The keys are the operator's, in the ERROR line the boot and each
-// maintenance pass log. It still answers 200 with ok true, so no probe takes the process out of
-// service for it. With none, the body is byte for byte the one a process with no such read
-// answers (R9).
+// neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names, with one fixed
+// reason code, private_project_unprovisioned, compared as the literal a probe reads, and nothing
+// else: no key and no count, since a probe answers a caller with no credential, and a key or a
+// count tells it of a project it cannot see (R2). The keys are the operator's, in the ERROR line
+// the boot and each maintenance pass log. It still answers 200 with ok true, so no probe takes the
+// process out of service for it. With none, the body is byte for byte the one a process with no
+// such read answers (R9).
 func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T) {
 	database := storetest.Open(t)
 	probe := func(state *privateProjectsState) (int, string) {
@@ -913,8 +914,8 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 	if code != http.StatusOK || string(health["ok"]) != "true" {
 		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and ok true", code, body)
 	}
-	if got := string(health["degraded"]); got != `["`+unprovisionedPrivateProjectReason+`"]` {
-		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want [%q]: %s", got, unprovisionedPrivateProjectReason, body)
+	if got := string(health["degraded"]); got != `["private_project_unprovisioned"]` {
+		t.Fatalf(`/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want ["private_project_unprovisioned"]: %s`, got, body)
 	}
 	if strings.Contains(body, "PRIV") {
 		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
@@ -932,11 +933,12 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 }
 
 // /healthz says that a project is private before its full switch, with the fixed reason code
-// private_before_full_switch and nothing else: no key and no count, as for an unprovisioned private
-// project (R2), and 200 with ok true, since the operator chose that state. The reason is the
-// project's state, not the list's: a key on DISPATCH_PRIVATE_BEFORE_FULL_SWITCH whose project is
-// public answers no reason, and one DISPATCH_PRIVATE_PROJECTS names too is fully switched and
-// answers none either. A private project neither list names still answers
+// private_before_full_switch, compared as the literal a probe reads, and nothing else: no key and
+// no count, the body being the one a handler with no read answers plus degraded alone, as for an
+// unprovisioned private project (R2), and 200 with ok true, since the operator chose that state.
+// The reason is the project's state, not the list's: a key on DISPATCH_PRIVATE_BEFORE_FULL_SWITCH
+// whose project is public answers no reason, and one DISPATCH_PRIVATE_PROJECTS names too is fully
+// switched and answers none either. A private project neither list names still answers
 // private_project_unprovisioned beside it.
 func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
 	database := storetest.Open(t)
@@ -966,11 +968,25 @@ func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
 		t.Fatalf("make DAYONE private: %v", err)
 	}
 	code, health, body := probe(nil, []string{"DAYONE"})
-	if code != http.StatusOK || string(health["ok"]) != "true" || string(health["degraded"]) != `["`+privateBeforeFullSwitchReason+`"]` {
-		t.Fatalf("/healthz with DAYONE private before its full switch = %d %s, want 200, ok true and degraded [%q]", code, body, privateBeforeFullSwitchReason)
+	if code != http.StatusOK || string(health["ok"]) != "true" || string(health["degraded"]) != `["private_before_full_switch"]` {
+		t.Fatalf(`/healthz with DAYONE private before its full switch = %d %s, want 200, ok true and degraded ["private_before_full_switch"]`, code, body)
 	}
 	if strings.Contains(body, "DAYONE") {
 		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
+	}
+	// No count either: beside degraded, the body is the one a handler with no read answers, field
+	// for field, so nothing in it tells a caller how many projects are private before their full
+	// switch.
+	delete(health, "degraded")
+	without := httptest.NewRecorder()
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil).
+		ServeHTTP(without, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal(without.Body.Bytes(), &withoutFields); err != nil {
+		t.Fatalf("decode /healthz %s: %v", without.Body.String(), err)
+	}
+	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz with DAYONE private before its full switch = %s, want the body without the read plus degraded alone, %s", body, without.Body.String())
 	}
 	if code, health, body := probe([]string{"DAYONE"}, []string{"DAYONE"}); code != http.StatusOK || health["degraded"] != nil {
 		t.Fatalf("/healthz with DAYONE private and on both lists = %d %s, want 200 and no degraded: it took its full switch", code, body)
@@ -979,7 +995,7 @@ func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
 		`insert into projects (key, name, default_assignee, visibility) values ('OFFL', 'Off both lists', 'alice@example.com', 'private')`); err != nil {
 		t.Fatalf("seed OFFL: %v", err)
 	}
-	want := `["` + unprovisionedPrivateProjectReason + `","` + privateBeforeFullSwitchReason + `"]`
+	want := `["private_project_unprovisioned","private_before_full_switch"]`
 	if code, health, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || string(health["degraded"]) != want {
 		t.Fatalf("/healthz with DAYONE private before its full switch and OFFL on neither list = %d %s, want 200 and degraded %s", code, body, want)
 	}

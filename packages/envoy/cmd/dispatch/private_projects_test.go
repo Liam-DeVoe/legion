@@ -169,8 +169,8 @@ func TestAProcessServesOverAnUnprovisionedPrivateProject(t *testing.T) {
 	if err := json.Unmarshal(raw, &health); err != nil {
 		t.Fatalf("decode /healthz %s: %v", raw, err)
 	}
-	if response.StatusCode != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{unprovisionedPrivateProjectReason}) || strings.Contains(string(raw), "PRIV") {
-		t.Fatalf("/healthz = %d %s, want 200, ok, degraded [%q], and no project's key", response.StatusCode, raw, unprovisionedPrivateProjectReason)
+	if response.StatusCode != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{"private_project_unprovisioned"}) || strings.Contains(string(raw), "PRIV") {
+		t.Fatalf(`/healthz = %d %s, want 200, ok, degraded ["private_project_unprovisioned"], and no project's key`, response.StatusCode, raw)
 	}
 }
 
@@ -227,7 +227,7 @@ func TestAProcessServesAProjectPrivateBeforeItsFullSwitch(t *testing.T) {
 	if err := json.Unmarshal(raw, &health); err != nil {
 		t.Fatalf("decode /healthz %s: %v", raw, err)
 	}
-	if response.StatusCode != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{privateBeforeFullSwitchReason}) || strings.Contains(string(raw), "PRIV") {
-		t.Fatalf("/healthz = %d %s, want 200, ok, degraded [%q], and no project's key", response.StatusCode, raw, privateBeforeFullSwitchReason)
+	if response.StatusCode != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{"private_before_full_switch"}) || strings.Contains(string(raw), "PRIV") {
+		t.Fatalf(`/healthz = %d %s, want 200, ok, degraded ["private_before_full_switch"], and no project's key`, response.StatusCode, raw)
 	}
 }

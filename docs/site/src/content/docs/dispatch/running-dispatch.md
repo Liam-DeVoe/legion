@@ -423,14 +423,16 @@ any private project, while its namespace, its stores and its bus gate come with 
 So nobody takes it for a fully switched project, its access carries
 `"private_before_full_switch": true` while it is private, the server logs at INFO, at start, each
 such project as private before its full switch, and `/healthz` says one exists (below). A key both
-settings name takes its full switch.
+settings name takes its full switch. From the apply that adds such a key to
+`DISPATCH_PRIVATE_PROJECTS`, its access, the start's lines and `/healthz` no longer say its project
+is private before its full switch, though that switch has not run.
 
 A project the database holds private that neither list names, because its key was taken off
-the list or the list was emptied, stays private. Nothing of it reaches anyone who could not see
+the lists or the lists were emptied, stays private. Nothing of it reaches anyone who could not see
 it before, and every change of its visibility but its owner's switch to public is refused.
 Dispatch still starts and serves every other project: it logs an ERROR line naming the project and
 both repairs at start and at every maintenance pass, once a minute, and `/healthz` answers
-`degraded: ["private_project_unprovisioned"]`, naming no project. The owner decides the repair: put the key back on the list, or
+`degraded: ["private_project_unprovisioned"]`, naming no project. The owner decides the repair: put the key back on either list, or
 make the project public, from the Access tab or, with the database credential alone and no server
 running if need be, with:
 
@@ -438,8 +440,8 @@ running if need be, with:
 envoy-dispatch project-visibility <KEY> public
 ```
 
-So to take a key off the list, make the project public first, and only then remove its key. At
-start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
+So to take a key off both lists, make the project public first, and only then remove its key. At
+start Dispatch also logs, at INFO, the listed keys no private project holds yet. With either list, each
 server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
 private project for one of the reasons of step 4, naming the reason and what repairs it. Every
 response carries `Dispatch-Private-Projects: 1` while either list names a project, the database

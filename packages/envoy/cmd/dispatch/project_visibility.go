@@ -19,7 +19,7 @@ var projectVisibilityActor = model.Actor{Kind: "system", ID: "envoy-dispatch pro
 // projectVisibilityUsage is what `envoy-dispatch project-visibility` prints for arguments it cannot
 // take.
 const projectVisibilityUsage = "project-visibility: make a project public with `envoy-dispatch project-visibility <KEY> public`; " +
-	"it makes a project public only, the repair of a private project DISPATCH_PRIVATE_PROJECTS no longer names"
+	"it makes a project public only, the repair of a private project neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names any longer"
 
 // makeProjectPublic runs `envoy-dispatch project-visibility <KEY> public`: it makes project KEY
 // public without the server, in one transaction that appends project.access_changed as

@@ -2512,9 +2512,9 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 // provisioned as private: each entry trimmed, empty ones dropped, the list deduplicated and sorted.
 // An entry that is no project key, the old on/off value 1 included, is never read as a key: the
 // boot keeps the keys beside it, ignores that entry and logs one ERROR line naming it, so the
-// project it meant is never provisioned and its switch to private stays 409
-// PRIVATE_PROJECT_NOT_PROVISIONED (it fails closed). Control: a setting that read the entry would
-// put it on the list.
+// project it meant is never provisioned and its switch to private is refused while neither list
+// names its key (it fails closed). Control: a setting that read the entry would put it on the
+// list.
 func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
 	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": " PRIV, ALPHA ,PRIV,"}); !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || len(boot.PrivateProjectsIgnored) != 0 {
 		t.Errorf(`DISPATCH_PRIVATE_PROJECTS=" PRIV, ALPHA ,PRIV,": PrivateProjects = %q, ignored %q; want [ALPHA PRIV], none ignored`, boot.PrivateProjects, boot.PrivateProjectsIgnored)
@@ -2543,8 +2543,10 @@ func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
 // comma-separated keys of the projects the deployment makes private before their full switch, each
 // entry trimmed, empty ones dropped, the list deduplicated and sorted. An entry that is no project
 // key is never read as a key: the boot keeps the keys beside it, ignores that entry and logs one
-// ERROR line naming the setting, the entry and the 409 PRIVATE_PROJECT_NOT_PROVISIONED a switch of
-// the project it meant gets, and neither list reads the other's entries. Control: a setting that
+// ERROR line naming the setting, the entry and the refusal a switch of the project it meant gets
+// while neither list names its key: 409 PRIVATE_PROJECTS_OFF while both lists are empty, as a
+// mistyped day-one key leaves them when it is this setting's only entry, else 409
+// PRIVATE_PROJECT_NOT_PROVISIONED. Neither list reads the other's entries. Control: a setting that
 // read the entry would put it on the list.
 func TestThePrivateBeforeFullSwitchSettingIsAListOfKeys(t *testing.T) {
 	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": " PRIV, ALPHA ,PRIV,"})
@@ -2573,8 +2575,10 @@ func TestThePrivateBeforeFullSwitchSettingIsAListOfKeys(t *testing.T) {
 		reportIgnoredPrivateProjects(privateBeforeFullSwitchVariable, boot.PrivateBeforeFullSwitchIgnored)
 		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
 		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) ||
-			!strings.Contains(lines[0], "setting=DISPATCH_PRIVATE_BEFORE_FULL_SWITCH") || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
-			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming the setting, the entry and the switch's refusal", entry, logged.String())
+			!strings.Contains(lines[0], "setting=DISPATCH_PRIVATE_BEFORE_FULL_SWITCH") ||
+			!strings.Contains(lines[0], "PRIVATE_PROJECTS_OFF") || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
+			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming the setting, the entry and the switch's refusal "+
+				"both while both lists are empty (PRIVATE_PROJECTS_OFF) and while only the key is missing (PRIVATE_PROJECT_NOT_PROVISIONED)", entry, logged.String())
 		}
 	}
 }

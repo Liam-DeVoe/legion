@@ -58,8 +58,8 @@ func privateProjectsSetting(value string) (keys, ignored []string) {
 func reportIgnoredPrivateProjects(setting string, ignored []string) {
 	for _, entry := range ignored {
 		slog.Error("dispatch: "+setting+" names project keys, and this entry is not one, so it is ignored: no project is named by it, "+
-			"and the switch to private of the project it meant stays 409 PRIVATE_PROJECT_NOT_PROVISIONED while neither "+
-			privateProjectsVariable+" nor "+privateBeforeFullSwitchVariable+" names its key",
+			"and the switch to private of the project it meant is refused while neither "+privateProjectsVariable+" nor "+privateBeforeFullSwitchVariable+
+			" names its key: 409 PRIVATE_PROJECTS_OFF while both are empty, else 409 PRIVATE_PROJECT_NOT_PROVISIONED",
 			"setting", setting, "entry", entry, "rule", contracts.ProjectKeyRule)
 	}
 }
