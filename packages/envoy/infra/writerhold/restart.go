@@ -58,10 +58,6 @@ type Restart struct {
 	Limit time.Duration
 	// Retry is the pause between two evictions the disruption budget refused, 5 s when zero.
 	Retry time.Duration
-
-	// keptIDs leaves out step 4's refusal of a server that kept its step-1 id
-	// (TestHoldAServerThatKeepsItsId's control).
-	keptIDs bool
 }
 
 // Restarted is one declared server step 3 restarted and step 4 proved: its pod, how its old
@@ -454,7 +450,7 @@ func (r Restart) proveOnce(ctx context.Context, server DeclaredServer, before ma
 	}
 	defer reading.close()
 	now := reading.varz[server.Pod]
-	if now.ServerID == server.Varz.ServerID && !r.keptIDs {
+	if now.ServerID == server.Varz.ServerID {
 		return Varz{}, refusef(StepProof, "%s kept its step-1 id across its pod's restart: its nats-server did not restart", describeServer(server.Pod, now))
 	}
 	if err := reading.checkTopology(ctx, StepProof, r.Declared.names(), before); err != nil {

@@ -439,11 +439,12 @@ func TestHoldReportContinuousChurn(t *testing.T) {
 
 // TestHoldReportAFiniteTransient shows a client that retries a refused connect 5 times and stops,
 // listed at the first reading, reads clean on the next round: an unresolved connection blocks only
-// when the same (server id, cid) is in two readings. Its control, a predicate that counts every
-// listed connection at once, stops the hold on such a transient. It fails when the report stops on
-// a connection seen in one reading alone. Each run has a transient of its own, whose first attempt
-// the callout holds and the rest it refuses at once, and reads within the server's 2 s
-// authorization timeout of that hold, which would refuse the attempt itself.
+// when the same (server id, cid) is in two readings. The reading count, 2, is the control: the
+// transient was listed at the first reading, so a predicate that counts every listed connection at
+// once stops the hold on it (shown red by a go test -overlay copy of report.go with that
+// predicate). It fails when the report stops on a connection seen in one reading alone. The
+// transient's first attempt the callout holds and the rest it refuses at once, and the report reads
+// within the server's 2 s authorization timeout of that hold, which would refuse the attempt itself.
 func TestHoldReportAFiniteTransient(t *testing.T) {
 	r := newCalloutRig(t, holdAwareName)
 	declared := r.step1ThenRestart(t)
@@ -469,14 +470,7 @@ func TestHoldReportAFiniteTransient(t *testing.T) {
 		r.awaitUnlisted(t, holdtest.Pod(0), r.callout.cids(named(name)))
 	}
 
-	done, first := transient("transient a")
-	control := r.report(declared, nil)
-	control.predicate.atOnce = true
-	_, err := control.Run(ctx, r.caller)
-	requireRefusal(t, err, StepReport, fmt.Sprintf("cid %d", first.cid()), `name "transient a"`)
-	over("transient a", done)
-
-	done, _ = transient("transient b")
+	done, _ := transient("transient b")
 	w := &waits{then: func(context.Context) error {
 		over("transient b", done)
 		return nil
@@ -496,10 +490,12 @@ func named(name string) func(*heldConnect) bool {
 // with its CONNECT user `service`, and the Keeper's renewal probe, also `service`, each listed at
 // the first reading: the report waits, reads again, and passes once both are gone, sending nothing
 // meanwhile. When the paused connection is then admitted as the operator, it is in both readings,
-// and the hold stops naming it. Its control, a predicate that stops at once on a non-empty user,
-// stops on the renewal probe. It fails when the report takes a listed CONNECT user for a client
-// that holds a grant, or lets a connection admitted between two readings pass. Each run pauses a
-// pair of its own and reads within the server's 2 s authorization timeout of the pause.
+// and the hold stops naming it. The reading count, 2, is the control: both were listed with their
+// user at the first reading, so a predicate that stops at once on a non-empty user stops on the
+// renewal probe (shown red by a go test -overlay copy of report.go with that predicate). It fails
+// when the report takes a listed CONNECT user for a client that holds a grant, or lets a connection
+// admitted between two readings pass. Each run pauses a pair of its own and reads within the
+// server's 2 s authorization timeout of the pause.
 func TestHoldReportAPausedOperatorConnect(t *testing.T) {
 	r := newCalloutRig(t, holdAwareName)
 	declared := r.step1ThenRestart(t)
@@ -526,13 +522,6 @@ func TestHoldReportAPausedOperatorConnect(t *testing.T) {
 		r.awaitUnlisted(t, holdtest.Pod(0), cids)
 	}
 
-	_, probe := pause()
-	control := r.report(declared, nil)
-	control.predicate.atOnceOnUser = true
-	_, err := control.Run(ctx, r.caller)
-	requireRefusal(t, err, StepReport, fmt.Sprintf("cid %d", probe.cid()), `name "keeper renewal probe" user "service"`)
-	end(nil)
-
 	pause()
 	sent := r.caller.Stats().OutMsgs
 	gone := &waits{then: func(context.Context) error {
@@ -555,8 +544,9 @@ func TestHoldReportAPausedOperatorConnect(t *testing.T) {
 
 // TestHoldReportOnlyTheCallerAndTheAuthService shows the hold holds with only the caller and the
 // auth service connected, the auth service's connection in $G, which /connz lists with an empty
-// account. Control: a predicate that compares the account with the string "$G" stops the hold on
-// that connection, naming its account. Control: one listener left connected on n3 stops the hold,
+// account: that empty account is the control, since a predicate that compares the account with
+// the string "$G" stops the hold on that connection (shown red by a go test -overlay copy of
+// report.go with that predicate). Control: one listener left connected on n3 stops the hold,
 // naming its server, cid, name and user. It fails when the report reads an empty account as
 // another account, or passes a connection that is neither the caller's nor the auth service's.
 func TestHoldReportOnlyTheCallerAndTheAuthService(t *testing.T) {
@@ -568,11 +558,6 @@ func TestHoldReportOnlyTheCallerAndTheAuthService(t *testing.T) {
 	require.Equal(t, 1, reading.Readings)
 	service := r.authServiceConnection(t, reading)
 	require.Empty(t, service.Account, "/connz lists a connection in $G with an empty account")
-
-	control := r.report(declared, (&waits{}).wait)
-	control.predicate.accountByName = true
-	_, err = control.Run(ctx, r.caller)
-	requireRefusal(t, err, StepReport, fmt.Sprintf("cid %d name %q user %q account \"\"", service.CID, holdAwareName, r.keys.ServicePublic))
 
 	listener := dialSeed(t, r.cluster.Servers[2].URL(), r.listenerSeed, natsgo.Name("listener"))
 	cid, err := listener.GetClientID()
@@ -596,10 +581,10 @@ func (r *calloutRig) authServiceConnection(t *testing.T, reading *ReportReading)
 }
 
 // TestHoldReportASecondOperator shows a second operator process, connected as the caller's own
-// user, stops the hold, named: the predicate admits the caller's own (server id, cid) alone.
-// Control: a predicate that admits every connection of the caller's user holds with the second
-// operator connected, which is the danger. It fails when the report resolves the caller by its
-// user.
+// user, stops the hold, named: the predicate admits the caller's own (server id, cid) alone. The
+// second process dials with the caller's own seed, so a predicate that admits every connection of
+// the caller's user holds with it connected, which is the danger (shown red by a go test -overlay
+// copy of report.go with that predicate). It fails when the report resolves the caller by its user.
 func TestHoldReportASecondOperator(t *testing.T) {
 	r := newCalloutRig(t, holdAwareName)
 	declared := r.step1ThenRestart(t)
@@ -607,11 +592,6 @@ func TestHoldReportASecondOperator(t *testing.T) {
 	second := dialSeed(t, r.cluster.URL(), r.callerSeed, natsgo.Name("operator/holdtest-second"))
 	cid, err := second.GetClientID()
 	require.NoError(t, err)
-
-	control := r.report(declared, (&waits{}).wait)
-	control.predicate.byCallerUser = true
-	_, err = control.Run(ctx, r.caller)
-	require.NoError(t, err, "control: admitting the caller's user lets a second operator through")
 
 	_, err = r.report(declared, (&waits{}).wait).Run(ctx, r.caller)
 	requireRefusal(t, err, StepReport, fmt.Sprintf("cid %d name \"operator/holdtest-second\"", cid))
@@ -638,10 +618,11 @@ func TestHoldReportAnAuthReplicaNotHoldAware(t *testing.T) {
 
 // TestHoldReportPagesPastOneServersLimit shows a server with more than 1,024 connections: the
 // reading pages by offset until it holds them all, so a listener whose connection is on the
-// second page stops the hold, named, and with none the hold holds over all of them. Control: a
-// reading that counts the first page as the whole holds with that listener connected. A /connz
-// whose total moves at each page never holds one list, and after 3 readings is UNKNOWN. It fails
-// when the report reads one page alone, or counts pages that disagree.
+// second page stops the hold, named, and with none the hold holds over all of them. Control: the
+// server's first page alone lacks that listener (shown red by a go test -overlay copy of report.go
+// that counts the first page as the whole). A /connz whose total moves at each page never holds one
+// list, and after 3 readings is UNKNOWN. It fails when the report reads one page alone, or counts
+// pages that disagree.
 func TestHoldReportPagesPastOneServersLimit(t *testing.T) {
 	r := newCalloutRig(t, holdAwareName)
 	declared := r.step1ThenRestart(t)
@@ -695,22 +676,33 @@ func TestHoldReportPagesPastOneServersLimit(t *testing.T) {
 	_, err = r.report(declared, (&waits{}).wait).Run(ctx, r.caller)
 	requireRefusal(t, err, StepReport, fmt.Sprintf("cid %d name \"listener\"", cid))
 
-	control := r.report(declared, nil)
-	control.onePage = true
-	_, err = control.Run(ctx, r.caller)
-	require.NoError(t, err, "control: the first page alone misses the listener past it")
+	// Control: the first page alone lacks the listener, which connected last.
+	monitor, stop, err := r.hub.Monitor(ctx, pod)
+	require.NoError(t, err)
+	var first Connz
+	require.NoError(t, monitor.Get(ctx, fmt.Sprintf("/connz?auth=1&state=open&limit=%d&offset=0", connzLimit), &first))
+	stop()
+	require.Greater(t, first.Total, first.Limit, "pod %s's connections fill more than one page", pod)
+	for _, conn := range first.Connections {
+		require.NotEqual(t, cid, conn.CID, "control: the listener is on the first page")
+	}
 
 	moving := r.report(declared, nil)
-	moving.open = func(ctx context.Context, open string) (Monitor, func(), error) {
+	moving.Hub = opened(func(ctx context.Context, open string) (Monitor, func(), error) {
 		monitor, stop, err := r.hub.Monitor(ctx, open)
 		if err != nil || open != pod {
 			return monitor, stop, err
 		}
 		return &movingTotal{Monitor: monitor}, stop, nil
-	}
+	})
 	_, err = moving.Run(ctx, r.caller)
 	requireUnknown(t, err, StepReport, "held no one list of every connection in 3 readings")
 }
+
+// opened is a MonitorOpener that opens each pod's monitoring port with open.
+type opened func(ctx context.Context, pod string) (Monitor, func(), error)
+
+func (o opened) Monitor(ctx context.Context, pod string) (Monitor, func(), error) { return o(ctx, pod) }
 
 // nkeyOf is the public key and signer of the nkey seed.
 func nkeyOf(t *testing.T, seed string) (string, func([]byte) ([]byte, error)) {
@@ -755,7 +747,7 @@ func TestHoldReportABlindReadingIsUnknown(t *testing.T) {
 	callerPod := holdtest.Pod(r.member(t, r.caller))
 	otherPod := holdtest.Pod((r.member(t, r.caller) + 1) % len(r.cluster.Servers))
 	wrong := r.report(declared, nil)
-	wrong.open = func(ctx context.Context, pod string) (Monitor, func(), error) {
+	wrong.Hub = opened(func(ctx context.Context, pod string) (Monitor, func(), error) {
 		monitor, stop, err := r.hub.Monitor(ctx, pod)
 		if err != nil || pod != callerPod {
 			return monitor, stop, err
@@ -766,14 +758,28 @@ func TestHoldReportABlindReadingIsUnknown(t *testing.T) {
 			return nil, nil, err
 		}
 		return &connzFrom{Monitor: monitor, connz: other}, func() { stop(); stopOther() }, nil
-	}
+	})
 	_, err = wrong.Run(ctx, r.caller)
 	requireUnknown(t, err, StepReport, "/connz answered as server")
 
 	noAuth := r.report(declared, nil)
-	noAuth.noAuth = true
+	noAuth.Hub = opened(func(ctx context.Context, pod string) (Monitor, func(), error) {
+		monitor, stop, err := r.hub.Monitor(ctx, pod)
+		if err != nil {
+			return nil, nil, err
+		}
+		return withoutAuth{monitor}, stop, nil
+	})
 	_, err = noAuth.Run(ctx, r.caller)
 	requireUnknown(t, err, StepReport, "the caller's own connection", "shows no authorized_user")
+}
+
+// withoutAuth is a monitoring port that reads /connz without auth=1, which leaves every
+// authorized_user empty.
+type withoutAuth struct{ Monitor }
+
+func (w withoutAuth) Get(ctx context.Context, path string, into any) error {
+	return w.Monitor.Get(ctx, strings.Replace(path, "auth=1&", "", 1), into)
 }
 
 // connzFrom is a monitoring port that answers /connz from another server's port: the wrong server.
@@ -790,9 +796,10 @@ func (c *connzFrom) Get(ctx context.Context, path string, into any) error {
 }
 
 // TestHoldReportTheCallerAfterItsReconnect shows the caller's server id and client id are read
-// again after the restart moved it, so the predicate still finds the caller. Control: with the
-// ids read before the restart, the reading does not see the caller, and the hold stops. It fails
-// when the report keeps the caller's ids from before its reconnect.
+// again after the restart moved it, so the predicate still finds the caller. Control: no server the
+// reading lists answers as the caller's server id from before the restart, so a report that kept
+// those ids would not see the caller. It fails when the report keeps the caller's ids from before
+// its reconnect.
 func TestHoldReportTheCallerAfterItsReconnect(t *testing.T) {
 	r := newCalloutRig(t, holdAwareName)
 	before := r.callerID
@@ -803,8 +810,7 @@ func TestHoldReportTheCallerAfterItsReconnect(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, before.ServerID, reading.Caller.ServerID, "the restart moved the caller to a new server id")
 
-	control := r.report(declared, nil)
-	control.caller = func() (ConnRef, error) { return before, nil }
-	_, err = control.Run(ctx, nil)
-	requireUnknown(t, err, StepReport, "does not see the caller's own connection", before.ServerID)
+	for _, server := range reading.Servers {
+		require.NotEqual(t, before.ServerID, server.Varz.ServerID, "control: pod %s still answers as the caller's server from before the restart", server.Pod)
+	}
 }

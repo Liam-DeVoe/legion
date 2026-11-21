@@ -98,7 +98,7 @@ func (f *forcedHub) consumerNames(t *testing.T, stream, holdID string) []string 
 	barrier := MetaBarrier{Hub: f.hub, Declared: f.declared, HoldID: holdID}
 	require.NoError(t, barrier.Run(rowContext(t), f.operator, func(ctx context.Context) error {
 		var err error
-		names, err = listAll(ctx, f.operator, StepBarrier, fmt.Sprintf(natsserver.JSApiConsumersT, stream), streamChecks{},
+		names, err = listAll(ctx, f.operator, StepBarrier, fmt.Sprintf(natsserver.JSApiConsumersT, stream),
 			func(page *listPage[string]) []string { return page.Consumers }, func(name string) string { return name })
 		return err
 	}))
@@ -494,66 +494,56 @@ func TestForcedOrderHoldBucketBarrierAcrossTheRestart(t *testing.T) {
 // TestForcedOrderHoldBucketBarrierLeaderChange shows a leader change between the bucket barrier's
 // acknowledgement and the read: the leader read after the read differs from the one before the
 // barrier, so the barrier is written again, and acknowledged by the new leader, before the read is
-// made again. The change is a stepdown inside the first read, made again until a follower leads.
-// Control, run first: the same schedule with the leader read after the read left out returns after
-// the first read, and writes no barrier again. The read the change makes stale cannot be forced: a
-// follower whose apply the hooks hold does not stand for leader (TestForcedOrderHoldBucketBarrier
-// AcrossTheRestart), so the row shows the rule, not a stale read. It fails when the read does not
-// read the stream's leader again after the read, or reads again with no new barrier.
+// made again. The change is a stepdown inside the first read, made again until a follower leads,
+// which stepDown confirms by reading the stream's leader after it. The read the change makes stale
+// cannot be forced: a follower whose apply the hooks hold does not stand for leader
+// (TestForcedOrderHoldBucketBarrierAcrossTheRestart), so the row shows the rule, not a stale read.
+// It fails when the read does not read the stream's leader again after the read, or reads again
+// with no new barrier (shown red by a go test -overlay copy of barrier.go that leaves out the
+// leader's reading after the read).
 func TestForcedOrderHoldBucketBarrierLeaderChange(t *testing.T) {
 	f := newForcedHub(t)
 	f.barrierBucket(t)
 	stream := kvStreamPrefix + bucketBarrierBucket
-	for _, run := range []struct {
-		name    string
-		key     string
-		control bool
-	}{{"control", "C", true}, {"the row", "K", false}} {
-		answered(t, f.putAsync(t, run.key), run.name+": the write")
-		barrierSubject := testnats.Subject("$KV." + bucketBarrierBucket + ".hold.barrier." + run.key)
-		// The reads run on the reader's goroutine: each is sent on reads, and the first one's
-		// change, a stepdown, sends the hook's mark after it on changed, or its failure.
-		reads := make(chan msgGet, barrierAttempts)
-		changed := make(chan int, 1)
-		failed := make(chan error, 1)
-		first := true
-		read := func(context.Context) error {
-			if !first {
-				reads <- f.get(run.key)
-				return nil
-			}
-			first = false
-			if err := f.stepDown(stream); err != nil {
-				failed <- err
-				return err
-			}
-			reads <- f.get(run.key)
-			changed <- f.hooks.Mark()
+	const key = "K"
+	answered(t, f.putAsync(t, key), "the write")
+	barrierSubject := testnats.Subject("$KV." + bucketBarrierBucket + ".hold.barrier." + key)
+	// The reads run on the reader's goroutine: each is sent on reads, and the first one's change, a
+	// stepdown, sends the hook's mark after it on changed, or its failure.
+	reads := make(chan msgGet, barrierAttempts)
+	changed := make(chan int, 1)
+	failed := make(chan error, 1)
+	first := true
+	read := func(context.Context) error {
+		if !first {
+			reads <- f.get(key)
 			return nil
 		}
-		reader := bucketReader{noLeaderCheck: run.control}
-		done := answer(func() error { return reader.run(rowContext(t), f.operator, bucketBarrierBucket, run.key, read) })
-		var mark int
-		select {
-		case mark = <-changed:
-		case err := <-failed:
-			t.Fatalf("%s: %v", run.name, err)
-		case <-time.After(3 * reachWithin):
-			t.Fatalf("%s: the leader did not change inside the first read", run.name)
+		first = false
+		if err := f.stepDown(stream); err != nil {
+			failed <- err
+			return err
 		}
-		answered(t, done, run.name+": the read")
-		t.Logf("%s: the read after the leader change answered %s", run.name, <-reads)
-		again := f.hooks.Events(testnats.ClientPublish, barrierSubject, testnats.After(mark))
-		if run.control {
-			require.Empty(t, reads, "control: the read was made again")
-			require.Empty(t, again, "control: a barrier was written again")
-			continue
-		}
-		require.NotEmpty(t, again, "no barrier was written again after the leader change")
-		require.Len(t, reads, 1, "the read was made again once")
-		read2 := <-reads
-		require.Equal(t, "written", read2.value, "the read made again answered %s", read2)
+		reads <- f.get(key)
+		changed <- f.hooks.Mark()
+		return nil
 	}
+	done := answer(func() error { return ReadBucket(rowContext(t), f.operator, bucketBarrierBucket, key, read) })
+	var mark int
+	select {
+	case mark = <-changed:
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(3 * reachWithin):
+		t.Fatal("the leader did not change inside the first read")
+	}
+	answered(t, done, "the read")
+	t.Logf("the read after the leader change answered %s", <-reads)
+	again := f.hooks.Events(testnats.ClientPublish, barrierSubject, testnats.After(mark))
+	require.NotEmpty(t, again, "no barrier was written again after the leader change")
+	require.Len(t, reads, 1, "the read was made again once")
+	read2 := <-reads
+	require.Equal(t, "written", read2.value, "the read made again answered %s", read2)
 }
 
 // stepDown steps stream's leader down, again until another member leads it, within reachWithin.

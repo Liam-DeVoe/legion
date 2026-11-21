@@ -48,11 +48,12 @@ func (r *calloutRig) restartOf(declared Declared, binds *bindings, limit time.Du
 // step-1 id across its pod's eviction, as one whose nats-server never restarted would: the pod is
 // deleted and made again, but the process, and with it any work a client left inside it, is the
 // same. The restart stops there, after the server before it, naming the pod and the id, and evicts
-// no later pod. Its control is the same schedule with the id check left out, under which the
-// restart passes all three pods while envoy-nats-1's server keeps its id: the danger. Every pod
-// that restarts passes, its exit recorded from its old container (137 read as forced, never
-// graceful), its binding check asked with its step-1 and new /varz. It fails when step 4 accepts a
-// server's old id, or does not read the restarted server's own /varz.
+// no later pod. Its control is the kept server's own /varz after its pod's eviction, which answers
+// its step-1 id: the danger, which a step 4 without the id check passes (shown red by a go test
+// -overlay copy of restart.go without it). The pod that restarts passes, its exit recorded from its
+// old container (137 read as forced, never graceful), its binding check asked with its step-1 and
+// new /varz. It fails when step 4 accepts a server's old id, or does not read the restarted
+// server's own /varz.
 func TestHoldAServerThatKeepsItsId(t *testing.T) {
 	r := newCalloutRig(t, holdAwareName)
 	ctx := rowContext(t)
@@ -62,25 +63,29 @@ func TestHoldAServerThatKeepsItsId(t *testing.T) {
 	declared, err := Discover(ctx, r.hub)
 	require.NoError(t, err)
 	binds := &bindings{}
-	control := r.restartOf(declared, binds, 2*time.Minute)
-	control.keptIDs = true
-	restarted, err := control.Run(ctx, r.caller)
-	require.NoError(t, err, "control: with the id check left out, a server that did not restart passes")
-	require.Len(t, restarted, 3)
-	require.Equal(t, declared[1].Varz.ServerID, restarted[1].Varz.ServerID, "the kept server answers its step-1 id")
-	for i, one := range restarted {
-		require.Equal(t, holdtest.Pod(i), one.Pod)
-		require.True(t, one.Exit.Forced(), "%s: %s", one.Pod, one.Exit)
-		require.False(t, one.Exit.Graceful())
-		require.Contains(t, one.Exit.String(), "forced")
-	}
-	require.Equal(t, []string{holdtest.Pod(0), holdtest.Pod(1), holdtest.Pod(2)}, binds.pods)
-	require.Equal(t, []bool{true, false, true}, binds.moved)
+	evicted := len(r.kube.Evicted())
+	restarted, err := r.restartOf(declared, binds, 2*time.Minute).Run(ctx, r.caller)
+	requireRefusal(t, err, StepProof, "pod "+holdtest.Pod(1), declared[1].Varz.ServerID, "kept its step-1 id")
+	require.Len(t, restarted, 1, "the restart passed the pod before the kept server")
+	require.True(t, restarted[0].Exit.Forced(), "%s", restarted[0].Exit)
+	require.False(t, restarted[0].Exit.Graceful())
+	require.Contains(t, restarted[0].Exit.String(), "forced")
+	require.Equal(t, []string{holdtest.Pod(0)}, binds.pods)
+	require.Equal(t, []bool{true}, binds.moved)
+	require.Equal(t, []string{holdtest.Pod(0), holdtest.Pod(1)}, r.kube.Evicted()[evicted:], "no pod after the kept server was evicted")
+
+	// Control: the kept server answers its step-1 id after its pod's eviction.
+	monitor, stop, err := r.hub.Monitor(ctx, holdtest.Pod(1))
+	require.NoError(t, err)
+	var kept Varz
+	require.NoError(t, monitor.Get(ctx, "/varz", &kept))
+	stop()
+	require.Equal(t, declared[1].Varz.ServerID, kept.ServerID, "control: the kept server answers its step-1 id")
 
 	r.kube.SetExitCode(0)
 	declared, err = Discover(ctx, r.hub)
 	require.NoError(t, err)
-	evicted := len(r.kube.Evicted())
+	evicted = len(r.kube.Evicted())
 	restarted, err = r.restartOf(declared, &bindings{}, 2*time.Minute).Run(ctx, r.caller)
 	requireRefusal(t, err, StepProof, "pod "+holdtest.Pod(1), declared[1].Varz.ServerID, "kept its step-1 id")
 	require.Len(t, restarted, 1, "the restart passed the pod before the kept server")

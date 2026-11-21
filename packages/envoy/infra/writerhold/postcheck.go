@@ -60,10 +60,6 @@ type Change struct {
 // difference stops the command naming the stream. The readings, in ProtectedStreams' order, are
 // returned.
 func Postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, changes map[string]Change) ([]StreamReading, error) {
-	return postcheck(ctx, nc, step1, changes, streamChecks{})
-}
-
-func postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, changes map[string]Change, checks streamChecks) ([]StreamReading, error) {
 	recorded := make(map[string]StreamReading, len(step1))
 	for _, reading := range step1 {
 		recorded[reading.Name] = reading
@@ -101,25 +97,27 @@ func postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, change
 			}
 			return nil, refusef(StepPostcheck, "%s is absent after the command, which states it %s it with %d writes", name, change.Kind, change.Writes)
 		}
-		if err := checks.serverWriters(StepPostcheck, info); err != nil {
+		if err := serverWriters(StepPostcheck, info); err != nil {
 			return nil, err
 		}
 		now := readingOf(info)
-		if err := checks.compare(name, was, now, change); err != nil {
+		if err := compare(name, was, now, change); err != nil {
 			return nil, err
 		}
 		readings = append(readings, now)
 		present = append(present, name)
 	}
-	if _, err := takeCensus(ctx, nc, StepPostcheck, present, checks); err != nil {
+	if _, err := takeCensus(ctx, nc, StepPostcheck, present); err != nil {
 		return nil, err
 	}
 	return readings, nil
 }
 
 // compare refuses a stream whose reading after the command, now, is not what step 1's reading,
-// was, and the command's change make it.
-func (c streamChecks) compare(name string, was, now StreamReading, change Change) error {
+// was, and the command's change make it. A restored stream's created is not compared: nats-server
+// 2.15.1 gives a restored stream a new created and 2.10.29 keeps the archive's
+// (TestHoldThePostcheck), so its last_seq and messages against the archive's are the check.
+func compare(name string, was, now StreamReading, change Change) error {
 	switch change.Kind {
 	case ChangeKept:
 		if was.Absent {
@@ -139,12 +137,6 @@ func (c streamChecks) compare(name string, was, now StreamReading, change Change
 			return refusef(StepPostcheck, "%s's last_seq is %d, and the command states %d writes to the stream it created", name, now.LastSeq, change.Writes)
 		}
 	case ChangeRestored:
-		if c.restoreNewCreated && now.Created.Equal(was.Created) {
-			return refusef(StepPostcheck, "%s keeps step 1's created %s, and the command states it restored it", name, was.Created)
-		}
-		if c.restoreSameCreated && !now.Created.Equal(was.Created) {
-			return refusef(StepPostcheck, "%s's created moved from %s to %s, and the command states it restored it", name, was.Created, now.Created)
-		}
 		if now.LastSeq != change.Archive.LastSeq+change.Writes {
 			return refusef(StepPostcheck, "%s's last_seq is %d, and the archive's %d plus the command's %d writes after the restore is %d", name, now.LastSeq, change.Archive.LastSeq, change.Writes, change.Archive.LastSeq+change.Writes)
 		}

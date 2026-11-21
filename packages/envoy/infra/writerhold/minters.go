@@ -75,12 +75,6 @@ type AcceptedMinter struct {
 	Answer    string `json:"answer"`
 }
 
-// minterPreflight is the preflight's minter check; skipReport is the row's control, a preflight
-// that reads no report.
-type minterPreflight struct {
-	skipReport bool
-}
-
 // PreflightMinters is the preflight's minter check (§3a, "How the preflight reads it"): it reads
 // reportPath, the --minters-report of `hold prepare` or `hold set`, and the accepted list through
 // client (t-11's get on that one ConfigMap). It stops the hold unless the report ran under one hour
@@ -90,13 +84,6 @@ type minterPreflight struct {
 // accepted entry names one. No report is a refusal naming it; a report or a list that does not read
 // whole is UNKNOWN, and so is a report whose unknown list names a step.
 func PreflightMinters(ctx context.Context, client kubernetes.Interface, reportPath string, now func() time.Time) error {
-	return minterPreflight{}.run(ctx, client, reportPath, now)
-}
-
-func (p minterPreflight) run(ctx context.Context, client kubernetes.Interface, reportPath string, now func() time.Time) error {
-	if p.skipReport {
-		return nil
-	}
 	if reportPath == "" {
 		return refusef(StepPreflight, "no minter report: the hold takes --minters-report <file>, the report operator-token-minters.sh --report writes")
 	}

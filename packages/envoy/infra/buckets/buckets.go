@@ -78,9 +78,6 @@ type env struct {
 	hub     func(ctx context.Context, h writerhold.HubFlags) (*writerhold.Operator, error)
 	now     func() time.Time
 	http    *http.Client
-	// restoreRuns is how many times a restore of one bucket is run before it stops: 2, its one
-	// rerun; a test's control runs it once.
-	restoreRuns int
 }
 
 func realEnv() env {
@@ -88,10 +85,9 @@ func realEnv() env {
 		records: func(ctx context.Context, h writerhold.HubFlags, signing bool) (*holdrecord.Client, error) {
 			return h.Records(ctx, signing)
 		},
-		hub:         func(ctx context.Context, h writerhold.HubFlags) (*writerhold.Operator, error) { return h.Operator(ctx) },
-		now:         time.Now,
-		http:        &http.Client{Timeout: 10 * time.Second},
-		restoreRuns: 2,
+		hub:  func(ctx context.Context, h writerhold.HubFlags) (*writerhold.Operator, error) { return h.Operator(ctx) },
+		now:  time.Now,
+		http: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -391,7 +387,7 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 			c.Inputs["sha256."+bucket] = manifest.Buckets[bucket].SHA256
 		}
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
-			return restoreAll(ctx, nc, stdout, o.from, manifest, o.buckets, e.restoreRuns)
+			return restoreAll(ctx, nc, stdout, o.from, manifest, o.buckets)
 		}
 	case "backup":
 		// The backup is the first command of the buckets-recreate and buckets-restore workflows: a

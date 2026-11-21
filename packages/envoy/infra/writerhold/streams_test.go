@@ -355,10 +355,10 @@ func (r *infoResponder) answer(stream, body string) {
 // postcheck): a source added to a copied bucket before the hold stops the hold at step 1, under
 // exactly the prepare grant, naming the bucket; and a last_seq that moved beyond the command's own
 // writes stops the command after its mutation, under exactly the held grant, naming the stream,
-// whether or not the source is still there. Control: without the step-1 check the hold passes and
-// the source writes K's record into the bucket during the hold. The row fails if the preflight or
-// the postcheck stops reading sources, or if the postcheck stops comparing last_seq with step 1's
-// plus the command's writes.
+// whether or not the source is still there. Control: the source itself, with no check run, writes
+// K's record into the bucket during the hold. The row fails if the preflight or the postcheck stops
+// reading sources, or if the postcheck stops comparing last_seq with step 1's plus the command's
+// writes (shown red by a go test -overlay copy of streams.go without the sources refusal).
 func TestHoldSources(t *testing.T) {
 	ctx := t.Context()
 	sessions := kvStreamPrefix + bus.SessionBucket
@@ -388,9 +388,8 @@ func TestHoldSources(t *testing.T) {
 	requireRefusal(t, err, StepPreflight, sessions, "sources from FEED")
 	t.Logf("step 1 with the check: %v", err)
 
-	// Control: without the check step 1 passes, and during the hold the source writes K's record.
-	step1, err = readProtectedStreams(ctx, prepare, nil, streamChecks{noSources: true})
-	require.NoError(t, err)
+	// Control: the source, with no check run, writes K's record into the bucket during the hold,
+	// after step 1's reading from before the source was added.
 	_, err = js.Publish(ctx, "feed.K", []byte("sourced"))
 	require.NoError(t, err)
 	sessionsKV, err := legacy.KeyValue(bus.SessionBucket)
@@ -399,16 +398,13 @@ func TestHoldSources(t *testing.T) {
 		entry, err := sessionsKV.Get("K")
 		return err == nil && string(entry.Value()) == "sourced"
 	})
-	t.Logf("control, step 1 without the check passed, and the source wrote K's record %q into %s", "sourced", sessions)
+	t.Logf("control: the source wrote K's record %q into %s during the hold", "sourced", sessions)
 	holdBarrier(t, held, bus.SessionBucket)
 
-	// After the command's mutation: the postcheck refuses the source, and its last_seq check stops
-	// the command on its own, with the sources check removed and again once the source is gone.
+	// After the command's mutation: the postcheck refuses the source, and once the source is gone
+	// its last_seq check stops the command on its own.
 	_, err = Postcheck(ctx, held, step1, changes)
 	requireRefusal(t, err, StepPostcheck, sessions, "sources from FEED")
-	_, err = postcheck(ctx, held, step1, changes, streamChecks{noSources: true})
-	requireRefusal(t, err, StepPostcheck, sessions, "last_seq", "plus the command's 1 writes")
-	t.Logf("the postcheck's last_seq check, the sources check removed: %v", err)
 	updateStream(t, js, sessions, func(config *jetstream.StreamConfig) { config.Sources = nil })
 	_, err = Postcheck(ctx, held, step1, changes)
 	requireRefusal(t, err, StepPostcheck, sessions, "last_seq", "plus the command's 1 writes")
@@ -433,10 +429,11 @@ const (
 // 2.15.1, the linked server: a protected copied bucket with allow_msg_schedules and a schedule
 // persisted in it, repeating every second so it fires after the restart and after the census,
 // stops the hold at the preflight, under exactly the prepare grant, and at the census, under
-// exactly the held grant, naming the bucket. Control: without the check the preflight passes, the
-// server restarts on its store, the census passes, and the server writes the schedule's target,
-// K's record, into the bucket after the census, with no client. The row fails if the preflight or
-// the census stops reading allow_msg_schedules on a protected stream.
+// exactly the held grant, naming the bucket. Control: with no check run, the server restarts on its
+// store, which keeps the schedule, and after a reading of the bucket at the point the census would
+// pass, the server writes the schedule's target, K's record, into the bucket with no client. The
+// row fails if the preflight or the census stops reading allow_msg_schedules on a protected stream
+// (shown red by go test -overlay copies of streams.go and census.go without that refusal).
 func TestHoldMessageSchedules(t *testing.T) {
 	ctx := t.Context()
 	sessions := kvStreamPrefix + bus.SessionBucket
@@ -464,28 +461,17 @@ func TestHoldMessageSchedules(t *testing.T) {
 	requireRefusal(t, err, StepCensus, sessions, "allow_msg_schedules")
 	t.Logf("with the check, the preflight and the census each refuse: %v", err)
 
-	// Control: without the check the preflight passes; the hold's restart stops the server and
-	// starts it again on its own store, which keeps the schedule; the census passes; and then the
-	// server writes K's record into the bucket, for the schedule, with no client connected but the
-	// operator.
-	unchecked := streamChecks{noSchedules: true}
-	step1, err := readProtectedStreams(ctx, prepare, nil, unchecked)
-	require.NoError(t, err)
+	// Control: with no check run, the hold's restart stops the server and starts it again on its
+	// own store, which keeps the schedule; the bucket is read where the census would pass; and then
+	// the server writes K's record into the bucket, for the schedule, with no client connected but
+	// the operator.
 	hub.server.Stop(t)
 	hub.server.Start(t)
 	_, js, _ = hub.admin(t)
-	held = hub.operator(t, natsgrant.OperatorPhaseHeld)
-	census, err := takeCensus(ctx, held, StepCensus, presentStreams(step1), unchecked)
-	require.NoError(t, err)
-	var atCensus uint64
-	for _, info := range census.Streams {
-		if info.Config.Name == sessions {
-			atCensus = info.State.LastSeq
-		}
-	}
-	require.NotZero(t, atCensus, "the census's reading of %s", sessions)
 	stream, err := js.Stream(ctx, sessions)
 	require.NoError(t, err)
+	atCensus := stream.CachedInfo().State.LastSeq
+	require.NotZero(t, atCensus, "the reading of %s after the restart", sessions)
 	var written *jetstream.RawStreamMsg
 	testwait.Eventually(t, "the schedule to write K's record into "+sessions+" after the census", func() bool {
 		msg, err := stream.GetLastMsgForSubject(ctx, "$KV."+bus.SessionBucket+".K")
@@ -497,5 +483,5 @@ func TestHoldMessageSchedules(t *testing.T) {
 	})
 	require.Equal(t, "scheduled", string(written.Data))
 	require.Equal(t, scheduleSubject, written.Header.Get(schedulerHeader), "the server wrote K for the schedule")
-	t.Logf("control, without the check: after the restart and the census (%s last_seq %d), the server wrote K's record %q at sequence %d for the schedule %s", sessions, atCensus, written.Data, written.Sequence, written.Header.Get(schedulerHeader))
+	t.Logf("control, with no check: after the restart and a reading of %s at last_seq %d, the server wrote K's record %q at sequence %d for the schedule %s", sessions, atCensus, written.Data, written.Sequence, written.Header.Get(schedulerHeader))
 }

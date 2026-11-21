@@ -61,30 +61,6 @@ type StreamReading struct {
 	Messages uint64    `json:"messages"`
 }
 
-// streamChecks are the checks of this file and of census.go and postcheck.go that a row's control
-// removes or weakens, to show the danger each one stops. Production passes the zero value, which
-// runs every check; only a row sets a field.
-type streamChecks struct {
-	// noSources leaves out the refusal of a protected stream with sources or a mirror
-	// (TestHoldSources's control).
-	noSources bool
-	// noSchedules leaves out the refusal of a protected stream with allow_msg_schedules
-	// (TestHoldMessageSchedules's control).
-	noSchedules bool
-	// noDestinations leaves out the republish and subject transform destination checks
-	// (TestHoldWritersInsideTheServer's control).
-	noDestinations bool
-	// rawSpelling replaces the literal-subject test with an overlap check of the destination as
-	// it is spelled (TestHoldASubstitutionIsNotLiteral's control).
-	rawSpelling bool
-	// acceptIncomplete takes a list answer with a `missing` or `offline` list, or a page that adds
-	// no entry, as the whole list (TestHoldIncompleteLists's control).
-	acceptIncomplete bool
-	// restoreNewCreated makes the postcheck demand a new `created` of a restored stream, and
-	// restoreSameCreated demand step 1's (TestHoldThePostcheck's controls).
-	restoreNewCreated, restoreSameCreated bool
-}
-
 // ReadProtectedStreams is the preflight's stream reads (§3a step 1), on nc, the operator's
 // connection under the prepare grant: the STREAM.INFO of each of ProtectedStreams, by name.
 // expectedAbsent names the protected streams the hold's workflow expects absent (the selection
@@ -96,10 +72,6 @@ type streamChecks struct {
 // hold, and each makes the server write the stream with no client. The readings, in
 // ProtectedStreams' order, are what the postcheck compares against.
 func ReadProtectedStreams(ctx context.Context, nc *nats.Conn, expectedAbsent []string) ([]StreamReading, error) {
-	return readProtectedStreams(ctx, nc, expectedAbsent, streamChecks{})
-}
-
-func readProtectedStreams(ctx context.Context, nc *nats.Conn, expectedAbsent []string, checks streamChecks) ([]StreamReading, error) {
 	names := ProtectedStreams()
 	declared := make(map[string]bool, len(expectedAbsent))
 	for _, name := range expectedAbsent {
@@ -121,7 +93,7 @@ func readProtectedStreams(ctx context.Context, nc *nats.Conn, expectedAbsent []s
 			readings = append(readings, StreamReading{Name: name, Absent: true})
 			continue
 		}
-		if err := checks.serverWriters(StepPreflight, info); err != nil {
+		if err := serverWriters(StepPreflight, info); err != nil {
 			return nil, err
 		}
 		readings = append(readings, readingOf(info))
@@ -137,16 +109,14 @@ func readingOf(info *jetstream.StreamInfo) StreamReading {
 // serverWriters refuses, in step, a protected stream that the server itself writes with no client:
 // one that sources or mirrors another stream, republishes, transforms its subjects or allows
 // message schedules.
-func (c streamChecks) serverWriters(step string, info *jetstream.StreamInfo) error {
+func serverWriters(step string, info *jetstream.StreamInfo) error {
 	cfg := info.Config
 	name := cfg.Name
-	if !c.noSources {
-		if len(cfg.Sources) > 0 {
-			return refusef(step, "the protected stream %s sources from %s: the server writes each sourced message into it", name, sourceNames(cfg.Sources))
-		}
-		if cfg.Mirror != nil {
-			return refusef(step, "the protected stream %s mirrors %s: the server writes each mirrored message into it", name, cfg.Mirror.Name)
-		}
+	if len(cfg.Sources) > 0 {
+		return refusef(step, "the protected stream %s sources from %s: the server writes each sourced message into it", name, sourceNames(cfg.Sources))
+	}
+	if cfg.Mirror != nil {
+		return refusef(step, "the protected stream %s mirrors %s: the server writes each mirrored message into it", name, cfg.Mirror.Name)
 	}
 	if cfg.RePublish != nil {
 		return refusef(step, "the protected stream %s republishes %q to %q", name, cfg.RePublish.Source, cfg.RePublish.Destination)
@@ -154,7 +124,7 @@ func (c streamChecks) serverWriters(step string, info *jetstream.StreamInfo) err
 	if cfg.SubjectTransform != nil {
 		return refusef(step, "the protected stream %s transforms %q to %q", name, cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 	}
-	if cfg.AllowMsgSchedules && !c.noSchedules {
+	if cfg.AllowMsgSchedules {
 		return refusef(step, "the protected stream %s allows message schedules (allow_msg_schedules): a persisted schedule writes its target with no client", name)
 	}
 	return nil

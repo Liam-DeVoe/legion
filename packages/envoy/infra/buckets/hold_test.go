@@ -69,9 +69,8 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 		records: func(context.Context, writerhold.HubFlags, bool) (*holdrecord.Client, error) {
 			return s.Broker.Client(t), nil
 		},
-		hub:         func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return op, nil },
-		now:         time.Now,
-		restoreRuns: 2,
+		hub: func(context.Context, writerhold.HubFlags) (*writerhold.Operator, error) { return op, nil },
+		now: time.Now,
 	}
 	// The accepted minters, none, and a minter report of now with no finding.
 	_, err := s.Kube.Client.CoreV1().ConfigMaps(writerhold.AcceptedMintersNamespace).Create(context.Background(), &corev1.ConfigMap{
@@ -529,7 +528,7 @@ func TestHoldBackupAndRestoreThroughJsm(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer nc.Close()
-		_, _, err = restoreAll(context.Background(), nc, &bytes.Buffer{}, dir, m, []string{bus.InterestBucket}, 1)
+		_, _, err = restoreAll(context.Background(), nc, &bytes.Buffer{}, dir, m, []string{bus.InterestBucket})
 		return err
 	}
 	held := natsgrant.Operator(natsgrant.OperatorPhaseHeld).Publish
@@ -616,7 +615,8 @@ func (h *heldBuckets) bigBucket(bucket string, keys int) uint64 {
 // The restore's one rerun: a restore cut part way (its connection closed after its second chunk)
 // is run again from the first chunk once the cut's leftover is gone, and completes with every
 // message. A second cut stops the command, naming the bucket and both runs' errors, and leaves no
-// stream. The control is a restore with no rerun, which a cut leaves with the bucket missing.
+// stream. That two-cut run is the control: a cut on the last run leaves the bucket missing, as one
+// cut would with no rerun (shown red by a go test -overlay copy of restore.go with restoreRuns 1).
 func TestHoldTheRestoresOneRerun(t *testing.T) {
 	h := newHeldBuckets(t)
 	ctx := context.Background()
@@ -726,14 +726,6 @@ func TestHoldTheRestoresOneRerun(t *testing.T) {
 		t.Fatalf("the pending restore's rerun = %d, %d messages (present %t), want %d\n%s%s", code, n, ok, keys, stdout, stderr)
 	}
 	h.release()
-
-	// The control: no rerun, one cut: the bucket is left missing.
-	h.e.restoreRuns = 1
-	cut.cuts.Store(1)
-	code, _, _ = h.run("restore", "--bucket", bus.KnownSessionBucket, "--from", dir)
-	if _, ok := msgs(); code == 0 || ok {
-		t.Fatalf("control: a restore with no rerun cut once = %d, present %t; want the bucket missing", code, ok)
-	}
 }
 
 // An interrupted bucket restore (review H6): `buckets restore` killed after it removed its target,

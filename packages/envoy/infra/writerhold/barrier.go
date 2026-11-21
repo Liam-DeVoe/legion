@@ -194,7 +194,7 @@ func (b MetaBarrier) barrier(ctx context.Context, nc *nats.Conn, js jetstream.Je
 	listed, cancel := context.WithTimeout(ctx, barrierWithin)
 	defer cancel()
 	for {
-		names, err := listAll(listed, nc, StepBarrier, natsserver.JSApiStreams, streamChecks{},
+		names, err := listAll(listed, nc, StepBarrier, natsserver.JSApiStreams,
 			func(page *listPage[string]) []string { return page.Streams }, func(name string) string { return name })
 		if err != nil {
 			return err
@@ -240,17 +240,6 @@ func oneToken(what, token string) error {
 // barrierWithin. It returns read's last error, and is UNKNOWN when the leader changed at each of
 // barrierAttempts reads.
 func ReadBucket(ctx context.Context, nc *nats.Conn, bucket, holdID string, read func(context.Context) error) error {
-	return bucketReader{}.run(ctx, nc, bucket, holdID, read)
-}
-
-// bucketReader is ReadBucket's rule, with the seam its forced-order row's control flips.
-type bucketReader struct {
-	// noLeaderCheck leaves out the leader's reading after the read, so a leader change between the
-	// barrier and the read goes unseen (TestForcedOrderHoldBucketBarrierLeaderChange's control).
-	noLeaderCheck bool
-}
-
-func (b bucketReader) run(ctx context.Context, nc *nats.Conn, bucket, holdID string, read func(context.Context) error) error {
 	if nc == nil {
 		return unknownf(StepBarrier, nil, "the bucket barrier has no operator connection")
 	}
@@ -269,9 +258,6 @@ func (b bucketReader) run(ctx context.Context, nc *nats.Conn, bucket, holdID str
 			return err
 		}
 		readErr := read(ctx)
-		if b.noLeaderCheck {
-			return readErr
-		}
 		after, err := streamLeader(ctx, nc, stream)
 		if err != nil {
 			return err

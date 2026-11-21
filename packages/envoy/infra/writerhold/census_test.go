@@ -1,6 +1,7 @@
 package writerhold
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,9 +25,10 @@ import (
 // census naming that stream; so do a republish onto a subject of ENVOY_NOTIFICATIONS as its listed
 // configuration holds them, a push consumer whose deliver_subject is
 // $KV.envoy_session_consumers.x, and a stream that sources into KV_envoy_sessions. Control: a
-// republish onto an unrelated literal subject passes, and without the check the census passes and
-// the republish writes K's record during the hold. The row fails if the census stops reading
-// republish destinations, push consumers' deliver subjects or a protected stream's sources.
+// republish onto an unrelated literal subject passes, and with no check run the republish writes
+// K's record during the hold. The row fails if the census stops reading republish destinations,
+// push consumers' deliver subjects or a protected stream's sources (shown red by a go test
+// -overlay copy of census.go without the destination check).
 func TestHoldWritersInsideTheServer(t *testing.T) {
 	ctx := t.Context()
 	recordK := "$KV." + bus.SessionConsumersBucket + ".K"
@@ -61,12 +63,10 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 	requireRefusal(t, err, StepCensus, "AUDIT", recordK, "$KV.>")
 	t.Logf("with the check: %v", err)
 
-	// Control: without the check the census passes, and the republish writes K's record during
-	// the hold. The message AUDIT stores is the admin's publish here, standing for one the server
-	// stores with no client (a source's or a schedule's); the republish puts it on
-	// $KV.envoy_session_consumers.K, which the selection bucket stores as K's record.
-	_, err = takeCensus(ctx, held, StepCensus, ProtectedStreams(), streamChecks{noDestinations: true})
-	require.NoError(t, err)
+	// Control: with no check run, the republish writes K's record during the hold. The message
+	// AUDIT stores is the admin's publish here, standing for one the server stores with no client
+	// (a source's or a schedule's); the republish puts it on $KV.envoy_session_consumers.K, which
+	// the selection bucket stores as K's record.
 	_, err = js.Publish(ctx, "audit.k", []byte("republished"))
 	require.NoError(t, err)
 	selection, err := legacy.KeyValue(bus.SessionConsumersBucket)
@@ -75,7 +75,7 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 		entry, err := selection.Get("K")
 		return err == nil && string(entry.Value()) == "republished"
 	})
-	t.Logf("control, the census without the destination check passed, and the republish wrote K's record %q into KV_%s", "republished", bus.SessionConsumersBucket)
+	t.Logf("control: with no check run, the republish wrote K's record %q into KV_%s", "republished", bus.SessionConsumersBucket)
 
 	// A republish onto a subject of ENVOY_NOTIFICATIONS, as its listed configuration holds them.
 	audit("notifications.agent.x")
@@ -105,10 +105,11 @@ func TestHoldWritersInsideTheServer(t *testing.T) {
 // TestHoldASubstitutionIsNotLiteral shows the literal-destination check (§3a step 2, red team F5),
 // under exactly natsgrant.Operator(OperatorPhaseHeld): a republish from in.*.*.* to $1.$2.$3, and
 // the same with {{wildcard(n)}}, stops the hold as not literal, since its output is built from the
-// source subject's tokens. Control: a check of the destination as it is spelled passes it (no
-// token of $1.$2.$3 is $KV), and a retained message in.$KV.envoy_sessions.K is republished onto
+// source subject's tokens. Control: the destination as it is spelled overlaps no protected subject
+// (no token of $1.$2.$3 is $KV), and a retained message in.$KV.envoy_sessions.K is republished onto
 // $KV.envoy_sessions.K, K's record in KV_envoy_sessions, during the hold. The row fails if the
-// census judges a destination by its spelling alone.
+// census judges a destination by its spelling alone (shown red by a go test -overlay copy of
+// census.go that checks the spelling).
 func TestHoldASubstitutionIsNotLiteral(t *testing.T) {
 	ctx := t.Context()
 	hub := startGrantHub(t)
@@ -131,11 +132,17 @@ func TestHoldASubstitutionIsNotLiteral(t *testing.T) {
 	}
 
 	// Control: the destination's spelling overlaps no protected subject, so a check of the
-	// spelling passes it, and the republish writes K's record into KV_envoy_sessions.
-	_, err := takeCensus(ctx, held, StepCensus, ProtectedStreams(), streamChecks{rawSpelling: true})
-	require.NoError(t, err)
+	// spelling would pass it, and the republish writes K's record into KV_envoy_sessions.
+	lister := js.ListStreams(ctx)
+	var listed []jetstream.StreamInfo
+	for info := range lister.Info() {
+		listed = append(listed, *info)
+	}
+	require.NoError(t, lister.Err())
+	_, overlaps := overlapping("$1.$2.$3", protectedSubjects(listed))
+	require.False(t, overlaps, "the spelling $1.$2.$3 overlaps a protected subject")
 	retained := "in.$KV." + bus.SessionBucket + ".K"
-	_, err = js.Publish(ctx, retained, []byte("substituted"))
+	_, err := js.Publish(ctx, retained, []byte("substituted"))
 	require.NoError(t, err)
 	stream, err := js.Stream(ctx, "IN")
 	require.NoError(t, err)
@@ -147,7 +154,7 @@ func TestHoldASubstitutionIsNotLiteral(t *testing.T) {
 		entry, err := sessions.Get("K")
 		return err == nil && string(entry.Value()) == "substituted"
 	})
-	t.Logf("control, the census checking the spelling passed, and the republish of %s wrote K's record %q into KV_%s", retained, "substituted", bus.SessionBucket)
+	t.Logf("control: the spelling overlaps no protected subject, and the republish of %s wrote K's record %q into KV_%s", retained, "substituted", bus.SessionBucket)
 }
 
 // listResponder answers the census's three list requests, STREAM.LIST, STREAM.NAMES and
@@ -233,8 +240,9 @@ func (r *listResponder) set(edit func(subject string, offset int, page map[strin
 // so a responder on a server with no JetStream answers crafted pages, one entry a page, to the
 // census's own connection. Control: a complete answer passes, every page asked for; the push
 // consumer the incomplete answers leave out delivers onto $KV.envoy_sessions.x, which the complete
-// answer shows and refuses; and a census that takes the incomplete answers as whole passes with
-// that writer unseen. The row fails if the census takes a partial list as the whole.
+// answer shows and refuses; and the pages of each incomplete answer, read as a whole list
+// (consumersTakenAsWhole), lack that writer. The row fails if the census takes a partial list as
+// the whole (shown red by a go test -overlay copy of census.go's listAll that accepts it).
 func TestHoldIncompleteLists(t *testing.T) {
 	ctx := t.Context()
 	_, url := testnats.StartConfig(t, "", nil, true)
@@ -360,12 +368,29 @@ func TestHoldIncompleteLists(t *testing.T) {
 		requireUnknown(t, incompleteErr, StepCensus, answer.want...)
 		t.Logf("%s: %v", answer.name, incompleteErr)
 		if answer.hidesWriter {
-			// Control: a census that takes the answer as the whole list passes, with the writer
-			// the complete answer refused left unseen.
-			listing, err := takeCensus(ctx, census, StepCensus, nil, streamChecks{acceptIncomplete: true})
-			require.NoError(t, err, "%s, taken as whole", answer.name)
-			require.Len(t, listing.Consumers["WORK"], 1, "%s, taken as whole", answer.name)
-			t.Logf("control, %s taken as whole: the census passed, listing %d consumer of WORK, the writer push unseen", answer.name, len(listing.Consumers["WORK"]))
+			// Control: the answer's pages, taken as the whole list, leave the writer the
+			// complete answer refused unseen.
+			taken := consumersTakenAsWhole(ctx, t, census, consumerList)
+			require.NotContains(t, taken, "push", "%s, taken as whole", answer.name)
+			t.Logf("control, %s taken as whole: %v, the writer push unseen", answer.name, taken)
+		}
+	}
+}
+
+// consumersTakenAsWhole is the consumers a lister that takes each answer as the whole list reads
+// at subject: every page from offset 0 until offset+len reaches the page's total or a page adds no
+// entry, whatever its `missing` or `offline` list holds.
+func consumersTakenAsWhole(ctx context.Context, t *testing.T, nc *nats.Conn, subject string) []string {
+	t.Helper()
+	var names []string
+	for {
+		var page listPage[jetstream.ConsumerInfo]
+		require.NoError(t, apiRequest(ctx, nc, subject, pageRequest{Offset: len(names)}, &page))
+		for _, info := range page.Consumers {
+			names = append(names, info.Name)
+		}
+		if len(page.Consumers) == 0 || len(names) >= page.Total {
+			return names
 		}
 	}
 }

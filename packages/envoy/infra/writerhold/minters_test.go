@@ -90,7 +90,9 @@ func reportAt(runAt time.Time, findings []map[string]any, unknown []MinterUnknow
 // five fields (UNKNOWN, naming the finding's index and the fields), an accepted list that cannot be
 // read, an accepted entry that leaves out or empties any of its principal, right, clause and answer
 // (t-11's form), and no report. No principal of the rows is a person, because the
-// report names none. Control: a preflight that skips the report passes a report naming legion-ci@.
+// report names none. Control: the report itself names legion-ci@ as a holder, the danger a
+// preflight that skips the report passes (shown red by a go test -overlay copy of minters.go that
+// reads no report).
 // Production change that would fail it: a check that compares principals alone, takes the old
 // shape, takes a finding without its resource, permissions or grant time, ignores unknown steps,
 // reads an age from the file's time rather than run_at, takes an entry without its clause or its
@@ -115,8 +117,14 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 		requireRefusal(t, PreflightMinters(ctx, client(list), withCI, now), StepPreflight,
 			"names holders that envoy-operator/envoy-operator-accepted-minters does not accept: "+legionCI+" (role "+adminRole+" on "+rootProject+")")
 	})
-	t.Run("the control: a preflight that skips the report", func(t *testing.T) {
-		require.NoError(t, minterPreflight{skipReport: true}.run(ctx, client(list), withCI, now), "the danger: legion-ci@ passes")
+	t.Run("the control: the report names legion-ci@ as a holder", func(t *testing.T) {
+		_, findings, _, err := readMinterReport(withCI)
+		require.NoError(t, err)
+		var principals []string
+		for _, f := range findings {
+			principals = append(principals, f.Principal)
+		}
+		require.Contains(t, principals, legionCI, "the danger: the report names legion-ci@ as a holder")
 	})
 
 	for _, writer := range []struct{ principal, role, resource, permission string }{

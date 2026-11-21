@@ -260,15 +260,18 @@ const (
 // responders", which a cut restore's leftover answers for about 10 s on a clustered hub.
 var restoreStart = 60 * time.Second
 
+// restoreRuns is how many times a restore of one bucket is run before it stops: 2, its one rerun.
+const restoreRuns = 2
+
 // restoreAll restores each of buckets from dir/<bucket> on nc, each with restoreOne. A restore that
 // stops is a *writerhold.Left naming what the command left: each bucket restored before it, and the
 // stopped one's stream deleted.
-func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string, runs int) (map[string]writerhold.Change, map[string]string, error) {
+func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string) (map[string]writerhold.Change, map[string]string, error) {
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
 	var left []string
 	for _, bucket := range buckets {
 		archive := m.Buckets[bucket]
-		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, runs); err != nil {
+		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive); err != nil {
 			left = append(left, "KV_"+bucket+" deleted, its restore stopped")
 			return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
 		}
@@ -282,11 +285,12 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 
 // restoreOne restores bucket's stream from bucketDir, which replaces the stream: it deletes the
 // stream first, since a restore makes it and one that exists refuses it. A restore cut part way
-// (its connection closed, an answer that does not come) is run again from its first chunk, runs
-// times in all, each after the cut's leftover is gone; a cut on the last run stops the command,
-// naming the bucket and each run's error, with the leftover deleted, so no partial stream stays.
+// (its connection closed, an answer that does not come) is run again from its first chunk,
+// restoreRuns times in all, each after the cut's leftover is gone; a cut on the last run stops the
+// command, naming the bucket and each run's error, with the leftover deleted, so no partial stream
+// stays.
 // A restored stream whose state is not the archive's stops it too.
-func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, runs int) error {
+func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive) error {
 	stream := "KV_" + bucket
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
@@ -296,7 +300,7 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 		return fmt.Errorf("delete %s before its restore: %w", stream, err)
 	}
 	var errs []error
-	for run := 1; run <= runs; run++ {
+	for run := 1; run <= restoreRuns; run++ {
 		state, err := startRestore(ctx, nc, stdout, stream, bucketDir)
 		if err == nil {
 			if state.LastSeq != archive.LastSeq || state.Msgs != archive.Messages {
@@ -306,8 +310,8 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 			return nil
 		}
 		errs = append(errs, fmt.Errorf("run %d: %w", run, err))
-		fmt.Fprintf(stdout, "restore of %s: run %d of %d stopped part way: %v\n", bucket, run, runs, err)
-		if run == runs {
+		fmt.Fprintf(stdout, "restore of %s: run %d of %d stopped part way: %v\n", bucket, run, restoreRuns, err)
+		if run == restoreRuns {
 			break
 		}
 		if err := deleteLeftover(ctx, nc, stream); err != nil {

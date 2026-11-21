@@ -220,23 +220,15 @@ func TestHoldThePostcheck(t *testing.T) {
 	require.NotEqual(t, readingOfStream(t, step1, interests).Created, readingOfStream(t, after, interests).Created, "the recreated bucket's created")
 	// On 2.15.1 the restore gives the stream a new created: the snapshot is the V2 archive
 	// (stream.go:9477), whose restore, stream_backup.go's RestoreStreamV2, sets no created time.
+	// That is the control for comparing no created of a restored stream: a check demanding step
+	// 1's created, as the kept check does, would stop this correct restore, and one demanding a new
+	// created would stop the same restore on 2.10.29, whose V1 restore keeps the archive's.
 	require.NotEqual(t, readingOfStream(t, step1, roles).Created, readingOfStream(t, after, roles).Created, "the restored bucket's created on 2.15.1")
 	t.Logf("the postcheck passed: %s kept, last_seq %d; %s recreated, created %s, last_seq %d; %s restored, created %s (step 1's %s), last_seq %d, %d messages, from the archive's %+v",
 		selection, readingOfStream(t, after, selection).LastSeq,
 		interests, readingOfStream(t, after, interests).Created.Format(time.RFC3339Nano), readingOfStream(t, after, interests).LastSeq,
 		roles, readingOfStream(t, after, roles).Created.Format(time.RFC3339Nano), readingOfStream(t, step1, roles).Created.Format(time.RFC3339Nano),
 		readingOfStream(t, after, roles).LastSeq, readingOfStream(t, after, roles).Messages, backup.ArchiveState)
-
-	// Control: a restore check that compares created stops the correct restore. On 2.15.1 that is
-	// the check demanding step 1's created, as the kept check does; the plan's control, which
-	// demands a new created, passes this restore, and stops one only on a server whose restore
-	// keeps the archive's created (2.10.29's V1 restore).
-	_, err = postcheck(ctx, held, step1, changes, streamChecks{restoreSameCreated: true})
-	requireRefusal(t, err, StepPostcheck, roles, "created moved from")
-	t.Logf("control, a restore check demanding step 1's created: %v", err)
-	_, err = postcheck(ctx, held, step1, changes, streamChecks{restoreNewCreated: true})
-	require.NoError(t, err, "the plan's control, a new created demanded of a 2.15.1 restore")
-	t.Logf("the plan's control, a restore check demanding a new created, passes this 2.15.1 restore")
 
 	// Control: one write by another raw client stops the command naming the stream, in each case,
 	// taken in the reverse of the order the postcheck reads the streams, so each refusal is the

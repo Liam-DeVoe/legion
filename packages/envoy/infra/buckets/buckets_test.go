@@ -36,9 +36,8 @@ func noHold(t *testing.T) env {
 			t.Error("the run opened the hub as the operator")
 			return nil, errors.New("no hold here")
 		},
-		now:         time.Now,
-		http:        http.DefaultClient,
-		restoreRuns: 2,
+		now:  time.Now,
+		http: http.DefaultClient,
 	}
 }
 
