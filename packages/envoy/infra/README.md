@@ -4107,8 +4107,9 @@ The residual: on this path clients reach the restored and proven hub before its 
 **The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
 hold row (`holdRowFloor`, a `signedrecord.Floor`, in `internal/cipher/api`): the highest verified
 gen it has served or written, with the digest of that row's signed lines. A row put back below that
-gen, or another row at it, reads as unknown, and no move is made from such a row, so the operator
-never signs a move from a row a hold has moved past (a prepare row put back mid-hold, say). It
+gen, or another row at it, reads as unknown, no move is made from such a row, and no route's 409
+carries it as the row it refused against (it answers `below_floor` instead), so the operator never
+signs a move from a row a hold has moved past (a prepare row put back mid-hold, say). It
 keeps a floor of each hold record it has written or served too (`recordFloors`): an older signed
 record put back, or a record gone that no route deleted, reads as unknown, and the command that
 reads it stops. The one record the routes delete, the cohort that `hold abort` from `prepare`

@@ -136,9 +136,9 @@ type holdRefusal struct {
 }
 
 // writeHoldRefusal answers the hold routes' refusal of code with message, carrying the row and
-// the gen a restore must carry when conflict names them. It is the routes' one refusal writer:
-// their bodies name the code in error, as the operator's client reads it, rather than the
-// broker's {code, error}.
+// the gen a restore must carry when conflict names them. It is the routes' one refusal writer
+// (one that carries a row goes through writeHoldConflict first): their bodies name the code in
+// error, as the operator's client reads it, rather than the broker's {code, error}.
 func writeHoldRefusal(w http.ResponseWriter, status int, code, message string, conflict *natshold.Conflict) {
 	body := holdRefusal{Error: code, Message: message}
 	if conflict != nil {
@@ -152,6 +152,20 @@ func writeHoldRefusal(w http.ResponseWriter, status int, code, message string, c
 		}
 	}
 	writeJSON(w, status, body)
+}
+
+// writeHoldConflict is writeHoldRefusal for a refusal that carries the row a write read
+// (conflict.Current). That row goes through this broker's floor of the row first (acceptRow), as
+// GET's does, so no route hands out a row the floor reads as a replay or a fork: the answer is then
+// 409 below_floor with no row, which the operator's client reads as unknown.
+func (s *server) writeHoldConflict(w http.ResponseWriter, status int, code, message string, conflict *natshold.Conflict) {
+	if conflict != nil && conflict.Current != nil {
+		if err := s.acceptRow(*conflict.Current); err != nil {
+			writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("refused %s against a hold row that reads as unknown: %v: an older row put back, or another row at the gen this broker served or wrote", code, err), nil)
+			return
+		}
+	}
+	writeHoldRefusal(w, status, code, message, conflict)
 }
 
 // readHoldBody decodes r's body into v as readJSON does, at most maxJSONBodyBytes (413
@@ -302,16 +316,16 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "move the hold row", err)
 		return
 	case errors.Is(err, natshold.ErrNoRow):
-		writeHoldRefusal(w, http.StatusNotFound, "no_row", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusNotFound, "no_row", err.Error(), conflict)
 		return
 	case errors.Is(err, natshold.ErrGenMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
 		return
 	case errors.Is(err, natshold.ErrBadTransition):
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_transition", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusBadRequest, "bad_transition", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "move the hold row", err)
@@ -365,13 +379,13 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "restore the hold row", err)
 		return
 	case errors.Is(err, natshold.ErrBadTransition):
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_transition", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusBadRequest, "bad_transition", err.Error(), conflict)
 		return
 	case errors.Is(err, natshold.ErrRowExists):
-		writeHoldRefusal(w, http.StatusConflict, "row_exists", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "row_exists", err.Error(), conflict)
 		return
 	case errors.Is(err, natshold.ErrGenMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "restore the hold row", err)
@@ -450,10 +464,10 @@ func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ str
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "write the hold record", err)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
 		return
 	case errors.Is(err, natshold.ErrGenMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "write the hold record", err)
@@ -678,10 +692,10 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "delete the cohort", err)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error()+": the cohort is deleted only while the row is prepare with its hold id", conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error()+": the cohort is deleted only while the row is prepare with its hold id", conflict)
 		return
 	case errors.Is(err, natshold.ErrGenMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "delete the cohort", err)
@@ -770,7 +784,7 @@ func (s *server) putNATSHoldCutover(w http.ResponseWriter, r *http.Request, oper
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "write the cutover row", err)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "write the cutover row", err)

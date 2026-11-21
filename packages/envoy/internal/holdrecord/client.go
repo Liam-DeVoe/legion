@@ -853,7 +853,8 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 // method, the route, the status and "an unrecognized body". No text of the body reaches the error,
 // the code apart, and only a code the client knows: an answer it cannot read may hold anything, a
 // record's value among it, and an error is printed and logged. A current row that does not verify
-// is ErrUnknown beside the route's code.
+// is ErrUnknown beside the route's code, and so is any `below_floor`, the broker's refusal of a
+// row or record it reads as an older one put back or another at the gen it served.
 func (c *Client) refusal(method, path string, status int, data []byte) error {
 	var answer struct {
 		Error   string   `json:"error"`
@@ -878,6 +879,9 @@ func (c *Client) refusal(method, path string, status int, data []byte) error {
 			return errors.Join(refusal, err)
 		}
 		refusal.Row = &row
+	}
+	if code == codeBelowFloor {
+		return fmt.Errorf("%w: %w", ErrUnknown, refusal)
 	}
 	return refusal
 }

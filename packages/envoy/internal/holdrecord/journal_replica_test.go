@@ -6,6 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,53 +164,60 @@ func replicaRows(t *testing.T) {
 
 // rowFloorRows are TestTheHoldJournal's rows of the routes' floor of the hold row: a row a
 // database writer puts back below the gen the broker served or wrote, or another verified row at
-// that gen, reads as unknown, and no move is made from it.
+// that gen, reads as unknown, no move is made from it, and no refusal hands it out.
 func rowFloorRows(t *testing.T) {
 	ctx := context.Background()
 	const rowColumns = `gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig`
 
-	t.Run("a prepare row put back mid-hold reads as unknown, and no release is moved from it", func(t *testing.T) {
-		// The reviewer's replay: prepare at gen 2, held at gen 3 with hold set done and a command's
-		// intent pending; a database writer puts the signed prepare row back and deletes log row 3.
-		// Fails while the routes keep no floor for the row: Row reads prepare at gen 2, and
-		// MoveRow(2, released) stores released at gen 3, freeing every client mid-hold.
+	// replayedPrepare is the reviewer's replay: prepare at gen 2, held at gen 3 with hold set done
+	// and a command's intent pending, both written through the routes; then a database writer puts
+	// the signed prepare row back and deletes log row 3. It returns the rig, its client and the
+	// prepare row.
+	replayedPrepare := func(t *testing.T, holdID string) (rig, *holdrecord.Client, holdrecord.Row) {
+		t.Helper()
 		r := newRig(t)
 		c := r.client(t)
 		current := row(t, c)
-		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, "h-replayed", "prepare")
+		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare")
 		if err != nil {
 			t.Fatal(err)
 		}
-		var saved [8]any
 		var gen int64
-		var phase, holdID, reason, updatedBy, sig string
+		var phase, savedHoldID, reason, updatedBy, sig string
 		var updatedAt, signedAt time.Time
-		if err := r.Pool.QueryRow(ctx, `select `+rowColumns+` from nats_hold`).Scan(&gen, &phase, &holdID, &reason, &updatedAt, &updatedBy, &signedAt, &sig); err != nil {
+		if err := r.Pool.QueryRow(ctx, `select `+rowColumns+` from nats_hold`).Scan(&gen, &phase, &savedHoldID, &reason, &updatedAt, &updatedBy, &signedAt, &sig); err != nil {
 			t.Fatal(err)
 		}
-		saved = [8]any{gen, phase, holdID, reason, updatedAt, updatedBy, signedAt, sig}
-		if err := c.StartJournal(ctx, "h-replayed", holdrecord.WorkflowCutover, nil); err != nil {
+		if err := c.StartJournal(ctx, holdID, holdrecord.WorkflowCutover, nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Admit(ctx, "h-replayed", cmd(holdrecord.CommandSet), nil); err != nil {
+		if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandSet), nil); err != nil {
 			t.Fatal(err)
 		}
-		held, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, "h-replayed", "held")
+		held, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, holdID, "held")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := c.AppendDone(ctx, "h-replayed", holdrecord.CommandSet, nil); err != nil {
+		if err := c.AppendDone(ctx, holdID, holdrecord.CommandSet, nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Admit(ctx, "h-replayed", cmd("create-bucket"), nil); err != nil {
+		if _, err := c.Admit(ctx, holdID, cmd("create-bucket"), nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.Pool.Exec(ctx, `update nats_hold set gen = $1, phase = $2, hold_id = $3, reason = $4, updated_at = $5, updated_by = $6, signed_at = $7, sig = $8`, saved[:]...); err != nil {
+		if _, err := r.Pool.Exec(ctx, `update nats_hold set gen = $1, phase = $2, hold_id = $3, reason = $4, updated_at = $5, updated_by = $6, signed_at = $7, sig = $8`,
+			gen, phase, savedHoldID, reason, updatedAt, updatedBy, signedAt, sig); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log where gen = $1`, int64(held.Gen)); err != nil {
 			t.Fatal(err)
 		}
+		return r, c, prepared
+	}
+
+	t.Run("a prepare row put back mid-hold reads as unknown, and no release is moved from it", func(t *testing.T) {
+		// Fails while the routes keep no floor for the row: Row reads prepare at gen 2, and
+		// MoveRow(2, released) stores released at gen 3, freeing every client mid-hold.
+		r, c, prepared := replayedPrepare(t, "h-replayed")
 		// Each step reports and the next still runs, so the control shows where the move lands.
 		if got, err := c.Row(ctx); !errors.Is(err, holdrecord.ErrUnknown) {
 			t.Errorf("Row with the prepare row put back answered %+v, %v; want ErrUnknown", got, err)
@@ -219,6 +230,28 @@ func rowFloorRows(t *testing.T) {
 		var storedPhase string
 		if err := r.Pool.QueryRow(ctx, `select gen, phase from nats_hold`).Scan(&storedGen, &storedPhase); err != nil || storedPhase != "prepare" || storedGen != int64(prepared.Gen) {
 			t.Errorf("after the refused move the row is %s at gen %d (%v), want the put-back prepare at gen %d", storedPhase, storedGen, err, prepared.Gen)
+		}
+	})
+
+	t.Run("a records write refused against a prepare row put back carries no row, and reads as unknown", func(t *testing.T) {
+		// After the replay, a records PUT the store refuses 409 carries the row it read in current.
+		// Fails while that row skips the floor: the body hands out the put-back prepare row, which
+		// verifies, as the row the write was refused against.
+		r, c, _ := replayedPrepare(t, "h-replayed-current")
+		var body string
+		r.once(recordPut, func(w http.ResponseWriter, req *http.Request) bool {
+			answer := httptest.NewRecorder()
+			r.Routes().ServeHTTP(answer, req)
+			body = answer.Body.String()
+			maps.Copy(w.Header(), answer.Header())
+			w.WriteHeader(answer.Code)
+			_, _ = w.Write(answer.Body.Bytes())
+			return true
+		})
+		_, err := c.PutRecord(ctx, "h-replayed-current", "selection", "inputs", 5, json.RawMessage(`{"a":1}`))
+		var refusal *holdrecord.RouteError
+		if strings.Contains(body, `"current"`) || !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Code != "below_floor" || refusal.Row != nil {
+			t.Errorf("a records PUT at a gen the record does not hold answered %v, body %s; want 409 below_floor with no current row, read as ErrUnknown", err, body)
 		}
 	})
 
