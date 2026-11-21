@@ -637,6 +637,11 @@ func TestRateReadingIsOneJSONLine(t *testing.T) {
 	if started := strings.Count(rig.logs.String(), rateReadingStarts); started != 1 {
 		t.Errorf("the log says %d times that the reading starts, want once:\n%s", started, rig.logs.String())
 	}
+	// The interval is written as Dispatch's start line writes it, a duration's text, not the
+	// nanoseconds a JSON handler gives a time.Duration.
+	if !strings.Contains(rig.logs.String(), `"interval":"10m0s"`) {
+		t.Errorf("the start line does not give the interval as \"10m0s\":\n%s", rig.logs.String())
+	}
 	hostname, err := os.Hostname()
 	if err != nil {
 		t.Fatal(err)
@@ -1032,6 +1037,24 @@ func TestRateReadingRefusesAReadingThatSpansTwoRateWindows(t *testing.T) {
 		t.Fatalf("the pass wrote %d lines, want one", len(passes[0]))
 	}
 	checkErrorLine(t, passes[0][0], "the reading spans two rate windows")
+}
+
+// A reading that spans two rate windows in the last minute before its other counter's reset is a
+// before_reset error line, as Dispatch's is: that minute was tried and read nothing.
+func TestRateReadingMarksASpanningReadingInALastMinuteAsBeforeReset(t *testing.T) {
+	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 29*time.Minute + 50*time.Second}
+	github := rateStandIn(t, acme)
+	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
+	rig := newRateRig(t, github, config.GitHubApps{Implement: app, Review: app})
+	// The core counter resets while GET /rate_limit is answered, 9 s before the GraphQL reset.
+	github.whenRateLimitIsRead(func() { rig.clock.set(github.coreReset(acme).Add(time.Second)) })
+
+	_, passes := rig.passes(t, 1, nil)
+
+	if len(passes[0]) != 1 {
+		t.Fatalf("the pass wrote %d lines, want one", len(passes[0]))
+	}
+	checkErrorLineAt(t, passes[0][0], "the reading spans two rate windows", true)
 }
 
 // Each way an installation's reading fails gives that installation its error line, and the

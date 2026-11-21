@@ -200,7 +200,7 @@ func (r *rateReader) run(ctx context.Context) {
 	for _, app := range r.keyed {
 		ids = append(ids, app.id)
 	}
-	r.log.Info(rateReadingStarts, "app_ids", ids, "interval", githubrate.Interval)
+	r.log.Info(rateReadingStarts, "app_ids", ids, "interval", githubrate.Interval.String())
 	for ctx.Err() == nil {
 		r.pass(ctx)
 		if ctx.Err() != nil {
@@ -341,7 +341,7 @@ func (r *rateReader) readInstallation(ctx context.Context, app rateApp, installa
 		return githubrate.Reading{Error: err.Error(), BeforeReset: beforeReset}
 	}
 	if !at.Before(core.Reset) || !at.Before(graphQL.Reset) {
-		return githubrate.Reading{Error: "a counter reset before its own-call snapshot; the reading spans two rate windows"}
+		return githubrate.Reading{Error: "a counter reset before its own-call snapshot; the reading spans two rate windows", BeforeReset: beforeReset}
 	}
 	return githubrate.Reading{Core: core, GraphQL: graphQL, BeforeReset: beforeReset}
 }
