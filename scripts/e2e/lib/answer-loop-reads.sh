@@ -384,6 +384,13 @@ omp_openai_summary() {
 answer_question_id() { grep -oE 'legion-answer:[0-9a-f]+' <<<"$1" | head -1 | cut -d: -f2 || true; }
 # occurrences TEXT NEEDLE: how many times NEEDLE occurs in TEXT.
 occurrences() { grep -oF -- "$2" <<<"$1" | wc -l || true; }
+# question_occurrences REQUEST ID TAG MARKER: how many times the question ID of run TAG asked under
+# MARKER occurs in REQUEST, counted by the whole suffix the rig asks it with,
+# `(question ID of run TAG, MARKER)`, and not by MARKER alone: a model's own reply can name the
+# marker ("the same as for the earlier questions, A10-1 included"), and a later request carries
+# that reply in the conversation, so the marker alone counts the question twice (proof run
+# 44858316560, A10 under the postgres store).
+question_occurrences() { occurrences "$1" "(question $2 of run $3, $4)"; }
 
 # ---- the asker's inbox -------------------------------------------------------------------------------
 # inbox_reply EVENT prints the text the asker received in reply to EVENT, or fails; inbox_replies

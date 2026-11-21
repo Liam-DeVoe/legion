@@ -732,6 +732,24 @@ describe("the stopped agents' conversations", () => {
     expect(read(`occurrences 'a b c' 'A9)'`)).toEqual({ code: 0, text: "0" });
     expect(read(`occurrences '' 'A9)'`)).toEqual({ code: 0, text: "0" });
   });
+
+  test("question_occurrences counts a question by the whole suffix it was asked with, not by its marker", () => {
+    // A resumed agent's request as proof run 44858316560 recorded it: the question asked once,
+    // then the agent's own reply naming the marker again.
+    const request = JSON.stringify({
+      messages: [
+        { role: "user", content: "What blocked the release? (question pre-change-scan of run 12688, A10-1)" },
+        { role: "assistant", content: "The same as for the earlier pre-change-scan questions (including A10-1)." },
+        { role: "user", content: "And again? (question pre-change-scan of run 12688, A10-2)" },
+      ],
+    });
+    const q = `'${request}'`;
+    expect(read(`question_occurrences ${q} pre-change-scan 12688 A10-1`).text).toBe("1");
+    expect(read(`question_occurrences ${q} pre-change-scan 12688 A10-2`).text).toBe("1");
+    // The marker alone is what counted the question twice.
+    expect(read(`occurrences ${q} 'A10-1)'`).text).toBe("2");
+    expect(read(`question_occurrences ${q} pre-change-scan 12689 A10-1`)).toEqual({ code: 0, text: "0" });
+  });
 });
 
 describe("the asker's inbox", () => {

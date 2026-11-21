@@ -2322,7 +2322,7 @@ check_a9() {
   soft_wait 300 "the resumed architect's first model call" more_than "$m" proxy_count agents || true
   soft_wait 600 "the resumed architect's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents "$m")
-  counts="question 1 $(occurrences "$request" "in-order-1 of run $run_tag, A9"), question 2 $(occurrences "$request" "in-order-2 of run $run_tag, A9"), exchange 1 $(appended_exchanges architect "$q1"), exchange 2 $(appended_exchanges architect "$q2")"
+  counts="question 1 $(question_occurrences "$request" in-order-1 "$run_tag" A9), question 2 $(question_occurrences "$request" in-order-2 "$run_tag" A9), exchange 1 $(appended_exchanges architect "$q1"), exchange 2 $(appended_exchanges architect "$q2")"
   # Every reply the architect gave since the task was delivered, not its last one: on resume it may
   # also answer a person's earlier reply in the same turn, and its last words then answer that.
   reply=$(assistant_texts_after architect "$(question_text after-resume)")
@@ -2485,7 +2485,7 @@ a10_gpt() {
   soft_wait 600 "the resumed merger's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents-gpt "$m")
   for ((k = 1; k <= n; k++)); do
-    counts+="${counts:+ }$(occurrences "$request" "A10-gpt-$k)")"
+    counts+="${counts:+ }$(question_occurrences "$request" "${ids[k - 1]}" "$run_tag" "A10-gpt-$k")"
     want_counts+="${want_counts:+ }1"
   done
   note "GPT-6.1: the resumed merger's first request (agents-gpt, after its first $m model calls), for $(jq -r '.model // "no model"' <<<"$request"), holds each of the $n questions this many times: $counts"
@@ -2613,7 +2613,7 @@ check_a10() {
   soft_wait 300 "the resumed Claude Code reviewer's first model call" more_than "$m" proxy_count "claude-$store" || true
   soft_wait 600 "the resumed reviewer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after "claude-$store" "$m")
-  counts="$(occurrences "$request" "A10-1)") $(occurrences "$request" "A10-2)")"
+  counts="$(question_occurrences "$request" pre-change-scan "$run_tag" A10-1) $(question_occurrences "$request" pre-change-scan "$run_tag" A10-2)"
   note "the resumed Claude Code reviewer's first request (claude-$store, after its first $m model calls) holds the two questions: $counts"
   suspend_agent pre_change || true
   if answer_holds pre-change-scan "$(inbox_reply "$e1")" >/dev/null && answer_holds pre-change-scan "$(inbox_reply "$e2")" >/dev/null &&
@@ -2645,9 +2645,9 @@ check_a10() {
   claims_cmd deliver --claim "${agent[$store:architect.token]}" --task "Reply with one word: ready." >/dev/null
   soft_wait 300 "the resumed architect's first model call" more_than "$m" proxy_count agents || true
   request=$(first_request_after agents "$m")
-  note "the resumed architect's first request holds the question asked after the compaction $(occurrences "$request" "A10 after compaction)") time(s)"
+  note "the resumed architect's first request holds the question asked after the compaction $(question_occurrences "$request" in-order-2 "$run_tag" "A10 after compaction") time(s)"
   compacted && inbox_reply "$e3" >/dev/null && answer_holds in-order-2 "$(inbox_reply "$e3")" >/dev/null &&
-    [ "$(occurrences "$request" "A10 after compaction)")" = 1 ] && ok_compact=1
+    [ "$(question_occurrences "$request" in-order-2 "$run_tag" "A10 after compaction")" = 1 ] && ok_compact=1
   suspend_agent architect || true
   if [ "$ok_claude$ok_compact" = 11 ]; then
     record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the answer to ${markers[judged]}, the later of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
