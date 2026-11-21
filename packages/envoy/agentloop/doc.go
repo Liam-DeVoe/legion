@@ -46,7 +46,8 @@
 // included, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters and the retry, and nothing else.
+// the token, the endpoint's query parameters, the Final schema's order (see "The structured
+// reply") and the retry, and nothing else.
 //
 // # Cache marks
 //
@@ -73,6 +74,20 @@
 // strict flag set. On every protocol the schema therefore binds the reply as it is generated,
 // and the package's own read of the reply is the second check, which an endpoint that speaks a
 // vendor's protocol without being that vendor still needs.
+//
+// The schema reaches the provider with each of its objects' keys in the order Request.Final
+// writes them. Under structured output the model writes its reply's keys in the schema's order,
+// so that order is the order the model decides the reply's fields in. On a run of the Legion
+// daemon's answer loop the reply form, declared kind, text, needs, reached the provider sorted
+// as kind, needs, text, and its last call replayed 12 times in each order answered not_answered
+// with an empty needs 10 times of 12 sorted and none of 12 in the declared order. The SDK keeps
+// the order on openai-chat alone: its Anthropic and Responses adapters rebuild the schema as a
+// map before they send it, and Go writes a map with its keys sorted. The run's HTTP transport
+// therefore puts every object of the schema in each call's body back in Final's order, nested
+// objects and array elements included, once per call and before the retry, so the retry sends
+// the same bytes. A key the SDK added that Final lacks keeps its place after Final's own keys,
+// every string and number keeps the bytes the SDK wrote, and a body that carries no schema is
+// sent byte for byte as it came.
 //
 // # The Final schema is held to the strict subset
 //

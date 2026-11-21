@@ -52,7 +52,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 	messages := append(history, input...)
 
-	transport := newModelTransport(req.Model.Endpoint)
+	transport := newModelTransport(req.Model.Endpoint, req.Final)
 	model, options, err := languageModel(req, transport.client())
 	if err != nil {
 		return Result{}, err

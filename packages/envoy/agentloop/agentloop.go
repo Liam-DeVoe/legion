@@ -243,7 +243,9 @@ type Request struct {
 	// made, so this run's first call is FirstToolIndex + 1. A fresh run leaves it zero.
 	FirstToolIndex int
 	// Final is the JSON schema the last reply must be exactly one object of, which is what
-	// Result.Value holds. A nil Final asks for free text.
+	// Result.Value holds. A nil Final asks for free text. Final reaches the provider with each
+	// of its objects' keys in the order Final writes them, which is the order the model writes
+	// the reply's keys in (doc.go, "The structured reply").
 	Final json.RawMessage
 	// Check is a caller's own check of the Final object, for a rule the schema cannot state
 	// inside the strict subset (strict.go), such as a property that must not be empty for one
