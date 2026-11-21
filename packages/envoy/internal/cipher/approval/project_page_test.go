@@ -2,7 +2,6 @@ package approval_test
 
 import (
 	"crypto/ecdsa"
-	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -366,8 +365,10 @@ func TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest(t *test
 	logged := len(capture.Records())
 
 	res := b.FromPage(t, "/approve", all)
+	// Errorf, not Fatalf: a POST that answers otherwise is still checked for its error line below,
+	// and the page it lands on is read only when it answered the redirect.
 	if res.Status != http.StatusSeeOther {
-		t.Fatalf("approve all while Dispatch is down = %d, want 303:\n%s", res.Status, pageText(t, res.Body))
+		t.Errorf("approve all while Dispatch is down = %d, want 303:\n%s", res.Status, pageText(t, res.Body))
 	}
 	if state := r.state(t, plain.recordID); state != "approved" {
 		t.Errorf("the untagged request = %s, want approved: Dispatch is asked nothing for it", state)
@@ -377,18 +378,14 @@ func TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest(t *test
 	if pending, grants := r.count(t, `select count(*) from requests where record_id = $1 and state = 'pending'`, tagged.recordID), r.grants(t, tagged.recordID); pending != 1 || grants != 0 {
 		t.Errorf("the PRIV_SHARED request has %d pending request rows and %d grants; want it still pending with none", pending, grants)
 	}
-	landed := b.Get(t, res.Header.Get("Location"))
-	if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, tagged.recordID+": unavailable: "+unansweredNote) {
-		t.Errorf("the page approve all lands on = %d; want 200 with the PRIV_SHARED request's outcome %q:\n%s", landed.Status, unansweredNote, text)
+	if res.Status == http.StatusSeeOther {
+		landed := b.Get(t, res.Header.Get("Location"))
+		if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, tagged.recordID+": unavailable: "+unansweredNote) {
+			t.Errorf("the page approve all lands on = %d; want 200 with the PRIV_SHARED request's outcome %q:\n%s", landed.Status, unansweredNote, text)
+		}
 	}
 	if down.Calls() == 0 {
 		t.Fatal("the down Dispatch was never asked: the test is blind")
 	}
-	for _, line := range capture.Records()[logged:] {
-		if line.Level >= slog.LevelError {
-			fields := map[string]any{}
-			line.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
-			t.Errorf("approve all while Dispatch is down wrote an error line %q: %v", line.Message, fields)
-		}
-	}
+	requireNoErrorLine(t, "approve all while Dispatch is down", capture.Records()[logged:])
 }

@@ -160,8 +160,7 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 			var codes []any
 			for _, record := range capture.Records() {
-				fields := map[string]any{}
-				record.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+				fields := logFields(record)
 				if record.Message == answer.RefusalMessage && fields["answer_id"] == id {
 					if record.Level != slog.LevelWarn {
 						t.Errorf("the refusal's record is at %v, want WARN", record.Level)

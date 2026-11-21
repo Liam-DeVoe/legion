@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -409,6 +410,27 @@ func (r *rig) requirePending(t *testing.T, recordID string) {
 	t.Helper()
 	if state, grants := r.state(t, recordID), r.grants(t, recordID); state != "pending" || grants != 0 {
 		t.Fatalf("record %s is %s with %d grants, want still pending with none", recordID, state, grants)
+	}
+}
+
+// --- reading what the broker logged, through a logtest.Recorder the test made the default ---
+
+// logFields is a logged record's attributes by key.
+func logFields(line slog.Record) map[string]any {
+	fields := map[string]any{}
+	line.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+	return fields
+}
+
+// requireNoErrorLine fails t for each of lines, what what logged, that is an error line: an
+// outcome the broker counts as ordinary, such as a refusal or a dependency that cannot answer,
+// writes none, since alerting reads error lines.
+func requireNoErrorLine(t *testing.T, what string, lines []slog.Record) {
+	t.Helper()
+	for _, line := range lines {
+		if line.Level >= slog.LevelError {
+			t.Errorf("%s wrote an error line %q: %v", what, line.Message, logFields(line))
+		}
 	}
 }
 

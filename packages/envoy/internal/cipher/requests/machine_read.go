@@ -1724,15 +1724,10 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
 // signed reason it asks with, read from the request object it embeds once that object verifies
-// for this broker: its audience, its signature and its time against when the record was written.
-// The reason is what the person rule reads of the row (maySeeRecord), so it comes only from an
-// object that verified.
+// for this broker (verifiedRequest). The reason is what the person rule reads of the row
+// (maySeeRecord), so it comes only from an object that verified.
 func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason string, _ error) {
-	body, err := record.ParseBody(canonical)
-	if err != nil {
-		return nil, "", err
-	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	_, obj, err := m.verifiedRequest(canonical, createdAt)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1741,6 +1736,18 @@ func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (i
 		identifiers[i] = d.Identifier
 	}
 	return identifiers, obj.Reason, nil
+}
+
+// verifiedRequest parses the record whose canonical body is canonical and verifies the request
+// object it embeds for this broker: its audience, its signature and its time against createdAt,
+// when the record was written. requestedIdentifiers, ReadRecord and RecordProfiles read through it.
+func (m *Machine) verifiedRequest(canonical string, createdAt time.Time) (record.Body, record.RequestObject, error) {
+	body, err := record.ParseBody(canonical)
+	if err != nil {
+		return record.Body{}, record.RequestObject{}, err
+	}
+	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	return body, obj, err
 }
 
 // leftOutRetention is how long past the last list that left a record out, and past the record's
@@ -1892,11 +1899,7 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	if state == "held" {
 		state = "pending"
 	}
-	body, err := record.ParseBody(canonical)
-	if err != nil {
-		return RecordDetail{}, err
-	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	body, obj, err := m.verifiedRequest(canonical, createdAt)
 	if err != nil {
 		return RecordDetail{}, err
 	}
@@ -1983,11 +1986,7 @@ func (m *Machine) RecordProfiles(ctx context.Context, recordID string) (kind str
 		Scan(&canonical, &kind, &createdAt); err != nil {
 		return "", nil, nil, err
 	}
-	body, err := record.ParseBody(canonical)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	_, obj, err := m.verifiedRequest(canonical, createdAt)
 	if err != nil {
 		return "", nil, nil, err
 	}

@@ -4,7 +4,6 @@
 package approval_test
 
 import (
-	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -202,14 +201,10 @@ func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 		t.Errorf("the page the refused approval lands on does not name the policy:\n%s", landed)
 	}
 
+	requireNoErrorLine(t, "the refused approval", capture.Records())
 	var outcomes []any
 	for _, logged := range capture.Records() {
-		fields := map[string]any{}
-		logged.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
-		if logged.Level >= slog.LevelError {
-			t.Errorf("the refused approval wrote an error line %q: %v", logged.Message, fields)
-		}
-		if logged.Message == "approval page decision" && fields["record"] == recordID {
+		if fields := logFields(logged); logged.Message == "approval page decision" && fields["record"] == recordID {
 			outcomes = append(outcomes, fields["outcome"])
 		}
 	}
