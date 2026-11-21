@@ -873,4 +873,5 @@ func TestTheHoldJournal(t *testing.T) {
 	})
 
 	wayOutRows(t)
+	answerRows(t)
 }

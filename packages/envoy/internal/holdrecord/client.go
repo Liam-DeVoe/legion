@@ -99,12 +99,16 @@ type CutoverRow struct {
 	HoldGen uint64
 }
 
-// RouteError is a route's 400, 403 or 409 answer, with its code: `bad_signature`,
-// `bad_transition`, `not_operator`, `gen_mismatch`, `hold_mismatch`, `row_exists` or `below_floor`.
+// RouteError is a route's coded refusal: a hold route's `bad_request`, `too_large`,
+// `bad_signature`, `bad_transition`, `not_operator`, `no_row`, `gen_mismatch`, `hold_mismatch`,
+// `row_exists` or `below_floor`, or the broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is
+// the verified current row a 409 carries.
 type RouteError struct {
 	Status int
 	Code   string
 	Row    *Row
+	// The request's method and route, which Error names.
+	method, path string
 }
 
 // RestoreGenError is a restore's 409 `gen_mismatch`: the route stores a restored row only at
@@ -124,8 +128,13 @@ func (e *RestoreGenError) Error() string {
 // Unwrap is the route's RouteError.
 func (e *RestoreGenError) Unwrap() error { return e.Route }
 
-// Error names the answer's status and code.
-func (e *RouteError) Error() string { return fmt.Sprintf("holdrecord: %d %s", e.Status, e.Code) }
+// Error names the request's method and route, and the answer's status and code.
+func (e *RouteError) Error() string {
+	if e.method == "" {
+		return fmt.Sprintf("holdrecord: %d %s", e.Status, e.Code)
+	}
+	return fmt.Sprintf("holdrecord: %s %s answered %d %s", e.method, e.path, e.Status, e.Code)
+}
 
 // New refuses an empty BrokerURL, a nil Token and an empty VerifyKeys.
 func New(cfg Config) (*Client, error) {
@@ -427,7 +436,7 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 		}
 		var d Done
 		if err := json.Unmarshal(record.Value, &d); err != nil {
-			return Done{}, 0, fmt.Errorf("holdrecord: hold %s's done record does not decode: %w", holdID, err)
+			return Done{}, 0, fmt.Errorf("holdrecord: hold %s's %s record does not decode: %s", holdID, journalKind, jsonFailure(err))
 		}
 		return d, record.Gen, nil
 	}
@@ -581,6 +590,15 @@ const (
 	maxAnswer = 16 << 20
 )
 
+// routeCodes are the codes a refusal of the hold's routes carries: each hold route's own, in the
+// `error` field beside its `message` (the broker's holdRefusal), and the broker's own failures
+// any route answers, in the `code` field beside its `error` text (the broker's writeError).
+var routeCodes = struct{ hold, broker map[string]bool }{
+	hold: map[string]bool{"bad_request": true, "too_large": true, "bad_signature": true, "bad_transition": true,
+		"not_operator": true, "no_row": true, codeGenMismatch: true, "hold_mismatch": true, "row_exists": true, codeBelowFloor: true},
+	broker: map[string]bool{"DATABASE_UNAVAILABLE": true, "INTERNAL": true},
+}
+
 var errNoSigningKey = errors.New("holdrecord: the configuration holds no signing key, so this client only reads")
 
 // appendEntry writes one `done` or `stop` entry of command, which change makes, at the record's
@@ -618,7 +636,7 @@ func (c *Client) writeJournal(ctx context.Context, holdID string, expectedGen ui
 	}
 	value, err := json.Marshal(d)
 	if err != nil {
-		return fmt.Errorf("holdrecord: encode hold %s's done record: %w", holdID, err)
+		return fmt.Errorf("holdrecord: encode hold %s's done record: %s", holdID, jsonFailure(err))
 	}
 	_, err = c.PutRecord(ctx, holdID, journalKind, journalKey, expectedGen, value)
 	return err
@@ -668,7 +686,7 @@ type rowWire struct {
 func (c *Client) verifyRow(wire rowWire) (Row, error) {
 	signedAt, err := time.Parse(time.RFC3339Nano, wire.SignedAt)
 	if err != nil {
-		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the hold row's signed_at %q: %v", wire.SignedAt, err))
+		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the hold row at gen %d has a signed_at that is no RFC 3339 time", wire.Gen))
 	}
 	if err := signedrecord.Verify(c.cfg.VerifyKeys, wire.Sig, signedrecord.HoldRow(wire.Gen, wire.Phase, wire.HoldID, signedAt)); err != nil {
 		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the hold row at gen %d: %v", wire.Gen, err))
@@ -742,9 +760,28 @@ func (c *Client) call(ctx context.Context, method, path string, query url.Values
 
 func decodeAnswer(method, path string, data []byte, answer any) error {
 	if err := json.Unmarshal(data, answer); err != nil {
-		return fmt.Errorf("holdrecord: %s %s answered a body that does not decode: %w", method, path, err)
+		return fmt.Errorf("holdrecord: %s %s answered a body that does not decode: %s", method, path, jsonFailure(err))
 	}
 	return nil
+}
+
+// jsonFailure names what json refused by the field's path and the error's class, never by the
+// error's text: a type error quotes the number that does not fit its field ("cannot unmarshal
+// number 1844674407370955161600123456789 into ..."), and a syntax error a character of the input,
+// so a body or a record's value would reach an error that is printed and logged.
+func jsonFailure(err error) string {
+	var typed *json.UnmarshalTypeError
+	var syntax *json.SyntaxError
+	switch {
+	case errors.As(err, &typed) && typed.Field != "":
+		return fmt.Sprintf("its field %s does not fit %s (a type error)", typed.Field, typed.Type)
+	case errors.As(err, &typed):
+		return fmt.Sprintf("it does not fit %s (a type error)", typed.Type)
+	case errors.As(err, &syntax):
+		return fmt.Sprintf("it is not JSON at byte %d (a syntax error)", syntax.Offset)
+	default:
+		return "an error of another class"
+	}
 }
 
 // exchange sends one request with the operator's token and returns the answer's status and body.
@@ -757,7 +794,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, fmt.Errorf("holdrecord: encode the body of %s %s: %w", method, path, err)
+			return 0, nil, fmt.Errorf("holdrecord: encode the body of %s %s: %s", method, path, jsonFailure(err))
 		}
 		payload = bytes.NewReader(encoded)
 	}
@@ -789,22 +826,30 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	return resp.StatusCode, data, nil
 }
 
-// refusal is the error a refused request answers: a *RouteError for a route's coded answer, with
-// the verified current row it carries, and a plain error naming the status otherwise. A current
-// row that does not verify is ErrUnknown beside the route's code.
+// refusal is the error a refused request answers: a *RouteError for an answer coded with one of
+// routeCodes, with the verified current row it carries, and otherwise a plain error naming the
+// method, the route, the status and "an unrecognized body". No text of the body reaches the error,
+// the code apart, and only a code the client knows: an answer it cannot read may hold anything, a
+// record's value among it, and an error is printed and logged. A current row that does not verify
+// is ErrUnknown beside the route's code.
 func (c *Client) refusal(method, path string, status int, data []byte) error {
 	var answer struct {
 		Error   string   `json:"error"`
+		Code    string   `json:"code"`
 		Current *rowWire `json:"current"`
 	}
-	if json.Unmarshal(data, &answer) != nil || answer.Error == "" {
-		text := strings.TrimSpace(string(data))
-		if len(text) > 200 {
-			text = text[:200]
-		}
-		return fmt.Errorf("holdrecord: %s %s answered %d: %s", method, path, status, text)
+	var code string
+	switch {
+	case json.Unmarshal(data, &answer) != nil:
+	case routeCodes.hold[answer.Error]:
+		code = answer.Error
+	case routeCodes.broker[answer.Code]:
+		code = answer.Code
 	}
-	refusal := &RouteError{Status: status, Code: answer.Error}
+	if code == "" {
+		return fmt.Errorf("holdrecord: %s %s answered %d with an unrecognized body", method, path, status)
+	}
+	refusal := &RouteError{Status: status, Code: code, method: method, path: path}
 	if answer.Current != nil {
 		row, err := c.verifyRow(*answer.Current)
 		if err != nil {
