@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -202,8 +203,9 @@ func chooseNATSConnection(tokenFile, daemonSeed, paneSeed, paneUser string) (nat
 	}
 }
 
-// log logs, once, the user the connection authenticates as, by public key, whether that is the pane
-// user, and where its seed came from; never the seed.
+// log logs, once, who the connection authenticates as, never the credential: for a seed, the user
+// by public key, whether that is the pane user, and where its seed came from; for the service
+// token, the account the token names, and seed=service-token.
 func (c natsConnection) log(log *slog.Logger) {
 	log.Info("legion daemon connects to NATS", "user", c.user, "paneUser", c.paneUser, "seed", string(c.source))
 }
@@ -213,7 +215,7 @@ func (c natsConnection) log(log *slog.Logger) {
 // the boot: an unreachable NATS for every credential (natsauth.Unreachable), and, for the service
 // token alone, a refusal (natsauth.Refused). The NATS auth service refuses a token while it is
 // away or holds no answer a decision needs yet, so the token's connection waits that out at boot as
-// it does while running (natsauth.ConnectService, natsauth.ReconnectBackoff), and the daemon,
+// it does while running (natsauth.ConnectService, and options' reconnect delay), and the daemon,
 // which serves nothing while its boot runs, reads as not ready meanwhile rather than exiting into a
 // restart. A seed's refusal, or a refusal of no credential, is a misconfiguration no wait fixes,
 // and refuses the boot as before.
@@ -224,13 +226,14 @@ func (c natsConnection) waitsOut(err error) bool {
 // options are the connection options the daemon's own connection dials with, after its
 // credential: what the server reports, logged (natsauth.LogEvents), and reconnects that never give
 // up (natsauth.ReconnectForever). The service token's connection also waits its reconnects out on
-// the boot's own schedule, readinessRetry, which waitsOut holds the boot's connect to, so one rule
-// waits a refusal of the auth service out at boot and while running (natsauth.ReconnectBackoff); a
-// seed's keeps nats.go's own reconnect wait.
+// the boot's own schedule, readinessRetry, which waitsOut holds the boot's connect to: one rule,
+// bootprobe.Retry.Delay, waits a refusal of the auth service out at boot and while running. nats.go
+// counts a reconnect's attempts from one, and Delay its retries from none. A seed's keeps nats.go's
+// own reconnect wait.
 func (c natsConnection) options(log *slog.Logger) []nats.Option {
 	options := []nats.Option{natsauth.LogEvents(log), natsauth.ReconnectForever()}
 	if c.tokenFile != "" {
-		options = append(options, natsauth.ReconnectBackoff(readinessRetry.Initial, readinessRetry.Max))
+		options = append(options, nats.CustomReconnectDelay(func(attempts int) time.Duration { return readinessRetry.Delay(attempts - 1) }))
 	}
 	return options
 }

@@ -27,10 +27,10 @@ import (
 )
 
 // The accounts of two daemons held to their exchange projects: PUB's, and one whose exchange
-// entry names a project Dispatch is slow to answer about.
+// entry names another project, OTHER in the tests that list it.
 const (
-	pubDaemonAccount  = "system:serviceaccount:legion-pub:legion-daemon"
-	slowDaemonAccount = "system:serviceaccount:legion-slow:legion-daemon"
+	pubDaemonAccount   = "system:serviceaccount:legion-pub:legion-daemon"
+	otherDaemonAccount = "system:serviceaccount:legion-other:legion-daemon"
 )
 
 // entryPerson is the person every exchange entry in these tests acts for.
@@ -51,20 +51,21 @@ func exchangeOf(projects map[string][]string) func(string) (string, []string, bo
 // dispatchAnswers is a Deps.Access standing in for Dispatch: each project's answer, or
 // projectaccess.ErrProjectNotFound for one it does not hold, counting the asks about each. As
 // Dispatch answers, a project is visible to no person when it is private, and to entryPerson
-// unless unseen names it.
+// unless unseen names it. Like K3's, its answer carries no repository, whatever Dispatch maps to
+// the project.
 type dispatchAnswers struct {
 	mu      sync.Mutex
-	answers map[string][]string // project → repositories
+	answers map[string][]string // project → the repositories Dispatch maps to it
 	private map[string]bool
 	unseen  map[string]bool // private projects entryPerson cannot see
 	failing error
 	// failingFor fails the asks about one project alone, beside the others' answers.
 	failingFor map[string]error
 	asked      map[string]int
-	// blockAfter is how many asks about a project answer at once; each later ask blocks for
-	// block, or until its context ends.
+	// blockAfter is how many asks about a project answer at once when release is set; each
+	// later ask waits until release is closed, or until its context ends.
 	blockAfter int
-	block      time.Duration
+	release    chan struct{}
 }
 
 func (d *dispatchAnswers) access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
@@ -73,16 +74,16 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 		d.asked = map[string]int{}
 	}
 	d.asked[project]++
-	asks, repositories, failing := d.asked[project], d.answers[project], cmp.Or(d.failing, d.failingFor[project])
+	asks, failing := d.asked[project], cmp.Or(d.failing, d.failingFor[project])
 	_, held := d.answers[project]
 	private, unseen := d.private[project], d.unseen[project]
-	blocks := d.block > 0 && asks > d.blockAfter
+	release := d.release
 	d.mu.Unlock()
-	if blocks {
+	if release != nil && asks > d.blockAfter {
 		select {
 		case <-ctx.Done():
 			return projectaccess.Answer{}, ctx.Err()
-		case <-time.After(d.block):
+		case <-release:
 		}
 	}
 	switch {
@@ -91,18 +92,12 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 	case !held:
 		return projectaccess.Answer{}, fmt.Errorf("%w: %s", projectaccess.ErrProjectNotFound, project)
 	}
-	answer := projectaccess.Answer{Project: project, Visibility: "public", Visible: true, Repositories: slices.Clone(repositories)}
+	answer := projectaccess.Answer{Project: project, Visibility: "public", Visible: true}
 	if private {
 		answer.Visibility = "private"
 		answer.Visible = person == entryPerson && !unseen
 	}
 	return answer, nil
-}
-
-func (d *dispatchAnswers) set(project string, repositories ...string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.answers[project] = repositories
 }
 
 func (d *dispatchAnswers) fail(err error) {
@@ -129,8 +124,8 @@ func (d *dispatchAnswers) hide(project string, hidden bool) {
 }
 
 // heldDeps are Deps whose ServiceToken verifies tokens, whose exchange list is exchange, and
-// whose Dispatch is dispatch, with one pass over every project services can name made, as Start's
-// first pass is.
+// whose Dispatch is dispatch, with one refresh over every project services can name made, as
+// Start's first refresh is.
 func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string][]string, dispatch *dispatchAnswers, services []ServiceEntry) Deps {
 	t.Helper()
 	deps := Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access}
@@ -226,44 +221,70 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	require.Equal(t, "PUB's exception", string(msg.Data))
 }
 
-// No admission waits on Dispatch: the service makes a pass at its start and every 20 s after,
-// and a decision reads only the pass it holds. Dispatch here answers its first ask about PUB at
-// once and blocks three seconds on every later one. With a second pass blocked, PUB's daemon is
-// admitted in under 100 ms from the first pass. The control reads Access inside the decision: the
-// admission waits the three seconds, and this test fails naming how long it took.
+// No admission waits on Dispatch: the service asks it at its start and every 20 s after, and a
+// decision reads only the answers it holds. Before the first refresh has answered, PUB's daemon is
+// refused at once, naming PUB as a project whose access is not yet known. Dispatch here answers
+// its first ask about PUB at once and holds every later one until the test releases it. With a
+// second ask in flight and held, PUB's daemon is decided, admitted on the first answer, and
+// Dispatch was asked no more. The control reads Access inside the decision: the decision waits on
+// the held ask, and the test fails naming the decision that did not return.
 func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, blockAfter: 1, block: 3 * time.Second}
+	release := make(chan struct{})
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, blockAfter: 1, release: release}
 	deps := Deps{
 		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}),
 		Access: dispatch.access,
 	}
 	deps.held = newHeldAccess(deps, services)
 	require.NotNil(t, deps.held)
+	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	requireRefused(t, err, labelProjectAccessUnknown, "project access not yet known: PUB")
+
 	asks, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
 	go deps.held.refresh(asks)
-	testwait.Eventually(t, "the first pass held", func() bool { return deps.held.latest() != nil })
-	go deps.held.refresh(asks) // its ask about PUB blocks three seconds
-	testwait.Eventually(t, "a second ask about PUB in flight", func() bool {
+	testwait.Eventually(t, "the first answer about PUB held", func() bool {
+		_, known := deps.held.answer(heldKey{project: "PUB", person: entryPerson})
+		return known
+	})
+	go deps.held.refresh(asks) // its ask about PUB waits on release
+	asked := func() int {
 		dispatch.mu.Lock()
 		defer dispatch.mu.Unlock()
-		return dispatch.asked["PUB"] >= 2
-	})
+		return dispatch.asked["PUB"]
+	}
+	testwait.Eventually(t, "a second ask about PUB in flight", func() bool { return asked() >= 2 })
 
-	began := time.Now()
-	decision, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
-	took := time.Since(began)
-	require.NoError(t, err)
-	require.Less(t, took, 100*time.Millisecond, "the PUB daemon's admission took %s: it waited on Dispatch", took)
-	require.Contains(t, decision.Grant.Subscribe, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+"PUB.>")
+	type result struct {
+		decision Decision
+		err      error
+	}
+	decided := make(chan result, 1)
+	go func() {
+		decision, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+		decided <- result{decision, err}
+	}()
+	var got result
+	testwait.Eventually(t, "PUB's daemon decided while Dispatch held its second ask", func() bool {
+		select {
+		case got = <-decided:
+			return true
+		default:
+			return false
+		}
+	})
+	require.Equal(t, 2, asked(), "the decision asked Dispatch")
+	close(release)
+	require.NoError(t, got.err)
+	require.Contains(t, got.decision.Grant.Subscribe, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+"PUB.>")
 }
 
-// A complete pass once held is kept while Dispatch cannot be reached, and the next complete pass
-// replaces it: here PUB's daemon is admitted through an outage on the pass from before it, and,
-// once Dispatch answers that the entry's person no longer sees PUB, refused naming PUB.
+// An answer once held is kept while Dispatch cannot be reached, and the next answer replaces it:
+// here PUB's daemon is admitted through an outage on the answer from before it, and, once Dispatch
+// answers that the entry's person no longer sees PUB, refused naming PUB.
 func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
@@ -285,13 +306,16 @@ func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 
 // Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
 // is no outage to admit through: the token exchange refuses every trade that asks Dispatch then
-// (oauth's refusedByDispatch), so a pass holding that refusal is complete, the auth service
-// refuses a connection held to what it refused, under its own label and naming why, and logs it
-// at error once a pass. Here Dispatch answers that PUB's person sees OPS and PUB, then refuses
-// the broker's token while that person is off both access lists: PUB's daemon is refused, and one
-// error line names the refusal for the pass's two questions. The next pass replaces the refusal:
-// once Dispatch answers again, with the person back, the daemon is admitted. The control keeps the
-// last pass on a refusal, as on an outage: the daemon is admitted on the pass from before.
+// (oauth's refusedByDispatch), so a refresh holding that refusal refuses every held connection,
+// under its own label and naming why, and the broker logs it at error once a refresh. Here
+// Dispatch answers that PUB's person sees OPS and PUB, then refuses the broker's token while that
+// person is off both access lists: PUB's daemon is refused, and one error line names the refusal
+// for the refresh's two questions. A refresh in which Dispatch cannot be reached at all answers
+// no question, so it shows nothing about the token and the refusal stands. The next refresh
+// answered with no refusal clears it, though OPS's question fails in it: PUB's daemon is admitted
+// on PUB's new answer and on OPS's answer from before the refusal. The controls: keep the answers
+// on a refusal, as on an outage, and the daemon is admitted after the refusal; clear the refusal
+// on a refresh that answered nothing, and it is admitted through the outage.
 func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
@@ -318,22 +342,29 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
-	require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the pass's two refused questions:\n%s", logged.String())
+	require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the refresh's two refused questions:\n%s", logged.String())
 	require.Contains(t, logged.String(), "ACCESS_ACCOUNT_REQUIRED")
 	require.NotContains(t, logged.String(), "level=WARN", "a refusal of the broker's token was logged as an outage:\n%s", logged.String())
 
+	dispatch.fail(errors.New("dial tcp: connection refused"))
+	deps.held.refresh(t.Context())
+	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
+
 	dispatch.fail(nil)
-	dispatch.hide("OPS", false)
+	dispatch.mu.Lock()
+	dispatch.failingFor = map[string]error{"OPS": errors.New(`projectaccess: dispatch answered /api/v1/access/projects/OPS 500 with the code ""`)}
+	dispatch.mu.Unlock()
 	dispatch.hide("PUB", false)
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
-	require.NoError(t, err, "Dispatch's answer after its refusal did not replace it")
+	require.NoError(t, err, "a refresh answered with no refusal did not clear the refusal")
 }
 
 // The service asks Dispatch again every accessRefresh on its own (heldAccess.run, which Start
 // runs), the one thing that bounds how old a held answer is, so an answer changed at Dispatch
 // reaches a decision with no ask the test makes. With the re-ask every 100 ms, PUB's daemon is
-// admitted through the hub on Start's first pass; then PUB's person is taken off
+// admitted through the hub on Start's first refresh; then PUB's person is taken off
 // its access list at Dispatch, and within seconds the daemon's connection is refused, naming PUB as
 // one its person cannot see. The control asks once at Start and never again: the daemon is
 // admitted on that first answer for the whole wait. The refusal's reason is read from the line the
@@ -374,13 +405,13 @@ func TestTheServiceAsksDispatchAgainOnItsOwn(t *testing.T) {
 // what its entry says.
 func TestAnAccountWithNoExchangeEntryIsRefused(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
-	tokens := map[string]platformToken{"slow-daemon-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	tokens := map[string]platformToken{"other-daemon-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
 
-	_, err := Decide(t.Context(), deps, services, serviceRequest("slow-daemon-token"))
-	requireRefused(t, err, labelNoExchangeEntry, "account has no exchange entry: "+slowDaemonAccount)
+	_, err := Decide(t.Context(), deps, services, serviceRequest("other-daemon-token"))
+	requireRefused(t, err, labelNoExchangeEntry, "account has no exchange entry: "+otherDaemonAccount)
 }
 
 // A project the exchange list gives an account and Dispatch holds no answer for, because it holds
@@ -403,17 +434,17 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 // token. The control drops the person's check: the PRIV2 row is served.
 func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
 	tokens := map[string]platformToken{
 		"seen-token":   {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
-		"unseen-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"unseen-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	dispatch := &dispatchAnswers{
 		answers: map[string][]string{"PRIV": {"acme/priv"}, "PRIV2": {"acme/priv2"}},
 		private: map[string]bool{"PRIV": true, "PRIV2": true},
 		unseen:  map[string]bool{"PRIV2": true},
 	}
-	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PRIV"}, slowDaemonAccount: {"PRIV2"}}, dispatch, services)
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PRIV"}, otherDaemonAccount: {"PRIV2"}}, dispatch, services)
 
 	decision, err := Decide(t.Context(), deps, services, serviceRequest("seen-token"))
 	require.NoError(t, err, "a private project the entry's person sees was refused: the auth service asked about no person")
@@ -430,13 +461,13 @@ func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 // grant's emptiness.
 func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
-	tokens := map[string]platformToken{"empty-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	tokens := map[string]platformToken{"empty-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
-	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: nil}, dispatch, services)
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: nil}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("empty-token"))
-	requireRefused(t, err, labelNoProjects, "account's exchange entry names no project to hold it to: "+slowDaemonAccount)
+	requireRefused(t, err, labelNoProjects, "account's exchange entry names no project to hold it to: "+otherDaemonAccount)
 }
 
 // A grant natsgrant.WithinProjects cannot hold to the entry's projects is refused naming why,
@@ -453,12 +484,14 @@ func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
 	requireRefused(t, err, labelGrantNotHoldable, "grant cannot be held to its projects: service daemon/"+pubDaemonAccount+`: natsgrant: scope project "pub" is not a project key`)
 }
 
-// Through the auth service, Dispatch's grant may write the private-projects bucket and a
-// listener's may read it, and nothing more of it: a listener's holds no write to its keys and no
-// create of its stream. The static sets a hub renders hold neither, so a hub with no auth service
-// renders what it rendered before (c-hub-config-unchanged), and the measurement job's grant is
-// unchanged.
-func TestDispatchAndListenerGrantsCarryThePrivateProjectsBucket(t *testing.T) {
+// No kind's callout grant carries the private-projects bucket: listeners read a project's privacy
+// from Dispatch through the broker, and no such bucket exists on a hub. Dispatch's, a listener's,
+// a whole daemon's and the measurement job's callout grants are their natsgrant sets (a daemon's
+// with its reply prefix), and none holds a natsgrant.KVRead or natsgrant.KVWrite subject of
+// bus.PrivateProjectsBucket. The static sets a hub renders hold none of it either, so a hub with no
+// auth service renders what it rendered before (c-hub-config-unchanged). The control puts the
+// bucket decoration back in scopeGrant: the test fails naming the kind.
+func TestNoKindsGrantCarriesThePrivateProjectsBucket(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
 		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
@@ -467,26 +500,23 @@ func TestDispatchAndListenerGrantsCarryThePrivateProjectsBucket(t *testing.T) {
 		"measure-token":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
-	decide := func(raw string) natsgrant.Permissions {
-		decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
-		require.NoError(t, err)
-		return decision.Grant
+	bucket := slices.Concat(natsgrant.KVRead(bus.PrivateProjectsBucket), natsgrant.KVWrite(bus.PrivateProjectsBucket))
+	for kind, row := range map[string]struct {
+		raw  string
+		want natsgrant.Permissions
+	}{
+		"dispatch": {"dispatch-token", natsgrant.Dispatch("example-dispatch")},
+		"listener": {"listener-token", natsgrant.Listener("example-hub")},
+		"daemon":   {"daemon-token", daemonCalloutGrant(daemonAccount)},
+		"measure":  {"measure-token", natsgrant.Measure()},
+	} {
+		decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(row.raw))
+		require.NoError(t, err, kind)
+		for _, entry := range slices.Concat(decision.Grant.Publish, decision.Grant.Subscribe) {
+			require.NotContains(t, bucket, entry, "the %s callout grant carries the private-projects bucket's %s", kind, entry)
+		}
+		require.Equal(t, row.want, decision.Grant, "the %s callout grant is not its natsgrant set", kind)
 	}
-	bucketKeys := "$KV." + bus.PrivateProjectsBucket + ".>"
-	bucketCreate := "$JS.API.STREAM.CREATE.KV_" + bus.PrivateProjectsBucket
-
-	dispatch := decide("dispatch-token")
-	require.Equal(t, dispatchCalloutGrant("example-dispatch"), dispatch)
-	require.Contains(t, dispatch.Publish, bucketKeys)
-
-	listener := decide("listener-token")
-	require.Equal(t, listenerCalloutGrant("example-hub"), listener)
-	require.Contains(t, listener.Publish, "$JS.API.DIRECT.GET.KV_"+bus.PrivateProjectsBucket+".>")
-	require.NotContains(t, listener.Publish, bucketKeys)
-	require.NotContains(t, listener.Publish, bucketCreate)
-
-	require.Equal(t, daemonCalloutGrant(daemonAccount), decide("daemon-token"))
-	require.Equal(t, natsgrant.Measure(), decide("measure-token"))
 	for name, static := range map[string]natsgrant.Permissions{
 		"dispatch": natsgrant.Dispatch("example-dispatch"), "listener": natsgrant.Listener("example-hub"),
 		"listener host": natsgrant.ListenerHost("example-hub"), "host": natsgrant.Host("example-host"),
@@ -495,22 +525,6 @@ func TestDispatchAndListenerGrantsCarryThePrivateProjectsBucket(t *testing.T) {
 			require.NotContains(t, entry, bus.PrivateProjectsBucket, "the static %s set a hub renders names the private-projects bucket", name)
 		}
 	}
-}
-
-// dispatchCalloutGrant is the grant the auth service answers Dispatch's connection with as
-// machine machineID: natsgrant.Dispatch, then the private-projects bucket's write.
-func dispatchCalloutGrant(machineID string) natsgrant.Permissions {
-	grant := natsgrant.Dispatch(machineID)
-	grant.Publish = append(grant.Publish, natsgrant.KVWrite(bus.PrivateProjectsBucket)...)
-	return grant
-}
-
-// listenerCalloutGrant is the grant the auth service answers a listener's connection with as
-// machine machineID: natsgrant.Listener, then the private-projects bucket's read.
-func listenerCalloutGrant(machineID string) natsgrant.Permissions {
-	grant := natsgrant.Listener(machineID)
-	grant.Publish = append(grant.Publish, natsgrant.KVRead(bus.PrivateProjectsBucket)...)
-	return grant
 }
 
 // daemonCalloutGrant is the grant the auth service answers a daemon whose entry takes the whole

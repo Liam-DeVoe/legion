@@ -288,9 +288,10 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
-	// Dispatch's answers about the projects of the entries held to their exchange projects, and its
-	// repository mapping, are read in the background from now on, so no decision waits on
-	// Dispatch (scopeGrant). The answerer's copy of deps holds them.
+	// Dispatch's answers about the projects of the entries held to their exchange projects are
+	// read in the background once the service runs, so no decision waits on Dispatch (scopeGrant).
+	// The answerer's copy of deps holds them; a decision before the first answer refuses
+	// project_access_unknown, and its client retries.
 	deps.held = newHeldAccess(deps, settings.Services)
 	s := &Service{
 		conn: conn,
@@ -303,23 +304,13 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 		counted:    make(chan struct{}),
 		stopReport: make(chan struct{}),
 		reported:   make(chan struct{}),
-		stopHeld:   func() {},
 		heldDone:   make(chan struct{}),
 		settings: replicaSettings{tick: livenessTick, bound: livenessBound, budget: decideBudget,
 			maxWaiting: maxWaiting, maxRefusing: maxRefusing},
 	}
 	s.beat.Store(time.Now().UnixNano())
-	if deps.held != nil {
-		var asks context.Context
-		asks, s.stopHeld = context.WithCancel(context.WithoutCancel(ctx))
-		go func() { defer close(s.heldDone); deps.held.run(asks) }()
-	} else {
-		close(s.heldDone)
-	}
 	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, s.deliver)
 	if err != nil {
-		s.stopHeld()
-		<-s.heldDone
 		conn.Close()
 		return nil, fmt.Errorf("natscallout: subscribe %s: %w", authSubject, err)
 	}
@@ -334,14 +325,15 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	// request past them, which the callback would drop all the same a moment later, is dropped on
 	// arrival without holding its memory meanwhile.
 	if err := s.sub.SetPendingLimits(s.settings.maxWaiting+s.settings.maxRefusing+1, pendingBytes); err != nil {
-		s.stopHeld()
-		<-s.heldDone
 		conn.Close()
 		return nil, fmt.Errorf("natscallout: bound the requests held for %s: %w", authSubject, err)
 	}
 	go s.beatWhileTurning()
 	go s.countWhileRunning()
 	go s.reportWhileRunning()
+	var asks context.Context
+	asks, s.stopHeld = context.WithCancel(context.WithoutCancel(ctx))
+	go func() { defer close(s.heldDone); deps.held.run(asks) }()
 	return s, nil
 }
 

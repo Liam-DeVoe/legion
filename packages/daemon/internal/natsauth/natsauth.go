@@ -233,20 +233,9 @@ func ConnectService(urls []string, tokenFile, name string, options ...nats.Optio
 	if err != nil {
 		return nil, err
 	}
-	// The keeper ends when the connection closes, the daemon's own Close included. nats.go sends
-	// CLOSED to a status listener registered before the close, into a buffered channel, so the
-	// event is kept even when it comes before the goroutine waits; a close before the listener is
-	// registered sends nothing, which the IsClosed read after the registration catches.
-	closed := conn.StatusChanged(nats.CLOSED)
-	keep, stop := context.WithCancel(context.Background())
-	go func() {
-		defer stop()
-		if conn.IsClosed() {
-			return
-		}
-		<-closed
-	}()
-	go keeper.Keep(keep, conn)
+	// The keeper ends when the connection closes, the daemon's own Close included (natscred's
+	// Keep watches for the close).
+	go keeper.Keep(context.Background(), conn)
 	return conn, nil
 }
 
@@ -393,27 +382,10 @@ func Unreachable(err error) bool {
 // every refusal of that service, whatever its reason (the service tells the server why, and the
 // server tells the client only that it was refused). For a seed's connection that is a
 // misconfiguration, which Unreachable refuses; for the daemon's service token it is waited out,
-// at boot and while running alike (ConnectService, ReconnectBackoff).
+// at boot and while running alike (ConnectService, and the daemon's reconnect delay, which is its
+// boot's schedule).
 func Refused(err error) bool {
 	return errors.Is(err, nats.ErrAuthorization)
-}
-
-// ReconnectBackoff is the connection option that waits initial before the first reconnect of a
-// lost connection, doubling each attempt up to max: the daemon's service-token connection's wait
-// while running, the same schedule its boot waits a refusal out on (daemon.readinessRetry), so a
-// hub whose auth service refuses every client while it is away is not met with a reconnect per
-// client every two seconds.
-func ReconnectBackoff(initial, max time.Duration) nats.Option {
-	return nats.CustomReconnectDelay(func(attempts int) time.Duration {
-		wait := initial
-		for range attempts - 1 {
-			if wait >= max/2 {
-				return max
-			}
-			wait *= 2
-		}
-		return min(wait, max)
-	})
 }
 
 // PublicKey is the public key of the nkey user seed is the seed of, a seed Seed answered: what a
