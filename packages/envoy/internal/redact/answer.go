@@ -241,15 +241,18 @@ func whole(t reflect.Type) bool {
 // the JSON kind it held; never a value.
 func decodeText(err error, data []byte, t reflect.Type) string {
 	var syntax *json.SyntaxError
-	var typed *json.UnmarshalTypeError
-	switch {
-	case errors.As(err, &syntax):
+	if errors.As(err, &syntax) {
 		return fmt.Sprintf("the answer is not JSON that %s decodes from (at byte %d)", typeName(t), syntax.Offset)
-	case errors.As(err, &typed):
+	}
+	name, field := failingMember(data, t)
+	// A type error that names no field, from a member's own UnmarshalJSON - a RemoteText's, for a
+	// member that holds no JSON string - to which encoding/json adds none, names its member below.
+	var typed *json.UnmarshalTypeError
+	if errors.As(err, &typed) && (typed.Field != "" || name == "") {
 		kind, _, _ := strings.Cut(typed.Value, " ")
 		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field), kind, typeName(t), typeName(typed.Type))
 	}
-	if name, field := failingMember(data, t); name != "" {
+	if name != "" {
 		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(field))
 	}
 	return fmt.Sprintf("the answer does not decode into %s", typeName(t))
