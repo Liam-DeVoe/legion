@@ -1,11 +1,12 @@
 import { createIssue, createProject, putStep } from "./api";
 import { expect, test } from "./test";
 
-// An issue's Steps tab reads the step records Legion's daemon wrote of it (dispatch://INFRA-3570,
-// R18): each run of each step of each task, with the attempt the server counts, and a run that has
-// not ended read as running. The records go through the route the daemon writes with, as the
-// session `legion-daemon:LEG`, and a review's end arrives before its start, as an outbox row
-// that retried can deliver it.
+// An issue's Steps tab reads the step records Legion's daemon wrote of it: each run of each step
+// of each task, with the attempt the server counts, and a run that has not ended read as running.
+// The records go through the route the daemon writes with, as the session `legion-daemon:LEG`.
+// The review's run is written whole, its start and its end in one write, and then again with
+// only a start at another moment, which the record does not take: the run keeps its first start
+// and its failed end.
 
 const at = (time: string) => `2026-11-16T${time}:00Z`;
 
@@ -43,7 +44,9 @@ test("the Steps tab lists each run of an issue's steps, a running run as running
     returned_to: 2,
     started_at: at("10:00"),
   });
-  // The start of the same run again, as the daemon writes it: the record keeps what it holds.
+  // A second start of the same run at another moment, which no daemon write carries (its start
+  // and its end write one moment, and its only second start is a retry of the same body): the
+  // record keeps the start it holds.
   await putStep(issue.key, review, { ...reviewer, started_at: at("10:01") });
   await putStep(issue.key, crypto.randomUUID(), { ...implementer, started_at: at("10:31") });
 

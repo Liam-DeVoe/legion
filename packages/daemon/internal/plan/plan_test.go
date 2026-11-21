@@ -15,7 +15,7 @@ func oneTask(id, steps string) Plan {
 	if err != nil {
 		panic("oneTask(" + id + ", " + steps + "): " + err.Error())
 	}
-	return Plan{Tasks: []Task{{ID: id, HasSteps: steps != "", Steps: parsed}}}
+	return Plan{Tasks: []Task{{ID: id, Steps: parsed}}}
 }
 
 // defaultSteps is the project's default steps as the configuration ships them.
@@ -88,7 +88,7 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	}
 }
 
-// A task with neither steps nor a sub-owner runs the project's default steps (R5), and a block
+// A task with neither steps nor a sub-owner runs the project's default steps, and a block
 // whose `steps` is empty is the same as a block with none. Neither check refuses such a plan.
 func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 	defaults := defaultSteps(t)
@@ -96,7 +96,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		t.Fatalf("StepsOf(a task with no steps) = %+v, want the defaults %+v", got, defaults)
 	}
 	own, _ := ParseSteps("implementer reviewer")
-	if got := StepsOf(Task{ID: "a", HasSteps: true, Steps: own}, defaults); !reflect.DeepEqual(got, own) {
+	if got := StepsOf(Task{ID: "a", Steps: own}, defaults); !reflect.DeepEqual(got, own) {
 		t.Fatalf("StepsOf(a task with steps) = %+v, want its own %+v", got, own)
 	}
 	if got := StepsOf(Task{ID: "f", Owner: "architect"}, defaults); got != nil {
@@ -107,7 +107,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FromBlocks(%v): %v", attributes, err)
 		}
-		if len(p.Tasks) != 1 || p.Tasks[0].HasSteps || len(p.Tasks[0].Steps) != 0 {
+		if len(p.Tasks) != 1 || p.Tasks[0].NamesSteps() || p.Tasks[0].Steps != nil {
 			t.Fatalf("FromBlocks(%v) = %+v, want one task with no steps", attributes, p.Tasks)
 		}
 		if r := Supported(p); len(r) != 0 {
@@ -144,10 +144,10 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		t.Fatalf("FromBlocks: %v", err)
 	}
 	want := Plan{ArtifactID: "plan-md", Version: 3, RoleBlocks: []string{"prober"}, Tasks: []Task{
-		{ID: "d", Needs: []string{"dispatch://ACME-1/artifact/plan-md#b-a", "dispatch://ACME-1/artifact/plan-md#b-c@v2"}, HasSteps: true,
+		{ID: "d", Needs: []string{"dispatch://ACME-1/artifact/plan-md#b-a", "dispatch://ACME-1/artifact/plan-md#b-c@v2"},
 			Steps: []Step{{Role: "implementer", Key: "cd"}, {Role: "reviewer", Key: "r"}}, Text: "What task D does."},
 		{ID: "f", Owner: "architect", Text: "What this part must reach."},
-		{ID: "f1", PartOf: "dispatch://ACME-1/artifact/plan-md#b-f", Merges: true, HasSteps: true,
+		{ID: "f1", PartOf: "dispatch://ACME-1/artifact/plan-md#b-f", Merges: true,
 			Steps: []Step{{Role: "implementer"}, {Role: "reviewer"}}, Text: "What task F1 does."},
 	}}
 	if !reflect.DeepEqual(p, want) {

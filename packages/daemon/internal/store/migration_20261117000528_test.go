@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -12,14 +14,30 @@ import (
 // through everything before it whatever lands beside it.
 const stepRecordKindVersion = 20261117000528
 
+// stepRecordReleaseKinds is every kind the outbox's check names at stepRecordKindVersion, which is
+// the list that migration writes whole: what the release that records each step queues, and what a
+// rollback to it must still be able to queue. The one migration above it that writes the list,
+// 20261117023932, rewrites it with its own kind added (migration_20261117023932_test.go), and the
+// way back of the release that writes that migration is held to it (plan_ratings_way_back_test.go).
+var stepRecordReleaseKinds = []string{
+	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
+	"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
+	"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+	"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
+	"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
+}
+
 // A step record is the row that writes one step of an issue onto Dispatch (record.StepRecord). The
 // outbox refuses a kind its constraint does not name, so the row could not be queued before this
 // migration, and the transaction that started or ended the step would fail with it: the negative
 // control is that refusal, read before the migration, on a database that already carries the
-// merge-queue kinds' list (20261114031356), which this version stands above. After it the row is
-// queued, and so is every kind the constraint already named, since the migration rewrites the list
-// whole and a kind left out would stop its own effect. A kind that is none is still refused, with
-// the check's own SQLSTATE.
+// role-holders publication's list (20261116165926), which this version stands above. After it the
+// row is queued, and so is every kind the constraint already named, since the migration rewrites
+// the list whole and a kind left out would stop its own effect. A kind that is none is still
+// refused, with the check's own SQLSTATE. The rows the release before it left pending — the
+// role-holders publication and the merge-queue kinds its lists added among them, each on an issue
+// and with a payload of its own — come through the migration whole: the same id, kind, issue,
+// payload, attempts, due time and error.
 func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -36,16 +54,26 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	if err := queue("step_record"); !refusedByTheCheck(err) {
 		t.Fatalf("queueing a step_record row before the migration = %v, want the kind constraint to refuse it (23514): it is the row the migration exists for", err)
 	}
+	// The pending rows, whole: each field the release before wrote, as text.
+	const pendingRows = `select row(id, kind, issue, payload, attempts, next_at, last_error)::text from outbox order by id`
+	for i, kind := range []string{"role_holders_publish", "merge_queue_removal", "merge_queue_read", "update_ask", "supervise", "dispatch_status"} {
+		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, $2, jsonb_build_object('pending', $1::text), $3, now() + make_interval(mins => $3), $4)`,
+			kind, fmt.Sprintf("LEGION-%d", 300+i), i, fmt.Sprintf("attempt %d failed", i)); err != nil {
+			t.Fatalf("queue a pending %s row under the release before: %v", kind, err)
+		}
+	}
+	before := rowsAsText(t, store, pendingRows)
+	if len(before) != 6 {
+		t.Fatalf("the outbox holds %d rows before the migration, want the six pending rows of the release before", len(before))
+	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the step record's kind: %v", err)
 	}
-	for _, kind := range []string{
-		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
-		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
-		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "step_record",
-	} {
+	if after := rowsAsText(t, store, pendingRows); !reflect.DeepEqual(after, before) {
+		t.Fatalf("the pending rows after the migration = %+v, want the release before's rows whole: %+v", after, before)
+	}
+	for _, kind := range stepRecordReleaseKinds {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
