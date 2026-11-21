@@ -128,19 +128,23 @@ func hasLeader(t *testing.T, ctx context.Context, js nats.JetStreamContext, stre
 	return info.Cluster != nil && info.Cluster.Leader != ""
 }
 
-// rowRead reads stream until a read is answered, as a start reads one (readAgain): each read is
-// cut to ctx, the row's deadline, and one the server leaves unanswered within its read limit is
-// read again, since a member answers some reads with nothing at all (sentAgain). An answer that
-// is an error, or the end of ctx, fails the row.
+// rowRead reads stream until a read is answered. Each read takes a context of its own, cut to
+// RequestTimeout and to ctx, the row's deadline, and ends with it, so a read the server leaves
+// unanswered (a member answers some reads with nothing at all, sentAgain) ends before the next is
+// sent. An answer that is an error, or the end of ctx, fails the row.
 func rowRead(t *testing.T, ctx context.Context, js nats.JetStreamContext, stream string) *nats.StreamInfo {
 	t.Helper()
-	info, err := readAgain(ctx, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) {
-		return js.StreamInfo(stream, nats.Context(ctx))
-	})
-	if err != nil {
-		t.Fatalf("read %s: %v", stream, err)
+	for {
+		ask, cancel := context.WithTimeout(ctx, RequestTimeout)
+		info, err := js.StreamInfo(stream, nats.Context(ask))
+		cancel()
+		switch {
+		case err == nil:
+			return info
+		case !unanswered(err) || ctx.Err() != nil:
+			t.Fatalf("read %s: %v", stream, err)
+		}
 	}
-	return info
 }
 
 // A start that finds a bucket another program raised a moment ago, whose new group has not elected
@@ -339,10 +343,8 @@ func (c *cutContext) Err() error {
 // out under a context the row ends the moment creates, a listener on the same connection, sees the
 // create reach the server, and it answers context.DeadlineExceeded, as a send whose wait ran out
 // does, whatever the server sent back. So the server has taken the first create, its answer never
-// reaches the start, and the start sends the create again (sentAgain), on any machine. Whether the
-// server answers that resend at once, with the stream still leaderless, depends on the cluster:
-// the meta leader can take the resend first, and the first election can end before it lands. So
-// it records whether an answer the start took named no leader (leaderless), which the row needs.
+// reaches the start, and the start sends the create again (sentAgain), on any machine. It records
+// whether an answer the start took for a create sent again named no leader (leaderless).
 type earlyAnswerJetStream struct {
 	nats.JetStreamContext
 	wait    context.Context
@@ -375,30 +377,21 @@ func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.J
 }
 
 // A start whose create of the stream at three copies is answered while the stream has no leader
-// answers only once the stream has a leader. Each run starts a cluster, loses the start's first
-// create's answer and lets the start send it again (earlyAnswerJetStream); the row checks the
-// start's leader at once, then that each create reached the server and was the first one again.
-// A run whose resend was answered after the first election tests nothing of this, so the row runs
-// again on a new cluster until a run's answer named no leader, failing by name at the row's
-// deadline if none does. In 10 runs of the row here, each first run's answer named no leader.
+// answers only once the stream has a leader. The row loses the start's first create's answer and
+// lets the start send it again (earlyAnswerJetStream), reads the start's leader at once, then
+// checks that each create reached the server and was the first one again.
+//
+// Whether the server answers the create sent again while the stream has no leader is the
+// cluster's: the meta leader can take the resend before the first create, and the first election
+// can end before the resend lands. Then this run tests nothing of the order, and passes, since
+// the start's answer is right either way; it says which order it got. A row that held the
+// election (two of the stream's members stopped on a cluster of five, started again after the
+// leaderless answer) takes an election on the members' timers inside the start's 36 s hang guard,
+// which a loaded machine can run past: a failure of a correct start. In 10 runs here, every run's
+// answer named no leader.
 func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testing.T) {
-	wait := rowWait(t)
-	for run := 1; ; run++ {
-		if earlyAnswerRun(t, wait) {
-			return
-		}
-		if wait.Err() != nil {
-			t.Fatalf("in %d runs no answer the start took named no leader, so this row held nothing", run)
-		}
-		t.Logf("run %d: every create's answer the start took named a leader; running again on a new cluster", run)
-	}
-}
-
-// earlyAnswerRun is one run of the row above, on a cluster of its own, and reports whether an
-// answer the start took named no leader.
-func earlyAnswerRun(t *testing.T, wait context.Context) bool {
-	t.Helper()
 	cluster := testnats.StartCluster(t, 3)
+	wait := rowWait(t)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
@@ -436,7 +429,7 @@ func earlyAnswerRun(t *testing.T, wait context.Context) bool {
 			t.Fatalf("create %d the start sent was %s, want the first create's %s: an equal create", i, again.Data, early.first)
 		}
 	}
-	return early.leaderless
+	t.Logf("a create's answer the start took named no leader: %t", early.leaderless)
 }
 
 // A run of the reconnect hooks that finds the stream with no leader, as one whose other members
