@@ -27,6 +27,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     route_holder: null,
     route_status_reason: null,
     key: "CORE-1",
+    project: "CORE",
     title: "Core work",
     status: "todo",
     priority: null,

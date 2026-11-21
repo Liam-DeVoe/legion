@@ -17,6 +17,7 @@ import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
@@ -576,6 +577,7 @@ function todo(key: string, title: string): IssueSummary {
     primary_artifact_id: "artifact-1",
     priority: null,
     progress: { tasks: null, children: null },
+    project: issueProject(key),
     rank: "a",
     repo: null,
     resolved_repo: null,

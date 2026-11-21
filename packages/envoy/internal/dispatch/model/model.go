@@ -674,7 +674,9 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key       string   `json:"key"`
+	Key string `json:"key"`
+	// Project is the key of the project the issue belongs to.
+	Project   string   `json:"project"`
 	Title     string   `json:"title"`
 	Status    string   `json:"status"`
 	Priority  *int     `json:"priority"`
@@ -721,8 +723,8 @@ type IssueSummaryPage struct {
 }
 
 // SearchOwner identifies the issue or standalone project document that owns a search result.
-// An issue owner carries Key, Title and Status; a document owner carries Project, Slug,
-// ArtifactID and Name.
+// An issue owner carries Key, Project, Title and Status, Project being the issue's own; a
+// document owner carries Project, Slug, ArtifactID and Name.
 type SearchOwner struct {
 	// Kind is "issue" or "document": scanSearchRows reads the column the search query writes as
 	// `case when r.owner_artifact_id is null then 'issue' else 'document' end` (search.go).

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -47,6 +48,7 @@ function issue(
 ): IssueSummary {
   return {
     key,
+    project: issueProject(key),
     advances: advances.map((id) => ({ id, inherited: false })),
     advances_revision: 0,
     title: `Work ${key}`,

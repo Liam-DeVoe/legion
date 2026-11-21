@@ -61,6 +61,7 @@ const summary: IssueSummary = {
   primary_artifact_id: "artifact-1",
   priority: null,
   progress: { tasks: null, children: null },
+  project: issue.project,
   rank: "U",
   repo: null,
   resolved_repo: "acme/widgets",

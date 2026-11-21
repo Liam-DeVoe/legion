@@ -8,6 +8,7 @@ import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -21,6 +22,7 @@ import { readLayout } from "./issues-table-storage";
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     key,
+    project: issueProject(key),
     advances: [],
     advances_revision: 0,
     title: `Work ${key}`,

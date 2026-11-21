@@ -291,7 +291,7 @@ var issueAdvancesFilterTerms = `advances_stated as (
 // (issueAdvancesColumnsUnread), which is why they are a parameter rather than spliced in here.
 // The two cells of the move (issueMovedColumns) stand right behind them.
 func issueSummaryColumns(advances string) string {
-	return `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
+	return `i.key, i.project_key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
 	       ` + advances + `,
 	       ` + issueMovedColumns + `,
@@ -717,7 +717,7 @@ type issueSummaryRow struct {
 // targets are the row's scan targets, after leading, which a paged read fills with the columns
 // it carries ahead of the issue's own.
 func (r *issueSummaryRow) targets(leading ...any) []any {
-	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
+	targets := append(leading, &r.issue.Key, &r.issue.Project, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
 	targets = append(targets, r.advances.targets()...)
 	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy)
 	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)

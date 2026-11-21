@@ -1460,7 +1460,12 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		}
 		result.Kind, result.ID, result.Rank, result.BlockID = *kind, *id, *rank, matchBlockID
 		if *ownerKind == "issue" {
-			result.Owner = model.SearchOwner{Kind: *ownerKind, Key: *ownerKey, Title: *ownerTitle, Status: *ownerStatus}
+			// owner_project is a document's project, and the issue and message arms select none,
+			// so an issue owner's project is read from its key: an issue's key is its project's
+			// key, a hyphen and its number (createIssue), and no issue moves between projects
+			// (project_scope.go).
+			project, _, _ := strings.Cut(*ownerKey, "-")
+			result.Owner = model.SearchOwner{Kind: *ownerKind, Key: *ownerKey, Project: project, Title: *ownerTitle, Status: *ownerStatus}
 			result.Issue = &model.SearchIssue{Key: *ownerKey, Title: *ownerTitle, Status: *ownerStatus}
 		} else {
 			result.Owner = model.SearchOwner{
