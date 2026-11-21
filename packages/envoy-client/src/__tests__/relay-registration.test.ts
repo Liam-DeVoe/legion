@@ -24,7 +24,11 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
 } from "../consumer-delivery";
-import { NoRelaySubjectError, registerWithRelay } from "../relay-registration";
+import {
+  NoRelaySubjectError,
+  type RegisteringRelay,
+  registerWithRelay,
+} from "../relay-registration";
 import { createEnvoyClient, EnvoyApiError, expandSubscriptionTopics } from "../transport";
 
 const { started, standIn, podEnvironment, opened } = relaySocketFixtures("relay-registration");
@@ -62,6 +66,54 @@ describe("one registration", () => {
       status,
       responseBody: JSON.stringify(body),
     });
+  }
+
+  /**
+   * Two registrations that overlap, both refused `denied`: the first waits on its answer while
+   * `meanwhile` changes what the session follows and the second registers, refused and resent;
+   * then the first is refused and resends. Answers every topic list each sent, in order.
+   */
+  async function overlappingRefusals(
+    relay: RegisteringRelay,
+    followed: Set<string>,
+    denied: string,
+    meanwhile: () => void
+  ): Promise<(readonly string[])[]> {
+    const sent: (readonly string[])[] = [];
+    const refusedNow = () => refusal(403, projectRefusal([denied]));
+    const registration = (answer: (topics: readonly string[]) => Promise<string>) =>
+      registerWithRelay({
+        relay,
+        ownAgentSubject: AGENT,
+        followed: () => followed,
+        outage: inboundUnavailable(
+          () => undefined,
+          () => undefined
+        ),
+        send: (topics) => {
+          sent.push(topics);
+          return answer(topics);
+        },
+        answered: () => undefined,
+        drop: (topics) => {
+          for (const topic of topics) followed.delete(topic);
+        },
+        log: () => undefined,
+      });
+    const firstAnswer = Promise.withResolvers<string>();
+    let firstSent = false;
+    const first = registration(() => {
+      if (firstSent) return Promise.resolve("registered again");
+      firstSent = true;
+      return firstAnswer.promise;
+    });
+    meanwhile();
+    await registration((topics) =>
+      topics.includes(denied) ? Promise.reject(refusedNow()) : Promise.resolve("registered")
+    );
+    firstAnswer.reject(refusedNow());
+    await first;
+    return sent;
   }
 
   test("carries the topics the listener will store, and takes the answer", async () => {
@@ -361,37 +413,7 @@ describe("one registration", () => {
       ledger: { delivered: () => false, liveFailed: async () => true },
       persist: () => true,
     });
-    const refusedNow = () => refusal(403, projectRefusal([denied]));
-    const registration = (send: (topics: readonly string[]) => Promise<string>) =>
-      registerWithRelay({
-        relay: delivery,
-        ownAgentSubject: AGENT,
-        followed: () => followed,
-        outage: inboundUnavailable(
-          () => undefined,
-          () => undefined
-        ),
-        send,
-        answered: () => undefined,
-        drop: (topics) => {
-          for (const topic of topics) followed.delete(topic);
-        },
-        log: () => undefined,
-      });
-
-    const firstAnswer = Promise.withResolvers<string>();
-    let firstSent = false;
-    const first = registration(() => {
-      if (firstSent) return Promise.resolve("registered again");
-      firstSent = true;
-      return firstAnswer.promise;
-    });
-    followed.add(added);
-    await registration((topics) =>
-      topics.includes(denied) ? Promise.reject(refusedNow()) : Promise.resolve("registered")
-    );
-    firstAnswer.reject(refusedNow());
-    await first;
+    await overlappingRefusals(delivery, followed, denied, () => followed.add(added));
 
     expect(Object.keys(delivery.snapshot().follows).sort()).toEqual([kept, added].sort());
     const headers: Record<string, string> = {
@@ -424,41 +446,9 @@ describe("one registration", () => {
     const gone = "notifications.dispatch.issue.DSP-5.>";
     const denied = "notifications.github.acme.priv.>";
     const followed = new Set([kept, gone, denied]);
-    const sent: (readonly string[])[] = [];
-    const refusedNow = () => refusal(403, projectRefusal([denied]));
-    const registration = (answer: (topics: readonly string[]) => Promise<string>) =>
-      registerWithRelay({
-        relay: fakeRelay(),
-        ownAgentSubject: AGENT,
-        followed: () => followed,
-        outage: inboundUnavailable(
-          () => undefined,
-          () => undefined
-        ),
-        send: (topics) => {
-          sent.push(topics);
-          return answer(topics);
-        },
-        answered: () => undefined,
-        drop: (topics) => {
-          for (const topic of topics) followed.delete(topic);
-        },
-        log: () => undefined,
-      });
-
-    const firstAnswer = Promise.withResolvers<string>();
-    let firstSent = false;
-    const first = registration(() => {
-      if (firstSent) return Promise.resolve("registered again");
-      firstSent = true;
-      return firstAnswer.promise;
-    });
-    followed.delete(gone);
-    await registration((topics) =>
-      topics.includes(denied) ? Promise.reject(refusedNow()) : Promise.resolve("registered")
+    const sent = await overlappingRefusals(fakeRelay(), followed, denied, () =>
+      followed.delete(gone)
     );
-    firstAnswer.reject(refusedNow());
-    await first;
 
     expect(sent).toEqual([
       [AGENT, kept, gone, denied],
