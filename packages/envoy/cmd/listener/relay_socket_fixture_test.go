@@ -241,19 +241,17 @@ func (rig *relaySocketRig) dialAs(t *testing.T, session string, header http.Head
 // the rig's project, which it fails the test unless the upgrade admits.
 func (rig *relaySocketRig) open(t *testing.T, session string) (*relaySocketClient, string) {
 	t.Helper()
-	token := "access-token-of-" + session + "-" + t.Name()
-	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
-	return rig.openWith(t, session, token), token
+	return rig.openAs(t, relaySocketPerson, session)
 }
 
-// openAs is open for a session of person, another person than the rig's.
-func (rig *relaySocketRig) openAs(t *testing.T, person, session string) *relaySocketClient {
+// openAs is open for a session of person.
+func (rig *relaySocketRig) openAs(t *testing.T, person, session string) (*relaySocketClient, string) {
 	t.Helper()
 	token := "access-token-of-" + session + "-" + t.Name()
 	answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
 	answer.Person = person
 	rig.broker.Says(token, answer)
-	return rig.openWith(t, session, token)
+	return rig.openWith(t, session, token), token
 }
 
 // openWith opens session's socket with token, failing the test unless the upgrade admits it.
@@ -366,6 +364,15 @@ func (c *relaySocketClient) sendRaw(kind int, data []byte) {
 func (c *relaySocketClient) sub(sid int, subject string) {
 	c.t.Helper()
 	c.send(map[string]any{"op": "sub", "sid": sid, "subject": subject})
+}
+
+// subscribeOwn subscribes session's own relay subject as sid 1, as the client does, and returns
+// once a ping sent after the sub has its pong: once the replica holds the subscription.
+func (c *relaySocketClient) subscribeOwn(session string) {
+	c.t.Helper()
+	c.sub(1, bus.DeliverSubject(session))
+	c.ping()
+	<-c.pongs
 }
 
 func (c *relaySocketClient) pub(subject, data string) {

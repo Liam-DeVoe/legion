@@ -42,10 +42,8 @@ func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
 	}
 
 	const other = "ses_edge_other_person"
-	client := rig.openAs(t, relaySocketOtherPerson, other)
-	client.sub(1, bus.DeliverSubject(other))
-	client.ping()
-	<-client.pongs
+	client, _ := rig.openAs(t, relaySocketOtherPerson, other)
+	client.subscribeOwn(other)
 	sent := publishRelayFrame(t, rig.owner.url, other, natsgo.Header{})
 	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != sent.Reply {
 		t.Fatalf("the other person's socket was sent %s, want the msg %s", frame.raw, sent.Reply)
@@ -65,19 +63,15 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	const budget, share = 8 << 20, 2 << 20
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(budget), withCallerBudget(share))
 	const other = "ses_edge_share_other"
-	client := rig.openAs(t, relaySocketOtherPerson, other)
-	client.sub(1, bus.DeliverSubject(other))
-	client.ping()
-	<-client.pongs
+	client, _ := rig.openAs(t, relaySocketOtherPerson, other)
+	client.subscribeOwn(other)
 
 	sent := []int{4, 4, 4, 3}
 	sockets := make([]*relaySocket, len(sent))
 	for i := range sent {
 		session := "ses_edge_share_" + strconv.Itoa(i)
 		held, _ := rig.open(t, session)
-		held.sub(1, bus.DeliverSubject(session))
-		held.ping()
-		<-held.pongs
+		held.subscribeOwn(session)
 		sockets[i] = rig.openSocket(t, session)
 		sockets[i].writeMu.Lock()
 		t.Cleanup(sync.OnceFunc(sockets[i].writeMu.Unlock))
@@ -115,9 +109,7 @@ func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_own_receipts", "ses_edge_someone_else"
 	client, _ := rig.open(t, session)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	<-client.pongs
+	client.subscribeOwn(session)
 
 	publisher := testnats.Connect(t, rig.owner.url)
 	for _, reply := range []string{
