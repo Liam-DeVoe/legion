@@ -218,11 +218,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The socket's admission lives on a request context of its own: the answer to the Hocuspocus
 	// token this socket sends is that admission and no other's (authorizeSchemaVersion), since two
 	// sockets of one room can present one token, and cancelling that context with errSchemaRevoked
-	// is how a re-check closes the socket (RunSchemaAdmission), once it has closed the socket's
+	// is how a re-check closes the socket (RunSchemaAdmission). Its end, that cancel or the
+	// request's own (the API ends a socket whose credential has ended), closes the socket's
 	// connection to every frame but the close (revoked_writes.go).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel, writes: &revokedWrites{}}}
+	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel, writes: &revokedWrites{ctx: ctx}}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)

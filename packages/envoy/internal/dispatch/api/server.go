@@ -1009,10 +1009,13 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // passes, that IAP's key set still verifies and whose person is still admitted) cancels the
 // context with errCredentialExpired instead, which each socket closes with a code on which the
 // page reopens it at once: the live socket with contracts.LiveSocketMaxAgeClose (liveSocket.write),
-// and the document socket with the close frame ygo sends for that cause. The reopened socket's
-// upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
-// its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
-// any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
+// and the document socket with the close frame ygo sends for that cause; from the cancel on, that
+// socket carries no room update, only the message already going out and the close
+// (docs/revoked_writes.go, which reads the socket's context as it decides each frame). The
+// reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no
+// socket is served past its assertion and none is cut as if its person had gone. An expired
+// assertion that is wrong in any other way (a key IAP withdrew, a person no longer admitted) is a
+// refusal like any other.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())

@@ -3,6 +3,7 @@ package docs
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"net"
 	"net/http"
 	"sync"
@@ -10,31 +11,36 @@ import (
 	gws "github.com/gorilla/websocket"
 )
 
-// A re-check's revoke ends a writable document socket with the admission-revoked close
-// (revokeUnless), and from that moment its page is owed no more of the document. ygo sends that
-// close from the socket's context watcher, a goroutine the revoke's cancel only wakes, and until
-// that goroutine runs the room's broadcast goes on writing every update to the socket: with the
-// watcher scheduled 30 ms late, an edit made after the revoke reached the revoked page
-// (INFRA-5142). ygo offers no hook on what it writes to a peer, so the revoke closes the
-// connection to every frame itself, on the connection the websocket upgrade hijacks, where the
+// A document socket ends with the admission-revoked close when its request context is cancelled
+// with a cause that names that code: a re-check's revoke (revokeUnless), or the heartbeat's end
+// of the credential the socket was opened with (the API's whileCallerResolves, errCredentialExpired).
+// From that moment its page is owed no more of the document. ygo sends the close from the socket's
+// context watcher, a goroutine the cancel only wakes, and until that goroutine runs the room's
+// broadcast goes on writing every update to the socket: with the watcher scheduled 30 ms late, an
+// edit made after the revoke reached the revoked page (INFRA-5142). ygo offers no hook on what it
+// writes to a peer, so the connection the websocket upgrade hijacks closes itself, where the
 // awareness filter reads what the socket sends (awareness_limit.go): revokedWrites decides, frame
-// by frame and under its own lock, what goes out, and once revoked it lets out only the rest of
-// the message already going out and the close frame. A frame that starts after the revoke and is
-// neither never reaches the socket, however late the watcher runs.
+// by frame and under its own lock, what goes out, and reads the socket's context as it decides.
+// Cancelling a context sets its error before the cancel returns, and a parent's cancel cancels its
+// children before it returns, so every frame decided once the cancel has returned is decided as
+// revoked: only the rest of the message already going out and the close frame go out. A frame that
+// starts after the cancel and is neither never reaches the socket, however late the watcher runs.
 
-// revokedWrites is what a document socket's connection writes once its admission is revoked: it
-// reads the frames ygo writes, whole or split over writes, and decides each as its header
-// completes. Before the revoke every frame goes out. After it, a frame goes out only if it is a
-// close frame, or the next frame of a data message that went out before the revoke and has not
+// revokedWrites is what a document socket's connection writes once the socket's request context
+// has ended: it reads the frames ygo writes, whole or split over writes, and decides each as its
+// header completes. Before the end every frame goes out. After it, a frame goes out only if it is
+// a close frame, or the next frame of a data message that went out before the end and has not
 // ended - the message the close waits for, which gorilla's WriteControl never cuts into. Every
 // other frame - a room update, an awareness message, a sync answer - is dropped whole, header and
 // payload, and the write that carried it is answered as written, so gorilla and ygo go on to the
 // close as they would have. The connection's first write is the upgrade's 101 answer, which the
 // upgrader makes in one write before any frame (processHeaderConn reads the same), and goes out
-// as it is. Its zero value is ready to use, and a nil one revokes nothing (an admission no
-// ServeHTTP made).
+// as it is.
 type revokedWrites struct {
-	mu      sync.Mutex
+	// ctx is the socket's request context, the one ygo serves it on.
+	ctx context.Context
+	mu  sync.Mutex
+	// revoked is set by the first decision that finds ctx ended.
 	revoked bool
 	// upgraded is set once the upgrade's answer has gone out; every byte after it is a frame.
 	upgraded bool
@@ -47,9 +53,10 @@ type revokedWrites struct {
 	passing bool
 	// inMessage is set while a data message that went out has frames still to come.
 	inMessage bool
-	// frames counts the frames that went out, and framesBeforeRevoke is that count when the
-	// revoke came: the frames the socket carries past it are the revoke's to answer for, and a
-	// test reads the boundary here rather than off a clock (framesWrittenBeforeRevoke).
+	// frames counts the frames that went out, and framesBeforeRevoke is that count when ctx
+	// ended: every frame counted before it was decided before the cancel, and every frame after
+	// it is the end's to answer for, so a test reads that boundary here rather than off a clock
+	// (framesWrittenBeforeRevoke).
 	frames             int
 	framesBeforeRevoke int
 	// parts is decide's answer, reused from one write to the next: a connection takes one write
@@ -57,26 +64,22 @@ type revokedWrites struct {
 	parts [][]byte
 }
 
-// revoke closes the connection to every frame but the message going out and the close frame.
-// The admission's revoke takes it under the admissions' lock, before it cancels the socket's
-// request context, so no frame ygo starts once revokeUnless has returned reaches the socket.
-func (w *revokedWrites) revoke() {
-	if w == nil {
-		return
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !w.revoked {
+// noteEnd marks the writes revoked once ctx has ended, keeping the count of the frames let out
+// before; w.mu is held. A decision that found ctx live was made before the cancel, so the frames
+// counted when the end is first seen are exactly those.
+func (w *revokedWrites) noteEnd() {
+	if !w.revoked && w.ctx.Err() != nil {
 		w.revoked = true
 		w.framesBeforeRevoke = w.frames
 	}
 }
 
-// framesWrittenBeforeRevoke is how many frames the connection had let out when the revoke came,
-// and whether it has come.
+// framesWrittenBeforeRevoke is how many frames the connection had let out when the socket's
+// context ended, and whether it has.
 func (w *revokedWrites) framesWrittenBeforeRevoke() (int, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.noteEnd()
 	return w.framesBeforeRevoke, w.revoked
 }
 
@@ -90,6 +93,7 @@ func (w *revokedWrites) decide(p []byte) ([][]byte, bool) {
 		w.upgraded = true
 		return nil, true
 	}
+	w.noteEnd()
 	w.parts = w.parts[:0]
 	whole := len(w.header) == 0
 	// headerAt is where in p the header being read began, or -1 when an earlier write began it.

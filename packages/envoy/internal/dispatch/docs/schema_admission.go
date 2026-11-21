@@ -102,8 +102,9 @@ type schemaAdmission struct {
 	// the peer that cause's close frame and close the connection (sjawhar/ygo
 	// provider/websocket/server.go, ServeHTTP's context watcher).
 	cancel context.CancelCauseFunc
-	// writes is what the socket's connection lets out (revoked_writes.go): a revoke closes it to
-	// every frame but the message going out and the close, before the watcher runs.
+	// writes is what the socket's connection lets out (revoked_writes.go): once the socket's
+	// request context has ended, only the message going out and the close, whenever the watcher
+	// runs.
 	writes *revokedWrites
 }
 
@@ -147,11 +148,11 @@ func (a *schemaAdmissions) writable(admission *schemaAdmission, room, token stri
 	return admission.writable && !admission.revoked && admission.key == schemaAdmissionKey{room: room, token: token}
 }
 
-// revokeUnless closes every writable socket that fleet no longer admits: it closes the socket's
-// connection to every frame but the message already going out and the close frame
-// (revokedWrites), then cancels the socket's request context with errSchemaRevoked, on which ygo
-// sends the peer that close frame and closes the connection. So no room update ygo writes once
-// this has returned reaches a revoked socket, however late ygo's context watcher runs. The
+// revokeUnless closes every writable socket that fleet no longer admits: it cancels the socket's
+// request context with errSchemaRevoked, on which ygo sends the peer that close frame and closes
+// the connection. The cancel closes the socket's connection to every frame but the message already
+// going out and the close frame before it returns (revokedWrites), so no room update ygo writes
+// once this has returned reaches a revoked socket, however late ygo's context watcher runs. The
 // admission stays here, marked revoked, until its own ServeHTTP removes it, so its token is
 // answered read-only from then on and a later pass leaves it as it is: its connection is closing.
 // It returns the sockets it closed.
@@ -166,7 +167,6 @@ func (a *schemaAdmissions) revokeUnless(fleet schemaFleet) []*schemaAdmission {
 		}
 	}
 	for _, admission := range revoked {
-		admission.writes.revoke()
 		admission.cancel(errSchemaRevoked)
 	}
 	return revoked

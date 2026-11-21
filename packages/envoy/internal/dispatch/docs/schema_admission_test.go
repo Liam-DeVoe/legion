@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -740,6 +741,104 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	reconnected := docstest.Dial(t, address, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, crdt.New())
 	if err := reconnected.WaitForText(peerMarkdown, want, 10*time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// endedCredential is the cause the API cancels a document socket's request with once the
+// credential its upgrade carried has expired (api's errCredentialExpired, whileCallerResolves),
+// with the close code that cause names: the request's context is the parent of the one ygo serves
+// the socket on, so this is how that end reaches the document service.
+type endedCredential struct{}
+
+func (endedCredential) Error() string {
+	return "the credential this socket was opened with has expired"
+}
+
+func (endedCredential) CloseCode() (int, string) {
+	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// The other close a document socket ends on with the admission-revoked code is the end of the
+// credential its upgrade carried: the API cancels the socket's request with a cause naming that
+// code (whileCallerResolves), and ygo sends the close from the same context watcher a revoke
+// wakes. So the same holds of it: from the cancel on, the socket carries the rest of the message
+// going out and the close, and no room update. The page here is the slow page of
+// TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole, owed a document past 64 KB, and its
+// request is cancelled the way the API cancels it, through the request's context; one more edit
+// goes into the room straight after. Of the frames past those its connection had let out when the
+// cancel came, each must be that message's rest or the close.
+func TestASocketWhoseCredentialEndedGetsNoRoomUpdateAfterItsClose(t *testing.T) {
+	grant := sendBufferGrant(t)
+	markdown := slowPageMarkdown(slowPageMessageSize(t, grant))
+	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, markdown)
+	// The handler cancels each socket's request as the API does, and keeps the cancel by the
+	// socket's remote address, which is the page's local one.
+	var ends sync.Map
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, end := context.WithCancelCause(r.Context())
+		defer end(nil)
+		ends.Store(r.RemoteAddr, end)
+		service.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	accepted := &recordingListener{Listener: server.Listener}
+	server.Listener = accepted
+	server.Start()
+	t.Cleanup(server.Close)
+
+	writer := connectBrowser(t, server.URL, artifactID, "bob")
+	admissions := func() map[*schemaAdmission]struct{} {
+		service.schemaAdmissions.mu.Lock()
+		defer service.schemaAdmissions.mu.Unlock()
+		return maps.Clone(service.schemaAdmissions.sockets)
+	}
+	before := admissions()
+	dialed := time.Now()
+	reader := dialSlowPage(t, server.URL, artifactID, page(version, creatable))
+	serverConn := accepted.find(reader.LocalAddr().String())
+	if serverConn == nil {
+		t.Fatalf("no accepted connection has the slow page's local address %s, so nothing records what the server writes to it", reader.LocalAddr())
+	}
+	waitForTheDocumentOnTheWire(t, serverConn, dialed)
+	stored, ok := ends.Load(reader.LocalAddr().String())
+	if !ok {
+		t.Fatalf("no request of the slow page's address %s reached the handler", reader.LocalAddr())
+	}
+	// The slow page's admission is the one its socket added: the writer's was there before.
+	var admission *schemaAdmission
+	for candidate := range admissions() {
+		if _, old := before[candidate]; !old {
+			if admission != nil {
+				t.Fatal("two admissions appeared while the slow page connected, so neither can be told for its")
+			}
+			admission = candidate
+		}
+	}
+	if admission == nil {
+		t.Fatal("no admission appeared while the slow page connected")
+	}
+
+	endedAt := time.Now()
+	stored.(context.CancelCauseFunc)(endedCredential{})
+	editAsBrowser(t, service, artifactID, writer, strings.ReplaceAll(markdown, "document ", postRevokeMarker+" "))
+
+	requireRevokedSocketEnded(t, &service.schemaAdmissions, admission, endedAt)
+	writes, closedAt := serverConn.record()
+	if closedAt.IsZero() {
+		t.Fatal("the server never closed its side of the slow page's socket, though its ServeHTTP returned")
+	}
+	framesBefore, ended := admission.writes.framesWrittenBeforeRevoke()
+	if !ended {
+		t.Fatal("the slow page's connection never saw its request's end")
+	}
+	requireNothingAfterTheRevoke(t, writes, framesBefore)
+	read, err := readServerStream(streamOf(writes))
+	if err != nil {
+		t.Fatalf("the bytes the server wrote to the slow page are not an end its provider reconnects on: %v", err)
+	}
+	if read.biggestMessage <= 64*1024 {
+		t.Fatalf("the biggest document message the server wrote to the slow page is %d bytes; this test needs a page owed more than its buffers can take", read.biggestMessage)
 	}
 }
 

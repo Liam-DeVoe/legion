@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -51,7 +52,9 @@ func TestARevokedConnectionLetsOutOnlyTheMessageGoingOutAndTheClose(t *testing.T
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var wire bytes.Buffer
-			writes := &revokedWrites{}
+			ctx, end := context.WithCancelCause(context.Background())
+			defer end(nil)
+			writes := &revokedWrites{ctx: ctx}
 			conn := &revokedWritesConn{Conn: wireConn{wire: &wire}, writes: writes}
 			write := func(p []byte) {
 				t.Helper()
@@ -63,10 +66,11 @@ func TestARevokedConnectionLetsOutOnlyTheMessageGoingOutAndTheClose(t *testing.T
 			write(before[:1])
 			write(before[1:])
 			write(first)
-			// The middle frame's header is ten bytes; the revoke comes after the first five.
+			// The middle frame's header is ten bytes; the socket's context ends after the first
+			// five, as a revoke's cancel ends it.
 			write(middle[:5])
 			if c.revoke {
-				writes.revoke()
+				end(errSchemaRevoked)
 			}
 			write(middle[5:])
 			write(update[:3])
