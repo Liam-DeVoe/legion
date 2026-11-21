@@ -419,7 +419,10 @@ export type IssueTableColumnId = ColumnId | ListingColumnId;
  *  measured it stands at `most`, else its own width. Either, given `leaves`, gives Title, the
  *  column that fills the box, room in a desktop's box: where the others would leave Title less
  *  than that, it narrows - toward `min`, or toward the narrowest what it holds needs - to leave
- *  it that much (`LayoutColumns.yields`). */
+ *  it that much (`LayoutColumns.yields`), each such column in turn in the order the layout names
+ *  them. A column of set width that does so draws its header's words wrapped beside its filter
+ *  once it is narrower than they are on one line (`DataTable`'s `wrap`), and is never narrower
+ *  than its header needs as drawn, sorted or not (`LayoutColumns.wrappedHeaders`). */
 export type IssueTableColumnWidth =
   | { readonly size: number; readonly min: number; readonly leaves?: number }
   | { readonly fit: true; readonly most?: number; readonly leaves?: number };
@@ -480,6 +483,9 @@ export function issueTableLayout(
   const yielding = named.flatMap(([id, { leaves }]) =>
     leaves === undefined ? [] : [[id, leaves] as const]
   );
+  // A column of set width that gives way can narrow below its header's words on one line, so its
+  // header's words wrap there, and the column is never narrower than its header needs as drawn.
+  const wrapped = set.flatMap(([id, { leaves }]) => (leaves === undefined ? [] : [id]));
   const registryPins = ISSUE_TABLE_COLUMNS.pins;
   const layout: LayoutColumns = {
     ...ISSUE_TABLE_COLUMNS,
@@ -511,6 +517,7 @@ export function issueTableLayout(
     },
     ...(fitted.length === 0 ? {} : { fits: Object.fromEntries(fitted) }),
     ...(yielding.length === 0 ? {} : { yields: Object.fromEntries(yielding) }),
+    ...(wrapped.length === 0 ? {} : { wrappedHeaders: wrapped }),
     ...(pins === undefined || registryPins === undefined
       ? {}
       : { pins: { ...registryPins, wide: { ...registryPins.wide, columns: pins } } }),
@@ -568,6 +575,11 @@ export function useIssueTableColumns(
           ...(picks?.order === undefined ? {} : { order: picks.order }),
           ...(picks?.show === undefined ? {} : { show: picks.show }),
           ...(picks?.always === undefined ? {} : { always: picks.always }),
+          // A column of set width that gives Title its room may narrow below its header's words
+          // on one line, so they wrap there beside the filter rather than be cut, the column no
+          // narrower than they need (`wrappedHeaders`); where the column is as wide as one line,
+          // they stand on one.
+          ...(layout.wrappedHeaders?.includes(column.id) === true ? { wrap: true } : {}),
         },
       };
     });

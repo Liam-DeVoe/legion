@@ -72,21 +72,30 @@ const FAULT_WIDTHS = {
  *
  *  In a 1280 px window each list's box is 910 px inside, the row's checkbox column 44 of it.
  *  Claimed by has a set width, in which a holder's chip wraps whole however long the session's
- *  name is (`wrapTitles` draws the claims so, `ClaimChip`'s `wraps`), and no narrower than its
- *  header, 131 px with its two controls: one line of a held chip needs 532 px for a session
- *  titled as production's are, 550 for one titled with an emoji. A column that gives Title its
- *  floor (`leaves`) gives up width where the others would leave Title less, so Title keeps it
- *  whatever keys and pills production's rows hold. */
+ *  name is (`wrapTitles` draws the claims so, `ClaimChip`'s `wraps`): one line of a held chip
+ *  needs 532 px for a session titled as production's are, 550 for one titled with an emoji. Its
+ *  header's words stand on one line beside its filter in 127 px, and in a narrower column wrap
+ *  onto two, "Claimed" over "by", as the Priorities tab draws "Newest event" (`DataTable`'s
+ *  `wrap`), which need 107 px, and 120 with the sort arrow beside them while the list is sorted
+ *  by it: the column is never drawn narrower than its header needs as it is drawn, read off the
+ *  header (`LayoutColumns.wrappedHeaders`), so nothing in it overlaps. A column that gives Title
+ *  its floor (`leaves`) gives up width where the others would leave Title less, the first named
+ *  first, down to the narrowest it cuts nothing at. Each list keeps Title's floor with keys of 12
+ *  characters (`INFRAWIDE-12`, 143 px with its unread dot) among the review corpus's rows, but
+ *  the Parked list sorted by Claimed by, which leaves it 192 px; with a project's key of 9
+ *  characters (`INFRAWIDE`, 95 px) beside such a key, every column at that narrowest leaves
+ *  Title 257 px on the Active list and 172 on the Parked list, and 244 and 159 sorted by
+ *  Claimed by. */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   opens: FAULT_OPENS,
   // Its statuses are the in-flight ones, the widest of whose pills, "Needs review", needs 150 px
   // with the cell's padding. Title keeps 260 px: Claimed by gives up width for it from its 208
-  // px down to its header's, and stands at 190 with the review corpus's keys and at 156 with
-  // keys as wide as production's.
+  // px down to its header's need on two lines, and stands at 190 with the review corpus's keys,
+  // at 156 with keys as wide as production's and at 134 with keys of 12 characters.
   widths: {
     ...FAULT_WIDTHS,
-    claim: { leaves: 260, min: 132, size: 208 },
+    claim: { leaves: 260, min: 107, size: 208 },
   },
   wrapTitles: true,
   statusLegend: true,
@@ -101,13 +110,15 @@ const PARKED_LAYOUT = {
   // name, which wrap onto two lines, the time over the name: Moved there is no wider than 96 px
   // where its cells wrap, and its header, 102 px, is wider, so it stands at that. The Advances
   // column holds each priority's chip and its title after it, which wraps whole, at no more
-  // than 160 px. Claimed by stands at its header's width. With the review corpus's keys that
-  // leaves Title 201 px; with keys as wide as production's, Advances gives up width for Title's
-  // 200, down to the narrowest its chips need, 134 px on the corpus's.
+  // than 160 px. Claimed by stands at 132 px, its header on one line while the list is not
+  // sorted by it. With the review corpus's keys that leaves Title 201 px; with wider keys
+  // Claimed by gives up width for Title's 200 first, down to what its header needs on two lines,
+  // and Advances after it, down to the narrowest its chips need, 134 px on the corpus's: with
+  // keys of 12 characters Claimed by stands at 107 and Advances at 139.
   widths: {
     ...FAULT_WIDTHS,
+    claim: { leaves: 200, min: 107, size: 132 },
     advances: { fit: true, leaves: 200, most: 160 },
-    claim: { min: 132, size: 132 },
     moved: { fit: true, most: 96 },
   },
   wrapTitles: true,

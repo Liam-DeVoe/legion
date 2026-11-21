@@ -113,9 +113,12 @@ const COUNT = { size: 76, min: 76, numeric: true } as const;
  *  the four counts have no filter, and their headers no filter control; a count's column is as
  *  narrow as its numbers, which stand at its right edge under its header's words, two lines of
  *  them where they need it (`numeric`). The newest event's words take two lines as well, beside
- *  its filter, over a time that takes one (`wrap`). A phone draws the place and the title alone,
- *  which take its box (`PRIORITY_PHONE_HIDDEN`), and the title's cell names the owner, the three
- *  counts under their headers' words and the newest event, so nothing scrolls sideways. */
+ *  its filter, over a time that takes one (`wrap`), in 104 px, and while the table is sorted by
+ *  it the column widens to what the header needs with its sort arrow beside the words, 116 px
+ *  at 1280 (`LayoutColumns.wrappedHeaders`), so the arrow stays clear of the filter. A phone
+ *  draws the place and the title alone, which take its box (`PRIORITY_PHONE_HIDDEN`), and the
+ *  title's cell names the owner, the three counts under their headers' words and the newest
+ *  event, so nothing scrolls sideways. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   { id: "order", header: "#", size: 76, min: 76, pinned: true, text: (item) => item.order },
   {

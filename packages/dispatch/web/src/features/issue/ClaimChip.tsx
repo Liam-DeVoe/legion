@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
-import { pillClassName } from "../../components/Pill";
+import { pillClassName, usePillWrapped } from "../../components/Pill";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { pageInkText } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -148,7 +148,9 @@ export function claimIsTakeable(
  * width needs. A table that wraps its titles draws its claims so (`IssuesTable`'s
  * `wrapTitles`): the priorities page's fault lists and a priority's work table, where a
  * session's name runs as long as its writer made it and no column could hold every one on a
- * line.
+ * line. In that shape, here and inside `NoTooltips`, a chip on one line is a pill and a chip on
+ * more than one has 8 px corners, read off the drawn chip (`usePillWrapped`), so its fill holds
+ * its words.
  */
 export function ClaimChip({
   author = false,
@@ -167,6 +169,16 @@ export function ClaimChip({
   const tooltips = useTooltips();
   const page = usePageWords();
   const text = useAgentText();
+  const inDetails = page !== null && inRow;
+  // Inside `NoTooltips`, and where the host asks it to (`wraps`), nothing of the claim stops its
+  // line from wrapping, in a row of Details and in the pill alike: in the pill each part may
+  // shrink, and in both a long part breaks inside itself only where no break between words is
+  // left, since the holder's name and the instants are values, which wrap there. Elsewhere each
+  // part stays whole, as on `main`, and the holder's name ellipsizes.
+  const wrapping = page !== null || wraps;
+  const part = wrapping ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
+  // Whether the pill that wraps takes more than one line, which its corners follow.
+  const pill = usePillWrapped(claim !== null && wrapping && !inDetails);
   if (claim === null) {
     return null;
   }
@@ -211,14 +223,6 @@ export function ClaimChip({
       : "";
     return `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`;
   };
-  const inDetails = page !== null && inRow;
-  // Inside `NoTooltips`, and where the host asks it to (`wraps`), nothing of the claim stops its
-  // line from wrapping, in a row of Details and in the pill alike: in the pill each part may
-  // shrink, and in both a long part breaks inside itself only where no break between words is
-  // left, since the holder's name and the instants are values, which wrap there. Elsewhere each
-  // part stays whole, as on `main`, and the holder's name ellipsizes.
-  const wrapping = page !== null || wraps;
-  const part = wrapping ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
   // In a row of Details the parts are the words of one sentence, so a space stands between each
   // two of them where the pill's gap stands, and a line breaks there as between any two words.
   // The pill draws none, as on `main`.
@@ -237,9 +241,10 @@ export function ClaimChip({
             `block min-w-0 max-w-full text-sm leading-7 [overflow-wrap:anywhere] xl:leading-5 ${pageInkText}`
           : // Inside `NoTooltips` the pill's tone is the new issue page's (`pillClassName`'s
             // `onPage`), and it wraps there as where the host asks it to.
-            `${pillClassName(takeable ? "label" : "selected-label", page !== null, wrapping)} min-w-0 max-w-full gap-1`
+            `${pillClassName(takeable ? "label" : "selected-label", page !== null, wrapping, pill.wrapped)} min-w-0 max-w-full gap-1`
       }
       data-testid="issue-claim"
+      ref={pill.ref}
       style={{ flexShrink: 1 }}
       title={tooltips ? claimTitle() : undefined}
     >

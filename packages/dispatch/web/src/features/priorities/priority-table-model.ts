@@ -131,6 +131,8 @@ export function tableLayout<Row>(
 ): LayoutColumns {
   const pinned = columns.filter((column) => column.pinned).map(({ id }) => id);
   const minimums = Object.fromEntries(columns.map((column) => [column.id, column.min]));
+  // A header whose words wrap (`wrap`) is drawn no narrower than it needs, sorted or not.
+  const wrapped = columns.filter((column) => column.wrap === true).map(({ id }) => id);
   return {
     ids: columns.map((column) => column.id),
     hiddenByDefault: Object.fromEntries(
@@ -143,6 +145,7 @@ export function tableLayout<Row>(
       phone: { columns: pinned, share: 1, widths: {}, flexibleMin: minimums[flexible] ?? 0 },
       flexible,
     },
+    ...(wrapped.length === 0 ? {} : { wrappedHeaders: wrapped }),
   };
 }
 
