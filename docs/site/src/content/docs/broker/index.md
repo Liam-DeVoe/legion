@@ -94,10 +94,11 @@ sequenceDiagram
 
 The GitHub step is there only for a request that names a GitHub profile. The broker checks such a
 request before the approval request, and nothing is written and nobody is asked where it refuses
-one. It refuses three things with `422 PROFILE_MINT_REFUSED`: an account in effect that the App has
-no installation on, a profile whose token GitHub refuses, for example for a repository the
-installation does not reach, and a cut that leaves none of the profile's permissions but
-`metadata`. A target outside the profile is refused earlier still, with `400 TARGET_REFUSED`. Where
+one. It refuses four things with `422 PROFILE_MINT_REFUSED`: an account in effect that the App has
+no installation on, a `value: token` profile on an account where the App has more than one
+installation, a profile whose token GitHub refuses, for example for a repository the installation
+does not reach, and a cut that leaves none of the profile's permissions but `metadata`. A target
+outside the profile is refused earlier still, with `400 TARGET_REFUSED`. Where
 the check reaches no verdict, for example because GitHub is out of reach or refuses the App itself,
 or because the check passes its own time bounds, the request waits for its approver as it did
 before, and the refusal comes when the grant is read
