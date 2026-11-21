@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,18 +36,14 @@ import (
 // naming the server's max_connections and the client backends open on it
 // (connectionRefusalCause).
 //
-// dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
+// dispatchProcessSlots holds one token for each Dispatch process running in this test binary, so
+// it has testlimits.MaxProcessesAtOnce slots, and the slots held are the processes running. It is
 // one count for the whole binary because one `go test` binary is what one lane's server serves,
-// and parallel root tests in it share that server. A process counts from its start until it exits,
-// which is what it holds connections for, so a row that restarts a process one after another asks
-// for one process's worth.
-var dispatchProcessesRunning atomic.Int64
-
-// dispatchProcessSlots holds one token for each process running in this test binary, so it has
-// testlimits.MaxProcessesAtOnce slots: a start takes one before it counts and gives it back with
-// its count, once its process has exited. Parallel tests that each start a process, such as
-// TestBootRefusesASignInDomainNoFullMemberRecords's rows, wait here for a slot rather than run
-// one process more than every lane's Postgres is sized for.
+// and parallel root tests in it share that server. A start takes a slot before it runs its process
+// and gives it back once the process has exited, which is what it holds connections for, so a row
+// that restarts a process one after another asks for one process's worth. Parallel tests that each
+// start a process, such as TestBootRefusesASignInDomainNoFullMemberRecords's rows, wait here for a
+// slot rather than run one process more than every lane's Postgres is sized for.
 var dispatchProcessSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
 
 // processSlotsHeld is how many of the slots each test holds, so that a test that would wait for a
@@ -61,10 +56,10 @@ var processSlotsHeld = struct {
 
 // requireConnectionCeiling takes one of the binary's process slots for one more Dispatch process,
 // waiting while other tests hold them all, and refuses its start when this test already holds
-// every slot or the server cannot serve the processes running then. It answers the release that
-// gives the slot back and takes the process off the count, which the caller runs once the process
-// has exited; the test's cleanup runs it too, for a start that never ran a process, and only the
-// first call counts.
+// every slot or the server cannot serve the processes running then, which is the slots held once
+// this start holds its own. It answers the release that gives the slot back, which the caller runs
+// once the process has exited; the test's cleanup runs it too, for a start that never ran a
+// process, and only the first call counts.
 func requireConnectionCeiling(t *testing.T, databaseURL string) (release func()) {
 	t.Helper()
 	processSlotsHeld.Lock()
@@ -80,11 +75,10 @@ func requireConnectionCeiling(t *testing.T, databaseURL string) (release func())
 	processSlotsHeld.by[t] = held + 1
 	processSlotsHeld.Unlock()
 	dispatchProcessSlots <- struct{}{}
-	processes := int(dispatchProcessesRunning.Add(1))
+	processes := len(dispatchProcessSlots)
 	var once sync.Once
 	release = func() {
 		once.Do(func() {
-			dispatchProcessesRunning.Add(-1)
 			<-dispatchProcessSlots
 			processSlotsHeld.Lock()
 			if processSlotsHeld.by[t]--; processSlotsHeld.by[t] == 0 {
@@ -163,7 +157,7 @@ func connectionRefusalCause(refused, databaseURL string) string {
 		"open %d (store.ConnectionsPerProcess). The connection ceiling check counts only those processes; "+
 		"the rest are this binary's own pools and the server's other clients. Free the server's "+
 		"connections, or raise max_connections.",
-		allowed, open, dispatchProcessesRunning.Load(), store.ConnectionsPerProcess)
+		allowed, open, len(dispatchProcessSlots), store.ConnectionsPerProcess)
 }
 
 // serverInt is one integer setting of the server this test's database is on.
