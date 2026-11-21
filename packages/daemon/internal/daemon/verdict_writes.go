@@ -392,7 +392,7 @@ func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget
 	return newest[store.VerdictWriteCheckRun] == store.VerdictConclusionSuccess || newest[store.VerdictWriteStatus] == store.VerdictConclusionSuccess, err
 }
 
-// verdictDecision is what writeVerdict decided of a head: legion-verdict's conclusion, the kind of
+// verdictDecision is what writeVerdictOver decided of a head: legion-verdict's conclusion, the kind of
 // head (headLegion, headOutside) and, on a Legion head, the issue that owns it; or otherIssue,
 // another project's issue whose branch the head is, on which this daemon writes nothing.
 type verdictDecision struct {
@@ -625,7 +625,7 @@ type listedStatus struct {
 //
 // A head with no conclusion is written on only when overForeign is set, which is the writers'
 // sweep's ask to put failure over another writer's run or status at a head no verdict stands at;
-// writeVerdict, which a fact asks for, writes nothing there and makes no GitHub call. In token mode
+// a write a fact asks for (writeVerdictOver without overForeign) writes nothing there and makes no GitHub call. In token mode
 // the daemon mints no verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that
 // once. One goroutine makes every write (writeVerdicts), so no two writes of one head read its
 // runs together and each create one.
