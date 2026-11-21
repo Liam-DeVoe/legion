@@ -147,11 +147,29 @@ func (r Record) retire(names ...string) Record {
 	return r
 }
 
+// The families a store's sentinel names (StoreState.Family): the session family's bucket,
+// Dispatch's store, and a Legion daemon's store for one project (DaemonFamily).
+const (
+	SessionFamily  = "session"
+	DispatchFamily = "dispatch"
+	// daemonFamilyPrefix begins a daemon's family, which DaemonFamily completes with its project.
+	daemonFamilyPrefix = "daemon/"
+)
+
+// DaemonFamily is the family of a Legion daemon's store for project: "daemon/<project>".
+func DaemonFamily(project string) string { return daemonFamilyPrefix + project }
+
 // StoreState is what a store's sentinel holds.
 type StoreState struct {
 	// Key is the sentinel's own key (SentinelKey, PGSentinelKey), which the store's WriteSentinel
 	// sets and its State requires, as a record's (Record.Key).
 	Key string `json:"key"`
+	// Family is the store's family, required: SessionFamily for the bucket's sentinel,
+	// DispatchFamily for Dispatch's store, DaemonFamily(project) for a daemon's. Key alone cannot
+	// tell two Postgres stores apart, so a creator reading its own sentinel can check this names
+	// its own family. The library writes whatever family its caller gives; CreateSessionBucket
+	// writes SessionFamily.
+	Family string `json:"family"`
 	// Cutover is the family's cutover marker: CutoverDone, CutoverRolledBack, or "" before any.
 	Cutover string `json:"cutover,omitempty"`
 	// Boundary is the cutover boundary B: a session key with no record starts no later than it.
@@ -364,11 +382,15 @@ func (op Op) check() error {
 	return nil
 }
 
-// check refuses a sentinel that is not key's or sets a field that is not well formed: a cutover
-// marker this package does not know, or an orphan no consumer can be named.
+// check refuses a sentinel that is not key's or sets a field that is not well formed: no family or
+// one of no form this package names, a cutover marker this package does not know, or an orphan no
+// consumer can be named.
 func (s StoreState) check(key string) error {
 	if s.Key != key {
 		return fmt.Errorf("its key is %q, not %q", s.Key, key)
+	}
+	if !storeFamily(s.Family) {
+		return fmt.Errorf("its family %q is none of %s, %s or %s<project>", s.Family, SessionFamily, DispatchFamily, daemonFamilyPrefix)
 	}
 	if s.Cutover != "" && s.Cutover != CutoverDone && s.Cutover != CutoverRolledBack {
 		return fmt.Errorf("its cutover marker %q is none", s.Cutover)
@@ -379,6 +401,16 @@ func (s StoreState) check(key string) error {
 		}
 	}
 	return nil
+}
+
+// storeFamily reports whether family is one a sentinel may name: SessionFamily, DispatchFamily, or
+// DaemonFamily of a project name with no space, control character or '/'.
+func storeFamily(family string) bool {
+	if family == SessionFamily || family == DispatchFamily {
+		return true
+	}
+	project, ok := strings.CutPrefix(family, daemonFamilyPrefix)
+	return ok && project != "" && !strings.ContainsFunc(project, func(r rune) bool { return r == '/' || unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
 // Admit decides, from the store's sentinel, what a consumer call does in the fresh mode: it is

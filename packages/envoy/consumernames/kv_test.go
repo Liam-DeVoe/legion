@@ -634,7 +634,7 @@ func TestCreatingTheSessionBucketOnAClusterWritesItsSentinel(t *testing.T) {
 				config := SessionBucketConfig(replicas)
 				config.Bucket = fmt.Sprintf("%s_round_%d", SessionBucket, round)
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				store, err := createBucket(ctx, conn, config, StoreState{Cutover: CutoverDone, Boundary: 7})
+				store, err := createBucket(ctx, conn, config, StoreState{Family: SessionFamily, Cutover: CutoverDone, Boundary: 7})
 				if err != nil {
 					cancel()
 					t.Fatalf("round %d: the create on a three-server cluster at %d copies = %v", round, replicas, err)

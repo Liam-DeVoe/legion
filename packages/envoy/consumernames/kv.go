@@ -37,10 +37,19 @@ func SessionBucketConfig(replicas int) jetstream.KeyValueConfig {
 
 // CreateSessionBucket creates SessionBucket at replicas copies (SessionBucketConfig) and writes
 // its sentinel state, as the operator's create-bucket does before the cutover, and answers a
-// KVStore of it on conn. A bucket that exists already is refused, since no writer may adopt a
-// bucket another may own. The sentinel is written only once the new stream answers, within ctx's
-// deadline, else createBucketWait (createBucket).
+// KVStore of it on conn. The sentinel names SessionFamily: state's Family is set to it when empty,
+// and another family is refused, since this bucket is the session family's alone. A bucket that
+// exists already is refused, since no writer may adopt a bucket another may own. The sentinel is
+// written only once the new stream answers, within ctx's deadline, else createBucketWait
+// (createBucket).
 func CreateSessionBucket(ctx context.Context, conn *nats.Conn, replicas int, state StoreState) (*KVStore, error) {
+	switch state.Family {
+	case "":
+		state.Family = SessionFamily
+	case SessionFamily:
+	default:
+		return nil, fmt.Errorf("consumer names: %s is the %s family's bucket, not %q's", SessionBucket, SessionFamily, state.Family)
+	}
 	return createBucket(ctx, conn, SessionBucketConfig(replicas), state)
 }
 

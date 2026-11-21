@@ -59,9 +59,13 @@ function apiErrorCode(error: unknown): number | undefined {
   return (error as Partial<NatsError> | undefined)?.api_error?.err_code;
 }
 
-/** The sentinel the session bucket is made with (consumernames.StoreState), keyed by its own key. */
+/**
+ * The sentinel the session bucket is made with (consumernames.StoreState), keyed by its own key and
+ * naming the session family.
+ */
 export interface SessionBucketState {
   key: typeof sentinelKey;
+  family: "session";
   cutover: "done";
   boundary: number;
 }
@@ -71,8 +75,9 @@ export interface SessionBucketState {
  * (consumernames.CreateSessionBucket): it waits up to `seconds` for `stream`, the stream the
  * session consumers read, to exist, reads its first sequence, then creates the bucket with one
  * value a key, on file storage, at the stream's own replica count, and writes the sentinel
- * {"key":"envoy.bucket","cutover":"done","boundary":B} with B = max(1, that first sequence) as the
- * key's first write. The listener reads only a sentinel that names its own key.
+ * {"key":"envoy.bucket","family":"session","cutover":"done","boundary":B} with B = max(1, that
+ * first sequence) as the key's first write. The listener reads only a sentinel that names its own
+ * key and a family.
  * A bucket that exists already is refused, as create-bucket refuses it. Answers the sentinel.
  */
 export async function createSessionBucket(
@@ -95,6 +100,7 @@ export async function createSessionBucket(
   }
   const state: SessionBucketState = {
     key: sentinelKey,
+    family: "session",
     cutover: "done",
     boundary: Math.max(1, info.state.first_seq),
   };
