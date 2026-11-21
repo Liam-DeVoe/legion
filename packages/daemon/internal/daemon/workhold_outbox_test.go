@@ -291,8 +291,13 @@ func (r *workHoldRig) close(version int) {
 // approve is a person's approval of version of the root's spec, at Dispatch's seq.
 func (r *workHoldRig) approve(version int, seq int64) {
 	r.t.Helper()
-	r.apply(fmt.Sprintf("approved-%d", version), intake.DispatchArtifact{Key: r.tree.key, ArtifactID: r.tree.document,
-		Kind: intake.DispatchArtifactApproved, Version: version, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: seq}})
+	r.apply(fmt.Sprintf("approved-%d", version), r.approval(version, seq))
+}
+
+// approval is the fact of a person's approval of version of the root's spec, at Dispatch's seq.
+func (r *workHoldRig) approval(version int, seq int64) intake.DispatchArtifact {
+	return intake.DispatchArtifact{Key: r.tree.key, ArtifactID: r.tree.document, Kind: intake.DispatchArtifactApproved,
+		Version: version, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: seq}}
 }
 
 // carriedApproval is F3, Dispatch's carried approval of version 46 after an exact undo, as its
@@ -1160,9 +1165,7 @@ func TestWorkHoldStartsAStopMadeAtOnceWhileTheOpeningCommits(t *testing.T) {
 		r.runOnce()
 		return intake.Result{}, nil
 	})
-	approval := intake.DispatchArtifact{Key: r.tree.key, ArtifactID: r.tree.document, Kind: intake.DispatchArtifactApproved,
-		Version: 4, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 12}}
-	if result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-around-the-stop", approval, r.engine, r.admission,
+	if result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-around-the-stop", r.approval(4, 12), r.engine, r.admission,
 		stopBeforeTheCommit); err != nil || result.Refusal != nil {
 		t.Fatalf("apply the approval = %+v, %v", result.Refusal, err)
 	}

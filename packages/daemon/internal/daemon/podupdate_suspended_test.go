@@ -23,8 +23,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -201,7 +204,8 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 //
 // The control is a worker whose work hold stop still waits for the turn that its close message
 // starts (supervise.RequestSuspend.TurnAfter). Its agent runs in the pod and can answer, so the
-// round asks it and does not replace the pod before it answers.
+// round asks it and does not replace the pod before it answers. The tree's record of the hold
+// stands, as the close wrote it, so no decision of the round drops that stop.
 func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	const held, stopping = claim.RolePlanner, claim.RoleTester
 	workers := []claim.Role{claim.RoleImplementer, stopping}
@@ -212,6 +216,15 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
 	if c := rig.claimOf(held); c.State != supervise.StateSuspended || !c.WorkHeld() {
 		t.Fatalf("the restored %s is %s, suspended by %q; want it held by the work hold", held, c.State, c.SuspendedBy)
+	}
+	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). Each
+	// decision of the tester reads it while the stop waits for the turn, and drops the stop where
+	// no record stands (supervise's dropOpenedHoldStop).
+	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
+		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
+			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})
+	}); err != nil {
+		t.Fatalf("record the work hold of %s: %v", podUpdateIssue, err)
 	}
 	// The tester's stop as the outbox posts it: the close message reached the tester now, and the
 	// stop waits for the turn that message starts, up to its deadline 2 minutes later.
@@ -232,6 +245,10 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	rig.tick()
 	for _, role := range workers {
 		rig.awaitAsked(role, podUpdateRound)
+	}
+	if c := rig.claimOf(stopping); !c.WorkHeld() {
+		t.Fatalf("after the round asked it the %s is %s, suspended by %q, with no hold stop; want its hold stop still held for its turn",
+			stopping, c.State, c.SuspendedBy)
 	}
 	rig.awaitRound(held, podUpdateRound)
 	rig.signal(claim.RoleImplementer, "a1b2c3d")

@@ -318,7 +318,11 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if err := e.store.DeleteWorkHold(ctx, tx, root.Tree); err != nil {
 		return err
 	}
-	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(closing, ended), closing)
+	version := 0
+	if closing != nil {
+		version = closing.Version
+	}
+	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(closing, ended), version)
 }
 
 // openHeldClaims starts each claim of claims the hold stopped (stored suspended by hold), and no
@@ -331,13 +335,9 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // phase is told that the issue's other roles may ask it questions. The start carries opening apart
 // (record.SuperviseRequest.Opening): where the claim kept a task of its own, supervise puts those
 // sentences in front of it instead (Machine.EndHold). A claim that already has such a start queued
-// is given no second. Each start is one log line naming the issue, the role and the version that
-// closed the gate: the version closing names, or 0 where closing is nil.
-func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, opening string, closing *record.WorkHold) error {
-	closedAt := 0
-	if closing != nil {
-		closedAt = closing.Version
-	}
+// is given no second. Each start is one log line naming the issue, the role and version, the
+// version that closed the gate, which is 0 where no record or stop names it.
+func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, opening string, version int) error {
 	for _, c := range claims {
 		if c.role == claim.RoleArchitect || !c.state().WorkHeld() || openingQueued(c.run, root) {
 			continue
@@ -362,7 +362,7 @@ func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issu
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: the work hold's opening starts a claim it stopped", "issue", c.issue.Key, "role", c.role,
-			"version", closedAt, "tree", root.Tree, "phase", holds)
+			"version", version, "tree", root.Tree, "phase", holds)
 	}
 	return nil
 }
@@ -511,9 +511,5 @@ func (e *Engine) openStoppedClaims(ctx context.Context, tx pgx.Tx, root record.I
 	if err != nil {
 		return err
 	}
-	var closing *record.WorkHold
-	if version != 0 {
-		closing = &record.WorkHold{Project: root.Project, Tree: root.Tree, Version: version}
-	}
-	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(nil, bootOpenedSentence(root.Key)), closing)
+	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(nil, bootOpenedSentence(root.Key)), version)
 }
