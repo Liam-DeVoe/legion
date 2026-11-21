@@ -5089,7 +5089,7 @@ It needs no Docker, no cluster, no tmux, no GitHub and no deployed Dispatch.
 Its host must be loopback, and the driver also makes Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
 The runs of the change passed `DISPATCH_TEST_DATABASE_URL` beside it, naming the same server, and the script reads nothing of it.
 The broker is the run's own: Dispatch publishes its events on it, and the daemon consumes them from it.
-A whole run of the seven cases took 75 s on a shared devbox with a warm Go build cache: 14 s building the driver and 60 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
+A whole run of the seven cases took 67 s on a shared devbox with a warm Go build cache: 14 s building the driver and 52 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
 A case whose answer never comes waits a minute past its bound before it fails.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 Before them the script refuses a host with no `jj`, no `git`, no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`.
