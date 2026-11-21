@@ -2127,7 +2127,7 @@
       "print-ts-box"
     ],
     "answers": {
-      "about": "The answer census (cmd/redact-gate/answers.go). Outside internal/redact, a net/http.Response's Body appears only in its Close and as an assignment's target, and the standard library's readers of a response's body (readers) are not called: every client reads an answer through reader - ReadAnswer, whose opaque answer type has exactly methods, or StreamAnswer, the stream of a body that is data - and a census that lists none is UNKNOWN. Text held as the box from anything but a constant is held with the record of the answer it came from (recorder given record(resp)...), or its function is in exempt, with why.",
+      "about": "The answer census (cmd/redact-gate/answers.go). Outside internal/redact, a net/http.Response's Body appears only in its Close and as an assignment's target, and the standard library's readers of a response's body (readers) are not called: every client reads an answer through reader - ReadAnswer, whose opaque answer type has exactly methods, or StreamAnswer, the stream of a body that is data - and a census that lists none is UNKNOWN. Text held as the box from anything but a constant is held with the record of the answer it came from (recorder given record(resp)...), or its function is in exempt, with why. Every reference to a reader or a maker is its call (no function or method value); no decoder (decoders), and no type's own UnmarshalJSON or UnmarshalText called directly, fills a value that holds the box outside the answer type's Decode; net/http.ReadResponse is given the request its answer answers; and no response is handed whole to a parameter of interface type. In the box's package, the exported functions that take the answer type are exactly functions.",
       "reader": [
         "github.com/sjawhar/envoy/internal/redact.ReadAnswer",
         "github.com/sjawhar/envoy/internal/redact.StreamAnswer"
@@ -2157,6 +2157,13 @@
           "function": "github.com/sjawhar/envoy/oauth2call/oauth2calltest.Said",
           "why": "a test's own words, for the value a client would have decoded from an answer: Said is a maker (gate.answers.makers), so the census holds every call of it outside a test file to the record rule, and only test files call it"
         }
+      ],
+      "functions": ["Holds"],
+      "decoders": [
+        "encoding/json.Unmarshal",
+        "(*encoding/json.Decoder).Decode",
+        "encoding/xml.Unmarshal",
+        "(*encoding/xml.Decoder).Decode"
       ]
     }
   },

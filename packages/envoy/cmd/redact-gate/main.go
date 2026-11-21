@@ -9,19 +9,24 @@
 //
 //  1. inventory: the inventory parses, holds rows, and holds print-site rows;
 //  2. census: the censuses parse and resolve every production file of the repository's Go
-//     modules and TypeScript packages (UNKNOWN otherwise). The call census lists every call of
-//     the rule the change adds, each of which a row's mutation must name (census.go, tscensus.go,
-//     scripts/redact-gate/ts-census.ts). The boundary census reads the libraries' own exported
-//     API and fails on any call of golang.org/x/oauth2, go-oidc, google.golang.org/api/impersonate
-//     or cloud.google.com/go/cloudsqlconn that is not across redact.OAuth2 or oauth2call.Call, on a
-//     call of a text-only library not read under a CallScope, and on a client or token source
-//     handed a library that the boundary did not make (boundary.go). The field census lists every
-//     field the library boundary sets, each a closed value or the rule's reading (fields.go). The
-//     answer census fails on any read of an HTTP answer's body outside internal/redact but
-//     through redact.ReadAnswer or redact.StreamAnswer, on any read of an answer's status line
-//     (net/http's Response.Status, the answering party's own phrase) outside internal/redact, and
-//     on another party's text held as the box with no record of the answer it came from
-//     (answers.go);
+//     modules and TypeScript packages (UNKNOWN otherwise). The Go censuses read each module as
+//     every build CI makes reads it, for each GOOS/GOARCH CI builds (ciTargets) and each tag list
+//     its vet passes, and a file no such build compiles by its syntax alone (census.go). The call
+//     census lists every call of the rule the change adds, each of which a row's mutation must
+//     name (census.go, tscensus.go, scripts/redact-gate/ts-census.ts). The boundary census reads
+//     the libraries' own exported API and fails on any call of golang.org/x/oauth2, go-oidc,
+//     google.golang.org/api/impersonate or cloud.google.com/go/cloudsqlconn that is not across
+//     redact.OAuth2 or oauth2call.Call, on a call of a text-only library not read under a
+//     CallScope, and on a client or token source handed a library that the boundary did not make
+//     (boundary.go). The field census lists every field the library boundary sets, each a closed
+//     value or the rule's reading (fields.go). The answer census fails on any read of an HTTP
+//     answer's body outside internal/redact but through redact.ReadAnswer or redact.StreamAnswer,
+//     on any read of an answer's status line (net/http's Response.Status, the answering party's
+//     own phrase) outside internal/redact, on another party's text held as the box with no record
+//     of the answer it came from, on a reader or maker used as a value, a decode into a value that
+//     holds the box outside Answer.Decode, a response read with no request and a response printed
+//     whole, and on a function of the box's package that takes an answer and is not listed
+//     (answers.go, answers_reach.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
 //     normal verification between stage 3 and this one);
@@ -189,18 +194,57 @@ type entry struct {
 	Function string `json:"function"`
 }
 
-// census is what both languages' censuses answer.
+// census is what both languages' censuses answer. Targets and Untargeted are the Go census's
+// account of what it read: a line for each module's build of each target and tag list, and each
+// production file no such build compiles, which it read by syntax alone.
 type census struct {
-	Calls     []entry                      `json:"calls"`
-	Box       []finding                    `json:"box"`
-	Holders   []finding                    `json:"holders"`
-	Reflect   []finding                    `json:"reflect"`
-	Whole     []finding                    `json:"whole"`
-	Boundary  []finding                    `json:"boundary"`
-	Fields    []finding                    `json:"fields"`
-	Answers   []finding                    `json:"answers"`
-	Unknown   []string                     `json:"unknown"`
-	Functions map[string]map[string][2]int `json:"functions"` // file -> function -> [start, end)
+	Calls      []entry                      `json:"calls"`
+	Box        []finding                    `json:"box"`
+	Holders    []finding                    `json:"holders"`
+	Reflect    []finding                    `json:"reflect"`
+	Whole      []finding                    `json:"whole"`
+	Boundary   []finding                    `json:"boundary"`
+	Fields     []finding                    `json:"fields"`
+	Answers    []finding                    `json:"answers"`
+	Unknown    []string                     `json:"unknown"`
+	Targets    []string                     `json:"targets"`
+	Untargeted []string                     `json:"untargeted"`
+	Functions  map[string]map[string][2]int `json:"functions"` // file -> function -> [start, end)
+}
+
+// dedupe keeps one of each finding the Go census listed more than once: a file two builds compile
+// the same way is type-checked once for each set of files its package is compiled from, and
+// answers the same findings each time.
+func (c *census) dedupe() {
+	seenCall := map[entry]bool{}
+	calls := c.Calls[:0]
+	for _, e := range c.Calls {
+		if !seenCall[e] {
+			seenCall[e] = true
+			calls = append(calls, e)
+		}
+	}
+	c.Calls = calls
+	for _, list := range []*[]finding{&c.Box, &c.Holders, &c.Reflect, &c.Whole, &c.Boundary, &c.Fields, &c.Answers} {
+		seen := map[finding]bool{}
+		kept := (*list)[:0]
+		for _, f := range *list {
+			if !seen[f] {
+				seen[f] = true
+				kept = append(kept, f)
+			}
+		}
+		*list = kept
+	}
+	seenUnknown := map[string]bool{}
+	unknown := c.Unknown[:0]
+	for _, u := range c.Unknown {
+		if !seenUnknown[u] {
+			seenUnknown[u] = true
+			unknown = append(unknown, u)
+		}
+	}
+	c.Unknown = unknown
 }
 
 // finding is one thing a structural census listed: a use of the box's storage (Box), a type that
@@ -613,6 +657,8 @@ func (g *gate) census() census {
 		c.Fields = append(c.Fields, part.Fields...)
 		c.Answers = append(c.Answers, part.Answers...)
 		c.Unknown = append(c.Unknown, part.Unknown...)
+		c.Targets = append(c.Targets, part.Targets...)
+		c.Untargeted = append(c.Untargeted, part.Untargeted...)
 		for f, fns := range part.Functions {
 			c.Functions[f] = fns
 		}
@@ -745,11 +791,20 @@ func (g *gate) judgeStructural(c census) {
 	g.judgeAnswers(c)
 }
 
-// report prints every call the census listed, and each UNKNOWN, unjudged.
+// report prints every call the census listed, and each UNKNOWN, unjudged; what each build of the
+// Go census read, and each file it read by syntax alone; and the probe markers a row's evidence is
+// read for.
 func (g *gate) report(c census) {
 	for _, u := range c.Unknown {
 		fmt.Fprintf(g.out, "UNKNOWN %s\n", u)
 	}
+	for _, t := range c.Targets {
+		fmt.Fprintf(g.out, "TARGET %s\n", t)
+	}
+	for _, f := range c.Untargeted {
+		fmt.Fprintf(g.out, "UNTARGETED %s: no CI build compiles it; read by its syntax, it imports no package that reads an answer and selects no Body or Status\n", f)
+	}
+	fmt.Fprintf(g.out, "MARKERS the probe markers a mutant's captured output is read for: %s\n", strings.Join(markers, ", "))
 	sort.Slice(c.Calls, func(i, j int) bool {
 		return c.Calls[i].File+fmt.Sprint(c.Calls[i].Offset) < c.Calls[j].File+fmt.Sprint(c.Calls[j].Offset)
 	})

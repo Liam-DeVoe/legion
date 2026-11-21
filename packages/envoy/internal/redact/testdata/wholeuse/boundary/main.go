@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -52,6 +53,16 @@ const (
 	oauth2callPath   = modulePath + "/oauth2call"
 	boundaryWrapper  = "BoundTokenSource"
 )
+
+// sortedKeys is set's members in order.
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // library reports whether path is a package of a library whose calls cross the boundary.
 func library(path string) bool {
@@ -86,7 +97,10 @@ func main() {
 	}
 	// The module is loaded once for each target and tag set, so a file a build constraint keeps
 	// from one of them (a darwin-only file on a Linux gate, an e2e file) is read under another.
+	// Each load's target is kept, so the summary names, for each target, what its builds read.
 	var pkgs []*packages.Package
+	targetOf := map[*packages.Package]string{}
+	var targetOrder []string
 	for _, target := range strings.Split(*targets, ",") {
 		goos, goarch, ok := strings.Cut(target, "/")
 		if !ok {
@@ -116,12 +130,20 @@ func main() {
 				os.Exit(2)
 			}
 			pkgs = append(pkgs, loaded...)
+			for _, pkg := range loaded {
+				targetOf[pkg] = target
+			}
+			if !slices.Contains(targetOrder, target) {
+				targetOrder = append(targetOrder, target)
+			}
 		}
 	}
 
-	// The closed set: each library package any loaded package imports, read from its types.
+	// The closed set: each library package any loaded package imports, read from its types, with
+	// the targets whose builds import it.
 	api := map[string]string{}
 	perPackage := map[string]int{}
+	importedFor := map[string]map[string]bool{}
 	seen := map[string]bool{}
 	var tokenSource *types.Interface
 	var libTypes []types.Type
@@ -133,7 +155,14 @@ func main() {
 					tokenSource, _ = obj.Type().Underlying().(*types.Interface)
 				}
 			}
-			if !library(path) || seen[path] {
+			if !library(path) {
+				continue
+			}
+			if importedFor[path] == nil {
+				importedFor[path] = map[string]bool{}
+			}
+			importedFor[path][targetOf[pkg]] = true
+			if seen[path] {
 				continue
 			}
 			seen[path] = true
@@ -154,6 +183,19 @@ func main() {
 
 	root, _ := filepath.Abs(*dir)
 	var lines []string
+	// builtFor is each non-test file's targets, the loads that compile it; fileRefs its references.
+	builtFor := map[string]map[string]bool{}
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Syntax {
+			if name := pkg.Fset.Position(file.Pos()).Filename; !strings.HasSuffix(name, "_test.go") {
+				if builtFor[name] == nil {
+					builtFor[name] = map[string]bool{}
+				}
+				builtFor[name][targetOf[pkg]] = true
+			}
+		}
+	}
+	fileRefs := map[string]int{}
 	walked := map[string]bool{}
 	refs, handoffs, failed, files := 0, 0, 0, 0
 	for _, pkg := range pkgs {
@@ -198,6 +240,7 @@ func main() {
 					}
 				}
 				refs++
+				fileRefs[name]++
 				pos := pkg.Fset.Position(id.Pos())
 				rel, err := filepath.Rel(root, pos.Filename)
 				if err != nil {
@@ -239,7 +282,17 @@ func main() {
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\n", path, perPackage[path])
+		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\tfor %s\n", path, perPackage[path], strings.Join(sortedKeys(importedFor[path]), ", "))
+	}
+	for _, target := range targetOrder {
+		targetFiles, targetRefs := 0, 0
+		for name, built := range builtFor {
+			if built[target] {
+				targetFiles++
+				targetRefs += fileRefs[name]
+			}
+		}
+		fmt.Printf("TARGET\t%s\tnon-test files=%d\treferences=%d\n", target, targetFiles, targetRefs)
 	}
 	if *listAPI {
 		var names []string

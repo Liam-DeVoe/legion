@@ -13,6 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"sort"
 	"strings"
 )
 
@@ -93,7 +96,11 @@ func fileExists(path string) bool {
 // adds or changes whose resolved callee is the rule or a printer built on it (gate.rule,
 // gate.printers), found with go/types, so a receiver call, a method value and a call through an
 // import or a type alias resolve as a plain call does. Every production file of each module's
-// packages is parsed and type-checked; one that cannot be is UNKNOWN.
+// packages is parsed and type-checked, as each build CI makes reads it: each module is listed
+// once for each of ciTargets and each tag list its CI vet passes (ciTagSets), and each package is
+// type-checked for every set of files one of those builds compiles it from, so a file built for
+// one target or tag list only is read like any other. A file no such build compiles is read by
+// its syntax alone (untargeted). A file that cannot be read is UNKNOWN.
 func (g *gate) goCensus(dir string) census {
 	c := census{}
 	files, err := g.changed(dir, func(n string) bool {
@@ -110,43 +117,178 @@ func (g *gate) goCensus(dir string) census {
 		return c
 	}
 	for _, mod := range mods {
-		modDir := filepath.Join(dir, mod)
-		list := exec.Command("go", "list", "-e", "-export", "-json", "-deps", "./...")
-		list.Dir = modDir
-		var stderr bytes.Buffer
-		list.Stderr = &stderr
-		// -e reports a package that does not build in its Error and goes on; a broken file is
-		// then that package's UNKNOWN, and every other package is still read.
-		out, err := list.Output()
-		if err != nil && len(out) == 0 {
-			c.Unknown = append(c.Unknown, fmt.Sprintf("Go: go list in %s: %v: %s", mod, err, lastLines(stderr.String(), 5)))
-			continue
+		g.goModuleCensus(&c, dir, mod, files, rule, printers)
+	}
+	c.dedupe()
+	return c
+}
+
+// goListed is one package as go list -json answers it.
+type goListed struct {
+	ImportPath, Dir, Export           string
+	GoFiles, CgoFiles, IgnoredGoFiles []string
+	Standard, DepOnly                 bool
+	Error                             *struct{ Err string }
+}
+
+// goList lists patterns in the module at modDir for target and tags, with -export -deps where
+// export is set, so each dependency's export data is built for that target.
+func goList(modDir, target, tags string, export bool, patterns ...string) ([]goListed, error) {
+	args := []string{"list", "-e", "-json"}
+	if export {
+		args = append(args, "-export", "-deps")
+	}
+	if tags != "" {
+		args = append(args, "-tags="+tags)
+	}
+	list := exec.Command("go", append(args, patterns...)...)
+	list.Dir = modDir
+	list.Env = append(os.Environ(), targetEnv(target)...)
+	var stderr bytes.Buffer
+	list.Stderr = &stderr
+	// -e reports a package that does not build in its Error and goes on; a broken file is then
+	// that package's UNKNOWN, and every other package is still read.
+	out, err := list.Output()
+	if err != nil && len(out) == 0 {
+		return nil, fmt.Errorf("%v: %s", err, lastLines(stderr.String(), 5))
+	}
+	var pkgs []goListed
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var p goListed
+		if err := dec.Decode(&p); err != nil {
+			return pkgs, fmt.Errorf("go list output: %v", err)
 		}
-		type pkg struct {
-			ImportPath, Dir, Export string
-			GoFiles                 []string
-			Standard, DepOnly       bool
-			Error                   *struct{ Err string }
-		}
-		exports := map[string]string{}
-		var mine []pkg
-		dec := json.NewDecoder(bytes.NewReader(out))
-		for dec.More() {
-			var p pkg
-			if err := dec.Decode(&p); err != nil {
-				c.Unknown = append(c.Unknown, "Go: go list output: "+err.Error())
-				break
+		pkgs = append(pkgs, p)
+	}
+	return pkgs, nil
+}
+
+// targetEnv is the environment of a build for target, a GOOS/GOARCH: cgo off where it is not the
+// host's own, since cgo does not cross-compile here.
+func targetEnv(target string) []string {
+	goos, goarch, _ := strings.Cut(target, "/")
+	env := []string{"GOOS=" + goos, "GOARCH=" + goarch}
+	if goos != runtime.GOOS || goarch != runtime.GOARCH {
+		env = append(env, "CGO_ENABLED=0")
+	}
+	return env
+}
+
+// goModuleCensus is goCensus over the module at mod: listed for each target and tag list,
+// type-checked once for each set of files a package is compiled from, and its files no build
+// compiles read by syntax. It reports, for each target and tag list, how many packages and files
+// the build compiles and how many packages it type-checked that no build before it had.
+func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[int]bool, rule, printers map[string]bool) {
+	modDir := filepath.Join(dir, mod)
+	tagSets, err := ciTagSets(dir, mod)
+	if err != nil {
+		c.Unknown = append(c.Unknown, fmt.Sprintf("Go: the build tags of %s cannot be read: %v", mod, err))
+		return
+	}
+	checked := map[string]bool{} // a package's import path and the files one build compiles it from
+	built := map[string]bool{}   // every file some build compiles
+	present := map[string]bool{} // every production file go list names, built or not
+	for _, target := range ciTargets {
+		for _, tags := range tagSets {
+			listed, err := goList(modDir, target, tags, false, "./...")
+			if err != nil {
+				c.Unknown = append(c.Unknown, fmt.Sprintf("Go: go list in %s for %s, tags %q: %v", mod, target, tags, err))
+				continue
 			}
-			exports[p.ImportPath] = p.Export
-			if !p.DepOnly && !p.Standard {
-				mine = append(mine, p)
+			var need []string
+			packages, compiled := 0, 0
+			for _, p := range listed {
+				if p.Standard || p.DepOnly {
+					continue
+				}
+				packages++
+				compiled += len(p.GoFiles)
+				for _, name := range p.IgnoredGoFiles {
+					if !strings.HasSuffix(name, "_test.go") {
+						present[filepath.Join(p.Dir, name)] = true
+					}
+				}
+				for _, name := range p.GoFiles {
+					present[filepath.Join(p.Dir, name)] = true
+					built[filepath.Join(p.Dir, name)] = true
+				}
+				if len(p.CgoFiles) > 0 {
+					c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cgo files (%s), which the census does not read", p.ImportPath, strings.Join(p.CgoFiles, ", ")))
+				}
+				key := p.ImportPath + "\x00" + strings.Join(p.GoFiles, "\x00")
+				if len(p.GoFiles) == 0 || checked[key] {
+					continue
+				}
+				checked[key] = true
+				need = append(need, p.ImportPath)
 			}
-		}
-		for _, p := range mine {
-			g.goPackage(&c, dir, p.ImportPath, p.Dir, p.GoFiles, p.Error != nil, exports, files, rule, printers)
+			c.Targets = append(c.Targets, fmt.Sprintf("Go module %s for %s, tags %q: %d packages, %d production files compiled, %d packages type-checked on a file set no build before it compiles", mod, target, tags, packages, compiled, len(need)))
+			if len(need) == 0 {
+				continue
+			}
+			deps, err := goList(modDir, target, tags, true, need...)
+			if err != nil {
+				c.Unknown = append(c.Unknown, fmt.Sprintf("Go: go list -export in %s for %s, tags %q: %v", mod, target, tags, err))
+				continue
+			}
+			exports := map[string]string{}
+			for _, p := range deps {
+				exports[p.ImportPath] = p.Export
+			}
+			wanted := set(need)
+			for _, p := range deps {
+				if wanted[p.ImportPath] && !p.DepOnly {
+					g.goPackage(c, dir, p.ImportPath, p.Dir, p.GoFiles, p.Error != nil, exports, files, rule, printers)
+				}
+			}
 		}
 	}
-	return c
+	var untargeted []string
+	for file := range present {
+		if !built[file] {
+			untargeted = append(untargeted, file)
+		}
+	}
+	sort.Strings(untargeted)
+	for _, file := range untargeted {
+		g.untargeted(c, dir, file)
+	}
+}
+
+// untargetedImports are the packages a file no CI build compiles may not import: those that make
+// or read an HTTP answer, whose use the census reads only type-checked.
+var untargetedImports = []string{"net/http", "net/http/httputil", "github.com/sjawhar/envoy/internal/redact", "github.com/sjawhar/envoy/oauth2call"}
+
+// untargeted reads file, a production file no build of ciTargets and the CI tag lists compiles
+// (a Windows-only file, a race-only one), by its syntax alone, since no one type-check can read
+// it: it is listed as such where it imports none of untargetedImports and selects no Body or
+// Status, and is UNKNOWN otherwise.
+func (g *gate) untargeted(c *census, dir, file string) {
+	rel, _ := filepath.Rel(dir, file)
+	rel = filepath.ToSlash(rel)
+	f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
+	if err != nil {
+		c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cannot be parsed: %v", rel, err))
+		return
+	}
+	var why []string
+	for _, spec := range f.Imports {
+		if path := strings.Trim(spec.Path.Value, `"`); slices.Contains(untargetedImports, path) {
+			why = append(why, "imports "+path)
+		}
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Body" || sel.Sel.Name == "Status") {
+			why = append(why, "selects ."+sel.Sel.Name)
+		}
+		return true
+	})
+	if len(why) > 0 {
+		c.Unknown = append(c.Unknown, fmt.Sprintf("%s: no CI build compiles it, and it %s, which the census reads only type-checked", rel, strings.Join(slices.Compact(why), ", ")))
+		return
+	}
+	c.Untargeted = append(c.Untargeted, rel)
 }
 
 // goPackage type-checks one package from source, lists its rule references on changed lines

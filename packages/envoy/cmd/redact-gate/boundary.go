@@ -53,9 +53,15 @@ func (g *gate) boundary(dir string) census {
 	return c
 }
 
-// ciTargets is each GOOS/GOARCH the CI's Go checks build and vet the modules for
-// (.github/workflows/ci-job-envoy-go-checks.yaml), each of which the Go census loads a module for.
-var ciTargets = []string{"linux/amd64", "darwin/arm64"}
+// ciTargets is each GOOS/GOARCH CI builds the modules for, each of which the Go and boundary
+// censuses load a module for: linux/amd64, the host, which every job builds and tests on;
+// darwin/arm64, which the Go checks vet every module for (ci-job-envoy-go-checks.yaml,
+// ci-job-typecheck.yaml, ci-job-envoy-infra-go.yaml); and linux/arm64 and darwin/amd64, which
+// the listener's archives, the legion and agent-secrets releases and their notices build
+// (.github/go-release-targets.json, envoy-infra-targets.json, agent-secrets-client-targets.json,
+// scripts/go-release-notices.sh). The host's comes first, so its build is the one each other's
+// file sets are compared with.
+var ciTargets = []string{"linux/amd64", "darwin/arm64", "linux/arm64", "darwin/amd64"}
 
 // ciTagSets is every build tag list the CI's vet passes for mod on any of ciTargets, as
 // .github/scripts/go_build_tags.py reads them off the module, and the empty list, which is a build
@@ -96,6 +102,8 @@ func (c *census) addBoundary(out []byte, prefix, what string, needAPI bool) {
 			summary = scanner.Text()
 		case "API":
 			c.Boundary = append(c.Boundary, finding{File: prefix, What: strings.Join(fields[1:], ": "), Kind: "api", OK: true, Why: what})
+		case "TARGET":
+			c.Targets = append(c.Targets, fmt.Sprintf("boundary census, %s, for %s: %s", what, strings.Join(fields[1:2], ""), strings.Join(fields[2:], ", ")))
 		case "ok", "FAIL":
 			if len(fields) < 4 {
 				c.Unknown = append(c.Unknown, fmt.Sprintf("boundary census: %s: a line it cannot read: %q", what, scanner.Text()))

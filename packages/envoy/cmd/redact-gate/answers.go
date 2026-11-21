@@ -18,14 +18,16 @@ import (
 // and the box's method that holds a field with it (recorder); and the functions whose unrecorded
 // remote text the census allows, each with why.
 type answersConfig struct {
-	Reader   []string       `json:"reader"`
-	Answer   string         `json:"answer"`
-	Methods  []string       `json:"methods"`
-	Readers  []string       `json:"readers"`
-	Makers   []string       `json:"makers"`
-	Record   string         `json:"record"`
-	Recorder string         `json:"recorder"`
-	Exempt   []answerExempt `json:"exempt"`
+	Reader    []string       `json:"reader"`
+	Answer    string         `json:"answer"`
+	Methods   []string       `json:"methods"`
+	Functions []string       `json:"functions"`
+	Readers   []string       `json:"readers"`
+	Decoders  []string       `json:"decoders"`
+	Makers    []string       `json:"makers"`
+	Record    string         `json:"record"`
+	Recorder  string         `json:"recorder"`
+	Exempt    []answerExempt `json:"exempt"`
 }
 
 // answerExempt is a function of one file whose remote text the answer census finds held with no
@@ -56,18 +58,23 @@ type answerExempt struct {
 //     the record of the answer it came from: the box's recorder given record(resp)..., or a local
 //     set only from it, where resp is the response the text names (a header, the status line);
 //     text that names no response, or a record of another response, fails unless
-//     gate.answers.exempt names its function with why.
+//     gate.answers.exempt names its function with why;
+//   - the rules of answers_reach.go: a reader or a maker referred to other than by its call, a
+//     decode into a value that holds the box outside Answer.Decode, net/http.ReadResponse given no
+//     request, and a response handed whole to a parameter of interface type.
 //
 // In the box's own package the census checks the reader's type: its exported methods are exactly
-// gate.answers.methods, so no method that answers the bytes can be added unseen.
+// gate.answers.methods, and the package's exported functions that take it exactly
+// gate.answers.functions, so no method or function that answers the bytes can be added unseen.
 func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) {
 	cfg := g.inv.Gate.Answers
-	boxPkg, _ := splitTypeName(g.inv.Gate.Box.Type)
+	boxPkg, boxName := splitTypeName(g.inv.Gate.Box.Type)
 	if path == boxPkg {
 		g.answerMethods(c, dir, fset, pkg, cfg)
+		g.answerFunctions(c, dir, fset, pkg, cfg)
 		return
 	}
-	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers)}
+	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers), decoders: set(cfg.Decoders), boxPkg: boxPkg, boxName: boxName}
 	for _, f := range files {
 		rel, _ := filepath.Rel(dir, fset.Position(f.Pos()).Filename)
 		rel = filepath.ToSlash(rel)
@@ -108,6 +115,9 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 			}
 			switch n := n.(type) {
 			case *ast.SelectorExpr:
+				if name, ok := a.reference(n, parents); ok {
+					add("reference", false, exprString(n), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
+				}
 				switch {
 				case a.responseField(n, "Body"):
 					switch {
@@ -125,7 +135,20 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 						add("status", false, exprString(n), "a read of an answer's status line as the answering party wrote it, whose phrase is its own words: name the status through redact.StatusLine (oauth2call.StatusLine), its code and the standard phrase")
 					}
 				}
+			case *ast.Ident:
+				if name, ok := a.reference(n, parents); ok {
+					add("reference", false, exprString(n), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
+				}
 			case *ast.CallExpr:
+				if why := a.decodedIntoBox(n, function()); why != "" {
+					add("decode", false, exprString(n), why)
+				}
+				if a.readsNoRequest(n) {
+					add("no-request", false, exprString(n), "net/http.ReadResponse given no request: the answer it reads holds no record of what the request carried, so none of its credentials is redacted from the answer's words; hand it the request the answer answers")
+				}
+				if arg := a.wholeResponse(n); arg != nil {
+					add("whole-response", false, exprString(arg), "a response handed whole to a parameter of interface type, where fmt, log, slog and encoding/json print the status line the answering party wrote and every header it sent, as they came: name its status through redact.StatusLine and a header through redact.Header")
+				}
 				name := a.calleeName(n)
 				switch {
 				case slices.Contains(cfg.Reader, name):
@@ -175,9 +198,10 @@ func (g *gate) answerMethods(c *census, dir string, fset *token.FileSet, pkg *ty
 }
 
 type answerReader struct {
-	info            *types.Info
-	cfg             answersConfig
-	readers, makers map[string]bool
+	info                      *types.Info
+	cfg                       answersConfig
+	readers, makers, decoders map[string]bool
+	boxPkg, boxName           string
 }
 
 // responseField reports whether sel selects the field name of a net/http.Response, directly or
