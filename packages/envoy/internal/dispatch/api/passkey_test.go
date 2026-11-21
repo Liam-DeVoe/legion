@@ -154,7 +154,7 @@ func TestAResetsRevocationIsLoggedAsTheResets(t *testing.T) {
 // Reset left, so the broker refuses an approve that names the old account, or an older
 // generation, and erin's machine never gets a token for that login.
 //
-// Control: the Reset keeps the address's account (store.PgPasskeys.ResetTx recording no new
+// Control: the Reset keeps the address's account (store.PgPasskeys.EndAccountTx recording no new
 // subject), and the late approve mints the login and the row fails naming its credential.
 func TestAnApprovalInFlightAcrossAResetMintsNoLogin(t *testing.T) {
 	r := newRestrictedTokenRig(t, withPasskeys)
