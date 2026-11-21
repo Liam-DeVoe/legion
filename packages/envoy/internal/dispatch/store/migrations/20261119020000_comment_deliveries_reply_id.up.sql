@@ -1,5 +1,5 @@
 -- pgmigrate:non-transactional
--- 20261121180000_comment_deliveries_reply_id.up.sql
+-- 20261119020000_comment_deliveries_reply_id.up.sql
 -- comment_deliveries.reply_id (0039) names the reply that answered a delivered comment, through a
 -- foreign key into comments and no index, and Postgres indexes the referenced side of a key and
 -- never the referencing side. So two reads made while the erase (envoy-dispatch erase) holds the

@@ -1,12 +1,12 @@
 -- pgmigrate:non-transactional
--- 20261121180100_asks_handed_back_reply_id.up.sql
+-- 20261119020100_asks_handed_back_reply_id.up.sql
 -- asks.handed_back_reply_id (0064, its key 0066) names the reply a hand-back answered, through a
 -- foreign key into comments and no index, and Postgres indexes the referenced side of a key and
 -- never the referencing side. So two reads made while the erase (envoy-dispatch erase) holds the
 -- owner locks of a comment's issue or document read the whole of asks: its count of the rows that
 -- point at the comment it erases (grapherase's readBlockers, which refuses the run while one does),
 -- and the check of this key that the delete of the comment's row makes. This index lets both reads
--- probe asks by the reply's id instead. 20261121180000 is the same index on comment_deliveries.
+-- probe asks by the reply's id instead. 20261119020000 is the same index on comment_deliveries.
 --
 -- It holds the rows that name a reply alone, since neither read asks for a row that names none:
 -- `handed_back_reply_id in (...)` and the key's check `handed_back_reply_id = $1` each imply

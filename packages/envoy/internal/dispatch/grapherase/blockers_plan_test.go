@@ -151,7 +151,7 @@ const blockersReplyRows = 5000
 // read sends for the comment seedAgreeingStore writes, with the arguments it binds
 // (explaintest.RecordedTx). With hash and merge joins off, under each plan-cache mode the plan
 // must read the comment's row through an index and each table through its reply index
-// (20261121180000, 20261121180100) by its key (explaintest.RequireEachRowProbedOnce). The
+// (20261119020000, 20261119020100) by its key (explaintest.RequireEachRowProbedOnce). The
 // control is the same count with that index dropped inside the explaining transaction, as the
 // database stood before those migrations, which must plan, run and fail the check under both
 // modes: it reads the table whole.

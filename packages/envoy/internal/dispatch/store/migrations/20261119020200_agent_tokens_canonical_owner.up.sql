@@ -1,5 +1,5 @@
 -- pgmigrate:non-transactional
--- 20261121192554_agent_tokens_canonical_owner.up.sql — the index a read of one address's personal
+-- 20261119020200_agent_tokens_canonical_owner.up.sql — the index a read of one address's personal
 -- tokens takes.
 --
 -- Every reader that finds an address's tokens compares the stored owner in the form people.email

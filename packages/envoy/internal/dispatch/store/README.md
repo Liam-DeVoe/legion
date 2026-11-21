@@ -36,7 +36,7 @@ The concurrent mode above is the way through:
 a first line of exactly `-- pgmigrate:non-transactional`, then one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, non-unique and named.
 `graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration.
 An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused, so a unique key on a table that size needs a stop-the-world migration instead.
-An expression index keeps the values it computed when its immutable function is replaced, so a migration that redefines `canonical_login` (`20261117000831`) runs `REINDEX INDEX CONCURRENTLY agent_tokens_canonical_owner` (`20261121192554`) in the same release.
+An expression index keeps the values it computed when its immutable function is replaced, so a migration that redefines `canonical_login` (`20261117000831`) runs `REINDEX INDEX CONCURRENTLY agent_tokens_canonical_owner` (`20261119020200`) in the same release.
 
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.

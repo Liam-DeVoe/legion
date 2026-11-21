@@ -260,7 +260,7 @@ func TestATokenMintedWhileARefusedTokenWasLiveMintsAndApprovesNothingOnceTheBind
 // agent_tokens there would grow each such request with the whole table. Over 5000 tokens of 500
 // other addresses, analyzed, the statement the request runs (personalTokenActorSQL), explained
 // with sequential scans off, scans agent_tokens sequentially nowhere, searches
-// agent_tokens_canonical_owner (migration 20261121192554) by its key, canonical_login(owner), and
+// agent_tokens_canonical_owner (migration 20261119020200) by its key, canonical_login(owner), and
 // reads every index it searches by that index's first key.
 //
 // Control, run by hand: with that index dropped before the plan, the row fails twice: "the arm's

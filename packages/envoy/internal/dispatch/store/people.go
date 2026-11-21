@@ -416,7 +416,7 @@ const AddressLockSharedSQL = `select pg_advisory_xact_lock_shared(hashtext('disp
 // model.CanonicalLogin's (canonical_login, migration 20261117000831: every Unicode space trimmed,
 // A-Z lowered and nothing else folded), so a token whose owner some writer stored in another case,
 // or wrapped in a tab or a no-break space, is the address's too. That comparison can read the
-// address's own tokens through agent_tokens_canonical_owner (migration 20261121192554), which
+// address's own tokens through agent_tokens_canonical_owner (migration 20261119020200), which
 // agent_tokens_owner_created_at, on the owner as stored, cannot serve.
 const revokeAddressTokensSQL = `
 	update agent_tokens set revoked_at = now()

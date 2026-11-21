@@ -139,7 +139,7 @@ func RefusedTokenSQL(token, people string) string {
 // address was revoked is not, so a later time with a build without the binding refuses nothing the
 // holder mints then. api.tokenAccountReplaced refuses such a token from the moment the binding
 // holds, and CatchUpAccountBinding revokes it. It can read only the address's tokens, through
-// agent_tokens_canonical_owner (migration 20261121192554), since api.personalTokenActor asks it on
+// agent_tokens_canonical_owner (migration 20261119020200), since api.personalTokenActor asks it on
 // every request of a token recording no account made after its address's recording.
 func MintedWhileRefusedLiveSQL(token, people string) string {
 	return "(" + token + ".subject is null and " + people + ".sub_recorded_at is not null and exists (select from agent_tokens refused" +
