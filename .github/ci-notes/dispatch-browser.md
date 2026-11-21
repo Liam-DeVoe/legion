@@ -945,9 +945,10 @@ it hands both to the merge job
 .github/scripts/dispatch-browser-run-reads.sh gives this job that one leg, on both lanes, so
 reading one owes it a blob in every run, and a row of it that failed and passed on its retry
 is counted in reading two's flake rate and named there. Before that upload no row of this job
-reached the merged report: in runs 44854372892, 44858725999, 44854495163 and 44854499318 the
-second row of e2e/search-tiers.e2e.ts failed its first attempt and passed its retry, this job's
-log said 1 flaky, and the merge job's flake rate could count none of it. This job's own
+reached the merged report: in runs 44854372892 and 44858725999 the second row of
+e2e/search-tiers.e2e.ts failed its first attempt and passed its retry and this job's log said
+1 flaky, in runs 44854495163 and 44854499318, which ran every row twice, it said 2 flaky, and
+the merge job's flake rate could count none of it. This job's own
 conclusion is still what the caller's `dispatch-browser` job reads, and the verdict step is not
 given it; a failed row of it fails that step through the merged report as any other leg's does.
 
@@ -1273,7 +1274,8 @@ each alone leg's, the embedder job's and the two-process job's two runs' - publi
 readings of it - the rows, the flake rate, the legs that did not succeed and the row
 durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
 and not seven. A leg is one Playwright run that uploads a blob report; which legs a job runs is
-read from its name by .github/scripts/dispatch-browser-run-reads.sh, whose head lists them.
+read from its name by .github/scripts/dispatch-browser-run-reads.sh, in the `legs` field its
+jq gives each job.
 The pull-request lane owes the four shards and the embedder; the full lane owes those, the
 three alone legs and the two-process job's two. The visual job runs no leg, for the reason
 .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.

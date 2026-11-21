@@ -18,7 +18,7 @@ import { test } from "./test";
 import { withAlice } from "./users";
 
 for (const route of realStackScannedRoutes) {
-  // SLOW(>=2s): a database reset, the review corpus where the worker has not seeded it yet, a
+  // SLOW(>=2s): the fakes' reset, the review corpus where the worker has not seeded it yet, a
   // sign-in and two axe scans of a drawn page.
   test(`${route.name} has no serious or critical accessibility violation in light or dark`, async ({
     browser,
