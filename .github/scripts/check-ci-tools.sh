@@ -160,6 +160,10 @@
 #        * its `digest` is 64 lower-case bare hex, the file `pinned_in` names can be read as
 #          text, and that digest occurs in it, each refused in its own words, so one source
 #          never means no checksum;
+#        * where it also carries `pinned_as: ARG <NAME>`, its `digest` is the value of the last
+#          `ARG <NAME>=` line of that file, exactly: an occurrence alone is met by a comment
+#          that kept an old digest after the ARG moved, which is what this key closes for an
+#          entry pinned by a Dockerfile ARG;
 #        * no row already covers its repository, compared without regard to case because
 #          github.com reads an owner and a repository that way, so a decline never bypasses a
 #          tool that has a second source;
@@ -1182,6 +1186,23 @@ for entry, repository in declines:
             f"in {pinned_in}, the file it names as the pin, so nothing checks the bytes this "
             f"entry declines a second source for. One source never means no checksum."
         )
+    elif str(entry.get("pinned_as") or "").strip():
+        pinned_as = str(entry["pinned_as"]).strip()
+        arg = re.fullmatch(r"ARG\s+(\w+)", pinned_as)
+        value = last_arg(re.compile(rf"^ARG\s+{arg[1]}=(\S+)\s*$"), pin_text) if arg else ""
+        if not arg:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(entry, 'pinned_as')}: this entry's pinned_as is "
+                f"{one_line(pinned_as)}, and the one form it takes is `ARG <NAME>`, the build "
+                f"argument of {pinned_in} whose value is this entry's digest."
+            )
+        elif value != digest:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(entry, 'digest')}: this entry's digest is {digest} and "
+                f"{pinned_in} pins {pinned_as}={value or '(no such ARG)'}. The install checks the "
+                f"bytes against that ARG, so one of the two admits bytes the other refuses: move "
+                f"this digest to the ARG's value, or the ARG to this digest."
+            )
 
     covered_by = row_repositories.get(repository.casefold())
     if covered_by:

@@ -466,11 +466,13 @@ no_second_source:
   # Oh My Pi, the build .omp-pin names, which .github/actions/install-omp installs for the jobs
   # whose tests run it. The URL is built from the pin (`github:<owner>/<repo>@<version>`, the tag
   # being `v` and the version), and the digest is `ARG OMP_SHA256` of the worker image's
-  # Dockerfile, which its tools stage checks the same archive against, so a bump of .omp-pin moves
-  # that ARG and this digest in one commit, and this gate refuses the commit that moves only one.
+  # Dockerfile, which its tools stage checks the same archive against. `pinned_as` names that ARG,
+  # so the gate holds this digest to its value exactly, and a bump of .omp-pin moves the ARG and
+  # this digest in one commit.
   - url: https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz
     digest: 9fd84e4ff44cddef87f323100e5cb30ca235284033c8a05192f90c69481fea68
     pinned_in: packages/daemon/docker/worker.Dockerfile
+    pinned_as: ARG OMP_SHA256
     why: >-
       The fork publishes this archive as a release asset of its own repository and nowhere else,
       and no copy is kept on purpose: a ghcr copy, as jj has, is one more set of bytes to fill and
