@@ -324,18 +324,7 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil || !ran {
 		return nil, err
 	}
-	// The walk carries where the task stands, not why it was stopped: the reason is read from the
-	// task's own row, the one source of it (record.Store.StopTask).
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-	if err != nil {
-		return nil, err
-	}
-	for _, task := range stored.Tasks {
-		if task.Task == w.Task {
-			return intake.LateReportOfStoppedTask(issue.Key, w.Task, task.StoppedReason, at.Position, w.Steps[at.Position-1].Role, fact.HandoffRecord != ""), nil
-		}
-	}
-	return nil, fmt.Errorf("late report of %s at generation %d: its plan holds no task %s", issue.Key, issue.Generation, w.Task)
+	return intake.LateReportOfStoppedTask(issue.Key, w.Task, w.StoppedReason, at.Position, w.Steps[at.Position-1].Role, fact.HandoffRecord != ""), nil
 }
 
 // spendLateHandoff keeps the handoff record fact names, a late report lateReport refused, as its
