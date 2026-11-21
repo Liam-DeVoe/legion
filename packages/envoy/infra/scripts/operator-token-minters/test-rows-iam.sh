@@ -48,7 +48,12 @@
 #   (bq) container.clusters.update, by which a holder turns on legacy ABAC, held on the project by
 #        an agent's Google service account exits 1;
 #   (bs) container.secrets.create, by which a holder makes a token Secret for a guarded
-#        ServiceAccount, held on the project by an agent's Google service account exits 1.
+#        ServiceAccount, held on the project by an agent's Google service account exits 1;
+#   (cb) the Cloud Build service agent holding roles/container.admin exits 1 unless --service-agent
+#        names it, and GKE's service agent holding it exits 0;
+#   (cd) rv11: grade-ci, cluster-admin on a fleet member, has the Workload Identity member ci/runner,
+#        and legion/worker may create pods in ci on the operator's cluster: exits 1 naming
+#        legion/worker, who can become ci/runner and so act as grade-ci.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -363,4 +368,52 @@ fi
 if row bs; then
   each new_container_row container.secrets.create
   passed "(bs) container.secrets.create held by an agent's Google service account exits 1"
+fi
+
+# --- (cb) Google's service agents: GKE's, GKE Hub's and Compute Engine's are allowed, and any other
+# only by --service-agent, since a product's agent acts for whoever uses that product. ---
+service_agent_row() {
+  local agent
+  base_world
+  case "$1" in
+    cloudbuild)
+      agent="service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+      iam "$project_res" roles/container.admin "serviceAccount:$agent"
+      run
+      want_status 1 "the Cloud Build service agent holding roles/container.admin"
+      want_text "FINDING serviceAccount:$agent: container.serviceAccounts.createToken," "the Cloud Build service agent holding roles/container.admin"
+      ;;
+    named)
+      agent="service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+      iam "$project_res" roles/container.admin "serviceAccount:$agent"
+      run --service-agent "$agent"
+      want_status 0 "the Cloud Build service agent named by --service-agent"
+      ;;
+    gke)
+      iam "$project_res" roles/container.admin "serviceAccount:service-$number@container-engine-robot.iam.gserviceaccount.com"
+      run
+      want_status 0 "GKE's service agent holding roles/container.admin"
+      ;;
+  esac
+}
+if row cb; then
+  each service_agent_row cloudbuild named gke
+  passed "(cb) another product's service agent holding roles/container.admin exits 1 unless --service-agent names it; GKE's exits 0"
+fi
+
+# --- (cd) rv11: who can become a Workload Identity member of an RBAC finding's Google account holds
+# what the finding gives the account. ---
+if row cd; then
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+  grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
+  add_sa operator-cluster ci runner
+  iam "$grade_ci_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[ci/runner]"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" ci ""
+  run
+  want_status 1 "legion/worker may create pods in ci, whose runner is grade-ci's Workload Identity member"
+  want_text "FINDING system:serviceaccount:legion:worker: create pods in ci, so it can become system:serviceaccount:ci:runner" \
+    "legion/worker may create pods in ci, whose runner is grade-ci's Workload Identity member"
+  passed "(cd) rv11: who can become the Workload Identity member of an RBAC finding's Google account exits 1 naming it"
 fi

@@ -32,6 +32,21 @@ for email in $(printf '%s\n' ${RBAC_ACCOUNTS[@]+"${!RBAC_ACCOUNTS[@]}"} | sort);
   live_iam "$check"
 done
 
+# --- Who can become a Workload Identity member of such an account: a ServiceAccount ns/name the
+# account's analysis lists as a member of the operator's pool acts as the account on every cluster
+# of the pool, so who can run as it there (a pod in ns, a token of it) holds what the RBAC finding
+# gives the account. Each cluster's read is followed again from those members (follow_members). ---
+members_json='{}'
+for entry in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+  IFS=$'\t' read -r principal _ _ resource _ <<<"$entry"
+  [[ "$principal" =~ ^serviceAccount:([^[]+)\.svc\.id\.goog\[([^/]+)/([^]]+)\]$ ]] || continue
+  [ "${BASH_REMATCH[1]}" = "$POOL_PROJECT" ] || continue
+  [[ "$resource" == //iam.googleapis.com/projects/*/serviceAccounts/* ]] || continue
+  [ -n "${RBAC_ACCOUNTS[${resource##*/}]:-}" ] || continue
+  members_json="$(jq -c --arg k "${BASH_REMATCH[2]}:${BASH_REMATCH[3]}" --arg v "${resource##*/}" '. + {($k): $v}' <<<"$members_json")"
+done
+[ "$members_json" = '{}' ] || follow_members "$members_json"
+
 # --- live: who can set IAM on the projects' ancestors: --project's, the pool project's and each
 # fleet member's. A holder of a folder's or the organization's setIamPolicy can grant itself any role
 # below it, container.admin on the project included, and a holder of the organization's

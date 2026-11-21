@@ -5,9 +5,18 @@
 # --- Principals. ---
 
 system_namespace() { case "$1" in kube-system | gke-* | gmp-*) return 0 ;; *) return 1 ;; esac; }
-# service_agent: a Google-managed service agent, which no principal of the project can act as.
+# service_agent MEMBER: a Google-managed service agent the deployment needs, which no principal of
+# the project can act as: GKE's (service-<number>@container-engine-robot), GKE Hub's
+# (service-<number>@gcp-sa-gkehub) and Compute Engine's (service-<number>@compute-system), and
+# each --service-agent. Any other service-<number>@gcp-sa-* account is judged as any account is: a
+# product's agent acts for whoever uses that product in the project.
 service_agent() {
-  [[ "$1" =~ ^serviceAccount:service-[0-9]+@(gcp-sa-[a-z0-9-]+|container-engine-robot|compute-system)\.iam\.gserviceaccount\.com$ ]]
+  local named
+  [[ "$1" =~ ^serviceAccount:service-[0-9]+@(container-engine-robot|gcp-sa-gkehub|compute-system)\.iam\.gserviceaccount\.com$ ]] && return 0
+  for named in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
+    [ "serviceAccount:$named" != "$1" ] || return 0
+  done
+  return 1
 }
 # account_project EMAIL sets ACCOUNT_PROJECT to the project a Google service account's email
 # names, or --project.

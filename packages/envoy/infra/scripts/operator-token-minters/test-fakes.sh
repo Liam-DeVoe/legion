@@ -96,9 +96,11 @@ case "${words[*]}" in
       { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
     ;;
   "container fleet scopes list")
-    # The fleet's scopes: the world's scopes.json, or none.
+    # As gcloud answers it: the permitted scopes at locations/global alone, so a scope elsewhere is
+    # not listed. The check lists scopes through the API (fake curl); this case lets a run of an
+    # older script, which asked gcloud, be compared on the same world.
     [ ! -e "$world/refuse-scopes" ] || refuse container.fleet.scopes.list "Permission 'gkehub.scopes.list' denied on 'projects/${flag[project]:-}/locations/global/scopes'"
-    if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi
+    { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } | jq '[.[] | select(.name | contains("/locations/global/"))]'
     ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
@@ -249,6 +251,45 @@ case "${args[*]}" in
           subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}])}' \
       "$dir/grants.json"
     ;;
+  "get secrets -n "*" --field-selector type=kubernetes.io/service-account-token -o json")
+    # A namespace's token Secrets: the world's token-secrets.json entries ({namespace, name}) there.
+    [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
+    { if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
+      jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
+        | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}]}'
+    ;;
+  "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
+    # The cluster's webhook configurations: the world's webhooks.json (each a configuration object), or none.
+    [ ! -e "$dir/refuse-webhooks" ] || forbidden mutatingwebhookconfigurations.admissionregistration.k8s.io 'list resource "mutatingwebhookconfigurations" in API group "admissionregistration.k8s.io"' container.mutatingWebhookConfigurations.list
+    { if [ -e "$dir/webhooks.json" ]; then cat "$dir/webhooks.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get customresourcedefinitions -o json")
+    # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none.
+    [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
+    { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get "*admissionpolic*" -o json")
+    # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
+    { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get --raw "*)
+    # Discovery of one group version: the world's raw.json, keyed by path, or the API server's 404.
+    jq -e --arg p "${args[2]}" '.[$p] // error("no such path")' "$dir/raw.json" 2>/dev/null ||
+      { echo "Error from server (NotFound): the server could not find the requested resource" >&2; exit 1; }
+    ;;
+  "get roles,clusterroles --all-namespaces -o json")
+    # The built-in cluster-admin role, and one ClusterRole of each grant (planted-<its index>, as the
+    # bindings' list names it), holding the grant as a rule, limited by name when the grant names one.
+    [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
+    jq '{apiVersion: "v1", kind: "List", items: (
+      [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "cluster-admin"},
+        rules: [{apiGroups: ["*"], resources: ["*"], verbs: ["*"]}]}]
+      + [to_entries[] | .key as $i | .value as $g | {
+          apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "planted-\($i)"},
+          rules: [{apiGroups: [$g.group], verbs: [$g.verb],
+                   resources: [if $g.resource == "*" or ($g.subresource // "") == "" then $g.resource else "\($g.resource)/\($g.subresource)" end]}
+                  + (if $g.name then {resourceNames: [$g.name]} else {} end)]}])}' "$dir/grants.json"
+    ;;
   "get namespace "*" -o name")
     namespace="${args[2]}"
     if grep -qxF -- "$namespace" "$dir/namespaces"; then
@@ -318,8 +359,10 @@ EOF
 
 # --- Fake curl: the GKE Hub API's GET projects/<p>/locations/-/memberships, as v1 answers it
 # (ListMembershipsResponse: resources, nextPageToken, unreachable), one membership a page, the
-# unreachable locations on the first page alone. The bearer token must come in through the
-# configuration curl reads on stdin (-K -), never on the command line. ---
+# unreachable locations on the first page alone; and GET projects/<p>/locations/-/scopes
+# (ListScopesResponse: scopes, nextPageToken) from the world's scopes.json, one scope a page. The
+# bearer token must come in through the configuration curl reads on stdin (-K -), never on the
+# command line. ---
 fake curl <<'EOF'
 config="$(cat)"
 url="" token=""
@@ -341,12 +384,20 @@ done
 scheme=Bearer
 [[ "$config" == *"header = \"Authorization: $scheme example-access-token\""* ]] || { echo "fake curl: no bearer token on stdin" >&2; exit 2; }
 fleet_project="$(jq -r .project "$world/fleet.json")"
-if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
-  project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
-  printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' \
-    "'gkehub.memberships.list'" "'projects/${project_of%%/*}/locations/-/memberships'"
+deny() {
+  printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' "'$1'" "'$2'"
   echo "curl: (22) The requested URL returned error: 403" >&2
   exit 22
+}
+project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
+if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
+  [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
+  { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
+    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "\($at + 1)"} else {} end)'
+  exit 0
+fi
+if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
+  deny gkehub.memberships.list "projects/${project_of%%/*}/locations/-/memberships"
 fi
 jq --argjson at "${token:-0}" '
   . as $w
