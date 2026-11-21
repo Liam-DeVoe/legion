@@ -34,7 +34,9 @@
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
 #                     that gives a right below to a subject that is not a person, a system
 #                     namespace's, a system component or the operator's own Google service account
-#                     is a finding. A binding to a role the render does not hold (other than the
+#                     is a finding. A rule limited by resourceNames on impersonate or escalate is a
+#                     finding naming the names (impersonating the group system:masters by name is
+#                     cluster-admin). A binding to a role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
 #   code: IAM         Each --iam-preview file (`pulumi preview --json --show-sames` of a program that
@@ -64,8 +66,14 @@
 #                     resource the API server's discovery (`kubectl api-resources --namespaced
 #                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
 #                     controller may make a pod from it, as an agent sandbox does; a discovery that
-#                     cannot be read whole is UNKNOWN. A review without the groups would miss every
-#                     grant made to a group. Its witness is a review for the group the built-in
+#                     cannot be read whole is UNKNOWN. RBAC allows a request against a rule with
+#                     resourceNames only when the request names one, so the rights also name each
+#                     name: impersonate groups for system:masters and every Group subject the
+#                     bindings name, impersonate users for every User subject, and escalate, bind,
+#                     update and patch on each role bound to a reviewed principal
+#                     (named-rights.jq); every other cluster of the pool is asked them too. A
+#                     review without the groups would miss every grant made to a group. Its witness
+#                     is a review for the group the built-in
 #                     cluster-admin binding names, system:masters, which must be allowed: an API
 #                     server whose answers cannot say yes proves nothing by saying no. Each
 #                     --agent-namespace pattern that matches no namespace holding a ServiceAccount

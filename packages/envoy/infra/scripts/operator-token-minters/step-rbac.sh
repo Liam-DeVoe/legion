@@ -20,9 +20,9 @@ else
   mark
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
   # list one, the full list's label stays.
-  rights="$(jq -c --argjson guard "$GUARD_RIGHTS" '. + $guard | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$(rights_json db)")"
+  rights="$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")"
   custom_rights "$KUBE" plain || unknown "$step" "$CUSTOM_ERROR"
-  rights="$(jq -c --argjson custom "$CUSTOM_RIGHTS" '. + $custom | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$rights")"
+  rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
@@ -66,6 +66,10 @@ else
     printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
   done < <(printf '%s\n' ${seen_groups[@]+"${!seen_groups[@]}"} | sed '/^$/d' | sort)
   bound_subjects "$KUBE" || unknown "$step" "$BOUND_ERROR"
+  # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
+  # and user by name, and escalate, bind, update or patch each role bound to a reviewed principal.
+  named_rights
+  rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
   if [ "$((accounts + ${#seen_accounts[@]} + BOUND))" -eq 0 ]; then
     unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject, so there is no principal to review"
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights"; then

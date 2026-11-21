@@ -49,7 +49,8 @@ read_other_cluster() {
   done 3<"$WORK/serviceaccounts.rec"
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
-  guard_rights="$(jq -c --argjson custom "$CUSTOM_RIGHTS" '. + $custom | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$GUARD_RIGHTS")"
+  named_rights
+  guard_rights="$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$NAMED_RIGHTS")"
   if [ "$((accounts + BOUND))" -eq 0 ]; then
     unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject to review, so there is no principal to review"
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then

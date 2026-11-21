@@ -305,6 +305,66 @@
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate groups system:masters cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate groups system:masters cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate groups system:masters cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "impersonate users grade-ci@example-grade.iam.gserviceaccount.com cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate users grade-ci@example-grade.iam.gserviceaccount.com cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "impersonate users grade-ci@example-grade.iam.gserviceaccount.com cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "update clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch clusterroles.rbac.authorization.k8s.io planted-3 cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
       "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
       "right": "container.secrets.get on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
       "role": "roles/container.admin",

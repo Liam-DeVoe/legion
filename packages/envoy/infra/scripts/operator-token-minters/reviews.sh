@@ -137,12 +137,13 @@ custom_rights() {
 # to $WORK/principals.rec: each User subject of its ClusterRoleBindings and RoleBindings that
 # k8s_subject does not allow and that the file does not hold already, with system:authenticated
 # (system:anonymous with system:unauthenticated). A person's User subject, every Group subject and
-# every ServiceAccount subject are left out. Sets BOUND to how many it added; returns 1 with
-# BOUND_ERROR when the API server refused the list or answered no JSON.
+# every ServiceAccount subject are left out. Sets BOUND to how many it added, and BINDINGS_OK to
+# whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
+# server refused the list or answered no JSON.
 bound_subjects() {
   local kind name label
   local -A held=()
-  BOUND=0 BOUND_ERROR=""
+  BOUND=0 BOUND_ERROR="" BINDINGS_OK=false
   if ! kubectl --kubeconfig "$1" get clusterrolebindings,rolebindings --all-namespaces -o json >"$WORK/bindings.json" 2>"$WORK/bindings.err"; then
     BOUND_ERROR="the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings, container.clusterRoleBindings.list and container.roleBindings.list on GKE): $(first_line "$WORK/bindings.err")"
     return 1
@@ -152,6 +153,7 @@ bound_subjects() {
     BOUND_ERROR="the API server's list of bindings is not JSON: $(first_line "$WORK/bindings.err")"
     return 1
   fi
+  BINDINGS_OK=true
   while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
   while IFS="$US" read -r -u 7 kind name; do
     k8s_subject "$kind" "" "$name"
@@ -167,3 +169,16 @@ bound_subjects() {
     BOUND=$((BOUND + 1))
   done 7<"$WORK/bindings.rec"
 }
+# named_rights: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster whose
+# bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate groups
+# and users by name, and escalate, bind, update and patch by name on each role bound to a reviewed
+# principal. When the bindings could not be read, it holds impersonate groups system:masters alone.
+named_rights() {
+  local reviewed bindings='{"items": []}'
+  reviewed="$(cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
+  NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" -f "$LIB/named-rights.jq" <<<"$bindings")"
+}
+# with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
+# where both hold one, RIGHTS's label stays.
+with_rights() { jq -c --argjson more "$2" '. + $more | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$1"; }

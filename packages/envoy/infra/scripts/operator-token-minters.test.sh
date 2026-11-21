@@ -125,7 +125,12 @@
 #   (an) each escalation right alone, given to ci/runner on another cluster of the pool (impersonate
 #        users, groups and serviceaccounts, escalate and bind clusterroles, create and patch
 #        clusterrolebindings cluster-wide; bind and escalate roles and create and patch rolebindings
-#        in envoy-operator), exits 1 naming it.
+#        in envoy-operator), exits 1 naming it;
+#   (ao) rights limited by name: legion/worker may impersonate the group system:masters by name,
+#        impersonate a named user bound to cluster-admin, or escalate a named clusterrole bound to
+#        it; each exits 1 naming the name;
+#   (ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the
+#        names, with every live step refused.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -558,7 +563,10 @@ rbac_right_row() {
   run
   want_status 1 "$right allowed to legion/worker"
   want_line "FINDING system:serviceaccount:legion:worker: $right" "$right allowed to legion/worker"
-  [ "$(count_prefix 'FINDING ')" -eq 1 ] || fail "$right allowed to legion/worker: want that one finding"
+  # An unnamed grant also allows each name the check asks by name (a bound group or user, a bound
+  # role), so every finding must name legion/worker, not only one.
+  [ "$(count_prefix 'FINDING system:serviceaccount:legion:worker: ')" -eq "$(count_prefix 'FINDING ')" ] ||
+    fail "$right allowed to legion/worker: a finding names another principal"
 }
 if row b; then
   each rbac_right_row "${rbac_rights[@]}"
@@ -1492,6 +1500,57 @@ escalation_row() {
 if row an; then
   each escalation_row "${escalation_rights[@]}"
   passed "(an) each of the ${#escalation_rights[@]} escalation rights, given alone to ci/runner on another cluster of the pool, exits 1 naming it"
+fi
+
+# --- (ao) Rights limited by resource name, which a review naming nothing never finds. ---
+named_right_row() {
+  local planted want
+  base_world
+  case "$1" in
+    group)
+      subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" groups "" "" system:masters
+      want="impersonate groups system:masters cluster-wide"
+      ;;
+    user)
+      cluster_admin operator-cluster "$(user_subject alice@example.com)"
+      subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" users "" "" alice@example.com
+      want="impersonate users alice@example.com cluster-wide"
+      ;;
+    role)
+      # The fake names each grant's ClusterRole planted-<its index>; this one is bound to legion/worker.
+      planted="planted-$(jq length "$world/clusters/operator-cluster/grants.json")"
+      subject_grant operator-cluster "$(sa_subject legion worker)" get "" configmaps "" legion ""
+      subject_grant operator-cluster "$(sa_subject legion worker)" escalate rbac.authorization.k8s.io clusterroles "" "" "$planted"
+      want="escalate clusterroles.rbac.authorization.k8s.io $planted cluster-wide"
+      ;;
+  esac
+  run
+  want_status 1 "legion/worker may $want, by name"
+  want_line "FINDING system:serviceaccount:legion:worker: $want" "legion/worker may $want, by name"
+}
+if row ao; then
+  each named_right_row group user role
+  passed "(ao) a ServiceAccount that may impersonate the group system:masters, impersonate a named user bound to cluster-admin, or escalate a named clusterrole bound to it, each by name, exits 1 naming the name"
+fi
+
+# --- (ap) The code read of a rule limited by resource name. ---
+if row ap; then
+  base_world
+  refuse_live
+  edit "$world/render.json" '.items += [
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "masters-and-view"},
+     rules: [{apiGroups: [""], resources: ["groups"], verbs: ["impersonate"], resourceNames: ["system:masters"]},
+             {apiGroups: ["rbac.authorization.k8s.io"], resources: ["clusterroles"], verbs: ["escalate"], resourceNames: ["view"]}]},
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding", metadata: {name: "worker-masters"},
+     roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "masters-and-view"},
+     subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]'
+  run
+  want_status 1 "a render's name-limited impersonate and escalate rules"
+  want_line "FINDING system:serviceaccount:legion:worker: impersonate groups system:masters cluster-wide, declared by ClusterRoleBinding worker-masters" \
+    "a render's name-limited impersonate rule"
+  want_line "FINDING system:serviceaccount:legion:worker: escalate clusterroles.rbac.authorization.k8s.io view cluster-wide, declared by ClusterRoleBinding worker-masters" \
+    "a render's name-limited escalate rule"
+  passed "(ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the names"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
