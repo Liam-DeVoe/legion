@@ -159,9 +159,9 @@ opens them in full, and Dispatch remembers that choice.
 
 A card with a parent or an open child stays where it is while Dispatch checks the move. When the
 move would break the parent-status rule, the Board asks the same question as the issue page (see
-[Statuses](#statuses)). The card moves only after you confirm a choice. While that question is
-open, a card with no parent and no open child that you drop moves at once, but Dispatch saves its
-move only after the question ends.
+[Statuses](#statuses)). The card moves only after you confirm a choice. A card with no parent and
+no open child that you drop while Dispatch checks another move, before that move's question opens,
+moves at once, but Dispatch saves its move only after the other move ends.
 
 If someone else moved cards while you were dragging, the move fails with "The board changed while
 you were moving this card - refreshed, try again." The Board shows the fresh order.

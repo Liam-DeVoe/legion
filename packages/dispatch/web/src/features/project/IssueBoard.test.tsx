@@ -1069,15 +1069,18 @@ test("a move the reader stopped says it may have been made, not that it failed",
 // status only after the rule's dry run; the route's answers are the real server's
 // (`status-change-fixtures.ts`).
 
+/** CORE-1 in Todo, a card with one open child. */
+const parentCard = issue({
+  key: "CORE-1",
+  progress: { children: { done: 0, total: 1 }, tasks: null },
+  rank: "a",
+  status: "todo",
+  title: "Parent",
+});
+
 /** CORE-1 with a child in work, then two cards with neither a parent nor a child. */
 const parentIssues: IssueSummary[] = [
-  issue({
-    key: "CORE-1",
-    progress: { children: { done: 0, total: 1 }, tasks: null },
-    rank: "a",
-    status: "todo",
-    title: "Parent",
-  }),
+  parentCard,
   issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
   issue({ key: "CORE-3", rank: "c", status: "in_progress", title: "Charlie" }),
 ];
@@ -1433,3 +1436,49 @@ for (const [board, lanes] of [
     }
   });
 }
+
+/** CORE-1 with its open child CORE-2 in work under it, both in Todo. */
+const childIssues: IssueSummary[] = [
+  parentCard,
+  issue({ key: "CORE-2", parent: "CORE-1", rank: "b", status: "todo", title: "Child" }),
+];
+
+// A keyboard move whose question's Move them with it lands moves the card's open child with it.
+// The board says the card's place once the card lands, and the child is in the cell by then: the
+// count holds it, and the card's rank PATCH names it as the card's neighbour there.
+test("Shift+H of a card with an open child, its question's Move them with it landed, announces the count with the child in the cell", async () => {
+  const user = userEvent.setup();
+  const statusChanges = answerTheQuestion(async () => ({
+    changed: [
+      { key: "CORE-2", parent: "CORE-1", previous_last_seq: 1, status: "backlog" },
+      { key: "CORE-1", parent: null, previous_last_seq: 1, status: "backlog" },
+    ],
+    issue: { ...patched, status: "backlog" },
+  }));
+  const patchIssue = patchInFlight();
+  const { cleanup } = renderBoard({}, undefined, childIssues);
+  try {
+    const shown = await screen.findByRole("region", { name: "Project board" });
+    const status = within(shown).getByRole("status", { name: "Board announcements" });
+    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+    await user.keyboard("{Shift>}H{/Shift}");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to Backlog?" });
+    const moveThem = within(question).getByRole("button", { name: "Move them with it" });
+    await waitFor(() => expect(moveThem).toBeEnabled());
+    // Asking: the card has not moved, so nothing is said of it yet.
+    expect(status.textContent).toBe("");
+
+    await user.click(moveThem);
+    await waitFor(() => expect(status.textContent).toBe("CORE-1 → Backlog, position 1 of 2"));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { rank: { before: "CORE-2" } }, keyedAttempt);
+    expect(
+      within(within(shown).getByRole("region", { name: "Backlog" }))
+        .getAllByRole("article")
+        .map((node) => node.textContent)
+    ).toEqual([expect.stringContaining("Parent"), expect.stringContaining("Child")]);
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});

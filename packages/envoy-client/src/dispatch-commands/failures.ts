@@ -44,30 +44,44 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
 }
 
 /**
- * What a `409 PARENT_STATUS_CONFLICT` prints, whichever command it answered (`runDispatchCli`):
- * the refusal's own message, then each issue that holds the rule as `KEY [status] title`, then the
- * flags of `dispatch issue-update` that move them. Dispatch writes each issue's status into the
- * message too, so a reader that takes no `issues` still sees them. Undefined for any other error,
- * and for a conflict that names no issue, which prints as its message alone.
+ * What a `409 PARENT_STATUS_CONFLICT` prints for the command `tool` it answered (`runDispatchCli`):
+ * the refusal's own message, then each issue that holds the rule as `KEY [status] title`, then
+ * what to do next. A create (`dispatch issue`) is refused only under a done parent, which the
+ * refusal names, and takes no flag that moves it: it prints how to reopen that parent first or
+ * file the issue elsewhere. Any other command prints the flags of `dispatch issue-update` that move
+ * the issues. Dispatch writes each issue's status into the message too, so a reader that takes no
+ * `issues` still sees them. Undefined for any other error, and for a conflict that names no issue,
+ * which prints as its message alone.
  */
-export function parentStatusConflictLines(error: unknown): string[] | undefined {
+export function parentStatusConflictLines(error: unknown, tool: string): string[] | undefined {
   if (!dispatchAnswered(error, 409) || error.code !== "PARENT_STATUS_CONFLICT") return undefined;
   const issues = error.issues ?? [];
   if (issues.length === 0) return undefined;
   const relations = new Set(issues.map((issue) => issue.relation));
+  const next =
+    tool === "dispatch_issue"
+      ? issues
+          .filter((issue) => issue.relation === "parent")
+          .map(
+            ({ key }) =>
+              `dispatch issue takes no flag that moves a done parent. Reopen ${key} first, with dispatch issue-update --issue ${key} --status <a status in work, such as in_progress>, then run dispatch issue again; or run it with --parent naming an open issue, or with no --parent.`
+          )
+      : [
+          ...(relations.has("child")
+            ? [
+                "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.",
+              ]
+            : []),
+          ...(relations.has("parent")
+            ? [
+                "dispatch issue-update --status takes --include-parent, which moves each issue above the issue that is not in work to in_progress.",
+              ]
+            : []),
+        ];
   return [
     messageFor(error),
     ...issues.map((issue) => `${issue.key} [${issue.status}] ${issue.title}`),
-    ...(relations.has("child")
-      ? [
-          "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.",
-        ]
-      : []),
-    ...(relations.has("parent")
-      ? [
-          "dispatch issue-update --status takes --include-parent, which moves each issue above the issue that is not in work to in_progress.",
-        ]
-      : []),
+    ...next,
   ];
 }
 
