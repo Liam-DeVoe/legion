@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unsafe"
 )
 
 // This file holds what the step (jjStep, jj.go) keeps of each revision argument of the push: the
@@ -33,30 +32,23 @@ func (c jjSent) word() string {
 	return c.id
 }
 
-// revision is revision argument i's word, split where the argument starts: prefix, what stands in
-// front of it (the name of --named, or the option's own spelling where the value is attached to
-// it), and argument, the revset the role wrote.
-func (p jjPush) revision(i int) (prefix, argument string) {
-	r := p.revisions[i]
-	return p.args[r.index][:r.offset], p.args[r.index][r.offset:]
-}
-
 // readRevisions reads each revision argument of the push with jj itself, before any rewrite: the
 // commits of it that the step can rewrite (readRevision), and, for an argument with such a commit,
 // every commit it names (revisionSets, read by ids), each with whether it is the working-copy
 // commit. A hidden commit the argument names is among them: jj's all() holds the hidden commits a
 // revset names, and their ancestors. An argument with no commit the step can rewrite has no set,
-// and costs one read: only sends reads the set, for an argument with a counted commit, which is one
-// the step can rewrite. Each commit the step can rewrite is followed from that read, on its own
-// (follow), with whether it is the working-copy commit. A hidden commit whose change has exactly
-// one visible commit stands for that commit, and is the working-copy commit where that one is, as
-// the commit id of @ is after a rewrite of @ hid it; one whose change has none, or more than one,
-// stands for itself. An argument whose read jj refuses (a revset jj cannot parse or resolve, an
-// ambiguous prefix, a commit that a git command made and that no jj command has imported yet) is
-// followed by nothing, and goes to the dry run and the real push as the role wrote it (given): jj
-// alone may still push such a commit, since the real push imports it, while none of the step's
-// commands, which run with --ignore-working-copy, imports it or can read it. The dry run then
-// fails as the read did, with jj's error, which the step cannot read (dryRunFilled).
+// and costs one read: only sends, for an argument with a counted commit, and checkArgMax, for one
+// with a followed commit, read the set, and each such commit is one the step can rewrite. Each
+// commit the step can rewrite is followed from that read, on its own (follow), with whether it is
+// the working-copy commit. A hidden commit whose change has exactly one visible commit stands for
+// that commit, and is the working-copy commit where that one is, as the commit id of @ is after a
+// rewrite of @ hid it; one whose change has none, or more than one, stands for itself. An argument
+// whose read jj refuses (a revset jj cannot parse or resolve, an ambiguous prefix, a commit that a
+// git command made and that no jj command has imported yet) is followed by nothing, and goes to
+// the dry run and the real push as the role wrote it (given): jj alone may still push such a
+// commit, since the real push imports it, while none of the step's commands, which run with
+// --ignore-working-copy, imports it or can read it. The dry run then fails as the read did, with
+// jj's error, which the step cannot read (dryRunFilled).
 func (s *jjStep) readRevisions() error {
 	s.revisionSets = make([][]jjSent, len(s.push.revisions))
 	s.revisionCommits = make([][]*jjFollowed, len(s.push.revisions))
@@ -321,14 +313,6 @@ func jjNotIn(ids []string, set map[string]bool) []string {
 	return out
 }
 
-// jjArgMax is the bound, in bytes, under which the step keeps each command of its own that grows
-// with the commits it names, the push's (checkArgMax) and each metaedit's (jjStep.metaedit): each
-// string of its arguments and of its environment with the NUL that ends it, and the pointer to each
-// (jjSize), which Linux refuses past 2,097,152 bytes, a quarter of the usual 8 MiB stack
-// (execve(2)). It is a variable so that this package's test binary, run as legion, can lower it
-// (TestMain); nothing in the legion binary changes it.
-var jjArgMax = 2_097_152
-
 // checkArgMax decides, before setAuthors rewrites rewrites, the current ids of the commits it
 // would rewrite, whether the push can still run once each revision argument has the words the
 // step would give it after that rewrite (revisionGiven). The step cannot know those words before
@@ -429,16 +413,6 @@ func (s *jjStep) commandSize(given []jjGiven) int {
 		jjSize(s.next, wrappedJJStepped+"=") + hex.EncodedLen(sha256.Size)
 }
 
-// jjSize is the bytes that Linux counts against jjArgMax (execve(2)) for words, strings of a
-// command's arguments or environment: each with the NUL that ends it, and the pointer to it.
-func jjSize(words ...string) int {
-	size := 0
-	for _, word := range words {
-		size += len(word) + 1 + int(unsafe.Sizeof(uintptr(0)))
-	}
-	return size
-}
-
 // sends is the commits revision argument i sends after the step, send, and their ids, sendIDs:
 // each commit it named before any rewrite (revisionSets), or, for the origin of one of counted, the
 // followed commits of it that no longer stand for themselves, the commit that stands for that one
@@ -474,35 +448,4 @@ func jjSameSet(ids []string, set map[string]bool) bool {
 		}
 	}
 	return true
-}
-
-// ids reads the commits of revset in one command: each one's full id, once, in jj's order, and
-// the id of the one that is the working-copy commit of the workspace the command runs in
-// (current_working_copy, which jj reads from the operation, --ignore-working-copy or not), or ""
-// where none is. A read jj refuses, or one that cannot start, is a jjStepFailure, its one error.
-func (s *jjStep) ids(revset string) (ids []string, working string, err error) {
-	out, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", revset, "-T", `commit_id ++ if(current_working_copy, " @") ++ "\n"`)
-	if err != nil {
-		return nil, "", err
-	}
-	for line := range strings.Lines(out) {
-		id, mark, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
-		if id == "" {
-			continue
-		}
-		ids = append(ids, id)
-		if mark == "@" {
-			working = id
-		}
-	}
-	return ids, working, nil
-}
-
-// eachID is the full id of each commit of revsets, read with one command for each (ids), each
-// once, in the order the reads print them (jjEachOnce).
-func (s *jjStep) eachID(revsets []string) ([]string, error) {
-	return jjEachOnce(revsets, func(revset string) ([]string, error) {
-		ids, _, err := s.ids(revset)
-		return ids, err
-	}, func(id string) string { return id })
 }

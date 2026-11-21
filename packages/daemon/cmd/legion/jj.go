@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -139,17 +140,10 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	return execWrapped("legion jj", next, words, withVariable(env, wrappedJJStepped, jjStepped(words)), nil, stderr)
 }
 
-// jjDryRunFlags are the words after those of a dry run of the push (dryRun): --dry-run,
+// jjDryRunFlags are the words after those of a dry run of the push (dryRunFilled): --dry-run,
 // --ignore-working-copy, --color=never, and `--config ui.quiet=false` as the last configuration,
 // so that neither a flag nor the repository's configuration silences it.
 var jjDryRunFlags = []string{"--dry-run", "--ignore-working-copy", "--color=never", "--config", "ui.quiet=false"}
-
-// dryRun is the dry run of the push with each revision argument as given gives it to that pass
-// (jjStep.words): the push's words without the ones that stay on the real push alone, then
-// jjDryRunFlags.
-func (s *jjStep) dryRun(given []jjGiven) []string {
-	return append(s.words(given, true), jjDryRunFlags...)
-}
 
 // jjStep is the step that runs before a push: it reads what the push sends from its dry run, and
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
@@ -257,7 +251,10 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 	bound, passes := -1, 0
 	for {
 		given := s.given(false)
-		_, stderr, code, err := s.command(s.env, s.dryRun(given))
+		// The dry run of the push with each revision argument as given gives it to this pass: the
+		// push's words without the ones that stay on the real push alone (jjStep.words), then
+		// jjDryRunFlags.
+		_, stderr, code, err := s.command(s.env, append(s.words(given, true), jjDryRunFlags...))
 		if err != nil {
 			return nil, err
 		}
@@ -769,6 +766,24 @@ func jjCommitIDs(ids []string) []string {
 // legion, can lower it (TestMain); nothing in the legion binary changes it.
 var jjWordBound = 100_000
 
+// jjArgMax is the bound, in bytes, under which the step keeps each command of its own that grows
+// with the commits it names, the push's (checkArgMax) and each metaedit's (jjStep.metaedit): each
+// string of its arguments and of its environment with the NUL that ends it, and the pointer to each
+// (jjSize), which Linux refuses past 2,097,152 bytes, a quarter of the usual 8 MiB stack
+// (execve(2)). It is a variable so that this package's test binary, run as legion, can lower it
+// (TestMain); nothing in the legion binary changes it.
+var jjArgMax = 2_097_152
+
+// jjSize is the bytes that Linux counts against jjArgMax (execve(2)) for words, strings of a
+// command's arguments or environment: each with the NUL that ends it, and the pointer to it.
+func jjSize(words ...string) int {
+	size := 0
+	for _, word := range words {
+		size += len(word) + 1 + int(unsafe.Sizeof(uintptr(0)))
+	}
+	return size
+}
+
 // jjWords is terms in as few revsets as keep each under jjWordBound bytes: each prefix, then terms
 // joined by ` | `, then suffix, the terms in order. A term that no revset of its own keeps under
 // the bound is a revset alone. A read of each, merged (readEach), is one read of them all where
@@ -867,6 +882,37 @@ func (s *jjStep) read(revset string) ([]jjCommitRead, error) {
 		})
 	}
 	return commits, nil
+}
+
+// ids reads the commits of revset in one command: each one's full id, once, in jj's order, and
+// the id of the one that is the working-copy commit of the workspace the command runs in
+// (current_working_copy, which jj reads from the operation, --ignore-working-copy or not), or ""
+// where none is. A read jj refuses, or one that cannot start, is a jjStepFailure, its one error.
+func (s *jjStep) ids(revset string) (ids []string, working string, err error) {
+	out, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", revset, "-T", `commit_id ++ if(current_working_copy, " @") ++ "\n"`)
+	if err != nil {
+		return nil, "", err
+	}
+	for line := range strings.Lines(out) {
+		id, mark, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+		if mark == "@" {
+			working = id
+		}
+	}
+	return ids, working, nil
+}
+
+// eachID is the full id of each commit of revsets, read with one command for each (ids), each
+// once, in the order the reads print them (jjEachOnce).
+func (s *jjStep) eachID(revsets []string) ([]string, error) {
+	return jjEachOnce(revsets, func(revset string) ([]string, error) {
+		ids, _, err := s.ids(revset)
+		return ids, err
+	}, func(id string) string { return id })
 }
 
 // jj runs one jj command of the step and answers what it printed on standard output: next, with

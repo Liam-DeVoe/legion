@@ -28,6 +28,14 @@ type jjPush struct {
 	revisions []jjRevision
 }
 
+// revision is revision argument i's word, split where the argument starts: prefix, what stands in
+// front of it (the name of --named, or the option's own spelling where the value is attached to
+// it), and argument, the revset the role wrote.
+func (p jjPush) revision(i int) (prefix, argument string) {
+	r := p.revisions[i]
+	return p.args[r.index][:r.offset], p.args[r.index][r.offset:]
+}
+
 // jjRevision is one revision argument of a push: the value of -c/--change or
 // -r/--revision/--revisions, or the revision of --named <name>=<revision>, which is the word at
 // index from offset on. jj itself resolves it (jjStep.readRevisions).
