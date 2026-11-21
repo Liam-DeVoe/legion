@@ -458,10 +458,11 @@ test("the chord that opens a view with no row reaches its failed read's Retry fr
         await jump(REFUSED_LATE_MS);
         const retry = page.getByRole("button", { name: "Retry" });
         const said = `t k from ${from}, with the read refused ${late ? "after" : "before"} the chord reached the tree, left the focus elsewhere than the Retry`;
-        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
         expect(document.activeElement, said).toBe(retry);
         // The focus is read again once more frames have passed.
         await frames(3);
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
         expect(document.activeElement, said).toBe(retry);
       } finally {
         page.unmount();
@@ -555,7 +556,7 @@ test("a focus the reader moves off a failed read's Retry onto the view's tree st
       expect(retry, "Tab from the control elsewhere left the Retry").toHaveFocus();
       await moveOnto(tree, move, user);
       await frames(3);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `${move} moved the focus off the Retry onto the tree, and the stage took it back`
@@ -590,7 +591,7 @@ test("a focus the reader moves onto the view's tree, a frame after the stage gav
       const tree = page.getByRole("tree", { name: CONTROL_LABELS.tree });
       await moveOnto(tree, move, user);
       await frames(3);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `${move} a frame after the stage gave the Retry the focus moved it onto the tree, and the stage took it back`
@@ -666,7 +667,7 @@ test("a view opened from another page gives its failed read's Retry the focus th
       page.rerender(<RefusedViewPage drawn late={late} />);
       await jump(REFUSED_LATE_MS);
       const retry = page.getByRole("button", { name: "Retry" });
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
       expect(
         document.activeElement,
         `the view, with its read refused ${late ? "after" : "as"} it mounted, left the focus on what holds it`

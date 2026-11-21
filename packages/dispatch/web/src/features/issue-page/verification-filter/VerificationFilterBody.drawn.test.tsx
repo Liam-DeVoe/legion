@@ -309,9 +309,10 @@ test("with a check's facts open, no result draws its commit anywhere but the sum
     act(() =>
       view.container.querySelector<HTMLElement>("[data-verification-check-words]")?.focus()
     );
-    expect(
-      view.container.querySelector("[data-verification-check]")?.getAttribute("aria-expanded")
-    ).toBe("true");
+    expect(view.container.querySelector("[data-verification-check]")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     // Each result's facts are drawn, its verdict among them.
     expect(
       [...view.container.querySelectorAll("[data-verification-result]")].map((drawn) => [

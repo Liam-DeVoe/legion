@@ -48,7 +48,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       chooser.focus();
       await user.keyboard(key);
       expect(screen.queryByRole("menu"), `${key} did not open the menu`).not.toBeNull();
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
       expect(document.activeElement, `${key} left the focus off the view that is on`).toBe(
         menuItem("spec")
       );
@@ -70,7 +70,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowUp}", "plan"],
     ] as const) {
       await user.keyboard(key);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
       expect(document.activeElement, `${key} did not move to ${PRESET_NAMES[to]}`).toBe(
         menuItem(to)
       );

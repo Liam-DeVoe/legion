@@ -249,7 +249,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );
         await settled();
-        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
         expect(
           screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-expanded"),
           `${path} expands the comment's thread`
@@ -299,7 +299,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         );
         await settled();
         const details = screen.getByTestId("desktop-margin-shell");
-        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
         expect(
           details.hasAttribute("hidden"),
           `${path} ${opens ? "left Details closed" : "opened Details"}`
@@ -398,7 +398,7 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
     for (const name of ["a turn's time", "a link inside a turn"]) {
       await user.click(screen.getByRole("link", { name }));
       await settled();
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the link.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the link.
       expect(
         details.hasAttribute("hidden"),
         `"${name}", which keeps Details open, closed the phone's Details`

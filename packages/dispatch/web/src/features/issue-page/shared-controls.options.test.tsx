@@ -3717,8 +3717,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       expect(box().value).toBe(LONG_REPOSITORY);
       expect(classOf(parentOf(box()))).toContain("w-full");
       expect(classOf(parentOf(box()))).not.toContain("w-[200px]");
-      // `described` is the text's own read, a `string | null`, and `toHaveAttribute` given null
-      // passes for no element at all, so the box's read is compared with it as it stands.
+      // `described` is the text's own read, and the box's read is compared with it as it stands.
+      // jest-dom: `described` is a `string | null`, and `toHaveAttribute` given null passes for no element.
       expect(box().getAttribute("aria-describedby")).toBe(described);
       expect(document.querySelectorAll(`[id="${described}"]`)).toHaveLength(1);
       expect(scope.queryByRole("button", { name: textName })).toBeNull();

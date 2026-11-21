@@ -365,20 +365,25 @@ How a unit test acts on the page and reads it:
 - A row acts as a person does, through user-event. A `fireEvent` call carries a comment within
   the five lines above it that says why user-event has no form for it.
 
-- A row reads focus and attributes through jest-dom. Focus is `expect(el).toHaveFocus()`, never
-  `expect(document.activeElement).toBe(el)`, `expect(el).toBe(document.activeElement)` or an
-  `expect` of a comparison with `document.activeElement`. An attribute is
-  `expect(el).toHaveAttribute(name, value)`, never `expect(el.getAttribute(name))` with `.toBe()`,
-  `.toBeNull()`, `.toContain()` or `.toMatch()`, and never `expect(el.hasAttribute(name))` with
-  `.toBe()`. Each form named with `.toBe()` counts with `.toEqual()` and `.toStrictEqual()` too.
-  `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part
-  of the value. A site that keeps the hand-written form carries its reason the same way.
-  `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs, refuses a call or a read
-  without one. A read of a property of the focused element, such as its `tagName`, is not one of
-  these forms. Bun 1.4.4 prints no `expect` message for a matcher that `expect.extend` registered,
-  jest-dom's among them, so a read whose message names what a failure needs, such as the key or the
-  path a loop is on, keeps the hand-written form with that reason, and a read whose message is a
-  fixed sentence goes to the matcher, which keeps the sentence as the claim it states.
+- A row reads focus and attributes through jest-dom.
+  Focus is `expect(el).toHaveFocus()`, never `expect(document.activeElement).toBe(el)`,
+  `expect(el).toBe(document.activeElement)` or an `expect` of a comparison with `document.activeElement`.
+  An attribute is `expect(el).toHaveAttribute(name, value)`,
+  never `expect(el.getAttribute(name))` with `.toBe()`, `.toBeNull()`, `.toContain()` or `.toMatch()`,
+  and never `expect(el.hasAttribute(name))` with `.toBe()`.
+  Each form named with `.toBe()` counts with `.toEqual()` and `.toStrictEqual()` too.
+  `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part of the value.
+  A read of a property of the focused element, such as its `tagName`, is not one of these forms.
+  Bun 1.4.4 prints no `expect` message for a matcher that `expect.extend` registered, jest-dom's among them.
+  So a read whose message names what a failure needs, such as the key or the path a loop is on, keeps the hand-written form,
+  and a read whose message is a fixed sentence goes to the matcher, which keeps the sentence as the claim it states.
+  A read that keeps the hand-written form has a `// jest-dom: <why this read keeps its own form>` line directly above its `expect(`,
+  as a browser row's `// @pr: ` line stands above its test.
+  That marker is the only exemption: it is the nearest non-blank line above the `expect(`, and its reason holds at least four words.
+  An ordinary comment, a block comment, a marker with code between it and the read, and a marker on the read's own line do not count.
+  A read whose `expect(` Biome puts on the line after `waitFor(() =>` takes its marker inside a block body, `waitFor(() => {`.
+  `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs,
+  refuses a `fireEvent` call without its reason and a hand-written read without its marker.
 
 Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
 no role edits them:

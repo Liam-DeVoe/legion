@@ -1348,7 +1348,7 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
       act(() => code.focus());
       // `f` steps from the block to the row's one link, the table's.
       if (on === link) await user.keyboard("f");
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the block.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the block.
       expect(document.activeElement, `the focus did not reach ${what}`).toBe(on);
       for (const key of [
         "ArrowRight",
@@ -1363,13 +1363,13 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
       ]) {
         const name = key === " " ? "Space" : key;
         expect(press(key).defaultPrevented, `the page took ${name} from ${what}`).toBe(false);
-        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
         expect(document.activeElement, `${name} moved the focus off ${what}`).toBe(on);
         expect(drawn(), `${name} on ${what} moved through the tree or folded it`).toEqual(rows);
         expect(rowReport(container), `${name} on ${what} said something`).toBe(report);
       }
       press("Escape");
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the block.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the block.
       expect(document.activeElement, `Escape on ${what} did not give the row back`).toBe(row);
     }
 
@@ -1882,13 +1882,13 @@ for (const [name, comeBack] of COMING_BACK) {
       await nextFrame();
 
       await comeBack(user, row, editable);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
-      await waitFor(() =>
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
         expect(
           document.activeElement === editable && caretBlock() === "r1",
           `${name} put no caret in the statement`
-        ).toBe(true)
-      );
+        ).toBe(true);
+      });
       expect(selected(), "the caret is not where Enter puts it").toEqual(["r1:0", "r1:0"]);
       expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
       await select(wordsOf(editable, "r2"), 3);
@@ -7614,7 +7614,7 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
         expect(document.body).toHaveFocus();
         await act(async () => run());
         await nextFrame();
-        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
         expect(document.activeElement, `${what} took the focus from where ${came} left it`).toBe(
           stays
         );
@@ -8058,7 +8058,7 @@ test("the row the tree is zoomed to draws no fold control and stays expanded, an
     await waitFor(() => expect(view.container.querySelector("[data-crumb]")).not.toBeNull());
     await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(1));
     expect(control(), `the zoom's own row draws a fold control at ${width} px`).toBeNull();
-    // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the width.
+    // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the width.
     expect(
       rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded"),
       `the zoom's own row does not say it is expanded at ${width} px`
@@ -9485,13 +9485,13 @@ test("an item's failure drawn after the reader left the focus on the page's body
       );
       await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
       await leave(body.view.container);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(document.activeElement, `${what} left the focus on an element`).toBe(document.body);
 
       await act(async () => answer.reject(noSuchComment()));
       await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
       await nextFrame();
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `the line that names no comment, drawn after ${what}, took the focus`
@@ -10026,15 +10026,13 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
         [container.querySelectorAll("[data-failed-read]").length, retry.isConnected],
         `the asks' line left the page while the ${run} Retry's read was out`
       ).toEqual([1, true]);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the run.
-      await waitFor(
-        () =>
-          expect(
-            retry.getAttribute("aria-busy"),
-            `the Retry is not busy while the ${run} Retry's read is out`
-          ).toBe("true"),
-        OWN_WORDS
-      );
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the run.
+        expect(
+          retry.getAttribute("aria-busy"),
+          `the Retry is not busy while the ${run} Retry's read is out`
+        ).toBe("true");
+      }, OWN_WORDS);
       expect(
         focusPlace(container),
         `the focus left the Retry while the ${run} Retry's read was out`
@@ -10946,13 +10944,13 @@ test("under a view whose slot is not filled, an item's address beside the view's
             ),
         }
       );
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the view.
-      await waitFor(() =>
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the view.
         expect(
           document.activeElement,
           `the line that names no item beside the ${preset} view does not hold the focus`
-        ).toBe(heading)
-      );
+        ).toBe(heading);
+      });
       gone.view.unmount();
     }
   } finally {
@@ -11025,10 +11023,10 @@ test("a block or the children an address names that the tree holds none of draw 
             ),
         }
       );
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
-      await waitFor(() =>
-        expect(document.activeElement, `${path}'s line does not hold the focus`).toBe(title)
-      );
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
+        expect(document.activeElement, `${path}'s line does not hold the focus`).toBe(title);
+      });
       expect(title.parentElement?.textContent).toContain(line);
       expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
       body.view.unmount();
@@ -11493,14 +11491,13 @@ test("an item's failed line drawn for the same address followed again stays draw
     const again = Promise.withResolvers<never>();
     read.mockReturnValueOnce(again.promise);
     await user.click(retry);
-    // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names whether
-    // the Retry is still drawn.
-    await waitFor(() =>
+    await waitFor(() => {
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names whether the Retry is still drawn.
       expect(
         retry.getAttribute("aria-busy"),
         `the Retry of the address followed again is not busy while its read runs again; ${retry.isConnected ? "it is drawn" : "its line left the page"}`
-      ).toBe("true")
-    );
+      ).toBe("true");
+    });
     expect(retry, "the Retry pressed lost the focus").toHaveFocus();
     await act(async () => again.reject(serverDown()));
     await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
@@ -11665,7 +11662,7 @@ test("a comment's row drawn after the reader acted since following its address m
       );
       await waitFor(() => expect(comments).toHaveBeenCalled());
       await run();
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(document.activeElement, `${what} left the focus elsewhere`).toBe(stays);
       for (const scroll of scrolls) scroll.mockClear();
 
@@ -11673,7 +11670,7 @@ test("a comment's row drawn after the reader acted since following its address m
       await waitFor(() => expect(rowsFor(body.view.container, "reply-b")).not.toEqual([]));
       await nextFrame();
       await nextFrame();
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `the comment's row, drawn after ${what}, took the focus from where it was`
@@ -11752,21 +11749,21 @@ test("a failed read of an id written short, of an ask and of a message draws a R
       const again = Promise.withResolvers<never>();
       read.mockReturnValueOnce(again.promise as never);
       await user.click(retry);
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
-      await waitFor(() =>
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
         expect(
           retry.getAttribute("aria-busy"),
           `${name}'s Retry is not busy while its read runs again`
-        ).toBe("true")
-      );
+        ).toBe("true");
+      });
       await act(async () => again.reject(serverDown()));
-      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
-      await waitFor(() =>
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
         expect(
           retry.getAttribute("aria-busy"),
           `${name}'s Retry is still busy once its read failed again`
-        ).toBeNull()
-      );
+        ).toBeNull();
+      });
       body.view.unmount();
     }
   } finally {

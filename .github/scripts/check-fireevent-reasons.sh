@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Every `fireEvent` call under packages/dispatch/web/src carries a reason of its own, and so does
-# every hand-written focus or attribute assertion jest-dom's matchers carry.
+# Every `fireEvent` call under packages/dispatch/web/src carries a reason of its own, and every
+# hand-written focus or attribute assertion jest-dom's matchers carry has a `// jest-dom: <reason>`
+# line directly above it.
 #
 # The Dispatch unit suite performs its interactions with `@testing-library/user-event`, and
 # `biome.json` refuses the `fireEvent` import under `packages/dispatch/web/src/**`. A file that
@@ -26,9 +27,10 @@
 # is the reviewer's to judge. A gate checks what a program can check; the judgement stays with a
 # reader.
 #
-# The second rule is the same check over the assertions jest-dom's matchers carry. The unit
-# suite's preload registers `@testing-library/jest-dom`'s matchers, which print the element they
-# read and what they found when they fail, and the suite asserts focus and attributes with them.
+# The second rule asks the same of the assertions jest-dom's matchers carry, and takes only an
+# explicit marker as the reason (below). The unit suite's preload registers
+# `@testing-library/jest-dom`'s matchers, which print the element they read and what they found
+# when they fail, and the suite asserts focus and attributes with them.
 # Focus is `expect(el).toHaveFocus()` (or `.not.toHaveFocus()`), not the focused element compared
 # by hand: `expect(document.activeElement).toBe(el)`, `expect(el).toBe(document.activeElement)`, or
 # `expect(document.activeElement === el)` with `===`, `!==`, `==` or `!=` on either side. An
@@ -47,14 +49,27 @@
 # rewritten, and nothing but this keeps a new test from writing them again: between the merge that
 # moved the suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus
 # reads went from 3 to 126 and their attribute reads compared with `.toBe(` from 212 to 273. A site
-# the matcher cannot say the same thing at keeps its form and carries its reason as a `fireEvent`
-# call does: a value that may be null, which `toHaveAttribute` takes as one the attribute must
-# hold, or a `.not` form the matcher decides otherwise. On an absent attribute `.not.toContain(`
-# fails and `.not.toHaveAttribute(name, expect.stringContaining(…))` passes; on an element that may
-# be missing, `.not.toBeNull()` over `el?.getAttribute(name)` and `.not.toBe(true)` over
+# the matcher cannot say the same thing at keeps its form and carries a marker, the way an e2e
+# row's `// @pr: ` line carries the reason for its tag: a line `// jest-dom: <why this read keeps
+# its own form>` directly above the read. A reason is a value that may be null, which
+# `toHaveAttribute` takes as one the attribute must hold, or a `.not` form the matcher decides
+# otherwise. On an absent attribute `.not.toContain(` fails and
+# `.not.toHaveAttribute(name, expect.stringContaining(…))` passes; on an element that may be
+# missing, `.not.toBeNull()` over `el?.getAttribute(name)` and `.not.toBe(true)` over
 # `el?.hasAttribute(name)` pass, and the matcher fails. A message that names what a failure needs,
 # such as the key or the path a loop is on, is a reason too: Bun 1.4.4 prints no `expect` message
 # for a matcher `expect.extend` registered, so only the hand-written form shows it.
+#
+# The marker is the only exemption. The nearest non-blank line above the read's `expect(` must
+# begin, after its indent, with `// jest-dom:`, and the reason after it must hold at least four
+# words. Nothing else counts: not a comment that says what the row checks, not a block comment, not
+# a marker with code between it and the read, not a marker on the read's own line, and not a marker
+# whose reason holds fewer than four words. A marker may run past the line width, as a `// @pr: `
+# line does, and any more a reader needs goes on comment lines above it. A read whose `expect(`
+# Biome moved onto the line after `waitFor(() =>` takes its marker inside a block body, between
+# `waitFor(() => {` and the `expect(`. The read once took any comment within the five lines above
+# it, as a `fireEvent` call does, and an ordinary comment that said what the row checks let a read
+# through whose reason nobody had written.
 #
 # Biome's formatter wraps a long assertion, so this rule reads each file whole: a site whose
 # `expect(` ends its line, with the read on the next, is the same site, and is named at the line of
@@ -66,12 +81,12 @@
 # does a message where a pattern reads the whole argument list (the focused element named in
 # `.toBe(`, or compared with `===`).
 #
-# A reason is a comment within the five lines above the call: the site's own one-line reason, or
-# the `biome-ignore` comment where the call sits beside the import. The window is five lines rather
-# than the line immediately above because a legitimate site is often wrapped — the reason sits above
-# an `await act(async () => {` or a `const` the call needs — and a bare immediately-above rule would
-# refuse that shape while buying nothing. It still refuses a reason written only at the top of the
-# file, which is the case this exists for.
+# A `fireEvent` call's reason is a comment within the five lines above the call: the site's own
+# one-line reason, or the `biome-ignore` comment where the call sits beside the import. The window
+# is five lines rather than the line immediately above because a legitimate site is often wrapped —
+# the reason sits above an `await act(async () => {` or a `const` the call needs — and a bare
+# immediately-above rule would refuse that shape while buying nothing. It still refuses a reason
+# written only at the top of the file, which is the case this exists for.
 #
 # A comment is a line whose trimmed text begins with `//`, `/*`, `*` or JSX's `{/*`, and nothing
 # else is. A line holding `//` or `*` anywhere else is code, in both places this reads one: on the
@@ -96,6 +111,10 @@ from pathlib import Path
 ROOT = Path("packages/dispatch/web/src")
 CALL = re.compile(r"\bfireEvent\b\s*[.(]")
 WINDOW = 5
+# A kept read's marker, which must be the nearest non-blank line above its `expect(`, and the
+# fewest words its reason may hold.
+MARKER = re.compile(r"^\s*// jest-dom:(.*)$")
+MARKER_WORDS = 4
 # A comment line, and the only thing this reads as one: the trimmed text begins a comment. A `//`
 # or a `*` anywhere else on a line is code, which is what the two bypasses this closes relied on.
 COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
@@ -150,6 +169,14 @@ def reasoned(lines: list[str], index: int) -> bool:
     return any(COMMENT.match(previous) for previous in lines[max(0, index - WINDOW) : index])
 
 
+def marked(lines: list[str], index: int) -> bool:
+    for previous in reversed(lines[:index]):
+        if previous.strip():
+            marker = MARKER.match(previous)
+            return marker is not None and len(marker.group(1).split()) >= MARKER_WORDS
+    return False
+
+
 files = 0
 sites = 0
 bare: list[tuple[Path, int, str]] = []
@@ -178,7 +205,7 @@ for path in sorted(ROOT.rglob("*")):
         if COMMENT.match(lines[index]):
             continue
         reads += 1
-        if reasoned(lines, index):
+        if marked(lines, index):
             continue
         bare_reads.append((path, index + 1, lines[index].strip()))
 
@@ -212,7 +239,8 @@ if bare_reads:
         print(file=sys.stderr)
     print(
         f"{len(bare_reads)} of {reads} hand-written focus and attribute assertions under {ROOT} "
-        f"carry no reason within the {WINDOW} lines above them:",
+        f"have no `// jest-dom: <reason>` line of at least {MARKER_WORDS} words directly above "
+        "them:",
         file=sys.stderr,
     )
     report(bare_reads)
@@ -229,8 +257,9 @@ if bare_reads:
         "`expect(el).toHaveAttribute(name, expect.stringContaining(part))` or "
         "`expect.stringMatching(re)` for `.toContain(part)` or `.toMatch(re)`. Where the matcher "
         "cannot say the same thing — a value that may be null, a `.not` form over a part of an "
-        "attribute or over an element that may be missing — write the reason on the line above "
-        "the assertion.",
+        "attribute or over an element that may be missing, a message that names what a failure "
+        "needs — write `// jest-dom: <why this read keeps its own form>` as the nearest non-blank "
+        "line above the assertion's `expect(`. No other comment counts.",
         file=sys.stderr,
     )
 
@@ -240,6 +269,6 @@ if bare or bare_reads:
 print(f"every one of the {sites} fireEvent calls under {ROOT} carries a reason")
 print(
     f"every one of the {reads} hand-written focus and attribute assertions in the {files} files "
-    f"under {ROOT} carries a reason"
+    f"under {ROOT} has a `// jest-dom: <reason>` line directly above it"
 )
 PY
