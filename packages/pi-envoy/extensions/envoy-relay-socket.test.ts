@@ -198,10 +198,14 @@ test("a task frame on the relay socket reaches the Legion entry's taker unanswer
     };
     expect(await signalsTaken(2, "the task frame")).toEqual([epoch, value]);
 
-    // The listener is stopping: the socket opens again at once and takes the subject again.
+    // The listener is stopping: the socket opens again at once and takes the subject again. The
+    // session sends that sub before its new epoch, which its registration's answer can tell before
+    // the stand-in has read the sub, so the test waits for the stand-in to read it.
     server.close(1012, "listener_stopping");
     const report = await reporting;
     expect(report.signals).toEqual([epoch, value, epoch]);
+    const subsEnd = Date.now() + 10_000;
+    while (server.subs.length < 2 && Date.now() < subsEnd) await Bun.sleep(25);
     expect(server.upgrades.filter((upgrade) => upgrade.status === 101)).toHaveLength(2);
     expect(server.subs).toEqual([
       { session: SESSION, subject: standInDeliverSubject(SESSION) },

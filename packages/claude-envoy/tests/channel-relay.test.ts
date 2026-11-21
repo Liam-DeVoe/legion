@@ -325,9 +325,12 @@ test("a task frame on the relay socket reaches the session's task values unanswe
     expect(server.refusedPublishes).toEqual([])
     expect(epochs).toBe(1)
 
-    // The listener is stopping: the socket opens again at once and takes the subject again.
+    // The listener is stopping: the socket opens again at once and takes the subject again. The
+    // new epoch can be told from the registration's answer before the stand-in has read the
+    // socket's second sub, so the test waits for both.
     server.close(1012, "listener_stopping")
     await waitFor(async () => epochs === 2, "the reopen's epoch")
+    await waitFor(async () => server.subs.length === 2, "the reopen's subscription")
     expect(server.upgrades.filter((upgrade) => upgrade.status === 101)).toHaveLength(2)
     expect(server.subs).toEqual([
       { session: SESSION, subject: relaySubject },
