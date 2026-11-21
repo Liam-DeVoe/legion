@@ -111,8 +111,17 @@ func (r *podUpdateRig) retryLaunch() {
 // and it keeps waiting on the same pod through them. The sweep opens the round over that pod,
 // asks the claim nothing and waits on no answer of it, and replaces the pod through the locator
 // the refusal named. The claim's next try comes up in the pod that replaced it, which has drifted
-// from nothing, and the round ends having told the issue and the controller nothing: a
-// replacement before the round's bound writes on no issue and tells no controller.
+// from nothing, and the controller is told nothing: the round ended before its bound.
+//
+// The round passed over no claim, but no role process ran in the pod, so the replacement is the
+// replacement of a pod no role process ran in (processlessRead), as the claim's own retry would
+// have made it had it reached the pod first (endRoundALaunchReplaced). Its line names the read as
+// not made for that reason, and one message on the issue names the waiting implementer as a
+// member that did not answer the round: its worker died in the pod, so what it did not push went
+// with the pod (lostClaims).
+//
+// The negative control is #4392 at f7c2ed015f: the line said the read was not made because the
+// round passed over no claim (nothingPassedOverRead), and the issue was written nothing.
 func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	token := rig.tokens[claim.RoleImplementer]
@@ -157,9 +166,14 @@ func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
 		t.Errorf("a sweep over the pod that replaced the round's own opened round %q, want none: that pod has drifted from nothing", c.UpdateRound)
 	}
-	if messages := rig.messages(); len(messages) > 0 {
-		t.Errorf("the issue was written %q, want nothing: a replacement before the round's bound writes on no issue", messages)
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %+v, want one line", lines)
 	}
+	if line := lines[0]; line["workspaceRead"] != "not made" || line["workspaceNotReadBecause"] != noProcessRead {
+		t.Errorf("the replacement's line names the read %+v, want one not made because %q", line, noProcessRead)
+	}
+	wantToldUnanswered(t, rig.messages(), "implementer (launching)")
 	if notices := rig.notices(); len(notices) > 0 {
 		t.Errorf("the controller was told %+v, want nothing: the round ended before its bound", notices)
 	}
@@ -246,16 +260,19 @@ func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.
 
 // The round passed over a claim the daemon suspended, and no claim records a process in the pod,
 // so the pod is replaced through the claim whose launch waits on it (podProcess). The passed-over
-// claim makes a read of the issue's workspace due (readRoundWorkspace), but no role process runs
-// in the pod to make it: the waiting claim runs none there, and the Sandbox runtime refuses a read
-// through a claim that records no process (its runningRoleConn), as the fake is scripted to here.
-// So the replacement makes no read, as the replacement of a pod no role process ran in makes none
-// (processlessRead). Its line names the read as not made because no role process ran in the pod,
-// and names the claims as every replacement through ReplacePod does. The one message on the issue
-// names the suspended planner and says that no role process ran in the pod.
+// claim would make a read of the issue's workspace due (readRoundWorkspace), but no role process
+// runs in the pod to make it: the waiting claim runs none there, and the Sandbox runtime refuses a
+// read through a claim that records no process (its runningRoleConn), as the fake is scripted to
+// here. So the replacement makes no read, as the replacement of a pod no role process ran in makes
+// none (processlessRead). Its line names the read as not made because no role process ran in the
+// pod, and names the claims as every replacement through ReplacePod does. The one message on the
+// issue names what the replacement by issue and at a launch name (lostClaims): each member that
+// did not answer the round, the suspended planner and the waiting implementer, whose worker died
+// in the pod with what it did not push. It says that no role process ran in the pod.
 //
-// The negative control is #4392 before its fix: the round read the workspace through the waiting
-// implementer, the read failed, and the message said that the read failed.
+// The negative controls are #4392 before its fix, where the round read the workspace through the
+// waiting implementer, the read failed, and the message said that the read failed; and #4392 at
+// f7c2ed015f, where the message named the planner alone, as a claim the round did not wait for.
 func TestPodUpdateMakesNoReadThroughAClaimWhoseLaunchWaitsOnThePod(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
@@ -288,17 +305,78 @@ func TestPodUpdateMakesNoReadThroughAClaimWhoseLaunchWaitsOnThePod(t *testing.T)
 	wantField(t, line, "notWaitedFor", claim.RolePlanner)
 	wantField(t, line, "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
 
-	messages := rig.messages()
+	wantToldUnanswered(t, rig.messages(), "planner (suspended)", "implementer (launching)")
+}
+
+// toldUnansweredRoles is the lead sentence of the message on the issue that names the members of
+// the round that had not answered it, of a pod no role process ran in (workspaceLostMessage).
+const toldUnansweredRoles = "These roles did not answer the update round before the replacement. No process of these roles ran in the pod: "
+
+// toldNotWaitedForRoles is the lead sentence of the message on the issue that names the claims the
+// round did not wait for, over a read made through a process (workspaceLostMessage).
+const toldNotWaitedForRoles = "The round did not wait for these roles, because no process of these roles ran in the pod: "
+
+// wantToldUnanswered holds messages, what the issue was written, to the one message a replacement
+// of a pod no role process ran in writes: it names each of named, a role with its state, as a
+// member that did not answer the round, says that no role process ran in the pod to read the
+// workspace, and says that work not on a branch at origin is lost.
+func wantToldUnanswered(t *testing.T, messages []string, named ...string) {
+	t.Helper()
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
 	}
-	for _, want := range []string{"planner (suspended)", "No role process ran in the pod"} {
-		if !strings.Contains(messages[0], want) {
-			t.Errorf("the message does not say %q:\n%s", want, messages[0])
+	message := messages[0]
+	for _, want := range append([]string{toldUnansweredRoles, "No role process ran in the pod", "Work that is not on a branch at origin is lost."}, named...) {
+		if !strings.Contains(message, want) {
+			t.Errorf("the message does not say %q:\n%s", want, message)
 		}
 	}
-	if strings.Contains(messages[0], "The read failed") {
-		t.Errorf("the message says a read failed, want no read made:\n%s", messages[0])
+	for _, not := range []string{toldNotWaitedForRoles, "The read failed"} {
+		if strings.Contains(message, not) {
+			t.Errorf("the message says %q, want the message of a pod no role process ran in:\n%s", not, message)
+		}
+	}
+}
+
+// The lead sentence of the message on the issue says why it names its roles
+// (workspaceLostMessage). A replacement of a pod no role process ran in names each member that had
+// not answered the round (lostClaims), whoever replaced the pod: the sweep by issue, a launch, or
+// the sweep through a claim whose launch waits on the pod. So its message says these roles did not
+// answer. A read the sweep made through a process names the claims the round did not wait for
+// (notWaitedFor), so its message says the round did not wait for them, whether the read failed or
+// found work. The sweep makes both the replacement through a waiting claim and the read through a
+// process (viaProcess), so whether a role process ran in the pod chooses the sentence
+// (workspaceRead.noProcess), not who replaced it.
+//
+// The negative control is #4392 at f7c2ed015f, whose sentence followed who replaced the pod
+// (workspaceRead.by): the sweep's replacement through a waiting claim said that the round did not
+// wait for roles that had not answered it.
+func TestTheWorkspaceLostMessageSaysWhyItNamesItsRoles(t *testing.T) {
+	round := podUpdateRound
+	planner := supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RolePlanner), Issue: podUpdateIssue, Role: claim.RolePlanner,
+		State: supervise.StateSuspended, Session: "ses_planner", UpdateRound: round}
+	unanswered, notWaitedFor := toldUnansweredRoles+"planner (suspended).", toldNotWaitedForRoles+"planner (suspended)."
+	for name, tc := range map[string]struct {
+		read      workspaceRead
+		want, not string
+	}{
+		"a read through a process that failed": {
+			read: workspaceRead{round: round, by: viaProcess, role: claim.RoleImplementer, err: errors.New("jj answered 1")},
+			want: notWaitedFor, not: unanswered},
+		"a read through a process that found work": {
+			read: workspaceRead{round: round, by: viaProcess, role: claim.RoleImplementer, work: runtime.WorkspaceWork{Head: "abc123", Commits: []string{"def456"}, Count: 1}},
+			want: notWaitedFor, not: unanswered},
+		"the sweep's replacement through a claim whose launch waits on the pod": {
+			read: processlessRead(round, viaProcess), want: unanswered, not: notWaitedFor},
+		"a replacement by issue":    {read: processlessRead(round, viaIssue), want: unanswered, not: notWaitedFor},
+		"a replacement at a launch": {read: processlessRead(round, viaLaunch), want: unanswered, not: notWaitedFor},
+	} {
+		t.Run(name, func(t *testing.T) {
+			message := workspaceLostMessage(round, podUpdateExchangeDrift, []supervise.Claim{planner}, tc.read, false)
+			if !strings.Contains(message, tc.want) || strings.Contains(message, tc.not) {
+				t.Errorf("the message reads:\n%s\nwant it to say %q, and not %q", message, tc.want, tc.not)
+			}
+		})
 	}
 }
 
@@ -445,7 +523,8 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 // The pod is replaced through a claim whose launch waits on it where no claim records a process
 // there, through the locator the runtime's refusal named; a process in the pod is still the one
 // the pod is ended through, whichever claim comes first, and a claim waiting on another pod is no
-// way to this one.
+// way to this one. podProcess answers the claim itself, and the runtime is asked through it at
+// the process it records or the pod its launch waits on (podKnown).
 func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
 	round := podUpdateRound
 	waiting := waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true)
@@ -462,19 +541,22 @@ func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
 		"a process in another pod, and a claim that waits": {group: []supervise.Claim{movedOn, waiting}, want: &waiting},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, found := podProcess(tc.group, round)
+			through, found := podProcess(tc.group, round)
 			if tc.want == nil {
 				if found {
-					t.Fatalf("podProcess = %+v, want no way to the round's pod", got)
+					t.Fatalf("podProcess = %+v, want no way to the round's pod", through)
 				}
 				return
 			}
-			want := podLocator(*tc.want)
-			if !found || got.Claim != tc.want.Token || !reflect.DeepEqual(got.Locator, want) {
-				t.Fatalf("podProcess = %+v (found %t), want %s through %+v", got, found, tc.want.Token, want)
+			if !found || !reflect.DeepEqual(through, *tc.want) {
+				t.Fatalf("podProcess = %+v (found %t), want %+v", through, found, *tc.want)
+			}
+			got, want := podKnown(through), podLocator(*tc.want)
+			if got.Claim != tc.want.Token || !reflect.DeepEqual(got.Locator, want) {
+				t.Fatalf("podKnown = %+v, want %s through %+v", got, tc.want.Token, want)
 			}
 			if err := got.Validate(); err != nil {
-				t.Fatalf("podProcess answered a process no runtime takes: %v", err)
+				t.Fatalf("podKnown answered a process no runtime takes: %v", err)
 			}
 		})
 	}

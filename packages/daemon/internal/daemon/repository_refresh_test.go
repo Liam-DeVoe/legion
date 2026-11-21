@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -1480,6 +1482,56 @@ func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing
 	}
 	if got := recordedIssue(t, w, a); got.Repo != strangerNamed {
 		t.Fatalf("%s recorded on %s, want it on %s, GitHub's spelling of the repository the entry answers with", a, got.Repo, strangerNamed)
+	}
+}
+
+// A recovery pass whose own bound (attempt, appMintAttempt) ended before its first deferred issue
+// was read prepares none of the issues it defers, and logs them in one Warn for the pass that names
+// each issue and each repository it resolves to, with the bound. Each issue still takes the steps
+// made in memory: it is noted silent for the repository its listing showed (noteUnread), so the
+// next pass takes it in its scope and no repository with that todo issue on it is let go
+// (deferUnreadIssues). The refresher's own ctx is live here, since a daemon that stops logs
+// nothing.
+//
+// The negative control is the Warn's call taken out of deferUnreadIssues: the pass then logs no
+// line, and this test fails on the missing Warn.
+func TestARecoveryPassItsBoundEndedLogsTheIssuesItDeferredInOneWarn(t *testing.T) {
+	var logged bytes.Buffer
+	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewJSONHandler(&logged, nil))}
+	attempt, end := context.WithCancel(context.Background())
+	end()
+	issues := []dispatch.IssueSummary{
+		{Key: "LEGION-1560", Status: "todo", ResolvedRepo: "Zeta/Tools"},
+		{Key: "LEGION-1561", Status: "todo", ResolvedRepo: "orbit/gadgets"},
+		{Key: "LEGION-1562", Status: "todo", ResolvedRepo: "zeta/tools"},
+	}
+	w.deferUnreadIssues(context.Background(), attempt, issues)
+
+	// Every line the JSON handler writes carries a level, and the text's last, empty line none.
+	lines := loggedLines(t, logged.String(), `"level":`)
+	if len(lines) != 1 {
+		t.Fatalf("the pass logged %d lines, want the one Warn for the issues its bound left: %s", len(lines), logged.String())
+	}
+	line := lines[0]
+	if line["level"] != "WARN" || line["msg"] != "workflow: the recovery's deadline ended before it read GitHub for the repositories these unrecorded issues name; the next pass reads them again" {
+		t.Errorf("the pass logged %+v, want the Warn that its bound ended before it read GitHub", line)
+	}
+	if got, want := fmt.Sprint(line["issues"]), "[LEGION-1560 LEGION-1561 LEGION-1562]"; got != want {
+		t.Errorf("the Warn names the issues %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprint(line["repositories"]), "[orbit/gadgets zeta/tools]"; got != want {
+		t.Errorf("the Warn names the repositories %s, want %s, each once", got, want)
+	}
+	if line["deadline"] != appMintAttempt.String() {
+		t.Errorf("the Warn names the bound %v, want %s", line["deadline"], appMintAttempt)
+	}
+
+	w.recoveringMu.Lock()
+	defer w.recoveringMu.Unlock()
+	for _, summary := range issues {
+		if repo := strings.ToLower(summary.ResolvedRepo); !w.silenced[repo][summary.Key] {
+			t.Errorf("%s is not noted silent for %s (silenced %v), want it in the next pass's scope", summary.Key, repo, w.silenced)
+		}
 	}
 }
 

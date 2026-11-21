@@ -1415,21 +1415,24 @@ func (w *workflowRuntime) deferUnreadIssues(ctx, attempt context.Context, issues
 	var left []string
 	leftOn := map[string]bool{}
 	for _, summary := range issues {
-		if attempt.Err() != nil {
+		err := attempt.Err()
+		if err == nil {
+			_, err = w.prepareUnrecorded(attempt, intake.ListedIssue(summary), false)
+		}
+		var limited *intake.RetryLater
+		switch {
+		case err == nil:
+			// The preparation returned no error, so nothing is logged for this issue.
+		case attempt.Err() != nil:
+			// The pass's deadline ended before this read or cut it short, and the one Warn below
+			// names it.
 			left, leftOn[strings.ToLower(summary.ResolvedRepo)] = append(left, summary.Key), true
-		} else if _, err := w.prepareUnrecorded(attempt, intake.ListedIssue(summary), false); err != nil {
-			var limited *intake.RetryLater
-			switch {
-			case attempt.Err() != nil:
-				// The pass's deadline cut this read short, and the one Warn below names it.
-				left, leftOn[strings.ToLower(summary.ResolvedRepo)] = append(left, summary.Key), true
-			case errors.As(err, &limited):
-				w.log.Warn("workflow: GitHub answered the recovery's read for the repository an unrecorded issue names with its rate limit; the next pass reads it again",
-					"issue", summary.Key, "repo", summary.ResolvedRepo, "wait", limited.After.String(), "error", err)
-			default:
-				w.log.Warn("workflow: the recovery did not read GitHub for the repository an unrecorded issue names; the next pass reads it again",
-					"issue", summary.Key, "repo", summary.ResolvedRepo, "error", err)
-			}
+		case errors.As(err, &limited):
+			w.log.Warn("workflow: GitHub answered the recovery's read for the repository an unrecorded issue names with its rate limit; the next pass reads it again",
+				"issue", summary.Key, "repo", summary.ResolvedRepo, "wait", limited.After.String(), "error", err)
+		default:
+			w.log.Warn("workflow: the recovery did not read GitHub for the repository an unrecorded issue names; the next pass reads it again",
+				"issue", summary.Key, "repo", summary.ResolvedRepo, "error", err)
 		}
 		if _, recorded := w.repositories.lookup(summary.ResolvedRepo); recorded {
 			// A name Parse refuses holds no marker to drop: prepareRead refuses it rather than
