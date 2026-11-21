@@ -141,12 +141,16 @@ type goingRowKey struct {
 
 // goingRowUpload is how a row's upload is sent, decided once under its call's key before any of
 // it is sent (AgentListener.rowUpload), so every try of that key sends the very same request: over
-// the document the upload's read before found (Over), as that document's next version naming the
-// token of the version it replaces (Base, "" for a document that has none), or else as a create
-// alone.
+// the document or file the upload's read before found (Over) - that artifact (Artifact) at the
+// latest version the read found (Version), which the upload names as a condition its route
+// decides under the owner's lock (goingCondition.ExpectVersion), and for a document with a token
+// the token the read answered as well (Base, "" for a file and for a document that has none) - or
+// else as a create alone.
 type goingRowUpload struct {
-	Over bool   `json:"over"`
-	Base string `json:"base,omitempty"`
+	Over     bool   `json:"over"`
+	Base     string `json:"base,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+	Version  int    `json:"version,omitempty"`
 }
 
 // goingPlanRowStored is one row of a plan as the store holds it.

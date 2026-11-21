@@ -571,12 +571,13 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 // prepared as the plan prepared it, a send to an agent session on the issue its row names
 // (sendIssue), its translation's reads made through doer, and told what of the requests it sends
 // first landed before (resumed, which answers the call key's landings for those requests). An
-// upload whose row's approval showed the document of its name, and whose read before finds that
-// document as shown (rowUpload), sheds the create alone its translation carries and names the
-// token of the version it replaces, so it lands as that document's next version. The create of a
-// new-issue run carries the route its row's approval names (newIssueRoute), which no argument of
-// the tool holds. A read tool sends one request (goingReadSends). Any other name is refused
-// UNKNOWN_TOOL.
+// upload whose row's approval showed the document or file of its name, and whose read before
+// finds it as shown (rowUpload), trades the create alone its translation carries for the version
+// that read found (goingCondition.ExpectVersion), and names the token of the version it replaces
+// where the read answered one, so it lands as that artifact's next version or not at all. The
+// create of a new-issue run carries the route its row's approval names (newIssueRoute), which no
+// argument of the tool holds. A read tool sends one request (goingReadSends). Any other name is
+// refused UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
 	resumed func(first []goingSend) []*goingLandedRequest, row goingPlanRowStored,
 ) ([]goingSend, bool, *agentwire.Error) {
@@ -596,7 +597,7 @@ func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRe
 				return nil, true, refusal
 			}
 			if upload.Over {
-				prepared.call.condition = nil
+				prepared.call.condition = &goingCondition{ExpectVersion: &goingArtifactVersion{Artifact: upload.Artifact, Version: upload.Version}}
 				if upload.Base != "" && prepared.call.body != nil {
 					prepared.call.body["precondition"] = map[string]any{"document": upload.Base}
 				}

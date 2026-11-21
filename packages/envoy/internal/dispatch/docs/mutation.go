@@ -717,8 +717,9 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 // under the write's own locks beside the precondition, or the replacement is refused with
 // ErrDocumentChanged and nothing written; a tree outside the schema holds no markdown to
 // compare, and is refused too. An expected content says which version the replacement replaces,
-// as a token does, so a replacement that carries one may name no token; one that names a token
-// as well is held to both.
+// as a token does, and is checked beside one: a replacement that names a token as well is held to
+// both, and one that names neither is taken unchecked, as ReplaceText takes every replacement
+// that names no token.
 func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition, expectSHA256 string) (string, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		return "", errUnjoined

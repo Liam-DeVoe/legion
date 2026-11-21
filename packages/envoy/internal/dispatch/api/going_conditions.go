@@ -3,13 +3,14 @@ package api
 // going_conditions.go is how a request the command bar sends in-process is made conditional. An
 // undo's write back (going_undo.go) - an issue's fields, an ask's parts, a document's content, a
 // claim taken back or released, a thread reopened or resolved again, a created issue closed -
-// puts its value back only where the item still holds what the undone write left, and every other
-// upload the bar sends makes a document only where its owner holds none of the name, a row of a
-// plan shedding that condition at the write only where its approval showed the document of its
-// name and its read before finds that document with the text the approval showed; a row whose read
-// finds anything else under the name waits for its person again (AgentListener.rowUpload). Each is
-// a compare-and-set its route decides under the lock it takes for the write, never a read and then
-// a write.
+// puts its value back only where the item still holds what the undone write left, and every
+// upload the bar sends is conditional too: a create alone, which makes a document only where its
+// owner holds none of the name, or, for a row of a plan whose approval showed the document or file
+// of its name and whose read before finds it as the approval showed it, a write over that very
+// artifact at the version the read found, refused where another writer wrote it since (a row whose
+// read finds anything else under the name waits for its person again: AgentListener.rowUpload).
+// Each is a compare-and-set its route decides under the lock it takes for the write, never a read
+// and then a write.
 //
 // The condition rides on the request's context (goingSend.condition, withGoingCondition), never
 // in its body. No client off the network can set a context, so none can make a route conditional
@@ -57,6 +58,11 @@ type goingCondition struct {
 	// ExpectNew is an upload's: the owner must hold no artifact the name finds, or the upload is
 	// refused, 409 DOCUMENT_EXISTS. With ExpectSHA256 it is 400 ARTIFACT_INPUT.
 	ExpectNew bool
+	// ExpectVersion is an upload's over a document or a file its owner holds: the artifact the name
+	// finds must be this one at this latest version, or the upload is refused, 409
+	// DOCUMENT_CHANGED, as it is where the name finds none. With ExpectNew or ExpectSHA256 it is 400
+	// ARTIFACT_INPUT. While nil it is left out of the request's digest (goingSend.digest).
+	ExpectVersion *goingArtifactVersion `json:",omitempty"`
 	// ExpectHolder is a release's: the actor who must hold the claim, or the release is refused,
 	// 409 CLAIM_HOLDER_CHANGED.
 	ExpectHolder *model.Actor
@@ -70,6 +76,12 @@ type goingCondition struct {
 	// COMMENT_CHANGED. While false it is left out of the request's digest (goingSend.digest), so a
 	// request that carries none digests as a build without the field records it.
 	ExpectOpen bool `json:",omitempty"`
+}
+
+// goingArtifactVersion is an artifact and the number of its latest version, as a read found them.
+type goingArtifactVersion struct {
+	Artifact string
+	Version  int
 }
 
 // withGoingCondition is ctx carrying condition to the route of the request it is the context of.

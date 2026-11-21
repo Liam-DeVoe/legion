@@ -532,6 +532,50 @@ func TestAnUploadRowShowsTheDocumentsTextAndWaitsAgainOverAnEditSinceItsApproval
 	}
 }
 
+// TestAnUploadRowOverADocumentWithNoTokenWritesNothingOverAVersionWrittenSinceItsRead: a row that
+// uploads over a document whose tree is outside the Proof schema - which renders no markdown and
+// has no token for an upload to name - is held to the version its read found. Another person's
+// version, written once the row's read is done and before the upload's route takes the owner's
+// lock, is not written over: the upload is refused, 409 DOCUMENT_CHANGED, the row fails so, and the
+// document holds that person's text.
+func TestAnUploadRowOverADocumentWithNoTokenWritesNothingOverAVersionWrittenSinceItsRead(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Holds a broken document")
+	broken := createCorruptedDocument(t, rig.mux, rig.database, rig.served.deps, issue, "broken.md", outsideSchemaCorruptions[0].Corrupt)
+	const words = "repair broken.md on Holds a broken document"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_artifact", map[string]any{
+				"issue": issue, "name": "broken.md", "content": "# Repaired\n\nBy the plan.\n", "force": true,
+			}))
+		}
+		return answered("Repaired, or not.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	// Bob repairs the document as the row's upload reaches its route: after the row's read.
+	var bobs atomic.Bool
+	rig.hooks.set(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		if bobs.CompareAndSwap(false, true) {
+			rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": "broken.md", "content": "# Repaired\n\nBy Bob.\n"})
+		}
+		inner.ServeHTTP(w, r)
+	})
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	if !bobs.Load() {
+		t.Fatal("the row's upload never reached its route, so Bob wrote no version")
+	}
+	if text := rig.documentText(t, broken.ID); !strings.Contains(text, "By Bob.") {
+		t.Fatalf("broken.md reads %q, want Bob's version kept: the row's upload wrote over it", text)
+	}
+	if row := rig.plan(t, run).Rows[0]; row.State != "failed" || row.Result == nil || row.Result.Status != http.StatusConflict || row.Result.Code != "DOCUMENT_CHANGED" {
+		t.Fatalf("the row is %s with %+v, want it failed, 409 DOCUMENT_CHANGED", row.State, row.Result)
+	}
+}
+
 // partlyLandedWaiting is a run of alice's whose one row, a reasoned close of a new issue titled
 // title, landed its reason and then failed in the server on its close, and whose retry of the key
 // found the issue's status changed by bob - so the row waits for alice again, its words saying the

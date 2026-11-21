@@ -681,7 +681,7 @@ type goingUploadBefore struct {
 // document by the name an upload gives it, and its text is read as the caller. A route whose owner
 // it cannot name reads nothing. A file has no text and no token, and neither has a document whose
 // tree is outside the Proof schema (409 DOC_SCHEMA), which only an upload naming no token repairs:
-// an upload over one names none (AgentListener.rowUpload).
+// an upload over either is held to the version the read found alone (AgentListener.rowUpload).
 func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared, fields []string, issue string) (goingObservation, error) {
 	observed := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}
 	owner, known := goingRouteUploadOwner(prepared.route, prepared.call.path)
@@ -696,10 +696,7 @@ func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared,
 	if err != nil {
 		return observed, fmt.Errorf("read the document an upload named %q writes over: %w", name, err)
 	}
-	before := goingUploadBefore{ID: artifact.ID, Name: artifact.Name}
-	for _, version := range artifact.Versions {
-		before.Version = max(before.Version, version.Number)
-	}
+	before := goingUploadBefore{ID: artifact.ID, Name: artifact.Name, Version: latestArtifactVersion(artifact)}
 	if artifact.Kind == "doc" {
 		text, token, err := o.documentValue(ctx, artifact.ID)
 		var refused goingRefusal

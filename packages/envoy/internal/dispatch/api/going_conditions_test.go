@@ -13,8 +13,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // goingConditionFixtures are the items the condition tests write: an issue with its notes, an ask
@@ -181,6 +184,85 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 				t.Fatalf("the refused %s left %s, want what stood before it: %s", tc.write, after, before)
 			}
 		})
+	}
+}
+
+// TestACommandBarUploadOverAFileWrittenSinceItsReadIsRefused: the command bar's upload over a file
+// its read found carries that file at the version the read found (goingCondition.ExpectVersion),
+// which the upload route decides under the owner's lock: a version another writer wrote since, or
+// another artifact under the name, refuses it, 409 DOCUMENT_CHANGED, and nothing is written; at
+// the file's latest version it lands as the next version.
+func TestACommandBarUploadOverAFileWrittenSinceItsReadIsRefused(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	target := "/api/v1/agents/" + goingPlanner + "/artifacts"
+	status, body := goingMultipartUpload(t, rig.mux, target, map[string]string{"name": "plan-notes.txt"}, "The first words.")
+	if status != http.StatusCreated {
+		t.Fatalf("upload the planner's file: %d %s", status, body)
+	}
+	var uploaded uploadedArtifact
+	if err := json.Unmarshal([]byte(body), &uploaded); err != nil {
+		t.Fatalf("read the upload's answer %s: %v", body, err)
+	}
+	file := uploaded.Artifact.ID
+	if status, body := goingMultipartUpload(t, rig.mux, target, map[string]string{"name": "plan-notes.txt"}, "Another writer's words."); status != http.StatusCreated {
+		t.Fatalf("write the file's second version: %d %s", status, body)
+	}
+	const versions = `select count(*) from artifact_versions where artifact_id = $1::uuid`
+	for _, stale := range []goingArtifactVersion{{Artifact: file, Version: 1}, {Artifact: "00000000-0000-0000-0000-000000000000", Version: 2}} {
+		status, answer := goingConditioned(t, rig.mux, "alice", goingMultipartSend(t, target, map[string]string{"name": "plan-notes.txt"}, "The bar's words."),
+			goingCondition{ExpectVersion: &stale})
+		if status != http.StatusConflict || goingAnswerCode(t, answer) != "DOCUMENT_CHANGED" {
+			t.Fatalf("the upload expecting %+v answered %d %s, want 409 DOCUMENT_CHANGED", stale, status, answer)
+		}
+		if count := rigCount(t, rig, versions, file); count != 2 {
+			t.Fatalf("after the upload expecting %+v the file holds %d versions, want its 2", stale, count)
+		}
+	}
+	status, answer := goingConditioned(t, rig.mux, "alice", goingMultipartSend(t, target, map[string]string{"name": "plan-notes.txt"}, "The bar's words."),
+		goingCondition{ExpectVersion: &goingArtifactVersion{Artifact: file, Version: 2}})
+	if status != http.StatusCreated || rigCount(t, rig, versions, file) != 3 {
+		t.Fatalf("the upload expecting the file's latest version answered %d %s, want 201 and its version 3", status, answer)
+	}
+}
+
+// rigCount is the one number query answers over rig's database.
+func rigCount(t *testing.T, rig goingWritesRig, query string, arguments ...any) int {
+	t.Helper()
+	var count int
+	if err := rig.database.Pool.QueryRow(context.Background(), query, arguments...).Scan(&count); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return count
+}
+
+// TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement: the count of uploads that
+// replaced a document unchecked (noteUnguardedReplacement) leaves out the command bar's own, which
+// say what they replace in a condition the route decides under its lock: an undo's write back,
+// which expects the markdown the document holds (goingCondition.ExpectSHA256), and a plan row's
+// upload over a document with no token, which expects its version (ExpectVersion). Each is taken,
+// and the counter reads none.
+func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *testing.T) {
+	registry := metrics.New()
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
+	issue := createArtifactIssue(t, handler)
+	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
+	target := "/api/v1/issues/" + issue.Key + "/artifacts"
+	held := readDocumentPrecondition(t, handler, artifactID).Markdown
+	status, answer := goingConditioned(t, handler, "alice", goingJSONSend(t, http.MethodPost, target,
+		map[string]any{"name": "notes.md", "content": "# Notes\n\nwritten back\n"}), goingCondition{WriteBack: true, ExpectSHA256: docs.MarkdownSHA256(held)})
+	if status != http.StatusCreated {
+		t.Fatalf("the write back expecting the markdown the document holds answered %d %s, want 201", status, answer)
+	}
+	if sample := unguardedReplacementSample(t, registry); sample != "" {
+		t.Fatalf("after the write back the counter reads %q, want no replacement counted: it said what it replaced", sample)
+	}
+	status, answer = goingConditioned(t, handler, "alice", goingJSONSend(t, http.MethodPost, target,
+		map[string]any{"name": "notes.md", "content": "# Notes\n\nthe plan's\n"}), goingCondition{ExpectVersion: &goingArtifactVersion{Artifact: artifactID, Version: 2}})
+	if status != http.StatusCreated {
+		t.Fatalf("the upload expecting the document's latest version answered %d %s, want 201", status, answer)
+	}
+	if sample := unguardedReplacementSample(t, registry); sample != "" {
+		t.Fatalf("after the upload expecting the version the counter reads %q, want no replacement counted: it said what it replaced", sample)
 	}
 }
 

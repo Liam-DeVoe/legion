@@ -1216,9 +1216,10 @@ func goingTranslateResultRecord(_ context.Context, _ goingReader, call goingCall
 // the time the upload takes the owner's lock - one another writer made after the write's read
 // before - is the route's to refuse, 409 DOCUMENT_EXISTS. A row of a run's plan whose approval
 // showed the document of its name, and whose read before finds that document with the text the
-// approval showed, is sent as its next version, with no condition and naming the token that read
-// answered; a row whose read before finds anything else under the name waits for its person again
-// (AgentListener.rowUpload, uploadChanged).
+// approval showed, is sent as its next version on the condition that the document is still at the
+// version that read found (goingCondition.ExpectVersion), naming the token that read answered where
+// it answered one; a row whose read before finds anything else under the name waits for its person
+// again (AgentListener.rowUpload, uploadChanged).
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = goingText(call.arguments, "content")
@@ -1227,9 +1228,9 @@ func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput)
 
 // goingUploadCondition is the condition an upload carries to its route on its context
 // (going_conditions.go): a create alone (ExpectNew), since whether an upload writes over a
-// document is known only once its read before is in. A row of a plan sheds it at the write only
-// where its approval showed the document of its name and its read before finds that document as
-// the approval showed it (AgentListener.rowUpload).
+// document is known only once its read before is in. A row of a plan trades it at the write for
+// the version its read before found (ExpectVersion), only where its approval showed the document
+// or file of its name and that read finds it as the approval showed it (AgentListener.rowUpload).
 func goingUploadCondition() *goingCondition {
 	return &goingCondition{ExpectNew: true}
 }

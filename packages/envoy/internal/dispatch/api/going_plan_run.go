@@ -472,16 +472,19 @@ func (a *AgentListener) adoptLandings(ctx context.Context, request agentwire.Cal
 
 // rowUpload is how the upload of request's row is sent (goingRowUpload): as a try of its call's
 // key decided it before, or, on that key's first try to reach it, as the upload's read before now
-// finds its name - over the document of that name its owner holds, naming the token that read
-// answered (goingObservation.token), or as a create alone - kept on the row under the call's key
-// before anything of it is sent. So a second try of the key sends the request the first sent, and
-// answers what that one landed. What the read finds is held to the read the row's approval was
-// made over (uploadChanged): a document made, written - a new version, or text another writer
-// changed that no version holds yet - or removed under the name after that read makes the row wait
-// again, so an upload is sent over a document only where its approval showed that document with
-// that text, and as a create alone otherwise. A document made after this read is refused by the
-// upload's route, 409 DOCUMENT_EXISTS, and one written after it 409 PRECONDITION_FAILED, since the
-// token named is this read's.
+// finds its name - over the document or file of that name its owner holds, at the version that
+// read found, naming the token that read answered where it answered one (goingObservation.token),
+// or as a create alone - kept on the row under the call's key before anything of it is sent. So a
+// second try of the key sends the request the first sent, and answers what that one landed. What
+// the read finds is held to the read the row's approval was made over (uploadChanged): a document
+// made, written - a new version, or text another writer changed that no version holds yet - or
+// removed under the name after that read makes the row wait again, so an upload is sent over a
+// document only where its approval showed that document with that text, and as a create alone
+// otherwise. What another writer does after this read is refused by the upload's route under the
+// owner's lock, and nothing is written: a document or file made under the name 409
+// DOCUMENT_EXISTS, a version written of the artifact read 409 DOCUMENT_CHANGED - a file, and a
+// document outside the Proof schema, have no token, so this is their only guard - and a document's
+// text changed with no version 409 PRECONDITION_FAILED, since the token named is this read's.
 func (a *AgentListener) rowUpload(ctx context.Context, request agentwire.CallRequest, row goingPlanRowStored, prepared goingPrepared,
 	read goingReader,
 ) (goingRowUpload, *agentwire.Error) {
@@ -505,7 +508,7 @@ func (a *AgentListener) rowUpload(ctx context.Context, request agentwire.CallReq
 	}
 	upload := goingRowUpload{Over: before.held != nil}
 	if upload.Over {
-		upload.Base = before.token
+		upload.Base, upload.Artifact, upload.Version = before.token, before.held.ID, latestArtifactVersion(*before.held)
 	}
 	encoded, err := json.Marshal(upload)
 	if err != nil {
