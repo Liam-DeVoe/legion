@@ -1,4 +1,4 @@
-package loopback
+package testport
 
 import (
 	"errors"
@@ -20,17 +20,16 @@ func ClaimDir() string {
 	return filepath.Join("/tmp", "legion-loopback-hosts-"+strconv.Itoa(os.Getuid()))
 }
 
-// Claim is a loopback address of NewHost's that no live process of this user has claimed, now
-// claimed for owner, a process id: the file dir/<address> holds owner's id. NewHost's registry
-// keeps one process from giving an address twice; a claim keeps two processes, two script stacks
-// that each start a server, from both taking one. An address whose claim names a process that no
-// longer runs is free again, so a claim a killed script never released costs nothing, and each
-// Claim first removes every such claim in dir (sweep), so the directory holds the live claims
-// alone. Before it claims an address, Claim binds port 0 on it, so an address that is not up fails
-// here and names itself rather than at the server's start.
+// Claim is a loopback address LoopbackIP draws that no live process of this user has claimed, now
+// claimed for owner, a process id: the file dir/<address> holds owner's id. A claim keeps two
+// processes, two script stacks that each start a server, from both taking one address. An address
+// whose claim names a process that no longer runs is free again, so a claim a killed script never
+// released costs nothing, and each Claim first removes every such claim in dir (sweep), so the
+// directory holds the live claims alone. Before it claims an address, Claim binds port 0 on it, so
+// an address that is not up fails here and names itself rather than at the server's start.
 //
-// Off Linux it is 127.0.0.1, the address NewHost gives there, and nothing is claimed: every server
-// there shares it.
+// Off Linux it is 127.0.0.1, the address LoopbackIP gives there, and nothing is claimed: every
+// server there shares it.
 //
 // Two processes that draw the same address at the same moment, both after its owner died, can
 // both take it; with 16,516,096 addresses to draw from, that is no case a script meets.
@@ -43,7 +42,7 @@ func Claim(dir string, owner int) (string, error) {
 	}
 	sweep(dir)
 	for {
-		host := NewHost()
+		host := LoopbackIP().String()
 		listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 		if err != nil {
 			return "", fmt.Errorf("loopback address %s is not up: %w", host, err)

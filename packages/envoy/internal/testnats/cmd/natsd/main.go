@@ -20,7 +20,7 @@
 // script's sake.
 //
 // Every listener it has binds one loopback address of its own (testnats.ListenOn): the address -a
-// names, which must be a loopback address, or else one loopback.Claim picks and claims. A caller
+// names, which must be a loopback address, or else one testport.Claim picks and claims. A caller
 // reads the address from the log, on the line that already named the port (`Listening for client
 // connections on <address>:<port>`), and dials that, never 127.0.0.1. The claim is natsd's own,
 // released when it exits, unless -claim-for names another process: a script that restarts natsd on
@@ -46,7 +46,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testnats/loopback"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // readyTimeout bounds the wait for the server to accept connections, so a port another process
@@ -117,9 +117,9 @@ func run(args []string) error {
 
 // listenHost is the address natsd listens on, and what releases it: requested, the address -a
 // gave, when it is a loopback address, released by nobody since the caller owns it; or, when -a
-// gave none, an address loopback.Claim claims for claimFor, else for this process. natsd releases
+// gave none, an address testport.Claim claims for claimFor, else for this process. natsd releases
 // only a claim of its own, on its way out; a claim for another process is that process's, and is
-// free again once that process has exited (loopback.Claim). Any other -a is refused: natsd
+// free again once that process has exited (testport.Claim). Any other -a is refused: natsd
 // listens on loopback only.
 func listenHost(requested string, claimFor int) (string, func(), error) {
 	if requested != "" {
@@ -128,14 +128,14 @@ func listenHost(requested string, claimFor int) (string, func(), error) {
 		}
 		return requested, func() {}, nil
 	}
-	dir, owner := loopback.ClaimDir(), os.Getpid()
+	dir, owner := testport.ClaimDir(), os.Getpid()
 	if claimFor < 0 {
 		return "", nil, fmt.Errorf("-claim-for %d names no process", claimFor)
 	}
 	if claimFor != 0 {
 		owner = claimFor
 	}
-	host, err := loopback.Claim(dir, owner)
+	host, err := testport.Claim(dir, owner)
 	if err != nil {
 		return "", nil, err
 	}
@@ -143,7 +143,7 @@ func listenHost(requested string, claimFor int) (string, func(), error) {
 		return host, func() {}, nil
 	}
 	return host, func() {
-		if err := loopback.Release(dir, host, owner); err != nil {
+		if err := testport.Release(dir, host, owner); err != nil {
 			fmt.Fprintf(os.Stderr, "natsd: release the claim on %s: %v\n", host, err)
 		}
 	}, nil

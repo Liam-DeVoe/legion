@@ -17,7 +17,7 @@
 # claim_nats_host BIN_DIR builds internal/testnats/cmd/loopbackhost into BIN_DIR, once per run (a
 # binary already there is used as it is), and claims an address for this script's process ($$),
 # which it sets in nats_host. The claim is a file in /tmp/legion-loopback-hosts-<uid> naming this
-# process (internal/testnats/loopback), so no other script or natsd of this user takes the address
+# process (internal/testport's Claim), so no other script or natsd of this user takes the address
 # while this script runs, and it is free again once this process exits, even unreleased.
 # loopbackhost binds port 0 on the address before it prints it, so an address that is not up fails
 # here and names itself. On Linux every address of 127.0.0.0/8 is the loopback, and the address is

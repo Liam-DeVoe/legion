@@ -17,7 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/testnats/loopback"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // natsdArgsEnv, when set, makes the test binary natsd itself: TestMain runs run on these arguments,
@@ -101,7 +101,7 @@ func TestNatsdListensOnALoopbackAddressOfItsOwnAndNamesIt(t *testing.T) {
 	require.True(t, natsInfo(address), "the address natsd named, %s, does not answer", address)
 	require.False(t, natsInfo(net.JoinHostPort("127.0.0.1", port)), "127.0.0.1:%s reaches natsd", port)
 
-	claim := filepath.Join(loopback.ClaimDir(), host)
+	claim := filepath.Join(testport.ClaimDir(), host)
 	raw, err := os.ReadFile(claim)
 	require.NoError(t, err, "natsd holds no claim on %s", host)
 	require.Equal(t, fmt.Sprint(cmd.Process.Pid), strings.TrimSpace(string(raw)))
@@ -117,7 +117,7 @@ func TestNatsdListensOnALoopbackAddressOfItsOwnAndNamesIt(t *testing.T) {
 func TestNatsdTakesTheLoopbackAddressItIsGivenAndRefusesAnyOther(t *testing.T) {
 	host := "127.0.0.1"
 	if runtime.GOOS == "linux" {
-		host = loopback.NewHost()
+		host = testport.LoopbackIP().String()
 	}
 	_, address := startNatsd(t, "-a", host, "-p", "-1", "-store_dir", t.TempDir())
 	got, _, err := net.SplitHostPort(address)
@@ -125,7 +125,7 @@ func TestNatsdTakesTheLoopbackAddressItIsGivenAndRefusesAnyOther(t *testing.T) {
 	require.Equal(t, host, got)
 	require.True(t, natsInfo(address))
 	if runtime.GOOS == "linux" {
-		_, err = os.Stat(filepath.Join(loopback.ClaimDir(), host))
+		_, err = os.Stat(filepath.Join(testport.ClaimDir(), host))
 		require.ErrorIs(t, err, os.ErrNotExist, "natsd claimed %s, which its caller gave it", host)
 	}
 
@@ -147,7 +147,7 @@ func TestARestartWithClaimForKeepsTheAddressAndThePort(t *testing.T) {
 	first, address := startNatsd(t, "-claim-for", fmt.Sprint(os.Getpid()), "-p", "-1", "-store_dir", store)
 	host, port, err := net.SplitHostPort(address)
 	require.NoError(t, err)
-	claim := filepath.Join(loopback.ClaimDir(), host)
+	claim := filepath.Join(testport.ClaimDir(), host)
 	require.NoError(t, first.Process.Signal(syscall.SIGTERM))
 	require.NoError(t, first.Wait())
 	raw, err := os.ReadFile(claim)
@@ -162,5 +162,5 @@ func TestARestartWithClaimForKeepsTheAddressAndThePort(t *testing.T) {
 	_, again := startNatsd(t, "-a", host, "-p", port, "-store_dir", store)
 	require.Equal(t, address, again, "the restart came back elsewhere")
 	require.True(t, natsInfo(again))
-	require.NoError(t, loopback.Release(loopback.ClaimDir(), host, os.Getpid()))
+	require.NoError(t, testport.Release(testport.ClaimDir(), host, os.Getpid()))
 }

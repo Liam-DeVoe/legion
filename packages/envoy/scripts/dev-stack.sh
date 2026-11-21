@@ -630,7 +630,7 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # stack on this machine reaches it, and every URL here is built from the address it reports. The
 # first start claims that address for this script (-claim-for $$), so the claim outlasts a restart
 # and no other stack's natsd takes the address while this one is down; it is freed when this
-# script exits (internal/testnats/loopback).
+# script exits (internal/testport's Claim).
 #
 # start_natsd PORT MONITOR starts it on the client port PORT and, with --callout, the monitor port
 # MONITOR in place of callout_natsd_args's -1: -1 both at the start, and at a restart the ports it
