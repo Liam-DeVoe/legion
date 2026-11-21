@@ -883,17 +883,16 @@ func requireBrokerTokenRecordsNoAccount(t *testing.T, what string, recorder *htt
 // a personal token's mint, which writes no row, before the pass, after it, an hour after the broker
 // confirmed, and still once the affirmative read a process keeps for ciphertoken.AffirmativeCacheTTL
 // has passed and the broker, which ended it, is asked again; the second holder's own, recording the
-// account people records now, reads and mints throughout; and a token recording no account whose
-// credential was made before the recording, which might be either's, is refused 401
-// BROKER_TOKEN_RECORDS_NO_ACCOUNT throughout, never admitted again once the revocation settles.
-// Before the address passed on, the first holder's token read and minted. The pass ends the
-// unnamed credential that existed before it, as it ends every row of the address recording no
-// account, so after the pass the test asks with one the broker still holds live (made before the
-// recording, which an older broker, or a revoke the broker answered before it saw the row, would
-// leave): Dispatch refuses it by its creation time alone. A credential recording no account that
-// the broker made one minute after the recording is refused too (inside brokerCredentialMargin),
-// one made ten minutes after acts, and the personal token it mints records the second holder's
-// account.
+// account people records now, reads throughout and mints nothing (403 OAUTH_SCOPE_REQUIRED: no
+// broker token holds approve); and a token recording no account whose credential was made before
+// the recording, which might be either's, is refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT
+// throughout, never admitted again once the revocation settles. Before the address passed on, the
+// first holder's token read, and minted nothing. The pass ends the unnamed credential that existed
+// before it, as it ends every row of the address recording no account, so after the pass the test
+// asks with one the broker still holds live (made before the recording, which an older broker, or
+// a revoke the broker answered before it saw the row, would leave): Dispatch refuses it by its
+// creation time alone. A credential recording no account that the broker made one minute after the
+// recording is refused too (inside brokerCredentialMargin), and one made ten minutes after acts.
 func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 	ctx := context.Background()
 	s := newOutsideSignIn(t, nil)
@@ -908,9 +907,8 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 	}
 	requireTokenActs(t, "GET /api/v1/whoami with the first holder's broker token, before the address passes on",
 		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", replacedToken))
-	if minted := mint(machine, replacedToken, "minted before the address passed on"); minted.Code != http.StatusCreated {
-		t.Fatalf("the first holder's broker token's mint, before the address passes on, answered %d %s, want 201", minted.Code, minted.Body.String())
-	}
+	requireNoApproveScope(t, "the first holder's broker token's mint, before the address passes on",
+		mint(machine, replacedToken, "minted before the address passed on"))
 	unnamedMachine := ciphertokentest.NewCaller(t)
 	unnamedToken := "token-of-a-machine-recording-no-account"
 	broker.holds(&fakeCredential{id: "login-unnamed", person: reassignedEmail, tokens: []string{unnamedToken}, createdAt: time.Now().Add(-time.Hour)}, unnamedMachine)
@@ -943,8 +941,9 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 		}
 		requireTokenActs(t, "GET /api/v1/whoami with the second holder's broker token, "+when,
 			brokerTokenRequest(t, handler, holderMachine, http.MethodGet, "/api/v1/whoami", "", holderToken))
-		if minted := mint(holderMachine, holderToken, "the second holder's own, "+when); minted.Code != http.StatusCreated {
-			t.Fatalf("the second holder's broker token's mint, %s, answered %d %s, want 201", when, minted.Code, minted.Body.String())
+		requireNoApproveScope(t, "the second holder's broker token's mint, "+when, mint(holderMachine, holderToken, "the second holder's own, "+when))
+		if rows := s.tokenRowsNamed(t, "the second holder's own, "+when); rows != 0 {
+			t.Errorf("the second holder's refused mint, %s, wrote %d token rows, want none", when, rows)
 		}
 	}
 	phase("before the revocation pass")
@@ -969,16 +968,8 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 		brokerTokenRequest(t, handler, insideMachine, http.MethodGet, "/api/v1/whoami", "", insideToken))
 	requireTokenActs(t, "GET /api/v1/whoami with a broker token recording no account made ten minutes after the recording",
 		brokerTokenRequest(t, handler, laterMachine, http.MethodGet, "/api/v1/whoami", "", laterToken))
-	if minted := mint(laterMachine, laterToken, "minted ten minutes after the recording"); minted.Code != http.StatusCreated {
-		t.Fatalf("the mint by a broker token recording no account made ten minutes after the recording answered %d %s, want 201", minted.Code, minted.Body.String())
-	}
-	var subject *string
-	if err := s.database.Pool.QueryRow(ctx, `select subject from agent_tokens where name = 'minted ten minutes after the recording'`).Scan(&subject); err != nil {
-		t.Fatal(err)
-	}
-	if subject == nil || *subject != secondHolder {
-		t.Errorf("the token minted by a credential recording no account made after the recording records %v, want the second holder's account", subject)
-	}
+	requireNoApproveScope(t, "the mint by a broker token recording no account made ten minutes after the recording",
+		mint(laterMachine, laterToken, "minted ten minutes after the recording"))
 }
 
 // A revocation names the replaced account, not a moment: the second holder signs in at the broker

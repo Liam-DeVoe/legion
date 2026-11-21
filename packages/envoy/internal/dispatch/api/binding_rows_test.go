@@ -2,15 +2,12 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -65,13 +62,13 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 // TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne (the model's S1 with an account
 // of another issuer, review finding F6): a broker token whose credential records an account of
 // another issuer than Dispatch's sign-in issuer names an account Dispatch cannot compare with the
-// one it records, so once people records an account for its person it is refused at its admission
-// and as a minter, however long after the recording its credential was made, where a token
-// recording no account made that late acts and binds the address's account.
+// one it records, so once people records an account for its person it is refused at its admission,
+// however long after the recording its credential was made, where a token recording no account
+// made that late acts. A broker token mints nothing anyway (brokerPersonScopes).
 //
 // Control: brokerForeignAccount answering false, the reviewer's alternative of holding such a
 // token as one recording none: the token of another issuer made 10 minutes after the recording is
-// admitted, and its mint binds the address's account.
+// admitted.
 func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
@@ -99,35 +96,6 @@ func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T)
 	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT", "a token of another issuer made 10 minutes after the recording")
 	if _, err := served.brokerPersonAdmitted(ctx, none); err != nil {
 		t.Errorf("a token recording no account made 10 minutes after the recording: %v, want it admitted", err)
-	}
-	address := person
-	mint := func(minter brokerMinter) (string, error) {
-		t.Helper()
-		tx, err := rig.database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		var id string
-		if err := tx.QueryRow(ctx, mintAgentTokenSQL, person, "minted", []byte("hash of a mint"), "prefix00", []string{model.ScopePerson}, []string{},
-			nil, nil, nil, minter.address, minter.subject, true, minter.created, minter.foreign).
-			Scan(&id, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any)); err != nil {
-			return "", err
-		}
-		var subject *string
-		if err := tx.QueryRow(ctx, `select subject from agent_tokens where id = $1`, id).Scan(&subject); err != nil {
-			t.Fatal(err)
-		}
-		if subject == nil {
-			return "", nil
-		}
-		return *subject, nil
-	}
-	if _, err := mint(brokerMinter{address: &address, created: timeOrNull(late), foreign: served.brokerForeignAccount(foreign)}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("a mint by a token of another issuer answered %v, want nothing inserted", err)
-	}
-	if got, err := mint(brokerMinter{address: &address, created: timeOrNull(late)}); err != nil || got != "account-b" {
-		t.Errorf("a mint by a token recording no account made after the margin recorded %q (%v), want account-b", got, err)
 	}
 }
 
