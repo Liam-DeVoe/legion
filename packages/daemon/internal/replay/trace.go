@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -232,6 +233,23 @@ type GateClosed struct {
 	Version  int
 }
 
+// GateRegistered is a `workflow: design gate registered` line (workflow's gateRegistered): an
+// issue's architect registered version Version of its design document Artifact at the design
+// step Step, Open whether that version stood approved and ChangesRequested whether a changes
+// request stood on it, under the deployment's gated steps GatedSteps (the empty list gates none,
+// and the registration opens the gate at once). A replay rebuilds intake.GateRegistered from it
+// and the Dispatch shadow, since the registration is an API fact and no Dispatch event carries it.
+type GateRegistered struct {
+	LineHead
+	Issue            string
+	Artifact         string
+	Step             record.DesignStep
+	Version          int
+	Open             bool
+	ChangesRequested bool
+	GatedSteps       []record.DesignStep
+}
+
 // HoldReleased is a `workflow: a held phase is released` line (workflow's retryPhase): an issue
 // held where its phase's worker failed was put back in Phase, for Reason.
 type HoldReleased struct {
@@ -308,6 +326,18 @@ type Suspended struct {
 	Claim  ClaimRef
 	By     string
 	Reason string
+}
+
+// ClaimFailed is a `supervise: claim failed` line (supervise's machine): a claim's worker ran out
+// of a budget the machine keeps (launches, deaths, prompts) for Cause (died, launch_refused, …),
+// Why being the error it gives. A phase worker's failed claim is what puts its issue in the
+// phase held (workflow's claimFailed), which writes no line of its own, so the trace reads the
+// hold's start from this line and a replay injects intake.ClaimFailed at its offset.
+type ClaimFailed struct {
+	LineHead
+	Claim ClaimRef
+	Cause string
+	Why   string
 }
 
 // DaemonStarted is a `legion daemon started` line: a daemon process of Project finished its boot

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -171,6 +172,9 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 			Issue: "ACME-8", Artifact: "d9a022d3-3fd7-4acb-846d-dabef74b983d", Event: "approved", Version: 100},
 		"design-gate-closed.json": GateClosed{LineHead: head("workflow: design gate closed", "2026-11-21T03:22:07.596160896Z"),
 			Issue: "ACME-7", Artifact: "a52b7798-f7e8-4fe9-a271-448cc871c5fb", Event: "version", Version: 74},
+		"design-gate-registered.json": GateRegistered{LineHead: head("workflow: design gate registered", "2026-11-21T07:59:33.665464267Z"),
+			Issue: "ACME-7", Artifact: "a52b7798-f7e8-4fe9-a271-448cc871c5fb", Step: record.DesignStepSpec, Version: 78, Open: false,
+			ChangesRequested: false, GatedSteps: []record.DesignStep{record.DesignStepSpec}},
 		"held-phase-released.json": HoldReleased{LineHead: head("workflow: a held phase is released", "2026-11-20T00:10:01.999737953Z"),
 			Issue: "ACME-9", Phase: phase.Merging, Reason: "the operator retried this phase's worker"},
 		"issue-left-workflow.json": LeftWorkflow{LineHead: head("workflow: issue left the workflow", "2026-11-21T04:17:17.416684718Z"),
@@ -183,10 +187,15 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 			Claim: claimOf("legion-acme-acme-39-architect", "ACME-39", claim.RoleArchitect), Generation: 192, Delivery: "outbox:424751"},
 		"supervise-turn-ended.json": TurnEnded{LineHead: head("supervise: a turn ended", "2026-11-21T05:09:40.803838475Z"),
 			Claim: claimOf("legion-acme-acme-2-architect", "ACME-2", claim.RoleArchitect), Generation: 59},
+		"supervise-turn-ended-outcome.json": TurnEnded{LineHead: head("supervise: a turn ended", "2026-11-21T08:06:02.659521763Z"),
+			Claim: claimOf("legion-acme-acme-37-merger", "ACME-37", claim.RoleMerger), Generation: 8, Outcome: true},
 		"supervise-launched.json": Launched{LineHead: head("supervise: launched", "2026-11-21T05:08:53.046995199Z"),
 			Claim: claimOf("legion-acme-acme-37-tester", "ACME-37", claim.RoleTester), Generation: 3, Resumed: true},
 		"supervise-suspended.json": Suspended{LineHead: head("supervise: suspended", "2026-11-21T05:08:35.479252159Z"),
 			Claim: claimOf("legion-acme-acme-38-architect", "ACME-38", claim.RoleArchitect), By: "released", Reason: "the issue's pod has been idle for the release period"},
+		"supervise-claim-failed.json": ClaimFailed{LineHead: head("supervise: claim failed", "2026-11-18T10:37:34.716550893Z"),
+			Claim: claimOf("legion-acme-acme-58-implementer", "ACME-58", claim.RoleImplementer), Cause: "launch_refused",
+			Why: "launch failures ran out: launch legion-acme-acme-58-implementer: start through its authenticated launcher: the shared public leak check could not be installed: the served check could not be run: waitid: no child processes"},
 		"daemon-first-line-stale-plugin.json": ProcessStart{LineHead: head("daemon: stale-plugin relaunches install", "2026-11-21T01:54:55.881009799Z")},
 		"daemon-boot-stage-prompts.json": BootStage{LineHead: head("legion workflow boot stage", "2026-11-21T01:54:55.884463509Z"),
 			Stage: "prompts"},
