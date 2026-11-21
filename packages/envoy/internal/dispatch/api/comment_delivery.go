@@ -345,10 +345,26 @@ func openCommentDeliveryAttempt(
 // attempt a duplicate before the outcome it is waiting on is known.
 //
 // A zero resume is a person's or an agent's Retry: it resumes the lowest pending attempt nobody
-// holds, and otherwise opens one of its own.
+// holds, and otherwise opens one of its own. An attempt it opens for a session the writer of the
+// attempt may not see (attemptWriter: the request's reader, else actor as RecordedViewer reads
+// them) is never committed pending: it is written failed, "no live session <id>", the answer that
+// attempt's resolve would make (resolveDeliveryTarget), with the receipt its settle owes, in this
+// transaction (openHiddenCommentDeliveryAttempt), and the call reports it settled. A pending
+// attempt names no session until its resolution is recorded, so one committed pending for a hidden
+// session and stranded there by a sender that never came back would leave the delivery sweep a
+// send to make to it.
 func (s *server) claimCommentDeliveryAttempt(
-	ctx context.Context, comment model.Comment, target ResolvedMention, resume attemptClaim,
+	ctx context.Context, comment model.Comment, target ResolvedMention, actor model.Actor, resume attemptClaim,
 ) (claimedCommentDelivery, error) {
+	// The writer is resolved on the pool, before the transaction holds a connection
+	// (store.ErrNestedAcquire); only an unbound call opens an attempt.
+	var writer model.Actor
+	if resume.attempt == 0 {
+		var err error
+		if writer, err = s.attemptWriter(ctx, actor); err != nil {
+			return claimedCommentDelivery{}, err
+		}
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return claimedCommentDelivery{}, err
@@ -434,6 +450,18 @@ func (s *server) claimCommentDeliveryAttempt(
 	default:
 		// No attempt is pending, or a live sender holds the one that is, so this retry gets one of
 		// its own rather than two senders driving the same attempt.
+		hidden, err := hiddenSessionTarget(ctx, tx, writer, &target.Target)
+		if err != nil {
+			return claimedCommentDelivery{}, err
+		}
+		if hidden != "" {
+			settled, err := s.openHiddenCommentDeliveryAttempt(ctx, tx, stored, target, actor, hidden)
+			if err != nil {
+				return claimedCommentDelivery{}, err
+			}
+			claimed.settled = &settled
+			return claimed, nil
+		}
 		if claimed.attemptClaim, err = openCommentDeliveryAttempt(ctx, tx, stored, target); err != nil {
 			return claimedCommentDelivery{}, err
 		}
@@ -442,6 +470,41 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	return claimed, nil
+}
+
+// openHiddenCommentDeliveryAttempt opens, in the claim transaction tx, the next attempt of
+// comment's mention of target, a session the attempt's writer may not see, already failed with
+// "no live session <hidden>": the answer its resolve would record (resolveDeliveryTarget), naming
+// no session, as recordCommentDeliveryResolution leaves such a resolution. It appends the
+// comment.delivery receipt that attempt's settle owes, commits, and publishes the receipt. The
+// attempt is never pending, so no sender - the delivery sweep above all - finds it owed, and no
+// listener is asked.
+func (s *server) openHiddenCommentDeliveryAttempt(
+	ctx context.Context, tx pgx.Tx, comment model.Comment, target ResolvedMention, actor model.Actor, hidden string,
+) (model.CommentDelivery, error) {
+	failure := noLiveSessionPrefix + " " + hidden
+	settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, resolve_error, state, error, claimed_at)
+		values (
+			$1, $2,
+			(select coalesce(max(attempt), 0) + 1 from comment_deliveries where comment_id = $1 and target = $2),
+			$3, $4, 'failed', $4, now()
+		)
+		returning `+commentDeliveryColumns,
+		comment.ID, target.Target, target.Delivery, failure,
+	))
+	if err != nil {
+		return model.CommentDelivery{}, err
+	}
+	receipt, err := s.appendEvent(ctx, tx, commentDeliveryReceipt(comment, actor, settled))
+	if err != nil {
+		return model.CommentDelivery{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.CommentDelivery{}, err
+	}
+	s.publish(ctx, receipt)
+	return settled, nil
 }
 
 // take claims pending, an attempt nobody else holds - never claimed, claimed by a sender that
@@ -771,7 +834,7 @@ func (s *server) deliverResolvedCommentMention(
 	resume attemptClaim,
 	takeover takeoverRetry,
 ) (model.CommentDelivery, *mentionHeldForOrder, error) {
-	claimed, err := s.claimCommentDeliveryAttempt(ctx, comment, target, resume)
+	claimed, err := s.claimCommentDeliveryAttempt(ctx, comment, target, actor, resume)
 	if err != nil {
 		return model.CommentDelivery{}, nil, err
 	}

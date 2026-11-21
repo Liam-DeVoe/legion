@@ -219,6 +219,13 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 // whose session must take an earlier event of the comment's owner first, or whose read of that
 // rule failed (mentionHeldForOrder), is handed, under the claim the send took, to this process's
 // mention sender, whose lane for that session sends it once the outbox has sent that event.
+//
+// A mention attempt resolves as the comment's author, with what that person sees now
+// (attemptWriter, access.RecordedViewer), not as the server: an attempt stranded before anything
+// was resolved - a lookup cut short by its bound (resolveMentionTarget), or a Retry's attempt whose
+// sender died before it recorded a resolution - names no session yet, and a session its author may
+// not see is answered "no live session" (resolveDeliveryTarget), so the sweep sends it nothing. The
+// lane a held send is handed to resolves as that author too (mentionSend.reader).
 func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) error {
 	if owed.commentID != "" {
 		comment, err := s.loadComment(ctx, s.deps.Store.Pool, everyReader, owed.commentID)
@@ -229,6 +236,11 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 		if err != nil {
 			return err
 		}
+		author, err := s.attemptWriter(ctx, comment.Author)
+		if err != nil {
+			return err
+		}
+		ctx = withReader(ctx, author)
 		_, held, err := s.deliverResolvedCommentMention(ctx, comment, created,
 			ResolvedMention{Target: owed.target, Delivery: owed.delivery}, comment.Author,
 			attemptClaim{attempt: owed.attempt}, s.newTakeoverRetry())
