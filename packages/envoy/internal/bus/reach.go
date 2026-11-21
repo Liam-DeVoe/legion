@@ -28,16 +28,19 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 // ErrRemoteNATS is what a connect refuses a NATS server this machine does not run with.
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
-// ErrNoNATSServer is a connect's refusal of a server list that names no server or holds a blank
-// entry (refuseNoServer).
+// ErrNoNATSServer is a connect's refusal of a server list that names no server, or holds an entry
+// that is blank or names no host (refuseNoServer).
 var ErrNoNATSServer = errors.New("bus: refusing a NATS server list that names no server")
 
-// refuseNoServer reports urls naming no server, or an entry that is blank. nats.go fills an empty
-// list with its DefaultURL, nats://127.0.0.1:4222, and reads a blank entry as that port on this
-// machine, so such a client would reach whatever listens on the default NATS port, presenting its
-// credential there: on a shared machine, another process's server, the hazard a test server on
-// a loopback address of its own (testport) closes for the tests. Every connect refuses it first,
-// before its environment is read.
+// refuseNoServer reports urls naming no server, or an entry that is blank or names no host, read
+// as LocalNATSURL reads it (nats://, nats://:4222). nats.go fills an empty list with its
+// DefaultURL, nats://127.0.0.1:4222, and reads a blank entry or one with no host as port 4222 (or
+// the port the entry names) on this machine, so such a client would reach whatever listens there,
+// presenting its credential: on a shared machine, another process's server, the hazard a test
+// server on a loopback address of its own (testport) closes for the tests. ENVOY_ALLOW_REMOTE_NATS
+// does not admit such an entry: it names no server to allow. Every connect refuses it first,
+// before its environment is read. An entry that does not parse is left to nats.go, which refuses
+// it at its connect rather than dialing a default.
 func refuseNoServer(urls []string) error {
 	if len(urls) == 0 {
 		return fmt.Errorf("%w: nats.go would dial its default, nats://127.0.0.1:4222, in its place", ErrNoNATSServer)
@@ -45,6 +48,9 @@ func refuseNoServer(urls []string) error {
 	for i, raw := range urls {
 		if strings.TrimSpace(raw) == "" {
 			return fmt.Errorf("%w: entry %d of %d is blank, which nats.go reads as port 4222 on this machine", ErrNoNATSServer, i+1, len(urls))
+		}
+		if host, err := natsURLHost(raw); err == nil && host == "" {
+			return fmt.Errorf("%w: entry %d of %d, %s, names no host, which nats.go dials on this machine", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
 		}
 	}
 	return nil
@@ -77,21 +83,31 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 // a loopback address on one machine resolves to a shared server on another - the devbox's own
 // envoy-nats is exactly such a name. A URL it cannot read names no server it can vouch for.
 func LocalNATSURL(raw string) bool {
+	host, err := natsURLHost(raw)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// natsURLHost is the host raw names, read as a NATS server URL is read here: trimmed, with nats://
+// in front when it names no scheme, and without a root dot, since a host name's root dot is not
+// part of the name. It does not change case: a host name is case-insensitive, so a caller compares
+// it so.
+func natsURLHost(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
 		trimmed = "nats://" + trimmed
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return false
+		return "", err
 	}
-	// A host name is case-insensitive and its root dot is not part of the name.
-	host := strings.TrimSuffix(parsed.Hostname(), ".")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return strings.TrimSuffix(parsed.Hostname(), "."), nil
 }
 
 // natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
