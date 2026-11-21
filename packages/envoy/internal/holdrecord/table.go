@@ -75,14 +75,23 @@ type rules struct {
 	// cohort, which the cohort-delete route admits on that row too, and its done entry ends the
 	// journal. Without it no command is admitted on the released row and the journal never ends.
 	ReleasedPrepareAbort bool
+	// ReleasedNoJournalAbort: a row lost in prepare before the hold's journal was written, and
+	// restored released with the hold's id, may leave the hold's cohort and no journal. With no
+	// journal (the zero Done, which the cohort-delete route passes for a hold with no done record)
+	// hold abort is admitted on that row (Request.RowReleased): it deletes the cohort, which the
+	// cohort-delete route admits there, and writes no entry, since there is no journal. Without it
+	// nothing deletes that cohort.
+	ReleasedNoJournalAbort bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
 // no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal,
-// BackupCommand, HubAbortAfterStop, AbortAfterOwnStop and ReleasedPrepareAbort.
+// BackupCommand, HubAbortAfterStop, AbortAfterOwnStop, ReleasedPrepareAbort and
+// ReleasedNoJournalAbort.
 var currentRules = rules{ProveEpochs: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true,
 	Serialize: true, StopEntries: true, SetCommand: true, ConvertStoppable: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true, AbortAfterOwnStop: true, ReleasedPrepareAbort: true}
+	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true, AbortAfterOwnStop: true, ReleasedPrepareAbort: true,
+	ReleasedNoJournalAbort: true}
 
 var current = tableFor(currentRules)
 
@@ -256,10 +265,16 @@ type modelRequest struct {
 func (t table) Decide(d Done, req modelRequest) error {
 	w, c := d.Workflow, req.Command
 	if req.RowReleased {
-		if c == CommandAbort && t.Rules.ReleasedPrepareAbort && inPrepare(d) {
+		switch {
+		case c != CommandAbort:
+		case d.Workflow == "": // no journal: the hold never wrote one
+			if t.Rules.ReleasedNoJournalAbort {
+				return nil
+			}
+		case t.Rules.ReleasedPrepareAbort && inPrepare(d):
 			return nil
 		}
-		return wrap(ErrNotHeld, "the row is released: only hold abort is admitted on it, and only while the journal shows prepare")
+		return wrap(ErrNotHeld, "the row is released: only hold abort is admitted on it, and only while the journal shows prepare or there is none")
 	}
 	if t.Rules.EndIsFinal {
 		for _, end := range []string{CommandRelease, CommandAbort} {

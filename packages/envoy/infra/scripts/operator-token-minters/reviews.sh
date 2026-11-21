@@ -148,11 +148,14 @@ judge_reviews() {
 # itself those; a token Secret is read) or by create on a custom resource there, and, by its name,
 # by create serviceaccounts/token or impersonate (become-rights.jq). Each principal of
 # $WORK/principals.rec allowed one of these is a finding naming the chain, but a seed, which is only
-# followed; each ServiceAccount so found is followed in turn, up to 5 steps; one found in the fifth
-# and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no finding.
+# followed; and so is a binding subject whose live role limits one of them by name (a patch of one
+# Deployment sets its serviceAccountName), read as live_named reads the others when it read the
+# cluster's roles. Each ServiceAccount so found is followed in turn, up to 5 steps; one found in the
+# fifth and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no finding.
 follow_becomes() {
-  local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who
-  local -A followed=() targets_of=()
+  local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who why
+  local what id detail kind ns name
+  local -A followed=() targets_of=() targets_why=()
   for ((round = 0; round < 5; round++)); do
     : >"$WORK/become.tsv"
     while IFS= read -r sa; do
@@ -164,6 +167,7 @@ follow_becomes() {
     rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
     targets_of=()
     while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
+    while IFS=$'\t' read -r why targets; do targets_why[$why]="$targets"; done < <(jq -r '.[] | [.why, (.targets | join(" "))] | @tsv' <<<"$rights")
     if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights"; then
       unknown "$step" "$REVIEW_ERROR"
       return 0
@@ -187,6 +191,24 @@ follow_becomes() {
         error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
       esac
     done 4<"$WORK/review.rec"
+    # The same rights limited by name in a live role, which a review naming nothing never finds.
+    [ "${ROLES_OK:-false}" = true ] || continue
+    jq -r -n --argjson rights '[]' --argjson named_rights "$rights" --argjson live true -L "$LIB" -f "$LIB/code-rbac.jq" \
+      "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>/dev/null || continue
+    while IFS="$US" read -r -u 6 what id detail kind ns name; do
+      [ "$what" = grant ] || continue
+      k8s_subject "$kind" "$ns" "$name"
+      [ "$SUBJECT_OK" != true ] || continue
+      targets=""
+      for why in "${!targets_why[@]}"; do
+        [[ "$detail" != *", $why" ]] || { targets="${targets_why[$why]}"; break; }
+      done
+      [ "$targets" != "${SUBJECT#system:serviceaccount:}" ] || continue
+      finding "$SUBJECT" "$detail$suffix" "$detail" "$resource" "$detail" "RBAC: $id limits it by name"
+      if [[ "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+        FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$detail"
+      fi
+    done 6<"$WORK/become-named.rec"
   done
   for sa in ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"}; do
     [ -n "${followed[$sa]:-}" ] ||
@@ -194,24 +216,27 @@ follow_becomes() {
   done
 }
 # remember_cluster KUBECONFIG STEP SUFFIX RESOURCE: keeps what follow_becomes needs of the cluster just
-# read (its principals and its discovery's custom resources), for follow_members, which runs after
-# the IAM steps find the Workload Identity members of an RBAC finding's Google account.
+# read (its principals, its discovery's custom resources, and its bindings and roles with whether
+# live_named read them), for follow_members, which runs after the IAM steps find the Workload
+# Identity members of an RBAC finding's Google account.
 REMEMBERED=()
 remember_cluster() {
-  local n="${#REMEMBERED[@]}"
+  local n="${#REMEMBERED[@]}" file
   cp "$WORK/principals.rec" "$WORK/remembered-$n.principals"
-  if [ -e "$WORK/api-resources" ]; then cp "$WORK/api-resources" "$WORK/remembered-$n.api"; else : >"$WORK/remembered-$n.api"; fi
-  REMEMBERED+=("$1$US$2$US$3$US$4")
+  for file in api-resources bindings.json roles.json; do
+    if [ -e "$WORK/$file" ]; then cp "$WORK/$file" "$WORK/remembered-$n.$file"; else : >"$WORK/remembered-$n.$file"; fi
+  done
+  REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}")
 }
 # follow_members MEMBERS: on every cluster remember_cluster kept, who can become a ServiceAccount of
 # MEMBERS (a JSON object of namespace:name to the Google account it acts as through Workload
 # Identity) holds what that account holds, so it is followed as follow_becomes follows a found one.
 follow_members() {
-  local n kube step suffix resource member
+  local n kube step suffix resource member file
   for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
-    IFS="$US" read -r kube step suffix resource <<<"${REMEMBERED[$n]}"
+    IFS="$US" read -r kube step suffix resource ROLES_OK <<<"${REMEMBERED[$n]}"
     cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
-    cp "$WORK/remembered-$n.api" "$WORK/api-resources"
+    for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
     FOUND_SAS=()
     while IFS=$'\t' read -r member account; do
       FOUND_SAS[$member]="acts as $account through Workload Identity"
@@ -273,6 +298,8 @@ admission_rights() {
 # permission.
 live_named() {
   local what id detail kind ns name
+  # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
+  ROLES_OK=false
   [ "$BINDINGS_OK" = true ] || return 0
   if ! kubectl --kubeconfig "$1" get roles,clusterroles --all-namespaces -o json >"$WORK/roles.json" 2>"$WORK/roles.err"; then
     unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
@@ -283,6 +310,7 @@ live_named() {
     unknown "$2" "the API server's list of roles is not JSON: $(first_line "$WORK/named.err")"
     return 0
   fi
+  ROLES_OK=true
   while IFS="$US" read -r -u 6 what id detail kind ns name; do
     [ "$what" = grant ] || continue
     k8s_subject "$kind" "$ns" "$name"

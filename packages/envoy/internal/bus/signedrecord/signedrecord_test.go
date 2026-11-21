@@ -33,9 +33,12 @@ func sign(t *testing.T, key ed25519.PrivateKey, lines []string) string {
 // Each forgery a writer of the broker's tables could make is refused, naming the reason: a record
 // with no signature, one signed by another key, a genuine record copied onto another key, a
 // genuine older record read after a newer gen was accepted, another genuine record at the gen
-// already accepted, and a value changed after signing. A genuine record verifies, and the record
-// accepted reads again at its gen, so the refusals are the verifier's and not a reader that refuses
-// everything. The fork row fails on a floor that keeps the gen alone, as it did at bb2b623923.
+// already accepted, a genuine record at a higher gen signed more than SignedAtSkew before the one
+// accepted (a record of an earlier history of the tables), and a value changed after signing. A
+// genuine record verifies, the record accepted reads again at its gen, and a higher gen signed
+// within the allowance before it is accepted, so the refusals are the verifier's and not a reader
+// that refuses everything. The fork row fails on a floor that keeps the gen alone, as it did at
+// bb2b623923, and the backdated row on one that keeps no signing time, as at 4a4ebd8787.
 func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 	operator, operatorKey := newKey(t)
 	_, otherKey := newKey(t)
@@ -46,15 +49,23 @@ func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 	if err := signedrecord.Verify(keys, genuineSig, genuine); err != nil {
 		t.Fatalf("the genuine record does not verify: %v", err)
 	}
+	signedAt := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 
 	older := signedrecord.Record("hold-1", "done", "hold", 1, value)
 	olderSig := sign(t, operatorKey, older)
 	floor := &signedrecord.Floor{}
-	if err := floor.Accept(2, genuine); err != nil {
+	if err := floor.Accept(2, signedAt, genuine); err != nil {
 		t.Fatalf("the floor refuses the first gen it reads: %v", err)
 	}
-	if err := floor.Accept(2, genuine); err != nil {
+	if err := floor.Accept(2, signedAt, genuine); err != nil {
 		t.Fatalf("the floor refuses the record it accepted, read again at its gen: %v", err)
+	}
+	skewed := &signedrecord.Floor{}
+	if err := skewed.Accept(2, signedAt, genuine); err != nil {
+		t.Fatal(err)
+	}
+	if err := skewed.Accept(3, signedAt.Add(-signedrecord.SignedAtSkew), signedrecord.Record("hold-1", "done", "hold", 3, value)); err != nil {
+		t.Fatalf("the floor refuses a higher gen signed the whole allowance before the accepted record: %v", err)
 	}
 
 	for _, forgery := range []struct {
@@ -85,7 +96,7 @@ func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 				if err := signedrecord.Verify(keys, olderSig, older); err != nil {
 					return err
 				}
-				return floor.Accept(1, older)
+				return floor.Accept(1, signedAt, older)
 			},
 			want: signedrecord.ErrReplay,
 		},
@@ -96,9 +107,20 @@ func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 				if err := signedrecord.Verify(keys, sign(t, operatorKey, other), other); err != nil {
 					return err
 				}
-				return floor.Accept(2, other)
+				return floor.Accept(2, signedAt, other)
 			},
 			want: signedrecord.ErrFork,
+		},
+		{
+			name: "a genuine record at a higher gen signed more than the allowance before the accepted one",
+			read: func() error {
+				earlier := signedrecord.Record("hold-1", "done", "hold", 4, value)
+				if err := signedrecord.Verify(keys, sign(t, operatorKey, earlier), earlier); err != nil {
+					return err
+				}
+				return floor.Accept(4, signedAt.Add(-signedrecord.SignedAtSkew-time.Second), earlier)
+			},
+			want: signedrecord.ErrBackdated,
 		},
 		{
 			name: "a value changed after signing",

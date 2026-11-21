@@ -64,7 +64,7 @@ type modelState struct {
 	Restores   int
 	Crashes    int
 	NextID     int
-	PrepLost   byte // PrepareRowLoss: the row was lost in prepare and restored released: 'N' before the journal was written, 'O' after it, which leaves the hold's cohort and journal, 'E' once hold abort on the released row ended them
+	PrepLost   byte // PrepareRowLoss: the row was lost in prepare and restored released: 'N' before the journal was written, which may leave the hold's cohort and no journal, 'O' after it, which leaves the hold's cohort and journal, 'E' once hold abort on the released row ended them
 	Slots      [2]modelSlot
 }
 
@@ -166,10 +166,11 @@ type modelOp struct {
 }
 
 const (
-	cmdSet           = CommandSet
-	cmdAbortPrepare  = "hold abort (prepare)"  // hold abort from prepare: it deletes the cohort and moves the row, and writes no entry
-	cmdAbortReleased = "hold abort (released)" // hold abort on a row lost in prepare and restored released: its intent, the cohort's delete, its done
-	cmdSnapRestore   = "snapshot restore"      // v59's first hub-restore command, written by hold set's process
+	cmdSet            = CommandSet
+	cmdAbortPrepare   = "hold abort (prepare)"              // hold abort from prepare: it deletes the cohort and moves the row, and writes no entry
+	cmdAbortReleased  = "hold abort (released)"             // hold abort on a row lost in prepare and restored released: its intent, the cohort's delete, its done
+	cmdAbortNoJournal = "hold abort (released, no journal)" // the same with no journal: the cohort's delete alone, and no entry
+	cmdSnapRestore    = "snapshot restore"                  // v59's first hub-restore command, written by hold set's process
 )
 
 var targets = []string{"A", "B"}
@@ -193,7 +194,7 @@ func (o modelOp) label() string {
 // operatorCmd is the command the operator types: hold abort from prepare, and on a released row,
 // is hold abort.
 func operatorCmd(c string) string {
-	if c == cmdAbortPrepare || c == cmdAbortReleased {
+	if c == cmdAbortPrepare || c == cmdAbortReleased || c == cmdAbortNoJournal {
 		return CommandAbort
 	}
 	return c

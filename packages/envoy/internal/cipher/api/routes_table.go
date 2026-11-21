@@ -290,7 +290,11 @@ func routes() []apiRoute {
 		// already public in the broker's own reference. Mounted only when the broker runs its
 		// OAuth provider, since with none it would name endpoints that are not there.
 		{http.MethodGet, "/.well-known/oauth-authorization-server", public((*server).authorizationServerMetadata)},
-		// Enroll a session's or pod's signing key under the caller's machine credential.
+		// Enroll a session's or pod's signing key under the caller's machine credential. Where
+		// BROKER_PROJECT_ACCESS_URL is set, an enrollment under a person's machine login or pod
+		// login is made only once Dispatch has said what kind of member that person is: a
+		// restricted member's is refused 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, and every one is
+		// refused 503 MEMBER_KIND_UNCHECKABLE while that cannot be read from Dispatch.
 		{http.MethodPost, "/v1/enrollments", launcherAuth((*server).createEnrollment)},
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
@@ -350,6 +354,9 @@ func routes() []apiRoute {
 		// Describe the calling session's enrollment and its live grants.
 		{http.MethodGet, "/v1/enrollments/self", sessionAuth((*server).readSelf)},
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
+		// Where BROKER_PROJECT_ACCESS_URL is set, a session whose person Dispatch calls a
+		// restricted member is denied every secret, restricted-member, and a session whose person's
+		// kind cannot be read from Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE, no request written.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
 		// Read a request the calling session's owner made: its person, its Legion claim or its
 		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole
@@ -367,7 +374,10 @@ func routes() []apiRoute {
 		// Release a live grant's values to the session that holds it. Every other session is 403
 		// NOT_YOURS, but one the grant's private project hides it from, as the read's rule says, is
 		// answered 403 GRANT_NOT_LIVE, as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE
-		// while Dispatch cannot say; neither releases anything.
+		// while Dispatch cannot say; neither releases anything. Where BROKER_PROJECT_ACCESS_URL is
+		// set, a restricted member's session is refused 403 GRANT_NOT_LIVE and the grant ended, and
+		// one whose person's kind cannot be read from Dispatch is refused 503
+		// MEMBER_KIND_UNCHECKABLE with nothing released.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
 		// End a grant the calling session holds. Every other session is 403 NOT_YOURS, but one the
 		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
@@ -610,12 +620,14 @@ func routes() []apiRoute {
 		// Write the writer hold's row while there is none, the first row or one a database admin
 		// deleted, judged by the log's latest entry, which must verify (409 below_floor otherwise,
 		// storing nothing): held with a hold id, only after a prepare or held entry of that hold
-		// id, or released, only after a released or prepare entry, or a held one whose hold's
-		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
-		// clients mid-hold, and a hold the log shows ended is not held again), at one above the
-		// highest gen nats_hold_log holds (1 for an empty log), signed over that gen. Another gen is
-		// 409 gen_mismatch naming restore_gen, the gen to sign afresh, since the operator's
-		// commands cannot read the log; a row that is there is 409 row_exists.
+		// id, or released, only after a released entry, a prepare entry of the hold id it names
+		// (409 hold_mismatch otherwise, no hold id included, so the prepared hold is not left
+		// where no command reaches it), or a held one whose hold's signed journal shows it ended
+		// (400 bad_transition otherwise, so no restore frees the clients mid-hold, and a hold the
+		// log shows ended is not held again), at one above the highest gen nats_hold_log holds (1
+		// for an empty log), signed over that gen. Another gen is 409 gen_mismatch naming
+		// restore_gen, the gen to sign afresh, since the operator's commands cannot read the log; a
+		// row that is there is 409 row_exists.
 		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
 		// Write one record of the hold the row names, whatever its phase: its cohort, its
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
@@ -634,9 +646,10 @@ func routes() []apiRoute {
 		// and for hold abort on a row lost in prepare and restored released: signed over the
 		// record's current gen (400 bad_signature otherwise), only while the row is prepare with
 		// that hold id, or released with it while that hold's done record verifies and shows
-		// prepare (409 hold_mismatch otherwise), and only at that gen (409 gen_mismatch otherwise).
-		// The same statement keeps the signed delete beside the records, so every replica reads the
-		// cohort as deleted. No other kind is deleted, so the journal outlives an abort.
+		// prepare, or there is no done record (409 hold_mismatch otherwise), and only at that gen
+		// (409 gen_mismatch otherwise). The same statement keeps the signed delete beside the
+		// records, so every replica reads the cohort as deleted. No other kind is deleted, so the
+		// journal outlives an abort.
 		{http.MethodDelete, "/v1/nats-hold/records", operatorAuth((*server).deleteNATSHoldCohort)},
 		// Write one family's cutover row, done by the hold's conversion or rolled_back by its
 		// rollback, with hold_gen the hold row's current gen, only while the row is held with the

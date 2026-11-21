@@ -116,6 +116,7 @@ var (
 		r := currentModel
 		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand, r.HubAbortAfterStop = "v62", false, false, false, false, false
 		r.AbortAfterOwnStop, r.DiskGoneRestore, r.RestoreBack, r.ReleasedPrepareAbort, r.PrepareRowLoss = false, false, false, false, false
+		r.ReleasedNoJournalAbort = false
 		return r
 	}()
 )
@@ -145,7 +146,7 @@ const (
 	classR28H        = "R28-H (a disk judged against a target the step-1 map lacks)"
 	classWayOut      = "WAY-OUT (a command that fails for good after its intent strands the hold: no command the table admits ends it)"
 	classEveryRun    = "EVERY-RUN (a rerun's stop records its own run alone: hold release moves the row as unchanged over an earlier run's change)"
-	classOrphan      = "ORPHAN (a row lost in prepare and restored released leaves its hold's cohort and journal, and no command ends them)"
+	classOrphan      = "ORPHAN (a row lost in prepare and restored released leaves its hold's cohort, and its journal when written, and no command ends them)"
 )
 
 // releasedOverAChange is the invariant hold release keeps: it never moves the row on a record that
@@ -211,8 +212,9 @@ func modelProfiles() []modelProfile {
 	// (no restore onto another disk after abort's stop names the done prove's disk gone) and
 	// without RestoreBack (no restore back onto the done prove's disk after a disk moved), each of
 	// which strands the hold, without ReleasedPrepareAbort (no abort on a row lost in prepare and
-	// restored released), which orphans its hold, and the same rules with each stop recording its
-	// own run alone (OwnRunOnly), under which hold release moves the row over an earlier run's
+	// restored released) and without ReleasedNoJournalAbort (no abort there when the journal was
+	// never written), each of which orphans its hold, and the same rules with each stop recording
+	// its own run alone (OwnRunOnly), under which hold release moves the row over an earlier run's
 	// change. AbortAfterOwnStop has no control here: without it a doomed census's rerun writes a stop
 	// after the new prove, which admits abort, so its absence strands no hold, and its rows in
 	// table_test.go and journal_test.go are its controls.
@@ -230,6 +232,8 @@ func modelProfiles() []modelProfile {
 	ownRun.Name = currentModel.Name + "-OwnRunOnly"
 	noReleasedAbort := currentModel
 	noReleasedAbort.Name, noReleasedAbort.ReleasedPrepareAbort = currentModel.Name+"-ReleasedPrepareAbort", false
+	noJournalAbort := currentModel
+	noJournalAbort.Name, noJournalAbort.ReleasedNoJournalAbort = currentModel.Name+"-ReleasedNoJournalAbort", false
 	return append(out, modelProfile{modelRules: currentModel, Fail: true},
 		modelProfile{modelRules: noWayOut, Want: []string{classWayOut}, Fail: true},
 		modelProfile{modelRules: bucketsAlone, Want: []string{classWayOut}, Fail: true},
@@ -237,6 +241,7 @@ func modelProfiles() []modelProfile {
 		modelProfile{modelRules: noGone, Want: []string{classWayOut}, Fail: true},
 		modelProfile{modelRules: noBack, Want: []string{classWayOut}, Fail: true},
 		modelProfile{modelRules: noReleasedAbort, Want: []string{classOrphan}, Fail: true},
+		modelProfile{modelRules: noJournalAbort, Want: []string{classOrphan}, Fail: true},
 		modelProfile{modelRules: ownRun, Want: []string{classEveryRun}, Fail: true, OwnRunOnly: true})
 }
 
@@ -368,7 +373,7 @@ func explore(r modelRules, t modelTable, sc modelScenario, bound int) (int, []mo
 	good := make([]bool, len(nodes))
 	var q []int32
 	for i, n := range nodes {
-		if n.s.Row == 'R' && n.s.PrepLost != 'O' {
+		if n.s.Row == 'R' && n.s.PrepLost != 'O' && n.s.PrepLost != 'N' {
 			good[i] = true
 			q = append(q, int32(i))
 		}
@@ -481,30 +486,31 @@ var (
 )
 
 // pinnedBound2 is this model's run at bound 2 of the rules added since the bundle, with a command
-// that fails for good modeled and a row lost in prepare: the current rules and their seven
+// that fails for good modeled and a row lost in prepare: the current rules and their eight
 // controls, the rules without WayOut, without EveryCommandStoppable, without HubAbortAfterStop,
-// without DiskGoneRestore, without RestoreBack, without ReleasedPrepareAbort, and with each stop
-// recording its own run alone.
+// without DiskGoneRestore, without RestoreBack, without ReleasedPrepareAbort, without
+// ReleasedNoJournalAbort, and with each stop recording its own run alone.
 //
 // Cost, measured with /usr/bin/time -v on the whole of TestTheHoldJournalModel at its default
 // (every profile at bound 2, and v62 at bound 3), -test.parallel=4 as on a 4-CPU runner, two large
-// walks at once (failWalks) and a 4 GiB soft memory limit: peak RSS 5,536,516 kB, wall 3:14.5, on a
+// walks at once (failWalks) and a 4 GiB soft memory limit: peak RSS 5,509,668 kB, wall 3:15.1, on a
 // dev box. Each large walk is about 1.3 to 1.5 million states.
 var pinnedBound2 = map[string]modelCount{
-	"v63":                       {1449810, 0, nil},
-	"v63-WayOut":                {1430114, 14517, map[string]int{classWayOut: 14517}},
-	"v63-EveryCommandStoppable": {1404316, 7058, map[string]int{classWayOut: 7058}},
-	"v63-HubAbortAfterStop":     {665962, 151408, map[string]int{classWayOut: 151408}},
-	"v63-DiskGoneRestore":       {1256336, 67238, map[string]int{classWayOut: 67238}},
-	"v63-RestoreBack":           {853646, 41760, map[string]int{classWayOut: 41760}},
-	"v63-ReleasedPrepareAbort":  {1448545, 1056, map[string]int{classOrphan: 1056}},
-	"v63-OwnRunOnly":            {1459549, 144, map[string]int{classEveryRun: 144}},
+	"v63":                        {1450140, 0, nil},
+	"v63-WayOut":                 {1430444, 14517, map[string]int{classWayOut: 14517}},
+	"v63-EveryCommandStoppable":  {1404646, 7058, map[string]int{classWayOut: 7058}},
+	"v63-HubAbortAfterStop":      {666292, 151408, map[string]int{classWayOut: 151408}},
+	"v63-DiskGoneRestore":        {1256666, 67238, map[string]int{classWayOut: 67238}},
+	"v63-RestoreBack":            {853976, 41760, map[string]int{classWayOut: 41760}},
+	"v63-ReleasedPrepareAbort":   {1448875, 1056, map[string]int{classOrphan: 1056}},
+	"v63-ReleasedNoJournalAbort": {1449810, 495, map[string]int{classOrphan: 495}},
+	"v63-OwnRunOnly":             {1459879, 144, map[string]int{classEveryRun: 144}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bound 2. Bound 3 is not pinned:
 // see TestTheHoldJournalModel's bound-3 comment.
-var pinnedCurrentBound2 = map[string]int{"cutover": 55740, "rollback": 7137, "selection-recovery": 9671, "buckets-create": 1178,
-	"buckets-recreate": 2986, "buckets-restore": 4373, "streams-update": 1178, "streams-census": 1558, "hub-restore": 1365989}
+var pinnedCurrentBound2 = map[string]int{"cutover": 55800, "rollback": 7197, "selection-recovery": 9701, "buckets-create": 1208,
+	"buckets-recreate": 3016, "buckets-restore": 4403, "streams-update": 1208, "streams-census": 1588, "hub-restore": 1366019}
 
 // failWalks holds the large walks, those with a command that fails for good (about 1.3 million
 // states each at bound 2), to two at once, so the test's peak memory stays inside a CI runner
@@ -516,18 +522,19 @@ var failWalks = make(chan struct{}, 2)
 // (31,948 states) and at three (139,812), and every earlier rule set and every rule set with one of
 // v62's fixes removed is a control that finds a counterexample of each class it names, asserted by
 // the class's name, with the bundle's counts. The current rules add WayOut, EveryCommandStoppable,
-// EndIsFinal, BackupCommand, HubAbortAfterStop, AbortAfterOwnStop and ReleasedPrepareAbort, and
-// are run with a command that fails for good after its intent (in hub-restore the census, or a
-// prove after a done prove, after which a done prove's disk may be lost) and a row lost in prepare
-// and restored released: they find no counterexample at bound 2 by default, and at bound 3 with
-// HOLDRECORD_MODEL_BOUND3=1, with pinned state counts. Their controls without WayOut, without
-// EveryCommandStoppable, without HubAbortAfterStop, without DiskGoneRestore and without
-// RestoreBack find the stranded hold (classWayOut): the first in every workflow but hub-restore,
-// the second in every workflow that runs no buckets command, the last three in hub-restore. Their
-// control without ReleasedPrepareAbort finds the hold a row lost in prepare orphans (classOrphan).
-// Their control in which a stop records its own run alone (OwnRunOnly) finds hold release moving
-// the row over an earlier run's change (classEveryRun). At every hub-restore state of the current
-// rules the package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
+// EndIsFinal, BackupCommand, HubAbortAfterStop, AbortAfterOwnStop, ReleasedPrepareAbort and
+// ReleasedNoJournalAbort, and are run with a command that fails for good after its intent (in
+// hub-restore the census, or a prove after a done prove, after which a done prove's disk may be
+// lost) and a row lost in prepare and restored released: they find no counterexample at bound 2 by
+// default, and at bound 3 with HOLDRECORD_MODEL_BOUND3=1, with pinned state counts. Their controls
+// without WayOut, without EveryCommandStoppable, without HubAbortAfterStop, without DiskGoneRestore
+// and without RestoreBack find the stranded hold (classWayOut): the first in every workflow but
+// hub-restore, the second in every workflow that runs no buckets command, the last three in
+// hub-restore. Their controls without ReleasedPrepareAbort and without ReleasedNoJournalAbort each
+// find the hold a row lost in prepare orphans (classOrphan), with its journal and with none. Their
+// control in which a stop records its own run alone (OwnRunOnly) finds hold release moving the row
+// over an earlier run's change (classEveryRun). At every hub-restore state of the current rules the
+// package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
 	// A soft memory limit keeps the walks' heap near their live size, about 1.4 GiB each, rather
 	// than twice it, so two at once stay inside a CI runner. It is lifted in Cleanup, which runs
@@ -540,7 +547,7 @@ func TestTheHoldJournalModel(t *testing.T) {
 	}
 	if currentModel.Name != "v63" || currentModel.rules != currentRules || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal ||
 		v62.BackupCommand || v62.HubAbortAfterStop || v62.AbortAfterOwnStop || v62.DiskGoneRestore || v62.RestoreBack ||
-		v62.ReleasedPrepareAbort || v62.PrepareRowLoss {
+		v62.ReleasedPrepareAbort || v62.PrepareRowLoss || v62.ReleasedNoJournalAbort {
 		t.Fatalf("the current rules are %q, the model's runs another table than the package's, or v62 carries a rule added since; the counts below are v62's and v63's", currentModel.Name)
 	}
 	for _, p := range modelProfiles() {

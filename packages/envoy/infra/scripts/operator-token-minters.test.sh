@@ -189,14 +189,15 @@ readonly container_admin=(
   container.clusterRoles.bind container.clusterRoles.escalate container.clusters.get container.clusters.impersonate
   container.cronJobs.create container.cronJobs.update container.daemonSets.create container.daemonSets.update
   container.deployments.create container.deployments.update container.jobs.create container.jobs.update
-  container.namespaces.create container.nodes.proxy container.pods.attach container.pods.create container.pods.exec container.pods.get
+  container.namespaces.create container.namespaces.update container.nodes.proxy container.pods.attach container.pods.create container.pods.exec container.pods.get
   container.pods.portForward container.pods.update container.replicaSets.create container.replicaSets.update
   container.replicationControllers.create container.replicationControllers.update
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
   container.certificateSigningRequests.approve container.certificateSigningRequests.create container.clusters.update
   container.roleBindings.create container.roleBindings.update container.roles.bind container.roles.escalate
-  container.secrets.create container.secrets.get container.secrets.list container.serviceAccounts.create container.serviceAccounts.createToken
+  container.secrets.create container.secrets.get container.secrets.list container.secrets.update container.serviceAccounts.create
+  container.serviceAccounts.createToken container.serviceAccounts.update
   container.statefulSets.create container.statefulSets.update container.subjectAccessReviews.create
   resourcemanager.projects.get
 )
