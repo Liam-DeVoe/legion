@@ -1502,10 +1502,12 @@ stack can leave it out: `name` `<hostname>-listener`, `host` and `instances` the
 listener's `ENVOY_ALLOWED_HOSTS` names, and `source` the `brokerUrl` of `listenerPrivacySource`
 (`{brokerUrl}`, the secrets broker's base URL that listener reads each project's privacy from). The
 listener's NetworkPolicy already admits the app's pods at 9020, where each proof reads from.
-Refused at preview, naming the entry: a blank `name`, `hub`, `source` or `host`, `instances` that
-are missing or not `host:port`, a name another entry or Dispatch's own listener has, and a `hub`
-`privateHubs` does not name; and naming `privateHubs`, a hub after the first that no entry serves.
-`listenerPrivacySource` is refused without `privateHubs`.
+Refused at preview, naming the entry: a blank `name`, `hub`, `source` or `host`, a `source` that is
+not the broker's base URL (an absolute http(s) URL with no path, query or fragment, which a replica
+reports unchanged and the proof compares byte for byte), `instances` that are missing or not
+`host:port`, a name another entry or Dispatch's own listener has, and a `hub` `privateHubs` does not
+name; and naming `privateHubs`, a hub after the first that no entry serves. `listenerPrivacySource`
+is refused without `privateHubs`, and its `brokerUrl` by the same base-URL rule.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the

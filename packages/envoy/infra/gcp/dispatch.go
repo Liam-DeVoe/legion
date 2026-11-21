@@ -2044,6 +2044,9 @@ func dispatchPrivateListeners(args *DispatchArgs, s dispatchSettings) ([]dispatc
 		if strings.TrimSpace(args.ListenerPrivacySource.BrokerUrl) == "" {
 			return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource.brokerUrl is blank")
 		}
+		if !brokerBaseURL(args.ListenerPrivacySource.BrokerUrl) {
+			return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource.brokerUrl is not the secrets broker's base URL, an absolute http(s) URL with no path, query or fragment: the listener joins its privacy route to it and reports it unchanged, and Dispatch's proof compares the two")
+		}
 		if s.oidcAudience == "" {
 			return nil, core.InputErrorf("oidcAudience", "oidcAudience is required when privateHubs is set: GET /private-readiness, the go-live report, answers only Dispatch's own projected token, which Dispatch verifies for that audience")
 		}
@@ -2067,6 +2070,9 @@ func dispatchPrivateListeners(args *DispatchArgs, s dispatchSettings) ([]dispatc
 			if strings.TrimSpace(field.value) == "" {
 				return nil, core.InputErrorf(input, "%s has no %s", entry, field.name)
 			}
+		}
+		if !brokerBaseURL(listener.Source) {
+			return nil, core.InputErrorf(input, "%s has a source that is not the secrets broker's base URL, an absolute http(s) URL with no path, query or fragment: a replica reports the base URL it joins its privacy route to, and Dispatch's proof compares the two", entry)
 		}
 		if strings.TrimSpace(listener.Instances) == "" {
 			return nil, core.InputErrorf(input, "%s has no instances: each proof reads every replica of a workload at its instances, a headless Service whose addresses are every replica", entry)
@@ -2098,6 +2104,17 @@ func dispatchPrivateListeners(args *DispatchArgs, s dispatchSettings) ([]dispatc
 func portNumber(port string) bool {
 	number, err := strconv.Atoi(port)
 	return err == nil && number >= 1 && number <= 65535
+}
+
+// brokerBaseURL reports whether source is the secrets broker's base URL as a listener's privacy
+// source names it: an absolute http(s) URL with a host and no user, path (a trailing slash
+// included), query or fragment, the rule Dispatch's boot holds DISPATCH_PRIVATE_LISTENERS to. A
+// listener joins /v1/project-privacy to it and reports it unchanged, which the proof compares byte
+// for byte.
+func brokerBaseURL(source string) bool {
+	parsed, err := url.Parse(source)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil &&
+		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" && !parsed.ForceQuery
 }
 
 // privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of

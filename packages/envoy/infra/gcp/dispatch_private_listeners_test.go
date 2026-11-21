@@ -170,6 +170,9 @@ func TestDispatchRendersItsListenerInventory(t *testing.T) {
 		{"a blank source", "privateListeners[1]", "privateListeners[1] (other-hub-listener) has no source", func(a *gcp.DispatchArgs) {
 			a.PrivateListeners[1].Source = " "
 		}},
+		{"a source carrying the privacy route", "privateListeners[1]", "privateListeners[1] (other-hub-listener) has a source that is not the secrets broker's base URL", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners[1].Source = privacySourceURL + "/v1/project-privacy"
+		}},
 		{"a blank host", "privateListeners[0]", "privateListeners[0] (envoy-hub-listener) has no host", func(a *gcp.DispatchArgs) {
 			a.PrivateListeners[0].Host = ""
 		}},
@@ -187,6 +190,12 @@ func TestDispatchRendersItsListenerInventory(t *testing.T) {
 		}},
 		{"a blank broker URL", "listenerPrivacySource", "listenerPrivacySource.brokerUrl is blank", func(a *gcp.DispatchArgs) {
 			a.ListenerPrivacySource.BrokerUrl = " "
+		}},
+		{"a broker URL carrying the privacy route", "listenerPrivacySource", "listenerPrivacySource.brokerUrl is not the secrets broker's base URL", func(a *gcp.DispatchArgs) {
+			a.ListenerPrivacySource.BrokerUrl = privacySourceURL + "/v1/project-privacy"
+		}},
+		{"a broker URL that is no URL", "listenerPrivacySource", "listenerPrivacySource.brokerUrl is not the secrets broker's base URL", func(a *gcp.DispatchArgs) {
+			a.ListenerPrivacySource.BrokerUrl = "envoy-broker.dispatch.svc.cluster.local"
 		}},
 		{"listenerPrivacySource without privateHubs", "listenerPrivacySource", "listenerPrivacySource is set and privateHubs is not", func(a *gcp.DispatchArgs) {
 			a.PrivateHubs, a.PrivateListeners = nil, nil
