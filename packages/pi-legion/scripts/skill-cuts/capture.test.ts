@@ -131,7 +131,8 @@ function f1Case(id: string): Case {
         { repo: "acme/skills", commit: COMMIT, path: "skills/delta", name: "delta" },
       ],
       plugins: [],
-      contextFiles: [{ repo: "acme/project", commit: COMMIT, path: "AGENTS.md" }],
+      // A devbox profile's context file: its dev box's user-level one (build.ts).
+      contextFiles: [{ repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md" }],
     },
     messages: messages.slice(0, 7),
     skillReads: [2, 4],
@@ -228,7 +229,7 @@ function captures(): Promise<Captures> {
       "skills/delta/SKILL.md": DELTA_SKILL,
     });
     writeTree(path.join(repos, "acme/project", COMMIT), {
-      "AGENTS.md": "# Made-up project\n\nKeep each answer short.\n",
+      ".claude/CLAUDE.md": "# Made-up user rules\n\nKeep each answer short.\n",
     });
     writeTree(path.join(dir, "old"), { "SKILL.md": OLD_SKILL, "references/x.md": X });
     writeTree(path.join(dir, "new"), { "SKILL.md": NEW_SKILL, "references/x.md": X });
@@ -413,6 +414,29 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       ).toBe(true);
       expect(hintVersions.length).toBeGreaterThan(0);
       expect(hintVersions.every((version) => version === "2023-06-01")).toBe(true);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
+    "a devbox case's context file is Oh My Pi's user-level one: CLAUDE.md in the scratch Claude Code config directory its run names, not a project file",
+    async () => {
+      const { old } = await captures();
+      const { record } = old.capture;
+      const configDir = path.join(record.scratch, "claude-config");
+      expect(record.context.contextFiles).toMatchObject([
+        { repo: "acme/project", path: ".claude/CLAUDE.md", as: "user level" },
+      ]);
+      const system = systemBlocks(old.capture.body).join("\n");
+      // Oh My Pi's block of it names the file where Oh My Pi read it at user level
+      // (CLAUDE_CONFIG_DIR/CLAUDE.md), and the working directory holds no .claude/CLAUDE.md.
+      expect(system).toContain(
+        `<file path="${path.join(configDir, "CLAUDE.md")}">\n# Made-up user rules\n\nKeep each answer short.`
+      );
+      expect(system).not.toContain(path.join(record.scratch, "work", ".claude"));
+      expect(existsSync(path.join(record.scratch, "work", ".claude"))).toBe(false);
+      // It is the prompt's one context file.
+      expect(system.match(/<file path="/g)).toHaveLength(1);
     },
     ROW_TIMEOUT_MS
   );

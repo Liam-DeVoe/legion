@@ -23,6 +23,12 @@
  * - `work/`: the session's working directory. Each context file named `AGENTS.md` or `CLAUDE.md`
  *   (the session repository's, at its default branch's commit at the session's start) is written
  *   there at its path, where Oh My Pi reads context files.
+ * - `claude-config/`: for a `devbox` context, whose one context file is the user-level one its
+ *   session's host read (build.ts), that file as `CLAUDE.md` in a scratch Claude Code config
+ *   directory (`claudeConfigDir`), which the capture names as `CLAUDE_CONFIG_DIR`: Oh My Pi 18.18.6
+ *   reads `CLAUDE.md` there as its one user-level context file (discovery/claude.ts), so the
+ *   block's path, its rank and its dedupe are Oh My Pi's own, as on the dev box. A devbox profile
+ *   of more than one context file is refused.
  * - `system-prompt.md`, the one `--append-system-prompt` file, as the daemon writes it
  *   (packages/daemon/internal/runtime/systemprompt.go, `ComposePrompt`): for a Legion context
  *   (`legion:<project>:<role>`, the role `architect-root` for a tree's root architect), the role
@@ -130,7 +136,7 @@ export interface ContextRecord {
     readonly commit: string;
     readonly path: string;
     readonly key: string;
-    readonly as: "working directory" | "system prompt";
+    readonly as: "working directory" | "system prompt" | "user level";
   }[];
   /** The role prompt: the case's own text, or the parts Compose named, or none. */
   readonly rolePrompt:
@@ -168,6 +174,9 @@ export interface CaseContext {
   readonly workspace: string;
   /** The `--append-system-prompt` file, when the context has one. */
   readonly appendSystemPrompt: string | undefined;
+  /** The Claude Code config directory that holds a devbox context's user-level context file
+   *  (`CLAUDE.md`), which the host's run names as `CLAUDE_CONFIG_DIR`; none for other contexts. */
+  readonly claudeConfigDir: string | undefined;
   readonly record: ContextRecord;
 }
 
@@ -997,8 +1006,17 @@ export async function buildContext(
   const pluginsDir = path.join(root, "plugins");
   const workspace = path.join(root, "work");
   const promptFile = path.join(root, "system-prompt.md");
-  for (const owned of [skillsDir, pluginsDir, workspace, promptFile]) {
+  const claudeConfigDir = path.join(root, "claude-config");
+  for (const owned of [skillsDir, pluginsDir, workspace, promptFile, claudeConfigDir]) {
     rmSync(owned, { recursive: true, force: true });
+  }
+  // A devbox profile's context file is the user-level one its session's host read (build.ts: a
+  // devbox session's working directory names no repository, so it has no other).
+  const devbox = c.context === "devbox";
+  if (devbox && c.profile.contextFiles.length > 1) {
+    throw new Error(
+      `case ${c.id}: its devbox profile holds ${c.profile.contextFiles.length} context files, and Oh My Pi reads one at user level`
+    );
   }
   mkdirSync(skillsDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
@@ -1098,8 +1116,14 @@ export async function buildContext(
   const fileRecords: ContextRecord["contextFiles"][number][] = [];
   for (const file of c.profile.contextFiles) {
     const { text, key } = await fileText(builds, source, file.repo, file.commit, file.path);
-    // Oh My Pi reads these context files from the working directory.
-    if (["AGENTS.md", "CLAUDE.md"].includes(path.basename(file.path))) {
+    if (devbox) {
+      // Oh My Pi's user-level context file: CLAUDE.md in Claude Code's config directory, which
+      // the run names as CLAUDE_CONFIG_DIR (discovery/claude.ts at the pinned tag).
+      mkdirSync(claudeConfigDir, { recursive: true });
+      writeFileSync(path.join(claudeConfigDir, "CLAUDE.md"), text);
+      fileRecords.push({ ...file, key, as: "user level" });
+    } else if (["AGENTS.md", "CLAUDE.md"].includes(path.basename(file.path))) {
+      // Oh My Pi reads these context files from the working directory.
       const dest = path.join(workspace, file.path);
       mkdirSync(path.dirname(dest), { recursive: true });
       writeFileSync(dest, text);
@@ -1117,6 +1141,7 @@ export async function buildContext(
     extensions,
     workspace,
     appendSystemPrompt: prompts.length > 0 ? promptFile : undefined,
+    claudeConfigDir: devbox && fileRecords.length > 0 ? claudeConfigDir : undefined,
     record: {
       source: source.name,
       skills: skillRecords,

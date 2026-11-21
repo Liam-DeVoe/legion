@@ -57,6 +57,8 @@ const ALPHA =
 const ALPHA_ARM = ALPHA.replace("1. One.", "1. One, from the arm.");
 const BETA = "---\nname: beta\ndescription: Use for the beta greeting.\n---\n\n# Beta\n";
 const AGENTS = "# Project\n\nKeep answers short.\n";
+/** Claude Code's user memory in a made-up repository: a devbox profile's user-level file. */
+const USER_RULES = "# Made-up user rules\n\nAnswer in one line.\n";
 const INSTRUCTIONS = "# Acme instructions\n\nWork the acme way.\n\n\n";
 
 /** The made-up daemon module: its role prompt composer and the parts it embeds. */
@@ -178,7 +180,10 @@ function writeRepositories(root: string): void {
     "skills/beta/SKILL.md": BETA,
     "skills/beta/references/r.md": "Beta reference.\n",
   });
-  writeTree(path.join(root, "acme/project", COMMIT), { "AGENTS.md": AGENTS });
+  writeTree(path.join(root, "acme/project", COMMIT), {
+    "AGENTS.md": AGENTS,
+    ".claude/CLAUDE.md": USER_RULES,
+  });
   writeTree(path.join(root, "acme/infra", COMMIT), {
     "legion/instructions/acme.md": INSTRUCTIONS,
   });
@@ -283,7 +288,9 @@ test("the git blob id, the frontmatter description and the role of a context are
 
 test("each skill is its repository's directory at its commit, through the cache, and the case's skill is the arm's", async () => {
   const root = path.join(dir, "skills");
-  const c = aCase("devbox", {});
+  const c = aCase("devbox", {
+    contextFiles: [{ repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md" }],
+  });
   const { options, arm } = setUp(root, c);
   const first = await buildContext(c, arm, options);
   expect(first.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
@@ -310,10 +317,27 @@ test("each skill is its repository's directory at its commit, through the cache,
     ["skill", true],
     ["file", true],
   ]);
-  // The repository's AGENTS.md is in the working directory, and a devbox has no role prompt.
-  expect(readFileSync(path.join(again.workspace, "AGENTS.md"), "utf8")).toBe(AGENTS);
+  // A devbox's context file is its user-level one: CLAUDE.md in the scratch Claude Code config
+  // directory the host's run names, not a file of the working directory; and it has no role
+  // prompt.
+  expect(again.claudeConfigDir).toBe(path.join(options.root, "claude-config"));
+  expect(readFileSync(path.join(again.claudeConfigDir ?? "", "CLAUDE.md"), "utf8")).toBe(
+    USER_RULES
+  );
+  expect(existsSync(path.join(again.workspace, ".claude"))).toBe(false);
+  expect(again.record.contextFiles.map((file) => file.as)).toEqual(["user level"]);
   expect(again.appendSystemPrompt).toBeUndefined();
   expect(again.record.rolePrompt).toBeNull();
+  // Oh My Pi reads one user-level context file, so a devbox profile of two is refused.
+  const two = aCase("devbox", {
+    contextFiles: [
+      { repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md" },
+      { repo: "acme/project", commit: COMMIT, path: "AGENTS.md" },
+    ],
+  });
+  expect(await buildContext(two, none, options).catch(String)).toContain(
+    "its devbox profile holds 2 context files, and Oh My Pi reads one at user level"
+  );
 });
 
 describe.skipIf(goMissing && !onActions)("a Legion context", () => {

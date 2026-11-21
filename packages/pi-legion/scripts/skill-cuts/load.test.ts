@@ -642,6 +642,10 @@ const GAMMA_PROFILE = {
   plugins: [],
   contextFiles: [],
 };
+/** The user-level context file of a devbox profile (build.ts: Claude Code's user memory of the
+ *  repository that installs its dev box's units), in the made-up acme/skills. */
+const USER_RULES = "# Made-up user rules\n\nEnd each answer with the word done.\n";
+const USER_FILE = { repo: "acme/skills", commit: COMMIT, path: ".claude/CLAUDE.md" };
 /** A `models.yml` of the gateway's Messages route, whose provider a capture points at its
  *  recorder. */
 const ANTHROPIC_MODELS =
@@ -1037,6 +1041,7 @@ function hostInputs(
     "skills/alpha/SKILL.md": ALPHA_SKILL,
     "skills/beta/SKILL.md": BETA_SKILL,
     "skills/gamma/SKILL.md": GAMMA_SKILL,
+    ".claude/CLAUDE.md": USER_RULES,
   });
   const skill = path.join(dir, "tested");
   writeTree(skill, tested);
@@ -1394,7 +1399,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
 
 describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
   test(
-    "installs each task's profile and the tested skill as local plugins, captures each task's first request with its own profile's listing and its headers, and counts a Skill call as a load",
+    "installs each task's profile and the tested skill as local plugins, gives a devbox profile's context file as user memory, captures each task's first request with its own profile's listing and its headers, and counts a Skill call as a load",
     async () => {
       const dir = path.join(scratch, "claude");
       const { out, common } = hostInputs(dir, [
@@ -1406,6 +1411,7 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
         profile,
         JSON.stringify({
           ...BETA_PROFILE,
+          contextFiles: [USER_FILE],
           claude: {
             marketplace: "acme-market",
             plugins: [{ name: "acme-tools", skills: ["beta"] }],
@@ -1452,9 +1458,9 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
       ]);
       expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
       const description = "Use when a task asks for the alpha checklist of the made-up project.";
-      for (const [id, file, plugin, sibling, text] of [
-        ["need-1", profile, "acme-tools", "beta", NEED],
-        ["near-1", other, "other-tools", "gamma", NEAR],
+      for (const [id, file, plugin, sibling, text, memory] of [
+        ["need-1", profile, "acme-tools", "beta", NEED, USER_FILE],
+        ["near-1", other, "other-tools", "gamma", NEAR, null],
       ] as const) {
         const files = loadCapturePaths(out, "claude", id);
         const body = JSON.parse(readFileSync(files.body, "utf8"));
@@ -1464,6 +1470,15 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
         const plugged = [...listing.keys()].filter((name) => name.includes(":")).sort();
         expect(plugged).toEqual([`${plugin}:alpha`, `${plugin}:${sibling}`].sort());
         expect(texts(body.messages).some((each) => each.includes(text))).toBe(true);
+        // The devbox profile's context file is Claude Code's user memory, and no project's.
+        const sent = texts(body.messages).join("\n");
+        const rule = "End each answer with the word done.";
+        expect(sent.includes(rule)).toBe(memory !== null);
+        if (memory !== null) {
+          const said = sent.slice(0, sent.indexOf(rule));
+          expect(said).toContain("(user's private global instructions for all projects)");
+          expect(said).not.toContain("(project instructions");
+        }
         // Thinking off: the body asks for none.
         expect(body.thinking).toBeUndefined();
         const record = z
@@ -1471,8 +1486,10 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
             requestHeaders: z.record(z.string(), z.string()),
             profile: z.string(),
             profileDigest: z.string(),
+            userMemory: z.unknown(),
           })
           .parse(JSON.parse(readFileSync(files.record, "utf8")));
+        expect(record.userMemory).toEqual(memory);
         expect(record.requestHeaders["anthropic-beta"]).toBeString();
         expect(
           Object.keys(record.requestHeaders).every((name) => name.startsWith("anthropic-"))

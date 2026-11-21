@@ -159,6 +159,44 @@ function readFrom(dir: string) {
   };
 }
 
+/** A change of F1 that puts a read of `url` (`skill://<name>`) and its successful result, which
+ *  starts `[Skill file: <header>]` and then holds `text`, after F1's prompt: the two lines' ids are
+ *  `<id>1` and `<id>2`. */
+function readFirst(id: string, url: string, header: string, text: string) {
+  return (lines: Record<string, unknown>[]) => {
+    const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
+    const callId = `toolu_${url.slice("skill://".length)}`;
+    const call = {
+      type: "message",
+      id: `${id}1`,
+      timestamp: "2026-11-20T01:59:45.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: url } }],
+      },
+    };
+    const result = {
+      type: "message",
+      id: `${id}2`,
+      timestamp: "2026-11-20T01:59:45.100Z",
+      message: {
+        role: "toolResult",
+        toolCallId: callId,
+        toolName: "read",
+        isError: false,
+        content: [{ type: "text", text: `[Skill file: ${header}]\n${text}` }],
+      },
+    };
+    insertAfter(lines, prompt, call);
+    insertAfter(lines, call, result);
+  };
+}
+
+/** Where the renamed-plugin session reads zeta: Oh My Pi's cache of the plugin zeta-tools of the
+ *  marketplace old-market (`plugins/cache/plugins/<marketplace>___<plugin>___<version>/`). */
+const OLD_MARKET_ZETA =
+  "/home/dev/.omp/plugins/cache/plugins/old-market___zeta-tools___0.1.0/skills/zeta/SKILL.md";
+
 const SECRET_TOKEN = fixtureSecret("tok");
 const PEM_BODY = fixtureSecret("pem");
 const PEM = [
@@ -280,44 +318,20 @@ const SESSIONS: Record<
   // alpha, which is the copy its host gave it.
   "read-wins": {
     store: "store_a",
-    change: (lines) => {
-      const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
-      const call = {
-        type: "message",
-        id: "de17a001",
-        timestamp: "2026-11-20T01:59:45.000Z",
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "toolu_delta",
-              name: "read",
-              arguments: { path: "skill://delta" },
-            },
-          ],
-        },
-      };
-      const result = {
-        type: "message",
-        id: "de17a002",
-        timestamp: "2026-11-20T01:59:45.100Z",
-        message: {
-          role: "toolResult",
-          toolCallId: "toolu_delta",
-          toolName: "read",
-          isError: false,
-          content: [
-            {
-              type: "text",
-              text: "[Skill file: /elsewhere/other-skills/delta/SKILL.md]\n# delta\n",
-            },
-          ],
-        },
-      };
-      insertAfter(lines, prompt, call);
-      insertAfter(lines, call, result);
-    },
+    change: readFirst(
+      "de17a00",
+      "skill://delta",
+      "/elsewhere/other-skills/delta/SKILL.md",
+      "# delta\n"
+    ),
+  },
+  // Before its read of alpha, the session reads zeta from Oh My Pi's cache of a plugin of
+  // acme/market's marketplace under the name the marketplace had at the session's start
+  // (old-market); R4's prefix table names the plugin under its later name (new-market), whose
+  // unit ships nothing at that commit. acme/market holds Claude Code's settings too.
+  "renamed-plugin": {
+    store: "store_a",
+    change: readFirst("2e7a000", "skill://zeta", OLD_MARKET_ZETA, "# zeta\n"),
   },
   secret: {
     store: "store_a",
@@ -687,6 +701,15 @@ function controlText(name: string): string {
   return lines.map((line) => `${JSON.stringify(line)}\n`).join("");
 }
 
+/** The transcript text of the control session c-other-model, which no row of CONTROL_SESSIONS
+ *  holds: F1 with its own first request, run on openai/gpt-6.1-sol, whose first reply reads alpha. */
+function otherModelControlText(): string {
+  const lines = f1Lines();
+  setText(lines, 0, () => "Run the alpha checklist on the other model.");
+  setModel(lines, "openai/gpt-6.1-sol");
+  return lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+}
+
 /** The first words of the restate and audit prompts, by which the stand-in tells their requests. */
 const RESTATE_PROMPT = "You read part of a coding agent's session and find each message";
 const AUDIT_PROMPT = "You decide whether one step of a coding agent's session follows";
@@ -733,6 +756,17 @@ function readerAnswer(body: {
     if (user.includes("None.")) {
       return JSON.stringify({ terms: ["alpha"], tasks: [...fives("need"), ...fives("near-miss")] });
     }
+    // m1 is a need task, and m2, when it is offered, a near-miss one; else a fifth written one.
+    const nearMiss = user.includes('<message id="m2">')
+      ? [
+          {
+            label: "near-miss",
+            from: "session",
+            messageId: "m2",
+            why: "a report, not the checklist",
+          },
+        ]
+      : [written("near-miss", 5)];
     return JSON.stringify({
       terms: ["alpha"],
       tasks: [
@@ -743,12 +777,7 @@ function readerAnswer(body: {
           why: "asks for the checklist",
           ...GOVERNS,
         },
-        {
-          label: "near-miss",
-          from: "session",
-          messageId: "m2",
-          why: "a report, not the checklist",
-        },
+        ...nearMiss,
         ...[1, 2, 3, 4].map((n) => written("need", n)),
         ...[1, 2, 3, 4].map((n) => written("near-miss", n)),
         // A need task whose first step the skill does not govern: the build leaves it out.
@@ -768,10 +797,17 @@ let recorder: Recorder;
 const skillMd = (name: string) =>
   `---\nname: ${name}\ndescription: Use when a task asks for ${name}.\n---\n\n# ${name}\n`;
 
+/** Claude Code's user memory in acme/skills's `.claude/`: the user-level context file of a devbox
+ *  session whose units come from acme/skills. */
+const USER_RULES = "# Made-up user rules\n\nAnswer each question in one line.\n";
+
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
- *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme. acme/other
- *  holds its own alpha and delta, which its installer links the same way. */
+ *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
+ *  Claude Code's settings and user memory in `.claude/`, as a dev box's config repository does.
+ *  acme/other holds its own alpha and delta, which its installer links the same way. acme/market
+ *  holds zeta and a marketplace that ships it in its plugin zeta-tools, under the marketplace's
+ *  name at SHA (old-market; R4's later read names it new-market), and Claude Code's settings. */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -790,6 +826,8 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/alpha/references/x.md": "Step notes.\n",
     "skills/beta/SKILL.md": skillMd("beta"),
     "skills/older/SKILL.md": skillMd("older"),
+    ".claude/settings.json": "{}\n",
+    ".claude/CLAUDE.md": USER_RULES,
     "installers/skills.sh": INSTALLER,
     "packages/pi-acme/package.json": JSON.stringify({
       name: "@acme/pi-acme",
@@ -813,6 +851,15 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
       dependencies: { "@acme/codegraph": "1.0.0" },
     }),
   },
+  "acme/market": {
+    "skills/zeta/SKILL.md": skillMd("zeta"),
+    ".claude-plugin/marketplace.json": JSON.stringify({
+      name: "old-market",
+      owner: { name: "acme" },
+      plugins: [{ name: "zeta-tools", source: "./" }],
+    }),
+    ".claude/settings.json": "{}\n",
+  },
 };
 
 /** The blob id the stand-in gives a file's text. */
@@ -823,8 +870,9 @@ const CUT_SHORT = REPOSITORIES["acme/skills"]?.["docker/omp-plugins/package.json
 /** The gh calls the stand-in took. */
 const ghCalls: string[][] = [];
 
-/** The stand-in gh: GET reads of commits, default branches, two files, and the tree and the
- *  blobs of each made-up repository at SHA; and GraphQL reads of blobs in a batch. */
+/** The stand-in gh: GET reads of commits, default branches, two files, each file of a made-up
+ *  repository at SHA, and the tree and the blobs of each made-up repository at SHA; and GraphQL
+ *  reads of blobs in a batch. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -852,6 +900,9 @@ const io = (lines: string[]): BuildIo => ({
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
       return ok("key: ACME\ninstructions: acme.md\n");
     }
+    const [, owned = "", file = ""] = /^repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(route) ?? [];
+    const text = REPOSITORIES[owned]?.[decodeURIComponent(file)];
+    if (text !== undefined && args.includes(`ref=${SHA}`)) return ok(text);
     const [, repository = "", kind = "", id = ""] =
       /^repos\/([^/]+\/[^/]+)\/git\/(trees|blobs)\/([0-9a-f]{40})(?:\?recursive=1)?$/.exec(route) ??
       [];
@@ -928,14 +979,18 @@ beforeAll(() => {
     store[controlPath(name)] = controlText(name);
   }
   // The sessions the tasks query's rows come from: task-1's is a subagent whose recorded listing
-  // lacks alpha; each other is F1 as the good session has it, so its rebuilt profile is the good
-  // case's. The control session c-unlisted is one like task-1's.
+  // lacks alpha; task-3's is F1 as the openai session has it, on openai/gpt-6.1-sol; each other is
+  // F1 as the good session has it, so its rebuilt profile is the good case's (and task-3's is
+  // too: only its model differs). The control session c-unlisted is one like task-1's, and
+  // c-other-model one whose first request ran on openai/gpt-6.1-sol.
   const storeA = files.store_a ?? {};
-  for (const row of TASK_ROWS) {
-    storeA[row.path] =
-      row.path === "/sessions/task-1.jsonl" ? unlistedSubagentText() : sessionText("good");
-  }
+  const taskSessions: Record<string, string> = {
+    "/sessions/task-1.jsonl": unlistedSubagentText(),
+    "/sessions/task-3.jsonl": sessionText("openai"),
+  };
+  for (const row of TASK_ROWS) storeA[row.path] = taskSessions[row.path] ?? sessionText("good");
   storeA[controlPath("c-unlisted")] = unlistedSubagentText();
+  storeA[controlPath("c-other-model")] = otherModelControlText();
   writeFileSync(
     path.join(setupDir, "store.json"),
     JSON.stringify({
@@ -976,6 +1031,7 @@ beforeAll(() => {
   const userSkills = "user-skills:omp (acme/skills:installers/skills.sh)";
   const otherSkills = "user-skills:omp (acme/other:installers/skills.sh)";
   const pkg = "package:@acme/pi-acme (acme/skills:packages/pi-acme/package.json)";
+  const market = "plugin:zeta-tools@new-market (acme/market:.claude-plugin/marketplace.json)";
   writeFileSync(
     path.join(copiesDir, "prefix-table.tsv"),
     tsv(PREFIX_TABLE_COLUMNS, [
@@ -993,6 +1049,13 @@ beforeAll(() => {
         "skills/alpha",
         "alpha",
         "plugin:acme-tools (acme/skills:plugins/acme-tools/.claude-plugin/plugin.json)",
+      ],
+      [
+        "**/plugins/cache/plugins/new-market___zeta-tools___*/skills/zeta/",
+        "acme/market",
+        "skills/zeta",
+        "zeta",
+        market,
       ],
     ])
   );
@@ -1082,6 +1145,15 @@ beforeAll(() => {
         "",
         "no package @acme/codegraph with skills was read"
       ),
+      installer(
+        "acme/market",
+        ".claude-plugin/marketplace.json",
+        "claude-marketplace",
+        "ships",
+        "plugin:zeta-tools@new-market",
+        "zeta",
+        "skills/zeta"
+      ),
     ])
   );
   writeFileSync(
@@ -1104,6 +1176,7 @@ beforeAll(() => {
       ["acme/skills", "main", SHA, "no", "no", "", 10, "recursive", 3, ""],
       ["acme/other", "main", SHA, "no", "no", "", 10, "recursive", 1, ""],
       ["forker/skills", "main", SHA, "yes", "no", "acme/skills", 10, "recursive", 1, ""],
+      ["acme/market", "main", SHA, "no", "no", "", 10, "recursive", 1, ""],
     ])
   );
   writeFileSync(
@@ -1115,6 +1188,7 @@ beforeAll(() => {
       ["acme/skills", "skills/beta", "beta", 10, "no", "no", "", "", ""],
       ["acme/skills", "skills/newer", "newer", 10, "no", "no", "", "", ""],
       ["forker/skills", "skills/alpha", "alpha", 10, "yes", "no", "acme/skills", "", ""],
+      ["acme/market", "skills/zeta", "zeta", 10, "no", "no", "", "", ""],
     ])
   );
   writeFileSync(path.join(copiesDir, "loaders.tsv"), tsv(LOADERS_COLUMNS, []));
@@ -1282,6 +1356,7 @@ describe("build-cases over every made-up session", () => {
         "checkout",
         "context",
         "read-wins",
+        "renamed-plugin",
       ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
@@ -1430,7 +1505,7 @@ describe("build-cases over every made-up session", () => {
         { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older" },
       ],
       plugins: [],
-      contextFiles: [],
+      contextFiles: [{ repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md" }],
     });
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
     expect(evidence["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toContain(
@@ -1438,7 +1513,7 @@ describe("build-cases over every made-up session", () => {
     );
     expect(evidence[`commit ${SHA} of acme/skills`]).toContain("at or before the session's start");
     expect(evidence[`the skills and manifests of acme/skills at ${SHA}`]).toContain(
-      "its 3 SKILL.md files and 4 manifest files"
+      "its 3 SKILL.md files and 5 manifest files"
     );
     expect(evidence["skill alpha (acme/skills skills/alpha)"]).toBe(
       `acme/skills at ${SHA}: user-skills:omp links it (acme/skills:installers/skills.sh); message 2 reads this copy`
@@ -1657,6 +1732,72 @@ describe("build-cases over every made-up session", () => {
     expect(c?.messages[2]).toEqual(messages[2] as SessionMessage);
   });
 
+  test("a top-level devbox session's profile holds Oh My Pi's user-level context file, the .claude/CLAUDE.md of the one repository of its units that holds Claude Code's settings, at the session's start; a subagent's holds none beside its recorded prompt", () => {
+    const c = byName("good");
+    expect(c?.context).toBe("devbox");
+    expect(c?.profile.contextFiles).toEqual([
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["left out: the working directory's context files"]).toBe(
+      "a devbox session's working directory names no repository"
+    );
+    expect(evidence["context file acme/skills .claude/CLAUDE.md"]).toBe(
+      `Oh My Pi's user-level context file is CLAUDE.md in Claude Code's config directory, on a dev box the .claude/ of the repository that installs its units: of the repositories of the profile's units (acme/skills), acme/skills alone holds Claude Code's settings .claude/settings.json at ${SHA}, and it has .claude/CLAUDE.md at ${SHA}`
+    );
+    // It is read at the commit of the session's start.
+    expect(
+      ghCalls.some(
+        (args) =>
+          args.includes("repos/acme/skills/contents/.claude/CLAUDE.md") &&
+          args.includes(`ref=${SHA}`)
+      )
+    ).toBe(true);
+    // A devbox session two of whose units' repositories hold Claude Code's settings has none, and
+    // its evidence says why.
+    const renamed = byName("renamed-plugin");
+    expect(renamed?.profile.contextFiles).toEqual([]);
+    expect(
+      renamed?.evidence?.find(
+        (each) => each.item === "left out: Oh My Pi's user-level context file"
+      )?.source
+    ).toBe(
+      "2 repositories (acme/market, acme/skills) of the profile's units (acme/market, acme/skills) hold Claude Code's settings .claude/settings.json at the session's start, so which is the dev box's Claude Code config directory, whose CLAUDE.md Oh My Pi reads at user level, is not known"
+    );
+    // A subagent's recorded prompt holds the context files its session was given.
+    const subagent = byName("subagent");
+    expect(subagent?.profile.systemPrompt).toEqual(SUBAGENT_PROMPT);
+    expect(subagent?.profile.contextFiles).toEqual([]);
+    expect(subagent?.evidence?.map((each) => each.item)).not.toContain(
+      "context file acme/skills .claude/CLAUDE.md"
+    );
+  });
+
+  test("a read whose unit R4 names by a later name ships nothing at the session's start, so the prefix rows its manifest gives at that commit place it at the unit that installed it then", () => {
+    const c = byName("renamed-plugin");
+    expect(c?.profile.skills.find((skill) => skill.name === "zeta")).toEqual({
+      repo: "acme/market",
+      commit: SHA,
+      path: "skills/zeta",
+      name: "zeta",
+    });
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    const later = "plugin:zeta-tools@new-market (acme/market:.claude-plugin/marketplace.json)";
+    const then = "plugin:zeta-tools@old-market (acme/market:.claude-plugin/marketplace.json)";
+    expect(evidence[`unit ${later}`]).toContain(
+      `message 2 reads [Skill file: ${OLD_MARKET_ZETA}], which attribute.ts's checkout rule places at acme/market skills/zeta`
+    );
+    expect(evidence[`left out: the skills of ${later}`]).toBe(
+      `acme/market at ${SHA}: by copies.ts's rules .claude-plugin/marketplace.json ships no skill there`
+    );
+    expect(evidence[`unit ${then}`]).toBe(
+      `message 2 reads [Skill file: ${OLD_MARKET_ZETA}], under the prefix row **/plugins/cache/plugins/old-market___zeta-tools___*/skills/zeta/ that the manifests of acme/market at ${SHA} give by copies.ts's rules; no unit installers.tsv names for the read ships zeta at that commit`
+    );
+    expect(evidence["skill zeta (acme/market skills/zeta)"]).toBe(
+      `acme/market at ${SHA}: plugin:zeta-tools@old-market ships it (acme/market:.claude-plugin/marketplace.json); installers.tsv, which R4 read later, does not list it; message 2 reads this copy`
+    );
+  });
+
   test("a step in the third window is found, and the restatement check reads every message before it", () => {
     const c = byName("third-window");
     const messages = f1Messages();
@@ -1868,7 +2009,7 @@ describe("build-cases over every made-up session", () => {
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(15);
+    expect(summary.casesBuilt).toBe(16);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
@@ -2110,6 +2251,62 @@ test("build-tasks proposes terms, reads first user messages per store and day, a
   ]);
   expect(summary.tasks[0].firstStep).toEqual(GOVERNS.firstStep);
 }, 30_000);
+
+test("build-tasks --model offers only the first user messages of sessions whose first request ran on that model, drops and counts each other session as other-model, and the summary names the model", async () => {
+  const out = path.join(scratch, "tasks-model", "tasks.jsonl");
+  const args = (model: string) => [
+    "build-tasks",
+    "--config",
+    config,
+    "--key-file",
+    keyFile,
+    "--skill",
+    old,
+    "--store",
+    "store_a",
+    "--out",
+    out,
+    "--model",
+    model,
+  ];
+  const lines: string[] = [];
+  expect(await main(args("openai/gpt-6.1-sol"), io(lines))).toBe(EXIT.ok);
+  // task-3's session ran on openai/gpt-6.1-sol and is offered; task-1's and task-4's, of the other
+  // text, ran on F1's model, and each is dropped.
+  expect(tasksOf(out).filter((task) => task.source === "session")).toEqual([
+    {
+      id: "t1",
+      text: "Write the Alpha report of step 2.",
+      label: "need",
+      source: "session",
+      store: "store_a",
+      pathHash: pathHash("/sessions/task-3.jsonl"),
+    },
+  ]);
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.model).toBe("openai/gpt-6.1-sol");
+  expect(summary.inputs.model).toBe("openai/gpt-6.1-sol");
+  expect(summary.messagesOffered).toBe(1);
+  expect(summary.candidateDrops.counts).toEqual({ "other-model": 2 });
+  expect(summary.candidateDrops.sessions).toEqual(
+    ["/sessions/task-1.jsonl", "/sessions/task-4.jsonl"].map((file) => ({
+      store: "store_a",
+      pathHash: pathHash(file),
+      reason: "other-model",
+      detail: "its first reply ran on anthropic/claude-sonnet-5-5, not openai/gpt-6.1-sol",
+    }))
+  );
+  expect(lines.join("")).toContain(
+    "2 candidate sessions dropped (2 other-model, not on openai/gpt-6.1-sol)"
+  );
+  expect(existsSync(`${out}.spool`)).toBe(false);
+  // The model is one of the inputs: a run that goes on with another is refused.
+  const other: string[] = [];
+  expect(await main(args("anthropic/claude-sonnet-5-5"), io(other))).toBe(EXIT.refused);
+  expect(other.join("\n")).toContain(
+    "--model was openai/gpt-6.1-sol, now anthropic/claude-sonnet-5-5"
+  );
+}, 60_000);
 
 /** The lines of the stand-in store's log since `from` characters, parsed. */
 const psqlLines = (from: number) =>
@@ -2463,6 +2660,69 @@ test("build-tasks --first-read stops once --max requests are kept, and killed af
   const other: string[] = [];
   expect(await main(controlArgs(sessions, killed, "3", "--max", "3"), io(other))).toBe(2);
   expect(other.join("\n")).toContain("--seed was 2, now 3; --max was 2, now 3");
+}, 60_000);
+
+test("build-tasks --first-read --model drops and counts each session whose first request ran on another model as other-model, keeps those on it, and reports how many on it read the skill in their first reply", async () => {
+  const names = [...Object.keys(CONTROL_SESSIONS), "c-other-model"];
+  const sessions = controlSessionsFile("control-model.jsonl", names);
+  const named = (hash: unknown) => names.find((name) => fileHash(controlPath(name)) === hash);
+  const run = async (model: string, dir: string) => {
+    const out = path.join(scratch, dir, "tasks.jsonl");
+    const lines: string[] = [];
+    const args = controlArgs(sessions, out, "1", "--max", "10", "--model", model);
+    expect(await main(args, io(lines))).toBe(EXIT.ok);
+    const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+    const outcomes = Object.fromEntries(
+      (summary.sessions as { hash: string; outcome: string; detail?: string }[]).map((each) => [
+        named(each.hash),
+        each.outcome === "other-model" ? each.detail : each.outcome,
+      ])
+    );
+    return { tasks: tasksOf(out), summary, outcomes, printed: lines.join("\n") };
+  };
+
+  const openai = await run("openai/gpt-6.1-sol", "control-model-openai");
+  expect(openai.tasks.map((task) => task.pathHash)).toEqual([
+    pathHash(controlPath("c-other-model")),
+  ]);
+  expect(openai.outcomes).toEqual({
+    ...Object.fromEntries(
+      Object.keys(CONTROL_SESSIONS).map((name) => [
+        name,
+        "its first reply ran on anthropic/claude-sonnet-5-5, not openai/gpt-6.1-sol",
+      ])
+    ),
+    "c-other-model": "first request",
+  });
+  expect(openai.summary.inputs.model).toBe("openai/gpt-6.1-sol");
+  expect(openai.summary.model).toEqual({ name: "openai/gpt-6.1-sol", firstRead: 1, otherModel: 6 });
+  expect(openai.printed).toContain(
+    "build-tasks: 1 sessions tried on openai/gpt-6.1-sol read alpha in their first reply; 6 sessions on another model dropped (other-model)"
+  );
+  expect(openai.printed).toContain(
+    "build-tasks: 1 sessions on openai/gpt-6.1-sol read alpha in their first reply, fewer than 5"
+  );
+
+  // On F1's model: c-one, c-same, c-secret, c-ungoverned and c-two read alpha in their first
+  // reply (c-same asks what c-one asks), c-late does not, and c-other-model is dropped.
+  const sonnet = await run("anthropic/claude-sonnet-5-5", "control-model-sonnet");
+  const order = blindOrder(names, "1").map(({ item }) => item);
+  const firstOfSame = order.find((name) => name === "c-one" || name === "c-same");
+  expect(sonnet.tasks.map((task) => task.pathHash)).toEqual(
+    order
+      .filter((name) => [firstOfSame, "c-secret", "c-two"].includes(name))
+      .map((name) => pathHash(controlPath(name)))
+  );
+  expect(sonnet.outcomes["c-other-model"]).toBe(
+    "its first reply ran on openai/gpt-6.1-sol, not anthropic/claude-sonnet-5-5"
+  );
+  expect(sonnet.outcomes["c-late"]).toBe("not first");
+  expect(sonnet.summary.model).toEqual({
+    name: "anthropic/claude-sonnet-5-5",
+    firstRead: 5,
+    otherModel: 1,
+  });
+  expect(sonnet.printed).not.toContain("in their first reply, fewer than 5");
 }, 60_000);
 
 test("build-tasks refuses --sessions, --seed and --max without --first-read, and --store with it, before any read", async () => {

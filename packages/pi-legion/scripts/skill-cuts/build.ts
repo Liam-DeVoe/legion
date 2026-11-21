@@ -15,11 +15,12 @@
  *       the cut's base> --copies <R4 out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
- *       --skill <dir> --store <db>... --out <tasks.jsonl> [--profiles-out <dir> --copies <R4
- *       out dir> --count <count dir> --context-session <store>:<hash>]
+ *       --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
+ *       --copies <R4 out dir> --count <count dir> --context-session <store>:<hash>]
  *   bun scripts/skill-cuts/build.ts build-tasks --first-read --config <skill-cuts.json>
  *       --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>]
- *       --out <tasks.jsonl> [--profiles-out <dir> --copies <R4 out dir> --count <count dir>]
+ *       --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <R4 out dir>
+ *       --count <count dir>]
  *
  * **build-cases.** `--sessions` holds the candidate sessions, one JSON line each:
  * `{"store", "hash", "path"?}`, `hash` the file hash count.sql names a file by (16 hex characters
@@ -217,7 +218,11 @@
  *   Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package the
  *   worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
- *   is installed alone.
+ *   is installed alone. A read whose skill none of those units ships at the session's start (R4
+ *   names a unit as the manifests name it later: a marketplace or plugin renamed since, whose
+ *   old name the read's plugin cache directory shows) adds each unit of the prefix rows that the
+ *   same manifests give at the session's start (copies.ts's rules, below) and that its path is
+ *   under, and that unit's copy is the one the session read.
  * - Commits: each repository at the last commit of its default branch (repositories.tsv, else
  *   GitHub's) at or before the session's start. Every GitHub read goes through `gh api`
  *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches.
@@ -237,9 +242,19 @@
  * - Context files: for a Legion context, the `AGENTS.md` of the repository of the session's
  *   working directory (`/legion/workspaces/<owner>/<name>/…`) when it has one at that commit, and
  *   the project's instructions file named by its project file (a `legion-project` manifest of
- *   manifests.tsv, `instructions:` read at that commit, under `<dir>/instructions/`). Each one R4's
- *   output or the session does not name is listed as left out. A subagent's case has none: its
- *   recorded prompt holds them. Its units and skills are read as its store's context's are.
+ *   manifests.tsv, `instructions:` read at that commit, under `<dir>/instructions/`). A devbox
+ *   session's working directory names no repository, so it has none of those; it has the
+ *   user-level context file Oh My Pi 18.18.6 reads (discovery/claude.ts): one file at user level,
+ *   CLAUDE.md in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names, the
+ *   `.claude/` of the repository that installs its units. That is the one repository of the
+ *   profile's units that holds Claude Code's settings there (`.claude/settings.json`, copies.ts's
+ *   claude-settings manifest) at the session's start, and its `.claude/CLAUDE.md` at that commit
+ *   (context.ts writes it under the working directory, where Oh My Pi reads it as the project's
+ *   `.claude/CLAUDE.md`; load.ts gives Claude Code it as user memory). Each one R4's output or the
+ *   session does not name is listed as left out: for a devbox, when no repository or more than
+ *   one of its units holds those settings, or that one has no CLAUDE.md then. A subagent's case
+ *   has none: its recorded prompt holds them. Its units and skills are read as its store's
+ *   context's are.
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
@@ -295,6 +310,18 @@
  * mode each offered message's session is rebuilt first and the next candidate taken in its
  * place (`offeredMessages`, `candidateDrops`), in `--first-read` when the session is tried
  * (`skillNotListed`); and a `--context-session` whose context does not list it is refused.
+ *
+ * **--model <model>** (both modes; the architect's design of 2026-11-21T04:09:32Z: a load test
+ * runs on one model, and the tasks taken from real sessions come only from sessions on it): a
+ * candidate session is kept only when its first request ran on `<model>`, as the session's file
+ * names it and R1's model table writes it (`firstReplyModel`: its last `model_change` before its
+ * first assistant message, a thinking suffix left out, so `<gateway>/openai/gpt-6.1-sol` and
+ * `openai/gpt-6.1-sol` are two models). Every other session is dropped and counted
+ * (`other-model`): in the reader's mode each offered message's session is pulled and the next
+ * candidate taken in its place (`candidateDrops`), in `--first-read` when the session is tried,
+ * and that summary's `model` says how many sessions tried on the model read the skill in their
+ * first reply. Written tasks are unchanged. The summary names the model; the inputs hold it, so a
+ * run that goes on with another model is refused. Without `--model` nothing of this happens.
  *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
  * `--budget-usd`, with the cases built so far written; 4 stopped by the stop rule, the same.
@@ -574,6 +601,11 @@ const WORKSPACE_DIR = /\/--legion-workspaces-[A-Za-z0-9._-]*?-([a-z][a-z0-9]*)-(
 const LEFT_OUT_CUSTOM = new Set(["prewalk-plan", "vibe-mode-context"]);
 /** Where a Legion pod's worker image installs its Oh My Pi packages (worker.Dockerfile). */
 const IMAGE_ROOT = "/opt/legion/";
+/** Claude Code's settings in its config directory, as copies.ts reads them (its claude-settings
+ *  manifest), and the user memory file beside them, which Oh My Pi reads as its user-level context
+ *  file (discovery/claude.ts at the pinned tag). */
+const CLAUDE_SETTINGS = ".claude/settings.json";
+const USER_CONTEXT_FILE = ".claude/CLAUDE.md";
 /** A Legion workspace: `/legion/workspaces/<owner>/<name>/<workspace>`. */
 const LEGION_WORKSPACE = /^\/legion\/workspaces\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)(?:\/|$)/;
 /** What stands in for each secret the scan takes out. */
@@ -1386,6 +1418,22 @@ function notServed(models: readonly string[], servedIds: ReadonlySet<string>): s
     : `the session's models from the skill's read on, ${named}: no route of the gateway serves any of them; no servedModels entry has their ids`;
 }
 
+/** `model` as R1's model table writes a session's model (attribute.ts's `sessionModel`): as the
+ *  session's file names it, its provider path kept and a thinking suffix left out. */
+function modelForm(model: string): string {
+  return sessionModel({ model, source: "model_change" }, new Set())?.model ?? model;
+}
+
+/** The model the first request of the session `t` ran on, as `build-tasks --model` compares it:
+ *  the last `model_change` of its branch before its first assistant message (before the branch's
+ *  end when it has none), as build-cases reads a session's model before a point of it, in R1's
+ *  form (`modelForm`); undefined when no model_change comes before it. */
+function firstReplyModel(t: Transcript): string | undefined {
+  const reply = t.items.find((item) => item.slim.role === "assistant");
+  const model = lastBefore(t.branch, reply?.at ?? t.branch.length, modelChange);
+  return model === undefined ? undefined : modelForm(model);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The session's role
 
@@ -2062,6 +2110,47 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     [...held.values()].flatMap((at) => at.manifests),
     new CopyIndex([...held.values()].flatMap((at) => at.copies))
   );
+  /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules). */
+  const shipsAtStart = (via: Via) =>
+    resolved.rows.filter(
+      (row) =>
+        row.unit === via.unit &&
+        row.manifestRepository === via.repository &&
+        row.manifestPath === via.manifest &&
+        row.copyPath !== undefined &&
+        Object.hasOwn(MEMBER_ACTIONS, row.action)
+    );
+  // A read whose skill no unit ships at the session's start, though the repository its unit comes
+  // from was read at that commit: R4 names the unit as the manifests name it at the later commit R4
+  // read, and a marketplace or a plugin renamed since leaves that unit empty then (the read's path
+  // names the plugin cache directory `<marketplace>___<plugin>___<version>` of the name it had).
+  // The prefix rows the same manifests give at the session's start (copies.ts's rules,
+  // `resolved.prefixes`) place the read at the unit that installed it then, and at its copy.
+  const placedAtStart = new Set<string>();
+  for (const read of input.reads) {
+    const name = read.skill;
+    if (name === undefined || placedAtStart.has(read.header)) continue;
+    placedAtStart.add(read.header);
+    if ([...units.values()].some(({ via }) => shipsAtStart(via).some((row) => row.skill === name)))
+      continue;
+    const rows = resolved.prefixes.filter(
+      (row) => row.name === name && prefixMatches(row.prefix, read.header)
+    );
+    for (const row of rows) {
+      for (const via of vias(row.via)) {
+        if (units.has(viaKey(via))) continue;
+        units.set(viaKey(via), {
+          via,
+          why: `message ${read.index} reads [Skill file: ${read.header}], under the prefix row ${row.prefix} that the manifests of ${via.repository} at ${commits.get(via.repository)} give by copies.ts's rules; no unit installers.tsv names for the read ships ${name} at that commit`,
+        });
+      }
+    }
+    const [row] = rows;
+    const known = readCopies.get(name);
+    if (row !== undefined && (known === undefined || known.index === read.index)) {
+      readCopies.set(name, { repo: row.repository, path: row.path, index: read.index });
+    }
+  }
 
   const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
   /** Each copy a unit ships at the session's start, in the order of the units, with how it ships
@@ -2070,14 +2159,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const [key, { via, why }] of units) {
     const id = via.unit;
     const start = `${via.repository} at ${commits.get(via.repository)}`;
-    const members = resolved.rows.filter(
-      (row) =>
-        row.unit === id &&
-        row.manifestRepository === via.repository &&
-        row.manifestPath === via.manifest &&
-        row.copyPath !== undefined &&
-        Object.hasOwn(MEMBER_ACTIONS, row.action)
-    );
+    const members = shipsAtStart(via);
     const later = listed(via);
     evidence.push({ item: `unit ${key}`, source: why });
     if (members.length === 0) {
@@ -2197,8 +2279,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const shipped = new Set(offers.map((offer) => `${offer.copy.repo}\0${offer.copy.name}`));
 
   // Context files: the session repository's AGENTS.md and the project's instructions file, which
-  // a recorded prompt already holds as its session had them.
-  const contextFiles: { repo: string; path: string }[] = [];
+  // a recorded prompt already holds as its session had them; for a devbox, whose working directory
+  // names no repository, the user-level context file Oh My Pi reads. `user` says why a file is
+  // that one.
+  const contextFiles: { repo: string; path: string; user?: string }[] = [];
   const legion = input.context.startsWith("legion:");
   if (input.recordedPrompt) {
     evidence.push({
@@ -2230,9 +2314,31 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
   } else {
     evidence.push({
-      item: "left out: context files",
+      item: "left out: the working directory's context files",
       source: "a devbox session's working directory names no repository",
     });
+    // Oh My Pi's one user-level context file (discovery/claude.ts at the pinned tag) is CLAUDE.md
+    // in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names: the `.claude/`
+    // of the repository that installs its units, which holds Claude Code's settings there.
+    const unitRepos = [...new Set([...units.values()].map(({ via }) => via.repository))].sort();
+    const homes = unitRepos.filter((repo) =>
+      held
+        .get(repo)
+        ?.manifests.some((each) => each.kind === "claude-settings" && each.path === CLAUDE_SETTINGS)
+    );
+    const [home] = homes;
+    if (homes.length === 1 && home !== undefined) {
+      contextFiles.push({
+        repo: home,
+        path: USER_CONTEXT_FILE,
+        user: `Oh My Pi's user-level context file is CLAUDE.md in Claude Code's config directory, on a dev box the .claude/ of the repository that installs its units: of the repositories of the profile's units (${unitRepos.join(", ")}), ${home} alone holds Claude Code's settings ${CLAUDE_SETTINGS} at ${commits.get(home)}`,
+      });
+    } else {
+      evidence.push({
+        item: "left out: Oh My Pi's user-level context file",
+        source: `${homes.length === 0 ? "no repository" : `${homes.length} repositories (${homes.join(", ")})`} of the profile's units (${unitRepos.join(", ") || "none"}) ${homes.length === 0 ? "holds" : "hold"} Claude Code's settings ${CLAUDE_SETTINGS} at the session's start, so which is the dev box's Claude Code config directory, whose CLAUDE.md Oh My Pi reads at user level, is not known`,
+      });
+    }
   }
 
   const profileSkills: ProfileSkill[] = [];
@@ -2280,14 +2386,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     if ((await github.text(file.repo, commit, file.path)) === undefined) {
       evidence.push({
         item: `left out: ${file.repo} ${file.path}`,
-        source: `the repository of the session's working directory ${input.cwd} has no ${file.path} at ${commit}`,
+        source:
+          file.user === undefined
+            ? `the repository of the session's working directory ${input.cwd} has no ${file.path} at ${commit}`
+            : `${file.user}, and it has no ${file.path} at ${commit}`,
       });
       continue;
     }
     profileFiles.push({ repo: file.repo, commit, path: file.path });
     evidence.push({
       item: `context file ${file.repo} ${file.path}`,
-      source: `the session's working directory ${input.cwd} is a workspace of ${file.repo}, which has ${file.path} at ${commit}`,
+      source:
+        file.user === undefined
+          ? `the session's working directory ${input.cwd} is a workspace of ${file.repo}, which has ${file.path} at ${commit}`
+          : `${file.user}, and it has ${file.path} at ${commit}`,
     });
   }
   return {
@@ -2303,7 +2415,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 const BUILD_CASES_USAGE =
   "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
-  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--profiles-out <dir> --copies <dir> --count <dir>]";
+  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
 /** One candidate session of the sessions file. */
 const Candidate = z.strictObject({
@@ -3909,11 +4021,13 @@ const TasksQuery = z.strictObject({
 });
 type TasksQuery = z.infer<typeof TasksQuery>;
 
-/** What a build-tasks run is made from: the skill's SKILL.md, the stores and the window. */
+/** What a build-tasks run is made from: the skill's SKILL.md, the stores, the window, and the
+ *  model `--model` names, when it names one. */
 const TasksInputs = z.strictObject({
   skill: Digested,
   stores: z.array(z.string()),
   window: z.strictObject({ start: z.string(), end: z.string() }),
+  model: z.string().optional(),
 });
 type TasksInputs = z.infer<typeof TasksInputs>;
 
@@ -3962,6 +4076,9 @@ function priorTasks(
     differ.push(
       `the window was ${was.window.start} to ${was.window.end}, now ${inputs.window.start} to ${inputs.window.end}`
     );
+  }
+  if (was.model !== inputs.model) {
+    differ.push(`--model was ${was.model ?? "not given"}, now ${inputs.model ?? "not given"}`);
   }
   if (differ.length > 0) {
     throw new Refused(
@@ -4061,8 +4178,21 @@ function profilesPlan(
   };
 }
 
-/** The profile of the file `filePath` of `store`, pulled into `spool`, parsed (`readTranscript`)
- *  and rebuilt by `sessionProfile`. Throws, naming why, when the session gives none. */
+/** The transcript of the file `filePath` of `store`, pulled into `spool` and parsed
+ *  (`readTranscript`). Throws when the pull fails or returns no row, or a line is no entry. */
+async function pulledTranscript(
+  command: string,
+  store: string,
+  filePath: string,
+  spool: string
+): Promise<Transcript> {
+  const { bytes } = await pullTranscript(command, store, filePath, spool);
+  if (bytes === 0) throw new Error("the pull returned no row");
+  return readTranscript(spool);
+}
+
+/** The profile of the file `filePath` of `store`, pulled into `spool` (`pulledTranscript`) and
+ *  rebuilt by `sessionProfile`. Throws, naming why, when the session gives none. */
 async function pulledProfile(
   run: ProfileRun,
   store: string,
@@ -4070,9 +4200,8 @@ async function pulledProfile(
   spool: string,
   skill: string
 ): Promise<SessionProfile> {
-  const { bytes } = await pullTranscript(run.config.psqlCommand, store, filePath, spool);
-  if (bytes === 0) throw new Error("the pull returned no row");
-  return sessionProfile(run, storeNamed(run.config, store), filePath, readTranscript(spool), skill);
+  const t = await pulledTranscript(run.config.psqlCommand, store, filePath, spool);
+  return sessionProfile(run, storeNamed(run.config, store), filePath, t, skill);
 }
 
 /** The context session of a run and its profile, the one each written task takes. */
@@ -4128,6 +4257,9 @@ interface TaskSession {
 /** The reason a session task, or a candidate session of one, is dropped when its rebuilt context
  *  does not list the tested skill (`listsSkill`). */
 const SKILL_NOT_LISTED = "skill-not-listed";
+/** The reason a candidate session is dropped when `--model` names another model than the one its
+ *  first request ran on (`firstReplyModel`). */
+const OTHER_MODEL = "other-model";
 
 /**
  * Writes the profile of each task of `tasks` to `<plan.dir>/<task id>.json` (load.ts's
@@ -4248,8 +4380,9 @@ function profilesRecord(
   };
 }
 
-/** A candidate session the tasks reader is not offered, and why: its context does not list the
- *  skill (`skill-not-listed`), or its profile cannot be rebuilt. */
+/** A candidate session the tasks reader is not offered, and why: its first request ran on another
+ *  model than `--model` (`other-model`), its context does not list the skill
+ *  (`skill-not-listed`), or it cannot be pulled or its profile rebuilt. */
 interface CandidateDrop {
   readonly store: string;
   readonly pathHash: string;
@@ -4261,17 +4394,21 @@ interface CandidateDrop {
 /**
  * The first user messages the tasks reader is offered, as build-tasks has always chosen them: the
  * first message of each distinct text, at most TASK_MESSAGES spread evenly over them (`spread`).
- * With `--profiles-out` (`plan`), each offered message's session is rebuilt (`pulledProfile`), and
- * a message is offered only when its context lists the skill (`listsSkill`): one whose context
- * does not, or whose profile cannot be rebuilt, is dropped and counted, and the next session of
- * the same text is tried, then the next text, until TASK_MESSAGES are offered or the candidates
- * run out (the reader then writes tasks, in the `--context-session` context). Returns the
- * messages, how many distinct texts there were, the profiles rebuilt (by `<store>\0<hash>`), the
- * drops, and the sessions.sql queries made for the paths.
+ * With `--model` (`model`, in R1's form) or `--profiles-out` (`plan`), each offered message's
+ * session is pulled: a message is offered only when its first request ran on `model`
+ * (`firstReplyModel`), and, with `plan`, its session is rebuilt (`sessionProfile`) and the message
+ * offered only when its context lists the skill (`listsSkill`). One on another model, one whose
+ * context does not list the skill, or one that cannot be pulled or rebuilt, is dropped and
+ * counted, and the next session of the same text is tried, then the next text, until TASK_MESSAGES
+ * are offered or the candidates run out (the reader then writes tasks, in the `--context-session`
+ * context). Returns the messages, how many distinct texts there were, the profiles rebuilt (by
+ * `<store>\0<hash>`), the drops, and the sessions.sql queries made for the paths.
  */
 async function offeredMessages(
   found: readonly FoundRow[],
   plan: ProfilesPlan | undefined,
+  model: string | undefined,
+  config: SkillCutsConfig,
   spool: string,
   skill: string,
   io: BuildIo
@@ -4293,7 +4430,7 @@ async function offeredMessages(
     rows.map((row, n) => ({ id: `m${n + 1}`, ...row }));
   const built = new Map<string, SessionProfile>();
   const drops: CandidateDrop[] = [];
-  if (plan === undefined) {
+  if (plan === undefined && model === undefined) {
     return { offered: numbered(chosen), distinct: groups.size, built, drops, queries: 0 };
   }
   const paths = new Map<string, string>();
@@ -4303,10 +4440,16 @@ async function offeredMessages(
       ...new Set(found.flatMap((row) => (row.store === store && row.hash ? [row.hash] : []))),
     ];
     if (hashes.length === 0) continue;
-    const resolved = await resolvePaths(plan.run.config.psqlCommand, store, hashes);
+    const resolved = await resolvePaths(config.psqlCommand, store, hashes);
     queries += resolved.queries;
     for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
   }
+  // Each session pulled, by `<store>\0<hash>`: the model its first request ran on, and its
+  // profile when `plan` asks for one and the model is the one asked for.
+  const pulled = new Map<
+    string,
+    { readonly model: string | undefined; readonly profile: SessionProfile | undefined }
+  >();
   const accepted: FoundRow[] = [];
   const order = [...chosen, ...firsts.filter((row) => !chosen.includes(row))];
   for (const first of order) {
@@ -4329,23 +4472,39 @@ async function offeredMessages(
         continue;
       }
       const key = `${row.store}\0${row.hash}`;
-      let profile = built.get(key);
-      if (profile === undefined) {
+      let session = pulled.get(key);
+      if (session === undefined) {
         const filePath = paths.get(key);
         if (filePath === undefined) {
           drop("not-in-store", "sessions.sql gives no file of its hash");
           continue;
         }
         try {
-          profile = await pulledProfile(plan.run, row.store, filePath, spool, skill);
+          const t = await pulledTranscript(config.psqlCommand, row.store, filePath, spool);
+          const ran = model === undefined ? undefined : firstReplyModel(t);
+          session = {
+            model: ran,
+            profile:
+              plan === undefined || ran !== model
+                ? undefined
+                : await sessionProfile(plan.run, storeNamed(config, row.store), filePath, t, skill),
+          };
         } catch (error) {
-          drop("profile-failed", messageFor(error));
+          drop(plan === undefined ? "pull-failed" : "profile-failed", messageFor(error));
           continue;
         }
-        built.set(key, profile);
+        pulled.set(key, session);
+        if (session.profile !== undefined) built.set(key, session.profile);
       }
-      if (!profile.listed) {
-        const { context } = profile.profile;
+      if (model !== undefined && session.model !== model) {
+        drop(
+          OTHER_MODEL,
+          `its first reply ran on ${session.model ?? "no model (no model_change comes before it)"}, not ${model}`
+        );
+        continue;
+      }
+      if (session.profile !== undefined && !session.profile.listed) {
+        const { context } = session.profile.profile;
         drop(SKILL_NOT_LISTED, `its context ${context} does not list ${skill}`, context);
         continue;
       }
@@ -4354,6 +4513,16 @@ async function offeredMessages(
     }
   }
   return { offered: numbered(accepted), distinct: groups.size, built, drops, queries };
+}
+
+/** The model `--model` names (`value`), in R1's form (`modelForm`), or undefined when it names
+ *  none. Refuses a blank one. */
+function modelOption(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Refused(`--model names no model. ${BUILD_TASKS_USAGE}`);
+  }
+  return modelForm(value.trim());
 }
 
 /** `skill-cuts build-tasks`. */
@@ -4374,6 +4543,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       copies: { type: "string" },
       count: { type: "string" },
       "context-session": { type: "string" },
+      model: { type: "string" },
     },
     BUILD_TASKS_USAGE
   );
@@ -4396,6 +4566,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   }
   mustBeFile(given["key-file"], "--key-file");
   const skill = taskSkill(given.skill);
+  const model = modelOption(values.model);
   const plan = profilesPlan(values, config, io, true);
   // An earlier run of the same inputs at --out: its terms and every query it recorded are kept,
   // with the messages those queries found (`<out>.found.jsonl`), and the build goes on from the
@@ -4406,6 +4577,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     skill: digestOf(given.skill, ["SKILL.md"]),
     stores,
     window: { start: config.windowStart, end: config.windowEnd },
+    ...(model === undefined ? {} : { model }),
   };
   const prior = priorTasks(given.out, summaryFile, inputs);
   if (prior?.done === true) {
@@ -4430,8 +4602,8 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   }
   writeWhole(foundFile, found.map((row) => `${JSON.stringify(row)}\n`).join(""));
   // The profile written tasks take, rebuilt before any reader call: a session that gives none
-  // stops the build here.
-  const spools = plan === undefined ? undefined : spoolDir(given.out);
+  // stops the build here. With --model or --profiles-out each candidate session is pulled too.
+  const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out);
   const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
   const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
   const gateway = readerGateway(config, given["key-file"]);
@@ -4502,7 +4674,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       io.out(`build-tasks: ${store} ${day}: ${query.rows ?? "no"} rows\n`);
     }
   }
-  const candidates = await offeredMessages(found, plan, spool, skill.name, io);
+  const candidates = await offeredMessages(found, plan, model, config, spool, skill.name, io);
   const { offered } = candidates;
   const picked = await runReader(
     "tasks",
@@ -4569,6 +4741,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       done: true,
       stores,
       window: { start: config.windowStart, end: config.windowEnd },
+      ...(model === undefined ? {} : { model }),
       terms: searched,
       queries,
       messagesFound: found.length,
@@ -4583,7 +4756,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       })),
       droppedNeed: dropped.length,
       dropped,
-      ...(plan === undefined
+      ...(plan === undefined && model === undefined
         ? {}
         : {
             candidateDrops: {
@@ -4613,19 +4786,28 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   // The messages found are in the tasks file where a task names one; the rest are not kept.
   rmSync(foundFile, { force: true });
   const notListed = candidates.drops.filter((each) => each.reason === SKILL_NOT_LISTED).length;
+  const onOther = candidates.drops.filter((each) => each.reason === OTHER_MODEL).length;
+  const drops =
+    plan === undefined && model === undefined
+      ? ""
+      : `, ${candidates.drops.length} candidate sessions dropped (${[
+          ...(plan === undefined ? [] : [`${notListed} ${SKILL_NOT_LISTED}`]),
+          ...(model === undefined ? [] : [`${onOther} ${OTHER_MODEL}, not on ${model}`]),
+        ].join(", ")})`;
   io.out(
-    `build-tasks: ${lines.length} tasks (${lines.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered, ${dropped.length} need tasks left out whose first step the skill does not govern${plan === undefined ? "" : `, ${candidates.drops.length} candidate sessions dropped (${notListed} ${SKILL_NOT_LISTED})`}; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-tasks: ${lines.length} tasks (${lines.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered, ${dropped.length} need tasks left out whose first step the skill does not govern${drops}; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
   return EXIT.ok;
 }
 
-/** What `build-tasks --first-read` is made from: the skill's SKILL.md, the sessions file, the seed
- *  and `--max`. */
+/** What `build-tasks --first-read` is made from: the skill's SKILL.md, the sessions file, the seed,
+ *  `--max`, and the model `--model` names, when it names one. */
 const ControlInputs = z.strictObject({
   skill: Digested,
   sessions: Digested,
   seed: z.string(),
   max: z.number(),
+  model: z.string().optional(),
 });
 type ControlInputs = z.infer<typeof ControlInputs>;
 
@@ -4676,6 +4858,17 @@ const ControlSummary = z.looseObject({
 
 /** The outcome of a session whose first request is a task of the control. */
 const FIRST_REQUEST = "first request";
+/** The outcome of a session whose first request is the text of an earlier one's. */
+const SAME_REQUEST = "same request";
+/** The outcomes of a session whose first assistant message read the skill: its first request is a
+ *  task, an earlier one's text, or one whose rebuilt context cannot be had or does not list the
+ *  skill. */
+const READ_FIRST: ReadonlySet<string> = new Set([
+  FIRST_REQUEST,
+  SAME_REQUEST,
+  "profile-failed",
+  SKILL_NOT_LISTED,
+]);
 
 /**
  * `build-tasks --first-read`: the positive control's tasks (plan, R6 "Positive control"). The
@@ -4687,9 +4880,12 @@ const FIRST_REQUEST = "first request";
  * unless an earlier session's first request is the same text. The tasks reader, in its `control`
  * mode, says of each such request whether the skill governs its first step; one it does not is
  * left out and counted, with the reader's reason. The build stops once `--max` requests
- * (TASKS_PER_LABEL unless given) are kept, or the sessions run out. A run of the same inputs at
- * `--out` goes on as `build-tasks` does: every session it tried and every request the reader
- * judged is kept, with no pull and no reader call.
+ * (TASKS_PER_LABEL unless given) are kept, or the sessions run out. With `--model`, a session
+ * whose first request ran on another model (`firstReplyModel`) is dropped first (`other-model`),
+ * and the summary's `model` says how many sessions tried on that model read the skill in their
+ * first reply (`firstRead`), which the command prints too, and says when it is under
+ * TASKS_PER_LABEL. A run of the same inputs at `--out` goes on as `build-tasks` does: every
+ * session it tried and every request the reader judged is kept, with no pull and no reader call.
  */
 async function buildControlTasks(
   values: Readonly<Record<string, string | boolean | string[] | undefined>>,
@@ -4712,6 +4908,7 @@ async function buildControlTasks(
   const config = configFrom(given.config);
   mustBeFile(given["key-file"], "--key-file");
   const skill = taskSkill(given.skill);
+  const model = modelOption(values.model);
   const plan = profilesPlan(values, config, io, false);
   const candidates = readCandidates(given.sessions, config);
   const order = blindOrder(candidates, given.seed).map(({ item }) => item);
@@ -4727,6 +4924,7 @@ async function buildControlTasks(
     },
     seed: given.seed,
     max,
+    ...(model === undefined ? {} : { model }),
   };
 
   // An earlier run of the same inputs: its sessions, its judgements and the requests it found.
@@ -4745,6 +4943,9 @@ async function buildControlTasks(
     const differ: string[] = [];
     if (was.seed !== inputs.seed) differ.push(`--seed was ${was.seed}, now ${inputs.seed}`);
     if (was.max !== inputs.max) differ.push(`--max was ${was.max}, now ${inputs.max}`);
+    if (was.model !== inputs.model) {
+      differ.push(`--model was ${was.model ?? "not given"}, now ${inputs.model ?? "not given"}`);
+    }
     for (const key of ["skill", "sessions"] as const) {
       if (was[key].sha256 !== inputs[key].sha256) {
         differ.push(`--${key} was ${was[key].path}, now ${inputs[key].path}, and it differs`);
@@ -4827,7 +5028,8 @@ async function buildControlTasks(
     );
 
   /** The record of a session not tried yet, and its first request when it is a task. With
-   *  `--profiles-out`, its profile is rebuilt from the spool it was pulled into (`built`, by
+   *  `--model`, a session whose first request ran on another model is dropped (`other-model`).
+   *  With `--profiles-out`, its profile is rebuilt from the spool it was pulled into (`built`, by
    *  `<store>\0<hash>`), and a session whose context does not list the skill is dropped
    *  (`skill-not-listed`), since its task would test nothing. */
   const texts = new Set([...found.values()].map((row) => row.text.trim()));
@@ -4859,6 +5061,15 @@ async function buildControlTasks(
     } catch (error) {
       return no("unparseable", messageFor(error));
     }
+    if (model !== undefined) {
+      const ran = firstReplyModel(t);
+      if (ran !== model) {
+        return no(
+          OTHER_MODEL,
+          `its first reply ran on ${ran ?? "no model (no model_change comes before it)"}, not ${model}`
+        );
+      }
+    }
     const userAt = t.items.findIndex((item) => item.slim.role === "user");
     const replyAt = t.items.findIndex((item) => item.slim.role === "assistant");
     const request = userAt < 0 ? undefined : t.message(userAt);
@@ -4882,7 +5093,7 @@ async function buildControlTasks(
     }
     const scrubbedText = removeSecrets(text);
     if (texts.has(scrubbedText.text.trim())) {
-      return no("same request", "an earlier session's first request is the same text");
+      return no(SAME_REQUEST, "an earlier session's first request is the same text");
     }
     if (plan !== undefined) {
       let profile: SessionProfile;
@@ -5021,6 +5232,16 @@ async function buildControlTasks(
       : await writeProfiles(plan, tasks, sessionsOf, known, undefined, spool, skill.name, io);
   const lines = profiled?.tasks ?? tasks;
   writeWhole(given.out, lines.map((task) => `${JSON.stringify(task)}\n`).join(""));
+  // With --model: how many sessions tried on it read the skill in their first reply, and how many
+  // were on another model.
+  const onModel =
+    model === undefined
+      ? undefined
+      : {
+          name: model,
+          firstRead: sessions.filter((each) => READ_FIRST.has(each.outcome)).length,
+          otherModel: sessions.filter((each) => each.outcome === OTHER_MODEL).length,
+        };
   write(true, {
     tasks: kept.map((row, n) => ({
       id: `t${n + 1}`,
@@ -5031,6 +5252,7 @@ async function buildControlTasks(
     droppedNeed: dropped.length,
     dropped,
     skillNotListed: sessions.filter((each) => each.outcome === SKILL_NOT_LISTED).length,
+    ...(onModel === undefined ? {} : { model: onModel }),
     ...(plan === undefined || profiled === undefined
       ? {}
       : { profiles: profilesRecord(plan, undefined, profiled) }),
@@ -5040,6 +5262,16 @@ async function buildControlTasks(
   io.out(
     `build-tasks: ${lines.length} control tasks from ${sessions.length} sessions tried, ${dropped.length} left out whose first step the skill does not govern, ${sessions.filter((each) => each.outcome === SKILL_NOT_LISTED).length} whose context does not list the skill; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
+  if (onModel !== undefined) {
+    io.out(
+      `build-tasks: ${onModel.firstRead} sessions tried on ${onModel.name} read ${skill.name} in their first reply; ${onModel.otherModel} sessions on another model dropped (${OTHER_MODEL})\n`
+    );
+    if (onModel.firstRead < TASKS_PER_LABEL) {
+      io.err(
+        `build-tasks: ${onModel.firstRead} sessions on ${onModel.name} read ${skill.name} in their first reply, fewer than ${TASKS_PER_LABEL}`
+      );
+    }
+  }
   if (tasks.length < max) {
     io.err(`build-tasks: the sessions gave ${tasks.length} control tasks, fewer than --max ${max}`);
   }

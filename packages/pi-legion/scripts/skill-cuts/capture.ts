@@ -7,9 +7,11 @@
  *         --thinking <case thinking> --hook replay-hook.ts [--extension <plugin>]...
  *         [--append-system-prompt <file>] <placeholder prompt>
  *
- * with a scratch HOME, in the case's context (context.ts), against a recorder on 127.0.0.1
- * (recorder.ts) that every model provider of the scratch profile points at. The hook's `context`
- * handler gives the model the arm's messages and its `tool_call` handler blocks every call. The
+ * with a scratch HOME (and, for a devbox context with a user-level context file, CLAUDE_CONFIG_DIR
+ * at context.ts's scratch Claude Code config directory), in the case's context (context.ts),
+ * against a recorder on 127.0.0.1 (recorder.ts) that every model provider of the scratch profile
+ * points at. The hook's `context` handler gives the model the arm's messages and its `tool_call`
+ * handler blocks every call. The
  * recorder keeps the turn's request and answers it with a fixed end-of-turn reply, so no tool runs
  * and the turn's request never reaches the gateway. One capture per case and arm: the body, as Oh
  * My Pi sent it byte for byte, and its record are saved under `outDir`, and a capture already
@@ -973,6 +975,10 @@ export async function captureBody(
             ? {}
             : { PI_CONFIG_FILES: options.configFiles.join(":") }),
           ...(hintRun ? {} : paneEnvironment),
+          // A devbox context's user-level context file, where Oh My Pi reads one (context.ts).
+          ...(context.claudeConfigDir === undefined
+            ? {}
+            : { CLAUDE_CONFIG_DIR: context.claudeConfigDir }),
           ...(promptFile === undefined || hintRun ? {} : { [SYSTEM_PROMPT_VARIABLE]: promptFile }),
         },
         stdin: "ignore",

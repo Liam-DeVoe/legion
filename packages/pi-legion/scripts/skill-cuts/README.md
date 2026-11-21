@@ -223,11 +223,11 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
-  --skill <skill dir> --store <db>... --out <tasks.jsonl> \
+  --skill <skill dir> --store <db>... --out <tasks.jsonl> [--model <model>] \
   [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
 bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> \
-  [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
+  [--model <model>] [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
 ```
 
 `build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
@@ -248,7 +248,22 @@ text's lines that the session's own read of that file held (a session whose read
 shipped at the session's start: each repository of a unit is read at its last commit at or before
 that start (its tree, its `SKILL.md` files and its manifests) and resolved by `copies.ts`'s rules,
 so every skill of the profile is in its repository at the commit the case names, and the case's
-evidence says which skills the later copies output lists that the unit did not ship then.
+evidence says which skills the later copies output lists that the unit did not ship then. A read
+whose skill none of its units ships at that start, because the later copies output names a unit
+as its manifest names it later (a marketplace or a plugin renamed since: the read's Oh My Pi
+plugin cache directory, `<marketplace>___<plugin>___<version>`, shows the old name), is placed by
+the prefix rows those manifests give at that start, at the unit that installed it then. A
+Legion session's context files are its workspace repository's `AGENTS.md` and its project's
+instructions file. A top-level devbox session's working directory names no repository, so its
+one context file is the user-level one Oh My Pi reads: `CLAUDE.md` in Claude Code's config
+directory, which the dev box's `CLAUDE_CONFIG_DIR` names, the `.claude/` of the repository that
+installs its units. That is the one repository of the profile's units that holds Claude Code's
+settings there (`.claude/settings.json`) at the session's start, and the profile names its
+`.claude/CLAUDE.md` at that commit; with none or several such repositories, or no `CLAUDE.md`
+there, the evidence says it is left out and why. A capture writes that file as `CLAUDE.md` in a
+scratch Claude Code config directory and runs Oh My Pi with `CLAUDE_CONFIG_DIR` there, so Oh My Pi
+reads it as its user-level file; `load` on Claude Code gives it as user memory, `CLAUDE.md` in its
+scratch `CLAUDE_CONFIG_DIR`.
 `--reprofile` builds the profiles of an existing case file again that way, from the cases alone
 (no session read, no reader call), and writes a new file in which only `profile` and the
 profile's part of `evidence` differ. A Legion session's
@@ -350,6 +365,17 @@ most-read session of the context that installs the skill). That profile is rebui
 reader call, and the build fails when that session gives none. The summary's `profiles` records
 the context session, each task's profile with its evidence, and why a task has none. A build that
 has already finished gets no profiles afterwards: give it a fresh `--out`.
+
+`--model <model>` (either mode) keeps only the sessions whose first request ran on that model, as
+the session's file names it and R1's model table writes it: its last `model_change` before its
+first assistant message, a thinking suffix left out (so `<gateway>/openai/gpt-6.1-sol` and
+`openai/gpt-6.1-sol` are two models). Every other session is dropped and counted as
+`other-model`: in the reader's mode each offered message's session is pulled and the next
+candidate taken in its place (`candidateDrops`), and in `--first-read` when the session is tried,
+where the summary's `model` (`{name, firstRead, otherModel}`) and the printed line say how many
+sessions tried on that model read the skill in their first reply, and say so when they are fewer
+than 5. Written tasks are unchanged. The summary names the model, and the inputs hold it, so a run
+that goes on with another model is refused.
 
 ## The request log
 

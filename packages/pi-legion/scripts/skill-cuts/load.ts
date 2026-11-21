@@ -42,10 +42,13 @@
  *   plugin install` installs a local marketplace that holds the profile's skills and the tested
  *   skill under its name, each in its plugin; then `claude -p --output-format stream-json
  *   --verbose --model <id> -- <task>` in the context's working directory, with
- *   `ANTHROPIC_BASE_URL` at the recorder. The first request that holds tools and the task's text
- *   is kept. Claude Code lists each plugin skill as `<plugin>:<name>` with its description
- *   (`claudeListing`). Thinking `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of `claude
- *   --effort` goes as that flag, and `auto` leaves Claude Code's own default.
+ *   `ANTHROPIC_BASE_URL` at the recorder. A `devbox` profile's context file is the user-level one
+ *   its dev box's host read (build.ts), so it goes in as Claude Code's user memory, `CLAUDE.md` in
+ *   the scratch `CLAUDE_CONFIG_DIR`, from its repository at its commit, and not into the working
+ *   directory; the record names it (`userMemory`). The first request that holds tools and the
+ *   task's text is kept. Claude Code lists each plugin skill as `<plugin>:<name>` with its
+ *   description (`claudeListing`). Thinking `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of
+ *   `claude --effort` goes as that flag, and `auto` leaves Claude Code's own default.
  *
  * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
  * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
@@ -641,6 +644,9 @@ interface ClaudeCaptureRecord {
   /** The other requests the run sent, each answered by the recorder. */
   readonly otherRequests: readonly { readonly path: string; readonly bytes: number }[];
   readonly context: ContextRecord;
+  /** The profile's user-level context file Claude Code read as user memory (`CLAUDE.md` in its
+   *  config directory), or null when the profile has none. */
+  readonly userMemory: UserMemory | null;
   readonly runMs: number;
 }
 
@@ -655,15 +661,23 @@ interface Captured {
 }
 
 /** The scratch Claude Code home of one test: the environment each run gets, the working
- *  directory, the appended system prompt, Claude Code's version, the context's record, and the
- *  milliseconds its context build took. */
+ *  directory, the appended system prompt, Claude Code's version, the context's record, the user
+ *  memory file written, and the milliseconds its context build took. */
 interface ClaudeSetup {
   readonly env: Record<string, string>;
   readonly workspace: string;
   readonly prompt: string | undefined;
   readonly version: string;
   readonly context: ContextRecord;
+  readonly userMemory: UserMemory | null;
   readonly contextMs: number;
+}
+
+/** The context file of a profile that Claude Code reads as user memory: where it comes from. */
+interface UserMemory {
+  readonly repo: string;
+  readonly commit: string;
+  readonly path: string;
 }
 
 /** The milliseconds each phase of a task took: its capture (made or read back), the context
@@ -896,7 +910,11 @@ class LoadTest {
 
   /** The scratch Claude Code home of `profile` (ClaudeSetup), made once per profile: its skills
    *  and the tested one laid out by context.ts, and a local marketplace of its layout's plugins
-   *  installed into a scratch CLAUDE_CONFIG_DIR. */
+   *  installed into a scratch CLAUDE_CONFIG_DIR. A devbox profile's context files are the
+   *  user-level file its dev box's host read (build.ts: a devbox session's working directory names
+   *  no repository, so it has no other), which Claude Code reads as user memory, CLAUDE.md in its
+   *  config directory: it is written there from the profile's repository at its commit, and left
+   *  out of the working directory. */
   claudeSetup(profile: TaskProfile): Promise<ClaudeSetup> {
     const made = this.claudeSetups.get(profile.digest);
     if (made !== undefined) return made;
@@ -906,13 +924,27 @@ class LoadTest {
       const root = path.join(this.root, "claude", "profiles", profile.digest.slice(0, 16));
       rmSync(root, { recursive: true, force: true });
       const { c, arm } = this.caseOf("claude-profile", "", profile.profile);
+      const devbox = c.context === "devbox";
+      const [userMemory, ...more] = devbox ? c.profile.contextFiles : [];
+      if (more.length > 0) {
+        throw new Error(
+          `the devbox profile ${profile.file} holds ${more.length + 1} context files; Claude Code has one user memory file`
+        );
+      }
       // Oh My Pi's plugins are no Claude Code plugins: only the skills and context files go in.
       const contextStarted = performance.now();
-      const context = await buildContext({ ...c, profile: { ...c.profile, plugins: [] } }, arm, {
-        source: this.o.source,
-        cacheDir: this.o.cacheDir,
-        root: path.join(root, "context"),
-      });
+      const context = await buildContext(
+        {
+          ...c,
+          profile: { ...c.profile, plugins: [], ...(devbox ? { contextFiles: [] } : {}) },
+        },
+        arm,
+        { source: this.o.source, cacheDir: this.o.cacheDir, root: path.join(root, "context") }
+      );
+      const memory =
+        userMemory === undefined
+          ? undefined
+          : await this.o.source.file(userMemory.repo, userMemory.commit, userMemory.path);
       const contextMs = Math.round(performance.now() - contextStarted);
       const plugins = layout.plugins.map((plugin) => ({ ...plugin, skills: [...plugin.skills] }));
       const own = plugins.find((plugin) => plugin.name === layout.skillPlugin);
@@ -954,6 +986,7 @@ class LoadTest {
       const tmp = path.join(root, "tmp");
       const config = path.join(root, "config");
       for (const dir of [home, tmp, config]) mkdirSync(dir, { recursive: true });
+      if (memory !== undefined) writeFileSync(path.join(config, "CLAUDE.md"), memory);
       const env: Record<string, string> = {
         HOME: home,
         PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -982,6 +1015,7 @@ class LoadTest {
             : readFileSync(context.appendSystemPrompt, "utf8"),
         version,
         context: context.record,
+        userMemory: userMemory ?? null,
         contextMs,
       };
     })();
@@ -1089,6 +1123,7 @@ class LoadTest {
         .filter((request) => request !== turn)
         .map((request) => ({ path: request.path, bytes: request.body.length })),
       context: setup.context,
+      userMemory: setup.userMemory,
       runMs,
     };
     writeWhole(files.body, turn.body);
