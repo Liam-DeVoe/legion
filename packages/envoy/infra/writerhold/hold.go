@@ -257,12 +257,7 @@ func abortReconcile(ctx context.Context, records *holdrecord.Client, op *Operato
 	if err != nil {
 		return err
 	}
-	var families []string
-	for _, c := range cutovers {
-		if strings.HasPrefix(c.Family, daemonFamilyPrefix) {
-			families = append(families, c.Family)
-		}
-	}
+	families := daemonFamilies(cutovers)
 	if len(families) == 0 {
 		return nil
 	}

@@ -54,6 +54,11 @@ name, inside a streams-census, cutover or hub-restore hold. With no --hold each 
 hold of its own workflow (streams-update, streams-census); with --hold it runs in that hold. The
 hold stays set: envoy-infra hold release --hold ID ends it.
 
+The census's daemon families are the broker's cutover rows' daemon/<P> families, beside the
+--family values that name no daemon (session, dispatch). --family daemon/<P> is optional: when any
+is given, the values must be exactly the rows' daemon families, or the census is UNKNOWN, naming
+each one missing or extra, before it reads or removes anything.
+
 The census reads each --daemon-database store only at the address its daemon's Deployment in
 namespace legion names (its envoy-infra.consumer-names/project, store-database and store-instance
 annotations): the file's URL must name that database and its second line that instance. A store
@@ -395,6 +400,12 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if err != nil {
 				return nil, nil, err
 			}
+			// The daemon families are the cutover rows', checked against any --family daemon/<P>
+			// value, before anything is read or removed.
+			families, err := censusFamilies(ctx, records, o.families)
+			if err != nil {
+				return nil, nil, err
+			}
 			// The fresh names are read before anything is removed: with no reader, or one that
 			// cannot read a store, the census is UNKNOWN and removes nothing. The daemons'
 			// Deployments, which both readers of the daemon stores check each store's address
@@ -403,7 +414,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				return nil, nil, unknownf(StepPostcheck, ErrNoFreshNamesReader, "read the recorded fresh consumer names")
 			}
 			deployments := KubeDaemonDeployments(op.Hub.Client)
-			fresh, err := e.readers.FreshNames(ctx, nc, deployments, o.families, o.dispatchDatabaseFile, o.daemonDatabases)
+			fresh, err := e.readers.FreshNames(ctx, nc, deployments, families, o.dispatchDatabaseFile, o.daemonDatabases)
 			if err != nil {
 				return nil, nil, unknownf(StepPostcheck, err, "read the recorded fresh consumer names")
 			}
@@ -411,7 +422,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			r, err := streams.Census(ctx, nc, streams.CensusInput{
 				Settings: settings,
 				Phase:    held,
-				Families: o.families,
+				Families: families,
 				Cutovers: func(ctx context.Context) (map[string]string, error) {
 					rows, err := records.Cutovers(ctx)
 					if err != nil {
@@ -457,7 +468,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if refused := streamsRefusal(r, err); refused != nil {
 				return changes, nil, leftBy(r, refused)
 			}
-			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, deployments, o.families, o.daemonDatabases, stdout)
+			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, deployments, families, o.daemonDatabases, stdout)
 			return changes, outputs, leftBy(r, err)
 		}
 	}
@@ -559,6 +570,59 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 
 // daemonFamilyPrefix begins each daemon's cutover family, daemon/<project key>.
 const daemonFamilyPrefix = "daemon/"
+
+// daemonFamilies are the daemon/<P> families of the broker's cutover rows, each once, sorted: the
+// daemon stores a census or hub-restore's abort reconciles.
+func daemonFamilies(rows []holdrecord.CutoverRow) []string {
+	var families []string
+	for _, row := range rows {
+		if strings.HasPrefix(row.Family, daemonFamilyPrefix) && !slices.Contains(families, row.Family) {
+			families = append(families, row.Family)
+		}
+	}
+	slices.Sort(families)
+	return families
+}
+
+// censusFamilies are the families a census reads and reconciles: each of given, the --family
+// values, that names no daemon (session, dispatch), and every daemon/<P> family of the broker's
+// cutover rows (daemonFamilies), as hub-restore's abort reads them. A --family daemon/<P> value is
+// a check of the operator's intent against those rows: when any is given and the two sets differ,
+// the census is UNKNOWN, naming each family a row holds that the values leave out and each value
+// no row holds, before it reads or removes anything, so it never removes a consumer of a daemon
+// family whose fresh names it did not read and whose store it did not reconcile.
+func censusFamilies(ctx context.Context, records *holdrecord.Client, given []string) ([]string, error) {
+	rows, err := records.Cutovers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	recorded := daemonFamilies(rows)
+	var families, flagged []string
+	for _, family := range given {
+		if strings.HasPrefix(family, daemonFamilyPrefix) {
+			flagged = append(flagged, family)
+		} else if !slices.Contains(families, family) {
+			families = append(families, family)
+		}
+	}
+	if len(flagged) > 0 {
+		var problems []string
+		for _, family := range recorded {
+			if !slices.Contains(flagged, family) {
+				problems = append(problems, family+" has a cutover row and no --family")
+			}
+		}
+		for _, family := range flagged {
+			if !slices.Contains(recorded, family) && !slices.Contains(problems, family+" is a --family with no cutover row") {
+				problems = append(problems, family+" is a --family with no cutover row")
+			}
+		}
+		if len(problems) > 0 {
+			return nil, unknownf(StepPreflight, nil, "the census's daemon families are the cutover rows' daemon/<P> families, and the --family values differ: %s", strings.Join(problems, "; "))
+		}
+	}
+	return append(families, recorded...), nil
+}
 
 // streamsRefusal is a streams run's error, or its report's verdict when it is not clean: an UNKNOWN
 // report is an *Unknown, a failing one a *Refusal, so the run writes no done entry for either.

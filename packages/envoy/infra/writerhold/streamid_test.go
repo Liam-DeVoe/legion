@@ -200,10 +200,12 @@ func TestHoldTheCensusReconcilesTheDaemonStoresStreamID(t *testing.T) {
 	require.NotEqual(t, old, current, "the recreated stream kept its identity")
 	h.awaitStreamLeaders()
 
-	// The first census sets its hold and stops at its convert check; every family's cutover row is
-	// then written done under that hold, so each census after it reaches its reconcile.
-	code, _, _ = h.streamsRun(stub, append([]string{"census"}, families...)...)
-	require.Equal(t, 1, code, "the census before any family is converted")
+	// The first census sets its hold and stops before it reads anything: its --family daemon/<P>
+	// values name families no cutover row holds yet (UNKNOWN). Every family's cutover row is then
+	// written done under that hold, so each census after it reaches its reconcile.
+	code, _, stderr := h.streamsRun(stub, append([]string{"census"}, families...)...)
+	require.Equal(t, 2, code, "the census before any family's cutover row")
+	require.Contains(t, stderr, "daemon/A is a --family with no cutover row")
 	census := h.row().HoldID
 	for _, family := range []string{"session", "daemon/A", "daemon/B"} {
 		_, err := h.s.Records.PutCutover(ctx, family, "done", census)
@@ -211,7 +213,7 @@ func TestHoldTheCensusReconcilesTheDaemonStoresStreamID(t *testing.T) {
 	}
 
 	// The control: no writer.
-	code, _, stderr := h.streamsRun(stub, append([]string{"census", "--hold", census}, families...)...)
+	code, _, stderr = h.streamsRun(stub, append([]string{"census", "--hold", census}, families...)...)
 	require.Equal(t, 2, code, "control: a census with no writer of the stores")
 	require.Contains(t, stderr, ErrNoStoreWriter.Error())
 	require.NotContains(t, h.journalCommands(census), "streams census done")
@@ -275,10 +277,11 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	families := []string{"--family", "session", "--family", "daemon/A", "--family", "daemon/B", "--family", "daemon/G",
 		"--daemon-database", "A=/dev/null", "--daemon-database", "B=/dev/null", "--daemon-database", "G=/dev/null"}
 
-	// The first census sets its hold and stops at its convert check; every family's cutover row is
-	// then written done, so each census after it reaches its reconcile.
+	// The first census sets its hold and stops before it reads anything: its --family daemon/<P>
+	// values name families no cutover row holds yet. Every family's cutover row is then written
+	// done, so each census after it reaches its reconcile.
 	code, _, _ := h.streamsRun(stub, append([]string{"census"}, families...)...)
-	require.Equal(t, 1, code, "the census before any family is converted")
+	require.Equal(t, 2, code, "the census before any family's cutover row")
 	census := h.row().HoldID
 	for _, family := range []string{"session", "daemon/A", "daemon/B", "daemon/G"} {
 		_, err := h.s.Records.PutCutover(ctx, family, "done", census)
