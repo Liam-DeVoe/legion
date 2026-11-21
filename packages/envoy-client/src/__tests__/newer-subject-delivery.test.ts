@@ -7,12 +7,9 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
-import {
-  createConsumerDelivery,
-  inboundUnavailable,
-  registerWithRelay,
-} from "../consumer-delivery";
+import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
 import { createDeliveryLedger } from "../delivery-ledger";
+import { registerWithRelay } from "../relay-registration";
 import { createEnvoyClient } from "../transport";
 
 /**
@@ -111,7 +108,7 @@ describe.skipIf(!envoyStackEnabled)("a topic only a newer build's stream subject
       const answer = await registerWithRelay({
         relay: delivery,
         ownAgentSubject: own,
-        followed: [TOPIC],
+        followed: () => [TOPIC],
         outage: inboundUnavailable(
           (why) => failures.push(why),
           () => undefined
@@ -131,6 +128,8 @@ describe.skipIf(!envoyStackEnabled)("a topic only a newer build's stream subject
           });
         },
         answered: (result) => delivery.answered(result.delivery),
+        drop: (topics, reason) => failures.push(`dropped ${topics.join(", ")} (${reason})`),
+        log: (line) => failures.push(line),
       });
 
       await client.publish({

@@ -190,9 +190,9 @@ func TestAFreshListenerAcceptsDispatchsIdentityTokenAtReadinessInsideItsWindow(t
 // /healthz answers 200 with "google" false and "oidc" null, /v1 serves the shared token, and a
 // listed account's Google identity token is answered 503 with Retry-After: 1, never 401. Once the
 // issuer answers, a read discovers it with no restart: the Google identity token is admitted,
-// "google" reads true, and the success is logged once. The binary is the production one,
-// unchanged, so what runs is main's own wiring of Google's issuer, reaching a stand-in the way it
-// would reach Google (googleIssuerStandIn).
+// "google" reads true, and the background reads log the success once. The binary is the
+// production one, unchanged, so what runs is main's own wiring of Google's issuer, reaching a
+// stand-in the way it would reach Google (googleIssuerStandIn).
 func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T) {
 	google := startGoogleIssuerStandIn(t)
 	googleToken := google.token(t, listenerGoogleAccount)
@@ -258,8 +258,15 @@ func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T)
 		return call(googleToken).StatusCode == http.StatusOK
 	})
 	wantGoogleHealth(true)
+	// The success line is the background reads' (oidc.LazyVerifier.Run): when a read on a token's
+	// path discovered the issuer first, the background loop logs it when it next wakes, at most
+	// 30 s (the loop's longest wait) after its last failed read, and then stops.
+	discovered := func() int {
+		return countLines(listener.Output.String(), "oidc: discovered the issuer", "issuer="+oidc.GoogleIssuer)
+	}
+	waitFor(t, 45*time.Second, "the listener to log that it discovered Google's issuer", func() bool { return discovered() > 0 })
 	output := listener.Output.String()
-	if succeeded := countLines(output, "oidc: discovered the issuer", "issuer="+oidc.GoogleIssuer); succeeded != 1 {
+	if succeeded := discovered(); succeeded != 1 {
 		t.Fatalf("the listener logged %d successful discoveries of %s, want 1:\n%s", succeeded, oidc.GoogleIssuer, output)
 	}
 	if most := 1 + int(time.Since(started)/time.Minute); failedReads() > most {
