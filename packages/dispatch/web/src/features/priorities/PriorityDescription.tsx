@@ -1,7 +1,9 @@
+import type { DocumentJSON } from "@legion/proof-editor";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import type { Doc } from "yjs";
 import { whoAmIQuery } from "../../api/queries";
+import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -51,11 +53,19 @@ function save(held: Held, onSave: (next: string) => void): void {
   onSave(markdown);
 }
 
-/** Puts the server's text into the editor as it opens, unless the editor holds it already: an
- *  empty description is the empty editor. Throws, as `setMarkdown` does, for a text holding what
- *  this editor may not create. */
-function take(held: Held, markdown: string): void {
-  if (held.handle.getMarkdown() !== markdown) held.handle.setMarkdown(markdown);
+/** Draws the server's text in the editor: from the tree the server read it into where one is
+ *  given (`tree`), which the editor builds with no parser of its own, and from its markdown where
+ *  none is. Throws, as `setMarkdown` and `setDocumentJSON` do, for a text holding what this editor
+ *  may not create. */
+function draw(handle: EditorHandle, markdown: string, tree: DisplayTree | undefined): void {
+  if (tree === undefined) handle.setMarkdown(markdown);
+  else handle.setDocumentJSON(tree as DocumentJSON);
+}
+
+/** Puts the server's text into the editor as it opens (`draw`), unless the editor holds it
+ *  already: an empty description is the empty editor. Throws as `draw` does. */
+function take(held: Held, markdown: string, tree: DisplayTree | undefined): void {
+  if (held.handle.getMarkdown() !== markdown) draw(held.handle, markdown, tree);
   held.base = held.handle.getMarkdown();
 }
 
@@ -88,11 +98,19 @@ function take(held: Held, markdown: string): void {
  * as it reaches any field; the box around it shows the focus ring while the editor holds it.
  * Where a page holds the description in a card of its own (`boxed={false}`), the card is that
  * box: the editor draws no border, only the focus ring, and its words start where the card's do.
+ *
+ * The stored description a reader who may not write it reads is drawn from the tree the server
+ * read it into (`descriptionTree`), as every other stored text is, so no reader's browser parses
+ * it: Go's reading holds marks nested past its bound as text, where the browser's parser spends
+ * the square of their depth. A writer's editor takes it in as its markdown, since what that
+ * editor writes back is its own reading of the markdown with the writer's edits in it (`take`,
+ * `save`); so does a reader's where the answer carries no tree.
  */
 export function PriorityDescription({
   boxed = true,
   canWrite,
   description,
+  descriptionTree,
   kept: keptByPage,
   label,
   onKeptChange,
@@ -102,6 +120,10 @@ export function PriorityDescription({
   boxed?: boolean;
   canWrite: boolean;
   description: string;
+  /** The server's reading of `description` (the priority's `description_tree`), absent from an
+   *  answer that carries none: a read made without `Dispatch-Trees: 1`, an empty description,
+   *  and the answer of a pod of the build before this one during a rolling deploy. */
+  descriptionTree: DisplayTree | undefined;
   /** The reader's texts kept beside the editor, where the page holds them rather than the
    *  editor - in the write store (`usePriorityWrites`): `onKeptChange` hears each change of
    *  them. */
@@ -121,8 +143,11 @@ export function PriorityDescription({
   const [ownKept, setOwnKept] = useState(NOTHING_KEPT);
   const kept = keptByPage ?? ownKept;
   const setKept = onKeptChange ?? setOwnKept;
-  const latest = useRef({ canWrite, description, kept, onSave, setKept });
-  latest.current = { canWrite, description, kept, onSave, setKept };
+  // The tree the editor draws the server's text from (`draw`): the server's reading of it for a
+  // reader who may not write it, and none for a writer, whose editor takes in its markdown.
+  const reading = canWrite ? undefined : descriptionTree;
+  const latest = useRef({ canWrite, description, kept, onSave, reading, setKept });
+  latest.current = { canWrite, description, kept, onSave, reading, setKept };
   // The handle once the editor holds the description: its name, its access and the references
   // drawn over its text follow it.
   const [editor, setEditor] = useState<EditorHandle | undefined>(undefined);
@@ -177,7 +202,7 @@ export function PriorityDescription({
         return;
       }
       const current: Held = { base: "", handle: created, sent: [], timer: undefined };
-      take(current, latest.current.description);
+      take(current, latest.current.description, latest.current.reading);
       seen.current = latest.current.description;
       held.current = current;
       doc.on("update", onUpdate);
@@ -228,7 +253,7 @@ export function PriorityDescription({
     // text it could not draw as the editor closes. One it takes in is held in its own reading.
     current.base = markdown;
     try {
-      current.handle.setMarkdown(description);
+      draw(current.handle, description, latest.current.reading);
       current.base = current.handle.getMarkdown();
     } catch (error) {
       setFailure({

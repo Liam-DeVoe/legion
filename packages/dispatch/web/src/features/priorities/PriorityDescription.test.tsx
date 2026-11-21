@@ -1,12 +1,21 @@
-import { afterEach, expect, jest, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, mock, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
+import type { DisplayTree } from "../../api/types";
+import type { CreateEditor } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  flushTasks,
+  installFakeParseWorker,
+  restoreParseWorker,
+} from "../refs/parse-worker-fixture";
 import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 
@@ -22,21 +31,36 @@ afterEach(() => {
 
 /**
  * The description as a page holds it, in the documents' own editor: `description` is the text
- * the server answered with, which `rerender` moves, and every write lands in `onSave`. Queries
- * are scoped to this render's container, since bun runs every test file in one document.
+ * the server answered with and `tree` the reading the server sent of it, which `rerender` moves,
+ * and every write lands in `onSave`. `imports` is the length of each text the editor took in as
+ * markdown (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of
+ * the page (`e2e/parse-counting.ts`). Queries are scoped to this render's container, since bun
+ * runs every test file in one document.
  */
-function described(description: string, canWrite = true) {
+function described(description: string, canWrite = true, tree?: DisplayTree) {
   const editors = recordedEditors();
+  const imports: number[] = [];
+  const createEditor: CreateEditor = async (root, options) => {
+    const handle = await editors.runtime.createEditor(root, options);
+    const setMarkdown = handle.setMarkdown;
+    handle.setMarkdown = (markdown) => {
+      imports.push(markdown.length);
+      setMarkdown.call(handle, markdown);
+    };
+    return handle;
+  };
+  const runtime = { ...editors.runtime, createEditor };
   const onSave = mock((_next: string) => {});
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const page = (text: string, writer: boolean): ReactNode => (
+  const page = (text: string, writer: boolean, reading: DisplayTree | undefined): ReactNode => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <DocumentRuntime.Provider value={editors.runtime}>
+        <DocumentRuntime.Provider value={runtime}>
           <PriorityDescription
             canWrite={writer}
             description={text}
+            descriptionTree={reading}
             label="Description of P1"
             onSave={onSave}
           />
@@ -44,7 +68,7 @@ function described(description: string, canWrite = true) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(page(description, canWrite));
+  const view = render(page(description, canWrite, tree));
   unmounts.push(() => {
     view.unmount();
     client.clear();
@@ -52,8 +76,10 @@ function described(description: string, canWrite = true) {
   return {
     /** The editor once it holds the description, and its handle. */
     editor: () => editors.named("Description of P1", view.container),
+    imports,
     onSave,
-    rerender: (text: string, writer = canWrite) => view.rerender(page(text, writer)),
+    rerender: (text: string, writer = canWrite, reading?: DisplayTree) =>
+      view.rerender(page(text, writer, reading)),
     scope: within(view.container),
     view,
   };
@@ -268,4 +294,85 @@ test("the server's text in the editor's own reading of the text the edit started
   expect(onSave.mock.calls).toEqual([
     ["# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build Mine.\n"],
   ]);
+});
+
+/** Emphasis nested 4,000 deep, 24,001 characters: the shape micromark spends 672,095,992
+ *  `attention` steps on, about 55 s (cybermonklabs/legion#4437). */
+const NESTED = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
+
+/** The server's reading of `NESTED`, as Go's display read writes it for marks nested past its
+ *  bound (pmdoc's `maxInlineNesting`, `literalDocument`): one paragraph of the text's own
+ *  characters, no mark among them. It is written out here because the page's own engine, which
+ *  `displayTree` reads with, is the parser this test keeps the page from running. */
+const NESTED_TREE: DisplayTree = {
+  content: [{ content: [{ text: NESTED, type: "text" }], type: "paragraph" }],
+  type: "doc",
+};
+
+beforeEach(async () => {
+  await warmMarkdownRenderer();
+});
+
+afterEach(restoreParseWorker);
+
+/** Counts every call of the shared read-only engine's `parse`, the one entry a display surface
+ *  parses markdown on the page through (`e2e/parse-counting.ts`), until the returned restore:
+ *  the length of each text parsed, so a failure names how much and prints none of it. */
+function countPageParses(): { parsed: number[]; restore: () => void } {
+  const engine = loadedEngine();
+  if (engine === undefined) throw new Error("the row needs the shared engine loaded");
+  const counted = engine as { parse: typeof engine.parse };
+  const parse = counted.parse;
+  const parsed: number[] = [];
+  counted.parse = (markdown, softBreaks) => {
+    parsed.push(markdown.length);
+    return parse.call(engine, markdown, softBreaks);
+  };
+  return {
+    parsed,
+    restore: () => {
+      counted.parse = parse;
+    },
+  };
+}
+
+test("a stored description is drawn from the server's tree, and nothing on the page or in the parse worker parses it", async () => {
+  const worker = installFakeParseWorker();
+  const { parsed, restore } = countPageParses();
+  try {
+    const { editor, imports } = described(NESTED, false, NESTED_TREE);
+    // A reader who may not write it reads it in the editor, read-only, which builds the tree it
+    // is given with no parser of its own: its markdown taken in instead is the editor's parse.
+    const { box } = await editor();
+    expect(box.textContent).toBe(NESTED);
+    expect(box.querySelector("em, strong")).toBeNull();
+    await act(() => flushTasks());
+    expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
+    expect(parsed).toEqual([]);
+    expect(imports).toEqual([]);
+  } finally {
+    restore();
+  }
+});
+
+test("a description the reader has just written is drawn from its own text, never from the tree of the stored one", async () => {
+  const stored = "The **old** plan.";
+  const { editor, onSave } = described(stored, true, displayTree(stored));
+  const { box, handle } = await editor();
+  expect(within(box).getByText("old").tagName).toBe("STRONG");
+  // The reader writes "The *new* plan.": "new" over "old", in the editor's own emphasis, through
+  // the editor's own transaction, since happy-dom delivers no keystroke to ProseMirror.
+  handle.view.focus();
+  selectText(handle, "old");
+  const { view } = handle;
+  const emphasis = view.state.schema.marks.emphasis;
+  if (emphasis === undefined) throw new Error("the editor has no emphasis mark");
+  view.dispatch(
+    view.state.tr.replaceSelectionWith(view.state.schema.text("new", [emphasis.create()]), false)
+  );
+  act(() => handle.view.dom.blur());
+  expect(onSave.mock.calls).toEqual([["The *new* plan.\n"]]);
+  // The server still answers the old text and its tree, and the editor shows what was written.
+  expect(within(box).getByText("new").tagName).toBe("EM");
+  expect(within(box).queryByText("old")).toBeNull();
 });

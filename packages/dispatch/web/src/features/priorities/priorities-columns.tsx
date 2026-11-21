@@ -155,7 +155,7 @@ const PHONE_COUNTS = (
 function TitleCell({ item }: { item: PriorityItem }) {
   const actions = useRowActions();
   const open = actions.openId === item.priority.id;
-  const { description, id, title } = item.priority;
+  const { description, description_tree: descriptionTree, id, title } = item.priority;
   const keptDescription = actions.kept(id, description);
   // An open row draws its whole description, and so does a closed one that keeps the reader's
   // text beside it: the notice of a write another person's change refused is on the row whether
@@ -164,11 +164,14 @@ function TitleCell({ item }: { item: PriorityItem }) {
   // A closed row's excerpt: the description's start, in plain words on one line - its paragraphs
   // run together, its markdown read rather than shown, and a `dispatch://` reference written as
   // its short form - which the projection every plain-text place takes of a stored text gives
-  // (`useMarkdownHeadline`). It is drawn once the projection has answered.
+  // (`useMarkdownHeadline`). Its words are those of the tree the server read the description into
+  // (`description_tree`), so no reader's browser parses it, and its markdown's where the answer
+  // carries no tree. It is drawn once the projection has answered.
+  const excerpted = !whole && description !== "";
   const excerpt = useMarkdownHeadline(
-    undefined,
+    excerpted ? descriptionTree : undefined,
     EXCERPT_MAX,
-    whole || description === "" ? undefined : description
+    excerpted ? description : undefined
   );
   return (
     <div className="min-w-0 space-y-1">
@@ -186,6 +189,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
         <PriorityDescription
           canWrite={actions.canWrite}
           description={description}
+          descriptionTree={descriptionTree}
           kept={keptDescription}
           label={`Description of ${item.order}`}
           onKeptChange={(texts) => actions.onKeep(id, texts)}
