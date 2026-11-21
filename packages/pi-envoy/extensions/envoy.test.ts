@@ -15309,7 +15309,7 @@ console.log(JSON.stringify(args));
 
       test("stops a command past its limit and says when, keeping what it printed", async () => {
         const command = "echo $$ > pid && printf early && : > printed && sleep 600";
-        const { agent, delivered, replied, replies, work } = await bootShellSession(
+        const { agent, delivered, replies, work } = await bootShellSession(
           "shell-command-stopped",
           {
             accept: () => ({ accepted: true, body: `!${command}` }),
@@ -15324,10 +15324,12 @@ console.log(JSON.stringify(args));
         const stoppedAfterMs = await onPassClock(async (clock) => {
           const spawnedAt = clock.now();
           agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
-          // A shell started and printed within 58 held turns over 20 runs at the 96 rung, and
-          // within 2 idle.
-          await clock.hold(() => existsSync(join(work, "printed")));
-          expect(existsSync(join(work, "printed"))).toBe(true);
+          // The shell is a real subprocess, whose start no count of turns measures, so the row
+          // waits for its `printed` file with the clock held and no bound of its own: a bound on
+          // turns would race the shell as the old limit did. The describe's 120_000 is the hang
+          // guard for a shell that never prints, a defect, which ends the row with the fake clock
+          // still on (`onTestClock` says what that costs the rows after it).
+          while (!existsSync(join(work, "printed"))) await settle();
           // The shell's own work moved no clock, and the command is still running.
           expect(clock.now()).toBe(spawnedAt);
           expect(replies).toHaveLength(0);
@@ -15339,7 +15341,9 @@ console.log(JSON.stringify(args));
           await clock.hold(() => replies.length > 0, 300);
           expect(replies).toHaveLength(0);
           await clock.advance(1);
-          await clock.run("the reply", replied(1));
+          // The reply waits on the stopped shell's end, a real subprocess's too, so with no bound
+          // of its own either.
+          while (replies.length === 0) await settle();
           await clock.run("the delivery", delivered(1));
           return clock.now() - spawnedAt;
         });
@@ -21277,35 +21281,40 @@ console.log(JSON.stringify(args));
   });
 
   test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
-    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-      const bounds: number[] = [];
-      setNatsConnectForTests(
-        (async (options: ConnectionOptions) => {
-          bounds.push(options.timeout ?? Number.NaN);
-          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
-        }) as unknown as typeof realConnect,
-        NATS_DIAL_PLAN
-      );
-      try {
-        const context: SessionContext = {
-          cwd: "/tmp/envoy-omp-test",
-          sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
-          setInterval: () => {},
-          ui: sessionContext().ui,
-        };
-        const { default: envoyExtension } = await import("./envoy.ts?pass-budget");
-        const fixture = createPi();
-        envoyExtension(fixture.pi);
-        await fixture.handlers.get("session_start")?.({}, context);
-        // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
-        expect(bounds).toHaveLength(1);
-        expect(bounds[0]).toBeLessThanOrEqual(7_500);
-        expect(bounds[0]).toBeGreaterThan(6_000);
-      } finally {
-        setNatsConnectForTests(natsStandInConnect);
-      }
-    });
+    // The dial's bound is what the pass has left of its deadline (`dialNats`), read from the
+    // clock, so the row runs on the test's clock (`onPassClock`), which the start's own work does
+    // not move: the bound is then the whole 7.5 s. On the real clock the row read it as more than
+    // 6 s, which a host slow enough to spend 1.5 s of the pass before its dial failed.
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, () =>
+      onPassClock(async (clock) => {
+        globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+        const bounds: number[] = [];
+        setNatsConnectForTests(
+          (async (options: ConnectionOptions) => {
+            bounds.push(options.timeout ?? Number.NaN);
+            throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+          }) as unknown as typeof realConnect,
+          NATS_DIAL_PLAN
+        );
+        try {
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const { default: envoyExtension } = await import("./envoy.ts?pass-budget");
+          const fixture = createPi();
+          envoyExtension(fixture.pi);
+          await clock.run("the start", fixture.handlers.get("session_start")?.({}, context));
+          // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits, and
+          // the one dial is bounded by the whole deadline, which nothing has spent.
+          expect(bounds).toEqual([7_500]);
+        } finally {
+          setNatsConnectForTests(natsStandInConnect);
+        }
+      })
+    );
   }, 30_000);
 
   for (const { row, error, shown, withheld } of [
