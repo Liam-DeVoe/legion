@@ -51,7 +51,7 @@ packages/claude-envoy
 packages/envoy-client
 packages/contracts
 packages/pi-shared
-packages/broker-client
+packages/cipher-client
 
 # contracts/src/dispatch-href.ts and envoy-client's links.ts read the dashboard's pages file, which
 # the dashboard's route table writes beside the server's reader that embeds it.
