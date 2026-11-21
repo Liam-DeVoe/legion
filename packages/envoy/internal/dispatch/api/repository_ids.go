@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,15 +19,17 @@ import (
 // own repository (POST /api/v1/issues, PATCH /api/v1/issues/{key}) and a project's default (PUT
 // /api/v1/settings/repo-projects/{owner}/{repo} leaving the mapping a default), records beside it
 // the GitHub id GitHub answers for that name as the write runs (writtenRepository): the name a
-// person writes now names the repository they mean now. A write GitHub does not answer is refused
-// 503 REPOSITORY_ID_UNAVAILABLE in words that name no project, and nothing is stored: no write
-// while a project is private stores a name without the repository it means. With no project
-// private, no id is read and the name is stored with none, as before any project could be private
-// (R9); the switch to private then waits for its owner to confirm each such name
-// (refs.UnconfirmedRepositories). A write that carries the name its row already stores keeps the
-// row as it is, with its id or with none, and reads nothing: a read of a stored name can answer a
-// repository that took the name later, and a new id on a row the project's owner left unconfirmed
-// would undo the owner's confirmation (refs.ConfirmRepository).
+// person writes now names the repository they mean now. Nothing is stored for a write whose id the
+// read does not give: where GitHub answers that Dispatch's App cannot read the repository, it is 403
+// REPOSITORY_NOT_AVAILABLE in the words a repository hidden from the writer is refused in, so a
+// writer cannot tell the two apart; where GitHub gives no answer, it is 503
+// REPOSITORY_ID_UNAVAILABLE in words that name no project. With no project private, no id is read
+// and the name is stored with none, as before any project could be private (R9); the switch to
+// private then waits for its owner to confirm each such name (refs.UnconfirmedRepositories). A write
+// that carries the name its row already stores keeps the row as it is, with its id or with none,
+// and reads nothing: a read of a stored name can answer a repository that took the name later, and
+// a new id on a row the project's owner left unconfirmed would undo the owner's confirmation
+// (refs.ConfirmRepository).
 
 // codeRepositoryIDUnavailable is the code a repository write is refused with when GitHub does not
 // answer the id it reads, or when its project turned private beside a write that read none.
@@ -59,9 +62,12 @@ func (s *server) writtenRepository(canonical string, who model.Actor) *writtenRe
 
 // id is the GitHub id of the repository the written name reaches now (githubapp.CurrentRepository,
 // which follows GitHub's redirect from an old name), read the first time it is asked for and kept.
-// With no project private it reads nothing and answers nil. A read GitHub does not answer, a
-// deployment with no App key's included, is repositoryIDUnavailable. ctx is the request's, never
-// one held to a repository.
+// With no project private it reads nothing and answers nil. Where GitHub answers that Dispatch's
+// App cannot read the repository, no installation covering it (githubapp.ErrNoInstallation) or a
+// 403 or 404 for the repository itself (githubapp.ErrRepositoryUnreadable), it is
+// repositoryNotAvailable; any other failure, which is no answer from GitHub about the repository (a
+// rate limit, a 5xx, a timeout or a transport failure, and a deployment with no App key, which
+// cannot ask), is repositoryIDUnavailable. ctx is the request's, never one held to a repository.
 func (w *writtenRepository) id(ctx context.Context) (*int64, error) {
 	if !w.reads {
 		return nil, nil
@@ -72,13 +78,17 @@ func (w *writtenRepository) id(ctx context.Context) (*int64, error) {
 	w.read = true
 	owner, name, _ := strings.Cut(w.name, "/")
 	current, err := w.github.CurrentRepository(ctx, owner, name)
-	if err != nil {
+	switch {
+	case errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrRepositoryUnreadable):
+		slog.Info("dispatch: a repository write names a repository Dispatch's GitHub App cannot read while a project is private; the write is refused", "repository", w.name, "error", err)
+		w.err = repositoryNotAvailable()
+	case err != nil:
 		slog.Warn("dispatch: a repository write could not read the repository's GitHub id while a project is private; the write is refused", "repository", w.name, "error", err)
 		w.err = repositoryIDUnavailable()
-		return nil, w.err
+	default:
+		w.found = &current.ID
 	}
-	w.found = &current.ID
-	return w.found, nil
+	return w.found, w.err
 }
 
 // sameRepositoryName reports whether a write that sets repo carries the name stored already, as

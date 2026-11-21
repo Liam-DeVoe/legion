@@ -308,15 +308,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The GitHub id of the repository the body names, read before the transaction so no lock waits
 	// on GitHub, while a project is private: a create's name is new to its row, so the id GitHub
-	// answers now is the one the creator means, and a read GitHub does not answer refuses the
-	// create before anything is written (writtenRepository).
+	// answers now is the one the creator means. A read that does not give it refuses the create
+	// before anything is written (writtenRepository), at the gate below, where a repository hidden
+	// from the creator is refused, so the two refusals are made at the same step.
 	var repoID *int64
+	var repoIDRefusal error
 	if repo != nil {
-		var err error
-		if repoID, err = s.writtenRepository(*repo, who).id(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+		repoID, repoIDRefusal = s.writtenRepository(*repo, who).id(r.Context())
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -393,9 +391,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A repository the GitHub proxy hides from the creator is not theirs to name
-	// (refuseRepoHidden), judged by the id the create read: read once the project and the parent
-	// are read as the creator reads them, before the project's owner lock and before anything is
-	// written.
+	// (refuseRepoHidden), judged by the id the create read, and neither is one whose id the read did
+	// not give: read once the project and the parent are read as the creator reads them, before the
+	// project's owner lock and before anything is written.
+	if repoIDRefusal != nil {
+		s.writeHandlerError(w, repoIDRefusal)
+		return
+	}
 	if err := refuseRepoHidden(r.Context(), tx, who, repo, repoID); err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -197,6 +197,10 @@ func requireStatus(t *testing.T, what string, response *httptest.ResponseRecorde
 //     to acme/privfail, and her PRIV default write of acme/privfaildefault each answer 503
 //     REPOSITORY_ID_UNAVAILABLE ("GitHub did not answer; try again", naming no project) and write
 //     nothing.
+//   - Where GitHub answers that Dispatch's App is not installed on acme/notinstalled, alice's create
+//     of a PRIV issue naming it, her patch of a PRIV issue to it, and her PRIV default write of it
+//     each answer 403 REPOSITORY_NOT_AVAILABLE, byte for byte what carol's create of an OTHER issue
+//     naming acme/privnew2, hidden from her, answers, and write nothing.
 //   - An OTHER parent above a PRIV child (rows only a direct write makes): clearing the parent's
 //     repository, and moving the parent under an OTHER issue whose repository holds no id, are each
 //     written, and carol then reads the repository the PRIV child resolves to, through the parent.
@@ -209,10 +213,15 @@ func requireStatus(t *testing.T, what string, response *httptest.ResponseRecorde
 // none); read the id again for a stored name (the patch after the reuse records 9010); read the id
 // for a stored name that has none (carol's re-saved OTHER issue asks GitHub, and is refused the
 // repository PRIV holds by that id); store a name with no id when GitHub does not answer, the path
-// before this rule (carol's create of acme/pubfail is written). Each time the test fails naming it.
+// before this rule (carol's create of acme/pubfail is written); answer every failed id read 503, a
+// not-installed repository included (the three acme/notinstalled writes answer 503). Each time the
+// test fails naming it.
 func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 	github := newIDGitHub(map[string]repositoryIdentity{
 		"acme/priv": {9101, "acme/priv"}, "acme/privpatched": {9102, "acme/privpatched"}, "acme/privdefault": {9103, "acme/privdefault"},
+		// Installed, so a failed read of them is GitHub giving no answer, not GitHub answering that
+		// the App cannot read them.
+		"acme/pubfail": {9301, "acme/pubfail"}, "acme/privfail": {9302, "acme/privfail"}, "acme/privfaildefault": {9303, "acme/privfaildefault"},
 		"acme/pubdefault": {9104, "acme/pubdefault"},
 		"acme/privold2":   {9003, "acme/privnew2"}, "acme/privnew2": {9003, "acme/privnew2"},
 		"acme/pubparent": {9201, "acme/pubparent"}, "acme/pubx": {9202, "acme/pubx"},
@@ -344,6 +353,39 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 		t.Errorf("the refused default write left %d mappings of acme/privfaildefault, want none", mapped)
 	}
 	github.fail(false)
+
+	// GitHub answers that the App is not installed on acme/notinstalled: refused as a repository
+	// hidden from the writer is, in the same bytes, with nothing written.
+	hiddenRefusal := send("POST /api/v1/issues", "/api/v1/issues", map[string]any{"project": "OTHER", "title": "Names acme/privnew2", "repo": "acme/privnew2", "force": true}, "carol@example.com")
+	hiddenBody := strings.TrimSpace(hiddenRefusal.Body.String())
+	if hiddenRefusal.Code != http.StatusForbidden || !strings.Contains(hiddenBody, `"code":"`+codeRepositoryNotAvailable+`"`) {
+		t.Fatalf("carol's create of an OTHER issue naming acme/privnew2, which PRIV holds unshared, answered %d %s, want 403 %s: the comparison proves nothing",
+			hiddenRefusal.Code, hiddenBody, codeRepositoryNotAvailable)
+	}
+	requireNotAvailable := func(what string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := strings.TrimSpace(response.Body.String()); response.Code != http.StatusForbidden || got != hiddenBody {
+			t.Errorf("%s names acme/notinstalled, which Dispatch's App cannot read: %d %s, want 403 and the bytes a hidden repository is refused with: %s",
+				what, response.Code, got, hiddenBody)
+		}
+	}
+	issues = countRows(t, database, `select count(*) from issues`)
+	requireNotAvailable("alice's create of a PRIV issue",
+		send("POST /api/v1/issues", "/api/v1/issues", map[string]any{"project": "PRIV", "title": "Names acme/notinstalled", "repo": "acme/notinstalled", "force": true}, "alice"))
+	if after := countRows(t, database, `select count(*) from issues`); after != issues {
+		t.Errorf("the refused not-installed create left %d issues, want %d", after, issues)
+	}
+	requireNotAvailable("alice's patch of "+written,
+		send("PATCH /api/v1/issues/{key}", "/api/v1/issues/"+written, map[string]any{"repo": "acme/notinstalled"}, "alice"))
+	if repo := repoOf(decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+written, nil, "alice")).Repo); repo != "acme/privpatched" {
+		t.Errorf("the refused not-installed patch left %s naming %s, want acme/privpatched", written, repo)
+	}
+	requireNotAvailable("alice's PRIV default write",
+		send("PUT /api/v1/settings/repo-projects/{owner}/{repo}", "/api/v1/settings/repo-projects/acme/notinstalled",
+			map[string]any{"project": "PRIV", "default": true}, "alice"))
+	if mapped := countRows(t, database, `select count(*) from repo_projects where repo = 'acme/notinstalled'`); mapped != 0 {
+		t.Errorf("the refused not-installed default write left %d mappings of acme/notinstalled, want none", mapped)
+	}
 
 	// An OTHER parent above a PRIV child.
 	parent := create("carol@example.com", map[string]any{"project": "OTHER", "title": "The parent of a PRIV child", "repo": "acme/pubparent", "force": true})

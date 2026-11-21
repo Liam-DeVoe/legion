@@ -137,10 +137,18 @@ func refuseRepoHidden(ctx context.Context, q queryer, who model.Actor, repo *str
 		return fmt.Errorf("read whether the writer may read %s: %w", *repo, err)
 	}
 	if hidden {
-		return errorf(http.StatusForbidden, codeRepositoryNotAvailable,
-			"this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch")
+		return repositoryNotAvailable()
 	}
 	return nil
+}
+
+// repositoryNotAvailable is 403 REPOSITORY_NOT_AVAILABLE in its one set of words, which name no
+// project and no issue and do not say why: a repository the GitHub proxy hides from the writer
+// (refuseRepoHidden), and one GitHub answers Dispatch's App cannot read (writtenRepository), are
+// refused alike, so a writer cannot tell one from the other.
+func repositoryNotAvailable() error {
+	return errorf(http.StatusForbidden, codeRepositoryNotAvailable,
+		"this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch")
 }
 
 // repoScan receives refs.IssueRepoColumns for one issue, the repository-resolution rule the
