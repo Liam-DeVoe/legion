@@ -3786,6 +3786,19 @@ const RECORD_FILES: Record<string, true> = Object.fromEntries(
     .map((file) => [file, true])
 );
 
+/** The notes rig.sh writes in a run's fixture.log when a publish the run's world depends on
+ * reached no listener (unscored), each by the text its line opens with, and how the run's rig
+ * error names it. */
+const UNHEARD = [
+  {
+    line: "skill-scenarios: the settlement of the re-run reached no listener at ",
+    what: "the settlement publish failed or went unheard",
+  },
+  {
+    line: "skill-scenarios: the report of the check reached no listener at ",
+    what: "the report publish failed or went unheard",
+  },
+];
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -3793,6 +3806,13 @@ const RECORD_FILES: Record<string, true> = Object.fromEntries(
  *     searches every project of its server, so runs that share one can read each other's issue
  *     and asks, and one run's answer can be another's;
  *   - it never finished: out.txt has no `exit=` line;
+ *   - it met a gh call no route models (calls.jsonl's `unmodeled`);
+ *   - a publish its world depends on failed or went unheard: rig.sh noted that the settlement of
+ *     the re-run (rerun_settle) or the report of the check (red_report) reached no listener
+ *     (fixture.log, UNHEARD), so the turn it should have woken ran on no wake;
+ *   - a step its world depends on did not finish, and the rig stopped the run after the turn
+ *     before it: red-at-the-head's report of the check left no reported-at, or its settlement of
+ *     a pressed re-run no settled-at;
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
@@ -3852,6 +3872,76 @@ function unscored(
     ? parsed(path.join(runDir, "calls.jsonl"), Call).find((call) => call.unmodeled === true)
     : undefined;
   if (unmodeled !== undefined) return `${UNMODELED}: gh ${unmodeled.argv.join(" ")}`;
+  // A publish the world depends on that no listener heard: the turn it should have woken ran on
+  // no wake, so the run did not get the world it was built for (the architect's ruling of
+  // 2026-11-21 01:06Z, on finding R6-F1). rig.sh notes each one and goes on to the turn, through
+  //   note() { printf 'skill-scenarios: %s\n' "$*"; }
+  // (rig.sh:313 at bb4eef5b), on the output of the step, which run_red_at_the_head appends to the
+  // run's fixture.log; `--publish` exits 1 when the listener answered no 2xx or did not answer in
+  // the stand-in's five seconds (gh-standin.ts:560-568). The two such publishes (UNHEARD) are the
+  // settlement of the re-run, in rerun_settle:
+  //   SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --publish "$R/settlement.json" ||
+  //     note "the settlement of the re-run reached no listener at $url"
+  // (rig.sh:4442-4443), appended by `rerun_settle >>"$R/fixture.log" 2>&1 || fail …` (rig.sh:4494);
+  // and the rig's report of the check the counted set had not reported (world `l`, `t`), in
+  // red_report:
+  //   SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --publish "$R/reported.json" ||
+  //     note "the report of the check reached no listener at $url"
+  // (rig.sh:4403-4404), appended by `red_report >>"$R/fixture.log" 2>&1 || fail …` (rig.sh:4490).
+  // The run is a rig error named with the note's own line.
+  const unheard = existsSync(path.join(runDir, "fixture.log"))
+    ? lines(path.join(runDir, "fixture.log")).flatMap((line) => {
+        const of = UNHEARD.find((note) => line.startsWith(note.line));
+        return of === undefined ? [] : [`${of.what} (fixture.log: ${line})`];
+      })[0]
+    : undefined;
+  if (unheard !== undefined) return unheard;
+  // A step the world depends on that did not finish: the rig stops the run there, after the turn
+  // before it has ended, so out.txt keeps that turn's `exit=` line and the run reads as finished.
+  // run_red_at_the_head runs the two steps as
+  //   red_report >>"$R/fixture.log" 2>&1 || fail "the world $world report failed; see $R/fixture.log"
+  //   rerun_settle >>"$R/fixture.log" 2>&1 || fail "the world $world settlement failed; see $R/fixture.log"
+  // (rig.sh:4490 and 4494 at bb4eef5b), and fail (rig.sh:314-317) prints its message on the stderr
+  // of `rig.sh run`, which cmd_batch's xargs passes on to the batch's own stderr (rig.sh:4626):
+  // the run directory holds no copy of it, so the scorer names the run by no message of the rig's.
+  // What the run does hold is the step's own mark, which each step writes only once its rewrite of
+  // fixtures.json has gone through, red_report's
+  //   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
+  // (rig.sh:4401) and rerun_settle's
+  //   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/settled-at"
+  // (rig.sh:4440). So a run of a world whose counted set the rig reports (world.json's `report`)
+  // with no reported-at, or a run whose press reached fixtures.json (a `press` route that has
+  // answered, rerun_pressed's own test, rig.sh:4415-4417) in a world that settles it (`turns` 2)
+  // with no settled-at, stopped at that step, in every world. It is a rig error named by that fact.
+  if (scenario === "red-at-the-head" && existsSync(path.join(runDir, "world.json"))) {
+    const facts = z
+      .looseObject({ report: z.boolean().optional(), turns: z.number().optional() })
+      .safeParse(JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")));
+    if (
+      facts.success &&
+      facts.data.report === true &&
+      !existsSync(path.join(runDir, "reported-at"))
+    )
+      return "the rig's report step did not finish: the run has no reported-at";
+    const fixtures = path.join(runDir, "fixtures.json");
+    const pressed =
+      existsSync(fixtures) &&
+      z
+        .looseObject({
+          routes: z.array(
+            z.looseObject({ press: z.boolean().optional(), answered: z.number().optional() })
+          ),
+        })
+        .parse(JSON.parse(readFileSync(fixtures, "utf8")))
+        .routes.some((route) => route.press === true && (route.answered ?? 0) > 0);
+    if (
+      facts.success &&
+      facts.data.turns === 2 &&
+      pressed &&
+      !existsSync(path.join(runDir, "settled-at"))
+    )
+      return "the rig's settlement step did not finish: the run has no settled-at";
+  }
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";

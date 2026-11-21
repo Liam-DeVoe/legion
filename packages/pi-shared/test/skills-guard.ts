@@ -468,14 +468,17 @@ const ONLY_THE_IMPLEMENTER_WAITS = /\ba Legion implementer waits this way only\b
  *
  * The subject is the `merge_group` checks, and the gap after them is `.{0,30}` rather than
  * `[^.]`, so it reaches across the one full stop of the prompt part's "checks failed. That is
- * work to fix." The clause that replaced it keeps every word up to `goes back` and then says
- * when: "… is work to fix, so the issue goes back on the second such removal of that head", so a
- * send-back followed by `on the second` or `only on the second` passes, and so does the prompt
- * part's "the issue goes back only on the second such removal of that head", which calls nothing
- * work to fix.
+ * work to fix." Between `is work to fix` and the send-back any punctuation stands, or none: the
+ * comma of "is work to fix, so send the issue back", the full stop of "That is work to fix. Send
+ * the issue back", and the colon of "That is work to fix: send the issue back", which no file
+ * carried and which a `[,.]` let through. The clause that replaced it keeps every word up to
+ * `goes back` and then says when: "… is work to fix, so the issue goes back on the second such
+ * removal of that head", so a send-back followed by `on the second` or `only on the second`
+ * passes, and so does the prompt part's "the issue goes back only on the second such removal of
+ * that head", which calls nothing work to fix.
  */
 const FIRST_EJECTION_GOES_BACK =
-  /\bmerge_group`?\s+checks\b.{0,30}?\bis\s+work\s+to\s+fix\b[,.]?\s+(?:so\s+)?(?:the\s+issue\s+goes\s+back|send\s+the\s+issue\s+back)\b(?!\s+(?:only\s+)?on\s+the\s+second\b)/i;
+  /\bmerge_group`?\s+checks\b.{0,30}?\bis\s+work\s+to\s+fix\b\s*[^\w\s]*\s+(?:so\s+)?(?:the\s+issue\s+goes\s+back|send\s+the\s+issue\s+back)\b(?!\s+(?:only\s+)?on\s+the\s+second\b)/i;
 
 /**
  * The ban on a wait INFRA-1303 retired from the tester's prompt part
@@ -630,46 +633,71 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
  * types, the unit and integration suites and every other lane are CI's work, read on GitHub at the
  * head you tested", the concepts page's "reads CI for everything static", and the pull-request
  * body reference's "Lint, types and the unit and integration suites are CI's, read on GitHub at the
- * head" (main's "are CI's: read them on GitHub at the head"). Two shapes: `read(s) CI for
- * everything static`, and the lanes called CI's (`CI's`, `CI's work`) with a comma or a colon and
- * then `read` at once. The sentences that keep a `ci_check` check CI's pass, since no `read`
- * follows at once: "A check carrying `ci_check` is CI's: that read shows its one derived result"
+ * head" (main's "are CI's: read them on GitHub at the head"), and its earlier "are CI's, read there
+ * and recorded for no later step". Two shapes: `read(s) CI for everything static`, and the lanes
+ * called CI's (`CI's`, `CI's work`) with a comma or a colon and then a read of them where the
+ * tester made it: `read on GitHub`, `read them on GitHub` or `read there`. The place is the object
+ * the pattern reads, so a sentence that sends its reader to one job's log passes: "Formatting is
+ * CI's: read the `fmt` job's log to see what it changed." and "Lint is CI's work, read the job log
+ * on GitHub when it fails." The sentences that keep a `ci_check` check CI's pass, since no such
+ * read follows: "A check carrying `ci_check` is CI's: that read shows its one derived result"
  * (the tester's role part) and "a check carrying `ci_check` is CI's, and its result …" (its core).
  * So do the sentences that replaced the read: "every other lane are CI's work, and you do not run
  * in your own pod what CI runs for you" (the core) and "are CI's: the tester lets CI do its job"
  * (pr-body.md).
  */
 const TESTER_READS_THE_STATIC_LANES =
-  /\breads?\s+CI\s+for\s+everything\s+static\b|\bCI's(?:\s+work)?[,:]\s+read\b/i;
+  /\breads?\s+CI\s+for\s+everything\s+static\b|\bCI's(?:\s+work)?[,:]\s+read\s+(?:them\s+)?(?:on\s+GitHub|there)\b/i;
 
 /**
  * The read of the head's checks before a verdict: the tester's prompt part's "Read the head's
  * checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`",
  * and the pull-request body reference's "The tester reads the head's checks on GitHub before any
- * verdict". A verdict is the tester's word, so the reviewer's read passes: "The reviewer reads the
- * head's checks on GitHub itself before it approves" (concepts.md).
+ * verdict". The subject is the tester: by name (`the tester reads`), as `you read`, or as the
+ * imperative `Read` that opens a sentence or a list item, which is the prompt part's own shape.
+ * The opening is read through a lookbehind, so a hit names the line of the `Read`. A verdict is
+ * the tester's word, and another role's read passes: "The reviewer reads the head's checks on
+ * GitHub itself before it approves" (concepts.md) and "The reviewer reads the head's checks on
+ * GitHub before any verdict it gives."
  */
 const HEADS_CHECKS_BEFORE_ANY_VERDICT =
-  /\breads?\s+the\s+head's\s+checks\b[^.]{0,30}?\bbefore\s+any\s+verdict\b/i;
+  /(?:\bthe\s+tester\s+reads|\byou\s+read|(?<=(?:^|[.!?:;]\s|[-*]\s))read)\s+the\s+head's\s+checks\b[^.]{0,30}?\bbefore\s+any\s+verdict\b/i;
+
+/**
+ * The phase's holder, named by the phase alone: `the role that holds the issue's phase` or `the
+ * holder of the issue's phase`, which the tester read as itself while it held `testing`.
+ */
+const PHASE_HOLDER = String.raw`(?:role\s+that\s+holds|holder\s+of)\s+the\s+issue's\s+phase\b`;
 
 /**
  * The tester as a holder of the re-run. Four shapes: the three-holder list that opened with it,
  * "the tester in `testing`, the reviewer in `reviewing` …" (the red-at-the-head page, the worker
  * prompt part, the concepts and troubleshooting pages); the pull-request body reference's "is the
  * tester's to re-run once"; the page's "The tester and the implementer still re-run such a red
- * once"; and the holder named by the phase alone, `the role that holds the issue's phase` or `the
- * holder of the issue's phase`, with a re-run later in its sentence, which the tester read as its
- * own while it held `testing`: the tester's prompt part's "The role that holds the issue's phase
- * re-runs a red at the head", the page's "The holder of the issue's phase presses the re-run",
- * pr-body.md's "re-run once … by the role that holds the issue's phase" and the architect's prompt
- * part's "the role that holds the issue's phase re-runs a red the change did not make once". The
- * sentences that replaced them name the two holders and pass: "The holders of the re-run are the
- * reviewer in `reviewing` and the implementer while it holds `implementing`." and "The tester
- * presses nothing" (the page, the worker prompt part). So does the worker prompt part's "One role
- * holds the issue's phase at a time", which names no holder of a re-run.
+ * once"; and the phase's holder (`PHASE_HOLDER`) as the one who re-runs, either as the subject of
+ * `re-run(s)` or `presses` — the tester's prompt part's "The role that holds the issue's phase
+ * re-runs a red at the head", the page's "The holder of the issue's phase presses the re-run" and
+ * the architect's prompt part's "the role that holds the issue's phase re-runs a red the change
+ * did not make once" — or as the `by` of a re-run earlier in its sentence, pr-body.md's "re-run
+ * once … by the role that holds the issue's phase". The `by` is read through a lookbehind, so a
+ * hit names the line of the holder. A holder that is the object of another verb passes, though a
+ * re-run follows it: "After a restart the daemon starts the role that holds the issue's phase
+ * again, and that role reruns its last command." The sentences that replaced them name the two
+ * holders and pass: "The holders of the re-run are the reviewer in `reviewing` and the
+ * implementer while it holds `implementing`." and "The tester presses nothing" (the page, the
+ * worker prompt part). So does the worker prompt part's "One role holds the issue's phase at a
+ * time", which names no holder of a re-run.
  */
-const THE_TESTER_HOLDS_THE_RERUN =
-  /\btester\s+in\s+`?testing`?\s*,\s+the\s+reviewer\b|\bthe\s+tester's\s+to\s+re-?run\b|\bthe\s+tester\s+and\s+the\s+implementer\s+still\s+re-?run\b|\b(?:role\s+that\s+holds|holder\s+of)\s+the\s+issue's\s+phase\b(?=[^.]*?\bre-?runs?\b)/i;
+const THE_TESTER_HOLDS_THE_RERUN = new RegExp(
+  [
+    String.raw`\btester\s+in\s+\`?testing\`?\s*,\s+the\s+reviewer\b`,
+    String.raw`\bthe\s+tester's\s+to\s+re-?run\b`,
+    String.raw`\bthe\s+tester\s+and\s+the\s+implementer\s+still\s+re-?run\b`,
+    String.raw`\b${PHASE_HOLDER}\s+(?:re-?runs?|presses)\b`,
+    String.raw`(?<=\bre-?runs?\b[^.]*\bby\s+the\s+)${PHASE_HOLDER}`,
+  ].join("|"),
+  "i"
+);
 
 /**
  * The tester's waits on CI: the tester's prompt part's "you wait for none of them but three: the
@@ -677,13 +705,16 @@ const THE_TESTER_HOLDS_THE_RERUN =
  * `completed`, however you learned of it", and its earlier "you wait for none of them but that
  * re-run"; the pull-request body reference's "The tester waits on CI for nothing but what that
  * page gives it", its earlier "the tester waits for none of them but the re-run", and its "however
- * the tester learned of it". The reviewer's wait passes, since its list is "the three" the page
- * gives it: "You wait for none of them but the three
+ * the tester learned of it". The tester's wait is read with its object, `for nothing` or `for
+ * none`, before the `but` of its exceptions, so a sentence that has the tester wait for something
+ * else passes: "The tester waits for the app to boot, but reads no CI." and "The tester waits
+ * until the deploy finishes, but never on CI." The reviewer's wait passes, since its list is "the
+ * three" the page gives it: "You wait for none of them but the three
  * `skill://legion-worker/references/red-at-the-head.md` gives you" (go/reviewer.md). So does the
  * tester's "wait on no CI".
  */
 const THE_TESTER_WAITS_ON_CI =
-  /\bthe\s+tester\s+waits?\b[^.]{0,40}?\bbut\b|\byou\s+wait\s+for\s+none\s+of\s+them\s+but\s+(?:three|that\s+re-?run)\b|\bhowever\s+the\s+tester\s+learned\b/i;
+  /\bthe\s+tester\s+waits?\s+(?:on\s+CI\s+)?for\s+(?:nothing|none)\b[^.]{0,20}?\bbut\b|\byou\s+wait\s+for\s+none\s+of\s+them\s+but\s+(?:three|that\s+re-?run)\b|\bhowever\s+the\s+tester\s+learned\b/i;
 
 /**
  * The tester's verdict on a check CI proves: the worker skill's `ci_check` reference's "A
@@ -696,23 +727,40 @@ const THE_TESTER_WAITS_ON_CI =
  */
 const CI_CHECK_IN_THE_TESTERS_FAILURES = /\bci_check`?\s+check\s+goes\s+in\s+`?failures\b/i;
 
+/** The tester's own record: a `test` handoff or record, `--phase test` or `phase: "test"`. */
+const TEST_RECORD = String.raw`(?:\btest\`?\s+(?:handoff|record)\b|--phase\s+test\b|\bphase:\s*"test")`;
+
+/** The field `redAtTheHead`, unless a `no`, `never` or `not` just before it says a record lacks it. */
+const RED_AT_THE_HEAD_FIELD = String.raw`(?<!\b(?:no|never|not)\s+\`?)\bredAtTheHead\b`;
+
 /**
  * The tester's record of a red at the head. Three shapes: `dispatch handoff-write`'s phase list
  * holding `test` in the sentence of the re-run or its record, the page's "written with `dispatch
  * handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the `gh
- * run rerun` call" until 0ac2891a; a `test` handoff or record, `--phase test` or `phase: "test"` in
- * one sentence with `redAtTheHead`, in either order; and the tester as the subject that records
- * the red, "the tester records the red" or "the tester's `redAtTheHead`". The tester reads no CI,
- * so no red at the head is in its record, and a text that puts one there brings back the read the
- * record is made from. The records that stay pass: the page's `--phase <implement|review>` before
- * the `gh run rerun` call, the reviewer's "names the red in its `redAtTheHead` record and its review
+ * run rerun` call" until 0ac2891a; the tester's record (`TEST_RECORD`) in one sentence with
+ * `redAtTheHead` (`RED_AT_THE_HEAD_FIELD`), in either order; and the tester as the subject that
+ * records the red, "the tester records the red" or "the tester's `redAtTheHead`". The red it
+ * records is the noun or a red lane: `red` followed by a stop, a lane noun or a word that follows
+ * a noun (`at`, `in`, `that`, `the` …), so a red that names something else passes: "The tester
+ * notes the red banner the app shows when the login fails." The tester reads no CI, so no red at
+ * the head is in its record, and a text that puts one there brings back the read the record is
+ * made from. The records that stay pass: the page's `--phase <implement|review>` before the `gh
+ * run rerun` call, the reviewer's "names the red in its `redAtTheHead` record and its review
  * body", the handoff reads' `--phase <plan|implement|test|review>` (the worker skill) and
  * `--phase test --version <n>` (the implementer's role part), the tester's own `test` handoff and
  * its `failures`, which name no `redAtTheHead`, a sentence that says the tester's record carries no
  * `redAtTheHead`, and "The tester writes the red test for a way no test would catch".
  */
-const THE_TESTER_RECORDS_A_RED =
-  /\bhandoff-write\b[^.]{0,60}?--phase\s+<[a-z|]*\btest\b[a-z|]*>(?=[^.]*?\b(?:re-?run|redAtTheHead)\b)|(?:\btest`?\s+(?:handoff|record)\b|--phase\s+test\b|\bphase:\s*"test")(?=[^.]*?(?<!\b(?:no|never|not)\s+`?)\bredAtTheHead\b)|(?<!\b(?:no|never|not)\s+`?)\bredAtTheHead\b(?=[^.]*?(?:\btest`?\s+(?:handoff|record)\b|--phase\s+test\b|\bphase:\s*"test"))|\bthe\s+tester\s+(?:records?|writes?(?:\s+down)?|notes?|names?)\s+(?:the|a|each|that|this)\s+red\b(?!\s+tests?\b)|\bthe\s+tester's\s+`?redAtTheHead\b/i;
+const THE_TESTER_RECORDS_A_RED = new RegExp(
+  [
+    String.raw`\bhandoff-write\b[^.]{0,60}?--phase\s+<[a-z|]*\btest\b[a-z|]*>(?=[^.]*?\b(?:re-?run|redAtTheHead)\b)`,
+    `${TEST_RECORD}(?=[^.]*?${RED_AT_THE_HEAD_FIELD})`,
+    `${RED_AT_THE_HEAD_FIELD}(?=[^.]*?${TEST_RECORD})`,
+    String.raw`\bthe\s+tester\s+(?:records?|writes?(?:\s+down)?|notes?|names?)\s+(?:the|a|each|that|this)\s+red\b(?=\s*[^\w\s]|\s*$|\s+(?:(?:CI\s+)?${LANE}s?|at|in|on|of|from|to|for|with|as|and|or|before|after|when|while|that|which|whose|it|its|the|this)\b)`,
+    String.raw`\bthe\s+tester's\s+\`?redAtTheHead\b`,
+  ].join("|"),
+  "i"
+);
 
 /** The tester's six retired shapes, in the order they are written above. */
 const RETIRED_TESTER_CI_READS = [

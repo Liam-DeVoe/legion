@@ -37,26 +37,23 @@ Before it presses the re-run, the role records on the Dispatch issue all eight o
 8. the failing test or step, with the first line that states the failure
 
 A record short of one of the eight is a record the next reader cannot act on, and the eight are
-counted as such.
-
-The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
-recorded as failed, with the error, and the role makes the re-run all the same. Where the log
-can be read and holds no line that states the failure, the record says that, naming the step and
-what the log did hold, rather than leaving the field empty or writing a line the log does not
+counted as such. The role reads that first line with `gh run view <run-id> --log-failed`. A read
+that fails is recorded as failed, with the error, and the role makes the re-run all the same. Where
+the log can be read and holds no line that states the failure, the record says that, naming the step
+and what the log did hold, rather than leaving the field empty or writing a line the log does not
 carry.
 
 **The run that holds the check must have ended first.** A lane can fail and read `completed` while
 other lanes of its workflow run still run. Until that run ends, `gh run view <run-id> --log-failed`
 answers `run <id> is still in progress; logs will be available when it is complete` and exits 1, and
-GitHub refuses `gh run rerun`. So before the log read the role reads
-the run's own status, `gh run view <run-id> --json status --jq .status`, and reads the log and
-presses the re-run only on `completed`. The run's own `completed` is no leave to press while the
-counted set does not report that check `completed`. Until then it waits for the pull request's
-checks event, as *The act and the wait* says: that settlement comes once every check run of the head
-has ended. A re-run GitHub refuses all the same starts no attempt, so it spends nothing: the role
-records GitHub's answer, and on the next wake it reads the spend again before it presses, as before
-the first press, since a refusal while the run reads `completed` can mean another press already
-started an attempt.
+GitHub refuses `gh run rerun`. So before the log read the role reads the run's own status,
+`gh run view <run-id> --json status --jq .status`, and reads the log and presses the re-run only on
+`completed`. The run's own `completed` is no leave to press while the counted set does not report
+that check `completed`. Until then it waits for the pull request's checks event, as *The act and the
+wait* says: that settlement comes once every check run of the head has ended. A re-run GitHub
+refuses all the same starts no attempt, so it spends nothing: the role records GitHub's answer, and
+on the next wake it reads the spend again before it presses, as before the first press, since a
+refusal while the run reads `completed` can mean another press already started an attempt.
 
 The record is a handoff record of the role's own phase, written with
 `dispatch handoff-write --issue <issue> --phase <implement|review> --body-file <file>` before the
@@ -276,15 +273,13 @@ so only the role ends a round such a red would hold, and it ends it by this page
 
 A green re-run of a red in no test, such as a download that answered 5xx or a runner that ended,
 owes the record before the press and none of these three steps: the census is one issue per test,
-and a fault of a download or a runner belongs to the tree that owns that step. After a green
-re-run whose log read failed, the role knows the job but not the test's name: it makes no search,
-posts no comment, and sends step 3's message to the controller, naming the job and saying the log
-could not be read.
-
-After a green re-run of a failing test, and before it completes its phase, the role runs these
-three commands in this order. A red cleared and never written up is a flaky test nobody fixes,
-which is the cost this page is paid to stop. A re-run that comes back red is handled as
-*Red again* above says and owes no occurrence.
+and a fault of a download or a runner belongs to the tree that owns that step. After a green re-run
+whose log read failed, the role knows the job but not the test's name: it makes no search, posts no
+comment, and sends step 3's message to the controller, naming the job and saying the log could not
+be read. After a green re-run of a failing test, and before it completes its phase, the role runs
+these three commands in this order. A red cleared and never written up is a flaky test nobody fixes,
+which is the cost this page is paid to stop. A re-run that comes back red is handled as *Red again*
+above says and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited

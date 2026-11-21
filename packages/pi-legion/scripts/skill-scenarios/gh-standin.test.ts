@@ -192,7 +192,8 @@ test("a route that follows another advances on that route's calls, never on its 
   ]);
   expect(own.map((call) => call.stdout)).toEqual([`${RED.stdout}\n`, `${GREEN.stdout}\n`]);
   expect([pressed.stdout, pressed.exit]).toEqual([`${GREEN.stdout}\n`, 0]);
-});
+  // Slowest measured 5.09 s (pod, alone, timed out at bun's 5 s, 2026-11-21); also 1.22-3.99 s in the pod, 0.34 s in CI run 44797028466.
+}, 16_000);
 
 // Catches (INFRA-1303 D4): a body edit made after the press that never reaches the reply the rig
 // puts in place once it settles the re-run (`settled`), so the pull request read after the
@@ -225,8 +226,7 @@ test("a body edit reaches a route's settled reply as it reaches its replies", as
 
 /** How many times each row below runs its calls at once: the lost update they pin was measured
  * at 6 of 20 trials of one re-run beside three reads of the head. Each row's bound is its own,
- * sized to its time alone in a Legion pod on 2026-11-19: 16.6 s and 17.7 s for the first row,
- * 23.8 s and 24.4 s for the second. */
+ * three times its slowest measured time, beside it. */
 const TRIALS = 20;
 
 test("reads of the head made beside the re-run never lose the re-run's count", async () => {
@@ -250,7 +250,8 @@ test("reads of the head made beside the re-run never lose the re-run's count", a
   expect(seen).toEqual(
     Array.from({ length: TRIALS }, () => ({ rerun: 1, after: [`${GREEN.stdout}\n`, 0] }))
   );
-}, 60_000);
+  // Slowest measured 33.54 s (pod, whole file, 2026-11-21); also 26.49-28.07 s there, 16.6-17.7 s alone (pod, 2026-11-19), 3.24 s in CI run 44797028466.
+}, 101_000);
 
 test("calls of one route made at once each take a reply of their own and each count", async () => {
   const calls = 6;
@@ -267,7 +268,8 @@ test("calls of one route made at once each take a reply of their own and each co
   }
   // One call takes the first reply and every other one the last, as one call after another would.
   expect(seen).toEqual(Array.from({ length: TRIALS }, () => ({ red: 1, answered: calls })));
-}, 90_000);
+  // Slowest measured 24.4 s (pod, alone, 2026-11-19); also 19.81-22.57 s (pod, whole file, 2026-11-21), 3.15 s in CI run 44797028466.
+}, 74_000);
 
 test("a follows that names no route's match is refused, naming it, and answers no call", async () => {
   const typo = world([
@@ -547,9 +549,8 @@ test("the reviews a role sends are kept across calls, read back by every read, a
   expect((await check()).exit).toBe(0);
   const typo = world([{ match: "^gh pr view", reviews: "pr", comments: "^gh api nothing" }]);
   expect((await typo.check()).exit).toBe(2);
-  // Fourteen stand-in processes one after another: past bun's 5 s default on a loaded machine
-  // (measured alone in a Legion pod on 2026-11-19: 2.6 s and 4.8 s).
-}, 30_000);
+  // Fourteen stand-in processes in turn; slowest measured 4.8 s (pod, alone, 2026-11-19); also 2.6 s there, 3.03-3.72 s (pod, whole file, 2026-11-21), 0.69 s in CI run 44797028466.
+}, 15_000);
 
 /** Routes that change a review the role sent: its body, and its dismissal. */
 const REVIEW_EDITS = [
@@ -622,8 +623,8 @@ test("a review's body update and its dismissal answer as GitHub does, and the ne
   expect(calls().flatMap((call) => ("unmodeled" in call ? [call.request] : []))).toEqual([
     `gh api PUT ${REVIEWS}/7009 --raw-field body=x`,
   ]);
-  // Nine stand-in processes one after another, bounded as the row above is.
-}, 30_000);
+  // Nine stand-in processes one after another: slowest measured 2.46 s (pod, whole file, 2026-11-21), 0.41 s in CI run 44797028466, inside bun's 5 s default.
+});
 
 test("the re-run and the failed-log read are each recorded with the route that answered them", async () => {
   const log = "--- FAIL: TestSettlesTheHead (0.12s)";
@@ -682,7 +683,7 @@ test("a watch reply prints its frame again at each interval until the call is ki
   ).toEqual([{ argv: "run watch 7 --interval 1", route: match, exit: null }]);
   const busy = await gh("run", "watch", "7", "--interval", "0");
   expect([busy.stderr.startsWith("rig: request not modeled: gh "), busy.exit]).toEqual([true, 1]);
-}, 30_000);
+});
 
 // Catches: `gh pr checks --watch` with gh's `gh run watch` interval, where gh 2.98.0 reads the
 // checks every 10 seconds unless --interval names another (pkg/cmd/pr/checks/checks.go:21), and
@@ -723,7 +724,8 @@ test("a watch of the checks prints its frame every 10 seconds unless --interval 
     ["pr checks 1 --watch", null],
     ["pr checks 1 --watch --fail-fast -i 1", null],
   ]);
-}, 30_000);
+  // Slowest measured 4.36 s (pod, whole file, 2026-11-21); also 4.32-4.34 s there; no CI run yet.
+}, 14_000);
 
 // Catches: a read that writes fixtures.json back, which changes what a later reader of the world
 // reads, so the order of two readers decides what each reads (at 7bf70a93 every call wrote the
@@ -744,7 +746,7 @@ test("two readers of one world read the same in either order: a read writes noth
   const fileFirst = { file: file(), view: await view() };
   const viewFirst = { view: await view(), file: file() };
   expect(viewFirst).toEqual(fileFirst);
-}, 30_000);
+});
 
 // Catches: a call that would write a world rows share, written in silence, so a later row reads a
 // world the order of rows made: the stand-in refuses it, naming the world and the call, and writes
@@ -766,7 +768,7 @@ test("a call that would write a shared world is refused by name, and a read of i
   });
   expect(readFileSync(path.join(run, "fixtures.json"), "utf8")).toBe(before);
   expect(recorded()).toBe(true);
-}, 30_000);
+});
 
 // Catches: a refusal that names a fixed ref, or none, where GitHub names the one the call asked
 // for, so a role that read a commit by a wrong name (`null`, a branch nobody made) cannot tell
@@ -917,9 +919,8 @@ test("a call is read as gh resolves it: long flags, one argument after another, 
     1,
     true,
   ]);
-  // Six stand-in processes one after another: 1.1 s on a quiet pod, 1.8 to 3.0 s beside the rig
-  // suite (measured), and past bun's 5 s default beside two replays.
-}, 12_000);
+  // Six stand-in processes in turn; slowest measured 5 s (pod, beside two replays, timed out at bun's 5 s); also 0.91-3.0 s in the pod, 0.27 s in CI run 44797028466.
+}, 15_000);
 
 // Catches: a --json read that drops a field gh refuses or the world does not hold and answers
 // exit 0 without it, where gh 2.98.0 refuses an unknown field with its list (measured) and the
@@ -1040,7 +1041,8 @@ test("a GraphQL query is answered with its own selection of the world, or GitHub
   expect([unheld.stdout, unheld.exit, calls()[3]?.unmodeled]).toEqual(["", 1, true]);
   expect(respelled.stdout).toBe(selected.stdout);
   expect(calls()[4]?.request).toBe(calls()[0]?.request);
-});
+  // Slowest measured 5.001 s (pod, whole file beside a test batch, timed out at bun's 5 s, 2026-11-20); also 0.93-4.68 s in the pod, 0.25 s in CI run 44797028466.
+}, 16_000);
 
 // Catches: a measured answer printed in other bytes than the files hold, or with the probe's
 // commit (1111…1111) where the call named another, and a `$<name>` in a route's stdout left

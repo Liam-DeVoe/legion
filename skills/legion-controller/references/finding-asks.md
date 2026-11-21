@@ -53,7 +53,7 @@ An answer that arrives while no controller runs never wakes you, a reference pub
    printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
-   Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says.
+   Exit 0 with `[]` is nothing waiting. Exit 0 with a non-empty list is the asks waiting on you: act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says. Any other exit is a failed read, such as the block's own 1 when Dispatch did not answer and jq's 5 when the answer was no list.
 4. List the clear defects nobody took yet:
 
    ```text

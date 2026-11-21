@@ -363,10 +363,22 @@ func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
 	}
-	for _, old := range []string{"is work to fix, so send the issue back", "That is work to fix. Send the issue back"} {
-		if strings.Contains(merger, old) {
-			t.Errorf("roles/merger.md still sends the issue back on the first `failed_checks` ejection: %q", old)
+	// The retired send-back is refused with any punctuation after "is work to fix", or none: the
+	// comma of "is work to fix, so send the issue back", the full stop of "That is work to fix. Send
+	// the issue back", and a colon, which two literal pins let through until the class search at
+	// INFRA-1303's merge head. The rows below show the pattern takes each of the three.
+	sendsBackAtOnce := regexp.MustCompile(`(?i)\bis work to fix\s*[^\w\s]*\s+(?:so\s+)?send the issue back\b`)
+	for _, old := range []string{
+		"is work to fix, so send the issue back",
+		"That is work to fix. Send the issue back",
+		"That is work to fix: send the issue back",
+	} {
+		if !sendsBackAtOnce.MatchString(old) {
+			t.Errorf("the send-back pattern lets through %q", old)
 		}
+	}
+	if phrase := sendsBackAtOnce.FindString(foldWhitespace(merger)); phrase != "" {
+		t.Errorf("roles/merger.md still sends the issue back on the first `failed_checks` ejection: %q", phrase)
 	}
 }
 

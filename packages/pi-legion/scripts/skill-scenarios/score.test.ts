@@ -4994,6 +4994,37 @@ redRun("trial-i-head-210", {
   ]),
 });
 
+// A run whose settlement no listener heard: rig.sh's rerun_settle noted it in fixture.log, after
+// the stand-in's own record of the publish, and the settlement turn ran all the same (214); and
+// the same run whose publish the listener answered 200, which scores as trial-i-head-101 (215).
+/** A run's fixture.log as the rig leaves it: the seed's lines, the stand-in's record of a publish,
+ * the rig's note where it wrote one, and the capture of the records. */
+const redPublishLog = (published: string, note: string) =>
+  `seeded LWEVAL\nseeded LWEVAL-1\n${published}\n${note}captured LWEVAL-1: 2 handoff records\n`;
+redRun("trial-i-head-214", {
+  "fixture.log": redPublishLog(
+    '{"error":"The operation timed out."}',
+    "skill-scenarios: the settlement of the re-run reached no listener at http://127.0.0.1:41237\n"
+  ),
+});
+redRun("trial-i-head-215", {
+  "fixture.log": redPublishLog('{"status":200,"body":"{\\"ok\\":true}"}', ""),
+});
+
+// A run whose re-run the rig pressed in fixtures.json (a `press` route that has answered) and
+// whose settlement step did not finish: rerun_settle wrote no settled-at and the rig stopped the
+// run after the turn that pressed it, whose `exit=0` out.txt keeps (216); and the same run with
+// the settled-at it writes once the settlement went through, which scores as trial-i-head-101
+// (217).
+const redPressedFixtures = JSON.stringify({
+  routes: [{ match: "^gh run rerun 7001001 --failed", press: true, answered: 1 }],
+});
+redRun("trial-i-head-216", { "fixtures.json": redPressedFixtures });
+redRun("trial-i-head-217", {
+  "fixtures.json": redPressedFixtures,
+  "settled-at": "2026-09-30T17:31:40Z\n",
+});
+
 /** A reviewer's round that ended with changes requested, in `summary`'s words: the review call,
  * after `before`, the calls ahead of it (the log read and the one re-run unless a row names
  * others). */
@@ -5376,6 +5407,43 @@ const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28
 const redTwoTurns =
   "1 assignment 2026-09-30T17:28:00Z exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n";
 redWorldRun("trial-t-head-1", "t", {}, redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns));
+// trial-t-head-1 whose report of the check no listener heard: rig.sh's red_report noted it in
+// fixture.log, and the report turn ran all the same (8); and the same run whose report the
+// listener answered 200, which scores as trial-t-head-1 (9).
+redWorldRun(
+  "trial-t-head-8",
+  "t",
+  {},
+  {
+    ...redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns),
+    "fixture.log": redPublishLog(
+      '{"error":"Unable to connect. Is the computer able to access the url?"}',
+      "skill-scenarios: the report of the check reached no listener at http://127.0.0.1:41237\n"
+    ),
+  }
+);
+redWorldRun(
+  "trial-t-head-9",
+  "t",
+  {},
+  {
+    ...redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns),
+    "fixture.log": redPublishLog('{"status":200,"body":"{\\"ok\\":true}"}', ""),
+  }
+);
+// trial-t-head-1 whose report step did not finish: red_report wrote no reported-at and the rig
+// stopped the run after its first turn (10).
+redWorldRun(
+  "trial-t-head-10",
+  "t",
+  {},
+  Object.fromEntries(
+    Object.entries(redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns)).filter(
+      ([file]) => file !== "reported-at"
+    )
+  )
+);
+
 // Re-ran before the rig reported the check, which is a role that decided on the commit
 // endpoint: its record came first, so the order holds and the report alone fails it. The re-run
 // is in its first turn, which ended before the report, so its read of the counted set in the
@@ -5573,6 +5641,34 @@ for (const world of testerWorlds) {
   );
 }
 
+// A tester's run whose settlement step did not finish: the tester pressed the re-run, which its
+// rule forbids, and the rig's settlement of it left no settled-at (a-head-215); and a tester's run
+// of world `l` whose report step left no reported-at (l-head-215). Neither got its world, whatever
+// the tester did.
+run(
+  "trial-a-head-215",
+  {
+    "out.txt": "exit=0\n",
+    "world.json": redWorldFile({ world: "a" }),
+    "calls.jsonl": calls([redRerunCall()]),
+    "handoffs.json": handoffs(testRecord()),
+    "daemon.log": accepted("h-test", 1),
+    "fixtures.json": redPressedFixtures,
+  },
+  [...header, turn[0], writeHandoff, ...redComplete("pass", testerPassed)]
+);
+run(
+  "trial-l-head-215",
+  {
+    "out.txt": "exit=0\n",
+    "world.json": redWorldFile({ world: "l" }),
+    "calls.jsonl": calls([]),
+    "handoffs.json": handoffs(testRecord()),
+    "daemon.log": accepted("h-test", 1),
+  },
+  [...header, turn[0], writeHandoff, ...redComplete("pass", testerPassed)]
+);
+
 // A directory that names no world of the twenty, and one whose world is not the world it ran.
 redRun("trial-z-head-1");
 redWorldRun("trial-b-head-4", "a", {});
@@ -5722,6 +5818,56 @@ test("a run that met an unmodeled request is a rig error naming it, counted per 
     "trial-i-head-210\trig error: an unmodeled request: gh api repos/example/widgets/commits/main/check-suites\n"
   );
   expect(out).toContain("\nscenario\tlabel\tunmodeled\nred-at-the-head:i\thead\t1\n");
+});
+
+// Catches: a run whose settlement no listener heard scored as if its world had settled the re-run
+// as built (the architect's ruling of 2026-11-21 01:06Z, on finding R6-F1): rig.sh notes it and
+// runs the settlement turn all the same, so the scorer reads the note and leaves the run out of
+// the counts, naming it. A run whose publish was heard scores as before.
+test("a run whose settlement publish went unheard is a rig error naming the rig's note", () => {
+  expect(out).toContain(
+    "trial-i-head-214\trig error: the settlement publish failed or went unheard (fixture.log: skill-scenarios: the settlement of the re-run reached no listener at http://127.0.0.1:41237)\n"
+  );
+  expect(out).not.toMatch(/^trial-i-head-214\tpass=/m);
+  expect(rowOf("trial-i-head-215").replace("trial-i-head-215", "")).toBe(
+    rowOf("trial-i-head-101").replace("trial-i-head-101", "")
+  );
+});
+
+// Catches: the sibling, a run whose report of the check no listener heard (worlds `l` and `t`,
+// red_report) scored as if its counted set had reported the red as built: the same class, a
+// publish the world depends on that did not reach the run. A run whose report was heard scores
+// as before.
+test("a run whose report publish went unheard is a rig error naming the rig's note", () => {
+  expect(out).toContain(
+    "trial-t-head-8\trig error: the report publish failed or went unheard (fixture.log: skill-scenarios: the report of the check reached no listener at http://127.0.0.1:41237)\n"
+  );
+  expect(out).not.toMatch(/^trial-t-head-8\tpass=/m);
+  expect(rowOf("trial-t-head-9").replace("trial-t-head-9", "")).toBe(
+    rowOf("trial-t-head-1").replace("trial-t-head-1", "")
+  );
+});
+
+// Catches: a run whose settlement or report step did not finish scored as if its world had been
+// built, in any world: the rig stops such a run after the turn before the step, whose `exit=0`
+// out.txt keeps, and its fail message goes to the batch's stderr, not the run directory. The run
+// is named by what it holds, the step's missing mark; a run with the mark scores as before.
+test("a run whose settlement or report step did not finish is a rig error named by its missing mark", () => {
+  expect(out).toContain(
+    "trial-i-head-216\trig error: the rig's settlement step did not finish: the run has no settled-at\n"
+  );
+  expect(out).toContain(
+    "trial-a-head-215\trig error: the rig's settlement step did not finish: the run has no settled-at\n"
+  );
+  expect(out).toContain(
+    "trial-t-head-10\trig error: the rig's report step did not finish: the run has no reported-at\n"
+  );
+  expect(out).toContain(
+    "trial-l-head-215\trig error: the rig's report step did not finish: the run has no reported-at\n"
+  );
+  expect(rowOf("trial-i-head-217").replace("trial-i-head-217", "")).toBe(
+    rowOf("trial-i-head-101").replace("trial-i-head-101", "")
+  );
 });
 
 test("a record another session wrote is not the role's own", () => {
@@ -6082,8 +6228,8 @@ test("in each tester world, a tester that read no CI, pressed nothing and passed
     testerWorlds.map((world) => [world, "true", "ciReads=0 pressed=true outcome=true"])
   );
   // Every tester run is counted: a run that never met the red is the rule kept, not a run left
-  // out of the denominators.
-  expect(out).toContain("red-at-the-head:a\thead\t2/12\t0/12\t0\t0\n");
+  // out of the denominators. trial-a-head-215, whose settlement step did not finish, is a rig error.
+  expect(out).toContain("red-at-the-head:a\thead\t2/12\t0/12\t1\t0\n");
 });
 
 // Catches: a tester's read of the head's checks left unscored, which the tester's rule forbids

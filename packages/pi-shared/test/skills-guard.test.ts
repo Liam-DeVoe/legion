@@ -89,7 +89,7 @@ function reported(
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. The last five rows are the shapes no file
+// and the line its pattern's first word stands on. The last six rows are the shapes no file
 // carried, in the words a reword would bring them back in. Every row is found by its own pattern
 // alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
@@ -315,6 +315,17 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
       "The reviewer reads the head's checks on GitHub before it approves.",
       "Never re-run a lane",
       "that failed on itself.",
+    ],
+    2,
+  ],
+  // The merger's send-back with a colon, which `FIRST_EJECTION_GOES_BACK`'s `[,.]` and the two
+  // literal pins of roles_test.go let through until the class search at INFRA-1303's merge head.
+  [
+    'merger.md\'s send-back with a colon, "That is work to fix: send the issue back"',
+    [
+      "5. Act on a removal by its `removalReason`:",
+      "   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to",
+      "     fix: send the issue back with `request_backward_move` (step 6).",
     ],
     2,
   ],
@@ -628,11 +639,47 @@ const retiredTesterReads: readonly (readonly [
     2,
   ],
   [
+    "pr-body.md's \"are CI's: read them on GitHub at the head\", as main has it",
+    [
+      "- The tester tries to break the changed surface and writes the red test for a way no test would",
+      "  catch. Lint, types and the unit and integration suites are CI's: read",
+      "  them on GitHub at the head, and wait for none.",
+    ],
+    2,
+  ],
+  [
+    "tester.md's \"are CI's work, read on GitHub at the head you tested\", its read of everything static shortened away",
+    [
+      "Judge whether the implementer's tests would catch the ways it breaks. Lint, types, the unit and",
+      "integration suites and every other lane are CI's work, read",
+      "on GitHub at the head you tested and written down nowhere for a later step to trust.",
+    ],
+    2,
+  ],
+  [
+    "pr-body.md's \"are CI's, read there and recorded for no later step\", as it stood before",
+    [
+      "- **The tester** reads CI on GitHub at the head it is judging for everything static: lint,",
+      "  types and the unit and integration suites are CI's, read",
+      "  there and recorded for no later step.",
+    ],
+    2,
+  ],
+  [
     "tester.md's \"Read the head's checks on GitHub before any verdict\"",
     [
       "Record what you ran and what you observed.",
       "Read the head's checks on GitHub before any verdict, whether or not a check of the issue",
       "carries `ci_check`.",
+    ],
+    2,
+  ],
+  [
+    "pr-body.md's \"The tester reads the head's checks on GitHub before any verdict\"",
+    [
+      "- The tester tries to break the changed surface and writes the red test for a way no test would",
+      "  catch. The tester reads the",
+      "  head's checks on GitHub before any verdict.",
     ],
     2,
   ],
@@ -688,6 +735,20 @@ const retiredTesterReads: readonly (readonly [
     2,
   ],
   [
+    "red-at-the-head.md's \"The holder of the issue's phase presses the re-run\", its list shortened away",
+    ["## Who may re-run", "", "- The holder of the issue's", "  phase presses the re-run."],
+    3,
+  ],
+  [
+    "architect.md's \"the role that holds the issue's phase re-runs a red the change did not make once\"",
+    [
+      "When CI settles on the head, the daemon names every check GitHub reported. A red is",
+      "information, not a verdict: the role that holds the issue's",
+      "phase re-runs a red the change did not make once.",
+    ],
+    2,
+  ],
+  [
     'tester.md\'s "you wait for none of them but three"',
     [
       "The round goes on when the re-run is green. A lane GitHub shows `queued` or `in progress` is read",
@@ -711,6 +772,15 @@ const retiredTesterReads: readonly (readonly [
       "  waits on CI for nothing but what that page gives it: the run that holds a red, until it ends.",
     ],
     1,
+  ],
+  [
+    'pr-body.md\'s "the tester waits for none of them but the re-run"',
+    [
+      "  read on GitHub at the head. A lane GitHub shows `queued` or `in progress` is read as such, and",
+      "  the tester waits for none",
+      "  of them but the re-run.",
+    ],
+    2,
   ],
   [
     'pr-body.md\'s "however the tester learned of it"',
@@ -757,6 +827,24 @@ const retiredTesterReads: readonly (readonly [
     2,
   ],
   [
+    '`redAtTheHead` in a record of `phase: "test"`',
+    [
+      "Every testing round records a `test` handoff on the Dispatch issue.",
+      'Its JSON object carries `phase: "test"` and a `redAtTheHead` list of',
+      "the reds at the head.",
+    ],
+    2,
+  ],
+  [
+    "`redAtTheHead` before the `test` handoff that carries it",
+    [
+      "Record the red before anything else.",
+      "A `redAtTheHead` list naming all eight facts goes in the",
+      "`test` handoff of the round.",
+    ],
+    2,
+  ],
+  [
     '"the tester records the red"',
     [
       "A red at the head that the change did not make is the reviewer's to re-run once.",
@@ -782,7 +870,9 @@ test.each(retiredTesterReads)("%s is reported at the line it starts on", (_sourc
 
 // Each sentence the trees keep beside the tester's retired ones, which a pattern too wide would
 // refuse: the sentences that replaced them, the reviewer's own read and wait, and the sentences that
-// keep a `ci_check` check CI's.
+// keep a `ci_check` check CI's. The last seven are sentences a docs page, a runbook or a tester's
+// page could plausibly say, which no tree carries: the tester patterns refused each until the class
+// search at INFRA-1303's merge head.
 const keptBesideTesterReads: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'tester.md\'s "Let CI do its job"',
@@ -904,6 +994,55 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
     [
       "The tester tries to break the changed surface. The tester writes the red",
       "test that pins each defect it finds, and the resumed implementer makes it pass.",
+    ],
+  ],
+  [
+    "a docs page's \"Formatting is CI's: read the `fmt` job's log\"",
+    [
+      "The repository checks its own format in CI. Formatting is CI's:",
+      "read the `fmt` job's log to see what it changed.",
+    ],
+  ],
+  [
+    "a docs page's \"Lint is CI's work, read the job log on GitHub when it fails.\"",
+    [
+      "Nothing lints on your machine. Lint is CI's work,",
+      "read the job log on GitHub when it fails.",
+    ],
+  ],
+  [
+    "a docs page's \"The reviewer reads the head's checks on GitHub before any verdict it gives.\"",
+    [
+      "The reviewer works from the pull request alone. The reviewer reads the",
+      "head's checks on GitHub before any verdict it gives.",
+    ],
+  ],
+  [
+    "a runbook's \"starts the role that holds the issue's phase again, and that role reruns its last command\"",
+    [
+      "After a restart the daemon starts the role that holds the issue's",
+      "phase again, and that role reruns its last command.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester waits for the app to boot, but reads no CI."',
+    [
+      "The tester boots the app and drives it as a user would. The tester waits",
+      "for the app to boot, but reads no CI.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester waits until the deploy finishes, but never on CI."',
+    [
+      "The tester drives the deployed app. The tester waits until the",
+      "deploy finishes, but never on CI.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester notes the red banner the app shows when the login fails."',
+    [
+      "The tester records what it saw. The tester notes the red",
+      "banner the app shows when the login fails.",
     ],
   ],
 ];
