@@ -1113,7 +1113,8 @@ overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` na
 operator's overlays, so its `default` outranks theirs for that role alone. Under Kubernetes the
 file must be in an operator mount, and an issue pod made before that mount has drifted: its roles
 keep running in it on the overlays it holds, so the role stays on its old model until the pod's
-update round replaces the pod, once every role in it has answered or at the round's bound; the
+update round replaces the pod, once every role in it has answered, no turn runs and each role's
+report since its last turn names no running background work, or at the round's bound; the
 controller's pod alone is replaced at its next launch (the `role_config_files` item above, and
 `docs/kubernetes.md`, "Rolling it out").
 
