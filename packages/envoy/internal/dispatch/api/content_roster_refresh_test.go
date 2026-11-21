@@ -40,6 +40,9 @@ func TestAReadRefreshesAnExpiredListenerAnswerBeforeItsContentRule(t *testing.T)
 		})
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	ctx := context.Background()
+	// An agents list stores the listener's answer, fresh, as any read of it does, so the session is
+	// one Dispatch knows before carol messages it.
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	sent := createdID(t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/agents/"+refreshedListed+"/messages",
 		map[string]any{"body": "A direct message to the PUB session.", "delivery": "btw"}, http.StatusCreated))
 	awaitBackgroundWrites(t, seed.server)
@@ -47,8 +50,10 @@ func TestAReadRefreshesAnExpiredListenerAnswerBeforeItsContentRule(t *testing.T)
 	if err := seed.database.Pool.QueryRow(ctx, `select count(*) from session_owners where session_id = $1`, refreshedListed).Scan(&tied); err != nil || tied != 0 {
 		t.Fatalf("%s is tied to %d people (%v), want nobody: the row proves nothing", refreshedListed, tied, err)
 	}
-	// An agents list stores the listener's answer, fresh, as any read of it does.
-	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+	// The answer fresh again, so the first read below reads its list at base as on the fix.
+	if _, err := seed.database.Pool.Exec(ctx, `update route_roster set expires_at = now() + interval '1 hour'`); err != nil {
+		t.Fatalf("make the stored listener answer fresh: %v", err)
+	}
 	read := func() []string {
 		t.Helper()
 		answer := seed.mustRequest(t, callerAlice, http.MethodGet, "/api/v1/agents/"+refreshedListed+"/messages", nil, http.StatusOK)

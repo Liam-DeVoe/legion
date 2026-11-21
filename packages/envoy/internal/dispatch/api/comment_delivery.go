@@ -426,14 +426,20 @@ func (s *server) claimCommentDeliveryAttempt(
 		}
 		return claimed, nil
 	}
+	// An unbound call takes no pending attempt pinned to a session its writer may not see
+	// (access.SessionClause): resuming it would answer that session's id and settle another
+	// sender's owed attempt with this writer's refusal. It opens one of its own instead, resolved
+	// under the writer, and leaves that attempt pending, which the delivery sweep sends as the
+	// comment's author.
 	pending, err := scanCommentDelivery(tx.QueryRow(ctx, `
 		select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and state = 'pending'
+		  and (comment_deliveries.session_id is null or `+access.SessionClause("comment_deliveries.session_id", "$3")+`)
 		order by attempt
 		limit 1
 		for update
-	`, stored.ID, target.Target), &takeable)
+	`, stored.ID, target.Target, refs.VisibilityArg(writer)), &takeable)
 	switch {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return claimedCommentDelivery{}, err

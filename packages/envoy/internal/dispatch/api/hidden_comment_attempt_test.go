@@ -148,3 +148,73 @@ func TestACommentMentionOfAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
 		sweep(fmt.Sprintf("attempt %d as its commit left it, resolve_error %s", c.attempt, encoded), c.attempt, c.session, c.fail)
 	}
 }
+
+// TestARetryResumesNoAttemptPinnedToASessionItsCallerMayNotSee: carol mentions a role alice may
+// read on PUB's issue, and the mention's attempt 1 is left pending by a sender that never came
+// back, its claim lapsed, pinned to privateSession, which alice may not see. alice's Retry of the
+// mention (deliverResolvedCommentMention, unbound, under her reader, as POST
+// /api/v1/comments/{id}/deliveries calls it) does not resume that attempt: it answers an attempt
+// of its own that names nothing of privateSession, and leaves attempt 1 pending. The delivery
+// sweep then settles attempt 1 as carol's, never with alice's refusal of privateSession.
+//
+// Control: claimCommentDeliveryAttempt's unbound read taking a pending attempt whatever session
+// it is pinned to; alice's Retry answers attempt 1, failed, "no live session" privateSession.
+func TestARetryResumesNoAttemptPinnedToASessionItsCallerMayNotSee(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	ctx := context.Background()
+	target := "role:" + walkedRole
+	commentID := createdID(t, walk.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+walk.issue[seedPublic]+"/comments",
+		map[string]any{"body": "@" + walkedRole + " look", "delivery": "btw", "mentions": []map[string]string{{"target": target}}}))
+	awaitBackgroundWrites(t, walk.server)
+	if _, err := walk.database.Pool.Exec(ctx, `
+		update comment_deliveries
+		set state = 'pending', error = null, envelope_id = null, duplicate = false, session_id = $3, resolve_error = null,
+		    claimed_at = now() - interval '10 minutes', created_at = now() - interval '10 minutes'
+		where comment_id = $1::uuid and target = $2 and attempt = 1`, commentID, target, privateSession); err != nil {
+		t.Fatalf("leave attempt 1 pending, pinned to %s, its claim lapsed: %v", privateSession, err)
+	}
+	alice, err := walk.server.readerFor(ctx, model.BrowserActor(seedAlice))
+	if err != nil {
+		t.Fatalf("resolve what alice sees: %v", err)
+	}
+	comment, err := walk.server.loadComment(ctx, walk.database.Pool, everyReader, commentID)
+	if err != nil {
+		t.Fatalf("load carol's comment: %v", err)
+	}
+	created, err := walk.server.loadCommentCreatedEvent(ctx, walk.database.Pool, comment)
+	if err != nil {
+		t.Fatalf("load carol's comment's event: %v", err)
+	}
+	retried, _, err := walk.server.deliverResolvedCommentMention(withReader(ctx, alice), comment, created,
+		ResolvedMention{Target: target, Delivery: "btw"}, model.BrowserActor(seedAlice), attemptClaim{}, walk.server.newTakeoverRetry())
+	if err != nil {
+		t.Fatalf("alice's Retry of carol's mention: %v", err)
+	}
+	answer, _ := json.Marshal(retried)
+	if retried.Attempt == 1 || strings.Contains(string(answer), privateSession) {
+		t.Errorf("alice's Retry answers %s: it resumed the attempt pinned to %s, a session she may not see", answer, privateSession)
+	}
+	awaitBackgroundWrites(t, walk.server)
+	var state string
+	var failure *string
+	if err := walk.database.Pool.QueryRow(ctx, `
+		select state, error from comment_deliveries where comment_id = $1::uuid and target = $2 and attempt = 1`,
+		commentID, target).Scan(&state, &failure); err != nil {
+		t.Fatalf("read attempt 1: %v", err)
+	}
+	if state != "pending" {
+		t.Errorf("after alice's Retry attempt 1 is %s (%v), want it left pending for its own sender", state, failure)
+	}
+	if err := walk.server.resumeOwedDeliveries(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	awaitBackgroundWrites(t, walk.server)
+	if err := walk.database.Pool.QueryRow(ctx, `
+		select state, error from comment_deliveries where comment_id = $1::uuid and target = $2 and attempt = 1`,
+		commentID, target).Scan(&state, &failure); err != nil {
+		t.Fatalf("read attempt 1 after the sweep: %v", err)
+	}
+	if state == "pending" || (failure != nil && *failure == noLiveSessionPrefix+" "+privateSession) {
+		t.Errorf("after the sweep attempt 1 is %s (%v), want it settled as carol's, not with alice's refusal of %s", state, deref(failure), privateSession)
+	}
+}
