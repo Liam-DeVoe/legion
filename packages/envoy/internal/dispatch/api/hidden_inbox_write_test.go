@@ -23,8 +23,14 @@ import (
 // narrowed to NOPE-1; a restore naming the PRIV thread by id restores 0, as one naming a thread
 // nobody holds; and the thread's own read mark answers 204 and moves nothing, as a thread nobody
 // holds. None of them waits on PRIV-1's owner lock, which a writer of PRIV holds while each runs,
-// none appends an event to PRIV's log, and alice's PRIV row stays unread. Her unnarrowed Mark all
-// read then marks the PUB thread alone, and her unnarrowed dismissal dismisses it alone, so the
+// none appends an event to PRIV's log, and alice's PRIV row stays unread.
+//
+// The Agent half (myAgentSeenAnd) is held alike: alice also wrote, while PRIV was public, one-off
+// messages to s-priv-agent, a session that acted in PRIV, and to s-pub-agent, one her own
+// credential proved in PUB, and each replied once PRIV was private. The token's Mark all read of
+// its Agent threads marks s-pub-agent's thread alone: s-priv-agent's reply stays unread and no
+// user_agent_state.updated event names that session. Her unnarrowed Mark all read then marks the
+// PUB Reply thread alone, and her unnarrowed dismissal dismisses the two PUB threads alone, so the
 // token still writes over what it sees.
 func TestAnInboxWriteNeverReachesAThreadItsCallerMayNotSee(t *testing.T) {
 	seed := seedPrivateProjectWith(t, testServerOptions{settle: time.Hour})
@@ -36,7 +42,21 @@ func TestAnInboxWriteNeverReachesAThreadItsCallerMayNotSee(t *testing.T) {
 	}
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	hiddenThread := threadOn(seed.issue[seedPrivate])
+	const privAgent, pubAgent = "s-priv-agent", "s-pub-agent"
+	seed.asSession(t, privAgent, seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+		map[string]any{"body": privAgent + " works on PRIV."}, http.StatusCreated)
+	seed.asSessionOf(t, seedAlice, pubAgent, seedPublic, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
+		map[string]any{"body": pubAgent + " works on PUB."}, http.StatusCreated)
+	agentRoots := map[string]string{}
+	for _, session := range []string{privAgent, pubAgent} {
+		agentRoots[session] = createdID(t, seed.request(t, callerAlice, http.MethodPost, "/api/v1/agents/"+session+"/messages",
+			map[string]any{"body": "A word for " + session + ".", "delivery": "btw"}))
+	}
 	seed.makePrivate(t, seedPrivate)
+	agentReplies := map[string]string{}
+	for session, root := range agentRoots {
+		agentReplies[session] = writeAgentReply(t, seed.database.Pool, root, "session", session, time.Now())
+	}
 	visibleThread := threadOn(seed.issue[seedPublic])
 	for issue, thread := range map[string]string{seed.issue[seedPrivate]: hiddenThread, seed.issue[seedPublic]: visibleThread} {
 		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
@@ -122,9 +142,44 @@ func TestAnInboxWriteNeverReachesAThreadItsCallerMayNotSee(t *testing.T) {
 			t.Errorf("%s appended %d thread-state events to PRIV's log, which the token does not see", pair.name, after-eventsBefore)
 		}
 	}
+	agentStateEvents := func(session string) int {
+		t.Helper()
+		var count int
+		if err := seed.database.Pool.QueryRow(context.Background(), `
+			select count(*) from events where type = 'user_agent_state.updated' and payload->>'session_id' = $1
+		`, session).Scan(&count); err != nil {
+			t.Fatalf("count %s's agent-state events: %v", session, err)
+		}
+		return count
+	}
+	replyRead := func(reply string) bool {
+		t.Helper()
+		var read bool
+		if err := seed.database.Pool.QueryRow(context.Background(), `
+			select exists (select 1 from user_agent_reply_read where login = $1 and reply_id = $2::uuid)
+		`, seedAlice, reply).Scan(&read); err != nil {
+			t.Fatalf("read whether alice read %s: %v", reply, err)
+		}
+		return read
+	}
+	privAgentEvents := agentStateEvents(privAgent)
+	agents := seed.request(t, caller, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{"read_through": now(), "kind": []string{"agent"}})
+	if agents.Code != http.StatusOK || markedBy(t, agents) != 1 {
+		t.Errorf("the token's Mark all read of its Agent threads: %d %s, want %s's thread alone marked",
+			agents.Code, strings.TrimSpace(agents.Body.String()), pubAgent)
+	}
+	if replyRead(agentReplies[privAgent]) {
+		t.Errorf("the token's Mark all read of its Agent threads marked %s's reply read, a session it may not see", privAgent)
+	}
+	if after := agentStateEvents(privAgent); after != privAgentEvents {
+		t.Errorf("the token's Mark all read of its Agent threads appended %d user_agent_state.updated events naming %s", after-privAgentEvents, privAgent)
+	}
+	if !replyRead(agentReplies[pubAgent]) {
+		t.Errorf("the token's Mark all read of its Agent threads left %s's reply unread", pubAgent)
+	}
 	marked := seed.request(t, caller, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{"read_through": now()})
 	if marked.Code != http.StatusOK || markedBy(t, marked) != 1 {
-		t.Errorf("the token's unnarrowed Mark all read: %d %s, want PUB's thread alone marked", marked.Code, strings.TrimSpace(marked.Body.String()))
+		t.Errorf("the token's unnarrowed Mark all read: %d %s, want PUB's Reply thread alone marked", marked.Code, strings.TrimSpace(marked.Body.String()))
 	}
 	if _, unread := threadMark(t, seed.database, seedAlice, hiddenThread); !unread {
 		t.Errorf("the token's unnarrowed Mark all read marked alice's PRIV thread read")
@@ -135,11 +190,14 @@ func TestAnInboxWriteNeverReachesAThreadItsCallerMayNotSee(t *testing.T) {
 	dismissed := decodeBody[struct {
 		Dismissed int `json:"dismissed"`
 	}](t, seed.request(t, caller, http.MethodPost, "/api/v1/me/inbox/dismiss", map[string]any{"dismiss_through": now()}))
-	if dismissed.Dismissed != 1 {
-		t.Errorf("the token's unnarrowed dismissal dismissed %d threads, want PUB's alone", dismissed.Dismissed)
+	if dismissed.Dismissed != 2 {
+		t.Errorf("the token's unnarrowed dismissal dismissed %d threads, want PUB's Reply thread and %s's alone", dismissed.Dismissed, pubAgent)
 	}
 	if at := threadDismissal(t, seed.database, seedAlice, hiddenThread); at != nil {
 		t.Errorf("the token's unnarrowed dismissal dismissed alice's PRIV thread at %v", *at)
+	}
+	if at := agentThreadDismissal(t, seed.database, seedAlice, agentRoots[privAgent]); at != nil {
+		t.Errorf("the token's unnarrowed dismissal dismissed alice's thread with %s at %v", privAgent, *at)
 	}
 }
 
