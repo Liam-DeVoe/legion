@@ -480,27 +480,37 @@ proc_walk_complaint() {
 # that set PR_SET_DUMPABLE to 0 (ssh-agent and gpg-agent do at their start), one whose credentials
 # changed (a login session's process that tailscaled or sshd started as root), and one with no
 # memory left (a zombie); its /proc/PID directory, its stat and its status stay its own user's.
-# SHELL_START is the start (proc_start) of this shell, $$, the run's own, and the ANCESTORs are this
-# shell's line of parents (proc_parent). A process of the run is one this shell started, or one
-# started for it, so it started after this shell. Its parent is the process that started it, or,
-# once that one ended, the nearest subreaper above it, or pid 1, which adopted it: each parent read
-# up from it is one of its ancestors, and for a process of the run every one below this shell, or
-# below the ANCESTOR that adopted it, started after this shell, so the first one older than this
-# shell is an ANCESTOR. So PID cannot carry the mark when it runs nothing (it has ended or is a
-# zombie), when it started before this shell (a devbox's own ssh-agent, gpg-agent or forward), and
-# when the first of its parents older than this shell is none of the ANCESTORs: a process that ran
+# SHELL_START is the start (proc_start) of this shell, $$, the run's own, and each ANCESTOR is one
+# of this shell's whole line of parents up to its top, as PID:START (proc_parent and proc_start;
+# procs_naming refuses a line it could not read to the top), so a pid another process has taken
+# since matches none. A process that started in the same clock tick as this shell is taken for one
+# that started after it, and a parent of the same tick for a younger one: the refusal is the side a
+# tie falls on. A process of the run is one this shell started, or one started for it, so it
+# started after this shell. Its parent is the process that started it, or, once that one ended,
+# the nearest subreaper above it, or pid 1, which adopted it: each parent read up from it is one of
+# its ancestors, and for a process of the run every one below this shell, or below the ANCESTOR
+# that adopted it, started after this shell, so the first one older than this shell is an
+# ANCESTOR, or the init of this shell's pid namespace: a shell that entered a namespace from outside
+# (`docker exec`, `kubectl exec`, a step of a GitHub Actions `container:` job) has no parent there
+# (its parent reads 0), and the run's orphans go to the namespace's init. A subreaper that is none
+# of the ANCESTORs adopts none of the run's processes, since the kernel gives an orphan only to a
+# subreaper above its own dead parent. So PID cannot carry the mark when it runs nothing (it has
+# ended or is a zombie), when it started before this shell (a devbox's own ssh-agent, gpg-agent or
+# forward), and when the first of its parents older than this shell is none of the ANCESTORs and
+# no init of a pid namespace (pid 1 here, or the last pid of its NSpid 1): a process that ran
 # outside the run before it, below which nothing inherited the run's environment (another session's
 # tool, a login session's process). Any other may: a child of the run, one double-forked away from
 # it to a reaper, as an ssh-agent the run started is, and one whose line of parents could not be
 # read to its end (a parent that ended during the read), unless it has ended since. A process of
-# another session that double-forked away during the run (a gpg-agent started for a new homedir)
-# reads as one of the run's: its parent is then a reaper too, and nothing readable tells the two
-# apart. Each process on the way is read once, its parent and its start from one read of its stat
-# (as proc_start reads it), in this shell: a devbox holds dozens of this user's zombies and
-# not-dumpable processes, and a subshell for each read doubled the time of a walk of its /proc.
+# another session that double-forked away during the run (a gpg-agent started for a new homedir),
+# or that a container's init adopted, reads as one of the run's: its parent is then a reaper too,
+# and nothing readable tells the two apart. Each process on the way is read once, its parent and
+# its start from one read of its stat (as proc_start reads it), in this shell: a devbox holds dozens
+# of this user's zombies and not-dumpable processes, and a subshell for each read doubled the time
+# of a walk of its /proc.
 unread_may_carry() {
   local pid=$1 shell=$2 at parent=$1 start='' stat ancestor i
-  local -a fields
+  local -a fields ns
   shift 2
   for ((i = 0; i < 4096; i++)); do
     stat=
@@ -513,7 +523,11 @@ unread_may_carry() {
       start=$at
       [ "$start" -ge "$shell" ] || return 1
     elif [ "$at" -lt "$shell" ]; then
-      for ancestor; do [ "$ancestor" != "$parent" ] || return 0; done
+      for ancestor; do [ "$ancestor" != "$parent:$at" ] || return 0; done
+      [ "$parent" != 1 ] || return 0
+      ns=()
+      { while read -r -a ns; do [ "${ns[0]-}" != NSpid: ] || break; ns=(); done <"/proc/$parent/status"; } 2>/dev/null || :
+      [ "${#ns[@]}" -lt 2 ] || [ "${ns[${#ns[@]} - 1]}" != 1 ] || return 0
       return 1
     fi
     parent=${fields[1]}
@@ -553,6 +567,7 @@ unread_may_carry() {
 # with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
   local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err complaint line rest shell comm unread=
+  local child child_start at lost
   # $0 is the batch's name and "$@" the patterns and the batch's entries; grep's matches go out on
   # fd 3, the walk's own output, and its complaints on stderr.
   local batch='said=$(grep -lzF "$@" 2>&1 >&3 3>&-)
@@ -622,12 +637,29 @@ exit 2'
     return 2
   fi
   if [ "${#unread_pids[@]}" -gt 0 ]; then
+    # This shell's line of parents, read to its top (a parent of 0), each parent held to a start no
+    # later than its child's. A line cut short, by a parent that ended and was reaped during the
+    # read or whose pid another process took, would take a reaper above the cut for a stranger and
+    # pass a process of the run (unread_may_carry), so the walk is then no answer.
     shell=$(proc_start "$$")
-    p=$(proc_parent "$$")
-    while [ -n "$p" ] && [ "$p" != 0 ] && [ "${#ancestors[@]}" -lt 4096 ]; do
-      ancestors+=("$p")
-      p=$(proc_parent "$p")
+    child=$$ child_start=$shell lost=
+    [ -n "$shell" ] || lost="this shell $$"
+    while [ -z "$lost" ]; do
+      p=$(proc_parent "$child")
+      [ "$p" != 0 ] || break
+      at=
+      [ -z "$p" ] || at=$(proc_start "$p")
+      if [ -z "$at" ] || [ "$at" -gt "$child_start" ] || [ "${#ancestors[@]}" -ge 4096 ]; then
+        lost="the parent ${p:-(none)} of $child"
+        break
+      fi
+      ancestors+=("$p:$at")
+      child=$p child_start=$at
     done
+    [ -z "$lost" ] || {
+      echo "procs_naming: this shell's line of parents could not be read to its end, at $lost, which ended or whose pid another process took, so this user's processes whose environment cannot be read were not checked and the processes naming $dir were not read" >&2
+      return 2
+    }
     for pid in "${unread_pids[@]}"; do
       unread_may_carry "$pid" "${shell:-0}" ${ancestors[@]+"${ancestors[@]}"} || continue
       comm=
