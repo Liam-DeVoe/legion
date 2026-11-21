@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -150,12 +151,10 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 func TestASentinelsFamilyRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
-		db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
-		store := NewPGStore(family, db)
+		store := NewPGStore(family, newMemPG())
 		if _, err := store.WriteSentinel(ctx, StoreState{Family: family, Cutover: CutoverDone}, 0); err != nil {
 			t.Fatal(err)
 		}
-		db.rows[PGSentinelKey] = pgRow{data: db.written[PGSentinelKey], revision: 1}
 		if state, err := store.State(ctx); err != nil || state.Family != family {
 			t.Fatalf("PGStore's sentinel written with the family %s read back as %+v, %v", family, state, err)
 		}
@@ -200,14 +199,14 @@ func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 	}
 	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
 		t.Run("PGStore of "+family, func(t *testing.T) {
-			db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
+			db := newMemPG()
 			store := NewPGStore(family, db)
 			sentinel := func(of string) {
-				data, err := json.Marshal(StoreState{Key: PGSentinelKey, Family: of, Cutover: CutoverDone})
+				data, err := json.Marshal(StoreState{Key: PGSentinelKey(family), Family: of, Cutover: CutoverDone})
 				if err != nil {
 					t.Fatal(err)
 				}
-				db.rows[PGSentinelKey] = pgRow{data: data, revision: 1}
+				db.rows[PGSentinelKey(family)] = pgRow{data: data, revision: 1}
 			}
 			for _, other := range append(others[family], "") {
 				sentinel(other)
@@ -236,7 +235,7 @@ func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 	}
 }
 
-// pgRow is one row of a fake PGQuerier: the record's bytes and the revision, or err.
+// pgRow is one row of memPG: the record's bytes and the revision, or err.
 type pgRow struct {
 	data     []byte
 	revision int64
@@ -257,51 +256,28 @@ func (r pgRow) Scan(dest ...any) error {
 	return nil
 }
 
-// fakePG answers every select from rows by logical name and records the record each write sends.
-type fakePG struct {
-	rows    map[string]pgRow
-	written map[string][]byte
-}
-
-func (f *fakePG) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
-	logical := args[0].(string)
-	if strings.HasPrefix(strings.TrimSpace(sql), "select") {
-		row, ok := f.rows[logical]
-		if !ok {
-			return pgRow{err: pgx.ErrNoRows}
-		}
-		return row
-	}
-	for _, arg := range args[1:] {
-		if data, ok := arg.([]byte); ok {
-			f.written[logical] = data
-		}
-	}
-	return pgRow{revision: 1}
-}
-
 // PGStore reads and writes the same self-keyed records: a write stamps the record and the sentinel
-// with their own keys, and a read refuses a row whose record is another key's or no record at all,
-// as KVStore does.
+// with their own keys, the family's (PGKey, PGSentinelKey), and a read refuses a row whose record
+// is another key's or no record at all, as KVStore does.
 func TestThePGStoreWritesAndReadsOnlySelfKeyedRecords(t *testing.T) {
 	ctx := context.Background()
-	db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
-	store := NewPGStore(DaemonFamily("legion-go"), db)
+	db := newMemPG()
+	family := DaemonFamily("legion-go")
+	store := NewPGStore(family, db)
 	if _, err := store.Write(ctx, "legion-go-CAPTURE-wake", Record{Current: "legion-go-CAPTURE-wake~A"}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteSentinel(ctx, StoreState{Family: DaemonFamily("legion-go"), Cutover: CutoverDone}, 0); err != nil {
+	if _, err := store.WriteSentinel(ctx, StoreState{Family: family, Cutover: CutoverDone}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(db.written["legion-go-CAPTURE-wake"]); !strings.Contains(got, `"key":"legion-go-CAPTURE-wake"`) {
-		t.Fatalf("the written record %s carries no key", got)
+	own := "daemon/legion-go/legion-go-CAPTURE-wake"
+	if got := string(db.rows[own].data); !strings.Contains(got, `"key":"`+own+`"`) {
+		t.Fatalf("the written record %s carries not its own key %s", got, own)
 	}
-	if got := string(db.written[PGSentinelKey]); !strings.Contains(got, `"key":"`+PGSentinelKey+`"`) {
-		t.Fatalf("the written sentinel %s carries no key", got)
+	if got := string(db.rows["envoy.sentinel/daemon/legion-go"].data); !strings.Contains(got, `"key":"envoy.sentinel/daemon/legion-go"`) {
+		t.Fatalf("the written sentinel %s carries not its own key", got)
 	}
-	db.rows["legion-go-CAPTURE-wake"] = pgRow{data: db.written["legion-go-CAPTURE-wake"], revision: 1}
-	db.rows["legion-go-other"] = pgRow{data: db.written["legion-go-CAPTURE-wake"], revision: 4}
-	db.rows[PGSentinelKey] = pgRow{data: db.written[PGSentinelKey], revision: 1}
+	db.rows[PGKey(family, "legion-go-other")] = pgRow{data: db.rows[own].data, revision: 4}
 	if record, _, err := store.Read(ctx, "legion-go-CAPTURE-wake"); err != nil || record.Current != "legion-go-CAPTURE-wake~A" {
 		t.Fatalf("control: Read of the record's own key = %+v, %v", record, err)
 	}
@@ -311,8 +287,129 @@ func TestThePGStoreWritesAndReadsOnlySelfKeyedRecords(t *testing.T) {
 	if _, _, err := store.Read(ctx, "legion-go-other"); !errors.Is(err, ErrMalformedRecord) || !strings.Contains(err.Error(), "legion-go-other") {
 		t.Fatalf("Read of a row holding another key's record = %v, want ErrMalformedRecord naming legion-go-other", err)
 	}
-	db.rows[PGSentinelKey] = pgRow{data: []byte(`{"cutover":"done"}`), revision: 2}
+	db.rows[PGSentinelKey(family)] = pgRow{data: []byte(`{"cutover":"done"}`), revision: 2}
 	if _, err := store.State(ctx); !errors.Is(err, ErrNoSentinel) {
 		t.Fatalf("State of a sentinel row carrying no key = %v, want ErrNoSentinel", err)
+	}
+}
+
+// memPG is a database of one intake_consumers table in memory, as PGStore's statements use it: a
+// select reads a row by key, an insert at revision 0 refuses a row that exists, an update writes
+// only where the row holds the revision given, and List's query reads every row its where clause
+// keeps, in key order.
+type memPG struct{ rows map[string]pgRow }
+
+func newMemPG() *memPG { return &memPG{rows: map[string]pgRow{}} }
+
+func (m *memPG) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	key := args[0].(string)
+	row, held := m.rows[key]
+	switch statement := strings.TrimSpace(sql); {
+	case strings.HasPrefix(statement, "select"):
+		if !held {
+			return pgRow{err: pgx.ErrNoRows}
+		}
+		return row
+	case strings.HasPrefix(statement, "insert"):
+		if held {
+			return pgRow{err: pgx.ErrNoRows}
+		}
+		m.rows[key] = pgRow{data: args[1].([]byte), revision: 1}
+		return pgRow{revision: 1}
+	default:
+		if !held || row.revision != args[2].(int64) {
+			return pgRow{err: pgx.ErrNoRows}
+		}
+		m.rows[key] = pgRow{data: args[1].([]byte), revision: row.revision + 1}
+		return pgRow{revision: row.revision + 1}
+	}
+}
+
+// Query answers List's query: `logical <> $1` keeps every row but the key given, and
+// `left(logical, length($1)) = $1` every row whose key begins with it.
+func (m *memPG) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+	arg := args[0].(string)
+	var keys []string
+	for key := range m.rows {
+		switch {
+		case strings.Contains(sql, "logical <> $1") && key != arg,
+			strings.Contains(sql, "left(logical, length($1)) = $1") && strings.HasPrefix(key, arg):
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return &memRows{m: m, keys: keys, at: -1}, nil
+}
+
+// memRows is memPG's answer to a query, one row of (key, record) at a time. It implements only
+// what List calls; the embedded pgx.Rows is nil, so any other call panics.
+type memRows struct {
+	pgx.Rows
+	m    *memPG
+	keys []string
+	at   int
+}
+
+func (r *memRows) Close()     {}
+func (r *memRows) Err() error { return nil }
+func (r *memRows) Next() bool { r.at++; return r.at < len(r.keys) }
+func (r *memRows) Scan(dest ...any) error {
+	*dest[0].(*string) = r.keys[r.at]
+	*dest[1].(*[]byte) = r.m.rows[r.keys[r.at]].data
+	return nil
+}
+
+// Several families' stores can share one database: several projects' daemons do. Each reads and
+// writes only its own family's sentinel, under its own key, and lists only its own family's records
+// and never a sentinel, so one project's cutover (its convert writing done to its sentinel) leaves
+// another project's fixed-mode daemon reading "not done", and each reads only its own records. A
+// record copied into one family's place from another's carries the other family's key, and is
+// malformed there. The control is the single sentinel row every store shared before: the second
+// project's sentinel could not be written beside the first's, and once the first's was written, the
+// second's daemon read it as another family's, malformed, and could never boot.
+func TestStoresOfSeveralFamiliesShareOneDatabase(t *testing.T) {
+	ctx := context.Background()
+	db := newMemPG()
+	p, q, d := NewPGStore(DaemonFamily("p"), db), NewPGStore(DaemonFamily("q"), db), NewPGStore(DispatchFamily, db)
+	for name, store := range map[string]*PGStore{"p": p, "q": q, "dispatch": d} {
+		if _, err := store.WriteSentinel(ctx, StoreState{Family: store.family}, 0); err != nil {
+			t.Fatalf("the %s store's first sentinel beside the others' = %v", name, err)
+		}
+	}
+	writes := map[*PGStore]string{p: "legion-go-p-github", q: "legion-go-q-github", d: "delivery-events"}
+	for store, logical := range writes {
+		if _, err := store.Write(ctx, logical, Record{Start: 7}, 0); err != nil {
+			t.Fatalf("write %s in the %s store = %v", logical, store.family, err)
+		}
+	}
+	// p's convert marks p's store converted.
+	if _, err := p.WriteSentinel(ctx, StoreState{Family: DaemonFamily("p"), Cutover: CutoverDone}, 1); err != nil {
+		t.Fatalf("p's convert writing done to p's sentinel = %v", err)
+	}
+	if state, err := p.State(ctx); err != nil || state.Family != DaemonFamily("p") || state.Cutover != CutoverDone {
+		t.Fatalf("p's sentinel after p's convert = %+v, %v; want p's, done", state, err)
+	}
+	for _, store := range []*PGStore{q, d} {
+		if state, err := store.State(ctx); err != nil || state.Family != store.family || state.Cutover != "" {
+			t.Fatalf("the %s store's sentinel after p's convert = %+v, %v; want its own, not done", store.family, state, err)
+		}
+	}
+	for store, logical := range writes {
+		records, err := store.List(ctx)
+		if err != nil || len(records) != 1 || records[logical].Start != 7 {
+			t.Fatalf("List of the %s store = %v, %v; want %s alone, and no sentinel", store.family, records, err, logical)
+		}
+		for other, otherLogical := range writes {
+			if other != store {
+				if _, _, err := store.Read(ctx, otherLogical); !errors.Is(err, ErrNoRecord) {
+					t.Fatalf("the %s store reading %s, the %s store's = %v; want ErrNoRecord", store.family, otherLogical, other.family, err)
+				}
+			}
+		}
+	}
+	// q's record copied whole into p's place for the same name.
+	db.rows[DaemonFamily("p")+"/legion-go-q-github"] = db.rows[DaemonFamily("q")+"/legion-go-q-github"]
+	if _, _, err := p.Read(ctx, "legion-go-q-github"); !errors.Is(err, ErrMalformedRecord) {
+		t.Fatalf("p reading q's record copied into p's place = %v; want ErrMalformedRecord", err)
 	}
 }

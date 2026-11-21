@@ -64,9 +64,11 @@ const (
 
 // Record is one logical name's selection record.
 type Record struct {
-	// Key is the store key the record belongs to: the logical name, or a durable's key
-	// (DurableKey). A store's Write sets it and its Read refuses a record whose key is not the key
-	// it read (decodeRecord), so a record of one key copied whole under another is no record there.
+	// Key is the store key the record belongs to: in the selection bucket the logical name, or a
+	// durable's key (DurableKey); in Postgres the family's key of the logical name (PGKey,
+	// <family>/<logical>). A store's Write sets it and its Read refuses a record whose key is not
+	// the key it read (decodeRecord), so a record of one key, or of another family, copied whole
+	// under another is no record there.
 	Key string `json:"key"`
 	// Current is the selected physical name, or "".
 	Current string `json:"current,omitempty"`
@@ -161,8 +163,9 @@ func DaemonFamily(project string) string { return daemonFamilyPrefix + project }
 
 // StoreState is what a store's sentinel holds.
 type StoreState struct {
-	// Key is the sentinel's own key (SentinelKey, PGSentinelKey), which the store's WriteSentinel
-	// sets and its State requires, as a record's (Record.Key).
+	// Key is the sentinel's own key (SentinelKey in the selection bucket, PGSentinelKey(family) in
+	// Postgres), which the store's WriteSentinel sets and its State requires, as a record's
+	// (Record.Key).
 	Key string `json:"key"`
 	// Family is the store's family, required: SessionFamily for the bucket's sentinel,
 	// DispatchFamily for Dispatch's store, DaemonFamily(project) for a daemon's. Key alone cannot
