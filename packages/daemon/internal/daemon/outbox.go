@@ -816,7 +816,9 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 // queued for the child (startRoot), whose own failures that row logs, a delivery row waiting for a
 // launch the wake pacing parked (parkedWait), which that launch's turn ends, and a role message a
 // pause held waiting for the role a pause stopped to hold its topic (roleMessage's wait on
-// notify.ErrNoHolder), which the role's return or an end of its debt ends (heldMessageOwed).
+// notify.ErrNoHolder), which the role's return or an end of its debt ends (heldMessageOwed), and
+// a reviewer's start held while its issue pod runs an image other than the configured one
+// (reviewerPods.check), which the pod's update round, opened by the daemon itself, ends.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
