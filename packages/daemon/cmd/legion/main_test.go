@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
@@ -900,6 +901,25 @@ func TestConfigCheckPrintsThePlanGuidance(t *testing.T) {
 		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 		want := "legion config check: plan guidance file " + guidance + " could not be read"
+		if code != 1 || !strings.HasPrefix(errb.String(), want) {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+		}
+	})
+
+	// Boot's read refuses a file over the bound, naming the key, before it writes anything, and
+	// `legion config check` makes the same refusal.
+	t.Run("a guidance file over the bound", func(t *testing.T) {
+		legionState(t)
+		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
+		guidance := filepath.Join(filepath.Dir(config), "guidance.md")
+		if err := os.WriteFile(guidance, []byte(strings.Repeat("g", configpkg.PlanGuidanceMaxBytes+1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+		want := "legion config check: plan_guidance names " + guidance + ", which holds more than"
 		if code != 1 || !strings.HasPrefix(errb.String(), want) {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 		}

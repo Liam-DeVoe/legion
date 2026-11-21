@@ -180,14 +180,41 @@ func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (st
 	return target, nil
 }
 
+// PlanGuidanceMaxBytes is the most a plan guidance file may hold. Every owner reads the whole
+// guidance at every launch, after Legion's own parts of the owner's prompt, which are about 90 KB
+// today; under Kubernetes the composed prompt travels in one launcher start frame of at most
+// shimwire.MaxFrameBytes (1 MiB) with the deployment's instructions and each arm's, and an owner
+// prompt past it is refused at every owner launch. 64 KiB keeps the guidance a small part of both,
+// about 16,000 tokens of standing text, which is far more than a guidance of a few points needs.
+const PlanGuidanceMaxBytes = 64 << 10
+
 // ReadPlanGuidance is the operator's plan guidance file (`plan_guidance`), refused naming the
 // operator's path when it is missing, unreadable, or blank: a configured file with nothing in it is
-// a misconfiguration, not an empty guidance. It writes nothing, so boot reads it with every other
-// refusal before it writes anything, and `legion config check` refuses what boot refuses.
+// a misconfiguration, not an empty guidance. A path that is not a regular file (a directory, a FIFO,
+// a device such as /dev/zero) and a file over PlanGuidanceMaxBytes are refused naming the key, so
+// boot never reads forever and no owner launch is refused for a prompt the guidance made too long.
+// It writes nothing, so boot reads it with every other refusal before it writes anything, and
+// `legion config check` refuses what boot refuses.
 func ReadPlanGuidance(path string) ([]byte, error) {
-	contents, err := os.ReadFile(path)
+	// O_NONBLOCK so that the open of a FIFO with no writer returns, and the Stat below refuses it.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("plan_guidance names %s, which is not a regular file", path)
+	}
+	contents, err := io.ReadAll(io.LimitReader(f, PlanGuidanceMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if len(contents) > PlanGuidanceMaxBytes {
+		return nil, fmt.Errorf("plan_guidance names %s, which holds more than %d bytes, the most an owner's prompt takes of it", path, PlanGuidanceMaxBytes)
 	}
 	if strings.TrimSpace(string(contents)) == "" {
 		return nil, fmt.Errorf("plan guidance file %s is empty", path)

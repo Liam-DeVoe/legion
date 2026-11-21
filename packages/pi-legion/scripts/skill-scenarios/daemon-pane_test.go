@@ -7,6 +7,8 @@ package main
 
 import (
 	"os"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -52,18 +54,29 @@ func TestTheToolRestatesTheDaemonsPlanGuidance(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	files := map[string]string{"guidance": guidance, "blank": "\n  \n", "absent": ""}
+	// Each file the daemon's read takes or refuses: a guidance, a blank one, an absent one, the
+	// largest the bound takes and one byte over it, a directory and a FIFO.
+	files := map[string]string{
+		"guidance": guidance, "blank": "\n  \n", "absent": "",
+		"largest": strings.Repeat("g", config.PlanGuidanceMaxBytes), "over": strings.Repeat("g", config.PlanGuidanceMaxBytes+1),
+	}
+	paths := map[string]string{"a directory": dir, "a FIFO": dir + "/fifo.md"}
+	if err := syscall.Mkfifo(paths["a FIFO"], 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for name, contents := range files {
-		file := dir + "/" + name + ".md"
+		paths[name] = dir + "/" + name + ".md"
 		if name != "absent" {
-			if err := os.WriteFile(file, []byte(contents), 0o600); err != nil {
+			if err := os.WriteFile(paths[name], []byte(contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
+	}
+	for name, file := range paths {
 		got, gotErr := readPlanGuidance(file)
 		want, wantErr := config.ReadPlanGuidance(file)
 		if string(got) != string(want) || (gotErr == nil) != (wantErr == nil) || (gotErr != nil && gotErr.Error() != wantErr.Error()) {
-			t.Errorf("readPlanGuidance of the %s file = %q, %v; config.ReadPlanGuidance = %q, %v", name, got, gotErr, want, wantErr)
+			t.Errorf("readPlanGuidance of %s = %q, %v; config.ReadPlanGuidance = %q, %v", name, got, gotErr, want, wantErr)
 		}
 	}
 }

@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -74,12 +76,29 @@ func TestPlanGuidanceCopyCarriesItsHeaderAndRefusesAnUnusableFile(t *testing.T) 
 		t.Fatal(err)
 	}
 	absent := filepath.Join(dir, "absent.md")
+	// The largest file the bound takes, and one byte more: every owner reads the whole guidance at
+	// every launch, and under Kubernetes it travels in the launcher's start frame.
+	largest := filepath.Join(dir, "largest.md")
+	if err := os.WriteFile(largest, []byte(strings.Repeat("g", PlanGuidanceMaxBytes)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	over := filepath.Join(dir, "over.md")
+	if err := os.WriteFile(over, []byte(strings.Repeat("g", PlanGuidanceMaxBytes+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A FIFO is read forever by a plain read with no writer: boot would never finish it.
+	fifo := filepath.Join(dir, "fifo.md")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, path, want string
 	}{
 		{name: "blank", path: blank, want: "plan guidance file " + blank + " is empty"},
 		{name: "absent", path: absent, want: "plan guidance file " + absent + " could not be read: "},
-		{name: "a directory", path: dir, want: "plan guidance file " + dir + " could not be read: "},
+		{name: "a directory", path: dir, want: "plan_guidance names " + dir + ", which is not a regular file"},
+		{name: "a FIFO", path: fifo, want: "plan_guidance names " + fifo + ", which is not a regular file"},
+		{name: "one byte over the bound", path: over, want: fmt.Sprintf("plan_guidance names %s, which holds more than %d bytes", over, PlanGuidanceMaxBytes)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ReadPlanGuidance(tc.path); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
@@ -87,4 +106,9 @@ func TestPlanGuidanceCopyCarriesItsHeaderAndRefusesAnUnusableFile(t *testing.T) 
 			}
 		})
 	}
+	t.Run("the largest file the bound takes", func(t *testing.T) {
+		if contents, err := ReadPlanGuidance(largest); err != nil || len(contents) != PlanGuidanceMaxBytes {
+			t.Fatalf("ReadPlanGuidance = %d bytes, %v; want all %d", len(contents), err, PlanGuidanceMaxBytes)
+		}
+	})
 }

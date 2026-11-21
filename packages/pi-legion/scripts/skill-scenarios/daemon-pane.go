@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -99,15 +100,35 @@ func planGuidanceCopy(project string, guidance []byte) string {
 	return "# Plan guidance of this deployment (" + project + ")\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n" + string(guidance)
 }
 
+// planGuidanceMaxBytes is this program's copy of config.PlanGuidanceMaxBytes, which a checkout
+// before the bound lacks.
+const planGuidanceMaxBytes = 64 << 10
+
 // readPlanGuidance reads a deployment's plan guidance file as the daemon's boot reads it, refusing
-// a file that cannot be read or that holds only blank lines, so the program prints no prompt that
-// no launch of the daemon is given: this program's own copy of config.ReadPlanGuidance, which a
+// a file that cannot be read, that is not a regular file, that holds more than
+// planGuidanceMaxBytes or that holds only blank lines, so the program prints no prompt that no
+// launch of the daemon is given: this program's own copy of config.ReadPlanGuidance, which a
 // checkout before the plan guidance lacks. daemon-pane_test.go holds it to the daemon's at this
 // checkout.
 func readPlanGuidance(path string) ([]byte, error) {
-	contents, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("plan_guidance names %s, which is not a regular file", path)
+	}
+	contents, err := io.ReadAll(io.LimitReader(f, planGuidanceMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if len(contents) > planGuidanceMaxBytes {
+		return nil, fmt.Errorf("plan_guidance names %s, which holds more than %d bytes, the most an owner's prompt takes of it", path, planGuidanceMaxBytes)
 	}
 	if strings.TrimSpace(string(contents)) == "" {
 		return nil, fmt.Errorf("plan guidance file %s is empty", path)
