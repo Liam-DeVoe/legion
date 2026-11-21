@@ -550,14 +550,14 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// records one.
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
-			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rig.issue.Key, HeadSHA: "head", CheckedHead: "head",
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rig.issue.Key, HeadSHA: entryRigHead, CheckedHead: entryRigHead,
 			Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request the implementer's completion is held to: %v", err)
 	}
 	implementer := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
 	applyFact(t, rig.pool, "api", "implement-complete", intake.HandoffComplete{Generation: 1, Issue: rig.issue.Key,
-		Role: claim.RoleImplementer, Claim: implementer.Claim, Summary: "implemented", Commit: "head",
+		Role: claim.RoleImplementer, Claim: implementer.Claim, Summary: "implemented", Commit: entryRigHead,
 		HandoffRecord: "implement", HandoffVersion: 1}, engine)
 	if issue := readIssue(t, rig.pool, rig.issue.Key); issue.Phase != phase.Testing {
 		t.Fatalf("the issue stands at %s after the implementer's completion, want testing: the case's own premise", issue.Phase)

@@ -516,10 +516,11 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	if err := pool.QueryRow(ctx, "select count(*) from schema_version").Scan(&recorded); err != nil {
 		t.Fatalf("count the versions recorded after the recovery: %v", err)
 	}
-	// The two deletes are the phase entry block's and the reviewed commit's way back, run before it.
-	if recorded != len(all)-2 {
-		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the two ways back each delete one version, and store.apply decides each migration on its own row",
-			recorded, len(all)-2)
+	// The three deletes are the phase entry block's, and the ways back of the reviewed commit and
+	// of the phase verdict's removal, run before it.
+	if recorded != len(all)-3 {
+		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the three ways back each delete one version, and store.apply decides each migration on its own row",
+			recorded, len(all)-3)
 	}
 }
 

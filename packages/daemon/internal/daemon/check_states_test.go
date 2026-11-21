@@ -21,6 +21,10 @@ import (
 // that reads that column runs its way back before any older one (docs/kubernetes.md).
 const phaseVerdictGoneVersion = 20261121074614
 
+// entryRigHead is the head of the pull request outbox_entry_test.go's rig records: a full commit id,
+// since a check.state_changed event names its head as one.
+const entryRigHead = "0000000000000000000000000000000000c0ffee"
+
 // testedFact is the check.state_changed event that decides a tester's completion of issue's
 // testing, and the event id the live consumer would apply it under: k1, the head's one check, yes
 // from the tester where passes, and no for a fail where not, at head, or at the head of the pull
