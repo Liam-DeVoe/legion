@@ -179,10 +179,13 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 		if err := json.Unmarshal(body, &page); err != nil {
 			return lg, fmt.Errorf("%s events after %d: %w", key, after, err)
 		}
-		for _, raw := range page {
+		for i, raw := range page {
 			ev, err := parseReplayEvent(raw)
 			if err != nil {
-				return lg, fmt.Errorf("%s events after %d: %w", key, after, err)
+				// The decoder's error can quote the value it could not read (time.Time's does): the
+				// words of Dispatch, or of whatever answers in its place, which can echo the bearer.
+				// The error names the event's place in the page, and none of it.
+				return lg, fmt.Errorf("%s events after %d: event %d of the page is not an event replay-fetch reads", key, after, i+1)
 			}
 			lg.Events = append(lg.Events, ev)
 		}
@@ -228,7 +231,9 @@ func versionAt(versions []listedVersion, at time.Time) (listedVersion, bool) {
 }
 
 // docText reads a document version's markdown: ok is false when Dispatch will not serve it (any
-// non-2xx but 401 and 403 once retries are spent), which is cached as <n>.unreadable.
+// non-2xx but 401 and 403 once retries are spent), which is cached as <n>.unreadable. id is
+// Dispatch's word (a listing's or an event's), which an error names only in Dispatch's shape
+// (shownID).
 func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, bool, error) {
 	dir := filepath.Join(f.raw, "versions", id)
 	okPath := filepath.Join(dir, strconv.Itoa(n)+".json")
@@ -257,7 +262,7 @@ func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, 
 		Markdown *string `json:"markdown"`
 	}
 	if err := json.Unmarshal(body, &v); err != nil {
-		return nil, false, fmt.Errorf("artifact %s version %d: %w", id, n, err)
+		return nil, false, fmt.Errorf("artifact %s version %d: %w", shownID(id), n, err)
 	}
 	if v.Markdown == nil {
 		return nil, false, nil
@@ -524,11 +529,12 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 	return counts, writeFileAtomic(filepath.Join(out, bundleMetaFile), append(metaJSON, '\n'))
 }
 
-// issueNumber is the integer after the dash of a project's issue key.
+// issueNumber is the integer after the dash of a project's issue key. A key that is not one of the
+// project's is Dispatch's listing's, named only in an issue key's shape (shownKey).
 func issueNumber(project, key string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimPrefix(key, project+"-"))
 	if err != nil || !strings.HasPrefix(key, project+"-") || n < 1 {
-		return 0, fmt.Errorf("issue key %q is not %s-<number>", key, project)
+		return 0, fmt.Errorf("issue key %s is not %s-<number>", shownKey(key), project)
 	}
 	return n, nil
 }

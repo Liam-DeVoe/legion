@@ -417,8 +417,11 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 				return err
 			}
 			var listing []listedArtifact
+			// The key is the event's word and the listing Dispatch's, or the words of whatever
+			// answers in its place: the key is named only in an issue key's shape, and none of
+			// the listing, whose decoder's error can quote a time it could not read.
 			if err := json.Unmarshal(body, &listing); err != nil {
-				return fmt.Errorf("%s artifacts: %w", k, err)
+				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", shownKey(k))
 			}
 			for _, la := range listing {
 				if la.Primary {
@@ -790,8 +793,10 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 				if err != nil || !ok {
 					return refused(err)
 				}
+				// The id is the anchor's word and the answer Dispatch's: the id is named only in
+				// Dispatch's shape, and none of the answer, whose decoder's error can quote a time.
 				if err := json.Unmarshal(meta, &la); err != nil {
-					return fmt.Errorf("artifact %s: %w", id, err)
+					return fmt.Errorf("artifact %s: the answer is not the shape replay-fetch reads", shownID(id))
 				}
 			}
 			cur := 0
@@ -810,7 +815,7 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 			}
 			var served []servedBlock
 			if err := json.Unmarshal(body, &served); err != nil {
-				return fmt.Errorf("artifact %s blocks: %w", id, err)
+				return fmt.Errorf("artifact %s blocks: %w", shownID(id), err)
 			}
 			bm, bad := buildBlockMap(cur, markdown, served)
 			outOfRange.Add(int64(bad))

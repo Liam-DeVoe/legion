@@ -356,11 +356,15 @@ const (
 	evPrefixUserState = "user_state."
 )
 
-// decodePayload decodes one event's payload, naming the event and its type in the error.
+// decodePayload decodes one event's payload, naming the event and its type in the error: the type
+// only where it is one this package names (shownEventType), and none of the payload, since a
+// decoder's error can quote the value it could not read (time.Time's does). An event replay-fetch
+// reads is Dispatch's words, or the words of whatever answers in its place, which can echo the
+// bearer.
 func decodePayload[T any](ev replayEvent) (T, error) {
 	var v T
 	if err := json.Unmarshal(ev.Payload, &v); err != nil {
-		return v, fmt.Errorf("event %d (%s): %w", ev.ID, ev.Type, err)
+		return v, fmt.Errorf("event %d (%s): its payload is not the shape this reads for its type", ev.ID, shownEventType(ev.Type))
 	}
 	return v, nil
 }

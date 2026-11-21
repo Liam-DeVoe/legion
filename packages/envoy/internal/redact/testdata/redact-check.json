@@ -5750,6 +5750,55 @@
       "production": "(*github.com/sjawhar/envoy/loadtest.replaySeeder).mapIssue: a created key that is not the bundle's named only in an issue key's shape (shownKey)"
     },
     {
+      "id": "loadtest-answer-members-event-page",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEventThatDoesNotDecodeNamesNoneOfIt",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog: an event that does not decode is named by its place in the page, never by the decoder's error"
+    },
+    {
+      "id": "loadtest-answer-members-event-payload",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnEventPayloadThatDoesNotDecodeNamesNoneOfIt",
+      "production": "loadtest decodePayload: an event's type named only where the package names it (shownEventType), and no decoder's error of its payload"
+    },
+    {
+      "id": "loadtest-answer-members-created-spec",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACreatedIssuesListingNamesNoneOfItsWords",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).createdSpecs: an event's issue key named only in an issue key's shape (shownKey), and no decoder's error of the listing"
+    },
+    {
+      "id": "loadtest-answer-members-anchored-meta",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/meta",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchBlockMaps: an anchor's document id named only in Dispatch's shape (shownID), and no decoder's error of its artifact answer"
+    },
+    {
+      "id": "loadtest-answer-members-anchored-version",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/version",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).docText: a document id named only in Dispatch's shape (shownID)"
+    },
+    {
+      "id": "loadtest-answer-members-anchored-blocks",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/blocks",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchBlockMaps: a document id whose blocks do not decode named only in Dispatch's shape (shownID)"
+    },
+    {
+      "id": "loadtest-answer-members-listed-key",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListedKeyThatIsNotTheProjectsNamesNoneOfIt",
+      "production": "loadtest issueNumber: a listed key that is not the project's named only in an issue key's shape (shownKey)"
+    },
+    {
       "id": "cireconcile-answer-words-errors",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cireconcile",
@@ -8397,6 +8446,41 @@
       "site": "loadtest replay-seed mapIssue: the key Dispatch's issue create names, decoded into a plain string, printed raw when it is not the bundle's",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-replay-key"
+    },
+    {
+      "site": "loadtest replay-fetch fetchLog: an event that did not decode printed the decoder's error, which quoted a time the answer echoed the bearer into",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-event-page"
+    },
+    {
+      "site": "loadtest decodePayload: an event's type, decoded into a plain string, and the decoder's error of its payload, which quoted a time, printed raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-event-payload"
+    },
+    {
+      "site": "loadtest replay-fetch createdSpecs: an event's issue key, decoded into a plain string, and the decoder's error of the issue's listing printed raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-created-spec"
+    },
+    {
+      "site": "loadtest replay-fetch fetchBlockMaps: an anchor's document id, decoded into a plain string, and the decoder's error of its artifact answer printed raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-anchored-meta"
+    },
+    {
+      "site": "loadtest replay-fetch docText: a document id, decoded into a plain string, printed raw when its version does not decode",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-anchored-version"
+    },
+    {
+      "site": "loadtest replay-fetch fetchBlockMaps: a document id, decoded into a plain string, printed raw when its blocks do not decode",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-anchored-blocks"
+    },
+    {
+      "site": "loadtest replay-fetch issueNumber: a listed issue key, decoded into a plain string, quoted raw when it is not the project's",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-listed-key"
     },
     {
       "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",
