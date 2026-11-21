@@ -413,7 +413,10 @@ exit 2`
     expect(unreadable.out).toBe("run_processes 0\nstop_marked_processes 0\n");
     expect(unreadable.named).toContain(String(marked));
     expect(await gone(marked)).toBe(true);
-  }
+  },
+  // A guard on a hang only: its four sweeps walk eight times, which overran Bun's 5 s default at
+  // load 1,751 (13.1 s), and every wait of its harness has a bound of its own.
+  60_000
 );
 
 // unreadablePy READY MODE [GO] is a python3 whose /proc/<pid>/environ is root's, so this user's
