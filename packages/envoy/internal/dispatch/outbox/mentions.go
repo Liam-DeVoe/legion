@@ -331,14 +331,19 @@ func (d mentionDeliveries) decidesCopyFor(sessionID string) bool {
 //
 // Where this read could name no holder for that attempt's role, and the attempt is within
 // unnamedForwardBound of its creation (unpinnedRoleMentions.owedWithinTheForwardsBound), the copy
-// waits (creditWaits): it stays in the event's list, sends nothing, holds its key against the
-// owner's later events, and the event is read again (destinations.waitForCredits, planChains).
-// By then the sender has pinned the session, and the attempt counts under it as any of that
-// session's own attempts does (model.MentionSessionSQL): the session it is pinned to is kept, and
-// takes the copy under that mention's key should the send fail, and every other credit is left
-// out. The wait is the one a role route's forward no key stands for takes, and no longer: a
-// sender that is alive holds its attempt pending for as long as its lane is held, and a copy that
-// waits holds the owner's later events from that session.
+// waits (creditWaits): it waits outside the event's list, sends nothing and holds nothing, and the
+// event is read again (destinations.waitForCredits). By then the sender has pinned the session,
+// and the attempt counts under it as any of that session's own attempts does
+// (model.MentionSessionSQL): the session it is pinned to is kept, and takes the copy under that
+// mention's key should the send fail, and every other credit is left out. The wait is the one a
+// role route's forward no key stands for takes, and no longer: a sender that is alive holds its
+// attempt pending for as long as its lane is held. Unlike that forward's, this wait holds none of
+// the owner's later events back from the session - not a copy in the outbox's chains, and not a
+// later comment's mention of that session or that comment's fallback row (planChains, owedKeys,
+// model.MentionCopyHolderSQL) - so a copy the wait keeps can reach the session after them: what
+// the rule decides is whether the session gets the copy, not the order it arrives in, as for the
+// comment's edit (editCreditCopyOf). That is the architect's ruling in round 10 of
+// dispatch://INFRA-3686.
 //
 // Past that bound, and where this read resolved the attempt's role to a session - another one, or
 // this one with the attempt past its lease: a claim can move between this read and the sender's

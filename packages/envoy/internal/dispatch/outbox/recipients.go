@@ -511,11 +511,12 @@ func registryUnanswered(err error) bool {
 // keeping the fallback row the pass publishes when it fails (destinations.leftTo). A session the
 // comment may yet name - an attempt that names no session yet is still to be sent, and its
 // sender may pin it to that session - is neither: where the batch could name no holder for that
-// attempt's role and the attempt is within unnamedForwardBound, its copy waits in the event's
-// list until the sender has pinned the attempt, and is decided then (creditWaits); past that
-// bound, or where the batch resolved the role to another session, or to this one with the attempt
-// past its lease, the copy is held as a fallback row that the pass publishes only should the
-// attempt be pinned to that session and fail (creditHeldAsARow, mentionDeliveries.creditCopyOf).
+// attempt's role and the attempt is within unnamedForwardBound, its copy waits outside the
+// event's list, holding nothing of the owner's later events, until the sender has pinned the
+// attempt, and is decided then (creditWaits); past that bound, or where the batch resolved the
+// role to another session, or to this one with the attempt past its lease, the copy is held as a
+// fallback row that the pass publishes only should the attempt be pinned to that session and fail
+// (creditHeldAsARow, mentionDeliveries.creditCopyOf).
 // The comment's edit follows the comment's copy: it reaches such a session where that session's
 // mention failed, and waits while that mention, or the comment's copy that follows it, is still
 // to be decided, within that same bound and holding nothing of the owner's later events; past
@@ -544,9 +545,9 @@ const (
 	creditKept
 	// creditWaits: a mention of the comment that is still to settle, or still to name a session,
 	// decides whether that session gets the copy. The copy makes no send this read and the event
-	// is read again; a new comment's stays in the event's list marked waiting and holds its key
-	// against the owner's later events, and an edit's waits outside the list and holds nothing
-	// (destinations.waitForCredits, destination.waiting, planChains).
+	// is read again; a new comment's copy, like an edit's, waits outside the list and holds
+	// nothing, so none of the owner's later events waits on it (destinations.waitForCredits,
+	// planChains).
 	creditWaits
 	// creditHeldAsARow: an attempt of the comment that names no session yet still owes a send,
 	// past the bound the copy waits such an attempt out for, or with its role resolved to another

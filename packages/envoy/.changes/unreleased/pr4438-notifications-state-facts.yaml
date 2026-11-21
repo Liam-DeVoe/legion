@@ -16,9 +16,10 @@ body: |-
   is owed, the reply through a failed mention, and to no other session that only a document
   credits. A session that gets the reply only later, once a role's mention pinned to it fails, gets
   every earlier edit of the reply right after the reply, so it never keeps the reply's first words;
-  a session that does not get the reply gets no edit of it. A copy of the edit that waits holds back
-  none of the issue's later events, so a person's later comment reaches that session without
-  waiting for the edit. A copy kept for a session that only a document credits no longer holds a
-  later reply back from that session once it claims the issue or the issue is routed to it.
+  a session that does not get the reply gets no edit of it. A copy of the reply, or of its edit,
+  that waits to learn whether such a mention names that session holds back none of the issue's
+  later events, so a person's later comment reaches that session without waiting for either. A
+  copy kept for a session that only a document credits no longer holds a later reply back from
+  that session once it claims the issue or the issue is routed to it.
   Dispatch fetches the identity token it presents to the listener within the call's own window, so
   a metadata server that does not answer no longer holds a registry read past that window.
