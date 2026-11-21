@@ -1,7 +1,7 @@
 // Command browsertype types into Dispatch documents as browsers do, so a load test can run
 // concurrent browser edits beside the agents it drives over HTTP. It connects peers to each
 // document's websocket room as a person of its own, named in the server's identity header (a
-// server run with DISPATCH_IDENTITY=header:<name> and DISPATCH_IDENTITY_HEADER_TRUSTED=1, as a load
+// server run with DISPATCH_IDENTITY=header:X-Dispatch-User and DISPATCH_IDENTITY_HEADER_TRUSTED=1, as a load
 // test's stack is: the room admits a person alone, never an agent token), and each peer, once it
 // holds the room's document, sends keystroke updates at a set rate: most type one character into an
 // existing paragraph's text, some replace a short range (an insert and a delete in one
@@ -126,7 +126,7 @@ func parseFlags(args []string) (config, error) {
 	var rawURL, artifactsFile string
 	var artifacts, protect stringList
 	flags.StringVar(&rawURL, "url", "", "Dispatch base URL, http(s)://host:port; peers connect to <url>/ws/doc/<artifact>")
-	flags.StringVar(&cfg.identityHeader, "identity-header", "X-Dispatch-User", "the header the server's DISPATCH_IDENTITY=header:<name> reads a person from")
+	flags.StringVar(&cfg.identityHeader, "identity-header", "X-Dispatch-User", "the header the peers name their person in; a server run with DISPATCH_IDENTITY=header:X-Dispatch-User reads X-Dispatch-User alone")
 	flags.StringVar(&cfg.person, "person", "browsertype", "login prefix of the people the peers are: peer n of every document is <person>-<n>")
 	flags.Var(&artifacts, "artifact", "document artifact id to type into (repeatable)")
 	flags.StringVar(&artifactsFile, "artifacts-file", "", "file of document artifact ids, one per line (blank lines and lines starting with # skipped); adds to -artifact")

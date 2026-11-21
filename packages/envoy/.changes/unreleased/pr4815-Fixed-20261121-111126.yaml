@@ -9,9 +9,11 @@ body: |-
   client that gave up waiting closes the same way: a request the web page abandoned at its
   30-second deadline, or a proxy timed out, also logs `499`, and its `elapsed_ms` (about `30000`
   for the page) tells a slow request from a page that moved on. A cancel or a deadline that
-  Dispatch made itself is still a `500` with its `ERROR` line. A request whose person a header
-  identity names, and whose person could not be recorded, no longer writes that header's email to
-  the `ERROR` line.
+  Dispatch made itself is still a `500` with its `ERROR` line. Header identity, which tests and
+  local harnesses use, now reads `X-Dispatch-User` alone: `DISPATCH_IDENTITY=header:<name>` with
+  any other name is refused at boot, so a credential header such as `Authorization` or `Cookie`
+  can never be read as a person and reach the log. A request whose person could not be recorded
+  no longer writes the person's email to the `ERROR` line.
 time: 2026-11-21T11:11:26Z
 custom:
     Issue: pr4815
