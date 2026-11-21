@@ -303,7 +303,7 @@ func TestTheHoldJournal(t *testing.T) {
 		for i, w := range []holdrecord.Workflow{holdrecord.WorkflowCutover, holdrecord.WorkflowRollback,
 			holdrecord.WorkflowSelectionRecovery, holdrecord.WorkflowBucketsCreate, holdrecord.WorkflowBucketsRecreate,
 			holdrecord.WorkflowBucketsRestore, holdrecord.WorkflowStreamsUpdate, holdrecord.WorkflowHubRestore,
-			holdrecord.WorkflowStreamsCensus} {
+			holdrecord.WorkflowStreamsCensus, holdrecord.WorkflowEnroll} {
 			holdID := "h-order-" + strconv.Itoa(i)
 			prepare(t, c, holdID, w, twoDisks)
 			// hold set's own check refused in held: its stop entry ends its intent with no done.
@@ -773,5 +773,94 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 		run(t, c, "h-oneclaim", cmd("streams census"), nil, nil)
 		release(t, c, "h-oneclaim")
+	})
+}
+
+// cmdEnroll is enroll's command, as the enroll workflow's table names it.
+const cmdEnroll = "consumer-names enroll"
+
+// enrollStopped is an enroll hold whose enroll was admitted and whose own check refused: its
+// stop entry, with a reason, ends its intent.
+func enrollStopped(t *testing.T, c *holdrecord.Client, holdID string) {
+	t.Helper()
+	ctx := context.Background()
+	hold(t, c, holdID, holdrecord.WorkflowEnroll, nil)
+	if w, err := c.Admit(ctx, holdID, cmd(cmdEnroll), map[string]string{"daemon": "P"}); err != nil || w != holdrecord.WorkflowEnroll {
+		t.Fatalf("Admit of %s = %q, %v", cmdEnroll, w, err)
+	}
+	if err := c.AppendStop(ctx, holdID, cmdEnroll, "the store holds a checkpoint"); err != nil {
+		t.Fatalf("%s's stop entry: %v", cmdEnroll, err)
+	}
+}
+
+// A refused enroll leaves its hold releasable, on the broker's own routes over Postgres: its stop
+// changed nothing outside the journal (the table's stopLeavesNothing), so a record holding no
+// entry but hold set's and enroll's, ending in its stop, admits hold release. Control: with the
+// flag removed the same release is refused ErrOutOfOrder, as a stopped convert's still is, so the
+// flag is what admits it and it is enroll's alone. A stopped enroll is admitted again, and its
+// done entry completes the record in the same write, with hold_gen the row's gen.
+func TestAnEnrollStopLeavesTheHoldReleasable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a stopped enroll leaves hold release admitted", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		enrollStopped(t, c, "h-enroll-stop")
+		if d, _ := journal(t, c, "h-enroll-stop"); d.Complete {
+			t.Fatal("enroll's stop entry completed the record")
+		}
+		release(t, c, "h-enroll-stop")
+		if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
+			t.Fatalf("after hold release the row is %s", after.Phase)
+		}
+	})
+
+	t.Run("control: without stopLeavesNothing the same release is refused", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		enrollStopped(t, c, "h-enroll-control")
+		holdrecord.WithoutEnrollStopLeavesNothing(func() {
+			_, err := c.Admit(ctx, "h-enroll-control", cmd(holdrecord.CommandRelease), nil)
+			refused(t, "hold release after a stopped enroll, the flag removed", err, holdrecord.ErrOutOfOrder, "the record is not complete")
+		})
+		// The flag restored, the same record admits it.
+		release(t, c, "h-enroll-control")
+	})
+
+	t.Run("a stopped convert keeps today's rule: hold release is refused", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-convert-stop", holdrecord.WorkflowCutover, nil)
+		if _, err := c.Admit(ctx, "h-convert-stop", cmd("convert"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStop(ctx, "h-convert-stop", "convert", "no safe start for K"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := c.Admit(ctx, "h-convert-stop", cmd(holdrecord.CommandRelease), nil)
+		refused(t, "hold release after a stopped convert", err, holdrecord.ErrOutOfOrder, "the record is not complete")
+	})
+
+	t.Run("a stopped enroll runs again, and its done entry completes the record with hold_gen", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		enrollStopped(t, c, "h-enroll-done")
+		if _, err := c.Admit(ctx, "h-enroll-done", cmd(cmdEnroll), map[string]string{"daemon": "P"}); err != nil {
+			t.Fatalf("Admit of %s after its stop: %v", cmdEnroll, err)
+		}
+		held := row(t, c)
+		_, gen := journal(t, c, "h-enroll-done")
+		if err := c.AppendDone(ctx, "h-enroll-done", cmdEnroll, map[string]string{"family": "daemon/P"}); err != nil {
+			t.Fatalf("%s's done entry: %v", cmdEnroll, err)
+		}
+		d, after := journal(t, c, "h-enroll-done")
+		if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != held.Gen || after != gen+1 || e.Command != cmdEnroll ||
+			e.State != "done" {
+			t.Fatalf("after enroll's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
+				d.Complete, d.HoldGen, held.Gen, after, gen, e)
+		}
+		_, err := c.Admit(ctx, "h-enroll-done", cmd(cmdEnroll), nil)
+		refused(t, "enroll after its done entry", err, holdrecord.ErrAlreadyDone, "complete")
+		release(t, c, "h-enroll-done")
 	})
 }

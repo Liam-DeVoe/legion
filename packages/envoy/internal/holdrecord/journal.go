@@ -20,6 +20,9 @@ const (
 	WorkflowStreamsUpdate     Workflow = "streams-update"
 	WorkflowHubRestore        Workflow = "hub-restore"
 	WorkflowStreamsCensus     Workflow = "streams-census"
+	// WorkflowEnroll enrols a store made after the window: its one command, `consumer-names
+	// enroll`, writes the store's marker and the family's broker cutover record.
+	WorkflowEnroll Workflow = "enroll"
 )
 
 // Operation is one journal entry. State is `intent`, `done` or `stop`. An `intent` entry carries

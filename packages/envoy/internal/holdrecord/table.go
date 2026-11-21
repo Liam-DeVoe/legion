@@ -22,14 +22,18 @@ type rules struct {
 	ConvertStoppable             bool // convert's stop for a name with no safe start ends its intent, so replay is admitted
 	PrepareMarksUnresolved       bool // restore --prepare marks a name with no start and goes on; restore --finish stops
 	CompletionSurvivesRowRestore bool // release does not compare hold_gen, so a row restored by RestoreRow can release
+	Enroll                       bool // the enroll workflow, whose one command enrols a store made after the window
+	EnrollStopLeavesNothing      bool // a stopped enroll, which changed nothing outside the journal, does not count against unchanged
+	EnrollStopsBeforeItsWrites   bool // enroll stops only before this hold's writes; after them a refusal leaves its intent for its rerun
 }
 
-// currentRules are the hold's rules as its design stands (the model's v62): every fix, with no
-// account move.
-var currentRules = rules{Name: "v62", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
+// currentRules are the hold's rules as its design stands (the model's v63): every fix, with no
+// account move, and the enroll workflow.
+var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true}
+	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, Enroll: true, EnrollStopLeavesNothing: true,
+	EnrollStopsBeforeItsWrites: true}
 
 var current = tableFor(currentRules)
 
@@ -41,6 +45,9 @@ type entry struct {
 	repeatable bool
 	stoppable  bool
 	epochal    bool
+	// stopLeavesNothing is a command whose stop entry changed nothing outside the journal, so its
+	// entries, when they end in that stop, do not count against unchanged: enroll's alone.
+	stopLeavesNothing bool
 }
 
 // table is one rule set's workflow table and rules.
@@ -74,7 +81,7 @@ func tableFor(r rules) table {
 		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
 		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop})
-	return table{Rules: r, rows: map[Workflow][]entry{
+	rows := map[Workflow][]entry{
 		WorkflowCutover:           cut,
 		WorkflowRollback:          rb,
 		WorkflowSelectionRecovery: sr,
@@ -84,7 +91,14 @@ func tableFor(r rules) table {
 		WorkflowStreamsUpdate:     {{name: "streams update", final: true}},
 		WorkflowStreamsCensus:     {{name: "streams census", final: true}},
 		WorkflowHubRestore:        hub,
-	}}
+	}
+	if r.Enroll {
+		// Final and not Repeatable: after its done entry only hold release is admitted. A stopped or
+		// crashed enroll is admitted again, since Decide refuses only a command with a done entry.
+		rows[WorkflowEnroll] = []entry{{name: "consumer-names enroll", final: true, stoppable: stop,
+			stopLeavesNothing: r.EnrollStopLeavesNothing}}
+	}
+	return table{Rules: r, rows: rows}
 }
 
 func (t table) row(w Workflow, c string) (entry, bool) {
@@ -98,8 +112,12 @@ func (t table) row(w Workflow, c string) (entry, bool) {
 
 // Workflows returns the table's workflows, in the design's order.
 func (t table) Workflows() []Workflow {
-	return []Workflow{WorkflowCutover, WorkflowRollback, WorkflowSelectionRecovery, WorkflowBucketsCreate, WorkflowBucketsRecreate,
+	out := []Workflow{WorkflowCutover, WorkflowRollback, WorkflowSelectionRecovery, WorkflowBucketsCreate, WorkflowBucketsRecreate,
 		WorkflowBucketsRestore, WorkflowStreamsUpdate, WorkflowHubRestore, WorkflowStreamsCensus}
+	if t.Rules.Enroll {
+		out = append(out, WorkflowEnroll)
+	}
+	return out
 }
 
 // Commands is the table's Commands.
@@ -165,7 +183,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 		}
 	}
 	if c == CommandRelease {
-		if d.Complete || t.unchanged(d.Ops) {
+		if d.Complete || t.unchanged(w, d.Ops) {
 			return nil
 		}
 		return wrap(ErrOutOfOrder, "the record is not complete")
@@ -229,11 +247,20 @@ func (t table) Decide(d Done, req modelRequest) error {
 }
 
 // unchanged reports whether the record shows nothing changed: no entry but hold release's own,
-// which a crashed release leaves, and, with SetCommand, hold set's, whose restart and barrier
-// change no stored data.
-func (t table) unchanged(ops []Operation) bool {
+// which a crashed release leaves, with SetCommand hold set's, whose restart and barrier change no
+// stored data, and the entries of a stopLeavesNothing command (enroll) that ends in its stop and
+// has no done entry: its stop comes before any write it makes outside the journal, so it changed
+// nothing. Every other command keeps the rule: convert and hold abort count however they ended.
+func (t table) unchanged(w Workflow, ops []Operation) bool {
+	latest := map[string]string{}
 	for _, o := range ops {
-		if o.Command != CommandRelease && !(t.Rules.SetCommand && o.Command == CommandSet) {
+		latest[o.Command] = o.State
+	}
+	for _, o := range ops {
+		switch e, _ := t.row(w, o.Command); {
+		case o.Command == CommandRelease, t.Rules.SetCommand && o.Command == CommandSet:
+		case e.stopLeavesNothing && latest[o.Command] == stateStop && !hasDone(ops, o.Command):
+		default:
 			return false
 		}
 	}

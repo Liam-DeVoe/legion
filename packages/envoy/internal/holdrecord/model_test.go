@@ -17,6 +17,13 @@ package holdrecord
 // of targets, its done entry records those alone, and the step-1 map is what hold set's reads gave
 // it.
 //
+// The record each admission reads holds every entry the code writes that a decision reads: each
+// done entry, each pending intent, and the intent and stop entries of a command whose latest
+// entry is its stop and which has no done entry, which hold release's unchanged rule counts. In
+// enroll the store or the stream may hold what enroll refuses, which no step of the hold removes,
+// and enroll's writes outside the journal, the store's marker and the family's broker cutover
+// record, are one step, since its rerun writes whatever a crash left missing.
+//
 // It explores every reachable state breadth-first, for every workflow, with two operator
 // processes. An admission is what the code does: with AtomicAdmit, one compare-and-swap step that
 // decides and writes the intent, and without it, a read that decides and a later write of the
@@ -32,12 +39,16 @@ package holdrecord
 //     done entry and no command's intent is pending (but hold release's own, and hold abort's
 //     after a done prove, whose one effect, the row move, has not happened while the row is held);
 //   - hub-restore's safety: abort never releases over a restored disk, and a disk is judged only by
-//     its step-1 id as recorded, and never against a target the step-1 map lacks.
+//     its step-1 id as recorded, and never against a target the step-1 map lacks;
+//   - enroll's stop leaves nothing: the row is never released on a record that is not complete
+//     while enroll's writes outside the journal exist.
 //
 // The current rules must find no counterexample, and every earlier rule set and every rule set
 // with one fix removed must find a counterexample of each class it names, which the test asserts
-// by the class's name. The state and counterexample counts are those the frozen model gave, so a
-// port that changed what the model explores fails here too.
+// by the class's name. The state and counterexample counts are frozen, so a port that changed
+// what the model explores fails here too: the rule sets that write no stop entry are the frozen
+// v62 model's, and the others were measured when v63 added the enroll workflow and the record's
+// stop entries.
 
 import (
 	"errors"
@@ -64,25 +75,27 @@ var oneHubProcess = map[string]bool{"v49": true, "v49+Step1Recorded": true, "v52
 
 // The counterexample classes. A control names the classes its run must find.
 const (
-	classTwoWrites   = "ITEM-1 (admission and intent as two writes: a command admitted before the completion writes its intent after it, and the hold is stranded)"
-	classTwoRun      = "ITEM-1 (two commands past their intent at once)"
-	classOutside     = "ITEM-1 (the row is released while another command runs)"
-	classPending     = "NEW-P (complete while another command's intent is pending)"
-	classStop        = "STOP (a refusal without a stop entry leaves an intent that no command can end)"
-	classAbortDone   = "the gate on v49 (abort's done entry before its row move)"
-	classAbortCrash  = "the gate on v49 (a crash between abort's done entry and its row move)"
-	classR27A        = "R27-A ("
-	classR27ASel     = "R27-A (selection-recovery's second cycle: replay --final cannot run again)"
-	classR27CReread  = "R27-C (step 1's disk ids are re-read, not recorded)"
-	classR27CNoProve = "R27-C (no correct prove can pass against a re-read step 1)"
-	classR27E        = "R27-E (a restore lands after a prove's check or its done entry)"
-	classR27F        = "R27-F (a logical name with no start needs restore --key, which the table does not name)"
-	classR28ASet     = "R28-A (hold set is no command: a crash between its writes, or a command run during its restart, strands the hold)"
-	classR28AConv    = "R28-A (convert stops for a name with no safe start, and ErrBusy refuses the replay that gives it one)"
-	classR28APrep    = "R28-A (restore --prepare stops for a name with no start, and restore --key requires its done entry)"
-	classR28B        = "R28-B (a restore on a target the latest prove did not name, after completion: no prove is admitted)"
-	classR28C        = "R28-C (a row restored after completion: release's hold_gen check refuses for good)"
-	classR28H        = "R28-H (a disk judged against a target the step-1 map lacks)"
+	classTwoWrites      = "ITEM-1 (admission and intent as two writes: a command admitted before the completion writes its intent after it, and the hold is stranded)"
+	classTwoRun         = "ITEM-1 (two commands past their intent at once)"
+	classOutside        = "ITEM-1 (the row is released while another command runs)"
+	classPending        = "NEW-P (complete while another command's intent is pending)"
+	classStop           = "STOP (a refusal without a stop entry leaves an intent that no command can end)"
+	classAbortDone      = "the gate on v49 (abort's done entry before its row move)"
+	classAbortCrash     = "the gate on v49 (a crash between abort's done entry and its row move)"
+	classR27A           = "R27-A ("
+	classR27ASel        = "R27-A (selection-recovery's second cycle: replay --final cannot run again)"
+	classR27CReread     = "R27-C (step 1's disk ids are re-read, not recorded)"
+	classR27CNoProve    = "R27-C (no correct prove can pass against a re-read step 1)"
+	classR27E           = "R27-E (a restore lands after a prove's check or its done entry)"
+	classR27F           = "R27-F (a logical name with no start needs restore --key, which the table does not name)"
+	classR28ASet        = "R28-A (hold set is no command: a crash between its writes, or a command run during its restart, strands the hold)"
+	classR28AConv       = "R28-A (convert stops for a name with no safe start, and ErrBusy refuses the replay that gives it one)"
+	classR28APrep       = "R28-A (restore --prepare stops for a name with no start, and restore --key requires its done entry)"
+	classR28B           = "R28-B (a restore on a target the latest prove did not name, after completion: no prove is admitted)"
+	classR28C           = "R28-C (a row restored after completion: release's hold_gen check refuses for good)"
+	classR28H           = "R28-H (a disk judged against a target the step-1 map lacks)"
+	classEnrollStranded = "ENROLL-STOP (a stopped enroll counts against release's unchanged rule: a store enroll refuses strands the hold)"
+	classEnrollWrites   = "ENROLL-WRITES (enroll stops after this hold's writes, and hold release moves the row over them as unchanged)"
 )
 
 // modelProfile is a rule set and the classes its run must find: none for the current rules, and
@@ -127,6 +140,9 @@ func modelProfiles() []modelProfile {
 		{"ConvertStoppable", func(r *rules) { r.ConvertStoppable = false }, []string{classR28AConv}},
 		{"PrepareMarksUnresolved", func(r *rules) { r.PrepareMarksUnresolved = false }, []string{classR28APrep}},
 		{"CompletionSurvivesRowRestore", func(r *rules) { r.CompletionSurvivesRowRestore = false }, []string{classR28C}},
+		// Enroll is a workflow, not a fix, so no control removes it; these two remove its rules.
+		{"EnrollStopLeavesNothing", func(r *rules) { r.EnrollStopLeavesNothing = false }, []string{classEnrollStranded}},
+		{"EnrollStopsBeforeItsWrites", func(r *rules) { r.EnrollStopsBeforeItsWrites = false }, []string{classEnrollWrites}},
 	} {
 		r := currentRules
 		r.Name = currentRules.Name + "-" + a.name
@@ -201,10 +217,13 @@ type modelState struct {
 	ProvenSet  int    // the targets the latest done prove names
 	Intent     string
 	Complete   bool
-	HoldGen    int  // the row's gen at completion
-	RowGen     int  // the row restores so far
-	Unresolved bool // rollback: a logical name with no start, which only restore --key resolves
-	NoStart    bool // cutover: a cohort member with no safe start, which only replay --key resolves
+	HoldGen    int    // the row's gen at completion
+	RowGen     int    // the row restores so far
+	Unresolved bool   // rollback: a logical name with no start, which only restore --key resolves
+	NoStart    bool   // cutover: a cohort member with no safe start, which only replay --key resolves
+	Stopped    string // the commands whose latest entry is a stop and which have no done entry, but hold set and hold release
+	Found      bool   // enroll: the store or the stream holds what enroll refuses, which no step of the hold removes
+	Enrolled   bool   // enroll: this hold's marker and cutover record are written
 	Cur        [2]modelDisk
 	Step1      [2]modelDisk
 	Restores   int
@@ -308,8 +327,9 @@ type modelOp struct {
 
 const (
 	cmdSet          = CommandSet
-	cmdAbortPrepare = "hold abort (prepare)" // hold abort from prepare: it deletes the cohort and moves the row, and writes no entry
-	cmdSnapRestore  = "snapshot restore"     // v59's first hub-restore command, written by hold set's process
+	cmdAbortPrepare = "hold abort (prepare)"  // hold abort from prepare: it deletes the cohort and moves the row, and writes no entry
+	cmdSnapRestore  = "snapshot restore"      // v59's first hub-restore command, written by hold set's process
+	cmdEnroll       = "consumer-names enroll" // enroll's one command
 )
 
 var targets = []string{"A", "B"}
@@ -364,6 +384,10 @@ func scenarios(r rules) []modelScenario {
 		{Name: "streams-update", W: WorkflowStreamsUpdate, Slots: slots, Init: []modelState{prep}, Ops: ops("streams update")},
 		{Name: "streams-census", W: WorkflowStreamsCensus, Slots: slots, Init: []modelState{prep}, Ops: ops("streams census")},
 	}
+	if r.Enroll {
+		out = append(out, modelScenario{Name: "enroll", W: WorkflowEnroll, Slots: slots,
+			Init: []modelState{prep, {Row: 'P', Found: true}}, Ops: ops(cmdEnroll)})
+	}
 	hub := modelScenario{Name: "hub-restore", W: WorkflowHubRestore, Hub: true, Slots: hubSlots,
 		Ops: []modelOp{{CommandProve, 1}, {CommandProve, 2}, {CommandProve, 3}, {cmd: "streams census"}, {cmd: CommandAbort},
 			{cmd: CommandRelease}}}
@@ -378,6 +402,9 @@ func scenarios(r rules) []modelScenario {
 // package are the state's.
 func toDone(sc modelScenario, s modelState) Done {
 	d := Done{Workflow: sc.W, Complete: s.Complete}
+	for _, c := range list(s.Stopped) { // no decision reads where they stand
+		d.Ops = append(d.Ops, Operation{Command: c, State: stateIntent}, Operation{Command: c, State: stateStop})
+	}
 	done := func(c string, out map[string]string) {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateDone, Outputs: out})
 	}
@@ -644,6 +671,7 @@ func admit(r rules, sc modelScenario, s modelState, k int, o modelOp) modelEdge 
 
 func writeIntent(s modelState, c string) modelState {
 	s.Intent = addSet(s.Intent, c)
+	s.Stopped = delSet(s.Stopped, c)
 	if c != CommandRelease {
 		s.Complete = false
 	}
@@ -685,6 +713,9 @@ func refuse(r rules, t modelTable, sc modelScenario, s modelState, k int, why st
 	ns := idle(s, k)
 	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
 		ns.Intent = delSet(ns.Intent, c)
+		if c != CommandSet && c != CommandRelease && !inSet(s.Ever, c) {
+			ns.Stopped = addSet(ns.Stopped, c)
+		}
 		return modelEdge{to: ns, label: c + ": " + why + ", stop entry", op: true}
 	}
 	suffix := ""
@@ -708,6 +739,28 @@ var transient = map[string]string{
 	"create-bucket":              "stops as UNKNOWN, the bucket's configuration or content is not this hold's",
 	"create-bucket --after-loss": "stops, the inputs or the bucket are not the selection record's",
 	"restore --finish":           "refuses, a server's id is still the one restore --prepare recorded",
+}
+
+// enrollCheck is enroll's check and its writes outside the journal. A store or a stream that holds
+// what enroll refuses (Found) makes it stop, naming it. Otherwise it writes the store's marker and
+// the family's broker cutover record, or finds them, this hold's, after a crash; before those
+// writes its check may also refuse for a cause its rerun can pass, and it stops. After them, with
+// EnrollStopsBeforeItsWrites, such a refusal writes no stop entry and leaves its intent pending,
+// so only its rerun is admitted, which finishes what the crash began.
+func enrollCheck(r rules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
+	c := s.Slots[k].Cmd
+	if s.Found {
+		return []modelEdge{refuse(r, t, sc, s, k, "stops, the store or the stream holds what it names", false)}
+	}
+	wrote := s
+	wrote.Enrolled = true
+	wrote.Slots[k].Step++
+	out := []modelEdge{{to: wrote, label: c + ": marker and cutover record written", op: true}}
+	if !s.Enrolled || !r.EnrollStopsBeforeItsWrites {
+		return append(out, refuse(r, t, sc, s, k, "stops, its check refuses", true))
+	}
+	return append(out, modelEdge{to: idle(s, k), label: c + ": UNKNOWN after this hold's writes, its intent pending for its rerun",
+		op: true})
 }
 
 func setStep(r rules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
@@ -826,6 +879,9 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 		if u == "" && othersRunning(ns, k) {
 			u = "the row is released while another command runs"
 		}
+		if u == "" && ns.Enrolled && !ns.Complete {
+			u = "the row is released as unchanged over enroll's writes"
+		}
 		return ns, u
 	}
 	reread := func() string {
@@ -865,6 +921,8 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 	case !sc.Hub:
 		if sl.Step == 1 {
 			switch {
+			case c == cmdEnroll:
+				return enrollCheck(r, t, sc, s, k)
 			case c == "restore --finish" && s.Unresolved:
 				return []modelEdge{refuse(r, t, sc, s, k, "stops, a name has no start", false)}
 			case c == "restore --prepare" && s.Unresolved && !r.PrepareMarksUnresolved:
@@ -1147,8 +1205,22 @@ func classifyR28(r rules, sc modelScenario, kind string, s modelState, trace []s
 	return ""
 }
 
+// classifyEnroll names the classes of the enroll workflow's rules, and "" for any other.
+func classifyEnroll(r rules, sc modelScenario, kind string, s modelState) string {
+	switch {
+	case kind == "the row is released as unchanged over enroll's writes":
+		return classEnrollWrites
+	case kind == "liveness" && sc.W == WorkflowEnroll && !r.EnrollStopLeavesNothing && s.Found:
+		return classEnrollStranded
+	}
+	return ""
+}
+
 func classify(r rules, sc modelScenario, kind string, s modelState, trace []string) string {
 	if c := classifyR28(r, sc, kind, s, trace); c != "" {
+		return c
+	}
+	if c := classifyEnroll(r, sc, kind, s); c != "" {
 		return c
 	}
 	switch {
@@ -1334,6 +1406,8 @@ func startLabel(sc modelScenario, s modelState) string {
 		l += ", a logical name with no start"
 	case s.NoStart:
 		l += ", a cohort member with no safe start"
+	case s.Found:
+		l += ", a store enroll refuses"
 	case sc.Hub:
 		l += ", a hub"
 	}
@@ -1482,59 +1556,63 @@ func (m modelRun) found(want string) int {
 	return n
 }
 
-// modelCount is a rule set's run as the frozen model counted it at bound 2: its states and its
-// counterexamples, and, for a control, how many it found of each class it names.
+// modelCount is a rule set's run as frozen at bound 2: its states and its counterexamples, and,
+// for a control, how many it found of each class it names.
 type modelCount struct {
 	states, counterexamples int
 	classes                 map[string]int
 }
 
-// frozenBound2 is the frozen model's run at bound 2 (its run-bound2.out), one row per rule set.
+// frozenBound2 is the model's run at bound 2, one row per rule set: v49 to v53, which write no
+// stop entry, as the frozen v62 model counted them (its run-bound2.out), and the rest as v63
+// measured them once the record held the stop entries and the enroll workflow was added.
 var frozenBound2 = map[string]modelCount{
 	"v49":                              {117021, 80869, map[string]int{classAbortDone: 5139}},
 	"v49+Step1Recorded":                {140075, 67585, map[string]int{classR27E: 392}},
 	"v52":                              {89187, 43878, map[string]int{classR27CNoProve: 3520}},
 	"v53":                              {251235, 27688, map[string]int{classTwoWrites: 2112}},
 	"v53-PendingBlocksComplete":        {263970, 45099, map[string]int{classPending: 2961}},
-	"v59":                              {124894, 43017, map[string]int{classR28ASet: 28604, classR28B: 384}},
-	"v62":                              {31948, 0, nil},
-	"v62-Step1Recorded":                {20164, 7052, map[string]int{classR27CReread: 552}},
-	"v62-ProveEpochs":                  {22000, 2304, map[string]int{classR27E: 2304}},
-	"v62-AbortMoveBeforeDone":          {39760, 734, map[string]int{classAbortDone: 734}},
-	"v62-AfterCompleteStrict":          {33370, 1422, map[string]int{classR27A: 1422}},
-	"v62-SelRecFinalRepeatable":        {31678, 297, map[string]int{classR27ASel: 297}},
-	"v62-RestoreKeyInTable":            {31585, 123, map[string]int{classR27F: 123}},
-	"v62-AtomicAdmit":                  {286517, 67661, map[string]int{classTwoWrites: 67661}},
-	"v62-Serialize":                    {135471, 86280, map[string]int{classTwoRun: 60724}},
-	"v62-StopEntries":                  {30975, 1995, map[string]int{classStop: 1995}},
-	"v62-SetCommand":                   {39130, 8294, map[string]int{classR28ASet: 7590}},
-	"v62-Step1Whole":                   {113110, 7380, map[string]int{classR28H: 7380}},
-	"v62-ExpectedMap":                  {28204, 864, map[string]int{classR28B: 864}},
-	"v62-ConvertStoppable":             {31990, 90, map[string]int{classR28AConv: 90}},
-	"v62-PrepareMarksUnresolved":       {31831, 45, map[string]int{classR28APrep: 45}},
-	"v62-CompletionSurvivesRowRestore": {31534, 1035, map[string]int{classR28C: 1035}},
+	"v59":                              {229743, 90738, map[string]int{classR28ASet: 66047, classR28B: 512}},
+	"v63":                              {47693, 0, nil},
+	"v63-Step1Recorded":                {24911, 8912, map[string]int{classR27CReread: 822}},
+	"v63-ProveEpochs":                  {28653, 3360, map[string]int{classR27E: 3360}},
+	"v63-AbortMoveBeforeDone":          {57825, 1202, map[string]int{classAbortDone: 1202}},
+	"v63-AfterCompleteStrict":          {49115, 1422, map[string]int{classR27A: 1422}},
+	"v63-SelRecFinalRepeatable":        {47423, 297, map[string]int{classR27ASel: 297}},
+	"v63-RestoreKeyInTable":            {47141, 141, map[string]int{classR27F: 141}},
+	"v63-AtomicAdmit":                  {561371, 130706, map[string]int{classTwoWrites: 130696}},
+	"v63-Serialize":                    {208241, 135113, map[string]int{classTwoRun: 96669}},
+	"v63-StopEntries":                  {31704, 2040, map[string]int{classStop: 2040}},
+	"v63-SetCommand":                   {65173, 16568, map[string]int{classR28ASet: 15800}},
+	"v63-Step1Whole":                   {180923, 13080, map[string]int{classR28H: 13080}},
+	"v63-ExpectedMap":                  {42701, 1152, map[string]int{classR28B: 1152}},
+	"v63-ConvertStoppable":             {46985, 90, map[string]int{classR28AConv: 90}},
+	"v63-PrepareMarksUnresolved":       {47519, 45, map[string]int{classR28APrep: 45}},
+	"v63-CompletionSurvivesRowRestore": {47174, 1292, map[string]int{classR28C: 1292}},
+	"v63-EnrollStopLeavesNothing":      {47579, 57, map[string]int{classEnrollStranded: 57}},
+	"v63-EnrollStopsBeforeItsWrites":   {47741, 12, map[string]int{classEnrollWrites: 12}},
 }
 
-// The current rules' runs as the frozen model counted them, by workflow (run-bound2.out and
-// run-bound3.out).
+// The current rules' runs by workflow, as v63 measured them at bound 2 and at bound 3.
 var (
-	frozenCurrentBound2 = map[string]int{"cutover": 3622, "rollback": 1348, "selection-recovery": 1652, "buckets-create": 476,
-		"buckets-recreate": 476, "buckets-restore": 476, "streams-update": 476, "streams-census": 482, "hub-restore": 22940}
-	frozenCurrentBound3 = map[string]int{"cutover": 4908, "rollback": 1842, "selection-recovery": 2253, "buckets-create": 651,
-		"buckets-recreate": 651, "buckets-restore": 651, "streams-update": 651, "streams-census": 657, "hub-restore": 127548}
+	frozenCurrentBound2 = map[string]int{"cutover": 4372, "rollback": 1573, "selection-recovery": 1652, "buckets-create": 476,
+		"buckets-recreate": 476, "buckets-restore": 476, "streams-update": 476, "streams-census": 482, "hub-restore": 36713,
+		"enroll": 997}
+	frozenCurrentBound3 = map[string]int{"cutover": 5922, "rollback": 2148, "selection-recovery": 2253, "buckets-create": 651,
+		"buckets-recreate": 651, "buckets-restore": 651, "streams-update": 651, "streams-census": 657, "hub-restore": 208854,
+		"enroll": 1368}
 )
 
 // The model of the hold's workflows, run on this package's journal and table, finds no
-// counterexample under the current rules, at two crashes and restores per run (31,948 states) and
-// at three (139,812), and at every state of hub-restore the package's Step1, Proven, Epoch,
+// counterexample under the current rules, at two crashes and restores per run (47,693 states) and
+// at three (223,806), and at every state of hub-restore the package's Step1, Proven, Epoch,
 // Expected and Moved read the record as the model does. Every earlier rule set and every rule set
 // with one fix removed is a control: each must find a counterexample of each class it names,
-// asserted by the class's name, and every count must be the frozen model's, so a change to the
-// table or to Decide that the model would catch fails here, and so does a port that explores
-// otherwise.
+// asserted by the class's name, and every count must be the frozen one, so a change to the table
+// or to Decide that the model would catch fails here, and so does a port that explores otherwise.
 func TestTheHoldJournalModel(t *testing.T) {
-	if currentRules.Name != "v62" {
-		t.Fatalf("the current rules are %q, and the frozen counts below are v62's", currentRules.Name)
+	if currentRules.Name != "v63" {
+		t.Fatalf("the current rules are %q, and the frozen counts below are v63's", currentRules.Name)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {
 		for _, c := range append([]string{CommandSet, CommandRelease}, Commands(w)...) {
@@ -1592,11 +1670,11 @@ func TestTheHoldJournalModel(t *testing.T) {
 			}
 		})
 	}
-	t.Run("v62 at bound 3", func(t *testing.T) {
+	t.Run("v63 at bound 3", func(t *testing.T) {
 		t.Parallel()
 		got := runModel(currentRules, 3)
-		if got.states != 139812 || got.total != 0 {
-			t.Errorf("the current rules at bound 3: %d states and %d counterexamples, and the frozen model 139812 and 0", got.states, got.total)
+		if got.states != 223806 || got.total != 0 {
+			t.Errorf("the current rules at bound 3: %d states and %d counterexamples, and the frozen model 223806 and 0", got.states, got.total)
 		}
 		for w, n := range frozenCurrentBound3 {
 			if got.byWorkflow[w] != n {

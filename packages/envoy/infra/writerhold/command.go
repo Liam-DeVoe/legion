@@ -277,6 +277,7 @@ func workflows() []string {
 		string(holdrecord.WorkflowCutover), string(holdrecord.WorkflowRollback), string(holdrecord.WorkflowSelectionRecovery),
 		string(holdrecord.WorkflowBucketsCreate), string(holdrecord.WorkflowBucketsRecreate), string(holdrecord.WorkflowBucketsRestore),
 		string(holdrecord.WorkflowStreamsUpdate), string(holdrecord.WorkflowHubRestore), string(holdrecord.WorkflowStreamsCensus),
+		string(holdrecord.WorkflowEnroll),
 	}
 }
 
