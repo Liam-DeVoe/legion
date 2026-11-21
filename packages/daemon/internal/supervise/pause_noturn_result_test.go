@@ -5,14 +5,16 @@ package supervise
 // answers that end that wait with no turn run is a decision of its own: the result that says no
 // turn ran and a late refusal with no turn running are charged as a failed prompt (promptFailed,
 // chargePrompt), and the answer of a prompt whose wait for its turn had already run out takes back
-// the confirmation that turn took for it (waitedOutAnswer). Before each ran the pause's stop
-// (stopAtResult), nothing else did: the turn was over, so no turn's end was coming, and the copy's
-// end runs only a stop whose wait for it has begun (endTurnCopyWait). The pause then never stopped
-// the role.
+// the confirmation a turn took for it, or nothing where no turn confirmed the task
+// (waitedOutAnswer). Before each ran the pause's stop (stopAtResult), nothing else did: the turn
+// was over, so no turn's end was coming, and the copy's end runs only a stop whose wait for it has
+// begun (endTurnCopyWait). The pause then never stopped the role.
 
 import (
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // pauseHeldForANoTurnResult is a claim in a turn of a task, whose project's pause holds its stop
@@ -145,13 +147,9 @@ func TestAWaitedOutPromptsNoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOve
 	stopsOnceAfterTheCopy(t, h, copies)
 }
 
-// The answer of a waited-out prompt that finds the task unconfirmed (waitedOutAnswer's last
-// branch) never meets a pause's stop held for its result: such a stop is held for the end of a turn
-// that ran while the prompt was outstanding, and the one start that could leave the task
-// unconfirmed then, a start naming the prompt's own id, which the task has moved off, is dropped
-// at the fence. The claim stays in no turn, so the pause's stop that reaches it runs at once and
-// holds nothing for the answer; a start naming no delivery confirms the task, as the test above
-// shows.
+// A turn start naming the prompt whose wait for its turn ran out, an id the task has moved off, is
+// dropped at the fence: the claim stays in no turn and the task unconfirmed, so a pause's stop that
+// reaches the claim then runs at once and holds nothing for that prompt's answer.
 func TestATurnStartNamingAWaitedOutPromptLeavesNoPausesStopWaitingForItsAnswer(t *testing.T) {
 	h, flag, _ := pauseHarness(t, queuedClaim())
 	h.reach(StateReady)
@@ -174,4 +172,44 @@ func TestATurnStartNamingAWaitedOutPromptLeavesNoPausesStopWaitingForItsAnswer(t
 	if c := h.claim(); c.State != StateSuspended || c.SuspensionHeld {
 		t.Fatalf("the claim after the pause's stop is %s holding a stop = %t, want it suspended at once with nothing held for the prompt's answer", c.State, c.SuspensionHeld)
 	}
+}
+
+// A busy answer to a later send of the task takes the task back unconfirmed under a new id while
+// the prompt whose wait ran out is still outstanding, and records the claim working for the turn
+// the agent named (promptResulted, recordBusyTurn). A pause's stop held over that turn waits at its
+// end for that earlier prompt's result. Its answer, saying it ran no turn, finds the task
+// unconfirmed and nothing more to take back (waitedOutAnswer's last branch), and it ends the
+// pause's wait as the other no-turn answers do: the stop begins its wait for the copy of the turn's
+// end, and the copy's end runs it.
+//
+// The control is waitedOutAnswer's last branch without noTurnAnswered: no wait for the copy
+// begins, the copy's end runs nothing, and the test fails at the stop it wants once the copy ended.
+func TestAWaitedOutPromptsAnswerAfterABusyAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) {
+	copies := &turnEndCopies{}
+	h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd = copies.start })
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	var first string
+	waitedOut(t, h, &first)
+	// The next trigger sends the task again under its new id, and Oh My Pi answers that send busy.
+	h.observe(runtime.Alive)
+	later := h.wantPrompts(2)[1].DeliveryID
+	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: later, AgentInvoked: false, Error: busyAnswer}); err != nil {
+		t.Logf("the busy answer answered %v", err)
+	}
+	h.wantState(StateWorking)
+	if !h.pending().ConfirmedAt.IsZero() {
+		t.Fatal("the busy answer left the task confirmed, want it taken back unconfirmed")
+	}
+	pausesStop(t, h, flag)()
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if started := copies.started(); len(started) != 1 {
+		t.Fatalf("the turn's end started %d copies, want one", len(started))
+	}
+
+	if err := h.handle(noTurnResult(h, first)); err != nil {
+		t.Logf("the waited-out prompt's answer answered %v", err)
+	}
+
+	stopsOnceAfterTheCopy(t, h, copies)
 }

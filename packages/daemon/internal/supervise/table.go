@@ -2395,11 +2395,12 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // While another prompt is outstanding, the turn and the read mark are that prompt's, and nothing
 // moves. Otherwise only the mark goes, where the answer says the prompt was never read, as a
 // refusal of the prompt that set it always took it (markUnread). read says whether the agent may
-// have read it, as promptFailed's does: a busy answer or a refusal was never read. No project
-// pause's stop waits for this answer there (stopWaitsForResult): such a stop is held for the end of
-// a turn that ran while this prompt was outstanding, and every start of a turn the machine takes
-// then confirms a task no turn confirmed — the fence drops a start naming another delivery, and
-// beginTurn counts the outstanding prompt as in flight — so the answer meets that stop above.
+// have read it, as promptFailed's does: a busy answer or a refusal was never read. That answer can
+// be the one a project pause's stop held for a turn's end waits for (stopWaitsForResult) — a busy
+// answer to a later send of the task took the task back unconfirmed while this prompt was still
+// outstanding, and the claim was recorded working for the turn the agent named — and the stop
+// then runs as it does after the other no-turn answers (noTurnAnswered). The task can also stand
+// confirmed here with a send of it in flight, whose own answer decides it.
 //
 // busy is whether the answer is Oh My Pi's busy answer (agentBusy): the agent is in a prompt now,
 // so this is one more of the places the daemon learns that its session is busy, and a ready or
@@ -2443,12 +2444,12 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 	m.log.Info("supervise: a prompt whose wait for its turn ran out was answered with no turn; it was charged when the wait ran out, so nothing more is charged",
 		"delivery", id, "why", why)
 	if read {
-		return nil
+		return m.noTurnAnswered(ctx, nil)
 	}
 	if record {
-		return errors.Join(m.markUnread(ctx), m.recordBusyTurn(ctx))
+		return m.noTurnAnswered(ctx, errors.Join(m.markUnread(ctx), m.recordBusyTurn(ctx)))
 	}
-	return m.markUnread(ctx)
+	return m.noTurnAnswered(ctx, m.markUnread(ctx))
 }
 
 // noTurnAnswered ends a decision on an answer of a prompt of the task that says no turn ran: err
@@ -2456,9 +2457,10 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 // outstanding, the answer has ended the wait of a project pause's stop for the prompt's result
 // (stopWaitsForResult), and that stop runs here (stopAtResult), which does nothing unless such a
 // stop stands over an idle claim. Its callers are the result that says no turn ran and a late
-// refusal with no turn running, each charged first (promptFailed). The answer of a prompt whose
-// wait for its turn had run out decides between that stop and the turn's own aftermath itself
-// (waitedOutAnswer).
+// refusal with no turn running, each charged first (promptFailed), and the answer of a prompt
+// whose wait for its turn had run out that takes back no confirmation (waitedOutAnswer), which was
+// charged when that wait ran out. Where the answer takes a confirmation back, waitedOutAnswer
+// decides between that stop and the turn's own aftermath itself.
 func (m *Machine) noTurnAnswered(ctx context.Context, err error) error {
 	if err != nil || m.awaitsResult() {
 		return err
