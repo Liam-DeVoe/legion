@@ -225,10 +225,7 @@
       {
         "file": "packages/envoy/cmd/cipher/secret_signal_linux.go",
         "function": "github.com/sjawhar/envoy/cmd/cipher.sigaction",
-        "operands": [
-          "*github.com/sjawhar/envoy/cmd/cipher.linuxSigaction",
-          "unsafe.Pointer"
-        ],
+        "operands": ["*github.com/sjawhar/envoy/cmd/cipher.linuxSigaction", "unsafe.Pointer"],
         "why": "rt_sigaction's struct, passed to the system call by address"
       },
       {
@@ -282,6 +279,20 @@
         "operands": [],
         "records_boxes": true,
         "why": "Answer.Decode's walk of the value a caller decodes an answer into: it reaches each RemoteText as a *RemoteText and hands it the answer's record through WithoutTokens, descending into no box and reading no box's storage"
+      },
+      {
+        "file": "packages/daemon/internal/store/storetext/strings.go",
+        "function": "github.com/sjawhar/legion/daemon/internal/store/storetext.holdsChange",
+        "operands": [],
+        "exported_fields_only": true,
+        "why": "Strings' check of a value the daemon stores for a string the store's text rule changes: it copies strings into the store and prints none, and reads exported fields alone, so no box's storage; an external error type's exported fields stay reachable to what the store keeps"
+      },
+      {
+        "file": "packages/daemon/internal/store/storetext/strings.go",
+        "function": "github.com/sjawhar/legion/daemon/internal/store/storetext.cleaned",
+        "operands": [],
+        "exported_fields_only": true,
+        "why": "Strings' copy of a value the daemon stores with the store's text rule applied to its strings: it copies strings into the store and prints none, and reads exported fields alone, so no box's storage; an external error type's exported fields stay reachable to what the store keeps"
       }
     ],
     "external_errors": ["golang.org/x/oauth2.RetrieveError"],
@@ -2076,6 +2087,21 @@
         "file": "packages/envoy/internal/redact/oauth2.go",
         "callee": "(golang.org/x/oauth2.TokenSource).Token",
         "why": "BoundTokenSource's own call of the source it holds: Token immediately reads its error with the fresh scope record, and prints no error text itself"
+      },
+      {
+        "file": "packages/envoy/internal/tlsalert/tlsalert.go",
+        "callee": "(interface).Unwrap",
+        "why": "In's walk down an error's chain, which reads each error's type and a *net.OpError's Op and prints none of them: it answers whether the chain holds a TLS alert"
+      },
+      {
+        "file": "packages/daemon/internal/tlsalert/tlsalert.go",
+        "callee": "(interface).Unwrap",
+        "why": "In's walk down an error's chain, which reads each error's type and a *net.OpError's Op and prints none of them: it answers whether the chain holds a TLS alert"
+      },
+      {
+        "file": "packages/envoy/cmd/cipher/secret_aws_failure.go",
+        "callee": "(interface).Unwrap",
+        "why": "errorChain, the AWS failure's walk down an error's chain, which prints no link's text: its callers read each link's type, print only an AWS error code of the closed sets ssoSessionCodes and awsCodes (awsSSOWords), and compare a link's whole text with words of the SDK's own (sdkSaid)"
       }
     ],
     "required": [

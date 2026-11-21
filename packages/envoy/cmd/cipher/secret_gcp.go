@@ -596,7 +596,7 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 	if err := b.signIn(ctx); err != nil {
 		return nil, err
 	}
-	client, err := gcpClientDial(ctx, b.storeCredentials(), b.storeInterceptor)
+	client, err := gcpClientDial(ctx, b.storeCredentials(ctx), b.storeInterceptor)
 	if err != nil {
 		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
 	}
@@ -613,27 +613,31 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 // gRPC prints that error into the call's status message with %v, so by the time a form prints the
 // store's error the body is text no redaction can tell apart; the status code stays gRPC's. The
 // other sources' token sources fail in this program's own words already: gcloudToken's,
-// googleidentity's, and a lent token that never refreshes. b.creds itself is unchanged, so
-// gcpUserinfo still classifies a refused refresh by its RetrieveError.
-func (b *gcpBackend) storeCredentials() *google.Credentials {
-	tokens := b.creds.TokenSource
+// googleidentity's, and a lent token that never refreshes. Each source in the chain is behind the
+// boundary (redact.TokenSource), and the universe domain the client signs for is b.creds's, read
+// once here under a scope. b.creds itself is unchanged, so gcpUserinfo still classifies a refused
+// refresh by its RetrieveError.
+func (b *gcpBackend) storeCredentials(ctx context.Context) *google.Credentials {
+	tokens := redact.TokenSource(b.creds.TokenSource)
 	if b.source == sourceCredentialsFile || b.source == sourceWellKnownFile {
-		tokens = redactedTokens{tokens}
+		tokens = redact.TokenSource(redactedTokens{tokens})
 	}
-	b.tokens = &storeTokens{TokenSource: tokens}
+	b.tokens = &storeTokens{source: tokens}
+	s := redact.Scope[string](ctx)
+	domain, err := redact.OAuth2(s.Read(b.creds.GetUniverseDomain()))
 	return &google.Credentials{
-		ProjectID: b.creds.ProjectID, TokenSource: b.tokens, JSON: b.creds.JSON,
-		UniverseDomainProvider: b.creds.GetUniverseDomain,
+		ProjectID: b.creds.ProjectID, TokenSource: redact.TokenSource(b.tokens), JSON: b.creds.JSON,
+		UniverseDomainProvider: func() (string, error) { return domain, err },
 	}
 }
 
 // redactedTokens is a token source whose failure is its class alone (redact.Class), as text that
 // wraps nothing: an error that still wrapped the *oauth2.RetrieveError would be turned back into
 // one that prints the token endpoint's body (storeCredentials).
-type redactedTokens struct{ oauth2.TokenSource }
+type redactedTokens struct{ source *redact.BoundTokenSource }
 
 func (s redactedTokens) Token() (*oauth2.Token, error) {
-	token, err := s.TokenSource.Token()
+	token, err := s.source.Token()
 	if err != nil {
 		return nil, errors.New("fetch an access token with the credentials file: " + redact.Class(err).Error())
 	}

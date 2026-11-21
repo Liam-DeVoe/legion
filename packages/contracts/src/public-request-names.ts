@@ -132,6 +132,12 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   },
   {
     place: "field",
+    name: "dedupe_key",
+    source:
+      "POST /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): the idempotency key the listener's stream recognises a repeat of the message under",
+  },
+  {
+    place: "field",
     name: "role",
     source:
       "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for",

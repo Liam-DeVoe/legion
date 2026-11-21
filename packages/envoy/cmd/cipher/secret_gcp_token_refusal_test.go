@@ -36,11 +36,12 @@ import (
 // sign-in whose token endpoint refuses the refresh invalid_grant with words that quote a URL
 // carrying a credential, fails, and nothing it prints holds the credential: the Secret Manager
 // client asks the credentials' token source for a token as it makes its first call, and the
-// refusal reaches the command inside that call's error, as the auth library prints a refused
-// token ("cannot fetch token: 400", then the answer's body). The token endpoint is asked, and the
-// refusal is named, so the row cannot pass on a command that failed before it reached the client.
-// The process is the command's own so the SDK's proxy and root certificate caches, each read once
-// per process, read this row's environment.
+// refusal reaches the command inside that call's error, either as the auth library prints a
+// refused token ("cannot fetch token: 400", then the answer's body) or as the store's failure
+// names it in this program's words (storeFailure: "the server answered HTTP 400 invalid_grant").
+// The token endpoint is asked, and the refusal is named, so the row cannot pass on a command that
+// failed before it reached the client. The process is the command's own so the SDK's proxy and
+// root certificate caches, each read once per process, read this row's environment.
 func TestASecretManagerCallsTokenRefusalPrintsNoneOfItsWords(t *testing.T) {
 	binary := buildAgentSecrets(t)
 
@@ -110,7 +111,8 @@ func TestASecretManagerCallsTokenRefusalPrintsNoneOfItsWords(t *testing.T) {
 	if err == nil {
 		t.Fatalf("secret list under refused credentials succeeded:\n%s", out)
 	}
-	if asked.Load() == 0 || !strings.Contains(string(out), "cannot fetch token: 400") {
+	named := strings.Contains(string(out), "cannot fetch token: 400") || strings.Contains(string(out), "the server answered HTTP 400 invalid_grant")
+	if asked.Load() == 0 || !named {
 		t.Fatalf("secret list did not fail on the token endpoint's refusal (asked %d times, deadline: %v):\n%s", asked.Load(), ctx.Err(), out)
 	}
 	redacttest.RequireNone(t, "agent-secrets.secret-manager-token", string(out))

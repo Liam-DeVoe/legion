@@ -37,15 +37,19 @@ import (
 var echoedCredentialFields = []string{"client_secret", "refresh_token", "device_code", "subject_token"}
 
 // proxyEcho is a stand-in for whatever answers in a Google service's or a token endpoint's place:
-// it answers status with an HTML page that shows each credential the request carried bare on a
-// line of its own (the Authorization header's value after its scheme, a form field's value), so
-// only a redaction of that very token can hide it, and then the request whole: its request line,
-// its headers and its body. It keeps each credential it showed.
+// it answers status with an HTML page that names itself (echoPage), shows each credential the
+// request carried bare on a line of its own (the Authorization header's value after its scheme, a
+// form field's value), so only a redaction of that very token can hide it, and then the request
+// whole: its request line, its headers and its body. It keeps each credential it showed.
 type proxyEcho struct {
 	status int
 	mu     sync.Mutex
 	shown  []string
 }
+
+// echoPage is the line a proxyEcho's page opens its text with, which an error that quotes the page
+// holds and one that prints none of it does not.
+const echoPage = "this page shows the request it answers"
 
 func (e *proxyEcho) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
@@ -65,7 +69,7 @@ func (e *proxyEcho) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e.shown = append(e.shown, bare...)
 	e.mu.Unlock()
 	var page strings.Builder
-	page.WriteString("<html><head><title>Bad Gateway</title></head><body><h1>Bad Gateway</h1><pre>\n")
+	page.WriteString("<html><head><title>Bad Gateway</title></head><body><h1>Bad Gateway</h1><pre>\n" + echoPage + "\n")
 	for _, credential := range bare {
 		page.WriteString(credential + "\n")
 	}
@@ -89,8 +93,10 @@ func (e *proxyEcho) credentials() []string {
 }
 
 // assertNamedWithoutCredentials fails the row when err's text holds any of bare (the credentials
-// the page showed on lines of their own) or of others, or, where the rule read the page and printed
-// it (it did not print redact.WordsNotReadable in its place), redacts fewer places than bare holds.
+// the page showed on lines of their own) or of others, or, where the error quotes the page (it holds
+// echoPage) and the rule printed it (not redact.WordsNotReadable in its place), redacts fewer
+// places than bare holds. An error that prints none of the page, as a refusal printed by its status
+// and registered code alone does (redact.Answered), has no place to redact.
 // bare must not be empty: a row that saw none could not have failed. It captures err's text under
 // capture and fails a credential it holds with `REDACT-ASSERT <capture>`, the check's designated
 // assertion (redacttest.Capture); each credential carries -RDX-, the check's marker for them.
@@ -109,7 +115,7 @@ func assertNamedWithoutCredentials(t *testing.T, capture string, err error, bare
 			t.Errorf("REDACT-ASSERT %s: the error carries the credential %q the request sent:\n%s", capture, credential, printed)
 		}
 	}
-	if n := strings.Count(printed, "[redacted]"); n < len(bare) && !strings.Contains(printed, redact.WordsNotReadable) {
+	if n := strings.Count(printed, "[redacted]"); strings.Contains(printed, echoPage) && n < len(bare) && !strings.Contains(printed, redact.WordsNotReadable) {
 		t.Errorf("the error redacts %d places, want at least the %d bare credentials:\n%s", n, len(bare), printed)
 	}
 }
@@ -153,7 +159,8 @@ func externalAccountJSON(t *testing.T, subject, sts, impersonation string) []byt
 // an external_account credential prints `status code <n>: <body>` for any refusal; the page a
 // stand-in for the security token service answers echoes the subject token and the client's Basic
 // header, and the one a stand-in for the impersonation call answers echoes the access token the
-// exchange minted, which nothing but the request ever held.
+// exchange minted, which nothing but the request ever held. The mint's error names the service
+// that refused and its status (externalAccountFailure), and none of those credentials.
 func TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials(t *testing.T) {
 	const subject, secret = "workload-subject-RDX-3b8f4d21", workforceSecret
 	t.Run("security token service", func(t *testing.T) {

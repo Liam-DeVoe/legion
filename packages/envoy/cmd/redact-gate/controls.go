@@ -13,8 +13,9 @@ import (
 
 // control is one negative control of the check: a fault planted in a scratch worktree of the
 // head, committed there, and the stage the gate must reject it at, naming expect, or, with each,
-// naming every one of several sets. A control with own runs its own evidence instead of the
-// gate's stages (controls 16 and 19, which run a row's test on an earlier tree).
+// naming every one of several sets, and with absent naming no text absent holds: a site planted
+// beside the fault that the stage must pass. A control with own runs its own evidence instead of
+// the gate's stages (controls 16 and 19, which run a row's test on an earlier tree).
 type control struct {
 	id, what string
 	plant    func(c *controlRun) error
@@ -22,6 +23,7 @@ type control struct {
 	stage    int    // the stage the gate must stop at
 	expect   []string
 	each     [][]string
+	absent   []string                       // text no failure of the stage may name
 	fixture  bool                           // controls (1), (20) and (20b): the fixture's own tests are their evidence, not the gate's stages
 	catches  func(id, category string) bool // with fixture, selects by id and category the rows that must be caught; nil selects every row
 	own      func(repo string, inv inventory) (verdict, output string)
@@ -279,6 +281,24 @@ func controlAlias(words string) string {
 				"file": plantDir + "control_reflect_named.go", "function": cipherclientPkg + ".controlNamed",
 				"operands": []string{"*golang.org/x/oauth2.RetrieveError"}, "why": "control (9b)",
 			})
+			return c.writeInventory()
+		}},
+	{id: "9c", what: "a walk the inventory says reads exported fields alone, one of whose Field calls runs under no IsExported guard on its index, beside one that does", stage: 2,
+		expect: []string{"reflection census", "controlUnguarded", "IsExported() guard"},
+		absent: []string{"controlGuarded"},
+		plant: func(c *controlRun) error {
+			if err := c.write(plantDir+"control_reflect_exported.go", "package cipherclient\n\nimport \"reflect\"\n\n// controlUnguarded is control (9c)'s planted walk, which reads a field it never asks is exported.\nfunc controlUnguarded(v reflect.Value) []reflect.Value {\n\tvar out []reflect.Value\n\tfor i := range v.NumField() {\n\t\tout = append(out, v.Field(i))\n\t}\n\treturn out\n}\n\n// controlGuarded is control (9c)'s planted walk that asks first, which the census passes.\nfunc controlGuarded(v reflect.Value) []reflect.Value {\n\tt := v.Type()\n\tvar out []reflect.Value\n\tfor i := range v.NumField() {\n\t\tif t.Field(i).IsExported() {\n\t\t\tout = append(out, v.Field(i))\n\t\t}\n\t}\n\treturn out\n}\n"); err != nil {
+				return err
+			}
+			gate := c.inv["gate"].(map[string]any)
+			exempt, _ := gate["reflection"].([]any)
+			for _, function := range []string{"controlUnguarded", "controlGuarded"} {
+				exempt = append(exempt, map[string]any{
+					"file": plantDir + "control_reflect_exported.go", "function": cipherclientPkg + "." + function,
+					"operands": []string{}, "exported_fields_only": true, "why": "control (9c)",
+				})
+			}
+			gate["reflection"] = exempt
 			return c.writeInventory()
 		}},
 	{id: "10", what: "one file of the change is made unparseable", stage: 2,
@@ -811,8 +831,8 @@ func runControl(repo string, ctl control) (string, string) {
 	return judgeControl(ctl, out.String(), code), out.String()
 }
 
-// judgeControl accepts the control when the first failing stage is its stage and that stage's
-// failure names everything it expects.
+// judgeControl accepts the control when the first failing stage is its stage, that stage's
+// failure names everything it expects, and none of its failures names what it holds absent.
 func judgeControl(ctl control, output string, code int) string {
 	if code == 0 {
 		return "the gate passed it"
@@ -855,6 +875,13 @@ func judgeControl(ctl control, output string, code int) string {
 	}
 	if len(missing) > 0 {
 		return fmt.Sprintf("no stage %d failure names %q", ctl.stage, strings.Join(missing, "; "))
+	}
+	for _, a := range ctl.absent {
+		for _, line := range lines {
+			if strings.Contains(line, a) {
+				return fmt.Sprintf("a stage %d failure names %q, which must pass: %s", ctl.stage, a, line)
+			}
+		}
 	}
 	return ""
 }

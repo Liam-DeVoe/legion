@@ -115,13 +115,17 @@ type holderRow struct {
 // reflectionExempt is a reflection or unsafe site the reflection census allows, with the types it
 // reaches, which the census checks hold no box storage and no external error type. RecordsBoxes
 // names the box's own record walk instead, in the box's package alone, which reaches box-holding
-// types to hand each box its record (structural.go, reflection).
+// types to hand each box its record. ExportedFieldsOnly names a walk that reads exported fields
+// alone, each reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index,
+// which the census checks in place of the types it reaches: the box keeps its text in unexported
+// fields (structural.go, reflection).
 type reflectionExempt struct {
-	File         string   `json:"file"`
-	Function     string   `json:"function"`
-	Operands     []string `json:"operands"`
-	RecordsBoxes bool     `json:"records_boxes"`
-	Why          string   `json:"why"`
+	File               string   `json:"file"`
+	Function           string   `json:"function"`
+	Operands           []string `json:"operands"`
+	RecordsBoxes       bool     `json:"records_boxes"`
+	ExportedFieldsOnly bool     `json:"exported_fields_only"`
+	Why                string   `json:"why"`
 }
 
 type gateConfig struct {

@@ -291,6 +291,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 // redirectRefused is what a refusal of a redirect this client does not follow says: its own
 // words, which the rule for remote text prints as they are.
 var redirectRefused = redact.NewRemoteText("a redirect, which this client does not follow")
+
 // answerIDHeader is the header every answer the broker itself writes names its answer id in
 // (answer.Header in internal/cipher/answer, which this client does not link); net/http's own
 // 400, 431 and 417, written before any of the broker's code runs, carry none.

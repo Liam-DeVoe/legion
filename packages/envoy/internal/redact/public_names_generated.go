@@ -35,6 +35,7 @@ var publicRequestNames = []publicRequestName{
 	{Place: "field", Name: "include", Source: "GET /v1/sessions, /v1/roles/{role} and /v1/registry/{id}?include= (the Envoy listener): the registry states a read asks for"},
 	{Place: "field", Name: "issue", Source: "GET /v1/legion/agents?issue= (the Envoy listener): the Dispatch issue key the Legion agent registry is read for"},
 	{Place: "field", Name: "topic", Source: "POST /v1/messages/publish (the Envoy listener, listenerwire.PublishRequest): the topic a message is published to"},
+	{Place: "field", Name: "dedupe_key", Source: "POST /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): the idempotency key the listener's stream recognises a repeat of the message under"},
 	{Place: "field", Name: "role", Source: "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for"},
 	{Place: "field", Name: "delegates", Source: "IAM Service Account Credentials API, generateAccessToken: the service accounts of the chain"},
 	{Place: "field", Name: "lifetime", Source: "IAM Service Account Credentials API, generateAccessToken: the token's lifetime"},

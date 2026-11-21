@@ -1197,8 +1197,11 @@ func TestEveryGitHubCallOfTheStartsMintKeepsGitHubsAnswer(t *testing.T) {
 				case r.URL.Path == "/app/installations/77":
 					fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
 				case r.URL.Path == "/app/installations/77/access_tokens":
+					// The minted token shares no run with GitHub's message: the record of the bot
+					// user's read, which carried it, redacts every run of it of redact.TokenPiece
+					// characters or more from the answer, "installation" among them before.
 					_, asked := askedInExchange(t, r)
-					fmt.Fprint(w, mintedFor("ghs_installation", time.Now().Add(time.Hour), asked.Permissions, "legion"))
+					fmt.Fprint(w, mintedFor("ghs_7Qm3xK9vT2pL", time.Now().Add(time.Hour), asked.Permissions, "legion"))
 				case r.URL.Path == "/app":
 					fmt.Fprint(w, `{"slug":"legion-implementer"}`)
 				case r.URL.Path == "/users/legion-implementer[bot]":

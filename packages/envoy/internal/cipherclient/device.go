@@ -121,11 +121,17 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(d.client(ctx)))
 }
 
-// client is the client a DeviceFlow's calls go through: HTTP, else the one ctx carries
-// (oauth2.HTTPClient), else http.DefaultClient, as x/oauth2 itself resolves a context's client.
+// client is the client a DeviceFlow's calls go through (clientOf, with HTTP).
 func (d *DeviceFlow) client(ctx context.Context) *http.Client {
-	if d.HTTP != nil {
-		return d.HTTP
+	return clientOf(ctx, d.HTTP)
+}
+
+// clientOf is the client a call of a library over ctx goes through: explicit, else the one ctx
+// carries (oauth2.HTTPClient), else http.DefaultClient, as x/oauth2 itself resolves a context's
+// client.
+func clientOf(ctx context.Context, explicit *http.Client) *http.Client {
+	if explicit != nil {
+		return explicit
 	}
 	if client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); client != nil {
 		return client

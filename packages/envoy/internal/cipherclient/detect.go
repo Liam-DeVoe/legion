@@ -22,7 +22,6 @@ import (
 	"path"
 	"strings"
 
-	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -170,15 +169,13 @@ func (e *ExternalAccountIdentity) account() string {
 // the security token service's answer (externalAccountFailure). The exchange builds its requests'
 // credentials itself (the subject token it read, the client's Basic pair, the access token it
 // minted and spends on the impersonation call) and hands back only its error text, so its
-// construction and each Token run under one record scope.
+// construction and each Token run under one record scope, over the identity's client (clientOf
+// HTTP) under a RefusalClient (withStatusOf).
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
-	if e.HTTP != nil {
-		ctx = context.WithValue(ctx, oauth2.HTTPClient, e.HTTP)
-	}
 	answered := &statusOf{}
-	s := redact.Scope[*google.Credentials](withStatusOf(ctx, oauth2.NewClient(ctx, nil), answered))
+	s := redact.Scope[*google.Credentials](withStatusOf(ctx, clientOf(ctx, e.HTTP), answered))
 	creds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), e.CredentialsJSON, google.ExternalAccount, poolScope)))
 	if err != nil {
 		return "", "", fmt.Errorf("the external_account credential %s names is not one this client reads", credentialsFileVar)

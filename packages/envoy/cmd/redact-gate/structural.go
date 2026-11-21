@@ -243,7 +243,7 @@ func (w *walker) file(f *ast.File) {
 		case *ast.KeyValueExpr:
 			w.storageWrite(n, function)
 		case *ast.CallExpr:
-			w.reflection(n, function)
+			w.reflection(n, parents, function)
 		}
 		return true
 	})
@@ -549,8 +549,11 @@ var reflectionMethods = map[string]bool{
 // and function and every type it reaches (its operands) holds no box storage and no external
 // error type: the operand of a conversion is the converted value's type, and those of a reflect
 // call the static types reflect.ValueOf is given in the package (through one level of an
-// interface parameter).
-func (w *walker) reflection(call *ast.CallExpr, function string) {
+// interface parameter). An entry that says its walk reads exported fields alone
+// (exported_fields_only) is allowed instead where each of its calls is a reflect.Value.Field that
+// runs only under a t.Field(i).IsExported() guard on its own index (exportedGuarded): the box
+// keeps its text in unexported fields, so such a walk cannot reach it, whatever type it is given.
+func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function string) {
 	kind, what := "", ""
 	if callee := w.callee(call); reflectionMethods[callee] {
 		kind, what = "reflect", callee
@@ -591,6 +594,19 @@ func (w *walker) reflection(call *ast.CallExpr, function string) {
 		f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); the box's own walk, which hands each box its record and reads no storage"
 		return
 	}
+	if exempt.ExportedFieldsOnly {
+		switch {
+		case ast.IsExported(w.g.inv.Gate.Box.Field):
+			f.Why = "exported_fields_only names a walk of exported fields, and the box's storage field is exported"
+		case what != "(reflect.Value).Field":
+			f.Why = "exported_fields_only names a reflection other than reflect.Value.Field"
+		case !w.exportedGuarded(call, parents):
+			f.Why = "exported_fields_only names a walk whose Field here does not run only under a t.Field(i).IsExported() guard on its own index"
+		default:
+			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); it reads an exported field alone, and the box keeps its text in unexported fields"
+		}
+		return
+	}
 	var operands []types.Type
 	if kind == "unsafe" {
 		operands = append(operands, w.info.Types[call.Args[0]].Type)
@@ -622,6 +638,60 @@ func (w *walker) reflection(call *ast.CallExpr, function string) {
 	default:
 		f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); its operands hold no box storage and no external error type"
 	}
+}
+
+// exportedGuarded reports whether call, a reflect.Value.Field whose index is an identifier, runs
+// only where that field is exported: it is the right operand of an && whose left operand's chain
+// of && holds t.Field(i).IsExported() on the same i (t a reflect.Type), or in an if's body whose
+// condition's chain does, within the function the call is in.
+func (w *walker) exportedGuarded(call *ast.CallExpr, parents []ast.Node) bool {
+	if len(call.Args) != 1 {
+		return false
+	}
+	index, ok := ast.Unparen(call.Args[0]).(*ast.Ident)
+	if !ok || w.info.Uses[index] == nil {
+		return false
+	}
+	child := ast.Node(call)
+	for i := len(parents) - 1; i >= 0; i-- {
+		switch p := parents[i].(type) {
+		case *ast.FuncDecl, *ast.FuncLit:
+			return false
+		case *ast.BinaryExpr:
+			if p.Op == token.LAND && p.Y == child && w.guards(p.X, w.info.Uses[index]) {
+				return true
+			}
+		case *ast.IfStmt:
+			if p.Body == child && w.guards(p.Cond, w.info.Uses[index]) {
+				return true
+			}
+		}
+		child = parents[i]
+	}
+	return false
+}
+
+// guards reports whether cond, read as a chain of &&, holds t.Field(i).IsExported() for the
+// index i, t a reflect.Type.
+func (w *walker) guards(cond ast.Expr, index types.Object) bool {
+	cond = ast.Unparen(cond)
+	if both, ok := cond.(*ast.BinaryExpr); ok && both.Op == token.LAND {
+		return w.guards(both.X, index) || w.guards(both.Y, index)
+	}
+	exported, ok := cond.(*ast.CallExpr)
+	if !ok || len(exported.Args) != 0 || w.callee(exported) != "(reflect.StructField).IsExported" {
+		return false
+	}
+	sel, ok := ast.Unparen(exported.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	field, ok := ast.Unparen(sel.X).(*ast.CallExpr)
+	if !ok || len(field.Args) != 1 || w.callee(field) != "(reflect.Type).Field" {
+		return false
+	}
+	at, ok := ast.Unparen(field.Args[0]).(*ast.Ident)
+	return ok && w.info.Uses[at] == index
 }
 
 func (w *walker) listed(t types.Type, operands []string) bool {

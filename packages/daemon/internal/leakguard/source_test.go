@@ -298,15 +298,18 @@ func TestARefusalCutInsideAURLsUserNameIsRefusedWithNoPartOfIt(t *testing.T) {
 
 // A 401 is GitHub no longer taking the token the read was made with: the read calls Forget once,
 // so the next mint is a new token, and the read is not kept. Any other refusal forgets nothing.
+// The refusal names GitHub's message, as the rule prints it, as a refused read's does
+// (TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept).
 func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
 		answer string
+		said   string
 		forget int32
 	}{
-		{"a read answered 401", http.StatusUnauthorized, `{"message":"Bad credentials","status":"401"}`, 1},
-		{"a read answered 404", http.StatusNotFound, `{"message":"Not Found","status":"404"}`, 0},
+		{"a read answered 401", http.StatusUnauthorized, `{"message":"Bad credentials","status":"401"}`, "Bad credentials", 1},
+		{"a read answered 404", http.StatusNotFound, `{"message":"Not Found","status":"404"}`, "Not Found", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refuse atomic.Bool
@@ -323,7 +326,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			source := sourceOver(fake.url, &mints)
 			source.Forget = func() { forgets.Add(1) }
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.said)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
