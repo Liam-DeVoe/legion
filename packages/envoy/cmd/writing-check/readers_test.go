@@ -390,3 +390,29 @@ func TestFetchAndReadersRefuseAnOutputInsideARepository(t *testing.T) {
 		t.Errorf("a refused command made %s (%v)", filepath.Join(repo, "data"), err)
 	}
 }
+
+// group, label, plant and recall write the texts fetch read from Dispatch (group copies its cases,
+// label and plant the writes' sentences, recall the no-list halves), so each refuses an output
+// inside a repository before it reads anything, as fetch and readers do.
+func TestTheCommandsThatCopyDispatchTextRefuseAnOutputInsideARepository(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	in, inside := filepath.Join(outside, "cases.jsonl"), filepath.Join(repo, "data", "out")
+	for _, args := range [][]string{
+		{"group", "--in", in, "--out", inside},
+		{"label", "--in", in, "--definition", filepath.Join(outside, "definition.md"), "--endpoint", "http://127.0.0.1:1", "--key-file", filepath.Join(outside, "key"), "--out", inside},
+		{"plant", "--in", filepath.Join(outside, "manifest.jsonl"), "--corpus", in, "--seed", "1", "--out", inside},
+		{"recall", "--labels", filepath.Join(outside, "labels.jsonl"), "--out", inside},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(t.Context(), args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), " is inside the repository at "+repo+": its files hold Dispatch text") {
+			t.Errorf("%v = %d:\n%s", args, code, stderr.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, "data")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused command made %s (%v)", filepath.Join(repo, "data"), err)
+	}
+}
