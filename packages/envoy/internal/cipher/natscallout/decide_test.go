@@ -265,7 +265,7 @@ func TestOnlyTheOperatorsAnswerKeepsItsStreamCalls(t *testing.T) {
 	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
 		"operator-token": {account: operatorAccount, issued: now, expiry: now.Add(10 * time.Minute)},
 		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(10 * time.Minute)},
-	}), Now: func() time.Time { return now }, HoldRead: stub.read, HoldKeys: signer.HoldKeys}
+	}), Now: func() time.Time { return now }, Hold: NewHoldView(stub.read, signer.HoldKeys, nil)}
 	operator, err := Decide(t.Context(), deps, services, serviceRequest("operator-token"))
 	require.NoError(t, err)
 	require.Equal(t, "operator/"+operatorAccount, operator.Name)
@@ -553,7 +553,7 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 	}
 	stub := &holdStub{}
 	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens), Now: func() time.Time { return now },
-		HoldRead: stub.read, HoldKeys: signer.HoldKeys}
+		Hold: NewHoldView(stub.read, signer.HoldKeys, nil)}
 	operatorName := "operator/" + operatorAccount
 	for _, row := range []struct {
 		name   string

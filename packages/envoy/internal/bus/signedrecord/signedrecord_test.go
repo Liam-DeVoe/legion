@@ -125,14 +125,43 @@ func TestAFieldHoldingALineBreakIsRefused(t *testing.T) {
 	}
 }
 
+// A record's digest line must be a SHA-256 digest in lowercase hex, which Record writes for a JSON
+// value: lines whose digest is anything else, built by hand, are refused by Sign and Verify
+// (ErrBadField), as a value that is not JSON is. Fails if the check reads a sentinel string at the
+// digest's position: a hand-built digest of "abc" signs.
+func TestARecordWhoseDigestIsNoSHA256IsRefused(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	good := signedrecord.Record("h", "done", "hold", 1, []byte(`{}`))
+	sig := sign(t, operatorKey, good)
+	for name, digest := range map[string]string{
+		"three letters":  "abc",
+		"uppercase hex":  strings.ToUpper(good[5]),
+		"one digit more": good[5] + "0",
+		"empty":          "",
+	} {
+		lines := append([]string(nil), good...)
+		lines[5] = digest
+		if _, err := signedrecord.Sign(operatorKey, lines); !errors.Is(err, signedrecord.ErrBadField) {
+			t.Errorf("Sign of a record whose digest is %s answered %v, want ErrBadField", name, err)
+		}
+		if err := signedrecord.Verify([]ed25519.PublicKey{operator}, sig, lines); !errors.Is(err, signedrecord.ErrBadField) {
+			t.Errorf("Verify of a record whose digest is %s answered %v, want ErrBadField", name, err)
+		}
+	}
+	if _, err := signedrecord.Sign(operatorKey, signedrecord.Record("h", "done", "hold", 1, []byte(`not json`))); !errors.Is(err, signedrecord.ErrBadField) {
+		t.Errorf("Sign of a record whose value is not JSON answered %v, want ErrBadField", err)
+	}
+}
+
 // Each kind's lines open with its own tag, so a signature over one kind's lines never verifies as
 // another kind's.
 func TestEachKindOpensWithItsTag(t *testing.T) {
 	for want, lines := range map[string][]string{
-		"nats-hold-v1":               signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
-		"nats-hold-record-v1":        signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
-		"nats-hold-record-delete-v1": signedrecord.RecordDelete("h", "cohort", "cohort", 1),
-		"nats-cutover-v1":            signedrecord.Cutover("session", "done", "h", 1),
+		"nats-hold-v1":                 signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
+		"nats-hold-record-v1":          signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
+		"nats-hold-record-delete-v1":   signedrecord.RecordDelete("h", "cohort", "cohort", 1),
+		"nats-cutover-v1":              signedrecord.Cutover("session", "done", "h", 1),
+		"envoy-kv-records-manifest-v1": signedrecord.RecordsManifest([]byte("{}\n")),
 	} {
 		if lines[0] != want {
 			t.Errorf("lines open with %q, want %q", lines[0], want)

@@ -1,5 +1,5 @@
 {
-  "source": "example-org/deployment envoy-cluster/hub.go hubMeasurePublish, hubMeasureSubscribe, after the change that removes the measurement user's stream calls and envoy-measure.>, and adds its cutover inbox (hubMeasureProbeSubject)",
+  "source": "the measurement user's grant as the deployment renders it once its stream calls and envoy-measure.> are removed and its cutover inbox is added (not yet deployed)",
   "publish": [
     "$JS.API.INFO",
     "$JS.API.STREAM.NAMES",

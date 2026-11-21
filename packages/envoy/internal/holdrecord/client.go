@@ -10,19 +10,29 @@
 //
 // The journal is the hold's `done` record (kind `done`, key `hold`): the hold's workflow, its
 // entries in order, and its completion. A command's admission and its `intent` entry are one
-// compare-and-swap write (Admit), so of two processes racing for one admission one is admitted
-// and the other refused, and Decide refuses ErrBusy while another command's intent is pending, so
-// at most one command is past its intent at any time. Every command is Stoppable: one whose own
-// check refuses after its intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the
-// intent and records what the command left. `hold release` follows only a complete record or one
-// whose stops all left nothing changed (LeftUnchanged), and `hold abort` is every workflow's way
-// out once a command has stopped and no intent is pending, so a command that can never succeed
-// cannot hold the hold. The one exception is hub-restore's own rule: after a done `hold prove`
-// abort is excluded, so a census that stops there is ended by another prove and census. The
-// workflow table and Decide are the ones model_test.go explores: every workflow from its true
-// start, with crashes between any two writes, two operator processes, restores landing outside the
-// hold, the row lost and restored, and any command of a workflow but hub-restore failing for good
-// after its intent.
+// compare-and-swap write (Admit), and Decide refuses ErrBusy while another command's intent is
+// pending, so of two processes racing to admit two commands one is admitted and the other refused.
+// A command's own pending intent admits its rerun, since a run cut by a crash leaves it, so two
+// processes admitting the same command are both admitted and both past its intent. The hold's
+// design assumes the operator runs one command of a hold at a time (A2), which the journal does
+// not enforce: under A2 at most one command is past its intent at any time. Every command is
+// Stoppable: one whose own check refuses after its intent writes a `stop` entry (AppendStop,
+// AppendStopLeft), which ends the intent and records what the command left. `hold release` follows
+// only a complete record or one whose stops all left nothing changed (LeftUnchanged), and `hold
+// abort` is every workflow's way out once a command has stopped and no intent is pending, so a
+// command that can never succeed cannot hold the hold. In hub-restore, after a done `hold prove`,
+// abort is admitted only once the pending command's latest entry is a stop, and releases the row
+// over the proven disks, which the hold's command compares with the prove's record (t-10's check):
+// clients then reach the restored and proven hub before its census, until a streams-census hold
+// runs clean. After a failed re-prove on a disk that moved, the operator restores that target back
+// onto the done prove's disk before running abort. If the proven disk is gone, abort's check writes
+// a stop naming it; the operator restores onto another disk and runs a new prove, and abort,
+// admitted again after its own stop, releases over that new epoch's disks. The workflow table and
+// Decide are the
+// ones model_test.go explores: every workflow from its true start, with crashes between any two
+// writes, two operator processes, restores landing outside the hold, the row lost and restored,
+// and any command failing for good after its intent, in hub-restore the census and a prove after a
+// done prove.
 package holdrecord
 
 import (
@@ -97,6 +107,23 @@ type RouteError struct {
 	Row    *Row
 }
 
+// RestoreGenError is a restore's 409 `gen_mismatch`: the route stores a restored row only at
+// RestoreGen, one above the highest `gen` its log holds, which no command can read. Bootstrap
+// answers it as it is, and so does RestoreRow for any row but a held one with its hold id. It
+// unwraps to the route's RouteError.
+type RestoreGenError struct {
+	RestoreGen uint64
+	Route      *RouteError
+}
+
+// Error names the gen a restore must carry.
+func (e *RestoreGenError) Error() string {
+	return fmt.Sprintf("holdrecord: 409 gen_mismatch: the route stores a restored row only at gen %d", e.RestoreGen)
+}
+
+// Unwrap is the route's RouteError.
+func (e *RestoreGenError) Unwrap() error { return e.Route }
+
 // Error names the answer's status and code.
 func (e *RouteError) Error() string { return fmt.Sprintf("holdrecord: %d %s", e.Status, e.Code) }
 
@@ -119,6 +146,18 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 	return &Client{cfg: cfg}, nil
+}
+
+// VerifyKeys answers a copy of the keys the client verifies every answer under
+// (Config.VerifyKeys), so a command that reads other records the operator signed, the session
+// consumers' records copy among them, verifies them under the same keys. Changing the copy, a key's
+// bytes included, changes nothing the client verifies with.
+func (c *Client) VerifyKeys() []ed25519.PublicKey {
+	out := make([]ed25519.PublicKey, len(c.cfg.VerifyKeys))
+	for i, key := range c.cfg.VerifyKeys {
+		out[i] = append(ed25519.PublicKey(nil), key...)
+	}
+	return out
 }
 
 // Barrier publishes a plain put to `$KV.<bucket>.hold.barrier.<holdID>` and returns once its
@@ -171,51 +210,75 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 	return c.writtenRow(answer, Row{Gen: expectedGen + 1, Phase: phase, HoldID: holdID, SignedAt: signedAt})
 }
 
-// RestoreRow writes the row through `POST /v1/nats-hold/restore`, refusing the same phases as
+// RestoreRow writes a lost row through `POST /v1/nats-hold/restore`, refusing the same phases as
 // MoveRow. A row restored `held` inside a hold keeps its hold id at a new `gen`, and the record's
 // completion stands, because no command is admitted while the row is missing. The route stores the
 // row only at one above the highest `gen` its log holds, which no command can read, and answers any
-// other gen 409 `gen_mismatch` naming that one in `restore_gen`: RestoreRow then signs the row
-// afresh at `restore_gen` and sends it once more, and answers a second refusal, another writer's
-// restore between the two, as it is.
+// other gen 409 `gen_mismatch` naming that one in `restore_gen`. For a `held` row with its hold id
+// RestoreRow then signs the row afresh at `restore_gen` and sends it once more, and answers a
+// second refusal, another writer's restore between the two, as it is; for any other row it answers
+// the first as a RestoreGenError. It refuses a `released` row with no hold id, the first row's
+// shape, which Bootstrap alone writes, at gen 1: following `restore_gen` with it would land a
+// released row mid-hold, freeing every client while a command runs.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
 	}
-	// The first send is at gen; a gen_mismatch naming another restore_gen is answered once.
-	for attempt := 0; ; attempt++ {
-		signedAt, sig, err := c.signRow(gen, phase, holdID)
-		if err != nil {
-			return Row{}, err
-		}
-		body := map[string]any{"gen": gen, "phase": phase, "hold_id": holdID, "reason": reason,
-			"signed_at": signedAt.Format(time.RFC3339Nano), "sig": sig}
-		status, data, err := c.exchange(ctx, http.MethodPost, restorePath, nil, body)
-		if err != nil {
-			return Row{}, err
-		}
-		if status/100 == 2 {
-			var answer rowWire
-			if err := decodeAnswer(http.MethodPost, restorePath, data, &answer); err != nil {
-				return Row{}, err
-			}
-			return c.writtenRow(answer, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
-		}
-		var refusal struct {
-			Error      string  `json:"error"`
-			RestoreGen *uint64 `json:"restore_gen"`
-		}
-		if json.Unmarshal(data, &refusal) == nil && refusal.Error == codeGenMismatch && refusal.RestoreGen != nil &&
-			*refusal.RestoreGen != gen && attempt == 0 {
-			gen = *refusal.RestoreGen
-			continue
-		}
-		return Row{}, c.refusal(http.MethodPost, restorePath, status, data)
+	if phase == natsgrant.OperatorPhaseReleased && holdID == "" {
+		return Row{}, errors.New("holdrecord: a released row with no hold id is the first row, which Bootstrap writes at gen 1 alone; RestoreRow restores a lost row")
 	}
+	row, err := c.restore(ctx, gen, phase, holdID, reason)
+	var mismatch *RestoreGenError
+	if phase == natsgrant.OperatorPhaseHeld && holdID != "" && errors.As(err, &mismatch) && mismatch.RestoreGen != gen {
+		return c.restore(ctx, mismatch.RestoreGen, phase, holdID, reason)
+	}
+	return row, err
+}
+
+// Bootstrap writes the first row, `released` with no hold id at gen 1, through `POST
+// /v1/nats-hold/restore`, once. It answers any refusal as it is: `row_exists` while a row is
+// there, and a RestoreGenError when the log holds entries, so a row deleted mid-hold is never
+// replaced by a released one; the operator restores that row with RestoreRow.
+func (c *Client) Bootstrap(ctx context.Context) error {
+	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
+	return err
+}
+
+// restore sends one restore of the row at gen, and answers the row stored, a RestoreGenError for
+// a gen_mismatch naming restore_gen, or the route's other refusal.
+func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
+	signedAt, sig, err := c.signRow(gen, phase, holdID)
+	if err != nil {
+		return Row{}, err
+	}
+	body := map[string]any{"gen": gen, "phase": phase, "hold_id": holdID, "reason": reason,
+		"signed_at": signedAt.Format(time.RFC3339Nano), "sig": sig}
+	status, data, err := c.exchange(ctx, http.MethodPost, restorePath, nil, body)
+	if err != nil {
+		return Row{}, err
+	}
+	if status/100 == 2 {
+		var answer rowWire
+		if err := decodeAnswer(http.MethodPost, restorePath, data, &answer); err != nil {
+			return Row{}, err
+		}
+		return c.writtenRow(answer, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
+	}
+	refused := c.refusal(http.MethodPost, restorePath, status, data)
+	var refusal struct {
+		Error      string  `json:"error"`
+		RestoreGen *uint64 `json:"restore_gen"`
+	}
+	var route *RouteError
+	if json.Unmarshal(data, &refusal) == nil && refusal.Error == codeGenMismatch && refusal.RestoreGen != nil && errors.As(refused, &route) {
+		return Row{}, &RestoreGenError{RestoreGen: *refusal.RestoreGen, Route: route}
+	}
+	return Row{}, refused
 }
 
 // Records reads and verifies the hold's records of one kind, through `/v1/nats-hold/records`. A
-// record the broker answers below its floor, an older signed record put back, is ErrUnknown.
+// read the broker answers below its floor (an older signed record put back, or a record it has seen
+// now missing, deleted outside the routes) is ErrUnknown.
 func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, error) {
 	var answer struct {
 		Records []recordWire `json:"records"`
@@ -224,7 +287,7 @@ func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, er
 	if err := c.call(ctx, http.MethodGet, recordsPath, query, nil, &answer); err != nil {
 		var refusal *RouteError
 		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
-			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back", holdID, kind))
+			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back, or a record it has seen deleted outside the routes", holdID, kind))
 		}
 		return nil, err
 	}
@@ -380,6 +443,11 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 // keeps it. CommandAbort's entry also carries each stop entry's record of what its command left,
 // under `left.<the stop's index in the journal>` as `<command>: <left>`, so the operator ends the
 // hold knowing the state; those keys replace any of inputs'. It returns the record's workflow.
+//
+// Admit refuses another command while one's intent is pending (ErrBusy), but admits the same
+// command again, its rerun after a crash: a second process running the same command at once is
+// admitted too. The operator runs one command of a hold at a time (assumption A2); the journal
+// cannot tell a rerun from a second process.
 func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs map[string]string) (Workflow, error) {
 	for attempt := 1; ; attempt++ {
 		row, err := c.Row(ctx)
@@ -451,7 +519,9 @@ func (c *Client) AppendStop(ctx context.Context, holdID, command, reason string)
 // command in this hold: LeftUnchanged only when this run changed nothing and no earlier run of it
 // recorded a change or ended with no entry (a run cut after its intent); otherwise left names what
 // those runs left. The caller knows its earlier runs (the journal holds their entries) and folds
-// what they left in; the journal records left as given. An empty left is refused.
+// what they left in, and the journal records left as given, but for the one case the journal
+// itself shows: LeftUnchanged after a run of the command that ended with no entry (two intents of
+// it in a row) is refused, naming the rule. An empty left is refused.
 func (c *Client) AppendStopLeft(ctx context.Context, holdID, command, reason, left string) error {
 	if left == "" {
 		return fmt.Errorf("holdrecord: %s's stop names nothing it left: give LeftUnchanged or what it changed", command)
@@ -463,6 +533,10 @@ func (c *Client) appendStop(ctx context.Context, holdID, command string, outputs
 	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
 		if !Stoppable(d.Workflow, command) {
 			return fmt.Errorf("holdrecord: %s is not Stoppable in %s, so its refusal writes no stop entry", command, d.Workflow)
+		}
+		if outputs[stopLeftKey] == LeftUnchanged && cutRun(d.Ops, command) {
+			return fmt.Errorf("holdrecord: %s's stop cannot record %q: an earlier run of %s in this hold ended with no entry, so what it left is unknown; the stop names what the runs left (LeftUnchanged's rule)",
+				command, LeftUnchanged, command)
 		}
 		d.Ops = append(d.Ops, Operation{Command: command, State: stateStop, Outputs: outputs})
 		return nil

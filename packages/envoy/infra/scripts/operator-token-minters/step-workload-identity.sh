@@ -8,13 +8,15 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE: on the cluster KUBE names, no guarded pair's namespace may
-# exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the cluster's
-# system namespaces, and no binding subject, may hold a right of GUARD_RIGHTS (each a finding, its
-# right followed by WHERE). The reviews carry the witness. PASS when it recorded neither a finding
-# nor an UNKNOWN.
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS: on the cluster KUBE names, no guarded pair's
+# namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
+# cluster's system namespaces, none of Kubernetes' own groups, and no binding subject may hold a
+# right of GUARD_RIGHTS (each a finding, its right followed by WHERE); every binding of
+# system:masters but the bootstrap one is a finding, and its other Group subjects are judged by
+# GROUPS, where the cluster takes its groups from (groups_verdict). The reviews carry the witness.
+# PASS when it recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -42,14 +44,24 @@ read_other_cluster() {
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   while IFS="$US" read -r -u 3 ns name; do
-    ! system_namespace "$ns" || continue
+    if system_namespace "$ns"; then
+      sa_record "$ns" "$name" seed: >>"$WORK/principals.rec"
+      continue
+    fi
     accounts=$((accounts + 1))
-    printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
-      "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
+    sa_record "$ns" "$name" >>"$WORK/principals.rec"
   done 3<"$WORK/serviceaccounts.rec"
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
+  namespace_groups
+  groups_verdict "$cstep" "$groups_mode"
+  masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
-  guard_rights="$(jq -c --argjson custom "$CUSTOM_RIGHTS" '. + $custom | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$GUARD_RIGHTS")"
+  named_rights
+  guard_rights="$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$NAMED_RIGHTS")"
+  # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
+  # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
+  [ "$accounts" -gt 0 ] ||
+    unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default, so its list cannot be read as whole"
   if [ "$((accounts + BOUND))" -eq 0 ]; then
     unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject to review, so there is no principal to review"
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
@@ -57,7 +69,7 @@ read_other_cluster() {
   elif judge_reviews "$cstep" "$where" "$principal"; then
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
-      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $BOUND binding subjects and anyone unauthenticated may make a namespace, or a ServiceAccount, a pod or a custom resource in a guarded namespace"
+      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, or hold an escalation right"
   fi
 }
 
@@ -87,9 +99,26 @@ else
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
-    read_other_cluster "$cstep" "cluster:$label" " on cluster $label"
+    read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
   done 5<"$WORK/clusters.tsv"
 fi
+
+# The projects of the clusters read here other than --project (the pool project's, a fleet GKE
+# member's), whose own IAM the step after this one reads.
+declare -A OTHER_PROJECTS=()
+
+# The pool project's own clusters, when --pool-project names another project (live: clusters of the
+# pool project): each uses the pool, as the project's other clusters do.
+while IFS=$'\t' read -r -u 5 cluster location _; do
+  OTHER_PROJECTS[$POOL_PROJECT]=1
+  label="$POOL_PROJECT/$location/$cluster"
+  cstep="live: Workload Identity on $label"
+  if ! kube_for "$cluster" "$location" "$POOL_PROJECT"; then
+    unknown "$cstep" "$KUBE_ERROR"
+    continue
+  fi
+  read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
 # page, as records in $WORK/fleet.rec: `unreachable` and the locations the listing could not reach,
@@ -156,9 +185,7 @@ elif ! fleet_memberships; then
   unknown "$step" "$FLEET_ERROR"
 else
   fleet_f="${#FINDINGS[@]}" fleet_u="${#UNKNOWNS[@]}" members=0 own=0 above=0 here=0
-  # The projects of the GKE members read here other than --project, whose IAM the step after this
-  # one reads.
-  declare -A OTHER_PROJECTS=()
+  # A GKE member read here in a project other than --project adds to OTHER_PROJECTS.
   while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
     if [ "$what" = unreachable ]; then
       unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
@@ -191,7 +218,8 @@ else
         unknown "$cstep" "$KUBE_ERROR"
         continue
       fi
-      read_other_cluster "$cstep" "cluster:$label" " on cluster $label"
+      groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
+      read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE"
     else
       here=$((here + 1))
       label="$POOL_PROJECT/$location/$id"
@@ -200,7 +228,7 @@ else
         unknown "$cstep" "$KUBE_ERROR"
         continue
       fi
-      read_other_cluster "$cstep" "membership:$label" " on fleet member $label"
+      read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
     fi
   done 6<"$WORK/fleet.rec"
   if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then

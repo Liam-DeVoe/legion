@@ -4,25 +4,29 @@
 # members' projects, the projects' ancestors, fleet registration and the hold writers. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
 # --- live: GKE IAM on the projects of the fleet's other GKE members. GKE authorizes IAM beside
-# RBAC, so a holder of container.namespaces.create, container.serviceAccounts.create or
-# container.pods.create there makes a guarded pair's namespace, ServiceAccount or pod on that member
-# as its RBAC would; IAM grants them in every namespace. --project's holders are the GKE IAM step's.
-# ---
+# RBAC, so a holder there of a guard right's container.* permission (a guarded namespace,
+# ServiceAccount or pod, or an escalation right by which it grants itself one) has it on that member
+# as its RBAC would, and a holder of the IAM writers there grants itself any of them
+# (MEMBER_PERMISSIONS). --project's holders are the GKE IAM step's. ---
 for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort); do
   check="gke:$other"
   CHECK_STEP[$check]="live: GKE IAM on project $other, of a fleet member"
   CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/projects/$other"
-  CHECK_PERMS[$check]="container.namespaces.create container.serviceAccounts.create container.pods.create"
+  CHECK_PERMS[$check]="${MEMBER_PERMISSIONS[*]}"
   scope_of "$other"
   CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
   live_iam "$check"
 done
 
-# --- live: who can set IAM on the projects' ancestors. A holder of a folder's or the organization's
-# setIamPolicy can grant itself any role below it, container.admin on the project included, and a
-# holder of the organization's iam.roles.update can add a permission to a custom role it holds. ---
+# --- live: who can set IAM on the projects' ancestors: --project's, the pool project's and each
+# fleet member's. A holder of a folder's or the organization's setIamPolicy can grant itself any role
+# below it, container.admin on the project included, and a holder of the organization's
+# iam.roles.update can add a permission to a custom role it holds. ---
 ancestor_projects=("$PROJECT")
 [ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || ancestor_projects+=("$POOL_PROJECT")
+for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort); do
+  [ "$other" = "$POOL_PROJECT" ] || ancestor_projects+=("$other")
+done
 declare -A ANCESTORS_SEEN=()
 for anc_project in "${ancestor_projects[@]}"; do
   step="live: who can set IAM on the ancestors of project ${anc_project:-?}"
@@ -38,6 +42,9 @@ for anc_project in "${ancestor_projects[@]}"; do
   elif ! jq -r '.[] | select(.type == "folder" or .type == "organization") | "\(.type)s/\(.id)"' "$WORK/ancestors.json" \
     >"$WORK/ancestors.list" 2>"$WORK/ancestors.err"; then
     unknown "$step" "gcloud projects get-ancestors $anc_project answered no JSON list: $(first_line "$WORK/ancestors.err")"
+    continue
+  elif ! jq -e --arg p "$anc_project" 'any(.[]; .type == "project" and .id == $p)' "$WORK/ancestors.json" >/dev/null 2>&1; then
+    unknown "$step" "gcloud projects get-ancestors $anc_project answered no ancestor holding the project itself, though a real answer always does, so it saw nothing"
     continue
   elif [ ! -s "$WORK/ancestors.list" ]; then
     pass "$step" "the project has no folder or organization above it"

@@ -2,28 +2,20 @@ package holdrecord
 
 import "slices"
 
-// rules are the rule choices that changed between versions of the hold's design, so the model in
-// model_test.go runs the table of each version and of each rule set with one fix removed.
+// rules are the rule choices tableFor and Decide read: those that changed between versions of the
+// hold's design, so the model in model_test.go builds the table of each version and of each rule
+// set with one fix removed (its modelRules adds the choices only its transitions read).
 // currentRules are the design's, and the package's functions use them.
 type rules struct {
-	Name                         string
-	Step1Recorded                bool // hold set records the step-1 map, and abort, prove and release compare against it
-	ProveEpochs                  bool // --restored after a done prove, and an epoch per done prove for the census
-	PlainReprove                 bool // the earlier designs' prove that names no target
-	AbortMoveBeforeDone          bool // abort moves the row before its done entry
-	AfterCompleteStrict          bool // after completion a command is admitted only when the final command can follow it again
-	SelRecFinalRepeatable        bool // replay --final is Repeatable in selection-recovery
-	RestoreKeyInTable            bool // restore --key is in rollback's table, Repeatable
-	PendingBlocksComplete        bool // an earlier design's rule: a final done entry is refused while another admitted command's intent is pending
-	AtomicAdmit                  bool // admission and intent are one compare-and-swap write
-	Serialize                    bool // ErrBusy while another command's intent is pending
-	StopEntries                  bool // a Stoppable command's refusal writes a stop entry, which ends its pending intent
-	SetCommand                   bool // hold set is a journal command, its intent before its row move, Stoppable
-	Step1Whole                   bool // hold set refuses a target it cannot read, and a target the map lacks is UNKNOWN
-	ExpectedMap                  bool // DisksMoved compares Proven's ids for the named targets and Step1's for the rest
-	ConvertStoppable             bool // convert's stop for a name with no safe start ends its intent, so replay is admitted
-	PrepareMarksUnresolved       bool // restore --prepare marks a name with no start and goes on; restore --finish stops
-	CompletionSurvivesRowRestore bool // release does not compare hold_gen, so a row restored by RestoreRow can release
+	ProveEpochs           bool // --restored after a done prove, and an epoch per done prove for the census
+	PlainReprove          bool // the earlier designs' prove that names no target
+	AfterCompleteStrict   bool // after completion a command is admitted only when the final command can follow it again
+	SelRecFinalRepeatable bool // replay --final is Repeatable in selection-recovery
+	RestoreKeyInTable     bool // restore --key is in rollback's table, Repeatable
+	Serialize             bool // ErrBusy while another command's intent is pending
+	StopEntries           bool // a Stoppable command's refusal writes a stop entry, which ends its pending intent
+	SetCommand            bool // hold set is a journal command, its intent before its row move, Stoppable
+	ConvertStoppable      bool // convert's stop for a name with no safe start ends its intent, so replay is admitted
 	// WayOut: the buckets commands are Stoppable, a stop records what its command left, hold
 	// release follows a record whose other entries are stops that left nothing changed, and hold
 	// abort is every workflow's way out: outside hub-restore it is admitted once a command's latest
@@ -42,22 +34,48 @@ type rules struct {
 	EndIsFinal bool
 	// BackupCommand: `envoy-infra buckets backup`, a snapshot of each copied bucket, runs under a
 	// hold, as the first command of buckets-recreate and buckets-restore, Repeatable. The recreate,
-	// which deletes the bucket, requires its done entry, so a recreate always follows a backup of
-	// the bucket taken in its own hold; the restore does not, since a lost bucket cannot be backed
-	// up, and it restores from an archive an earlier hold took. Its stop records LeftUnchanged, but
-	// its done entry counts as a change under hold release's rule as every done entry does, so
-	// after a backup the way out of a recreate or restore that stops is hold abort.
+	// which deletes a bucket, requires a done `buckets backup` entry in this hold, which is what
+	// Decide checks; Decide sees no bucket names, so that the backup holds each bucket the recreate
+	// deletes is the recreate command's to check, from the backup's outputs. The restore requires
+	// no backup, since a lost bucket cannot be backed up, and it restores from an archive an
+	// earlier hold took. Its stop records LeftUnchanged, but its done entry counts as a change under
+	// hold release's rule as every done entry does, so after a backup the way out of a recreate or
+	// restore that stops is hold abort.
 	BackupCommand bool
+	// HubAbortAfterStop: in hub-restore, after a done hold prove, hold abort is admitted only once
+	// the pending command's latest entry is a stop (a census that fails for good, say): a command
+	// whose latest entry, after the latest done prove, is a stop. With no stop there the prove still
+	// excludes it (ErrExcluded), and a stop from before the prove lifts nothing. A crashed abort's
+	// rerun needs nothing more: the stop that admitted it is still that command's latest entry. The abort
+	// releases the row, and its entry carries the stop's record of what was left. Hold release
+	// stays refused: hub-restore's completion is its clean census. Comparing each disk with the
+	// done prove's record before the abort releases is the hold's command's (t-10's), not this
+	// table's. After a failed re-prove on a disk that moved, the operator restores that target back
+	// onto the done prove's disk, a restore this table already admits, and then runs abort; if the
+	// proven disk is gone, abort's check writes a stop naming it, and AbortAfterOwnStop's path
+	// follows. The residual: on this path clients reach the restored and proven hub before its
+	// census, until a streams-census hold runs clean.
+	HubAbortAfterStop bool
+	// AbortAfterOwnStop: hub-restore's hold abort is admitted again after its own stop, whenever
+	// that stop was written, and reruns the reconcile for the stores that stop named; its own
+	// pending intent admits it too, since the stop that admitted a crashed run is no longer its
+	// latest entry. An abort admitted on its own pending intent is a rerun of a crashed abort: it
+	// repeats the whole abort from its start, the disk check against the newest done prove and then
+	// the reconcile over every store, and trusts nothing the crashed run wrote. An abort whose disk
+	// check found the done prove's
+	// disk gone (a 404 by name, or that name now has another numeric id) writes a stop naming the
+	// disk; that stop admits a restore onto another disk and a new hold prove there, which this
+	// table already admits before completion: the new prove's done opens a new epoch, abort's check
+	// reads the newest done prove, and abort is admitted again after its own stop.
+	AbortAfterOwnStop bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
-// no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal and
-// BackupCommand.
-var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
-	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
-	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true, BackupCommand: true}
+// no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal,
+// BackupCommand and HubAbortAfterStop.
+var currentRules = rules{ProveEpochs: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true,
+	Serialize: true, StopEntries: true, SetCommand: true, ConvertStoppable: true, WayOut: true, EveryCommandStoppable: true,
+	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true, AbortAfterOwnStop: true}
 
 var current = tableFor(currentRules)
 
@@ -82,6 +100,13 @@ type entry struct {
 	// since the stop the crashed run followed may have been superseded since (the stopped command
 	// ran again and finished).
 	needsStop bool
+	// stopLiftsExcludes is a command whose excludes refuse it only until, after the latest done
+	// hold prove, some command's latest entry is a stop: hub-restore's hold abort under
+	// HubAbortAfterStop.
+	stopLiftsExcludes bool
+	// ownStopLifts is a stopLiftsExcludes command whose own latest stop, whenever written, or its
+	// own pending intent lifts its excludes too: hub-restore's hold abort under AbortAfterOwnStop.
+	ownStopLifts bool
 }
 
 // table is one rule set's workflow table and rules.
@@ -114,7 +139,8 @@ func tableFor(r rules) table {
 	hub = append(hub,
 		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
-		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop, skipsSet: true})
+		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop, skipsSet: true,
+			stopLiftsExcludes: r.HubAbortAfterStop, ownStopLifts: r.AbortAfterOwnStop})
 	buckets := func(name string) []entry { return []entry{{name: name, final: true, stoppable: stop && r.WayOut}} }
 	recreate, restore := buckets("buckets recreate"), buckets("buckets restore")
 	if r.BackupCommand {
@@ -158,12 +184,6 @@ func (t table) row(w Workflow, c string) (entry, bool) {
 		}
 	}
 	return entry{}, false
-}
-
-// Workflows returns the table's workflows, in the design's order.
-func (t table) Workflows() []Workflow {
-	return []Workflow{WorkflowCutover, WorkflowRollback, WorkflowSelectionRecovery, WorkflowBucketsCreate, WorkflowBucketsRecreate,
-		WorkflowBucketsRestore, WorkflowStreamsUpdate, WorkflowHubRestore, WorkflowStreamsCensus}
 }
 
 // Commands is the table's Commands.
@@ -260,6 +280,9 @@ func (t table) Decide(d Done, req modelRequest) error {
 		return wrap(ErrAlreadyDone, "the record is complete")
 	}
 	for _, x := range e.excludes {
+		if e.stopLiftsExcludes && (stoppedSinceProve(d) || (e.ownStopLifts && (latestIsStop(d.Ops, c) || slices.Contains(pending(d), c)))) {
+			break
+		}
 		if hasDone(d.Ops, x) {
 			return wrap(ErrExcluded, x)
 		}
@@ -305,8 +328,10 @@ func (t table) Decide(d Done, req modelRequest) error {
 // unchanged reports whether the record shows nothing changed: no entry but hold release's own,
 // which a crashed release leaves, and, with SetCommand, hold set's, whose restart and barrier
 // change no stored data. With WayOut a command's stop that recorded LeftUnchanged, and the intent
-// it ends, change nothing either; a stop that recorded anything else, or nothing, a done entry
-// and an intent no stop ends all count as changes. It reads each stop's record as written: by
+// it ends, change nothing either; a stop that recorded anything else, or nothing, a done entry,
+// an intent no stop ends, and an intent followed by another of the same command before its stop or
+// done (a run cut after its intent, whose change no entry records) all count as changes. It reads
+// each stop's record as written, but for the cut run, which the journal itself shows: by
 // LeftUnchanged's rule a stop records what every run of its command left, so a crashed run's
 // change is in its rerun's stop, which the model checks (releasedOverAChange).
 func (t table) unchanged(ops []Operation) bool {
@@ -317,6 +342,9 @@ func (t table) unchanged(ops []Operation) bool {
 		}
 		if !t.Rules.WayOut || o.State == stateDone || (o.State == stateStop && o.Outputs[stopLeftKey] != LeftUnchanged) {
 			return false
+		}
+		if o.State == stateIntent && latest[o.Command].State == stateIntent {
+			return false // the run before this intent ended with no entry
 		}
 		latest[o.Command] = o
 	}
