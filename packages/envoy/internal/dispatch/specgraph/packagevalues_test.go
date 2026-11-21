@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"bytes"
+	"encoding/json/v2"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -129,12 +131,13 @@ type packageVariable struct {
 }
 
 // packageVariables is each variable of the package, of its code and of its tests, by its name and
-// its address, which packageValuesNow copies, each by the rule of its type (valueCopy).
-// TestEachVariableOfThePackageIsGuarded fails for a variable that the list does not name and for a
-// variable of a type that no rule covers. Each table that a sweep reads of its own is a function
-// that gives a new value at each call (sweepMaps, sweepPaths, namesOfNothing, addableMembers,
-// recordKinds, sweepFloors, scenarioFileTypes, builtBases and the patterns of blockTexts), not a
-// variable.
+// its address, which packageValuesNow copies, each by the rule of its type (valueCopy). Its body is
+// one return of a list, and each entry is {"<name>", &<name>}: TestEachVariableOfThePackageIsGuarded
+// reads the list from this source and fails for an entry that is not the address of the variable
+// that it names, for a variable that the list does not name and for a variable of a type that no
+// rule covers. Each table that a sweep reads of its own is a function that gives a new value at
+// each call (sweepMaps, sweepPaths, namesOfNothing, addableMembers, recordKinds, sweepFloors,
+// scenarioFileTypes, builtBases and the patterns of blockTexts), not a variable.
 func packageVariables() []packageVariable {
 	return []packageVariable{
 		// The variables of the code.
@@ -518,24 +521,27 @@ func packageValuesChanged(who string, before []packageValue) []string {
 
 // Each variable of the package is in the copy that the guard of the writers takes
 // (packageValuesNow), by a rule that copies what code of the package can change of it, so that a
-// writer that changes one fails by name: this test reads each file of the package with go/parser
-// and fails for each variable declared at its top level that the list (packageVariables) does not
-// name, for each name of the list that names no such variable or that the list names twice, and
-// when it finds no variable at all, since it then read none. It fails for each variable whose type,
-// or the type of a part of it, no rule covers (valueCopy). And it takes two copies and fails for
-// each list, map or pointer that both hold (sharedObject): a copy that held a variable's storage,
-// such as the capture names that a regexp hands out, would change with the variable, and the guard
+// writer that changes one fails by name: this test reads each file of the package with go/parser,
+// as the test binary was built from it (packageSources), and fails for each variable declared at
+// its top level that the list (packageVariables) does not name, for each name of the list that
+// names no such variable or that the list names twice, and when it finds no variable at all, since
+// it then read none. It reads the list itself from its source (variablesListed) and fails for each
+// entry that is not the address of the variable that it names ({"slug", &positionWord} copies
+// positionWord in slug's place, and the guard then does not watch slug), and unless the list that
+// it runs holds the names of that source in their order. It fails for each variable whose type, or
+// the type of a part of it, no rule covers (valueCopy). And it takes two copies and fails for each
+// list, map or pointer that both hold (sharedObject): a copy that held a variable's storage, such
+// as the capture names that a regexp hands out, would change with the variable, and the guard
 // would not see the change.
 func TestEachVariableOfThePackageIsGuarded(t *testing.T) {
 	t.Parallel()
-	paths, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sources := packageSources(t)
 	fset := token.NewFileSet()
 	declared := map[string]string{} // the name of each variable, and where the package declares it
-	for _, path := range paths {
-		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	var inSource []string
+	listRead := false
+	for _, path := range slices.Sorted(maps.Keys(sources)) {
+		f, err := parser.ParseFile(fset, path, sources[path], parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -543,6 +549,13 @@ func TestEachVariableOfThePackageIsGuarded(t *testing.T) {
 			continue
 		}
 		for _, decl := range f.Decls {
+			if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Recv == nil && fn.Name.Name == "packageVariables" {
+				names, unbound := variablesListed(fset, sources[path], fn)
+				inSource, listRead = names, true
+				for _, line := range unbound {
+					t.Error(line)
+				}
+			}
 			if g, isVar := decl.(*ast.GenDecl); isVar && g.Tok == token.VAR {
 				for _, spec := range g.Specs {
 					for _, name := range spec.(*ast.ValueSpec).Names {
@@ -557,14 +570,22 @@ func TestEachVariableOfThePackageIsGuarded(t *testing.T) {
 	if len(declared) == 0 {
 		t.Fatal("go/parser found no variable declared at the top level of the package, so the test read none")
 	}
+	if !listRead {
+		t.Fatal("go/parser found no function packageVariables in the package, so the test read no entry of the list")
+	}
 	listed := map[string]int{}
+	var running []string
 	for _, v := range packageVariables() {
 		listed[v.name]++
+		running = append(running, v.name)
 		if at := reflect.ValueOf(v.at); at.Kind() != reflect.Pointer || at.IsNil() {
 			t.Errorf("packageVariables holds a %T for %s, where it holds the variable's address", v.at, v.name)
 		} else if _, err := valueCopy(at.Elem(), v.name, 0); err != nil {
 			t.Errorf("%s declares the variable %s, of the type %v, and the guard has no copy of it: %v", declared[v.name], v.name, at.Elem().Type(), err)
 		}
+	}
+	if !slices.Equal(running, inSource) {
+		t.Errorf("the list that packageVariables gives names %q, and its source names %q, so the test did not read the list that runs", running, inSource)
 	}
 	for _, name := range slices.Sorted(maps.Keys(declared)) {
 		if listed[name] == 0 {
@@ -595,6 +616,104 @@ func TestEachVariableOfThePackageIsGuarded(t *testing.T) {
 			t.Errorf("two copies of %s hold one object at %q, so a writer that changes the variable there changes its copy too", a[i].name, at)
 		}
 	}
+}
+
+// packageSources is the text of each Go file of the package's directory, by its name, as the test
+// binary was built from it: each file on disk, and, where ENVOY_TEST_GO_OVERLAY names the overlay
+// that the binary was built with (go test -overlay, as a probe builds a changed package without
+// editing the tree; cmdtest.BuildCommand reads the same variable), each file of the directory that
+// the overlay replaces, adds or deletes, as the overlay has it. So the census reads the code that
+// runs under such a probe as it does in CI. An overlay that names a file by a relative path, which
+// the test cannot place, fails the test.
+func packageSources(t *testing.T) map[string][]byte {
+	t.Helper()
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string][]byte{}
+	for _, path := range paths {
+		if sources[path], err = os.ReadFile(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	overlay := os.Getenv("ENVOY_TEST_GO_OVERLAY")
+	if overlay == "" {
+		return sources
+	}
+	dir, err := filepath.EvalSymlinks(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir, err = filepath.Abs(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(overlay)
+	if err != nil {
+		t.Fatalf("ENVOY_TEST_GO_OVERLAY: %v", err)
+	}
+	var o struct{ Replace map[string]string }
+	if err := json.Unmarshal(data, &o); err != nil {
+		t.Fatalf("ENVOY_TEST_GO_OVERLAY %s: %v", overlay, err)
+	}
+	for from, to := range o.Replace {
+		if !filepath.IsAbs(from) {
+			t.Fatalf("ENVOY_TEST_GO_OVERLAY %s names %s by a relative path, which the test cannot place", overlay, from)
+		}
+		in, err := filepath.EvalSymlinks(filepath.Dir(from))
+		if err != nil || in != dir || filepath.Ext(from) != ".go" {
+			continue
+		}
+		name := filepath.Base(from)
+		if to == "" {
+			delete(sources, name)
+			continue
+		}
+		if sources[name], err = os.ReadFile(to); err != nil {
+			t.Fatalf("ENVOY_TEST_GO_OVERLAY %s: %v", overlay, err)
+		}
+	}
+	return sources
+}
+
+// variablesListed is the name of each entry of fn, the declaration of packageVariables in the file
+// src, in their order, and a line for each entry that is not bound to the variable that it names:
+// the body of fn is one return of a list of literals, and each entry is {"<name>", &<name>}, the
+// address of the variable of that name and no other expression, so that an entry that names one
+// variable and copies another, or copies a value made from one, fails by its name.
+func variablesListed(fset *token.FileSet, src []byte, fn *ast.FuncDecl) ([]string, []string) {
+	text := func(n ast.Node) string {
+		return string(src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset])
+	}
+	var list *ast.CompositeLit
+	if len(fn.Body.List) == 1 && fn.Type.Params.NumFields() == 0 {
+		if ret, isReturn := fn.Body.List[0].(*ast.ReturnStmt); isReturn && len(ret.Results) == 1 {
+			list, _ = ret.Results[0].(*ast.CompositeLit)
+		}
+	}
+	if list == nil {
+		return nil, []string{fset.Position(fn.Pos()).String() + ": packageVariables is not one return of a list of entries, so the test cannot read which variable each entry copies"}
+	}
+	var names, unbound []string
+	for _, e := range list.Elts {
+		name, bound := "", false
+		if entry, isEntry := e.(*ast.CompositeLit); isEntry && len(entry.Elts) == 2 {
+			lit, isLit := entry.Elts[0].(*ast.BasicLit)
+			addr, isAddr := entry.Elts[1].(*ast.UnaryExpr)
+			if isLit && lit.Kind == token.STRING {
+				name, _ = strconv.Unquote(lit.Value)
+			}
+			if isAddr && addr.Op == token.AND {
+				id, isIdent := addr.X.(*ast.Ident)
+				bound = isIdent && name != "" && id.Name == name
+			}
+		}
+		names = append(names, name)
+		if !bound {
+			unbound = append(unbound, fmt.Sprintf("%s: the entry %s of packageVariables is not the address of the variable that it names, so the guard copies another value in its place", fset.Position(e.Pos()), text(e)))
+		}
+	}
+	return names, unbound
 }
 
 // sharedObject is the first object that a and b, two copies of one variable, both hold, by its
