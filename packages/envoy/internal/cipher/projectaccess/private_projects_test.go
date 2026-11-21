@@ -51,8 +51,11 @@ var privateReads = []struct {
 // failure to read one, never an empty list: a caller that read it as empty would serve every
 // private project's channel as a public one's. Each such answer is an error that is not
 // ErrBrokerRefused, beside a nil list, and is not kept, so the next call asks Dispatch again. Only
-// "projects": [] is the empty list. Each row runs through both reads; a private project with no
-// slack_channels key is the fresh read's failure alone, and PrivateProjects keeps it, marked.
+// "projects": [] is the empty list. An answer holding one key twice in an object is no list
+// either: encoding/json would keep the last member, so a second "projects": [] would read as no
+// private project, and a second "slack_channels": [] as a project with no channel. Each row runs
+// through both reads; a private project with no slack_channels key is the fresh read's failure
+// alone, and PrivateProjects keeps it, marked.
 func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 	failures := []struct {
 		status int
@@ -69,6 +72,11 @@ func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 		{http.StatusServiceUnavailable, `{"code":"UNAVAILABLE"}`},
 		{http.StatusOK, `{"projects": [`},
 		{http.StatusOK, `{"projects": [{"slack_channels": ["C0PRIV00001"]}]}`},
+		// Two readings of one answer, which encoding/json reads as the last member's: projects
+		// twice, in the same case and in another, and an entry's slack_channels twice.
+		{http.StatusOK, `{"projects": [{"project": "PRIV", "slack_channels": ["C0PRIV00001"]}], "projects": []}`},
+		{http.StatusOK, `{"projects": [{"project": "PRIV", "slack_channels": ["C0PRIV00001"]}], "PROJECTS": []}`},
+		{http.StatusOK, `{"projects": [{"project": "PRIV", "slack_channels": ["C0PRIV00001"], "slack_channels": []}]}`},
 	}
 	for _, read := range privateReads {
 		for _, row := range failures {
