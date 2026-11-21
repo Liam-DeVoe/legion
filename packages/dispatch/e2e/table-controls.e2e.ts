@@ -58,6 +58,7 @@ import {
   seedDeliveryFixture,
   seedPipelineFixture,
   seedSessionGroupsFixture,
+  TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { connectedDot, documentEditor, placeCaret } from "./editor";
 import {
@@ -6919,4 +6920,135 @@ test("Save delivery settings keeps the keyboard focus through a save whose re-re
   } finally {
     await context.setOffline(false);
   }
+});
+
+// SLOW(>=2s): the Delivery page opened eight times, at two widths, by two presses, with its Window
+// select scrolled wholly out of sight and left wholly in sight.
+// INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p3g-h and -p3g-b at
+// da0804df and a1c78223, and this row in -p3-red-h at da0804df): with a brush window set - the
+// address's `ws` and `we`, as a drag along the chart's time axis sets them - the Delivery page's
+// header draws "clear brush window" in its generated line. Its press takes the button away with
+// the brush, and the header's hand-off (`useFocusPlace` in DeliveryPage.tsx), finding no other
+// control in that line, focuses the Window select on the line above with the browser's own
+// scroll. With the page scrolled so that the select stands wholly above the window and the button
+// wholly in it, the page scrolls back to the select, by Enter and by a click. With the select's
+// foot 8 px above the window it scrolls 153 px in Chromium and Firefox and 52 px in WebKit at
+// 390, and 62, 62 and 68 px at 1440, at da0804df and at a1c78223 alike; with its foot 2 px above,
+// as this row places it, 147, 147 and 46 px at 390 and 56, 56 and 62 px at 1440 at da0804df, in
+// both runs of each. The architect's ruling of 2026-11-21 12:25Z: a walk-back never scrolls to
+// reach a control out of sight; it passes over those and lands on the region's own stop where
+// none is in sight, and only a landing partly in sight may be scrolled, the least distance that
+// shows it whole. With the select wholly in sight the focus lands on it and nothing scrolls. A
+// focused control taken away, for which Firefox and WebKit fire no `focusout`, and each engine's
+// own scroll of a focused control into view: the clause of the `webkit` and `firefox` projects
+// that names the page-own focus row (e2e/playwright.config.ts).
+test("clear brush window pressed with the Window select scrolled out of sight scrolls the Delivery page nothing and hands the focus to no control out of sight @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await seedDeliveryFixture();
+  // A brush window inside the fixture's day, as a drag along the chart's time axis sets it.
+  const brushed = `/delivery?${TIMELINE_FIXTURE_QUERY}&ws=2024-06-01T06%3A00%3A00Z&we=2024-06-01T18%3A00%3A00Z`;
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const placed of ["out of sight", "in sight"] as const) {
+      for (const press of ["Enter", "click"] as const) {
+        const at = `${size.width}x${size.height}, the Window select ${placed}, by ${press}`;
+        await page.goto(brushed);
+        const header = page.locator("header", {
+          has: page.getByRole("heading", { level: 1, name: "Delivery timeline" }),
+        });
+        const clear = header.getByRole("button", { exact: true, name: "clear brush window" });
+        const windowSelect = header.locator("select").first();
+        await expect(clear, `${at}: the brush drew no clear brush window`).toBeVisible();
+        await expect(page.getByTestId("delivery-chart")).toBeVisible();
+        // The page is drawn whole below the header, so it scrolls as far as the case needs: its
+        // height holds across two frames.
+        await expect
+          .poll(async () => {
+            const height = await page.evaluate(() => document.documentElement.scrollHeight);
+            await nextFrames(page);
+            return height === (await page.evaluate(() => document.documentElement.scrollHeight));
+          })
+          .toBe(true);
+        // The reader's own scroll: the select's foot 2 px above the window's top, the button on
+        // the line under it wholly in the window; or the select's top 24 px under the window's top.
+        const before = await windowSelect.evaluate((node, out) => {
+          const box = node.getBoundingClientRect();
+          window.scrollTo(0, window.scrollY + (out ? box.bottom + 2 : box.top - 24));
+          return Math.round(window.scrollY);
+        }, placed === "out of sight");
+        const select = await windowSelect.evaluate((node) => {
+          const box = node.getBoundingClientRect();
+          return { bottom: Math.round(box.bottom), top: Math.round(box.top) };
+        });
+        const button = await clear.evaluate((node) => {
+          const box = node.getBoundingClientRect();
+          return { bottom: Math.round(box.bottom), top: Math.round(box.top) };
+        });
+        const selectAsPlaced =
+          placed === "out of sight"
+            ? select.bottom < 0
+            : select.top >= 0 && select.bottom <= size.height;
+        if (!selectAsPlaced || button.top < 0 || button.bottom > size.height) {
+          wrong.push(
+            `${at}: the page could not be scrolled to the case (scrollY ${before}, select ${select.top}..${select.bottom} px, button ${button.top}..${button.bottom} px)`
+          );
+          continue;
+        }
+        if (press === "Enter") {
+          // Focused with no scroll, as a Tab to the button before the reader's own scroll left it.
+          await clear.evaluate((node) => {
+            if (node instanceof HTMLElement) node.focus({ preventScroll: true });
+          });
+          await page.keyboard.press("Enter");
+        } else {
+          await clear.click();
+        }
+        await expect(clear, `${at}: clear brush window stayed drawn`).toHaveCount(0);
+        await expect(page, `${at}: the brush stayed in the address`).not.toHaveURL(/[?&]ws=/);
+        // The header's hand-off runs in the commit that takes the button away, and the page's
+        // rescue a frame and a task after the loss, so both are done by now.
+        await nextFrames(page);
+        await nextFrames(page);
+        // One read is the answer: every hand-off has run, and nothing else moves the focus.
+        const holder = await focusHolder(page);
+        const landed = await page.evaluate(() => {
+          const active = document.activeElement;
+          const box = active?.getBoundingClientRect();
+          return {
+            body: active === null || active === document.body,
+            bottom: Math.round(box?.bottom ?? 0),
+            meets:
+              box !== undefined &&
+              box.bottom > 0 &&
+              box.top < window.innerHeight &&
+              box.right > 0 &&
+              box.left < window.innerWidth,
+            ownStop:
+              active instanceof HTMLElement && active.matches('main, [data-testid="main-content"]'),
+            scrollY: Math.round(window.scrollY),
+            top: Math.round(box?.top ?? 0),
+          };
+        });
+        const onSelect = await windowSelect.evaluate((node) => node === document.activeElement);
+        const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scrollY ${before} -> ${landed.scrollY}`;
+        if (landed.scrollY !== before) {
+          wrong.push(`${at}: the page scrolled ${landed.scrollY - before} px, to ${where}`);
+        }
+        if (landed.body) {
+          wrong.push(`${at}: the focus is on the body, scrollY ${before} -> ${landed.scrollY}`);
+        } else if (placed === "in sight" && !onSelect) {
+          wrong.push(`${at}: the focus is on ${where}, not on the Window select`);
+        } else if (!landed.ownStop && !landed.meets) {
+          wrong.push(`${at}: the focus is on ${where}, out of sight`);
+        }
+      }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
 });

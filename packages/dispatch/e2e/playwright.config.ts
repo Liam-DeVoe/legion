@@ -359,9 +359,12 @@ const parallelProjects = [
   // Unpin holds the focus hands the focus into no other card, whose card the Pinned tab takes
   // away, its row that a date the reader gives the search bar's Updated since is their press,
   // whose box the date takes away, its row that a Snooze pick in the reading column's head
-  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away, and
-  // its row that a group card deleted on another device while it holds the focus leaves the
-  // focus on the Session groups dialog, whose card the live update takes away.
+  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away, its
+  // row that a group card deleted on another device while it holds the focus leaves the focus on
+  // the Session groups dialog, whose card the live update takes away, and its row that clear
+  // brush window pressed with the Window select scrolled out of sight scrolls the Delivery page
+  // nothing, whose button the cleared brush takes away and whose landing each engine scrolls into
+  // view its own way.
   // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
