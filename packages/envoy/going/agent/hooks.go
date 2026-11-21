@@ -7,9 +7,11 @@ import (
 	"math"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
 )
@@ -76,11 +78,30 @@ type softLimitNode struct {
 // the next chain replaces, so each one reaches the heap and is garbage at once.
 var softLimitGarbage atomic.Pointer[softLimitNode]
 
-// workAtSoftLimit works the agent at its soft limit until ctx ends: it holds a live heap of
-// pointers, which each collection marks, of nine tenths of the process's memory limit
-// (GOMEMLIMIT), and allocates more of the same without pause on one goroutine for each CPU the
-// runtime schedules on (GOMAXPROCS), so the collector runs at the limit the whole time. With no
-// limit set it holds nothing and waits for ctx. What it held is garbage once it returns.
+// The soft-limit hook's sizes: each chain it holds is a mebibyte of nodes, and it changes what it
+// holds by 2% of the memory limit at a time, after a collection whose peak use since the one
+// before passed softLimitHigh of the limit, or stayed under softLimitLow.
+const (
+	softLimitChainBytes = 1 << 20
+	softLimitStep       = 50
+	softLimitHigh       = 1.02
+	softLimitLow        = 0.95
+	// softLimitEvery is how often the hook reads the runtime's use against its limit.
+	softLimitEvery = 5 * time.Millisecond
+)
+
+// workAtSoftLimit works the agent at its soft limit until ctx ends. One goroutine for each CPU the
+// runtime schedules on (GOMAXPROCS) allocates chains of pointers without pause, each garbage at
+// once, while the hook holds chains of the same nodes, which each collection marks, and sizes what
+// it holds so the memory the runtime counts against its limit (GOMEMLIMIT: all it has mapped less
+// what it gave back to the system) peaks at the limit. It reads that use every softLimitEvery, and
+// after each collection lets go of 2% of the limit's worth of chains where the peak since the
+// collection before passed softLimitHigh of the limit, or takes on as much where it stayed under
+// softLimitLow. So the heap reaches the limit before each collection and the collector runs all
+// the time; held at a fixed share instead, the collection's own garbage, marked while it runs,
+// took the runtime past its limit toward the ceiling its server kills it at (136% of the limit
+// with nine tenths held). With no limit set it holds nothing and waits for ctx. What it held is
+// garbage once it returns.
 func workAtSoftLimit(ctx context.Context) {
 	limit := debug.SetMemoryLimit(-1)
 	if limit == math.MaxInt64 {
@@ -88,12 +109,20 @@ func workAtSoftLimit(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
-	var held *softLimitNode
-	for range limit * 9 / 10 / 64 {
-		held = &softLimitNode{next: held}
+	var held []*softLimitNode
+	hold := func(chains int) {
+		for range chains {
+			var chain *softLimitNode
+			for range softLimitChainBytes / 64 {
+				chain = &softLimitNode{next: chain}
+			}
+			held = append(held, chain)
+		}
 	}
+	step := max(1, int(limit/softLimitStep/softLimitChainBytes))
+	hold(int(limit / 2 / softLimitChainBytes))
 	procs := runtime.GOMAXPROCS(0)
-	slog.Info("agent: "+hookSoftLimit+": the agent works at its soft limit", "limit", limit, "held", limit*9/10, "goroutines", procs)
+	slog.Info("agent: "+hookSoftLimit+": the agent works at its soft limit", "limit", limit, "held", len(held)*softLimitChainBytes, "goroutines", procs)
 	var allocating sync.WaitGroup
 	for range procs {
 		allocating.Go(func() {
@@ -105,6 +134,32 @@ func workAtSoftLimit(ctx context.Context) {
 				softLimitGarbage.Store(chain)
 			}
 		})
+	}
+	samples := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}, {Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}}
+	metrics.Read(samples)
+	cycle, peak := samples[0].Value.Uint64(), uint64(0)
+	ticker := time.NewTicker(softLimitEvery)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+			continue
+		case <-ticker.C:
+		}
+		metrics.Read(samples)
+		peak = max(peak, samples[1].Value.Uint64()-samples[2].Value.Uint64())
+		if samples[0].Value.Uint64() == cycle {
+			continue
+		}
+		cycle = samples[0].Value.Uint64()
+		switch {
+		case float64(peak) > softLimitHigh*float64(limit) && len(held) > step:
+			clear(held[len(held)-step:])
+			held = held[:len(held)-step]
+		case float64(peak) < softLimitLow*float64(limit):
+			hold(step)
+		}
+		peak = 0
 	}
 	allocating.Wait()
 	runtime.KeepAlive(held)

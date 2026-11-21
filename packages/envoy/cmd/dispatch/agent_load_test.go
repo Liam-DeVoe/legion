@@ -494,6 +494,11 @@ const (
 	cpuReads = 500
 	// cpuLivez is the longest /livez may take to answer while the agent works.
 	cpuLivez = time.Second
+	// cpuAtLimitLow and cpuAtLimitHigh are the memory the agent's runtime counts against its limit,
+	// as a share of it, at each end of the window at its soft limit, outside which the test does not
+	// judge the window: the agent was not at its soft limit.
+	cpuAtLimitLow  = 0.90
+	cpuAtLimitHigh = 1.10
 )
 
 // cpuRead is one timed request: when it started and how long it took.
@@ -913,11 +918,13 @@ const cpuAgentShare = 4
 
 // TestTheAgentLeavesTheServerItsCPU: the agent cannot take the server's CPU (check c29). The
 // agent works at its soft limit, its garbage collection included (going/agent's test_soft_limit
-// hook: a live heap of nine tenths of its GOMEMLIMIT, and allocation without pause on each CPU its
-// runtime schedules on). Meanwhile the p99 of one fixed read of the server, an issue, stays under
-// twice its p99 with the agent idle, and /livez, asked every 100 ms, answers each time in under
-// 1 s. Every thread of the agent runs under the SCHED_IDLE policy, idle and at the load. The
-// agent holds production's share of the runner's CPUs, a quarter, 1 at the least
+// hook: allocation without pause on each CPU its runtime schedules on, beside a live heap the hook
+// sizes so the memory its runtime counts against GOMEMLIMIT peaks at the limit); the test does not
+// judge a window at whose start or end the agent used less than 90% or more than 110% of its
+// limit, or in which its collector made no collection. Meanwhile the p99 of one fixed read of the
+// server, an issue, stays under twice its p99 with the agent idle, and /livez, asked every 100 ms,
+// answers each time in under 1 s. Every thread of the agent runs under the SCHED_IDLE policy, idle
+// and at the load. The agent holds production's share of the runner's CPUs, a quarter, 1 at the least
 // (DISPATCH_TEST_AGENT_PROCS), where production gives it 4 of a container's 16: on a runner of 4
 // CPUs the 4 a server gives its agent would be every one. The test logs the CPUs it runs on, the
 // agent's GOMAXPROCS, and the spread of the read and of a round trip to the database, idle and at
@@ -1025,6 +1032,22 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 				t.Errorf("%d of the agent's threads run under %s, want every one under SCHED_IDLE (threads by policy %v)", count, policy, threads)
 			}
 		}
+	}
+	// The read's p99 says what an agent at its soft limit leaves the server only where the agent
+	// was there: using its limit at each end of the window, its collector having run in it. A
+	// window where it was not is no evidence either way, so the test stops before it judges one.
+	for _, end := range []struct {
+		name    string
+		figures agentFigures
+	}{{"start", busyWindow.agentBefore}, {"end", busyWindow.agentAfter}} {
+		if used := end.figures.used(); used < cpuAtLimitLow || used > cpuAtLimitHigh {
+			t.Fatalf("at the %s of the window the agent used %.0f%% of its memory limit, outside the %.0f%% to %.0f%% of an agent at its soft limit, so the window is not judged: %s",
+				end.name, 100*used, 100*cpuAtLimitLow, 100*cpuAtLimitHigh, describeAgentRuntime(busyWindow.agentBefore, busyWindow.agentAfter))
+		}
+	}
+	if busyWindow.agentAfter.cycles == busyWindow.agentBefore.cycles {
+		t.Fatalf("the agent's collector made no collection in the window, so the agent was not at its soft limit and the window is not judged: %s",
+			describeAgentRuntime(busyWindow.agentBefore, busyWindow.agentAfter))
 	}
 	if busy >= 2*idle {
 		t.Errorf("with the agent at its soft limit the fixed read's p99 is %v, want under twice its %v with the agent idle", busy, idle)
