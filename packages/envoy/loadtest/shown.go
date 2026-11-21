@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"slices"
 	"strings"
@@ -79,4 +81,20 @@ func shownEventType(t string) string {
 		return t
 	}
 	return notAReplayEventType
+}
+
+// referencesETagPattern is the ETag Dispatch writes for a references answer: 64 lowercase
+// hexadecimal digits in double quotes (internal/dispatch/api/references.go, referencesETag).
+var referencesETagPattern = regexp.MustCompile(`^"[0-9a-f]{64}"$`)
+
+// shownETag is etag, the ETag header of a references answer, as refs-fetch's TSV records it: the
+// ETag where it is one Dispatch writes (referencesETagPattern) or empty, and otherwise "sha256:"
+// and the hex SHA-256 of what the answer sent there. Two answers whose ETags differ still record
+// two values, since the TSV compares two builds' answers, and nothing the answer wrote prints.
+func shownETag(etag string) string {
+	if etag == "" || referencesETagPattern.MatchString(etag) {
+		return etag
+	}
+	digest := sha256.Sum256([]byte(etag))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }

@@ -458,7 +458,7 @@ func runRefsFetch(args []string) error {
 	fs := flag.NewFlagSet("refs-fetch", flag.ExitOnError)
 	var f refsFlags
 	f.register(fs)
-	out := fs.String("out", "", "output TSV: key, status, ETag, body sha256, bytes")
+	out := fs.String("out", "", "output TSV: key, status, ETag (its sha256: where it is not Dispatch's shape), body sha256, bytes")
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -478,7 +478,9 @@ func runRefsFetch(args []string) error {
 
 // refsFetch records the references answer of every seeded issue, in key order, so two builds'
 // answers compare byte for byte. It records every status, and counts the answers that have
-// members among the 200s alone: another status carries no answer to count.
+// members among the 200s alone: another status carries no answer to count. An answer's ETag is
+// Dispatch's word, or the word of whatever answers in its place, which can echo the read's
+// bearer: the TSV records it only in Dispatch's shape (shownETag).
 func refsFetch(ctx context.Context, a *api, sf seedFile, out string) error {
 	keys := make([]string, 0, len(sf.Issues))
 	for _, is := range sf.Issues {
@@ -493,7 +495,7 @@ func refsFetch(ctx context.Context, a *api, sf seedFile, out string) error {
 			return fmt.Errorf("references of %s: %w", key, res.err)
 		}
 		sum := sha256.Sum256(res.body)
-		fmt.Fprintf(&tsv, "%s\t%d\t%s\t%s\t%d\n", key, res.status, res.etag, hex.EncodeToString(sum[:]), len(res.body))
+		fmt.Fprintf(&tsv, "%s\t%d\t%s\t%s\t%d\n", key, res.status, shownETag(res.etag), hex.EncodeToString(sum[:]), len(res.body))
 		total += len(res.body)
 		switch {
 		case res.status != http.StatusOK:

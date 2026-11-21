@@ -5799,6 +5799,13 @@
       "production": "loadtest issueNumber: a listed key that is not the project's named only in an issue key's shape (shownKey)"
     },
     {
+      "id": "loadtest-answer-members-refs-etag",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAReferencesETagIsRecordedOnlyInDispatchsShape",
+      "production": "loadtest refsFetch: a references answer's ETag recorded in the TSV only in Dispatch's shape (shownETag), its SHA-256 otherwise"
+    },
+    {
       "id": "cireconcile-answer-words-errors",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cireconcile",
@@ -8481,6 +8488,11 @@
       "site": "loadtest replay-fetch issueNumber: a listed issue key, decoded into a plain string, quoted raw when it is not the project's",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-listed-key"
+    },
+    {
+      "site": "loadtest refs-fetch: a references answer's ETag header written raw to the TSV it records",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-refs-etag"
     },
     {
       "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",

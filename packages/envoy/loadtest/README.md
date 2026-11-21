@@ -675,7 +675,9 @@ production's 3,187, the distinct author-list share is in [0.03, 0.12], and the a
 row are within 25% of 231. It prints `PASS` or `FAIL` and exits 1 on a failure.
 
 `refs-fetch` writes one TSV row per seeded issue, in key order: key, status, ETag, body sha256 and
-bytes. Two builds' answers compare row by row.
+bytes. Two builds' answers compare row by row. The ETag is recorded as Dispatch writes it (64
+lowercase hex digits in double quotes), and any other value as `sha256:` and the hex SHA-256 of
+it, since what answers in Dispatch's place can echo the read's bearer there.
 
 ## The spec loop's seed
 
