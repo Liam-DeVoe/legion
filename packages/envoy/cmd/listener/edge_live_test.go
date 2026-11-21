@@ -46,6 +46,16 @@ const (
 // the subject it names.
 var edgeServerViolation = regexp.MustCompile(`(Publish|Subscription) Violation - .*?Subject "([^"]*)"`)
 
+// edgeLiveGrant is the edge listener's grant for edgeLiveMachine and edgeProject (natsgrant.Edge).
+func edgeLiveGrant(t *testing.T) natsgrant.Permissions {
+	t.Helper()
+	grant, err := natsgrant.Edge(edgeLiveMachine, []string{edgeProject})
+	if err != nil {
+		t.Fatalf("the edge's grant: %v", err)
+	}
+	return grant
+}
+
 // edgeLiveRig is one hub-image server with the users a row names, the client of Dispatch's user
 // that created the stream on it, as Dispatch's server does, and the broker the edge listener asks
 // about its callers' tokens.
@@ -78,7 +88,7 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 		// relay subject and answers on whatever reply subject a frame names. An edge listener's
 		// frames name a relay receipt (bus.RelayReplyPrefix), which the serving replica's grant
 		// publishes, and its connection probe names the edge's own inbox.
-		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix + ".>", bus.RelayReplyPrefix + ">"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
+		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>", bus.RelayReplyPrefix + ">"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
 	}
 	var static []testnats.StaticUser
 	for _, name := range []string{"edge", "dispatch", "shared", "observer"} {
@@ -241,7 +251,7 @@ func (r *edgeLiveRig) violations(t *testing.T) [][]string {
 // under it.
 func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 	t.Run("under its grant", func(t *testing.T) {
-		rig := newEdgeLiveRig(t, natsgrant.Edge(edgeLiveMachine, []string{edgeProject}))
+		rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 		edge := rig.startEdge(t)
 		edge.waitHealthy(t)
 		frames, err := rig.connect(t, "observer").SubscribeSync(bus.DeliverSubject(edgeLiveSession))
@@ -284,10 +294,11 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 		}
 	})
 	t.Run("without its inbox prefix", func(t *testing.T) {
-		grant := natsgrant.Edge(edgeLiveMachine, []string{edgeProject})
-		grant.Subscribe = slices.DeleteFunc(slices.Clone(grant.Subscribe), func(entry string) bool { return entry == natsgrant.EdgeInboxPrefix+".>" })
+		grant := edgeLiveGrant(t)
+		prefix := natsgrant.EdgeInboxPrefix(edgeLiveMachine)
+		grant.Subscribe = slices.DeleteFunc(slices.Clone(grant.Subscribe), func(entry string) bool { return entry == prefix+".>" })
 		if len(grant.Subscribe) != 2 {
-			t.Fatalf("the edge's grant does not subscribe %s.>: %v", natsgrant.EdgeInboxPrefix, grant.Subscribe)
+			t.Fatalf("the edge's grant does not subscribe %s.>: %v", prefix, grant.Subscribe)
 		}
 		rig := newEdgeLiveRig(t, grant)
 		edge := rig.startEdge(t)
@@ -305,8 +316,8 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 				line = candidate
 			}
 		}
-		if !strings.Contains(line, natsgrant.EdgeInboxPrefix) {
-			t.Fatalf("the edge listener's start did not end naming %s; its refusal was %q:\n%s", natsgrant.EdgeInboxPrefix, line, output)
+		if !strings.Contains(line, prefix) {
+			t.Fatalf("the edge listener's start did not end naming %s; its refusal was %q:\n%s", prefix, line, output)
 		}
 		t.Logf("the start ended: %s", line)
 	})
@@ -334,7 +345,7 @@ func edgeRoleEnvelope(summary string) contracts.Envelope {
 // is taken from the role lane by it, which resolves the edge session as the holder and forwards
 // the message to the session's agent subject, and the edge listener relays it to the session.
 func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
-	rig := newEdgeLiveRig(t, natsgrant.Edge(edgeLiveMachine, []string{edgeProject}))
+	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)
 	frames, err := rig.connect(t, "observer").SubscribeSync(bus.DeliverSubject(edgeLiveSession))

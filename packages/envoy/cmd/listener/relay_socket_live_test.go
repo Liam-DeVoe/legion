@@ -114,7 +114,7 @@ type relayLiveOptions struct {
 	edgeProjects string
 	// grant is each replica's grant for the edge's projects, natsgrant.Edge by default; a control
 	// renders another.
-	grant func(machineID string, projects []string) natsgrant.Permissions
+	grant func(machineID string, projects []string) (natsgrant.Permissions, error)
 }
 
 func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
@@ -132,11 +132,15 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 
 	seeds := map[string]string{}
 	var users []testnats.StaticUser
-	for name, grant := range map[string]natsgrant.Permissions{
-		relayLiveA:        options.grant(relayLiveA, strings.Split(options.edgeProjects, ",")),
-		relayLiveB:        options.grant(relayLiveB, strings.Split(options.edgeProjects, ",")),
-		relayLiveDispatch: natsgrant.Dispatch(relayLiveDispatch),
-	} {
+	grants := map[string]natsgrant.Permissions{relayLiveDispatch: natsgrant.Dispatch(relayLiveDispatch)}
+	for _, machineID := range []string{relayLiveA, relayLiveB} {
+		grant, err := options.grant(machineID, strings.Split(options.edgeProjects, ","))
+		if err != nil {
+			t.Fatalf("render the grant of replica %s for %s: %v", machineID, options.edgeProjects, err)
+		}
+		grants[machineID] = grant
+	}
+	for name, grant := range grants {
 		seed, public := testnats.User(t)
 		seeds[name] = seed
 		users = append(users, testnats.StaticUser{NKey: public, Publish: grant.Publish, Subscribe: grant.Subscribe})
@@ -498,7 +502,8 @@ func requireClosed(t *testing.T, client *relaySocketClient, within time.Duration
 // that on the receipt subject, and A acks the message: nothing is sent again through the
 // consumer's ack wait, the socket reopened with a fresh token whenever its token expires. The
 // server refused nothing under the rendered grants. Controls: the replicas rendered
-// natsgrant.Listener, and the row fails naming the server's refusal of _INBOX_envoy_edge.>; the edge
+// natsgrant.Listener, and the row fails naming the server's refusal of the replica's own inbox
+// prefix (natsgrant.EdgeInboxPrefix); the edge
 // grant rendered without its subscribe of the receipts, and the row fails naming the frame sent
 // again.
 func TestARelaySocketCarriesFramesAndReceiptsUnderTheEdgeGrant(t *testing.T) {

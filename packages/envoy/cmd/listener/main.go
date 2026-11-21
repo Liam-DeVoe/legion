@@ -1490,7 +1490,11 @@ func main() {
 	var wakes *wakeReporter
 	var edge *edgeGrant
 	if edgeMode(cfg) {
-		edge = newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+		if edge, err = newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met); err != nil {
+			logger.Error("edge listener grant refused", slog.String("error", err.Error()))
+			client.Conn.Close()
+			os.Exit(1)
+		}
 	} else {
 		wakes = newWakeReporter(wakesCtx, client)
 	}

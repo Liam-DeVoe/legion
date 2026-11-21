@@ -6,15 +6,18 @@ body: |-
   `notifications.envoy.deliver.*`, `notifications.envoy.relayreply.>`,
   `notifications.envoy.resume.>`, and `notifications.envoy.exceptions.notifications.agent.>` and
   `notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project, with no create or
-  update of the stream, and subscribing its own inbox prefix `_INBOX_envoy_edge.>`, the relay
-  subjects and the relay receipts, and no role lane. `natsgrant/testdata/edge.golden.json` pins it
-  for machine `m` and project `PRIV`. The NATS auth service answers an `edge-listener` entry of
-  `BROKER_NATS_SERVICES` with it, for the projects the entry lists. A listener started with
-  `ENVOY_EDGE_PROJECTS` names every inbox under that prefix, reads the stream and ends its start,
-  naming it, when the server has none, subscribes no role lane, publishes no Legion wake report,
-  keeps no role message and hands no kept lane over (a publish to an unheld role is answered 404),
-  and publishes no delivery exception on a lane its grant leaves out, counting each on
-  `envoy_edge_exceptions_withheld_total`.
+  update of the stream, and subscribing its own machine's inbox prefix
+  `_INBOX_envoy_edge_<machine id>.>`, the relay subjects and the relay receipts, and no role lane.
+  Both refuse a project list that is not project keys, sorted, each once.
+  `natsgrant/testdata/edge.golden.json` pins it for machine `m` and project `PRIV`. The session
+  consumers' calls it keeps reach every consumer of the stream and deliver to any subject the
+  stream does not carry; the infra README's "Permission sets" says how far. The NATS auth service
+  answers an `edge-listener` entry of `BROKER_NATS_SERVICES` with it, for the projects the entry
+  lists. A listener started with `ENVOY_EDGE_PROJECTS` names every inbox under that prefix, reads
+  the stream and ends its start, naming it, when the server has none, subscribes no role lane,
+  publishes no Legion wake report, keeps no role message and hands no kept lane over (a publish to
+  an unheld role is answered 404), and publishes no delivery exception on a lane its grant leaves
+  out, counting each on `envoy_edge_exceptions_withheld_total`.
 time: 2026-11-20T18:47:39Z
 custom:
     Issue: edge-nats-grant

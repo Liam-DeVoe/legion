@@ -39,9 +39,16 @@ func ListenerHostPermissions(machineID string) Permissions {
 // notification topic (the agent subjects, each project's role subjects, the relay subjects and
 // receipts, the resume lane, and the exception lanes of the agent subjects and of each project's
 // role subjects), no create or update of the stream, its own inbox prefix in place of every reply
-// inbox, every session's relay subject and the relay receipts, and no role lane.
-func EdgePermissions(machineID string, projects []string) Permissions {
-	return rules(natsgrant.Edge(machineID, projects))
+// inbox, every session's relay subject and the relay receipts, and no role lane. A project list
+// natsgrant.Edge refuses is refused here, with its reason. What the set does not hold back - the
+// session consumers' calls, which reach every consumer of the stream and deliver to any subject
+// the stream does not carry - is natsgrant.Edge's to say.
+func EdgePermissions(machineID string, projects []string) (Permissions, error) {
+	grant, err := natsgrant.Edge(machineID, projects)
+	if err != nil {
+		return Permissions{}, err
+	}
+	return rules(grant), nil
 }
 
 // DispatchDurables are the fixed durable consumers of the stream that Dispatch's grant lets it
