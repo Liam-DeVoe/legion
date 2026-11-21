@@ -372,13 +372,17 @@ func censusHeldOperator(t *testing.T, identity string) (*nats.Conn, nats.JetStre
 // daemon store the census names, each at the address its Deployment names, and rewrites, by a
 // write conditional on its revision, each sentinel whose stream_id differs from it: a stale one
 // and one that recorded none are rewritten, every other field kept, and each is named in the
-// result's Changed; an equal one is left at its revision; a store with no sentinel yet (a store
-// enrol has not written) is left without one. A second run changes nothing. A store it cannot read
-// is named in the result's Unreconciled with why, and it then writes nothing: a store with no
-// table, and a declared daemon family whose store no --daemon-database names. A malformed
-// --daemon-database, a listing of the Deployments it cannot read and a stream that carries no
-// identity fail the whole call. Control: in each of those runs the stale store is still stale
-// afterwards, so the writer that does not write reads before it writes.
+// result's Changed; an equal one is left at its revision, named in Reconciled with its identity;
+// a store with no sentinel yet (a store enrol has not written) is left without one, named in
+// Reconciled with none. A second run changes nothing and names every store in Reconciled. A store
+// it cannot read is named in the result's Unreconciled with why, and it then writes nothing, so
+// the stale store is in Unreconciled too, not written: a store with no table, and a declared
+// daemon family whose store no --daemon-database names. Each of those results places every
+// daemon family in one list (writerhold.StreamIDResult.Covers). A malformed --daemon-database, a
+// listing of the Deployments it cannot read and a stream that carries no identity fail the whole
+// call. Controls: in each of those runs the stale store is still stale afterwards, so the writer
+// that does not write reads before it writes; and the first result without Reconciled, as the
+// writer answered before it, fails Covers for the equal store.
 func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 	ctx := t.Context()
 	conn, js := censusHeldOperator(t, "stream-2")
@@ -399,12 +403,20 @@ func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 	listing := censusListing(censusDeploymentOf("STALE", staleDB), censusDeploymentOf("EQUAL", equalDB), censusDeploymentOf("UNREC", unrecordedDB),
 		censusDeploymentOf("FRESH", freshDB), censusDeploymentOf("NOTABLE", noTableDB))
 	families := []string{familySession, familyDispatch, daemonFamily("STALE"), daemonFamily("EQUAL")}
+	stored := append(slices.Clone(families), daemonFamily("UNREC"), daemonFamily("FRESH"))
 
 	result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, equal, unrecorded, fresh})
 	require.NoError(t, err)
-	require.Equal(t, writerhold.StreamIDResult{Changed: []writerhold.StreamIDChange{
-		{Project: "STALE", From: "stream-1", To: "stream-2"}, {Project: "UNREC", From: "", To: "stream-2"},
-	}}, result)
+	require.Equal(t, writerhold.StreamIDResult{
+		Changed: []writerhold.StreamIDChange{
+			{Project: "STALE", From: "stream-1", To: "stream-2"}, {Project: "UNREC", From: "", To: "stream-2"},
+		},
+		Reconciled: []writerhold.ReconciledStore{{Project: "EQUAL", StreamID: "stream-2"}, {Project: "FRESH"}},
+	}, result)
+	require.NoError(t, result.Covers(stored))
+	before := result
+	before.Reconciled = nil
+	require.ErrorContains(t, before.Covers(families), daemonFamily("EQUAL")+" is in none of", "control: the result without Reconciled")
 	state, revision := censusSentinel(t, staleDB)
 	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-2", Hold: "h0"}, state)
 	require.Equal(t, uint64(2), revision, "the stale sentinel's rewrite")
@@ -418,7 +430,10 @@ func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 
 	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, equal, unrecorded, fresh})
 	require.NoError(t, err)
-	require.Equal(t, writerhold.StreamIDResult{}, result, "the second run")
+	require.Equal(t, writerhold.StreamIDResult{Reconciled: []writerhold.ReconciledStore{
+		{Project: "EQUAL", StreamID: "stream-2"}, {Project: "FRESH"}, {Project: "STALE", StreamID: "stream-2"}, {Project: "UNREC", StreamID: "stream-2"},
+	}}, result, "the second run")
+	require.NoError(t, result.Covers(stored))
 	_, revision = censusSentinel(t, staleDB)
 	require.Equal(t, uint64(2), revision)
 
@@ -431,12 +446,27 @@ func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 	}
 	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, equal, noTable})
 	require.NoError(t, err)
-	require.Equal(t, writerhold.StreamIDResult{Unreconciled: []writerhold.UnreconciledStore{{Project: "NOTABLE", Reason: "it has no intake_consumers table"}}}, result)
+	require.Equal(t, writerhold.StreamIDResult{
+		Reconciled: []writerhold.ReconciledStore{{Project: "EQUAL", StreamID: "stream-2"}},
+		Unreconciled: []writerhold.UnreconciledStore{
+			{Project: "NOTABLE", Reason: "it has no intake_consumers table"},
+			{Project: "STALE", Reason: "not written, since no store is written while any is unreconciled (daemon/NOTABLE)"},
+		},
+	}, result)
+	require.NoError(t, result.Covers(append(slices.Clone(families), daemonFamily("NOTABLE"))))
 	stillStale("a run with a store that has no table")
 
-	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, append(slices.Clone(families), daemonFamily("UNNAMED")), []string{stale, equal})
+	unnamed := append(slices.Clone(families), daemonFamily("UNNAMED"))
+	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, unnamed, []string{stale, equal})
 	require.NoError(t, err)
-	require.Equal(t, writerhold.StreamIDResult{Unreconciled: []writerhold.UnreconciledStore{{Project: "UNNAMED", Reason: "no --daemon-database UNNAMED=<file> names it"}}}, result)
+	require.Equal(t, writerhold.StreamIDResult{
+		Reconciled: []writerhold.ReconciledStore{{Project: "EQUAL", StreamID: "stream-2"}},
+		Unreconciled: []writerhold.UnreconciledStore{
+			{Project: "STALE", Reason: "not written, since no store is written while any is unreconciled (daemon/UNNAMED)"},
+			{Project: "UNNAMED", Reason: "no --daemon-database UNNAMED=<file> names it"},
+		},
+	}, result)
+	require.NoError(t, result.Covers(unnamed))
 	stillStale("a run with a declared family whose store no flag names")
 
 	_, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, "EQUAL"})
@@ -508,9 +538,10 @@ func censusClosedPort(t *testing.T) uint16 {
 // of the daemon stores' stream identity (ReconcileDaemonStreamIDs) answers it in the result's Gone,
 // with that answer, its database, the instance its Deployment names and the instance the
 // operator's file states, and reconciles the store beside it. A store whose server only does not
-// answer is no gone one: it is unreconciled, naming why, and nothing is written. Control (red at
-// the writer before the gone-store rule): that writer counted the gone store as unread too, and
-// failed the whole call with nothing written.
+// answer is no gone one: it is unreconciled, naming why, and nothing is written, so the stale
+// store beside it is unreconciled too, not written. Control (red at the writer before the
+// gone-store rule): that writer counted the gone store as unread too, and failed the whole call
+// with nothing written.
 func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) {
 	ctx := t.Context()
 	conn, _ := censusHeldOperator(t, "stream-2")
@@ -526,6 +557,7 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 	require.NoError(t, err, "a gone store fails the call")
 	require.Equal(t, []writerhold.StreamIDChange{{Project: "STALE", From: "stream-1", To: "stream-2"}}, result.Changed)
 	require.Empty(t, result.Unreconciled)
+	require.Empty(t, result.Reconciled)
 	require.Len(t, result.Gone, 1)
 	require.Equal(t, writerhold.GoneStore{Project: "GONE", Database: dropped, Instance: censusInstance, StatedInstance: censusInstance,
 		Answer: result.Gone[0].Answer}, result.Gone[0])
@@ -536,13 +568,18 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 
 	_, err = selection.NewPGStore(staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 2)
 	require.NoError(t, err)
-	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, []string{daemonFamily("STALE"), daemonFamily("AWAY")}, []string{stale, unreachable})
+	away := []string{daemonFamily("STALE"), daemonFamily("AWAY")}
+	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, away, []string{stale, unreachable})
 	require.NoError(t, err)
 	require.Empty(t, result.Gone, "an unreachable store is no gone one")
 	require.Empty(t, result.Changed)
-	require.Len(t, result.Unreconciled, 1)
+	require.Empty(t, result.Reconciled)
+	require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
 	require.Equal(t, "AWAY", result.Unreconciled[0].Project)
 	require.NotContains(t, result.Unreconciled[0].Reason, "3D000")
+	require.Equal(t, writerhold.UnreconciledStore{Project: "STALE", Reason: "not written, since no store is written while any is unreconciled (daemon/AWAY)"},
+		result.Unreconciled[1])
+	require.NoError(t, result.Covers(away))
 	state, _ = censusSentinel(t, staleDB)
 	require.Equal(t, "stream-1", state.StreamID, "a run with an unreachable store wrote nothing")
 }
@@ -585,12 +622,14 @@ create trigger refuse_writes before insert or update on `+selection.IntakeConsum
 	require.Equal(t, []writerhold.StreamIDChange{{Project: "FIRST", From: "stream-1", To: "stream-2"}}, result.Changed,
 		"the store written before the failed write")
 	require.Empty(t, result.Gone)
+	require.Empty(t, result.Reconciled)
 	require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
 	require.Equal(t, "REFUSED", result.Unreconciled[0].Project)
 	require.Contains(t, result.Unreconciled[0].Reason, selection.PGSentinelKey+" row's write failed")
 	require.Contains(t, result.Unreconciled[0].Reason, "the row refuses writes", "the failed write's reason")
 	require.Equal(t, writerhold.UnreconciledStore{Project: "THIRD", Reason: "not written, since daemon/REFUSED's write failed before it"},
 		result.Unreconciled[1])
+	require.NoError(t, result.Covers(families))
 	state, _ := censusSentinel(t, pools["FIRST"])
 	require.Equal(t, "stream-2", state.StreamID, "control: the first store's write did not land")
 	for _, project := range projects[1:] {
@@ -599,14 +638,113 @@ create trigger refuse_writes before insert or update on `+selection.IntakeConsum
 	}
 }
 
+// Every result the census's writer of the daemon stores' stream identity
+// (ReconcileDaemonStreamIDs) answers without an error places each daemon family it was given in
+// exactly one of its lists (writerhold.StreamIDResult.Covers), the decision a hub-restore's abort
+// reads: a store already at the stream's identity in Reconciled with it, and one with no sentinel
+// yet in Reconciled with none; a stale store it wrote in Changed; a gone one in Gone; and one
+// whose write failed in Unreconciled, with the stale store after it, not written, while the stores
+// after it that are already consistent are still in Reconciled. With a store it cannot reach it
+// writes nothing: that store and the stale one are in Unreconciled, and the consistent and gone
+// ones keep their lists. Controls: each result without Reconciled, as the writer answered before
+// it, fails Covers naming the consistent store; and the stale store is still stale after the run
+// that could not reach a store.
+func TestTheCensusPlacesEachDaemonFamilyInOneList(t *testing.T) {
+	ctx := t.Context()
+	conn, _ := censusHeldOperator(t, "stream-2")
+	stale := selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}
+	consistent := selection.StoreState{Cutover: selection.CutoverDone, Boundary: 3, StreamID: "stream-2"}
+	pools := map[string]*pgxpool.Pool{}
+	entries := map[string]string{}
+	deployments := map[string]writerhold.DaemonDeployment{}
+	for project, state := range map[string]*selection.StoreState{"EQUAL": &consistent, "FIRST": &stale, "REFUSED": &stale, "THIRD": &stale, "UNSET": nil, "WHOLE": &consistent} {
+		entry, pool := censusDaemonStore(t, project, daemonMigrations...)
+		if state != nil {
+			_, err := selection.NewPGStore(pool).WriteSentinel(ctx, *state, 0)
+			require.NoError(t, err)
+		}
+		pools[project], entries[project], deployments[project] = pool, entry, censusDeploymentOf(project, pool)
+	}
+	_, err := pools["REFUSED"].Exec(ctx, `create function refuse_writes() returns trigger language plpgsql as $$
+begin
+	raise exception 'the row refuses writes';
+end $$;
+create trigger refuse_writes before insert or update on `+selection.IntakeConsumersTable+` for each row execute function refuse_writes()`)
+	require.NoError(t, err)
+	dropped := censusDroppedDatabase()
+	entries["GONE"], deployments["GONE"] = censusStoreFileFor(t, "GONE", pools["EQUAL"], dropped, censusInstance), censusDeployment("GONE", dropped, censusInstance)
+	entries["AWAY"], deployments["AWAY"] = censusStoreFileFor(t, "AWAY", pools["EQUAL"], "", censusInstance), censusDeploymentOf("AWAY", pools["EQUAL"])
+	listing := func(context.Context) ([]writerhold.DaemonDeployment, error) {
+		var listed []writerhold.DaemonDeployment
+		for _, d := range deployments {
+			listed = append(listed, d)
+		}
+		return listed, nil
+	}
+	of := func(projects ...string) (families, daemonDatabases []string) {
+		families = []string{familySession, familyDispatch}
+		for _, project := range projects {
+			families = append(families, daemonFamily(project))
+			daemonDatabases = append(daemonDatabases, entries[project])
+		}
+		return families, daemonDatabases
+	}
+
+	families, daemonDatabases := of("EQUAL", "FIRST", "GONE", "REFUSED", "THIRD", "UNSET", "WHOLE")
+	result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, families, daemonDatabases)
+	require.NoError(t, err)
+	require.Len(t, result.Gone, 1)
+	require.Contains(t, result.Gone[0].Answer, "SQLSTATE 3D000")
+	require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
+	require.Contains(t, result.Unreconciled[0].Reason, "the row refuses writes")
+	require.Equal(t, writerhold.StreamIDResult{
+		Changed: []writerhold.StreamIDChange{{Project: "FIRST", From: "stream-1", To: "stream-2"}},
+		Gone: []writerhold.GoneStore{{Project: "GONE", Database: dropped, Instance: censusInstance, StatedInstance: censusInstance,
+			Answer: result.Gone[0].Answer}},
+		Reconciled: []writerhold.ReconciledStore{{Project: "EQUAL", StreamID: "stream-2"}, {Project: "UNSET"}, {Project: "WHOLE", StreamID: "stream-2"}},
+		Unreconciled: []writerhold.UnreconciledStore{
+			{Project: "REFUSED", Reason: result.Unreconciled[0].Reason},
+			{Project: "THIRD", Reason: "not written, since daemon/REFUSED's write failed before it"},
+		},
+	}, result)
+	require.NoError(t, result.Covers(families))
+	before := result
+	before.Reconciled = nil
+	require.ErrorContains(t, before.Covers(families), daemonFamily("EQUAL")+" is in none of", "control: the result without Reconciled")
+
+	// A store it cannot reach: nothing written, the stale store unreconciled, not written.
+	_, err = selection.NewPGStore(pools["FIRST"]).WriteSentinel(ctx, stale, 2)
+	require.NoError(t, err)
+	families, daemonDatabases = of("AWAY", "EQUAL", "FIRST", "GONE")
+	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, daemonDatabases)
+	require.NoError(t, err)
+	require.Len(t, result.Gone, 1)
+	require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
+	require.Equal(t, writerhold.StreamIDResult{
+		Gone:       []writerhold.GoneStore{{Project: "GONE", Database: dropped, Instance: censusInstance, StatedInstance: censusInstance, Answer: result.Gone[0].Answer}},
+		Reconciled: []writerhold.ReconciledStore{{Project: "EQUAL", StreamID: "stream-2"}},
+		Unreconciled: []writerhold.UnreconciledStore{
+			{Project: "AWAY", Reason: result.Unreconciled[0].Reason},
+			{Project: "FIRST", Reason: "not written, since no store is written while any is unreconciled (daemon/AWAY)"},
+		},
+	}, result)
+	require.NoError(t, result.Covers(families))
+	before = result
+	before.Reconciled = nil
+	require.ErrorContains(t, before.Covers(families), daemonFamily("EQUAL")+" is in none of", "control: the result without Reconciled")
+	state, _ := censusSentinel(t, pools["FIRST"])
+	require.Equal(t, "stream-1", state.StreamID, "control: a run with a store it cannot reach wrote the stale store")
+}
+
 // A 3D000 calls a daemon store gone only at the address its Deployment names. Each case is a
 // store whose database the server answers 3D000 for, so a writer without the address check would
 // call each gone; with it, each is unreconciled, naming why, nothing is gone, and the stale store
-// beside it is not written: a Deployment with no store-instance annotation, one with no
-// store-database annotation, a 3D000 from another instance (the operator's file states an
-// instance the Deployment does not name), a file with no instance line, a Deployment naming
-// another database, no Deployment for the project, and two of them. Control: each case fails
-// against the writer with the address check taken out (census.go's censusReadDaemonStore).
+// beside it is not written, and is unreconciled for that: a Deployment with no store-instance
+// annotation, one with no store-database annotation, a 3D000 from another instance (the operator's
+// file states an instance the Deployment does not name), a file with no instance line, a
+// Deployment naming another database, no Deployment for the project, and two of them. Control:
+// each case fails against the writer with the address check taken out (census.go's
+// censusReadDaemonStore).
 func TestTheCensusCallsAStoreGoneOnlyAtItsDeploymentsAddress(t *testing.T) {
 	ctx := t.Context()
 	conn, _ := censusHeldOperator(t, "stream-2")
@@ -638,13 +776,17 @@ func TestTheCensusCallsAStoreGoneOnlyAtItsDeploymentsAddress(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			gone := censusStoreFileFor(t, "GONE", staleDB, dropped, row.instance)
 			listing := censusListing(append([]writerhold.DaemonDeployment{censusDeploymentOf("STALE", staleDB)}, row.deployments...)...)
-			result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, []string{daemonFamily("STALE"), daemonFamily("GONE")}, []string{stale, gone})
+			families := []string{daemonFamily("STALE"), daemonFamily("GONE")}
+			result, err := ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, gone})
 			require.NoError(t, err)
 			require.Empty(t, result.Gone, "a 3D000 away from the Deployment's address was called gone")
 			require.Empty(t, result.Changed)
-			require.Len(t, result.Unreconciled, 1)
+			require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
 			require.Equal(t, "GONE", result.Unreconciled[0].Project)
 			require.Contains(t, result.Unreconciled[0].Reason, row.reason)
+			require.Equal(t, writerhold.UnreconciledStore{Project: "STALE", Reason: "not written, since no store is written while any is unreconciled (daemon/GONE)"},
+				result.Unreconciled[1])
+			require.NoError(t, result.Covers(families))
 			state, _ := censusSentinel(t, staleDB)
 			require.Equal(t, "stream-1", state.StreamID, "a run with a store unreconciled wrote the stale store")
 		})

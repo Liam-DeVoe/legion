@@ -506,68 +506,77 @@ const censusMaxConflicts = 10
 // key>) among them, each read only at the address its Deployment names. It reads every store's
 // sentinel row before it writes any, then rewrites each sentinel whose stream_id differs from the
 // stream's identity, every other field kept, with selection.PGStore.WriteSentinel at the revision
-// it read; a refused write (selection.ErrConflict) reads the row again. Its result names each
-// store it changed, each it found gone and each it left unreconciled, in the order of their
-// project keys.
+// it read; a refused write (selection.ErrConflict) reads the row again. Its result places each
+// store, and so each daemon family of families, in exactly one of its lists
+// (writerhold.StreamIDResult.Covers), each list in the order of the stores' project keys: Changed
+// for each store it rewrote, Gone for each it found gone, Reconciled for each it read and found
+// already at the stream's identity, which it leaves unchanged, and Unreconciled for each it left
+// as it is, with why.
 //
-// A store whose table holds no sentinel row yet (one enrol has not written) records no identity
-// and is left as it is. A store the rule finds gone, its database answering that it does not
-// exist, is no daemon's, and does not hold back the others. A store the rule leaves unreconciled
-// is named with why: a declared family no entry names, an address that is not its Deployment's, a
-// file or database it cannot open, a server that does not answer, a missing table, and a sentinel
-// that does not decode or holds a field this build does not know, which a rewrite would drop.
-// While any is, it writes nothing. A failed write after others leaves the stores changed so far
-// in the result, and the failed one and each still to write unreconciled. A malformed
-// daemonDatabases entry, a listing of the Deployments it cannot read, and a stream that carries no
-// identity fail the whole call, with nothing written: an empty identity is never written over a
-// recorded one.
+// A store whose table holds no sentinel row yet (one enrol has not written) records no identity:
+// it is left as it is, reconciled with none. A store the rule finds gone, its database answering
+// that it does not exist, is no daemon's, and does not hold back the others. A store the rule
+// leaves unreconciled is named with why: a declared family no entry names, an address that is not
+// its Deployment's, a file or database it cannot open, a server that does not answer, a missing
+// table, and a sentinel that does not decode or holds a field this build does not know, which a
+// rewrite would drop. While any is, it writes nothing, and each stale store is unreconciled too,
+// not written. A failed write after others leaves the stores changed so far in the result, and
+// the failed one and each stale store still to write unreconciled. A malformed daemonDatabases
+// entry, a listing of the Deployments it cannot read, and a stream that carries no identity fail
+// the whole call, with nothing written: an empty identity is never written over a recorded one.
+// The result it answers with an error is the empty one, and carries no promise: it places no
+// store.
 func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families, daemonDatabases []string) (writerhold.StreamIDResult, error) {
-	var result writerhold.StreamIDResult
 	if _, err := censusNamedProjects(daemonDatabases); err != nil {
-		return result, fmt.Errorf("the daemon stores' stream identity: %w", err)
+		return writerhold.StreamIDResult{}, fmt.Errorf("the daemon stores' stream identity: %w", err)
 	}
 	info, err := streamInfo(ctx, conn, notifications)
 	if err != nil {
-		return result, fmt.Errorf("the daemon stores' stream identity: the info of %s: %w", notifications, err)
+		return writerhold.StreamIDResult{}, fmt.Errorf("the daemon stores' stream identity: the info of %s: %w", notifications, err)
 	}
 	current := selection.StreamIdentity(info)
 	if current == "" {
-		return result, fmt.Errorf("the daemon stores' stream identity: %s carries no %s, so there is no identity to record", notifications, selection.StreamIdentityMetadataKey)
+		return writerhold.StreamIDResult{}, fmt.Errorf("the daemon stores' stream identity: %s carries no %s, so there is no identity to record", notifications, selection.StreamIdentityMetadataKey)
 	}
 	stores, closeStores, err := censusReadDaemonStores(ctx, deployments, families, daemonDatabases)
 	defer closeStores()
 	if err != nil {
-		return result, fmt.Errorf("the daemon stores' stream identity: %w", err)
+		return writerhold.StreamIDResult{}, fmt.Errorf("the daemon stores' stream identity: %w", err)
 	}
+	// held is why a stale store is not written, "" while it may be: no store is written while any
+	// is unreconciled, and none after a write that failed.
+	var held string
+	var unreconciled []string
+	for _, s := range stores {
+		if s.unreconciled != "" {
+			unreconciled = append(unreconciled, daemonFamily(s.project))
+		}
+	}
+	if len(unreconciled) > 0 {
+		held = fmt.Sprintf("not written, since no store is written while any is unreconciled (%s)", strings.Join(unreconciled, ", "))
+	}
+	var result writerhold.StreamIDResult
 	for _, s := range stores {
 		switch {
 		case s.unreconciled != "":
 			result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: s.unreconciled})
 		case s.gone != nil:
 			result.Gone = append(result.Gone, *s.gone)
-		}
-	}
-	if len(result.Unreconciled) > 0 {
-		return result, nil
-	}
-	stale := func(s censusDaemonRead) bool { return s.gone == nil && s.found && s.state.StreamID != current }
-	for i, s := range stores {
-		if !stale(s) {
-			continue
-		}
-		change, changed, err := censusRewriteStreamID(ctx, s, current)
-		if err != nil {
-			result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: fmt.Sprintf("its %s row's write failed: %v", selection.PGSentinelKey, err)})
-			for _, rest := range stores[i+1:] {
-				if stale(rest) {
-					result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: rest.project,
-						Reason: fmt.Sprintf("not written, since %s's write failed before it", daemonFamily(s.project))})
-				}
+		case !s.found || s.state.StreamID == current:
+			result.Reconciled = append(result.Reconciled, writerhold.ReconciledStore{Project: s.project, StreamID: s.state.StreamID})
+		case held != "":
+			result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: held})
+		default:
+			change, kept, err := censusRewriteStreamID(ctx, s, current)
+			switch {
+			case err != nil:
+				result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: fmt.Sprintf("its %s row's write failed: %v", selection.PGSentinelKey, err)})
+				held = fmt.Sprintf("not written, since %s's write failed before it", daemonFamily(s.project))
+			case kept != nil:
+				result.Reconciled = append(result.Reconciled, *kept)
+			default:
+				result.Changed = append(result.Changed, change)
 			}
-			return result, nil
-		}
-		if changed {
-			result.Changed = append(result.Changed, change)
 		}
 	}
 	return result, nil
@@ -597,8 +606,9 @@ func censusReadSentinel(ctx context.Context, db Database) (selection.StoreState,
 
 // censusRewriteStreamID writes s's sentinel with stream_id current over the revision s read, and
 // answers the change. A refused write reads the row again and writes over the revision read then,
-// unless the row now records current, or none, which answers no change.
-func censusRewriteStreamID(ctx context.Context, s censusDaemonRead, current string) (writerhold.StreamIDChange, bool, error) {
+// unless the row now records current, or no row is left, which it answers as the store
+// reconciled, left unchanged by it, and no change.
+func censusRewriteStreamID(ctx context.Context, s censusDaemonRead, current string) (writerhold.StreamIDChange, *writerhold.ReconciledStore, error) {
 	store := selection.NewPGStore(s.db)
 	state, revision := s.state, s.revision
 	for range censusMaxConflicts {
@@ -606,18 +616,18 @@ func censusRewriteStreamID(ctx context.Context, s censusDaemonRead, current stri
 		next.StreamID = current
 		_, err := store.WriteSentinel(ctx, next, revision)
 		if err == nil {
-			return writerhold.StreamIDChange{Project: s.project, From: state.StreamID, To: current}, true, nil
+			return writerhold.StreamIDChange{Project: s.project, From: state.StreamID, To: current}, nil, nil
 		}
 		if !errors.Is(err, selection.ErrConflict) {
-			return writerhold.StreamIDChange{}, false, err
+			return writerhold.StreamIDChange{}, nil, err
 		}
 		var found bool
 		if state, revision, found, err = censusReadSentinel(ctx, s.db); err != nil {
-			return writerhold.StreamIDChange{}, false, err
+			return writerhold.StreamIDChange{}, nil, err
 		}
 		if !found || state.StreamID == current {
-			return writerhold.StreamIDChange{}, false, nil
+			return writerhold.StreamIDChange{}, &writerhold.ReconciledStore{Project: s.project, StreamID: state.StreamID}, nil
 		}
 	}
-	return writerhold.StreamIDChange{}, false, fmt.Errorf("it changed under %d writes: %w", censusMaxConflicts, selection.ErrConflict)
+	return writerhold.StreamIDChange{}, nil, fmt.Errorf("it changed under %d writes: %w", censusMaxConflicts, selection.ErrConflict)
 }
