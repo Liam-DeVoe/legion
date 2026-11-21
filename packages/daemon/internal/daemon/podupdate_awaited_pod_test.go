@@ -120,8 +120,8 @@ func (r *podUpdateRig) retryLaunch() {
 // member that did not answer the round: its worker died in the pod, so what it did not push went
 // with the pod (lostClaims).
 //
-// The negative control is #4392 at f7c2ed015f: the line said the read was not made because the
-// round passed over no claim (nothingPassedOverRead), and the issue was written nothing.
+// The negative control is #4392 at f7c2ed015f: the line said the read was not made because "The
+// round passed over no claim that had not answered.", and the issue was written nothing.
 func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	token := rig.tokens[claim.RoleImplementer]
@@ -216,6 +216,101 @@ func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *tes
 	}
 	if !slices.Equal(roles, []claim.Role{claim.RoleTester}) {
 		t.Errorf("the round asked %v, want the tester alone", roles)
+	}
+}
+
+// replacedThroughAProcessBesideAWaitingClaim carries a round to its replacement through the
+// tester's process, beside the implementer, whose process died in the pod and whose relaunch the
+// runtime refused for want of the pod's round (diesRefused): a member of the round with a session
+// whose launch waits on the pod (awaitsRoundPod), which has not answered and has no process to
+// answer with. The round waits on no answer of it (waitingClaims) and passes over no claim, so it
+// ends on the tester's answer. work is what a read of the issue's workspace finds. It holds that
+// the pod is replaced once, through the tester's process, and that the replacement's one line
+// names nobody under notWaitedFor and the implementer under waitingOnThePodNotWaitedFor, and it
+// returns the rig and that line.
+func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.WorkspaceWork) (*podUpdateRig, map[string]any) {
+	t.Helper()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	tester := rig.tokens[claim.RoleTester]
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, work)
+	rig.drifts(podUpdateExchangeDrift)
+	rig.refuseUntilReplaced(claim.RoleImplementer)
+	rig.diesRefused(claim.RoleImplementer)
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleTester, podUpdateRound)
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.signal(claim.RoleTester, "c0ffee")
+	replaced := rig.awaitReplacement(1, "once the tester answered")
+	if got := replaced[0].Pod; got.Claim != tester || podOf(got.Locator) != podUpdatePod {
+		t.Fatalf("ReplacePod was asked %+v, want the tester's process in pod %s", got, podUpdatePod)
+	}
+	rig.awaitClaim(claim.RoleTester, "the round's end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 || lines[0]["atTheBound"] != false {
+		t.Fatalf("the replacement was logged %+v, want one line that no bound made", lines)
+	}
+	line := lines[0]
+	wantField(t, line, "notWaitedFor")
+	wantField(t, line, "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
+	return rig, line
+}
+
+// wantReadThroughTheTester holds the replacement beside a waiting claim to one read of the
+// workspace, made through the tester, whose process the pod is replaced through, and named on the
+// line as found, which is "found work" or "found no work".
+func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]any, found string) {
+	t.Helper()
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Role != claim.RoleTester {
+		t.Errorf("the workspace was read %+v, want one read of %s through the tester", reads, podUpdateIssue)
+	}
+	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(claim.RoleTester) {
+		t.Errorf("the replacement's line names the read %+v, want one the tester made that %s", line, found)
+	}
+}
+
+// The round's pod holds the tester's process, and the implementer's process died there before
+// its relaunch was refused, so its launch waits on the pod. It is a member of the round with a
+// session that has not answered. No role was asked to push what its worker left on the pod's
+// disk, as no role is asked for a claim the round passed over, so the replacement through the
+// tester's process reads the workspace through the tester first, though the round passed over no
+// claim. The read finds an unpushed commit, and one message on the issue names the implementer
+// with its state, under the sentence of a read made through a process, and the commit. Had the
+// implementer's own retry reached the pod first, it would have replaced the pod at a launch and
+// named the implementer too (endRoundALaunchReplaced), so the issue hears of that work whichever
+// replacement comes first.
+//
+// The negative control is #4392 at a4cdff2799: the round passed over no claim, so the replacement
+// made no read, and the issue was written nothing.
+func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) {
+	rig, line := replacedThroughAProcessBesideAWaitingClaim(t,
+		runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	wantReadThroughTheTester(t, rig, line, "found work")
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+	}
+	for _, want := range []string{toldNotWaitedForRoles + "implementer (launching).", passedOverCommit, "Work that is not on a branch at origin is lost."} {
+		if !strings.Contains(messages[0], want) {
+			t.Errorf("the message does not say %q:\n%s", want, messages[0])
+		}
+	}
+	if strings.Contains(messages[0], toldUnansweredRoles) {
+		t.Errorf("the message says %q, want the sentence of a read made through a process:\n%s", toldUnansweredRoles, messages[0])
+	}
+}
+
+// The same round over a workspace whose read finds no work: the replacement reads the workspace
+// through the tester, and the issue is written nothing, since the read found nothing that went
+// with the pod.
+//
+// The negative control is #4392 at a4cdff2799: the line named the read as not made, since the
+// round passed over no claim.
+func TestPodUpdateWritesNothingWhereTheReadForAWaitingClaimFindsNoWork(t *testing.T) {
+	rig, line := replacedThroughAProcessBesideAWaitingClaim(t, runtime.WorkspaceWork{Head: passedOverHead})
+	wantReadThroughTheTester(t, rig, line, "found no work")
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Errorf("the issue was written %q, want nothing: the read found no work", messages)
 	}
 }
 
