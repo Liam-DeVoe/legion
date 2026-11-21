@@ -229,9 +229,12 @@ func (s *edgeScope) agents(agents []legionagents.Agent) []legionagents.Agent {
 // hand-back or claim revision. A role of one of the scope's projects can be claimed by any
 // session, and its claim record written by any writer of the role bucket, so the claim says
 // nothing of whose session it names: a holder outside the scope's projects is another project's
-// session, whose id and activity the scope shows nobody, as it shows no such session in a read. GET
-// /v1/roles/<role> and a role send through the publish route answer by it; the send still
-// forwards to the holder. A nil scope answers result as it is.
+// session, whose id and activity the scope shows nobody, as it shows no such session in a read. A
+// lapsed holder whose session record is gone has no projects to show, so it reads as unclaimed
+// too, even where it was a session of one of the scope's projects: the rule fails closed, and a
+// claim of the role then gets the 409 of a role held. GET /v1/roles/<role> and a role send
+// through the publish route answer by it; the send still forwards to the holder. A nil scope
+// answers result as it is.
 func (s *edgeScope) holder(result roles.Resolution) roles.Resolution {
 	if result.State == roles.Unclaimed || s.shows(result.Entry) {
 		return result
