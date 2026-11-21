@@ -466,9 +466,9 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	}
 }
 
-// RenewalAt is when Run trades again once token lands: RenewBefore ahead of its expiry, and
-// halfway to that expiry for a token that lives less than RenewBefore (untilRenewal). A caller
-// that holds an older token beside it reads from this whether the older one outlives the wait.
+// RenewalAt is when Run trades again once token lands: RenewBefore ahead of its expiry, and never
+// before half of what the token had left when it landed (untilRenewal). A caller that holds an
+// older token beside it reads from this whether the older one outlives the wait.
 func (c *Client) RenewalAt(token *Token) time.Time {
 	return c.renewalAt(token, c.now())
 }
@@ -483,25 +483,30 @@ func retriedTrade(err error) (string, []any) {
 }
 
 // untilRenewal is how long to wait before trading again for the token in hand: RenewBefore
-// ahead of its expiry, and half of what is left for a token that lives less than RenewBefore —
-// a deployment that mints short tokens, or a dev stack proving a renewal in seconds. That half
-// is never later than the token's own expiry, and it is what keeps such a client from trading
-// again the instant each token lands, which would spend the broker's per-address token bucket
-// in a loop and end in a 429.
+// ahead of its expiry, and never before half of what is left. A token of at least twice
+// RenewBefore renews RenewBefore ahead of its expiry, and a shorter one at its half life — a
+// deployment that mints short tokens, or a dev stack proving a renewal in seconds. That half is
+// never later than the token's own expiry, and it is what keeps such a client from trading again
+// soon after each token lands, which would spend the broker's per-address token bucket in a loop
+// and end in a 429.
 func (c *Client) untilRenewal(token *Token) time.Duration {
 	now := c.now()
 	return c.renewalAt(token, now).Sub(now)
 }
 
-// renewalAt is RenewalAt as of now.
+// renewalAt is RenewalAt as of now: the later of RenewBefore ahead of the token's expiry and half
+// of what it has left, and now for a token already past its expiry. The TypeScript client's
+// BrokerTokenClient holds the same rule (renewalAt in packages/cipher-client/src/token-client.ts),
+// and testdata/renewal.json holds the two to it (TestRenewalCorpus).
 func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
-	if at := token.Expiry.Add(-c.renewBefore); at.After(now) {
-		return at
+	left := token.Expiry.Sub(now)
+	if left <= 0 {
+		return now
 	}
-	if left := token.Expiry.Sub(now); left > 0 {
-		return now.Add(left / 2)
+	if half := now.Add(left / 2); half.After(token.Expiry.Add(-c.renewBefore)) {
+		return half
 	}
-	return now
+	return token.Expiry.Add(-c.renewBefore)
 }
 
 // sleep waits d, reporting false when ctx ended first. A Wake cuts the wait short, so the

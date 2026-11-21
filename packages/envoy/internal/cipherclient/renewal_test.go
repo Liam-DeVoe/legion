@@ -5,14 +5,18 @@
 // window to miss and an outage past one token's life is the same event as a short one; a broker
 // that refuses the identity stops the loop with a plain error, because no retry cures that; and
 // a caller is handed no identity it cannot use, so nothing of its writes lands unauthenticated.
+// When it trades again once a trade lands is the other half, held by testdata/renewal.json
+// (TestRenewalCorpus), which the TypeScript client's suite replays too.
 
 package cipherclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -168,6 +172,55 @@ func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 	}
 	if wait := client.untilRenewal(&Token{Expiry: now.Add(-time.Second)}); wait != 0 {
 		t.Errorf("a token already past its expiry is renewed in %s, want at once", wait)
+	}
+}
+
+// renewalCorpusPath is the file both clients' suites replay their renewal rule against; the
+// TypeScript suite reads it by relative path.
+const renewalCorpusPath = "testdata/renewal.json"
+
+// renewalCorpus is testdata/renewal.json: each row a token's life when it lands, the window, and
+// how long after it lands the rule trades again, all in seconds.
+type renewalCorpus struct {
+	Version int `json:"version"`
+	Rows    []struct {
+		Name               string  `json:"name"`
+		LifeSeconds        float64 `json:"life_seconds"`
+		RenewBeforeSeconds float64 `json:"renew_before_seconds"`
+		RenewsAfterSeconds float64 `json:"renews_after_seconds"`
+	} `json:"rows"`
+}
+
+// TestRenewalCorpus replays every row of testdata/renewal.json through renewalAt: a token is
+// traded again RenewBefore ahead of its expiry and never before half of what it had left when it
+// landed, so a token between one and two windows renews at its half life rather than soon after
+// it lands, and the TypeScript client, which replays the same file, renews at the same moment.
+func TestRenewalCorpus(t *testing.T) {
+	data, err := os.ReadFile(renewalCorpusPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", renewalCorpusPath, err)
+	}
+	var corpus renewalCorpus
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatalf("parse %s: %v", renewalCorpusPath, err)
+	}
+	if corpus.Version != 1 || len(corpus.Rows) == 0 {
+		t.Fatalf("%s is version %d with %d rows, want version 1 with rows", renewalCorpusPath, corpus.Version, len(corpus.Rows))
+	}
+	seconds := func(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
+	now := time.Now()
+	for _, row := range corpus.Rows {
+		t.Run(row.Name, func(t *testing.T) {
+			client, err := New(Config{BrokerURL: cipheraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
+				RenewBefore: seconds(row.RenewBeforeSeconds), Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			token := &Token{Expiry: now.Add(seconds(row.LifeSeconds))}
+			if got, want := client.renewalAt(token, now).Sub(now), seconds(row.RenewsAfterSeconds); got != want {
+				t.Errorf("a token of %v s with a window of %v s renews %s after it lands, want %s", row.LifeSeconds, row.RenewBeforeSeconds, got, want)
+			}
+		})
 	}
 }
 

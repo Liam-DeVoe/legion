@@ -73,10 +73,27 @@ import {
 
 /**
  * How long before an access token's expiry the client trades again, so a renewal lands with the
- * token in hand still good and nothing of the caller's restarts. The broker mints a machine's
- * token for an hour or less.
+ * token in hand still good and nothing of the caller's restarts; a token that lands with less than
+ * twice this left is traded again at half its life instead ({@link renewalAt}). The broker mints a
+ * machine's token for an hour or less.
  */
 export const DEFAULT_RENEW_BEFORE_MS = 5 * 60_000;
+
+/**
+ * When a token that lands at `now` and lapses at `expiresAt` is traded again: `renewBeforeMs`
+ * ahead of its expiry, and never before half of what it had left when it landed; at once for a
+ * token already past its expiry. A token of at least twice the window renews the window ahead of
+ * its expiry, and a shorter one at its half life, so a client handed short tokens, by the broker
+ * or by a subject near its own end, trades again no sooner than half a token's life after it
+ * landed, never at every call.
+ * It is the Go client's `renewalAt` (packages/envoy/internal/cipherclient/brokerclient.go), and
+ * the corpus beside it, `testdata/renewal.json`, holds both clients to it.
+ */
+export function renewalAt(expiresAt: number, now: number, renewBeforeMs: number): number {
+  const left = expiresAt - now;
+  if (left <= 0) return now;
+  return Math.max(expiresAt - renewBeforeMs, now + left / 2);
+}
 
 /** The broker writes `expires_in` in whole seconds, truncated, so a read token's computed expiry
  *  can fall up to this much before that of the access token it was traded from. */
@@ -400,6 +417,14 @@ export async function sendWithProof(
   return answer;
 }
 
+/** The token a client holds, and when it trades again: {@link renewalAt} as of the moment the
+ *  token landed, worked out once, so a token held to its half life is not halved again at every
+ *  call. */
+interface HeldToken {
+  readonly token: BrokerToken;
+  readonly renewsAt: number;
+}
+
 /** Trades this client's identity for the broker's access tokens and keeps one live. */
 export class BrokerTokenClient {
   readonly #brokerUrl: string;
@@ -421,7 +446,7 @@ export class BrokerTokenClient {
   readonly #random: () => number;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
   readonly #nonce: DpopNonce = { value: "" };
-  #held: BrokerToken | null = null;
+  #held: HeldToken | null = null;
   /** The retry loop under way (`#run`), so the callers that need a token make one trade per slot
    *  of its schedule however many they are. It runs on no caller's signal: each caller stops
    *  waiting for it on its own (`#joined`). */
@@ -488,14 +513,14 @@ export class BrokerTokenClient {
   }
 
   /**
-   * A live access token: the one in hand while it is good for longer than the renewal window, and
+   * A live access token: the one in hand until it is due for renewal ({@link renewalAt}), and
    * otherwise the answer of this client's one retry loop (`#run`), which trades until a token
    * lands or a refusal no trade cures ends it. A caller never starts a second loop and never cuts
    * the loop's wait short, so however many callers ask — a NATS connection's every reconnect,
    * each Dispatch request — the broker sees one trade per slot of the loop's schedule.
    *
-   * - Inside the renewal window, a caller waits for the loop's trade; once a trade of the loop has
-   *   failed, a caller takes the token in hand at once while it is live, since a client that
+   * - Once the token in hand is due, a caller waits for the loop's trade; once a trade of the loop
+   *   has failed, a caller takes the token in hand at once while it is live, since a client that
    *   already holds an identity need not stop for a broker that is merely down or busy, and the
    *   loop trades again on its schedule.
    * - With no live token in hand, a fail-fast caller (the default) is told the loop's last
@@ -518,8 +543,10 @@ export class BrokerTokenClient {
     const waitForReady = options.waitForReady === true;
     const now = this.#now();
     const held = this.#held;
-    if (held !== null && now < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (held !== null && now < held.expiresAt.getTime() && this.#last !== null) return held;
+    if (held !== null && now < held.renewsAt) return held.token;
+    if (held !== null && now < held.token.expiresAt.getTime() && this.#last !== null) {
+      return held.token;
+    }
     // A closed client trades no more, and says so to a caller with nothing live in hand.
     const closed = this.#closed.signal;
     if (closed.aborted) throw closed.reason;
@@ -557,7 +584,7 @@ export class BrokerTokenClient {
 
   /**
    * The loop's answer, or, when the caller's `signal` ends first, the token in hand where it is
-   * still live (a caller inside the renewal window need not wait out a broker that is slow to
+   * still live (a caller whose token is due need not wait out a broker that is slow to
    * answer), else what `#stopped` says. The loop goes on either way; the caller leaves the
    * waiting set, so nothing of it stays behind.
    */
@@ -566,7 +593,7 @@ export class BrokerTokenClient {
     const stop = (): void => {
       this.#waiters.delete(waiter);
       const held = this.#held;
-      if (held !== null && this.#now() < held.expiresAt.getTime()) resolve(held);
+      if (held !== null && this.#now() < held.token.expiresAt.getTime()) resolve(held.token);
       else reject(this.#stopped(signal?.reason));
     };
     const waiter: Waiter = {
@@ -627,7 +654,7 @@ export class BrokerTokenClient {
    * token it brings back is a fresh one.
    */
   drop(accessToken?: string): void {
-    if (accessToken !== undefined && this.#held?.accessToken !== accessToken) return;
+    if (accessToken !== undefined && this.#held?.token.accessToken !== accessToken) return;
     this.#held = null;
   }
 
@@ -679,7 +706,11 @@ export class BrokerTokenClient {
           `the secrets broker answered this pod's session ${this.#session} once it was registered, ${Math.round((this.#now() - this.#since) / 1000)} s and ${this.#failed} failed trades after the first`
         );
       }
-      this.#held = token;
+      // Its renewal is worked out once, as it lands, as the Go client's `Run` works it out.
+      this.#held = {
+        token,
+        renewsAt: renewalAt(token.expiresAt.getTime(), this.#now(), this.#renewBeforeMs),
+      };
       this.#last = null;
       this.#since = null;
       this.#failed = 0;
@@ -731,8 +762,8 @@ export class BrokerTokenClient {
     this.#since ??= now;
     this.#failed += 1;
     const held = this.#held;
-    if (held !== null && now < held.expiresAt.getTime()) {
-      this.#tell((waiter) => waiter.resolve(held));
+    if (held !== null && now < held.token.expiresAt.getTime()) {
+      this.#tell((waiter) => waiter.resolve(held.token));
     } else {
       this.#held = null;
       // A fail-fast caller is told this failure now; a wait-for-ready caller waits on. Each kind
@@ -807,11 +838,14 @@ export class BrokerTokenClient {
    * A read trade asks `spend` for a subject token with at least this client's renewal window
    * left, and {@link EXPIRES_IN_STEP_MS} more: the broker ends a read token no later than its
    * subject and writes its life in whole seconds, so one traded from a subject with less left
-   * would land inside its window and be traded again at the next call. The cost of that second:
-   * a refresh at this bound can end another process's read token of the same subject up to a
-   * second before that process renews it, which that process cures by dropping the token at
-   * Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE` and trading again (`brokerCredential`,
-   * `packages/envoy-client/src/broker-credential.ts`).
+   * would land with less than the window and be renewed at its half life ({@link renewalAt}),
+   * with less of its subject left each time. The cost of that second: a refresh at this bound can
+   * end another process's read token of the same subject up to a second before that process
+   * renews it, which that process cures by dropping the token at Dispatch's
+   * `401 BROKER_TOKEN_NOT_ACTIVE` and trading again (`brokerCredential`,
+   * `packages/envoy-client/src/broker-credential.ts`). A device login caps the ask at half the
+   * life its last refresh gave the access token (`DeviceLoginIdentity.spend`), so an access token
+   * fresh from a refresh meets it wherever that life is over the minute every trade keeps.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const source = this.#subject;

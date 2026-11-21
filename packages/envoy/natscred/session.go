@@ -81,9 +81,10 @@ const signTimeout = 10 * time.Second
 // connection on each token it lands that is not the one the connection presented, but for the
 // first when the presented token outlives that one's renewal. The loop trades on its first pass,
 // just after the connection presented a token the client held with more than RenewBefore left
-// (cipherclient.Client.Token), and renews RenewBefore ahead of each token it lands
-// (Client.RenewalAt). A presented token that lapses after the first token's renewal is kept until
-// the loop's second token, so the connection is not cut for nothing; one that lapses before it
+// (cipherclient.Client.Token), and renews each token it lands at Client.RenewalAt: RenewBefore
+// ahead of its expiry, and never before half of what the token had left when it landed. A
+// presented token that lapses after the first token's renewal is kept until the loop's second
+// token, so the connection is not cut for nothing; one that lapses before it
 // moves to the first, since the server would drop the connection at its expiry before the second
 // landed. The service answers a session's user with its token's expiry, so either way the
 // connection moves to a later token before the server drops it.

@@ -510,8 +510,9 @@ function warnedEvery(warn: (text: string) => void): {
  *  window ahead of it (`DEFAULT_RENEW_BEFORE_MS`, inside which it trades), or halfway there for
  *  a token that lives less than twice that window; at least `RENEW_FLOOR_MS`, unless that is
  *  past half the token's remaining life (the broker allows one-second tokens), and at once for a
- *  token already lapsed. */
-function renewDelay(expiry: number, now: number): number {
+ *  token already lapsed. Exported for `nats-credential.test.ts`, which replays the renewal corpus
+ *  (`packages/envoy/internal/cipherclient/testdata/renewal.json`) through it. */
+export function renewDelay(expiry: number, now: number): number {
   const remaining = expiry - now;
   if (remaining <= 0) return 0;
   const ahead = remaining - Math.min(DEFAULT_RENEW_BEFORE_MS, remaining / 2);

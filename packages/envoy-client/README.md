@@ -963,20 +963,21 @@ An identity with one of its variables missing is an error that names the variabl
 `AGENT_SECRETS_DEVICE_LOGIN_FILE` names, else `~/.config/legion/device-login.json`, mode 0600:
 the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
 `expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
-its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
-directory lets them write to it, or when another user owns either. A trade presents that access
-token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
-no actor, and every proof of a trade is signed with the login's key. A login made at another broker
-than `AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
-the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists, and
-its session is the caller's own, else `AGENT_SECRETS_SESSION`, else `device-login-<thumbprint>`, the
-first 12 characters of the key's thumbprint. The login is the person's own credential, so no
-`agent-secrets login` sign-in on the machine is read beside it, and a process with
-`PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is refused it, since
-the broker mints its trade as that person. Only this client trades a device login. The Go tools that
-read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper, `legion controller start`)
-refuse `device-login`, naming it as the TypeScript client's alone, so a machine that sets it for its
-sessions sets it for them, not for those tools.
+its `access_expires_at` and `access_life_seconds`, the life in whole seconds that token had when it
+landed. The file is refused when its group or anyone else may read it, when its directory lets
+them write to it, or when another user owns either. A trade presents that access token as the
+subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with no actor, and
+every trade's DPoP proof is signed with the login's key; a read trade adds a holder proof (below).
+A login made at another broker than `AGENT_SECRETS_URL` names is refused, and so is a broker on
+`http` off this machine's loopback: the login's tokens cross that connection. It names the projects
+`AGENT_SECRETS_PROJECTS` lists, and its session is the caller's own, else `AGENT_SECRETS_SESSION`,
+else `device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
+person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and a
+process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
+refused it, since the broker mints its trade as that person. Only this client trades a device
+login. The Go tools that read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
+`legion controller start`) refuse `device-login`, naming it as the TypeScript client's alone, so a
+machine that sets it for its sessions sets it for them, not for those tools.
 
 A refresh rotates the login's refresh token and revokes every access token the login answered
 before, and the broker revokes the whole login when a rotated refresh token is presented again
@@ -988,13 +989,18 @@ looks at the lock again just before it replaces the file, and a trade of it the 
 traded again. Under the lock a process reads the file again, refreshes when the access token kept
 there has less than a minute left, or when the broker refuses it as a token it no longer honours
 ("Token is not valid or has expired", or the login ended: a revoke ends a login before its token
-lapses), keeps the rotated login, and trades. A refusal of the trade's session or projects is
-not refreshed: a refresh cures none of those. A refresh the broker did not answer is sent once
-more at once: the broker redeems the spent refresh token again within its five-minute grace, and
-past it the login ends. The broker's `invalid_grant` to a refresh is final (`DeviceLoginEndedError`
-in `token-errors.ts`): the login was revoked or ran out, and only a new `dispatch login --device`
-cures it. A trade whose time ran out while another process of the machine held the lock says so
-(`LockHeldError`), and not that the broker did not answer.
+lapses), keeps the rotated login, and trades. A read trade refreshes first while the access token
+has less than the client's renewal window and a second left, capped at half the life the last
+refresh gave it (`access_life_seconds`) and never under the minute: a token fresh from a refresh
+meets it wherever that life is over a minute, and the next refresh comes no sooner than half a life
+later wherever that half is over the minute. A file with no `access_life_seconds`, as an older
+build writes it, keeps the minute alone until the next refresh. A refusal of the trade's session or
+projects is not refreshed: a refresh cures none of those. A refresh the broker did not answer is
+sent once more at once: the broker redeems the spent refresh token again within its five-minute
+grace, and past it the login ends. The broker's `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out, and only a new
+`dispatch login --device` cures it. A trade whose time ran out while another process of the
+machine held the lock says so (`LockHeldError`), and not that the broker did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1120,10 +1126,11 @@ audit row at the broker. The broker writes that row for every person's ordinary 
 no such trade decline the launcher credential (`personDeclinesNothing`). A person's read trade
 declines it and writes no such row. The client also reads the issuer's discovery document once.
 A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS` (900 seconds by default), and the client
-trades again five minutes before the token lapses (`DEFAULT_RENEW_BEFORE_MS`). So with the
-broker's default, a long-lived session that keeps calling trades about every ten minutes. Every
-`dispatch` command, Claude Code hook and `envoy-send` is a process of its own, so each one trades
-once.
+trades again five minutes before the token lapses (`DEFAULT_RENEW_BEFORE_MS`), and never before
+half the life the token had when it landed (`renewalAt`, the Go client's rule too), so a token of
+less than ten minutes is traded again at its half life. So with the broker's default, a long-lived
+session that keeps calling trades about every ten minutes. Every `dispatch` command, Claude Code
+hook and `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no

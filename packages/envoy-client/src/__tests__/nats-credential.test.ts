@@ -3,10 +3,11 @@
 // A session's broker NATS credential on the wire: what its authenticator puts on a CONNECT, that
 // it is the token and key the session's HTTP calls present, that nats.js is told never to give up
 // over a refused one, how the keeper moves the connection to a renewed token before the old one
-// lapses, and, on a real nats-server behind the real auth service, that a connection whose token
-// lapsed while the broker was away is admitted again once a token is live, that a revoked token
-// is dropped and the connection comes back, that a session switch subscribes the new session only
-// once the connection is admitted as it, and that a hub with no auth service fails the dial naming
+// lapses, at the moment the renewal corpus both broker clients replay names, and, on a real
+// nats-server behind the real auth service, that a connection whose token lapsed while the broker
+// was away is admitted again once a token is live, that a revoked token is dropped and the
+// connection comes back, that a session switch subscribes the new session only once the connection
+// is admitted as it, and that a hub with no auth service fails the dial naming
 // it; and which credential `envoySettings` resolves for a session: a seed, the session's broker
 // token, or none, and the reason inbound messages are off where the settings conflict or leave a
 // gap. The keeper and the follow against a stand-in connection are
@@ -19,7 +20,11 @@ import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "nod
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
-import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/cipher-client/token-client";
+import {
+  DEFAULT_RENEW_BEFORE_MS,
+  RETRY_FIRST_WAIT_MS,
+  RETRY_MAX_WAIT_MS,
+} from "@legion/cipher-client/token-client";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
@@ -43,6 +48,7 @@ import {
   followNatsCredential,
   keepNatsCredential,
   type NatsCredential,
+  renewDelay,
   TRADE_DEADLINE_MS,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
@@ -327,6 +333,35 @@ describe("one token per session for HTTP and NATS", () => {
     expect(await thumbprintOf(verifiedProof(auth.sig).header.jwk)).toBe(
       await thumbprintOf(httpKey.jwk)
     );
+  });
+});
+
+/** The renewal corpus both broker clients replay (`TestRenewalCorpus` in Go, `renewal.test.ts` in
+ *  cipher-client), read by relative path, never a copy: its times are seconds. */
+interface RenewalCorpus {
+  readonly rows: readonly {
+    readonly name: string;
+    readonly life_seconds: number;
+    readonly renew_before_seconds: number;
+    readonly renews_after_seconds: number;
+  }[];
+}
+const renewalCorpus = (await Bun.file(
+  new URL("../../../envoy/internal/cipherclient/testdata/renewal.json", import.meta.url)
+).json()) as RenewalCorpus;
+
+describe("the keeper's renewal moment", () => {
+  // The keeper renews no sooner than the token client trades again, or the renewal would land
+  // the token in hand: so its wait is the corpus's moment for every row of the client's window.
+  const rows = renewalCorpus.rows.filter(
+    (row) => row.renew_before_seconds * 1000 === DEFAULT_RENEW_BEFORE_MS
+  );
+  test("the corpus has rows of the token client's window", () => {
+    expect(rows.length).toBeGreaterThan(0);
+  });
+  test.each(rows.map((row) => [row.name, row] as const))("%s", (_, row) => {
+    const now = Date.now();
+    expect(renewDelay(now + row.life_seconds * 1000, now)).toBe(row.renews_after_seconds * 1000);
   });
 });
 

@@ -17,6 +17,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, EmbeddedJWK, type JWK } from "jose";
 import {
+  STAND_IN_ACCESS_SECONDS,
   STAND_IN_CREDENTIAL,
   STAND_IN_UNKNOWN_CODE,
   STAND_IN_USER_CODE,
@@ -28,6 +29,7 @@ import {
   DeviceLoginIdentity,
   deviceLoginHost,
   finishDeviceLogin,
+  leastAccessLifeMs,
   refreshDeviceLogin,
   startDeviceLogin,
   withDeviceLoginLock,
@@ -41,7 +43,7 @@ import {
   IDENTITY_VAR,
   PROJECTS_VAR,
 } from "../environment";
-import { TRADE_ATTEMPT_MS } from "../token-client";
+import { DEFAULT_RENEW_BEFORE_MS, EXPIRES_IN_STEP_MS, TRADE_ATTEMPT_MS } from "../token-client";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
@@ -150,6 +152,7 @@ test("the poll proves the login's key, waits out a pending code and keeps the lo
   expect(Object.keys(file).sort()).toEqual(
     [
       "access_expires_at",
+      "access_life_seconds",
       "access_token",
       "broker",
       "credential_id",
@@ -161,6 +164,7 @@ test("the poll proves the login's key, waits out a pending code and keeps the lo
   expect(file.broker).toBe(stub.url);
   expect(file.credential_id).toBe(STAND_IN_CREDENTIAL);
   expect(file.access_token).toBe(stub.loginTokens[0] as string);
+  expect(file.access_life_seconds).toBe(STAND_IN_ACCESS_SECONDS);
   // The key is the PKCS#8 DER, base64, of the key whose thumbprint the login is bound to.
   const key = createPrivateKey({
     key: Buffer.from(file.key as string, "base64"),
@@ -310,6 +314,47 @@ test("a code and an access token are taken to live an hour at most, whatever the
   const ended = Date.now();
   expect(login.accessExpiresAt?.getTime() ?? 0).toBeGreaterThanOrEqual(polled + hour);
   expect(login.accessExpiresAt?.getTime() ?? 0).toBeLessThanOrEqual(ended + hour);
+  expect(login.accessLifeSeconds).toBe(hour / 1000);
+});
+
+/** What a read trade asks a device login for: its client's window and a second (`#trade`). */
+const READ_ASK_MS = DEFAULT_RENEW_BEFORE_MS + EXPIRES_IN_STEP_MS;
+
+// The least life a kept access token must have left for a read trade to spend it without a
+// refresh: the ask, capped at half the life S the last refresh gave, never under the minute every
+// trade keeps. `spend` refreshes a token with strictly less left (`expires - now < least`), so
+// each row with an S says too whether a token fresh from a refresh, with all of S left and no time
+// gone, is refreshed, and whether it is a millisecond later.
+test.each([
+  ["S = 1 s: the minute, so every trade refreshes", 1, 60_000, true, true],
+  ["S = 30 s: the minute, so every trade refreshes", 30, 60_000, true, true],
+  ["S = 59 s: the minute, so every trade refreshes", 59, 60_000, true, true],
+  [
+    "S = 60 s: the minute; a token with exactly 60 s left is not under it and is spent, and one with any less is refreshed",
+    60,
+    60_000,
+    false,
+    true,
+  ],
+  ["S = 61 s: the minute, which a fresh token meets", 61, 60_000, false, false],
+  ["S = 120 s: half of S, the minute", 120, 60_000, false, false],
+  ["S = 301 s: half of S, under the ask", 301, 150_500, false, false],
+  ["S = 302 s: half of S, under the ask", 302, 151_000, false, false],
+  ["S = 3600 s: the ask, under half of S", 3600, READ_ASK_MS, false, false],
+  // An older build's file: no cap is known, and the ask uncapped would refresh at every read
+  // trade wherever S is under it, so the minute stands until a refresh keeps S.
+  ["no S kept, as an older build writes the file: the minute alone", null, 60_000, null, null],
+] as const)("a read trade's least life at %s", (_, seconds, least, fresh, later) => {
+  expect(leastAccessLifeMs(READ_ASK_MS, seconds)).toBe(least);
+  if (seconds === null || fresh === null || later === null) return;
+  expect(seconds * 1000 < least).toBe(fresh);
+  expect(seconds * 1000 - 1 < least).toBe(later);
+});
+
+test("a plain trade asks for no least life and takes the minute alone, whatever S is kept", () => {
+  for (const seconds of [null, 1, 60, 302, 3600]) {
+    expect(leastAccessLifeMs(undefined, seconds)).toBe(2 * TRADE_ATTEMPT_MS);
+  }
 });
 
 test("a complete page the broker sends is checked as the page is", async () => {

@@ -16,7 +16,7 @@
 // 3. The machine polls the device code, proving the key, until the person decides. Approved, it
 //    keeps the login in its file (`device-login-file.ts`, which holds the file's place, its read
 //    and its save): the key, the launcher credential's id and expiry, the refresh token, the
-//    broker, and the access token the poll answered with its expiry.
+//    broker, and the access token the poll answered with its expiry and its life.
 //
 // A trade, every time a session needs a broker token: the login's access token is the subject of
 // the RFC 8693 exchange, under RFC 8693's own `access_token` type, with no actor, and its proof is
@@ -109,6 +109,22 @@ const BROKER_SETTING = "AGENT_SECRETS_URL";
  *  refresh: two trade attempts' worth, so it cannot lapse at the broker while the trade that
  *  presents it is still under way. */
 const ACCESS_MARGIN_MS = 2 * TRADE_ATTEMPT_MS;
+
+/**
+ * The least life the access token kept in the file must have left for a trade to spend it as it
+ * is ({@link DeviceLoginIdentity.spend} refreshes one with less, strictly less): the trade's
+ * `leastLifeMs`, capped at half of `lifeSeconds`, the life the last refresh gave the access
+ * token, and never under {@link ACCESS_MARGIN_MS}. A file that keeps no life (an older build
+ * wrote it) and a trade that asks for none take that margin alone. The cap and the margin are
+ * `spend`'s, which says why.
+ */
+export function leastAccessLifeMs(
+  leastLifeMs: number | undefined,
+  lifeSeconds: number | null
+): number {
+  if (leastLifeMs === undefined || lifeSeconds === null) return ACCESS_MARGIN_MS;
+  return Math.max(ACCESS_MARGIN_MS, Math.min(leastLifeMs, (lifeSeconds * 1000) / 2));
+}
 
 /** The most one request of a login (the device authorization, a poll, a refresh) waits for the
  *  broker's answer before it is one the broker did not answer: half a trade's attempt, so a
@@ -271,9 +287,10 @@ function brokerConfiguration(
 
 /**
  * The login a grant's answer issues for `key` at `broker`: the refresh token, the credential's id
- * and expiry the broker's token hooks add, and the access token with when it lapses. An answer
- * that lacks any of them, or whose token is not DPoP-bound, is no login to keep, and nor is one
- * whose credential id holds a control character, since a login names that id to a person.
+ * and expiry the broker's token hooks add, and the access token with when it lapses and the life
+ * it was given. An answer that lacks any of them, or whose token is not DPoP-bound, is no login
+ * to keep, and nor is one whose credential id holds a control character, since a login names that
+ * id to a person.
  */
 function loginOf(
   key: KeyObject,
@@ -309,6 +326,7 @@ function loginOf(
     broker,
     accessToken: holdSecret(answered.access_token, accessExpiresAt),
     accessExpiresAt,
+    accessLifeSeconds: seconds,
   };
 }
 
@@ -542,7 +560,8 @@ export interface DeviceLoginIdentityOptions {
  * (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`): the access token the login holds, presented
  * under RFC 8693's `access_token` type with no actor, by a client that proves the login's own key
  * ({@link key}). Every trade spends it under the login's lock ({@link spend}), refreshing first
- * where the access token kept in the file has under a minute left, or less than the trade asks.
+ * where the access token kept in the file has under a minute left, or less than a read trade
+ * asks, up to half the life the last refresh gave it.
  */
 export class DeviceLoginIdentity implements TokenSource {
   readonly #path: string;
@@ -593,15 +612,19 @@ export class DeviceLoginIdentity implements TokenSource {
    * at another broker than this identity's, or a login of another key than the one this process
    * proves (a `dispatch login --device` since it started), each naming what cures it.
    *
-   * An access token with under a minute left, or under `leastLifeMs` where that is more, is
-   * refreshed first ({@link refreshDeviceLogin}), and the login it answers is kept before `trade`
-   * runs. A read trade passes its client's renewal window and one second more as `leastLifeMs`
-   * (`EXPIRES_IN_STEP_MS`): the broker ends a read token no later than the access token it was
-   * traded from and writes its life in whole seconds, so one traded from an access token with
-   * less left would start inside that window and be traded again at the next call. The cost of
-   * that second: a refresh at this bound can end another process's read token of that access
-   * token up to a second before that process renews it, which that process cures by dropping the
-   * token at Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE` and trading again.
+   * An access token with less left than {@link leastAccessLifeMs} answers is refreshed first
+   * ({@link refreshDeviceLogin}), and the login it answers is kept before `trade` runs. That is a
+   * minute ({@link ACCESS_MARGIN_MS}), or `leastLifeMs` where a trade asks for more, as a read
+   * trade does (`BrokerTokenClient`'s `#trade` says why), capped at half the life the last
+   * refresh gave the access token. The cap is what keeps an access token that lives less than the
+   * ask from being refreshed at every trade, each refresh ending the read tokens other processes
+   * traded from the token before: a fresh access token has about that whole life left, so it
+   * meets the cap, and the next refresh comes no sooner than half that life later, wherever that
+   * half is over the minute. Under two minutes of life the minute is the larger, and an access
+   * token that lives under a minute is refreshed at every trade, plain or read, by the minute
+   * alone, so a read trade's ask adds no refresh there. A file that keeps no life, which an older
+   * build wrote, takes the minute alone until the next refresh keeps one: the ask uncapped would
+   * refresh at every read trade wherever the life is under it.
    *
    * A kept access token the broker refuses as one it no longer honours
    * (`BrokerRefusedError.subjectNotHonoured`) is refreshed at once and traded once more: a revoke
@@ -641,7 +664,7 @@ export class DeviceLoginIdentity implements TokenSource {
         const refresh = (): Promise<DeviceLogin> =>
           refreshDeviceLogin(this.#path, login, { describe: this.describe(), held });
         const expires = login.accessExpiresAt?.getTime() ?? 0;
-        const least = Math.max(ACCESS_MARGIN_MS, leastLifeMs ?? 0);
+        const least = leastAccessLifeMs(leastLifeMs, login.accessLifeSeconds);
         let refreshed = login.accessToken === "" || expires - Date.now() < least;
         if (refreshed) login = await refresh();
         // At most two trades and one refresh: a refused token is refreshed once, unless it was
