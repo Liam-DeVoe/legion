@@ -1352,9 +1352,12 @@ a NATS outage serves again as soon as it starts.
 
 `natsAudience` holding an nkey seed, whitespace or a control character is refused by name before
 the component registers a resource, and `clusterOnly` refuses it. So is a `natsAudience` equal to
+`agentSecretsAudience` (the broker's `BROKER_K8S_OIDC_AUDIENCE`), to the listener's own audience
+(its Service address, `http://<hostname>-listener.<namespace>.svc.cluster.local:9020`), to
 `oidcAudience` or to the keyless Azure sign-in's `azureFederationAudience`
-(`api://AzureADTokenExchange` when unset), naming both: a token for either would be one the NATS
-auth service admits. `agentSecretsAudience`, `oidcAudience` and `azureFederationAudience` are
+(`api://AzureADTokenExchange` when unset), naming both: the NATS token crosses every CONNECT over
+plain `nats://`, so it would be a credential there, and a token for the other would be one the
+NATS auth service admits. `agentSecretsAudience`, `oidcAudience` and `azureFederationAudience` are
 compared and rendered as Dispatch and Entra read them, trimmed of surrounding whitespace, so a
 padded one renders and is compared as the audience it names, and one of whitespace alone, which
 names none, is refused by name rather than turning its verifier off.
@@ -1636,8 +1639,9 @@ render the same key twice and which the server refuses at its boot, missing inpu
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, a
 `natsSeedSecret` beside `natsAudience` and neither of the two, a `natsAudience` holding whitespace
-or a control character, a `natsAudience` equal to `oidcAudience` or the keyless Azure sign-in's
-audience, an `agentSecretsAudience` or `oidcAudience` of whitespace alone, an
+or a control character, a `natsAudience` equal to `agentSecretsAudience`, the listener's own
+audience, `oidcAudience` or the keyless Azure sign-in's audience, an `agentSecretsAudience`,
+`oidcAudience` or `azureFederationAudience` of whitespace alone, an
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside

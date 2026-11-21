@@ -662,6 +662,10 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("")
 		}, err: []string{"azureFederationAudience is empty", "api://AzureADTokenExchange"}},
+		{name: "an Azure audience of whitespace alone", edit: func(a *gcp.DispatchArgs) {
+			setAzureFederation(a)
+			a.AzureFederationAudience = pulumi.StringRef(" \t")
+		}, err: []string{"azureFederationAudience is empty", "api://AzureADTokenExchange"}},
 		{name: "an Azure chat deployment without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatDeployment = pulumi.String("example-chat-deployment") }, err: []string{"azureChatEndpoint is required when azureChatDeployment is set"}},
 		{name: "an Azure chat api-version without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatApiVersion = pulumi.StringRef("2024-05-01-preview") }, err: []string{"azureChatEndpoint is required when azureChatApiVersion is set"}},
 		{name: "an Azure chat scope without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatScope = pulumi.StringRef("https://ai.azure.com/.default") }, err: []string{"azureChatEndpoint is required when azureChatScope is set"}},

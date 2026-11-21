@@ -6,6 +6,7 @@ package gcp
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
@@ -64,6 +65,13 @@ func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listen
 // ENVOY_DISPATCH_PRINCIPAL.
 func dispatchServiceAccountSubject(s dispatchSettings) string {
 	return "system:serviceaccount:" + s.namespace + ":" + s.hostname
+}
+
+// dispatchListenerURL is the listener's own Service address, the one URL every caller reaches it
+// at: the app's ENVOY_URL, and the audience of the app's projected token for it, which the
+// listener verifies as its ENVOY_OIDC_AUDIENCE.
+func dispatchListenerURL(s dispatchSettings) string {
+	return "http://" + clusterLocal(s.hostname+"-listener", s.namespace) + ":" + strconv.Itoa(core.DefaultListenerPort)
 }
 
 // dispatchAccountTokenDir is where envoy-dispatch mounts its projected token for the listener's

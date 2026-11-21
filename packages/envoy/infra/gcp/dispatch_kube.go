@@ -427,9 +427,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// its own replica count. With natsInCluster no proxy runs: the empty socks5Proxy is what leaves
 	// ENVOY_NATS_SOCKS5_PROXY off both workloads, which then dial natsUrl themselves.
 	tailnetName := s.hostname + "-tailnet"
-	listenerPort := strconv.Itoa(core.DefaultListenerPort)
 	socks5Proxy := s.socks5Proxy()
-	listenerURL := "http://" + clusterLocal(listenerName, s.namespace) + ":" + listenerPort
+	listenerURL := dispatchListenerURL(s)
 
 	// natsURL is the one NATS URL once checked: every container reads this output rather than the
 	// raw input, so envoy-dispatch's NATS_URLS is never an unchecked copy beside the listener's

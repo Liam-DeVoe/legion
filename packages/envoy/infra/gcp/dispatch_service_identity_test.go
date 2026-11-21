@@ -225,17 +225,32 @@ func TestDispatchRefusesASeedInAnAudienceFirst(t *testing.T) {
 	require.EqualError(t, err, "natsAudience holds an nkey seed (not echoed)")
 }
 
-// natsAudience is the auth service's. Equal to another audience the app presents a token for or
-// verifies one under, a token minted for that one would be a bearer the auth service admits too,
-// so natsAudience beside oidcAudience or the Azure audience is refused, naming both inputs,
+// natsAudience is the auth service's, and the NATS token crosses every CONNECT. Equal to another
+// audience the app presents a token for or verifies one under, the NATS token would be spendable
+// there and a token minted for that one would be a bearer the auth service admits, so natsAudience
+// beside agentSecretsAudience (the secrets broker's), the listener's own audience (its Service
+// address, in whichever namespace), oidcAudience or the Azure audience is refused, naming both,
 // before anything registers. The comparison is of the audiences as their verifiers read them,
-// trimmed, so the other one padded with whitespace on either side is refused too; four distinct
+// trimmed, so the other one padded with whitespace on either side is refused too; five distinct
 // audiences resolve.
 func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 	for _, row := range []struct {
 		name, other string
 		edit        func(*gcp.DispatchArgs)
 	}{
+		{"agentSecretsAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
+			a.AgentSecretsUrl, a.AgentSecretsAudience = "https://example-broker.internal.example", dispatchNatsAudience
+		}},
+		{"agentSecretsAudience padded", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
+			a.AgentSecretsUrl, a.AgentSecretsAudience = "https://example-broker.internal.example", " "+dispatchNatsAudience+"\n"
+		}},
+		{"the listener's own audience", "the listener's own audience, http://example-dispatch-listener.dispatch.svc.cluster.local:9020", func(a *gcp.DispatchArgs) {
+			a.NatsAudience = "http://example-dispatch-listener.dispatch.svc.cluster.local:9020"
+		}},
+		{"the listener's own audience in another namespace", "the listener's own audience, http://example-dispatch-listener.other-ns.svc.cluster.local:9020", func(a *gcp.DispatchArgs) {
+			a.Namespace = pulumi.StringRef("other-ns")
+			a.NatsAudience = "http://example-dispatch-listener.other-ns.svc.cluster.local:9020"
+		}},
 		{"oidcAudience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchNatsAudience }},
 		{"oidcAudience padded", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = " " + dispatchNatsAudience + "\t" }},
 		{"azureFederationAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
@@ -271,7 +286,7 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 	args.OidcAudience = dispatchOidcAudience
 	setAzureFederation(args)
 	_, err := gcp.ResolveDispatch(args)
-	require.NoError(t, err, "four distinct audiences")
+	require.NoError(t, err, "five distinct audiences, the listener's own among them")
 }
 
 // Each audience is rendered as its verifier reads it, trimmed: Dispatch's DISPATCH_OIDC_AUDIENCE,

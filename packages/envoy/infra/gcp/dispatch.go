@@ -1421,14 +1421,19 @@ func blankAudience(input, value string) error {
 	return nil
 }
 
-// refuseSharedAudiences keeps natsAudience, which the NATS auth service admits, apart from
-// oidcAudience (callers of Dispatch itself) and the keyless Azure sign-in's audience (Entra;
-// azureFederationAudience, or its default). A token minted for the other audience would then be a
-// bearer the auth service admits too, so whoever receives it, or holds one for it, could present
-// it there. Each audience is kept apart, as the secrets broker keeps its exchange audience apart
-// from its enrollment one (internal/cipher/config, BROKER_EXCHANGE_K8S_AUDIENCE), so that no token
-// is spendable where another is. It compares the resolved settings, each audience as
-// dispatchAudience reads it, and names both inputs and neither value but the public Azure default.
+// refuseSharedAudiences keeps natsAudience, which the NATS auth service admits, apart from every
+// other audience the app presents a token for or verifies one under: agentSecretsAudience (the
+// secrets broker's BROKER_K8S_OIDC_AUDIENCE, on every broker route), the listener's own audience
+// (its Service address, dispatchListenerURL), oidcAudience (callers of Dispatch itself) and the
+// keyless Azure sign-in's audience (Entra; azureFederationAudience, or its default). A token
+// minted for natsAudience crosses each NATS CONNECT, over plain nats:// through the front door's
+// proxy, so were it also minted for another of these, whoever reads a CONNECT could present it
+// there, the broker's routes as Dispatch's account among them; and a token minted for another
+// would be a bearer the auth service admits. Each audience is kept apart, as the secrets broker
+// keeps its exchange audience apart from its enrollment one (internal/cipher/config,
+// BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where another is. It compares the
+// resolved settings, each audience as dispatchAudience reads it, and names both inputs and no
+// value but the public Azure default and the listener's own address, which is no secret.
 func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 	if s.natsAudience == "" {
 		return nil
@@ -1437,9 +1442,14 @@ func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 	if args.AzureFederationAudience == nil {
 		azureInput += " (unset, so " + defaultAzureFederationAudience + ")"
 	}
-	for _, other := range []struct{ input, audience string }{{"oidcAudience", s.oidcAudience}, {azureInput, s.azure.audience}} {
+	for _, other := range []struct{ input, audience string }{
+		{"agentSecretsAudience", s.agentSecretsAudience},
+		{"the listener's own audience, " + dispatchListenerURL(s), dispatchListenerURL(s)},
+		{"oidcAudience", s.oidcAudience},
+		{azureInput, s.azure.audience},
+	} {
 		if other.audience == s.natsAudience {
-			return core.InputErrorf("natsAudience", "natsAudience is also %s: a token minted for that audience would be a bearer the NATS auth service admits, so give natsAudience an audience of its own", other.input)
+			return core.InputErrorf("natsAudience", "natsAudience is also %s: a token minted for that audience would be a bearer the NATS auth service admits, and the NATS token, which crosses every CONNECT, would be spendable there, so give natsAudience an audience of its own", other.input)
 		}
 	}
 	return nil
@@ -1769,9 +1779,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.appKeySecretKey = args.AppPrivateKeySecretKey
 	s.azure = azure
 	s.answerer = answerer
-	if err := refuseSharedAudiences(args, s); err != nil {
-		return dispatchSettings{}, err
-	}
 	if args.DatabaseVersion != nil {
 		if *args.DatabaseVersion == "" {
 			return dispatchSettings{}, errors.New("databaseVersion is empty; leave it unset for " + defaultDispatchDatabaseVersion)
@@ -1853,6 +1860,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsLabel(namespace) {
 			return dispatchSettings{}, fmt.Errorf("allowedNamespaces[%d] %q must be a DNS label", i, namespace)
 		}
+	}
+	// The listener's own audience is its Service address, which names the namespace, so the
+	// audiences are compared once every input they read is resolved.
+	if err := refuseSharedAudiences(args, s); err != nil {
+		return dispatchSettings{}, err
 	}
 	return s, nil
 }
