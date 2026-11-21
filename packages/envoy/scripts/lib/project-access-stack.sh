@@ -137,7 +137,7 @@ project_access_dispatch_env() {
 # project_access_exports prints the banner's lines for PRIV's pod, the option and the airlock, as
 # the banner prints every export: two spaces, then `export NAME=value`, each path with printf %q,
 # so it is one shell word for the shell that sources the line. dev-stack.sh's banner prints them
-# after DEV_STACK_METADATA_SCRIPT's, in its one write. In a run without --project-access the
+# after DEV_STACK_METADATA_SCRIPT's. In a run without --project-access the
 # airlock's three values are empty.
 project_access_exports() {
   cat <<EOF

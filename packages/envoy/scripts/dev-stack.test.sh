@@ -91,6 +91,8 @@ set -m
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "${project_root}/packages/envoy/scripts/lib/rig-banner.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-stack.sh"
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/dev-stack-test.XXXXXX")"
 readonly temporary_dir
@@ -605,7 +607,7 @@ prepare_instance() {
 wait_for_ready() {
   local log_file="$1"
   for _ in $(seq 1 150); do
-    grep -q 'dev-stack: ready\.' "$log_file" 2>/dev/null && return 0
+    rig_banner_complete "$log_file" "${DEV_STACK_BANNER[@]}" && return 0
     sleep 0.1
   done
   return 1
@@ -673,15 +675,28 @@ broker_log_port() { grep -o '"message":"broker listening","addr":"127\.0\.0\.1:[
 nats_log_port() { grep -o 'Listening for client connections on 127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
-# The value of one "export NAME=..." line of the banner, as the shell that sources the line reads
-# it: the banner prints each path with printf %q, so the line is evaluated, in a subshell, rather
-# than cut at its "=".
+# The value of one "export NAME=..." line of the banner, from the banner's own block of the log
+# alone (lib/rig-banner.sh), as the shell that sources the line reads it: the banner prints each
+# path with printf %q, so the line is evaluated, in a subshell, rather than cut at its "=".
 exported() {
-  local line
-  line="$(grep -o "export $2=.*" "$1" | head -n1 || true)"
-  [[ -n "$line" ]] || return 0
-  (eval "${line#export }" && printf '%s' "${!2}") || true
+  rig_banner_value "$1" "${DEV_STACK_BANNER[@]}" "$2"
 }
+
+# A process's line ahead of the banner that names an export of the same name, and would run a
+# command if evaluated, is not the banner's: exported reads the banner's value and runs nothing.
+decoy_dir="${temporary_dir}/exported-decoy"
+mkdir -p "$decoy_dir"
+{
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf 'fake: a pasted line: export AGENT_SECRETS_URL=$(touch %s)/decoy\n' "$(printf %q "${decoy_dir}/ran")"
+  printf '%s\n\n' "${DEV_STACK_BANNER[0]}"
+  printf '  export AGENT_SECRETS_URL=%s\n' "$(printf %q "${decoy_dir}/the banner's")"
+  printf '\n%s\n' "${DEV_STACK_BANNER[1]}"
+} >"${decoy_dir}/log"
+decoy_value="$(exported "${decoy_dir}/log" AGENT_SECRETS_URL)"
+[[ ! -e "${decoy_dir}/ran" ]] || fail "exported evaluated a line of the log ahead of the banner"
+[[ "$decoy_value" == "${decoy_dir}/the banner's" ]] || fail "exported read '$decoy_value', not the banner's AGENT_SECRETS_URL"
+echo "PASS: exported reads the banner's own value and runs no line of the log ahead of it"
 
 # The globals assert_instance_ready sets for the caller: the run's work directory, the suffix its
 # names are made from, the ports every process of it reported, the port its Dispatch keeper held,

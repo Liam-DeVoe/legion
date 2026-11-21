@@ -46,6 +46,8 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "${project_root}/packages/envoy/scripts/lib/rig-banner.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-broker.sh"
 temporary_dir="$(mktemp -d)"
 readonly temporary_dir
@@ -288,7 +290,7 @@ run_instance() {
 wait_for_ready() {
   local log_file="$1"
   for _ in $(seq 1 50); do
-    grep -q 'dev-broker: ready\.' "$log_file" 2>/dev/null && return 0
+    rig_banner_complete "$log_file" "${DEV_BROKER_BANNER[@]}" && return 0
     sleep 0.1
   done
   return 1
@@ -341,21 +343,37 @@ curled_port() {
 }
 
 exported_port() {
-  # dev-broker.sh's own printed "export AGENT_SECRETS_URL=http://127.0.0.1:<port>" line: the
-  # value a human or agent-secrets would actually be told to use.
-  local log_file="$1"
-  grep -o 'AGENT_SECRETS_URL=http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true
+  # dev-broker.sh's own printed "export AGENT_SECRETS_URL=http://127.0.0.1:<port>" line, from its
+  # banner's own block (lib/rig-banner.sh): the value a human or agent-secrets would actually be told
+  # to use.
+  exported "$1" AGENT_SECRETS_URL | sed -nE 's|^http://127\.0\.0\.1:([0-9]+)$|\1|p'
 }
 
 exported() {
-  # The value of one "export NAME=..." line of dev-broker.sh's banner, as the shell that sources
-  # the line reads it: the banner prints each path with printf %q, so the line is evaluated, in a
-  # subshell, rather than cut at its "=".
-  local log_file="$1" name="$2" line
-  line="$(grep -o "export ${name}=.*" "$log_file" | head -n1 || true)"
-  [[ -n "$line" ]] || return 0
-  (eval "${line#export }" && printf '%s' "${!name}") || true
+  # The value of one "export NAME=..." line of dev-broker.sh's banner, from the banner's own block
+  # of the log alone (lib/rig-banner.sh), as the shell that sources the line reads it: the banner
+  # prints each path with printf %q, so the line is evaluated, in a subshell, rather than cut at its
+  # "=".
+  rig_banner_value "$1" "${DEV_BROKER_BANNER[@]}" "$2"
 }
+
+# A process's line ahead of the banner that names an export of the same name, and would run a
+# command if evaluated, is not the banner's: exported reads the banner's value and runs nothing.
+decoy_dir="${temporary_dir}/exported-decoy"
+mkdir -p "$decoy_dir"
+{
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf 'fake: a pasted line: export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$(touch %s)/decoy\n' "$(printf %q "${decoy_dir}/ran")"
+  printf '\n%s\n\n' "${DEV_BROKER_BANNER[0]}"
+  printf '  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=%s\n' "$(printf %q "${decoy_dir}/the banner's")"
+  printf '%s\n' "${DEV_BROKER_BANNER[1]}"
+} >"${decoy_dir}/log"
+decoy_value="$(exported "${decoy_dir}/log" AGENT_SECRETS_ACCOUNT_TOKEN_FILE)"
+if [[ -e "${decoy_dir}/ran" || "$decoy_value" != "${decoy_dir}/the banner's" ]]; then
+  echo "FAIL: exported read '$decoy_value' and ran a line of the log ahead of the banner: $([[ -e "${decoy_dir}/ran" ]] && echo yes || echo no)" >&2
+  exit 1
+fi
+echo "PASS: exported reads the banner's own value and runs no line of the log ahead of it"
 
 # Sets the global "db"/"port" variables to the database and port this instance used; exits the
 # whole test on any assertion failure.

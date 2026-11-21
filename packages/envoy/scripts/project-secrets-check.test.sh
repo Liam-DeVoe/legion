@@ -102,7 +102,8 @@ echo "dev-stack: broker http://127.0.0.1:5101" >&2
 printf '  export DEV_STACK_DIR=$(: >%s)\n' "$(printf %q "$state/an export ahead of the banner ran")"
 # Each path goes out with printf %q, as the real banner prints it, so a run under a TMPDIR whose
 # name holds a space or a quote holds the driver to reading each line as a shell does. The banner
-# goes out in one write, from "dev-stack: ready." to its last line, as the real one does.
+# goes out from "dev-stack: ready." to its last line; printf writes it one line per write, and the
+# driver reads it only once its last line is written (lib/rig-banner.sh).
 banner="$(cat <<BANNER
 
 dev-stack: ready.
