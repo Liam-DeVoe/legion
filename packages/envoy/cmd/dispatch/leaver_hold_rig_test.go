@@ -95,7 +95,7 @@ type leaverRig struct {
 	// enables that client. It has a URL before the broker starts and its handler once Dispatch does.
 	brokerDispatch *httptest.Server
 	// brokerAhead is how far, in nanoseconds, the clock of the broker's project-access client and
-	// hold gate runs ahead of the wall clock (brokerNow): pastBrokerCache moves it on.
+	// hold gate runs ahead of the wall clock (brokerNow): advanceBrokerClock moves it on.
 	brokerAhead atomic.Int64
 	// outside holds Dispatch's database, its people store and the boot the router serves, with
 	// PRIV and its access list, as newOutsideSignIn builds them.
