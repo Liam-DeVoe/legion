@@ -3019,7 +3019,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 216: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 218: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -3042,10 +3042,10 @@ package api
 // remedy that names the held stop rather than a relaunch. A plugin of any release stops on that
 // 409 as on the other, so the second remedy raises nothing.
 // (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
-// this repository, taken between 2026-11-21T20:07:21Z and 20:16:56Z, read main's 205, which
-// INFRA-3178 (#4573) took, and above it 206, 207, 208, 209, 210, 211, 212, 213, 214 and 215
-// declared by other open heads. So 216 is the lowest number above main's that no other open head
-// declared. This entry stood at 204, 207 and 212 before, each the number it took at an earlier
-// census. Read main's own number and every open pull request's again at the next forward merge
-// rather than from this line.)
-const DaemonAPIVersion = 216
+// this repository, taken between 2026-11-21T22:40:05Z and 22:51:29Z, read main's 205, which
+// INFRA-3178 (#4573) took, and above it 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216 and
+// 217 declared by other open heads, 216 by four of them. So 218 is the lowest number above main's
+// that no other open head declared. This entry stood at 204, 207, 212 and 216 before, each the
+// number it took at an earlier census. Read main's own number and every open pull request's again
+// at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 218
