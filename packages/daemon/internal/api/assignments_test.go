@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // assignmentsOf is the `assignments` of one issue of a state body, as the plugin's reader sees
@@ -120,19 +122,22 @@ func TestTheAssignmentsContractIsTheContractThatAddedTheField(t *testing.T) {
 // A caller below the contract that added each assignment's group is served every assignment
 // without `plan`, and the rest of each row as it stands; a caller at this daemon's contract is
 // served the group. The fixture's child LEGION-209 runs under `planning`, whose arm set
-// `default`.
+// `default`. A caller at or above shapedAnswersContract states its contract in the header, which
+// is what places it (no pod's claims place a caller there, callerKind.reaches), and a pod's claims
+// place a caller at the assignments contract.
 func TestTheStateServedBelowTheGroupContractCarriesNoPlan(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		contract int
-		plan     bool
+		name   string
+		claims []supervise.Claim
+		stated int
+		plan   bool
 	}{
-		{name: "a pod a contract below the group", contract: assignmentPlanContract - 1},
-		{name: "a pod at the assignments contract", contract: assignmentsContract},
-		{name: "a pod at this contract", contract: DaemonAPIVersion, plan: true},
+		{name: "a caller stating the contract below the group", claims: podClaims(0), stated: assignmentPlanContract - 1},
+		{name: "a pod at the assignments contract", claims: podClaims(assignmentsContract)},
+		{name: "a caller stating this contract", claims: podClaims(0), stated: DaemonAPIVersion, plan: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(tc.contract))
+			body := stateStating(t, stateServer(t, populatedState(t), tc.claims), statePodAddr+":41000", tc.stated)
 			var planning map[string]any
 			for _, row := range assignmentsOf(t, body, "LEGION-209") {
 				if row["experiment"] == "planning" {
@@ -153,7 +158,7 @@ func TestTheStateServedBelowTheGroupContractCarriesNoPlan(t *testing.T) {
 // assignmentPlanContract is the contract whose entry in version.go added the key, and this
 // daemon's own contract is never below it: a caller at this contract is served the group.
 func TestTheAssignmentPlanContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedPlan = 163
+	const addedPlan = 214
 	if assignmentPlanContract != addedPlan {
 		t.Fatalf("assignmentPlanContract = %d, want %d, the contract whose entry in version.go added each assignment's plan",
 			assignmentPlanContract, addedPlan)

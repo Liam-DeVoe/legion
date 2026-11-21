@@ -12,7 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
+	"regexp"
 	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +111,14 @@ func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 	}
 }
 
+// memoryTestCollectEnv makes a memory test's server collect its heap each time it is sent SIGUSR1
+// and then report that collection on its standard error (collectOnSignal).
+const memoryTestCollectEnv = "DISPATCH_MEMORY_TEST_COLLECT_ON_SIGNAL"
+
+// collectedLine is the line a server running with memoryTestCollectEnv writes once the collection
+// a SIGUSR1 asked for has run: its number and the heap it found live, in bytes.
+var collectedLine = regexp.MustCompile(`memory test: collection (\d+) found (\d+) bytes live\n`)
+
 // memoryServer is a Dispatch server: this test binary running main.
 type memoryServer struct {
 	command *exec.Cmd
@@ -119,6 +131,37 @@ type memoryServer struct {
 	// database is the harness's own handle on the database this server serves, which a measured
 	// window takes the block-index lease on (holdBlockIndexLease).
 	database *store.Store
+}
+
+func init() {
+	if os.Getenv(memoryTestServeEnv) == "1" && os.Getenv(memoryTestCollectEnv) == "1" {
+		collectOnSignal()
+	}
+}
+
+// collectOnSignal collects the heap and gives its free memory back to the system
+// (debug.FreeOSMemory) each time the process is sent SIGUSR1, and then writes the number of the
+// last collection the runtime completed and the heap it found live (collectedLine), read again
+// until no collection completed between two reads of the number, so the heap is that collection's.
+// It is installed before main runs, so the server never meets a SIGUSR1 it would die of.
+func collectOnSignal() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR1)
+	go func() {
+		samples := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}, {Name: "/gc/heap/live:bytes"}}
+		for range signals {
+			debug.FreeOSMemory()
+			for {
+				metrics.Read(samples)
+				number, live := samples[0].Value.Uint64(), samples[1].Value.Uint64()
+				metrics.Read(samples[:1])
+				if samples[0].Value.Uint64() == number {
+					fmt.Fprintf(os.Stderr, "memory test: collection %d found %d bytes live\n", number, live)
+					break
+				}
+			}
+		}
+	}()
 }
 
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
@@ -151,6 +194,9 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		// about twice what it holds. A test that needs another value sets GOGC in
 		// memoryHarness.env, which is appended after this and wins.
 		"GOGC=25",
+		// Every server collects and gives its free memory back to the system when it is sent
+		// SIGUSR1 (collectOnSignal), which start asks for before it reads the server's idle.
+		memoryTestCollectEnv + "=1",
 	}
 	command.Env = append(command.Env, h.env...)
 	held.Pass(command, "DISPATCH_LISTEN_FD")
@@ -191,8 +237,22 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	// The idle is read after a collection that gives the heap's free memory back to the system.
+	// Every boot compiles the pg_query WebAssembly module its migrations parse with
+	// (pgmigrate.Load, wazero), which holds about 220 MiB of the heap until it is done, and whether
+	// a collection frees that before /healthz answers is the luck of where the boot's collections
+	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
+	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
+	// low, and below zero (INFRA-3904).
+	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server
+}
+
+// collection is one collection the server reports: its number and the heap it found live.
+type collection struct {
+	number int
+	live   int64
 }
 
 // owedBeforeStart is what the test's database owes when a server is about to start: the documents
@@ -435,6 +495,41 @@ func (p *memoryServer) stop(t *testing.T) {
 	}
 }
 
+// collect asks the server for a collection (collectOnSignal), waits until the server has reported
+// it, and returns it with the length of the server's output up to the end of its report, where
+// whatever the server writes after it begins.
+func (p *memoryServer) collect(t *testing.T) (collection, int) {
+	t.Helper()
+	offset := p.output.Len()
+	if err := p.command.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("ask the server for a collection: %v\n%s", err, p.outputTail())
+	}
+	deadline := time.Now().Add(time.Minute)
+	for {
+		logged := p.outputFrom(offset)
+		if at := collectedLine.FindStringSubmatchIndex(logged); at != nil {
+			number, err := strconv.Atoi(logged[at[2]:at[3]])
+			if err != nil {
+				t.Fatalf("read the collection's number %q: %v", logged[at[2]:at[3]], err)
+			}
+			live, err := strconv.ParseInt(logged[at[4]:at[5]], 10, 64)
+			if err != nil {
+				t.Fatalf("read the collection's live heap %q: %v", logged[at[4]:at[5]], err)
+			}
+			return collection{number: number, live: live}, offset + at[1]
+		}
+		select {
+		case <-p.exited:
+			t.Fatalf("the server exited before it reported the collection it was asked for:\n%s", p.outputTail())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server did not report the collection it was asked for within a minute: is %s=1 set?\n%s", memoryTestCollectEnv, p.outputTail())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // resident is the server's resident memory in bytes, VmRSS now or VmHWM its peak.
 func (p *memoryServer) resident(t *testing.T, field string) int64 {
 	t.Helper()
@@ -471,22 +566,28 @@ func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 	}
 	written := p.output.Len()
 	during()
-	// A block-index pass reads whole documents of its own, so one inside the window would make the
-	// peak that pass's memory rather than the request's. start leaves nothing owed, and a pass
-	// that finds nothing owed logs nothing, so a clean window holds no such line. What a drain
-	// taken before the server started cannot cover is a window that fills an owed queue itself -
-	// any window that stores a document - since that row is owed while the measurement runs and
-	// the server's next tick would index it there; the pass is held off for the window's length by
-	// its own lease (holdBlockIndexLease) instead, and this guard stays as the proof that it was.
-	// The handler is the slog.NewTextHandler main installs with slog.SetDefault in
-	// cmd/dispatch/main.go, which writes the message mid-line as msg="dispatch: block index", so
-	// the substring is the match and not a line's prefix.
-	for _, line := range strings.Split(p.outputFrom(written), "\n") {
+	requireNoBlockIndexPass(t, p.outputFrom(written))
+	return p.resident(t, "VmHWM") - p.idle
+}
+
+// requireNoBlockIndexPass fails the test where window, what the server logged during a measured
+// window, holds a block-index pass. A block-index pass reads whole documents of its own, so one
+// inside the window would make what the window measured that pass's memory rather than the
+// request's. start leaves nothing owed, and a pass that finds nothing owed logs nothing, so a
+// clean window holds no such line. What a drain taken before the server started cannot cover is a
+// window that fills an owed queue itself - any window that stores a document - since that row is
+// owed while the measurement runs and the server's next tick would index it there; the pass is
+// held off for the window's length by its own lease (holdBlockIndexLease) instead, and this guard
+// stays as the proof that it was. The handler is the slog.NewTextHandler main installs with
+// slog.SetDefault in cmd/dispatch/main.go, which writes the message mid-line as
+// msg="dispatch: block index", so the substring is the match and not a line's prefix.
+func requireNoBlockIndexPass(t *testing.T, window string) {
+	t.Helper()
+	for _, line := range strings.Split(window, "\n") {
 		if strings.Contains(line, "dispatch: block index") {
-			t.Fatalf("the server indexed blocks inside the measured window, so the peak is that pass's memory: %s", line)
+			t.Fatalf("the server indexed blocks inside the measured window, so what it measured is that pass's memory: %s", line)
 		}
 	}
-	return p.resident(t, "VmHWM") - p.idle
 }
 
 // blockIndexLeaseNamespace is the first key every loop lease is taken under - duty's
@@ -612,15 +713,24 @@ func (p *memoryServer) tryUpload(mode, issue, markdown string) (uploadResult, er
 }
 
 // tryUploadNamed is tryUpload of a document named name: a new version of the issue's document of
-// that name where it has one.
+// that name where it has one. A version after the first replaces a document that already exists,
+// so it names the token of the version it replaces, which uploadBase reads.
 func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploadResult, error) {
+	base, err := p.uploadBase(issue, name)
+	if err != nil {
+		return uploadResult{}, err
+	}
 	actor := map[string]string{"kind": "session", "id": "memory-test"}
 	var body *bytes.Buffer
 	var contentType string
 	switch mode {
 	case "json":
 		body = &bytes.Buffer{}
-		if err := json.NewEncoder(body).Encode(map[string]any{"name": name, "content": markdown, "actor": actor}); err != nil {
+		upload := map[string]any{"name": name, "content": markdown, "actor": actor}
+		if base != nil {
+			upload["precondition"] = base
+		}
+		if err := json.NewEncoder(body).Encode(upload); err != nil {
 			return uploadResult{}, fmt.Errorf("encode the upload: %w", err)
 		}
 		contentType = "application/json"
@@ -629,7 +739,15 @@ func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploa
 		if err != nil {
 			return uploadResult{}, fmt.Errorf("encode the actor: %w", err)
 		}
-		body, contentType, err = apitest.MultipartUpload(map[string]string{"name": name, "actor": string(encodedActor)}, name, "text/markdown", []byte(markdown))
+		fields := map[string]string{"name": name, "actor": string(encodedActor)}
+		if base != nil {
+			encodedBase, err := json.Marshal(base)
+			if err != nil {
+				return uploadResult{}, fmt.Errorf("encode the token the upload replaces: %w", err)
+			}
+			fields["precondition"] = string(encodedBase)
+		}
+		body, contentType, err = apitest.MultipartUpload(fields, name, "text/markdown", []byte(markdown))
 		if err != nil {
 			return uploadResult{}, err
 		}
@@ -652,6 +770,32 @@ func (p *memoryServer) tryUploadNamed(mode, issue, name, markdown string) (uploa
 		result.artifactID = created.Artifact.ID
 	}
 	return result, nil
+}
+
+// uploadBase is the token an upload of the document the issue holds under name must name: the one
+// that document carries now, read as every reader of it reads it. It answers nothing where the
+// issue holds no document under that name, since such an upload is the document's first version
+// and replaces nothing. Any other answer is this reader's error: it cannot know what the upload
+// should name.
+func (p *memoryServer) uploadBase(issue, name string) (map[string]string, error) {
+	answer, err := p.trySend(http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+name+"/text", "", nil,
+		http.Header{"Authorization": {"Bearer " + memoryTestToken}})
+	if err != nil {
+		return nil, err
+	}
+	if answer.status == http.StatusNotFound {
+		return nil, nil
+	}
+	if answer.status != http.StatusOK {
+		return nil, fmt.Errorf("read the document %q of %s: status %d body %.300s", name, issue, answer.status, answer.body)
+	}
+	var document struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(answer.body, &document); err != nil {
+		return nil, fmt.Errorf("decode the document %q of %s: %w", name, issue, err)
+	}
+	return map[string]string{"document": document.Token}, nil
 }
 
 // requireAnswered fails the test unless the upload was stored or refused with a 4xx naming its

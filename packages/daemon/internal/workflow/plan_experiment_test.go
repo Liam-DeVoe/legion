@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,8 +22,8 @@ import (
 func drawnInto(t *testing.T, pool *pgxpool.Pool, key, experiment, variant, plan string) {
 	t.Helper()
 	at := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := record.NewStore().PutAssignments(ctx, tx, key, []record.Assignment{
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutAssignments(t.Context(), tx, key, []record.Assignment{
 			{Experiment: experiment, Unit: "issue", Variant: variant, Mode: "random", DrawnAt: &at, Plan: plan}})
 		return err
 	})
@@ -69,7 +68,7 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the plan of generation 0 deleted", child, got)
 		}
 		told := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + child +
-			" took no plan: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
+			" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
 			". " + inPlanningB(child)}}
 		if got := noticesOf(t, pool, child, "plan-not-taken"); !reflect.DeepEqual(got, told) {
 			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, told)
@@ -131,7 +130,7 @@ func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 	assertDefaultPlan(t, planStandingOf(t, pool, engine, issue, 1).plan, issue, 1, todaysDefaultSteps)
 	told := noticesOf(t, pool, issue, "plan-not-taken")
 	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + issue +
-		" took no plan: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
+		" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
 		". " + inPlanningB(issue)}}
 	if !reflect.DeepEqual(told, want) {
 		t.Fatalf("the plan-not-taken notices = %+v, want %+v", told, want)
@@ -162,7 +161,7 @@ func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing
 			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the owner's plan deleted", root.Key, got)
 		}
 		want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + root.Key +
-			" took no plan: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
+			" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
 			". " + inPlanningB(root.Key)}}
 		if got := noticesOf(t, pool, root.Key, "plan-not-taken"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, want)
@@ -199,8 +198,8 @@ func planNotTakenOfB(key string) *intake.Refusal {
 func drawnForMemory(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	at := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := record.NewStore().PutAssignments(ctx, tx, key, []record.Assignment{
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutAssignments(t.Context(), tx, key, []record.Assignment{
 			{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &at}})
 		return err
 	})
@@ -342,7 +341,7 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 			root := stepRoot(t, pool, phase.Admitted)
 			tc.drawn(t, pool, root.Key)
 			earlier := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "tester"))
-			earlier.GivenBy = claim.Token(token(t, "LEGION-300", claim.RoleArchitect))
+			earlier.GivenBy = claim.Token(treeRoleToken(t, "LEGION-300", claim.RoleArchitect))
 			mustTake(t, "an earlier owner's version 1 at generation 0", applyFacts(t, pool, engine)(planID(root.Key, 0, 1), earlier))
 
 			mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
@@ -355,7 +354,7 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 				!strings.Contains(told[0].Reason, "give it again with register_plan as your own.") {
 				t.Fatalf("the plan-not-taken notices = %+v, want the one notice of an earlier owner's plan, as built", told)
 			}
-			if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+			if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 				t.Fatalf("the owner's stop of a = %+v, want it taken", result.Refusal)
 			}
 			if got := walkStandingOf(t, pool, engine, root.Key, root.Generation).state; got != record.TaskStopped {
@@ -378,7 +377,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 		drawnInto(t, pool, root.Key, "planning", "b", "default")
 		firstStep(t, pool, engine, root.Key)
 
-		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, plan.DefaultTask))
+		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
 		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
 			" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
 		if !reflect.DeepEqual(result.Refusal, want) {
@@ -396,7 +395,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 		drawnInto(t, pool, root.Key, "planning", "a", "owner")
 		firstStep(t, pool, engine, root.Key)
 
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default = %+v, want it taken", result.Refusal)
 		}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation).state; got != record.TaskStopped {

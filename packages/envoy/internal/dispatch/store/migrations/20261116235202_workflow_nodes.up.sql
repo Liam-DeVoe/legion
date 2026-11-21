@@ -6,10 +6,10 @@
 -- relation each node states to its issue.
 --
 -- The two tables are the priority's shape (20261112024320_priority_nodes.up.sql), which is the shape
--- of the node and tuple store legion/INFRA-1149 is to add, less `legacy_source_seq`: so the day that
--- store lands, these rows copy into `graph_nodes` and `graph_tuples` column for column. They carry
--- names of their own, because tables named `graph_nodes` and `graph_tuples` here would collide with
--- that migration on the day it lands. The columns, the primary keys and the three read indexes are
+-- of the graph's node and tuple store, less `legacy_source_seq`: so the day that store lands, these
+-- rows copy into `graph_nodes` and `graph_tuples` column for column. They carry names of their
+-- own, because tables named `graph_nodes` and `graph_tuples` here would collide with that store's
+-- own migration on the day it lands. The columns, the primary keys and the three read indexes are
 -- the priority's exactly, which the store's test reads out of the catalogue
 -- (workflowstore TestTheTablesAreThePriorityShape).
 --

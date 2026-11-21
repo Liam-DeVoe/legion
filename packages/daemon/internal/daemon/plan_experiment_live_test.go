@@ -74,8 +74,7 @@ func TestExperimentLive(t *testing.T) {
 	if natsURL == "" {
 		t.Skipf("%s is unset, so there is no broker for Dispatch's events; scripts/e2e/experiment.sh starts a nats-server and sets it", liveNATSURLEnv)
 	}
-	root := liveCheckout(t)
-	requireBun(t)
+	root := liveCLICheckout(t)
 	options := scratchDispatchOptions{natsURL: natsURL, root: root}
 	daemonLog := os.Getenv(liveDaemonLogEnv)
 	if daemonLog != "" {
@@ -191,8 +190,9 @@ func (l *experimentLive) defaultNotTaken() {
 // from Dispatch's listing of the issue's documents.
 func (l *experimentLive) writePlan(key string) string {
 	l.t.Helper()
-	out, code := dispatchCLI(l.t, l.root, l.cliHome, l.r.baseURL, scratchSession, scratchAgentToken,
-		"artifact", "--issue", key, "--name", "plan.md", "--content", ownersPlan)
+	shell := cliShell{t: l.t, dir: l.cliHome, session: scratchSession, base: l.r.baseURL, token: scratchAgentToken}
+	ran, code := shell.bun(nil, dispatchCLI(l.root), "artifact", "--issue", key, "--name", "plan.md", "--content", ownersPlan)
+	out := string(ran.stdout) + string(ran.stderr)
 	if code != 0 {
 		l.t.Fatalf("`dispatch artifact --issue %s --name plan.md` exited %d:\n%s", key, code, out)
 	}
