@@ -6044,6 +6044,12 @@ export interface components {
     };
     Priority: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6078,6 +6084,12 @@ export interface components {
     };
     PriorityRow: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
