@@ -136,6 +136,8 @@ var missingAnswers = map[string]struct {
 		"the caller's own read mark, kept under any thread id and reading no message (idRoutes)"},
 	"POST /api/v1/issues/{key}/results": {http.StatusBadRequest, "UNKNOWN_CHECK",
 		"a result names a check of its issue's Verification document, and an issue the caller cannot read holds none"},
+	"POST /api/v1/issues/{key}/results/dry-run": {http.StatusBadRequest, "UNKNOWN_CHECK",
+		"the record's dry run makes the record's every refusal before its transaction (readResultRequest), so it answers the record's UNKNOWN_CHECK"},
 	"PUT /api/v1/issues/{key}/role-holders": {http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN",
 		"only the session of the issue's own project's Legion daemon writes its role holders, and every other caller is refused before any read, naming only the key it sent (putIssueRoleHolders)"},
 }
