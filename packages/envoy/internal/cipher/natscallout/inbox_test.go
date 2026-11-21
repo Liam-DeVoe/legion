@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -161,7 +162,108 @@ func TestNoCalloutGrantReadsAnotherInbox(t *testing.T) {
 		require.True(t, leak.answered)
 		require.NotEmpty(t, leak.seen, "under today's grant the second listener should have read the first's CONSUMER.INFO answer")
 	})
+	t.Run("live: a session answers the listener and Dispatch under their session reply inboxes", func(t *testing.T) {
+		answered, refused := sessionAnswers(t, natsgrant.SessionReplyInbox)
+		require.Equal(t, []string{"relay frame", "connection probe", "agent stream replay"}, answered)
+		require.Empty(t, refused, "the server refused the session's answers")
+	})
+	t.Run("live control: v60's _INBOX.relay.<identity> reply space", func(t *testing.T) {
+		answered, refused := sessionAnswers(t, func(identity string) string { return nats.InboxPrefix + "relay." + natscred.InboxPrefix(identity) })
+		require.Empty(t, answered, "under _INBOX.relay.<identity> the session's answers should be refused")
+		require.Len(t, refused, 3, "the server should refuse each of the session's three answers by name: %v", refused)
+		for _, subject := range refused {
+			require.True(t, strings.HasPrefix(subject, nats.InboxPrefix+"relay."), "refused %s", subject)
+		}
+	})
 }
+
+// sessionAnswers starts a server whose auth service admits session ses_a and, by their platform
+// tokens, a listener and Dispatch, each connecting under its own reply prefix; has the listener ask
+// the session a relay frame and a connection probe on its relay subject and Dispatch an agent
+// stream replay on its control subject, each on bus.SessionReplySubject under inbox of the
+// requester's account; and returns which the session's answer reached, and the subjects of the
+// session's answers the server refused. The session answers every request it receives.
+func sessionAnswers(t *testing.T, inbox func(identity string) string) (answered, refused []string) {
+	t.Helper()
+	const dispatchAccount = "system:serviceaccount:dispatch:dispatch"
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	a := newSession(t, "ses_a", 15*time.Minute)
+	now := time.Now()
+	raw := map[string]string{leakFirst: unsignedServiceToken(leakFirst, time.Hour), dispatchAccount: unsignedServiceToken(dispatchAccount, time.Hour)}
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
+		return path
+	}
+	service, err := start(t.Context(), Settings{
+		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed), XKeySeedFile: write("xkey.seed", keys.XKeySeed),
+		Services: []ServiceEntry{
+			{Kind: KindListener, MachineID: "hub-a", Account: leakFirst, AllProjects: true},
+			{Kind: KindDispatch, MachineID: "example-dispatch", Account: dispatchAccount, AllProjects: true},
+		},
+	}, Deps{Introspect: introspector(a), ServiceToken: serviceTokens(map[string]platformToken{
+		raw[leakFirst]:       {account: leakFirst, issued: now, expiry: now.Add(time.Hour)},
+		raw[dispatchAccount]: {account: dispatchAccount, issued: now, expiry: now.Add(time.Hour)},
+	}), Log: slog.New(slog.DiscardHandler)}, Decide)
+	require.NoError(t, err)
+	t.Cleanup(service.Close)
+	ready, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, service.Ready(ready))
+
+	sessionErrs := make(chan error, 16)
+	session, err := connectSession(t, url, a, sessionErrs)
+	require.NoError(t, err, "session ses_a was not admitted")
+	t.Cleanup(session.Close)
+	for _, subject := range []string{bus.DeliverSubject(a.id), contracts.AgentStreamControlSubject(a.id)} {
+		_, err := session.Subscribe(subject, func(m *nats.Msg) { _ = m.Respond([]byte(relayReplyDone)) })
+		require.NoError(t, err)
+	}
+	require.NoError(t, session.Flush())
+
+	connect := func(account string) *nats.Conn {
+		credential, _ := natscred.Service(natscred.ServiceFile(write(strings.ReplaceAll(account, ":", "_")+".token", raw[account])))
+		nc, err := nats.Connect(url, credential, nats.CustomInboxPrefix(natscred.InboxPrefix(account)), nats.NoReconnect(), nats.Timeout(10*time.Second))
+		require.NoError(t, err, "connect as %s", account)
+		t.Cleanup(nc.Close)
+		return nc
+	}
+	listener, dispatch := connect(leakFirst), connect(dispatchAccount)
+	for _, request := range []struct {
+		name             string
+		asker            *nats.Conn
+		account, subject string
+	}{
+		{"relay frame", listener, leakFirst, bus.DeliverSubject(a.id)},
+		{"connection probe", listener, leakFirst, bus.DeliverSubject(a.id)},
+		{"agent stream replay", dispatch, dispatchAccount, contracts.AgentStreamControlSubject(a.id)},
+	} {
+		reply := bus.SessionReplySubject(inbox(request.account), a.id)
+		answers, err := request.asker.SubscribeSync(reply)
+		require.NoError(t, err)
+		require.NoError(t, request.asker.PublishRequest(request.subject, reply, []byte(request.name)))
+		require.NoError(t, request.asker.Flush())
+		if _, err := answers.NextMsg(2 * time.Second); err == nil {
+			answered = append(answered, request.name)
+		}
+	}
+	for {
+		select {
+		case err := <-sessionErrs:
+			if subject, found := strings.CutPrefix(err.Error(), `nats: permissions violation: Permissions Violation for Publish to "`); found {
+				refused = append(refused, strings.TrimSuffix(subject, `"`))
+			}
+		default:
+			return answered, refused
+		}
+	}
+}
+
+// relayReplyDone is the body a session answers a relay frame with once it holds the message.
+const relayReplyDone = "done"
 
 // The two listeners of listenerLeak, each an all-projects listener entry of its own account.
 const (

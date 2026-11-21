@@ -128,7 +128,7 @@ const (
 	// listener's reply inbox can send such a reply. A session on its own grant (natsgrant.Session)
 	// publishes bus.SessionReplies alone, so its reply names that session, and is refused only for
 	// a token of another session's frame, which the session cannot read. A holder of the shared
-	// session user or of a host user can send any. The line names the frame's session and the
+	// session user can send any. The line names the frame's session and the
 	// session the reply names, never the sender, which the relay cannot see. A sender can send such
 	// replies as fast as it likes, so the line must not grow with them; one a minute still tells an
 	// operator it is going on, as admissionWarnEvery does for the listener's shared-token admissions.
@@ -205,9 +205,10 @@ type sessionRelays struct {
 	sessions  *session.SessionRegistry
 	machineID string
 	logger    *logging.Logger
-	// inbox is the listener's reply inbox, and replyPrefix it and a dot: a frame's reply subject is
-	// replyPrefix<session id>.<token> (bus.SessionReplySubject), and one subscription to the
-	// inbox's wildcard hears every reply.
+	// inbox is the listener's session reply inbox (bus.SessionConsumers.ReplyInbox: its service
+	// account's natsgrant.SessionReplyInbox, or a new inbox on a seed), and replyPrefix it and a
+	// dot: a frame's reply subject is replyPrefix<session id>.<token> (bus.SessionReplySubject),
+	// and one subscription to the inbox's wildcard hears every reply.
 	inbox       string
 	replyPrefix string
 	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
@@ -254,7 +255,7 @@ type sessionRelays struct {
 	// frames maps the token of every frame awaiting done or nak to it: the random last token of
 	// its reply subject. Among sessions on per-session credentials (the NATS auth service's grant,
 	// which subscribes a session's own relay subject alone) only the session the frame was sent to
-	// can read that subject. A holder of the shared session user or of a host user reads every
+	// can read that subject. A holder of the shared session user reads every
 	// session's relay subject, frames' reply subjects with them, and may publish to each, so neither
 	// the token nor onReply's check of the session the subject names stops it.
 	frames          map[string]*relayFrame
@@ -507,7 +508,7 @@ type relayFrame struct {
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
 // relay (sessionDelivery.relay). It relays nothing until setOwned(true).
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
-	inbox := nats.NewInbox()
+	inbox := delivery.consumers.ReplyInbox()
 	m := &sessionRelays{
 		delivery:    delivery,
 		cfg:         cfg,

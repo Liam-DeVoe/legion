@@ -15,12 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testnats/servicecallout"
 	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // A client connecting with a service's platform token asks under the reply prefix its token's
-// account names (natscred.InboxPrefix), says which account that is, and gets answers there: the
-// auth service grants that prefix in place of _INBOX.>, so a JetStream request, answered on the
-// connection's response inbox, is answered only when the client uses it.
+// account names (natscred.InboxPrefix) and gets answers there: the auth service grants that prefix
+// in place of _INBOX.>, so a JetStream request, answered on the connection's response inbox, is
+// answered only when the client uses it. The inbox under which it asks a session for an answer is
+// the account's session reply inbox, the one the auth service grants it (natsgrant.SessionReplyInbox).
 func TestAServiceConnectionAsksUnderItsOwnInboxPrefix(t *testing.T) {
 	url := servicecallout.Start(t, "listener/example-hub/*="+serviceTokenAccount)
 	tokenFile := filepath.Join(t.TempDir(), "token")
@@ -33,10 +35,10 @@ func TestAServiceConnectionAsksUnderItsOwnInboxPrefix(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	require.Equal(t, serviceTokenAccount, client.ServiceIdentity())
 	inbox := client.Connection().NewInbox()
 	require.True(t, strings.HasPrefix(inbox, natscred.InboxPrefix(serviceTokenAccount)+"."),
 		"the connection's inbox %s is not under its account's prefix %s", inbox, natscred.InboxPrefix(serviceTokenAccount))
+	require.Equal(t, natsgrant.SessionReplyInbox(serviceTokenAccount), bus.SessionReplyInboxOf(client.Connection()))
 	_, err = client.JS().AccountInfo()
 	require.NoError(t, err, "a JetStream request got no answer on the connection's own prefix")
 }
@@ -75,9 +77,9 @@ func TestAServiceConnectionsStoredRequestsAreAnswered(t *testing.T) {
 		"a window's Request's acknowledgement never reached the service")
 }
 
-// A client connecting with a seed, or with no credential, names no service account and keeps
-// nats.go's own inbox.
-func TestASeedConnectionNamesNoServiceIdentity(t *testing.T) {
+// A client connecting with a seed, or with no credential, keeps nats.go's own inbox, and asks a
+// session under a new inbox of it: one token after _INBOX., which a session's grant answers.
+func TestASeedConnectionKeepsNatsGosInbox(t *testing.T) {
 	unsetNkeyEnvironment(t)
 	_, url := testnats.Start(t)
 	client, err := bus.Connect([]string{url}, bus.WithEnvironment(func(name string) (string, bool) {
@@ -88,6 +90,8 @@ func TestASeedConnectionNamesNoServiceIdentity(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	defer client.Close()
-	require.Empty(t, client.ServiceIdentity())
-	require.True(t, strings.HasPrefix(client.Connection().NewInbox(), "_INBOX."))
+	require.True(t, strings.HasPrefix(client.Connection().NewInbox(), natsgo.InboxPrefix))
+	asked := bus.SessionReplyInboxOf(client.Connection())
+	token, found := strings.CutPrefix(asked, natsgo.InboxPrefix)
+	require.True(t, found && token != "" && !strings.Contains(token, "."), "a seed client asks a session under %s, want one token after _INBOX.", asked)
 }

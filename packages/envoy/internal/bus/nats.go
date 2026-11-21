@@ -295,10 +295,6 @@ type Client struct {
 	beforeRequestFlush func()
 	mu                 sync.Mutex
 
-	// serviceIdentity is the account the service token the client connects with names
-	// (credential), empty when it connects with a seed or with no credential. It never changes.
-	serviceIdentity string
-
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
 	// for the sends of that subject to take one each (deniedPublish). nats.go keeps one last error
@@ -419,7 +415,7 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
-	credential, _, err := credential(environment)
+	credential, err := credential(environment)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +487,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
 	}
-	credential, identity, err := credential(opts.environment)
+	credential, err := credential(opts.environment)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +499,6 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		urls:                        urls,
 		name:                        opts.name,
 		connectionSettings:          opts.connectionSettings(credential),
-		serviceIdentity:             identity,
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
@@ -827,15 +822,6 @@ func (c *Client) Connection() *nats.Conn {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Conn
-}
-
-// ServiceIdentity is the account the platform token this client connects with names
-// (natscred.Identity), the one whose reply prefix (natscred.InboxPrefix) its connections ask
-// under: empty for a client that connects with an nkey seed or with no credential, whose replies
-// arrive under nats.go's own _INBOX. A requester that names its reply inbox itself, one a session
-// must be able to answer, builds it from this (natsgrant.SessionReplyInbox).
-func (c *Client) ServiceIdentity() string {
-	return c.serviceIdentity
 }
 
 // ConnectionChanged returns a channel that is closed at the client's next connection event: a

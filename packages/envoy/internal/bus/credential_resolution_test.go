@@ -45,9 +45,10 @@ func metadataServer(t *testing.T, token string) {
 
 // The credential every bus connection presents is the one its environment names: an nkey seed, by
 // file or by value with the file winning as it always has, or a service's platform token, by file
-// or as this VM's Google identity token, read once to name the account it connects as. A service
-// token beside any other credential is refused naming both, since a process connects as one
-// identity, and so is a token that cannot be read or names no account; none set is no credential.
+// or as this VM's Google identity token, read once to name the account whose reply prefix it asks
+// under. A service token beside any other credential is refused naming both, since a process
+// connects as one identity, and so is a token that cannot be read or names no account; none set is
+// no credential.
 func TestCredentialResolution(t *testing.T) {
 	seed, _ := testnats.User(t)
 	dir := t.TempDir()
@@ -66,7 +67,7 @@ func TestCredentialResolution(t *testing.T) {
 		env      map[string]string
 		metadata string // the token the metadata server answers; empty fails every request
 		user     string // the CONNECT user the options give, ServiceUser for a service
-		identity string // the account a service's token names
+		identity string // the account a service's token names, whose reply prefix it asks under
 		nkey     bool
 		none     bool
 		refuses  []string
@@ -95,7 +96,7 @@ func TestCredentialResolution(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			metadataServer(t, row.metadata)
-			option, identity, err := credential(func(name string) (string, bool) {
+			option, err := credential(func(name string) (string, bool) {
 				value, set := row.env[name]
 				return value, set
 			})
@@ -108,7 +109,6 @@ func TestCredentialResolution(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.Equal(t, row.identity, identity)
 			if row.none {
 				require.Nil(t, option)
 				return
