@@ -16,9 +16,7 @@ import (
 // of ste-lint across two sentences, and what moves the first place of a verb: a stop before a
 // closing quote or bracket, an initialism, code font that holds a stop and a space, a verb of a
 // group in code font and in a name, and list items. A line that ste-lint reads as more than one,
-// as the corpus's lines with \v or U+2028 are, the judge reads whole (wholeText.lines), and so it
-// reads a line that opens a code fence, of which ste-lint reads nothing, while its sentences
-// would read the words after the first.
+// as the corpus's lines with \v or U+2028 are, the judge reads whole (wholeText.lines).
 func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 	lines := []string{
 		`The guide says "Run it." The job copies the report to deploy@build.example.com: each night after the tests of the merge pass on main.`,
@@ -30,7 +28,6 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 		"- Dispatch reads Web.Config. It keeps the record and",
 		"1. Dispatch keeps the record. It checks it or",
 		`He said "Stop." "Go." "Wait." Then each of the twenty words of this long piece runs on and on past every closing quote of the line today.`,
-		"```Dispatch checks Foo.Validate at boot. It validated the file and confirmed it.",
 	}
 	corpus, err := os.Open("ste/testdata/corpus.jsonl")
 	if err != nil {

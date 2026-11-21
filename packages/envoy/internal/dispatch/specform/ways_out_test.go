@@ -539,7 +539,7 @@ func TestAFindingPastTheEighthOfATextReadWholeIsRefusedWithNoWayOutOffered(t *te
 		t.Fatalf("%q: %d findings of %s, want %d: %q", body, len(details), ruleStopNoSpace, len(words), details)
 	}
 	last := len(details) - 1
-	const note = "Dispatch offers ways out for the first 8 findings of a text that ste-lint reads as more than one line or as code, so it offers none for this one, though one can exist"
+	const note = "Dispatch offers ways out for the first 8 findings of a text that ste-lint reads as more than one line, so it offers none for this one, though one can exist"
 	if want := stopNoSpace(words[last]); details[last] != want || ways[last] != note {
 		t.Errorf("%q: the finding after the %dth is %q with the ways out %q, want %q with %q", body, maxJudgedInSentence, details[last], ways[last], want, note)
 	}

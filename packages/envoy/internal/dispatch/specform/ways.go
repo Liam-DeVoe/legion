@@ -26,7 +26,7 @@ var pastNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings o
 // wholeNote is what the detail of a finding says whose ways out the judge would read in a text
 // that it reads whole, past the first maxJudgedInSentence findings of that text (wholeText.passes),
 // so the writer knows that Dispatch offers no way out of it, not that none exists.
-var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a text that ste-lint reads as more than one line or as code, so it offers none for this one, though one can exist",
+var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a text that ste-lint reads as more than one line, so it offers none for this one, though one can exist",
 	maxJudgedInSentence)
 
 // offer is the ways out that a judge offers a finding (ways), and what the finding says of the ways
