@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -435,6 +436,31 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	requireRefused(t, err, labelProjectNotFound, "project not found: GONE")
+}
+
+// An edge listener's entry lists its own projects, and scopeGrant refuses its connection before it
+// reads any answer, so the broker asks Dispatch nothing about it. Here the exchange list also
+// gives the edge listener's account EDGE; a refresh asks Dispatch about PUB, the held daemon's
+// project, once, and never about EDGE, and the edge listener's connection is refused by name.
+// The control drops newHeldAccess's skip of an edge listener's entry: the refresh then asks
+// Dispatch about EDGE.
+func TestAnEdgeListenersEntryAsksDispatchNothing(t *testing.T) {
+	const edgeAccount = "system:serviceaccount:example-ns:example-edge-listener"
+	now := time.Now()
+	services := []config.NATSService{
+		{Kind: config.NATSDaemon, Account: pubDaemonAccount},
+		{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"EDGE"}},
+	}
+	tokens := map[string]platformToken{"edge-token": {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true, "EDGE": true}}
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, edgeAccount: {"EDGE"}}, dispatch, services)
+	dispatch.mu.Lock()
+	asked := maps.Clone(dispatch.asked)
+	dispatch.mu.Unlock()
+	require.Equal(t, map[string]int{"PUB": 1}, asked, "the refresh asked Dispatch about an edge listener's projects")
+
+	_, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
+	requireRefused(t, err, labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a")
 }
 
 // The connection is held to what the token exchange holds the account's token to: the person its
