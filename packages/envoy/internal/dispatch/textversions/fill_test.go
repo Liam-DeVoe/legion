@@ -597,11 +597,8 @@ func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, 
 	if len(spec) >= pmdoc.MaxDocumentBytes {
 		t.Fatalf("the spec is %d bytes, at or over pmdoc.MaxDocumentBytes, %d", len(spec), pmdoc.MaxDocumentBytes)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin issue %s-%d: %v", textversionstest.Project, n, err)
-	}
-	defer tx.Rollback(ctx)
+	tx, _ := beginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	issue := textversionstest.InsertIssue(t, tx, n, fmt.Sprintf("Rotate the signing keys of region %d", n), spec)
 	created := textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", issue.Title))
 	if err := tx.Commit(ctx); err != nil {
@@ -615,11 +612,8 @@ func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, 
 func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker, issue textversionstest.WrittenIssue, number int) textversionstest.Written {
 	t.Helper()
 	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin version %d of %s's primary document: %v", number, issue.Key, err)
-	}
-	defer tx.Rollback(ctx)
+	tx, _ := beginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	appended := textversionstest.AppendEvents(t, tx, broker, issue.InsertVersion(t, tx, number, specMarkdown(issue.N, number)))
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit version %d of %s's primary document: %v", number, issue.Key, err)
@@ -673,11 +667,8 @@ const otherIssue = "ACME-2"
 func seedOtherIssue(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin issue %s: %v", otherIssue, err)
-	}
-	defer tx.Rollback(ctx)
+	tx, _ := beginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	textversionstest.InsertIssue(t, tx, 2, "Audit the verifiers")
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit issue %s: %v", otherIssue, err)

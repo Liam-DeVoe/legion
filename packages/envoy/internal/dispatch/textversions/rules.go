@@ -75,9 +75,11 @@ var versionRules = map[string]rule{
 
 // laterTextChanges names, of each kind of post, the event types that change its text after the
 // event that created it. A post's present row holds the text of one of its events only where no
-// committed event of these types of the same post comes after that one (presentBody). A
-// comment's is comment.edited, which INFRA-1523's edit and delete types join once their rules
-// come; no build edits a message, so a message has none yet, and its types go here once one does.
+// committed event of these types of the same post comes after that one (presentBody). Each kind's
+// statement reads its own types alone, written into its text, and a kind with none reads its row
+// alone (presentBodyStatement). A comment's is comment.edited, which INFRA-1523's edit and delete
+// types join once their rules come; no build edits a message, so a message has none yet, and its
+// types go here once one does.
 var laterTextChanges = map[string][]string{
 	kindComment: {"comment.edited"},
 	kindMessage: nil,
@@ -786,37 +788,82 @@ func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 }
 
 // presentBodyQuery reads the body of post $1 from its present row in the table its kind names
-// (%s), where no event after the one read, of the event's owner (issue $2, or document $3 for a
-// comment on a document of no issue) at a seq above that event's ($4), is of a type that changes
-// the post's text ($5, laterTextChanges) and names the post: the row and the later events are
-// read in the statement's one snapshot, so a row that answers holds the text the event wrote, and
-// no row answers where a later event changes it or the post has no row. The later events are read
-// through the owner's unique (issue_key, seq) or (artifact_id, seq) index, from the event's seq
-// up, not through the log: an owner's events take their ids and their seqs in the same order,
-// since each append takes the owner's lock before either and holds it until its transaction ends
-// (events.Broker), so they are the owner's events whose id is above the event's.
+// (the first %s), where no event after the one read, of the event's owner (issue $2, or document
+// $3 for a comment on a document of no issue) at a seq above that event's ($4), is of a type that
+// changes the post's text (the second %s, the kind's laterTextChanges written in as literals) and
+// names the post: the row and the later events are read in the statement's one snapshot, so a row
+// that answers holds the text the event wrote, and no row answers where a later event changes it
+// or the post has no row. The later events are read through the owner's unique (issue_key, seq)
+// or (artifact_id, seq) index, from the event's seq up, not through the log: an owner's events
+// take their ids and their seqs in the same order, since each append takes the owner's lock
+// before either and holds it until its transaction ends (events.Broker), so they are the owner's
+// events whose id is above the event's.
+//
+// The payload of a later event is read only where its type is one of the kind's, which the CASE
+// holds whatever plan Postgres runs: the fill's connection caches the statement, and the plan
+// Postgres may then keep for any arguments (a generic plan) can test a condition on the payload
+// before one on the type, and so unpack the stored payload of each later event of the owner.
 const presentBodyQuery = `
 	select p.body from public.%s p
 	 where p.id = $1::text::uuid
 	   and not exists (
 	         select from public.events l
 	          where (l.issue_key = $2 and l.seq > $4 or l.artifact_id = $3::uuid and l.seq > $4)
-	            and l.type = any($5::text[])
-	            and l.payload->>'id' = $1)`
+	            and case when l.type in (%s) then l.payload->>'id' = $1 end)`
 
-// presentBodyQueries is presentBodyQuery of each kind of post, over the table of its rows.
+// presentRowQuery reads the body of post $1 from its present row in the table its kind names
+// (%s), for a kind whose text no event changes after the one that wrote it (its laterTextChanges
+// is empty), so the row holds the text of each of its events and no later event is read.
+const presentRowQuery = `select p.body from public.%s p where p.id = $1::text::uuid`
+
+// presentBodyQueries is the statement of each kind of post that reads its present body, over the
+// table of its rows (presentBodyStatement).
 var presentBodyQueries = map[string]string{
-	kindComment: fmt.Sprintf(presentBodyQuery, "comments"),
-	kindMessage: fmt.Sprintf(presentBodyQuery, "messages"),
+	kindComment: presentBodyStatement("comments", laterTextChanges[kindComment]),
+	kindMessage: presentBodyStatement("messages", laterTextChanges[kindMessage]),
+}
+
+// presentBodyStatement is the statement that reads the present body of a post whose rows are in
+// table and whose text the event types laterTypes change after the event that wrote it:
+// presentRowQuery where laterTypes is empty, else presentBodyQuery with laterTypes written in
+// (sqlTextLiterals).
+func presentBodyStatement(table string, laterTypes []string) string {
+	if len(laterTypes) == 0 {
+		return fmt.Sprintf(presentRowQuery, table)
+	}
+	return fmt.Sprintf(presentBodyQuery, table, sqlTextLiterals(laterTypes))
+}
+
+// sqlTextLiterals writes texts as a list of SQL string literals, for a statement the package
+// builds from its own constants when it starts (presentBodyQueries). It refuses a text holding a
+// quote or a backslash, which no event type holds, rather than escaping it: such a text is a
+// mistake in those constants, never input, so it panics, and the package's start names it.
+func sqlTextLiterals(texts []string) string {
+	literals := make([]string, len(texts))
+	for index, text := range texts {
+		if strings.ContainsAny(text, `'\`) {
+			panic(fmt.Sprintf("textversions: the event type %q holds a quote or a backslash, which a statement does not take as a literal", text))
+		}
+		literals[index] = "'" + text + "'"
+	}
+	return strings.Join(literals, ", ")
 }
 
 // presentBody reads the whole body of post id of kind, whose event e cut it, from the post's
 // present row where that row holds the text e wrote: where no committed event of the post after
-// e changes its text (presentBodyQuery). found is false where one does, and where the post has no
-// row.
+// e changes its text (presentBodyQuery), which, for a kind whose text no later event changes, is
+// wherever the post has a row (presentRowQuery). found is false where a later event changes it,
+// and where the post has no row. The statement takes the post's id and, where it reads the later
+// events, e's owner and seq.
 func presentBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
+	var row pgx.Row
+	if len(laterTextChanges[kind]) == 0 {
+		row = tx.QueryRow(ctx, presentBodyQueries[kind], id)
+	} else {
+		row = tx.QueryRow(ctx, presentBodyQueries[kind], id, e.IssueKey, e.ArtifactID, e.Seq)
+	}
 	var body string
-	err := tx.QueryRow(ctx, presentBodyQueries[kind], id, e.IssueKey, e.ArtifactID, e.Seq, laterTextChanges[kind]).Scan(&body)
+	err := row.Scan(&body)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", false, nil
