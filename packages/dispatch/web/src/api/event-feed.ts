@@ -141,8 +141,8 @@ export const BATCH_WINDOW_MS = 100;
 export const WHOLE_CACHE_REFRESH_MS = 5_000;
 
 /**
- * An ask event that arrives while a read of the Inbox is fetching - the Inbox read of every ask,
- * or the one read the page draws the reader's own asks from - for a thread the cache does not
+ * An ask event that arrives while a read of the Inbox is fetching - the read of the open asks, or
+ * the one read the page draws the reader's own asks from - for a thread the cache does not
  * hold yet, is invisible to the flush: its `["ask-thread", id]` key matches nothing, and a card
  * that mounts from the landing rows seeds that thread from a body composed before the event. The
  * read's own refetch once its load settles does not reach this - a card can mount from the

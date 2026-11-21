@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
-import { inboxQuery } from "../../api/queries";
+import { openAsksKey } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import { usePageWords, useTooltips } from "../../components/tooltips";
@@ -444,7 +444,7 @@ export function ApprovalChip({
       const rereads = [
         queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
-        queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
+        queryClient.invalidateQueries({ queryKey: openAsksKey }),
         // The Inbox draws the reader's own approval asks from the one read.
         invalidateMeInbox(queryClient),
         ...(reviewed.issue_key === null

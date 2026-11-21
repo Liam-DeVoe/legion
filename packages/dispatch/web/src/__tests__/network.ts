@@ -73,10 +73,9 @@ const shellHandlers: RequestHandler[] = [
   // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
   // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
   http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
-  http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   // The one read, which the Inbox entry's count reads on every page (`useUnreadThreadCount`,
-  // `meInboxCountQuery`) and the Inbox and its drawer draw the reader's own rows from: a reader
-  // nothing has reached.
+  // `meInboxCountQuery`), the sidebar's Needs-you count reads, and the Inbox and its drawer draw
+  // the reader's own rows from: a reader nothing has reached.
   http.get("/api/v1/me/inbox", () =>
     Response.json({ entries: [], horizon: 0, limit: 50, offset: 0, total: 0 })
   ),

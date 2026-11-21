@@ -31,7 +31,7 @@ import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
+import { agentRow, plannerAgentRow, withConversation } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
@@ -1291,10 +1291,12 @@ test("an issue message conversation reads the issue's messages", async () => {
   }
 });
 
-test("an Agent row shows the session's name and reads that session's messages", async () => {
-  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([]);
+test("an Agent row shows the session's name and draws the conversation its row carries, reading none", async () => {
+  const getAgentConversation = spyOn(api, "getAgentConversation").mockResolvedValue([]);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
-  const { view } = renderThread(plannerAgentRow());
+  const { view } = renderThread(
+    withConversation(plannerAgentRow(), plannerExchange("message-1", "reply-1"))
+  );
   try {
     expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "agent");
     const pane = screen.getByTestId("inbox-pane");
@@ -1305,10 +1307,13 @@ test("an Agent row shows the session's name and reads that session's messages", 
       "href",
       "/agents/planner/live"
     );
-    await waitFor(() => expect(listAgentMessages).toHaveBeenCalledWith("planner"));
+    await waitFor(() =>
+      expect(pane.querySelector('[data-inbox-thread-turn="reply-1"]')).not.toBeNull()
+    );
+    expect(getAgentConversation).not.toHaveBeenCalled();
   } finally {
     view.unmount();
-    listAgentMessages.mockRestore();
+    getAgentConversation.mockRestore();
     listAgents.mockRestore();
   }
 });
@@ -1625,16 +1630,12 @@ function plannerExchange(id: string, reply: string): MessageRead {
 // there - and what that box sends is its own reply, under its own thread's newest message.
 test("the next Agent thread of a session shows nothing of a reply refused in the thread before it", async () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([
-    plannerExchange("message-1", "reply-1"),
-    plannerExchange("message-2", "reply-2"),
-  ]);
   const createAgentMessage = spyOn(api, "createAgentMessage")
     .mockRejectedValueOnce(
       new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
     )
     .mockResolvedValue({} as never);
-  const first = plannerAgentRow();
+  const first = withConversation(plannerAgentRow(), plannerExchange("message-1", "reply-1"));
   const { rerender, view } = renderThread(first);
   try {
     const user = userEvent.setup();
@@ -1645,12 +1646,15 @@ test("the next Agent thread of a session shows nothing of a reply refused in the
     await within(pane).findByText("Couldn't send — Dispatch refused the message");
 
     rerender(
-      agentRow("message-2", {
-        ...first,
-        reply: { ...first.reply, id: "reply-2" },
-        thread_id: "message-2",
-        unread_reply_ids: ["reply-2"],
-      })
+      withConversation(
+        agentRow("message-2", {
+          ...first,
+          reply: { ...first.reply, id: "reply-2" },
+          thread_id: "message-2",
+          unread_reply_ids: ["reply-2"],
+        }),
+        plannerExchange("message-2", "reply-2")
+      )
     );
     expect(pane.querySelector('[data-inbox-thread="message-2"]')).not.toBeNull();
     const next = within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
@@ -1675,7 +1679,6 @@ test("the next Agent thread of a session shows nothing of a reply refused in the
   } finally {
     view.unmount();
     listAgents.mockRestore();
-    listAgentMessages.mockRestore();
     createAgentMessage.mockRestore();
   }
 });

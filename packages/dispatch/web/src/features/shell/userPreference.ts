@@ -9,9 +9,9 @@ import { whoAmIQuery } from "../../api/queries";
  *  ordered, how wide the reading pane is, and which bands they folded shut
  *  (`inbox.folded-groups`, one set per grouping). Its filters, sort, grouping and the switch
  *  between the Inbox and what they have dismissed out of it are in the address instead, so a
- *  link carries them. `inbox.one_read` is the reader's opt-in to the one read (`useOneRead`,
- *  `features/inbox/one-read.ts`), kept in the browser because Dispatch keeps no per-person
- *  preference on the server. */
+ *  link carries them. `inbox.one_read` is the opt-in to the one read a reader could set while the
+ *  Inbox's default was still the reads it replaced; the one read is the only read now, so nothing
+ *  reads it. */
 export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.one_read"

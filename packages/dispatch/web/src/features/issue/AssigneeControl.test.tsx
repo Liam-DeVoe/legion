@@ -17,7 +17,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { projectDefaultAssigneesQuery } from "../../api/queries";
+import { openAsksQuery, projectDefaultAssigneesQuery } from "../../api/queries";
 import type { Issue, IssueDetails, IssueSummary, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -142,7 +142,7 @@ const inboxRow: OpenAskRow = {
 
 const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
-const inboxKey = ["inbox"] as const;
+const inboxKey = openAsksQuery().queryKey;
 
 /** The control with the assignee its host reads from the cache, each commit of it recorded with
  *  that assignee. */

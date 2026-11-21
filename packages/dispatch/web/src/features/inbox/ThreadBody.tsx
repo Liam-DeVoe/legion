@@ -21,7 +21,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
+import { askThreadQuery, issueQuery, meInboxKey } from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -362,7 +362,7 @@ function CommentThreadBody({
             onClose={noReturn}
             onSent={() => {
               void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              void queryClient.invalidateQueries({ queryKey: meInboxKey });
             }}
             owner={owner}
             replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
@@ -452,7 +452,7 @@ function MessageThreadBody({
             onClose={noReturn}
             onSent={() => {
               void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              void queryClient.invalidateQueries({ queryKey: meInboxKey });
             }}
             owner={{ issueKey, kind: "issue" }}
             replyTo={{
@@ -546,9 +546,8 @@ function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
  * so. The composer replies under the thread's newest message, in the mode the Agents page uses for
  * a reply in that thread (`exchangeDelivery`), so a reply sent here behaves as one sent there.
  *
- * A row of the one read carries its conversation (`agentConversation`), and the thread is drawn
- * from that, the same fields of the same shape; a row of the threads' read carries none, and the
- * thread is read out of the session's conversations.
+ * The row carries its conversation (`agentConversation`), as the one read answers it, and the
+ * thread is drawn from that alone.
  */
 function AgentThreadBody({
   openAtFirstUnread,
@@ -558,24 +557,16 @@ function AgentThreadBody({
   thread: MyReplyAgentRow;
 }): ReactNode {
   const sessionId = thread.session.id;
-  const carried = agentConversation(thread);
-  const messages = useQuery({ ...agentMessagesQuery(sessionId), enabled: carried === undefined });
+  const read: MessageRead | undefined = agentConversation(thread);
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
   const sendKey = threadSendKey(thread.thread_id);
   const hold = useSending(sendKey);
-  // Read before the loading branches, because the mark below is a hook: the thread's own
-  // conversation among the session's, which is undefined until the read lands.
-  const read: MessageRead | undefined =
-    carried ?? messages.data?.find((candidate) => candidate.message.id === thread.thread_id);
   const markNewest = useAgentThreadRead(thread, read?.replies ?? NO_REPLIES);
-  if (carried === undefined && messages.isPending) {
-    return <LoadingSkeleton label="Opening the conversation" />;
-  }
-  if (carried === undefined && messages.isError) {
+  if (read === undefined) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
-  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
+  const newest = (read.replies ?? []).at(-1) ?? read.message;
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
@@ -583,7 +574,7 @@ function AgentThreadBody({
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
     );
-  const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
+  const turns = [read.message, ...(read.replies ?? [])].map(turn);
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.
   const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
@@ -591,7 +582,7 @@ function AgentThreadBody({
     <>
       <ThreadTurns
         composer={
-          agent === undefined || read === undefined || newest === undefined ? null : (
+          agent === undefined ? null : (
             <div data-inbox-agent-composer="">
               {noDelivery !== undefined ? (
                 <>

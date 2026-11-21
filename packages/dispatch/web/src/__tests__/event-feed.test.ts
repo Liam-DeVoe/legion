@@ -1,4 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
+import type { OpenAsksResponse } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, type QueryKey } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -14,12 +15,11 @@ import {
   advancesIssuesQuery,
   architectureSourcesQuery,
   askThreadQuery,
-  inboxQuery,
-  inboxThreadsQuery,
   issueQuery,
   issueStepsQuery,
+  meInboxCountQuery,
   meInboxQuery,
-  myRepliesCountQuery,
+  openAsksQuery,
   prioritiesQuery,
   priorityHistoryQuery,
   prioritySummaryQuery,
@@ -39,7 +39,12 @@ import type {
   OpenAskRow,
 } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
-import { issueAsk, oneReadAnswer } from "../features/inbox/inbox-fixture";
+import {
+  answerOpenAsks,
+  issueAsk,
+  oneReadAnswer,
+  openAsksAnswer,
+} from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import {
@@ -129,8 +134,8 @@ const READS = {
   },
   grandparent: { key: issueQuery("CORE-00").queryKey },
   handoffs: { key: ["handoffs", "CORE-1"] },
-  inbox: { key: inboxQuery().queryKey },
-  inboxThreads: { key: inboxThreadsQuery().queryKey },
+  inbox: { key: openAsksQuery().queryKey },
+  inboxThreads: { key: meInboxQuery().queryKey },
   issuePanel: {
     data: { edges: [], node: { id: "CORE-1", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-1"],
@@ -185,11 +190,11 @@ const READS = {
   priorityHistory: { key: priorityHistoryQuery("linkage-closure").queryKey },
   prioritySummary: { key: prioritySummaryQuery().queryKey },
   projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
-  projectInbox: { key: ["inbox", "CORE"] },
+  projectInbox: { key: openAsksQuery("CORE").queryKey },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
-  replies: { key: myRepliesCountQuery().queryKey },
+  replies: { key: meInboxCountQuery().queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
   rootMessage: { key: messageQuery("CORE-1", "message-0").queryKey },
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
@@ -331,11 +336,26 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
   }
   if (name === "inboxThreads") {
     const key = page.threadsHold ? "CORE-1" : "CORE-5";
+    const thread = {
+      issue: { key, title: "Ship the release" },
+      kind: "comment",
+      reply: { created_at: "2026-10-26T00:00:00Z" },
+      thread_id: "root-1",
+    };
     return {
       as_of: "2026-10-26T00:00:00Z",
+      entries: [
+        {
+          moment: "2026-10-26T00:00:00Z",
+          node: { id: "root-1", kind: "comment" },
+          relations: [],
+          thread,
+        },
+      ],
+      horizon: 1,
       limit: 0,
       offset: 0,
-      rows: [{ issue: { key, title: "Ship the release" }, kind: "comment", thread_id: "root-1" }],
+      person: "alice",
       total: 1,
     };
   }
@@ -1946,11 +1966,11 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     issue_key: "CORE-2",
   });
   const rows = [onIssue, sibling, elsewhere];
-  const inFlight = Promise.withResolvers<OpenAskRow[]>();
-  const getInbox = spyOn(api, "getInbox").mockImplementationOnce(() => inFlight.promise);
+  const inFlight = Promise.withResolvers<OpenAsksResponse>();
+  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementationOnce(() => inFlight.promise);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const inboxKey = inboxQuery().queryKey;
+  const inboxKey = openAsksQuery().queryKey;
   const reads: string[] = [];
   // The endpoint answers after the claim: every thread on CORE-1 names the new claimant.
   const getAskThread = async (id: string): Promise<AskRead> => {
@@ -1977,7 +1997,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     );
   const cards: { unmount: () => void }[] = [];
   try {
-    void client.prefetchQuery(inboxQuery());
+    void client.prefetchQuery(openAsksQuery());
     await waitFor(() => expect(client.getQueryState(inboxKey)?.fetchStatus).toBe("fetching"));
     const claimed = event("issue.claimed", {
       claim: { actor: { id: "session-now", kind: "session" }, at: "2026-09-24T06:00:00Z" },
@@ -1989,7 +2009,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
       askThreadsIssue(claimed)
     );
     // The in-flight body was composed before the claim.
-    inFlight.resolve(rows);
+    inFlight.resolve(openAsksAnswer(rows));
     await waitFor(() => expect(client.getQueryState(inboxKey)?.fetchStatus).toBe("idle"));
     expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
     expect(hasPendingAskThreadInvalidation(client, elsewhere)).toBe(false);
@@ -2011,25 +2031,25 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     expect([...reads].sort()).toEqual(["ask-1", "ask-3"]);
 
     // A newer Inbox, composed after the claim, clears the issue's mark.
-    getInbox.mockResolvedValueOnce(rows);
+    listOpenAsks.mockResolvedValueOnce(openAsksAnswer(rows));
     await client.refetchQueries({ queryKey: inboxKey });
     expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(false);
     expect(hasPendingAskThreadInvalidation(client, sibling)).toBe(false);
   } finally {
     for (const card of cards) card.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
 // The page draws the reader's own asks from the one read, so a claim that moves while only that
-// read is in flight marks the issue as a claim while the Inbox read is in flight does. A card of
-// the reader's own mounts from the one read's body, so only a newer one read clears the mark: a
-// newer Inbox read alone does not.
+// read is in flight marks the issue as a claim while the read of the open asks is in flight does.
+// A card of the reader's own mounts from the one read's body, so only a newer one read clears the
+// mark: a newer read of the open asks alone does not.
 test("a claim that moves while the one read is in flight sends that issue's later cards to the ask endpoint, until a newer one read lands", async () => {
   const onIssue = issueAsk({ id: "ask-1" });
   const inFlight = Promise.withResolvers<MeInboxResponse>();
   const getMeInbox = spyOn(api, "getMeInbox").mockImplementationOnce(() => inFlight.promise);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([onIssue]);
+  const listOpenAsks = answerOpenAsks([onIssue]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const oneReadKey = meInboxQuery().queryKey;
@@ -2045,7 +2065,7 @@ test("a claim that moves while the one read is in flight sends that issue's late
   try {
     void client.prefetchQuery(meInboxQuery());
     await waitFor(() => expect(client.getQueryState(oneReadKey)?.fetchStatus).toBe("fetching"));
-    expect(client.getQueryState(inboxQuery().queryKey)).toBeUndefined();
+    expect(client.getQueryState(openAsksQuery().queryKey)).toBeUndefined();
     const claimed = event("issue.claimed", {
       claim: { actor: { id: "session-now", kind: "session" }, at: "2026-09-24T06:00:00Z" },
       reason: "claimed",
@@ -2060,8 +2080,8 @@ test("a claim that moves while the one read is in flight sends that issue's late
     await waitFor(() => expect(client.getQueryState(oneReadKey)?.fetchStatus).toBe("idle"));
     expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
 
-    // An Inbox read composed after the claim leaves the one read's body as it was.
-    await client.fetchQuery(inboxQuery());
+    // A read of the open asks composed after the claim leaves the one read's body as it was.
+    await client.fetchQuery(openAsksQuery());
     expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
 
     const mounted = renderHook(
@@ -2091,6 +2111,6 @@ test("a claim that moves while the one read is in flight sends that issue's late
   } finally {
     card?.unmount();
     getMeInbox.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });

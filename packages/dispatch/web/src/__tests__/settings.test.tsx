@@ -12,6 +12,7 @@ import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
+import { answerOpenAsks } from "../features/inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { keyedAttempt } from "./keyed-attempt";
 
@@ -95,7 +96,7 @@ test("human users manage repository project mappings from the settings route", a
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(server.list);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
@@ -187,7 +188,7 @@ test("human users manage repository project mappings from the settings route", a
     whoAmI.mockRestore();
     listIssues.mockRestore();
     getMyState.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listRepoProjects.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
@@ -224,7 +225,7 @@ test("a delayed mapping response does not undo a newer default the page has read
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(server.list);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
@@ -280,7 +281,7 @@ test("a delayed mapping response does not undo a newer default the page has read
     whoAmI.mockRestore();
     listIssues.mockRestore();
     getMyState.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listRepoProjects.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
@@ -303,7 +304,7 @@ test("repository settings retries a failed mapping query", async () => {
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listRepoProjects = spyOn(api, "listRepoProjects")
     .mockRejectedValueOnce(new Error("network"))
     .mockResolvedValueOnce([]);
@@ -344,7 +345,7 @@ test("repository settings retries a failed mapping query", async () => {
     whoAmI.mockRestore();
     listIssues.mockRestore();
     getMyState.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listRepoProjects.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
@@ -381,7 +382,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
@@ -444,7 +445,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
     queryClient.clear();
     whoAmI.mockRestore();
     listIssues.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listRepoProjects.mockRestore();
     listAgentTokens.mockRestore();
@@ -474,7 +475,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
@@ -512,7 +513,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     queryClient.clear();
     whoAmI.mockRestore();
     listIssues.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listRepoProjects.mockRestore();
     listAgentTokens.mockRestore();
@@ -572,7 +573,7 @@ function renderSettings(projects: string[]): {
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
     spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listAgentTokens").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),

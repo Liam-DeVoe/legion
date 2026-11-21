@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { inboxQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
+import { meInboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, OpenAskRow } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
@@ -17,7 +17,6 @@ import {
 } from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
-import { useOneRead } from "./one-read";
 import { meInboxAsks } from "./one-read-rows";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";
@@ -92,19 +91,15 @@ function needsYou(
   return { count: since.length, oldest };
 }
 
-/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox -
- *  the Inbox read's asks, or behind the opt-in (`useOneRead`) the one read's, which are the asks
- *  that wait on the reader and no other. */
+/** The rail's and the compact top bar's `Needs you N`: the reader's own, from the one read's
+ *  asks, which are the asks that wait on the reader and no other. */
 export function useNeedsYouCount(): number {
-  const oneRead = useOneRead();
   const human = useIsHuman();
-  const inbox = useQuery({ ...inboxQuery(), enabled: !oneRead });
-  const own = useQuery({ ...meInboxQuery(), enabled: oneRead && human });
+  const own = useQuery({ ...meInboxQuery(), enabled: human });
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const { requests } = useCredentialRequests();
-  const asks = oneRead ? meInboxAsks(own.data) : (inbox.data ?? []);
-  return needsYou(asks, requests, viewer).count;
+  return needsYou(meInboxAsks(own.data), requests, viewer).count;
 }
 
 export function BlockedOnYou({

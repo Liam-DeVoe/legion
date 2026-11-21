@@ -18,26 +18,18 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { markInboxReadRequest } from "../../api/client";
 import {
-  inboxThreadsQuery,
   meInboxCountQuery,
+  meInboxKey,
   meInboxQuery,
-  myRepliesCountQuery,
-  myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
-import { replaceQueryData } from "../../api/query-client";
-import type {
-  InboxReadRequest,
-  InboxReadResponse,
-  MyRepliesResponse,
-  MyReplyRow,
-} from "../../api/types";
+import type { InboxReadRequest, InboxReadResponse, MyReplyRow } from "../../api/types";
 import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
-import { type InboxListRow, rowId } from "./list-row";
+import type { InboxListRow } from "./list-row";
 import {
   type MeInboxSnapshot,
   meInboxSnapshot,
@@ -88,29 +80,10 @@ export function readRow(thread: MyReplyRow, readThrough: string): MyReplyRow {
   return { ...thread, read_through: readThrough, unread: false, unread_count: 0 };
 }
 
-/** The list as the press leaves it: every row it marked drawn as read, and not one of them taken
- *  out of the list. A read thread is still in the Inbox - only a dismiss takes it out - so the
- *  rows stay where the reader can see what their press did. */
-export function applyMarkAll(
-  answer: MyRepliesResponse,
-  marked: ReadonlySet<string>,
-  readThrough: string
-): MyRepliesResponse {
-  if (marked.size === 0) return answer;
-  return {
-    ...answer,
-    rows: (answer.rows ?? []).map((row) =>
-      marked.has(rowId({ kind: "thread", thread: row })) ? readRow(row, readThrough) : row
-    ),
-  };
-}
-
-/** What the press rolls back to: the reads it wrote, as they stood before it - the Inbox's own
- *  list and its count, and every cached read of the one read behind the Inbox's opt-in. */
+/** What the press rolls back to: every cached read of the one read as it stood before it - the
+ *  Inbox's own list and its unread count among them. */
 interface MarkAllRollback {
-  readonly count: number | undefined;
   readonly oneRead: MeInboxSnapshot;
-  readonly threads: MyRepliesResponse | undefined;
 }
 
 export interface MarkAllRead {
@@ -130,16 +103,14 @@ export interface MarkAllRead {
  * The Inbox's **Mark all read**, for one list: its own filters, its own read mark, its own
  * optimistic apply and its own rollback. The drawer mounts its own Inbox, so it gets its own.
  *
- * The press writes two reads at once - the Inbox's own list and the unread count every badge
- * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
- * and the compact header's Inbox link are all at zero before the server answers. A read of
- * either already out at the press is given up, and one asked while the press is out waits until
- * Dispatch has taken it (`holds`: its answer or its thread-state event, and at most
- * `SEND_DEADLINE_MS`): Dispatch can answer it before, with the rows still unread. Behind the
- * Inbox's opt-in those two are the one read's Inbox answer and its unread count
- * (`one-read-cache.ts`), which the press writes, and whose reads it gives up and holds, the same
- * way. The Agents page's **New replies** badge is the server's own count of unread agent
- * replies, so it drops when the answer lands and the viewer's agent state is read again.
+ * The press writes two reads at once - the one read's Inbox answer and the unread count every
+ * badge shares (`one-read-cache.ts`) - so the rows are drawn as read and the Type filter's counts,
+ * the sidebar's Inbox count and the compact header's Inbox link are all at zero before the server
+ * answers. A read of either already out at the press is given up, and one asked while the press is
+ * out waits until Dispatch has taken it (`holds`: its answer or its thread-state event, and at
+ * most `SEND_DEADLINE_MS`): Dispatch can answer it before, with the rows still unread. The Agents
+ * page's **New replies** badge is the server's own count of unread agent replies, so it drops
+ * when the answer lands and the viewer's agent state is read again.
  *
  * The Dismissed view has no press of its own: it holds what the reader has already dealt with, so
  * the Inbox passes no read mark there and nothing is offered (`asOf`).
@@ -159,16 +130,13 @@ export function useMarkAllRead({
   readonly rows: readonly InboxListRow[];
 }): MarkAllRead {
   const queryClient = useQueryClient();
-  const threadsKey = inboxThreadsQuery().queryKey;
-  const countKey = myRepliesCountQuery().queryKey;
-  // Behind the opt-in the list and the count are the one read's, and are held as these are.
-  const oneReadKeys = [meInboxQuery().queryKey, meInboxCountQuery().queryKey];
+  const heldKeys = [meInboxQuery().queryKey, meInboxCountQuery().queryKey];
   const scope = inboxWriteScope(filters);
   const body = asOf === undefined ? undefined : markAllReadBody(filters, asOf);
   // What a press may have marked is read again from the server: the list, its counts, and the
   // per-session agent state the Agents page's **New replies** badge counts.
   const readAgain = () => {
-    void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+    void queryClient.invalidateQueries({ queryKey: meInboxKey });
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   };
   // The button is offered only while the list holds an unread Reply or Agent row, which is what
@@ -178,7 +146,7 @@ export function useMarkAllRead({
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
-    holds: () => ({ endsOn: inboxThreadsWritten, keys: [threadsKey, countKey, ...oneReadKeys] }),
+    holds: () => ({ endsOn: inboxThreadsWritten, keys: heldKeys }),
     inline: true,
     label: () => "Inbox marked read",
     onError: (error, _input, rollback) => {
@@ -189,42 +157,26 @@ export function useMarkAllRead({
         return;
       }
       if (rollback === undefined) return;
-      queryClient.setQueryData(threadsKey, rollback.threads);
-      queryClient.setQueryData(countKey, rollback.count);
       restoreMeInbox(queryClient, rollback.oneRead);
     },
     onMutate: (input) => {
-      const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
-      const count = queryClient.getQueryData<number>(countKey);
       const oneRead = meInboxSnapshot(queryClient);
-      const marked = new Set(
-        (threads?.rows ?? [])
-          .filter((thread) => marksThread(thread, input))
-          .map((thread) => rowId({ kind: "thread", thread }))
-      );
       const through = input.read_through;
-      if (threads !== undefined && through !== undefined && through !== null) {
-        replaceQueryData(queryClient, threadsKey, applyMarkAll(threads, marked, through));
-      }
-      // The count every badge shares drops by what this press marks, clamped at zero: an
-      // unfiltered press marks every unread row and reads zero, and a filtered one takes away
-      // only its own rows rather than counting the rest of the Inbox away.
-      if (count !== undefined) {
-        replaceQueryData(queryClient, countKey, Math.max(0, count - marked.size));
-      }
-      // Behind the opt-in the list and the count are the one read's, written by the same rule
-      // and over a read of them still out, as the two above are (`patchMeInboxThreads`).
+      // The list and the count are written by the same rule, over a read of them still out
+      // (`patchMeInboxThreads`): every row the press marks drawn read, and the count every badge
+      // shares lowered by what it marks, clamped at zero, so an unfiltered press reads zero and a
+      // filtered one takes away only its own rows rather than counting the rest of the Inbox away.
       if (through !== undefined && through !== null) {
-        const oneMarked = meInboxThreadRows(queryClient).filter((thread) =>
+        const marked = meInboxThreadRows(queryClient).filter((thread) =>
           marksThread(thread, input)
         ).length;
         patchMeInboxThreads(
           queryClient,
           (thread) => (marksThread(thread, input) ? readRow(thread, through) : thread),
-          (unread) => Math.max(0, unread - oneMarked)
+          (unread) => Math.max(0, unread - marked)
         );
       }
-      return { count, oneRead, threads };
+      return { oneRead };
     },
     onSuccess: readAgain,
     request: (input) => markInboxReadRequest(input),

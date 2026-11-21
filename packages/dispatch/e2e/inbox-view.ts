@@ -16,9 +16,9 @@ import {
   createComment,
   createIssue,
   createProject,
-  getInbox,
-  listMyReplies,
+  listOpenAsks,
   markThreadRead,
+  meInboxThreads,
   patchIssue,
   requestApproval,
 } from "./api";
@@ -67,8 +67,8 @@ const decisionSpec = [
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
 async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
-  await expect.poll(async () => (await getInbox()).some(match)).toBe(true);
-  const row = (await getInbox()).find(match);
+  await expect.poll(async () => (await listOpenAsks()).some(match)).toBe(true);
+  const row = (await listOpenAsks()).find(match);
   if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
   return row;
 }
@@ -227,7 +227,7 @@ export async function seedEveryField(): Promise<{
     "Is the nightly mirror job still at 02:00?",
     "It moved to 03:00 last week."
   );
-  const listed = await listMyReplies({ state: "unread" });
+  const listed = await meInboxThreads({ state: "unread" });
   const readRow = (listed.rows ?? []).find((row) => row.thread_id === read);
   if (readRow === undefined) throw new Error("the thread to mark read was never listed");
   await markThreadRead(read, readRow.reply.created_at);
@@ -247,11 +247,10 @@ export async function seedEveryField(): Promise<{
 /** When each row was last written in, as the two reads answer it: what `newest` orders by. */
 export async function lastActivity(): Promise<ReadonlyMap<string, string>> {
   const at = new Map<string, string>();
-  for (const ask of await getInbox()) {
+  for (const ask of await listOpenAsks()) {
     at.set(ask.id, ask.last_reply?.created_at ?? ask.created_at);
   }
-  for (const thread of (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).rows ??
-    []) {
+  for (const thread of (await meInboxThreads({ state: "inbox" })).rows ?? []) {
     at.set(
       `${thread.kind === "agent" ? "agent" : "reply"}:${thread.thread_id}`,
       thread.reply.created_at

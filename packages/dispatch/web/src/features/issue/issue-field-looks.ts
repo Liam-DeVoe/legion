@@ -1,16 +1,16 @@
 /**
  * How a field of an issue that a pick changes - its priority, its assignee, its repository - shows
  * on each cache that draws the issue (`cacheOf`: its detail, its row of each list of issues, each
- * Inbox row of it, each ask of it the one read's Inbox answer lists), as a pick sets it
- * (`pickLook`) or an answer of Dispatch's carries it (`issueLook`, `answeredLooks`), and each such
- * cache with a look put over it (`shownOn`). It keeps nothing: what is live, what Dispatch last
- * answered and when are `issue-field-writes.ts`'s.
+ * row of it each read of the open asks lists, each ask of it the one read's Inbox answer lists),
+ * as a pick sets it (`pickLook`) or an answer of Dispatch's carries it (`issueLook`,
+ * `answeredLooks`), and each such cache with a look put over it (`shownOn`). It keeps nothing:
+ * what is live, what Dispatch last answered and when are `issue-field-writes.ts`'s.
  */
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 import {
-  inboxQuery,
   meInboxQuery,
+  openAsksKey,
   projectDefaultAssigneesQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -34,13 +34,9 @@ export const everyField: readonly IssueField[] = ["assignee", "priority", "repo"
  *  (`["issues", "advances", …]`, `/priorities` and `/priorities/<id>`). */
 const issueLists: readonly unknown[] = ["project", "advances"];
 
-/** The key of the Inbox's read, every row of which a pick of its issue shows on. */
-export const inboxKey = inboxQuery().queryKey;
-
 /** The key of the one read's Inbox answer (`meInboxQuery`), which the Inbox draws the reader's own
- *  asks from behind its opt-in (`useInboxAsks`): each ask it lists a pick of its issue shows on, as
- *  on an Inbox row. The one read's other reads, the unread count and the dismissed pages, list no
- *  ask. */
+ *  asks from (`useInboxAsks`): each ask it lists a pick of its issue shows on, as on a row of the
+ *  open asks. The one read's other reads, the unread count and the dismissed pages, list no ask. */
 const oneReadKey = meInboxQuery().queryKey;
 
 /** The fields of an issue a pick changes, as its detail and its row of each list of issues carry
@@ -91,10 +87,10 @@ export function issueLook(field: IssueField, issue: Partial<IssueFields>): Look 
   }
 }
 
-/** Every Inbox row the client holds. */
+/** Every row of the open asks the client holds, of every read of them (`openAsksKey`). */
 function inboxRows(client: QueryClient): OpenAskRow[] {
   return client
-    .getQueriesData<OpenAskRow[]>({ queryKey: inboxKey })
+    .getQueriesData<OpenAskRow[]>({ queryKey: openAsksKey })
     .flatMap(([, rows]) => (Array.isArray(rows) ? rows : []));
 }
 
@@ -284,13 +280,13 @@ function defaultAssignee(client: QueryClient, issueKey: string): string | undefi
 }
 
 /** Which of the caches a pick shows on the query under `queryKey` is: an issue's detail, a list
- *  of issues (`issueLists`), the Inbox, or the one read's Inbox answer (`oneReadKey`); undefined
- *  for any other. */
+ *  of issues (`issueLists`), a read of the open asks (`openAsksKey`, which draws Inbox rows), or
+ *  the one read's Inbox answer (`oneReadKey`); undefined for any other. */
 export function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | "oneRead" | undefined {
   const [head, second] = queryKey;
   if (head === "issue" && queryKey.length === 2) return "detail";
   if (head === "issues" && issueLists.includes(second)) return "list";
-  if (head === inboxKey[0]) return "inbox";
+  if (head === openAsksKey[0]) return "inbox";
   const oneRead =
     queryKey.length === oneReadKey.length &&
     oneReadKey.every((part, index) => queryKey[index] === part);
@@ -318,7 +314,7 @@ function onInboxRow(
  * on an Inbox row of it (`showOnInboxRow`). The one read lists the asks that wait on the reader,
  * whoever is signed in (`whoAmIQuery`): an ask a showing moves off the reader leaves it, and each
  * Inbox row an assignee shown makes wait on the reader joins it where it lists no entry of that
- * ask. Without that, taking an unassigned ask would take its row out of the Inbox read's list and
+ * ask. Without that, taking an unassigned ask would take its row out of the open asks' list and
  * put it in no other (`useInboxAsks`, which draws the reader's own asks from the one read alone),
  * and an assignee put back would leave in the answer a row that no longer waits on the reader.
  * Each ask that leaves or joins moves `total` with it. `answer` itself where it shows them all

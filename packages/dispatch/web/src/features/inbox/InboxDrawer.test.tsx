@@ -57,7 +57,7 @@ function renderDrawer() {
 
 test("opens over the triggering control, moves initial focus to Close, and returns it on close", async () => {
   const user = userEvent.setup();
-  const getInbox = mockInboxReads([issueAsk()]);
+  const listOpenAsks = mockInboxReads([issueAsk()]);
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();
   try {
@@ -77,7 +77,7 @@ test("opens over the triggering control, moves initial focus to Close, and retur
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -91,7 +91,7 @@ test("picking an assignee inside the drawer lists that person there, writes noth
     question: "Bob's question?",
   });
   const rows = [mine, bobs];
-  const getInbox = mockInboxReads(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
@@ -119,7 +119,7 @@ test("picking an assignee inside the drawer lists that person there, writes noth
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listUsers.mockRestore();
   }
 });
@@ -127,7 +127,7 @@ test("picking an assignee inside the drawer lists that person there, writes noth
 test("Snooze inside the drawer folds the row into Later, same as the Inbox page", async () => {
   const user = userEvent.setup();
   let served: OpenAskRow[] = [issueAsk()];
-  const getInbox = mockInboxReads(() => served);
+  const listOpenAsks = mockInboxReads(() => served);
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
@@ -153,7 +153,7 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     snoozeAsk.mockRestore();
   }
 });
@@ -162,7 +162,7 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
   const user = userEvent.setup();
   const withOptions = issueAsk({ options: [{ label: "Ship" }, { label: "Hold" }] });
   let served = [withOptions];
-  const getInbox = mockInboxReads(() => served);
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads([withOptions]);
   const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
     served = [];
@@ -187,13 +187,13 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
     view.unmount();
     answerAsk.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
 test("Escape with a row focused backs out of the row first; only a second Escape closes the drawer", async () => {
   const user = userEvent.setup();
-  const getInbox = mockInboxReads([issueAsk()]);
+  const listOpenAsks = mockInboxReads([issueAsk()]);
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();
   try {
@@ -219,7 +219,7 @@ test("Escape with a row focused backs out of the row first; only a second Escape
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -233,7 +233,7 @@ test("at 1440 px the drawer is still today's Inbox: the card in the row, no read
   };
   const was = window_.innerWidth;
   window_.happyDOM.setViewport({ width: 1440 });
-  const getInbox = mockInboxReads([issueAsk()]);
+  const listOpenAsks = mockInboxReads([issueAsk()]);
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();
   try {
@@ -250,6 +250,6 @@ test("at 1440 px the drawer is still today's Inbox: the card in the row, no read
     view.unmount();
     window_.happyDOM.setViewport({ width: was });
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });

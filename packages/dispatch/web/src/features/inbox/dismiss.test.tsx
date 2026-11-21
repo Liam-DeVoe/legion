@@ -22,21 +22,15 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import {
-  inboxQuery,
   meInboxCountQuery,
   meInboxDismissedQuery,
+  meInboxKey,
   meInboxQuery,
-  myRepliesKey,
+  openAsksQuery,
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
-import type {
-  DispatchEvent,
-  IssueDetails,
-  MyRepliesResponse,
-  MyReplyRow,
-  OpenAskRow,
-} from "../../api/types";
+import type { DispatchEvent, IssueDetails, MyReplyRow, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
@@ -74,10 +68,6 @@ afterEach(() => {
   for (const mock of restores.splice(0)) mock.mockRestore();
 });
 
-function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
-}
-
 /** A client holding everything the Inbox reads, with `asks` open and `rows` the reader's Reply
  *  and Agent rows, each drawn from the one read, as the reader's own asks among `asks` are. The
  *  refetch a landed press triggers is answered from the same rows. */
@@ -85,8 +75,8 @@ function seeded(rows: readonly MyReplyRow[], asks: readonly OpenAskRow[] = []): 
   const mine = asks.filter((ask) => askWaitingOnPerson(ask) === "alice");
   restores.push(spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }));
   restores.push(answerOneRead({ asks: mine, threads: rows }, { asOf: AS_OF }));
-  // The unread set of the issue a thread row is on, which the reading column reads.
-  restores.push(spyOn(api, "listMyReplies").mockResolvedValue(threadsRead(rows)));
+  // The unread set of the issue a thread row is on, which the reading column reads, is the one
+  // read's `unread` state narrowed to that issue, which `answerOneRead` answers from `rows`.
   restores.push(spyOn(api, "getMyAgentState").mockResolvedValue({}));
   // The reading column reads the issue behind the thread row it is on, with that issue's
   // comments and subscribers: answered here, since no test of this file asserts them.
@@ -102,7 +92,7 @@ function seeded(rows: readonly MyReplyRow[], asks: readonly OpenAskRow[] = []): 
     },
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(inboxQuery().queryKey, [...asks]);
+  client.setQueryData(openAsksQuery().queryKey, [...asks]);
   client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([...mine, ...rows], { asOf: AS_OF }));
   client.setQueryData(meInboxCountQuery().queryKey, rows.length);
   return client;
@@ -279,7 +269,7 @@ test("a read of either view or the count asked while a dismiss is out waits for 
   // the Inbox, and counted.
   const reads = getMeInbox.mock.calls.length;
   await act(async () => {
-    void client.invalidateQueries({ queryKey: myRepliesKey });
+    void client.invalidateQueries({ queryKey: meInboxKey });
     await settle();
   });
   expect(getMeInbox).toHaveBeenCalledTimes(reads);
@@ -372,7 +362,7 @@ test("a thread somebody else starts while a dismiss is out shows once the dismis
   await act(async () => {
     hearLiveEvent(client, threadStateEvent({ login: "alice", thread_id: "c9" }), "alice");
     hearLiveEvent(client, threadStateEvent({ login: "bob" }), "alice");
-    void client.invalidateQueries({ queryKey: myRepliesKey });
+    void client.invalidateQueries({ queryKey: meInboxKey });
     await settle();
   });
   // Neither event is the dismiss's: no read has asked Dispatch.
@@ -381,7 +371,7 @@ test("a thread somebody else starts while a dismiss is out shows once the dismis
 
   await act(async () => {
     hearLiveEvent(client, threadStateEvent({ login: "alice" }), "alice");
-    void client.invalidateQueries({ queryKey: myRepliesKey });
+    void client.invalidateQueries({ queryKey: meInboxKey });
   });
   // The dismiss's answer is still out, and both views and the count are what Dispatch holds: c1
   // dismissed, and bob's thread in the Inbox and counted.

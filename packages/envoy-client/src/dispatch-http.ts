@@ -44,6 +44,7 @@ import type {
   GraphReferences,
   Handoff,
   HandoffSummary,
+  InboxListState,
   Issue,
   IssueCheckResults,
   IssueCoverage,
@@ -57,12 +58,11 @@ import type {
   IssueSummaryPage,
   ItemBlocks,
   MarkdownRoundTripResponse,
+  MeInboxResponse,
   Message,
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
-  MyRepliesResponse,
-  OpenAskRow,
   OpenAsksResponse,
   Priorities,
   Project,
@@ -1395,24 +1395,15 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
-  /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
-   *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
-   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
-   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
-   *  which is what the Inbox page shows by default. The route reads the caller's own `person`
-   *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
-  async inbox(assignee: string): Promise<OpenAskRow[]> {
-    return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
-  }
-
-  /** `GET /api/v1/me/replies?kind=reply,agent`: every unread thread the caller's Inbox lists —
-   *  a thread they wrote in that somebody else has written in since, and a one-off message they
-   *  sent an agent session that it answered — newest reply first, in the server's own order,
-   *  which no reader re-sorts. No `limit` is asked for, so the answer holds every row. The route
-   *  reads the caller's own `person` scope and refuses a credential without it with 403
-   *  OAUTH_SCOPE_REQUIRED, as the Inbox does. */
-  async myReplies(): Promise<MyRepliesResponse> {
-    return this.#json("GET", ["api", "v1", "me", "replies"], undefined, { kind: "reply,agent" });
+  /** `GET /api/v1/me/inbox?state=<state>`: the caller's own Inbox from the one read, newest
+   *  activity first, every entry of it, since no `limit` is asked for. `inbox` holds the open asks
+   *  that wait on the caller - the asks handed to them, and the asks on the issues assigned to
+   *  them that nobody has handed on - beside their Reply and Agent rows, read or not; `unread`
+   *  holds the threads they wrote in that somebody else has written in since, and the one-off
+   *  messages they sent an agent session that it answered. The route reads the caller's own
+   *  `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
+  async meInbox(state: InboxListState): Promise<MeInboxResponse> {
+    return this.#json("GET", ["api", "v1", "me", "inbox"], undefined, { state });
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may

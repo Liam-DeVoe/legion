@@ -1,7 +1,7 @@
-/** The two reads an Inbox card can mount its thread from: the Inbox read of every ask
- *  (`inboxQuery`), and the one read (`meInboxQuery`), which the page draws the reader's own asks
- *  from. */
-export type InboxSource = "inbox" | "one-read";
+/** The two reads an Inbox card can mount its thread from: the read of the open asks
+ *  (`openAsksQuery`), which the page draws every person's asks but the reader's own from, and the
+ *  one read (`meInboxQuery`), which it draws the reader's own asks from. */
+export type InboxSource = "open-asks" | "one-read";
 
 /** An event that arrived while a read of the Inbox was in flight: the generation newest then,
  *  and the reads whose response in flight then can still seed a card with the body composed

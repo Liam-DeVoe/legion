@@ -15,7 +15,7 @@ import type {
   Priorities,
   Project,
 } from "../api/types";
-import { answerOneRead } from "../features/inbox/inbox-fixture";
+import { answerOneRead, answerOpenAsks } from "../features/inbox/inbox-fixture";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { replyRow } from "../features/threads/replies-fixture";
 
@@ -91,7 +91,7 @@ function project(overrides: Partial<Project> = {}): Project {
  *  Dispatch has no broker (the list answers `null`). `priorities` is what the rail's summary
  *  call answers; by default this deployment has written none. `threads` are the reader's Reply
  *  rows. The reader's own asks and threads reach the Inbox count through the one read, which the
- *  Inbox draws them from, and every ask through the Inbox read. */
+ *  Inbox draws them from; every ask is the server's open asks, a read the rail does not make. */
 function renderSidebar(
   pathname = "/",
   pending?: CredentialPendingRow[],
@@ -222,7 +222,7 @@ function renderSidebar(
   railSpies.push(
     answerOneRead({ asks: asks.filter((ask) => ask.waiting_on_person === "alice"), threads })
   );
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(asks);
+  const listOpenAsks = answerOpenAsks(asks);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(
     pending === undefined ? null : { pending }
   );
@@ -255,7 +255,7 @@ function renderSidebar(
   );
   return {
     getCredentialPending,
-    getInbox,
+    listOpenAsks,
     getIssue,
     listIssues,
     listPriorities,
@@ -279,7 +279,7 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -302,7 +302,7 @@ test("sidebar counts a pending credential request in the Inbox count, beside the
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -339,7 +339,7 @@ test("sidebar leaves an expired credential request out of the Inbox count", asyn
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -355,7 +355,7 @@ test("sidebar marks the current project", async () => {
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -373,7 +373,7 @@ test("sidebar never requests the full issue list", async () => {
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -410,7 +410,7 @@ for (const [unread, name] of [
     } finally {
       sidebar.view.unmount();
       sidebar.getCredentialPending.mockRestore();
-      sidebar.getInbox.mockRestore();
+      sidebar.listOpenAsks.mockRestore();
       sidebar.getIssue.mockRestore();
       sidebar.listIssues.mockRestore();
       sidebar.listProjects.mockRestore();
@@ -421,7 +421,9 @@ for (const [unread, name] of [
 
 test("sidebar keeps its hide control available while navigation loads", async () => {
   const user = userEvent.setup();
-  const getInbox = spyOn(api, "getInbox").mockImplementation(() => new Promise<never>(() => {}));
+  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
   const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
     () => new Promise<never>(() => {})
   );
@@ -451,7 +453,7 @@ test("sidebar keeps its hide control available while navigation loads", async ()
     expect(hideCount).toBe(1);
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    getMeInbox.mockRestore();
     getCredentialPending.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
@@ -470,7 +472,7 @@ test("the rail's Priorities entry opens the page and counts both faults as one n
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -489,7 +491,7 @@ test("the rail's Priorities entry carries no number where no priority exists", a
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
+    sidebar.listOpenAsks.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();

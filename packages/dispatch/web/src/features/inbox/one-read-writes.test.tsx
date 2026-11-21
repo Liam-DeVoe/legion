@@ -1,14 +1,14 @@
 /**
- * The optimistic writes over the one read behind the Inbox's opt-in (dispatch://INFRA-1152,
- * `one-read-cache.ts`): each write that moves one of the reader's own rows on the press moves it
- * in the one read's cache too, puts it back where the server refuses the write, and reads the one
- * read again once the server has decided. A hand-on and an assignee that make an ask wait on the
- * reader add it to the one read, which is where the opt-in draws the reader's own asks from, so the
- * row stays in their list while the write is out.
+ * The optimistic writes over the one read (dispatch://INFRA-1152, `one-read-cache.ts`): each
+ * write that moves one of the reader's own rows on the press moves it in the one read's cache
+ * too, puts it back where the server refuses the write, and reads the one read again once the
+ * server has decided. A hand-on and an assignee that make an ask wait on the reader add it to the
+ * one read, which is where the Inbox draws the reader's own asks from, so the row stays in their
+ * list while the write is out.
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -22,10 +22,10 @@ import {
 } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import {
-  inboxQuery,
   meInboxCountQuery,
   meInboxKey,
   meInboxQuery,
+  openAsksQuery,
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
@@ -34,7 +34,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
 import { replyRow } from "../threads/replies-fixture";
-import { issueAsk, oneReadAnswer } from "./inbox-fixture";
+import { answerOpenAsks, issueAsk, oneReadAnswer } from "./inbox-fixture";
 import { markAllReadBody, useMarkAllRead } from "./mark-all";
 import { useInboxAsks } from "./one-read";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
@@ -71,8 +71,8 @@ const CLIENT_OPTIONS = {
   },
 };
 
-/** `client`, signed in as alice and holding the Inbox read `inbox`, and the one read's Inbox
- *  answer and unread count. */
+/** `client`, signed in as alice and holding the read of the open asks `inbox`, and the one read's
+ *  Inbox answer and unread count. */
 function seeded(
   inbox: readonly OpenAskRow[],
   answer: MeInboxResponse,
@@ -80,7 +80,7 @@ function seeded(
   client: QueryClient = new QueryClient(CLIENT_OPTIONS)
 ): QueryClient {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(inboxQuery().queryKey, [...inbox]);
+  client.setQueryData(openAsksQuery().queryKey, [...inbox]);
   client.setQueryData(meInboxQuery().queryKey, answer);
   client.setQueryData(meInboxCountQuery().queryKey, unread);
   return client;
@@ -88,7 +88,7 @@ function seeded(
 
 function wrapper(client: QueryClient) {
   return ({ children }: { children: ReactNode }) => (
-    <MemoryRouter initialEntries={["/?one=1"]}>
+    <MemoryRouter initialEntries={["/"]}>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     </MemoryRouter>
   );
@@ -127,7 +127,8 @@ function unreadCount(client: QueryClient): number | undefined {
   return client.getQueryData<number>([...meInboxCountQuery().queryKey]);
 }
 
-/** The asks the Inbox lists behind the opt-in, beside a hand-on of `ask` (`useInboxAsks`). */
+/** The asks the Inbox lists with its filter cleared, beside a hand-on of `ask` (`useInboxAsks`):
+ *  the reader's own from the one read, and everybody else's from the read of the open asks. */
 function HandOnList({
   ask,
   onHandOn,
@@ -135,8 +136,7 @@ function HandOnList({
   ask: OpenAskRow;
   onHandOn: (submit: (to: string) => void) => void;
 }): ReactNode {
-  const inbox = useQuery({ queryFn: async () => [ask], queryKey: inboxQuery().queryKey });
-  const listed = useInboxAsks(inbox.data);
+  const listed = useInboxAsks([], "alice");
   const handOn = useAskHandOn(ask);
   onHandOn(handOn.submit);
   return (
@@ -148,7 +148,7 @@ function HandOnList({
   );
 }
 
-test("a hand-on to the reader keeps the ask in their list behind the opt-in, and a refusal puts the one read back", async () => {
+test("a hand-on to the reader keeps the ask in their list, and a refusal puts the one read back", async () => {
   // carol's ask, which alice hands to herself: the one read lists none of it yet.
   const ask = issueAsk({
     id: "ask-b",
@@ -156,6 +156,8 @@ test("a hand-on to the reader keeps the ask in their list behind the opt-in, and
   });
   const client = seeded([ask], oneRead([]));
   restores.push(spyOn(api, "getMeInbox").mockResolvedValue(oneRead([])));
+  // What Dispatch holds of the open asks: carol's, which a read after the refusal answers.
+  restores.push(answerOpenAsks([ask]));
   const answer = deferred<unknown>();
   answerRoute("PUT", "/api/v1/asks/*/asked-of").mockReturnValue(answer.promise);
   let submit: ((to: string) => void) | undefined;
@@ -335,7 +337,7 @@ function threadsAnswer(
   return { ...oneRead([]), limit: 1, total: threads.filter((thread) => thread.unread).length };
 }
 
-/** The reader's Reply rows and the Inbox count behind the opt-in, as the page draws them
+/** The reader's Reply rows and the Inbox count, as the page draws them from the one read
  *  (`useInboxThreadRows`, `useUnreadThreadCount`), under their Mark all read. */
 function OneReadThreads(): ReactNode {
   const listRef = useRef<HTMLUListElement>(null);
@@ -372,7 +374,7 @@ function drawnCount(): string {
   return screen.getByTestId("count").textContent ?? "";
 }
 
-// Behind the opt-in the reader's Reply rows and the Inbox count are the one read's. A read of it
+// The reader's Reply rows and the Inbox count are the one read's. A read of it
 // asked while Mark all read is out - an event's refresh of the reader's threads, say - would
 // reach Dispatch before the press marks anything, and draw the row unread and the count back at
 // one while the press is still going through. It waits for the press's answer, as the Inbox's own
@@ -461,11 +463,10 @@ test("a read of the one read asked before Mark all read does not put back the ro
   expect(drawnCount()).toBe("0");
 });
 
-/** The reader's own asks behind the opt-in as the page lists them (`useInboxAsks`), beside a
+/** The reader's own asks as the page lists them from the one read (`useInboxAsks`), beside a
  *  snooze of `ask`. */
 function OneReadAsks({ ask, until }: { ask: OpenAskRow; until: string }): ReactNode {
-  const inbox = useQuery({ queryFn: async () => [ask], queryKey: inboxQuery().queryKey });
-  const listed = useInboxAsks(inbox.data);
+  const listed = useInboxAsks(["alice"], "alice");
   const snooze = useAskSnooze(ask.id);
   return (
     <>
@@ -485,9 +486,9 @@ function drawnSnooze(id: string): string | null {
   return document.querySelector(`[data-ask="${id}"]`)?.getAttribute("data-snoozed") ?? null;
 }
 
-// The reader's own asks behind the opt-in are the one read's. A read of it asked while a snooze
-// is out would reach Dispatch before the snooze, and draw the row back out of Later while the
-// snooze is still going through. It waits for the snooze's answer, as the Inbox read does.
+// The reader's own asks are the one read's. A read of it asked while a snooze is out would reach
+// Dispatch before the snooze, and draw the row back out of Later while the snooze is still going
+// through. It waits for the snooze's answer, as the read of the open asks does.
 test("a read of the one read asked while a snooze is out waits for its answer, so the row stays snoozed", async () => {
   const until = "2026-10-20T09:00:00Z";
   const ask = issueAsk({ id: "ask-a" });

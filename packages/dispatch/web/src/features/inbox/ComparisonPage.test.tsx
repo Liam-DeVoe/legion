@@ -1,6 +1,6 @@
 /**
  * The comparison page's read sits outside the Inbox's cache prefix (dispatch://INFRA-1152): every
- * optimistic write over the Inbox's asks patches each read under `["inbox"]` as a list of rows, so
+ * optimistic write over the Inbox's asks patches each read under `openAsksKey` as a list of rows, so
  * a comparison cached there would turn each of those writes into a throw for as long as it stays
  * cached.
  */
@@ -11,7 +11,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { inboxQuery } from "../../api/queries";
+import { openAsksQuery } from "../../api/queries";
 import type { OpenAskRow } from "../../api/types";
 import { ComparisonPage } from "./ComparisonPage";
 import { issueAsk } from "./inbox-fixture";
@@ -22,7 +22,7 @@ test("the comparison is cached outside the Inbox's prefix, so a write over the I
   const comparison = spyOn(api, "getInboxComparison").mockResolvedValue({ run: null });
   try {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(inboxQuery().queryKey, [issueAsk({ id: "ask-a" })]);
+    client.setQueryData(openAsksQuery().queryKey, [issueAsk({ id: "ask-a" })]);
     render(
       <MemoryRouter>
         <QueryClientProvider client={client}>
@@ -32,15 +32,15 @@ test("the comparison is cached outside the Inbox's prefix, so a write over the I
     );
     await screen.findByText("The gate is not met, because no comparison ran.");
 
-    const underInbox = client.getQueriesData({ queryKey: inboxQuery().queryKey });
-    expect(underInbox.map(([key]) => key)).toEqual([inboxQuery().queryKey]);
+    const underInbox = client.getQueriesData({ queryKey: openAsksQuery().queryKey });
+    expect(underInbox.map(([key]) => key)).toEqual([openAsksQuery().queryKey]);
     // A snooze's own patch, which a comparison under the prefix would have thrown on.
     expect(() =>
-      client.setQueriesData<OpenAskRow[]>({ queryKey: inboxQuery().queryKey }, (current) =>
+      client.setQueriesData<OpenAskRow[]>({ queryKey: openAsksQuery().queryKey }, (current) =>
         current?.map((row) => ({ ...row, snoozed_until: "2026-10-20T09:00:00Z" }))
       )
     ).not.toThrow();
-    expect(client.getQueryData<OpenAskRow[]>(inboxQuery().queryKey)?.[0]?.snoozed_until).toBe(
+    expect(client.getQueryData<OpenAskRow[]>(openAsksQuery().queryKey)?.[0]?.snoozed_until).toBe(
       "2026-10-20T09:00:00Z"
     );
   } finally {

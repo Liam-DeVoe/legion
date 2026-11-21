@@ -1,13 +1,19 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
-import type { MyReplyAgentRow, MyReplyThreadRow } from "../../api/types";
+import { meInboxOwnerQuery, whoAmIQuery } from "../../api/queries";
+import type {
+  MeInboxAgentRow,
+  MeInboxResponse,
+  MessageRead,
+  MyReplyAgentRow,
+  MyReplyRow,
+  MyReplyThreadRow,
+} from "../../api/types";
 import type { RepliesOwner } from "./useMarkThreadRead";
 
-/** One unread thread row for `threadId`, as `GET /api/v1/me/replies` answers it: a Reply row,
- *  read through a mark older than its reply, at a version of its own - not 0, so a test cannot
- *  pass on a missing field. An Agent row is a shape of its own, which the tests that need one
- *  build themselves. */
+/** One unread thread row for `threadId`, as the one read answers a Reply row: read through a
+ *  mark older than its reply, at a version of its own - not 0, so a test cannot pass on a missing
+ *  field. An Agent row is a shape of its own, which the tests that need one build themselves. */
 export function replyRow(
   threadId: string,
   overrides: Partial<MyReplyThreadRow> = {}
@@ -75,6 +81,32 @@ export function plannerAgentRow(overrides: Partial<MyReplyAgentRow> = {}): MyRep
   });
 }
 
+/** `row` as the one read answers an Agent row: with the conversation with its session that its
+ *  reading pane draws (`agentConversation`), which nothing reads again. */
+export function withConversation(row: MyReplyAgentRow, conversation: MessageRead): MeInboxAgentRow {
+  return { ...row, conversation };
+}
+
+/** The one read's `unread` answer narrowed to one owner, holding the Reply rows `rows`, each an
+ *  entry of its thread at its newest reply: what every thread mounted on that owner reads to
+ *  learn whether it is unread (`meInboxOwnerQuery`). */
+export function unreadSetAnswer(rows: readonly MyReplyRow[]): MeInboxResponse {
+  return {
+    as_of: "2026-10-12T00:00:00Z",
+    entries: rows.map((row) => ({
+      moment: row.reply.created_at,
+      node: { id: row.thread_id, kind: row.kind },
+      relations: [],
+      thread: row,
+    })),
+    horizon: 1,
+    limit: 200,
+    offset: 0,
+    person: "alice",
+    total: rows.length,
+  };
+}
+
 /** Seeds the signed-in viewer (alice) and `owner`'s unread threads, so every thread mounted on
  *  that owner reads them from the cache rather than a request. */
 export function seedUnread(
@@ -87,11 +119,8 @@ export function seedUnread(
     kind: "user",
     login: "alice",
   });
-  queryClient.setQueryData(myRepliesOwnerQuery(owner).queryKey, {
-    as_of: "2026-10-12T00:00:00Z",
-    limit: 200,
-    offset: 0,
-    rows: threadIds.map((id) => replyRow(id)),
-    total: threadIds.length,
-  });
+  queryClient.setQueryData(
+    meInboxOwnerQuery(owner).queryKey,
+    unreadSetAnswer(threadIds.map((id) => replyRow(id)))
+  );
 }

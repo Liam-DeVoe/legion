@@ -1,6 +1,6 @@
 /**
- * The hand-on (`useAskHandOn`) against the Inbox read it moves the ask in: a read asked while the
- * hand-on is out waits for Dispatch's answer.
+ * The hand-on (`useAskHandOn`) against the Inbox's read of the open asks it moves the ask in: a
+ * read asked while the hand-on is out waits for Dispatch's answer.
  */
 
 import { expect, spyOn, test } from "bun:test";
@@ -11,13 +11,13 @@ import type { ReactNode } from "react";
 import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { openAsksQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { DispatchEvent, OpenAskRow } from "../../api/types";
-import { issueAsk } from "./inbox-fixture";
+import { issueAsk, openAsksAnswer } from "./inbox-fixture";
 import { useAskHandOn } from "./useAskHandOn";
 
-/** Whom each ask of an Inbox read waits on. */
+/** Whom each ask of a read of the open asks waits on. */
 function waitingOn(rows: readonly OpenAskRow[] | undefined): (string | undefined)[] | undefined {
   return rows?.map((row) => row.waiting_on_person);
 }
@@ -31,14 +31,16 @@ test("a read of the Inbox asked while a hand-on is out waits for its answer, and
   const ask = issueAsk({ id: "ask-1" });
   // What Dispatch holds: the ask waits on alice, who holds its issue, until it takes the hand-on.
   let served: OpenAskRow[] = [ask];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
+    openAsksAnswer(served)
+  );
   const handOn = Promise.withResolvers<OpenAskRow>();
   const handAskTo = spyOn(api, "handAskTo").mockReturnValue(handOn.promise);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   const { result, unmount } = renderHook(
-    () => ({ handOn: useAskHandOn(ask), inbox: useQuery(inboxQuery()).data }),
+    () => ({ handOn: useAskHandOn(ask), inbox: useQuery(openAsksQuery()).data }),
     { wrapper }
   );
   try {
@@ -49,10 +51,10 @@ test("a read of the Inbox asked while a hand-on is out waits for its answer, and
 
     // Dispatch has not taken the hand-on, so a read that reached it now would answer alice.
     await act(async () => {
-      void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+      void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(waitingOn(result.current.inbox)).toEqual(["bob"]);
 
     // Dispatch takes it, stamped with its own moment: the read goes now, and draws what it holds.
@@ -68,11 +70,11 @@ test("a read of the Inbox asked while a hand-on is out waits for its answer, and
       handOn.resolve(handed);
       await settle();
     });
-    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(result.current.inbox).toEqual([handed]));
   } finally {
     unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     handAskTo.mockRestore();
   }
 });
@@ -105,18 +107,20 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const ask = issueAsk({ id: "ask-1" });
   let served: OpenAskRow[] = [ask];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
+    openAsksAnswer(served)
+  );
   const handOn = Promise.withResolvers<OpenAskRow>();
   const handAskTo = spyOn(api, "handAskTo").mockReturnValue(handOn.promise);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   const { result, unmount } = renderHook(
-    () => ({ handOn: useAskHandOn(ask), inbox: useQuery(inboxQuery()).data }),
+    () => ({ handOn: useAskHandOn(ask), inbox: useQuery(openAsksQuery()).data }),
     { wrapper }
   );
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(waitingOn(result.current.inbox)).toEqual(["alice"]));
@@ -129,7 +133,7 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // Neither another ask's hand-on, nor an answer of this one, nor carol's hand-on of this one
     // is alice's hand-on.
@@ -140,7 +144,7 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(waitingOn(result.current.inbox)).toEqual(["bob"]);
 
     // Dispatch takes the hand-on, and somebody asks alice a new question meanwhile: the hand-on's
@@ -158,7 +162,7 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(result.current.inbox).toEqual(served));
     expect(result.current.handOn.pending).toBe(true);
 
@@ -171,7 +175,7 @@ test("a read of the Inbox held behind a hand-on goes on the hand-on's own event,
     expect(result.current.inbox).toEqual(served);
   } finally {
     unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     handAskTo.mockRestore();
   }
 });

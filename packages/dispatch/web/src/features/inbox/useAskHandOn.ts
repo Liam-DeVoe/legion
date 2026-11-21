@@ -1,11 +1,18 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
-import { inboxQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
+import { meInboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, OpenAskRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { cancelMeInbox, meInboxSnapshot, patchMeInboxAsks, restoreMeInbox } from "./one-read-cache";
+import {
+  cancelOpenAsks,
+  openAsksKeys,
+  openAsksSnapshot,
+  patchOpenAsks,
+  restoreOpenAsks,
+} from "./open-asks-cache";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
@@ -28,12 +35,12 @@ export interface AskHandOnWrite {
 /**
  * The one way the SPA hands an ask to a person. The new person lands on every inbox cache at
  * once, so the row leaves the list it was in and joins theirs on the press, rolls back if the
- * server refuses, and every read carrying the ask - the Inbox and its owner's lists
- * (`invalidateOwnerReads`), the one read behind the Inbox's opt-in (`one-read-cache.ts`), and the
- * ask's own thread - refetches once the hand-on settles, the same shape as `useAskSnooze`, over
- * `PUT /api/v1/asks/{id}/asked-of`. Behind the opt-in the reader's own asks are the one read's
- * alone, so an ask handed to the reader joins that read's Inbox answer as well, where it held no
- * entry yet; without it the row would leave the old read's list and join no other.
+ * server refuses, and every read carrying the ask - the open asks and its owner's lists
+ * (`invalidateOwnerReads`), the one read (`one-read-cache.ts`), and the ask's own thread -
+ * refetches once the hand-on settles, the same shape as `useAskSnooze`, over
+ * `PUT /api/v1/asks/{id}/asked-of`. The reader's own asks are the one read's alone, so an ask
+ * handed to the reader joins that read's Inbox answer as well, where it held no entry yet;
+ * without it the row would leave the open asks' list and join no other.
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
@@ -51,27 +58,23 @@ export interface AskHandOnWrite {
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
-  const inboxKey = inboxQuery().queryKey;
-  // The card says why its hand-on was refused, where the reader pressed it. A read of the Inbox,
-  // or behind its opt-in of the one read, asked while the hand-on is out waits until Dispatch has
-  // taken it (its answer or the ask's `ask.asked_of` event): Dispatch can answer it before, with
-  // the person from before the press.
+  // The card says why its hand-on was refused, where the reader pressed it. A read of the open
+  // asks or of the one read asked while the hand-on is out waits until Dispatch has taken it (its
+  // answer or the ask's `ask.asked_of` event): Dispatch can answer it before, with the person from
+  // before the press.
   const mutation = useKeyedWrite({
     method: "PUT",
     write: (press: { ask: Ask; askedOf: string }, bounds) =>
       api.handAskTo(press.ask.id, press.askedOf, bounds),
     holds: (press) => ({
       endsOn: askWritten(press.ask.id, ["ask.asked_of"]),
-      keys: [inboxKey, meInboxQuery().queryKey],
+      keys: [...openAsksKeys(queryClient), meInboxQuery().queryKey],
     }),
     inline: true,
     label: ({ askedOf }) => `Ask handed to ${askedOf}`,
     onMutate: async (press) => {
-      await Promise.all([
-        queryClient.cancelQueries({ queryKey: inboxKey }),
-        cancelMeInbox(queryClient),
-      ]);
-      const previous = queryClient.getQueriesData<OpenAskRow[]>({ queryKey: inboxKey });
+      await Promise.all([cancelOpenAsks(queryClient), cancelMeInbox(queryClient)]);
+      const openAsks = openAsksSnapshot(queryClient);
       const oneRead = meInboxSnapshot(queryClient);
       const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
@@ -88,22 +91,22 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
               waiting_on_person: press.askedOf,
             }
           : row;
-      queryClient.setQueriesData<OpenAskRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map(handedOn)
-      );
+      patchOpenAsks(queryClient, handedOn);
+      // The rows the open asks held of the ask, any one of them, which join the reader's own
+      // Inbox answer where the ask is handed to them and it held no entry of it yet.
       const joined =
         press.askedOf === by
-          ? (queryClient.getQueryData<OpenAskRow[]>(inboxKey) ?? []).filter(
-              (row) => row.id === press.ask.id
-            )
+          ? openAsks
+              .flatMap(([, rows]) => rows ?? [])
+              .filter((row) => row.id === press.ask.id)
+              .slice(0, 1)
+              .map(handedOn)
           : [];
       patchMeInboxAsks(queryClient, handedOn, joined);
-      return { inbox: previous, oneRead };
+      return { oneRead, openAsks };
     },
     onError: (_error, _press, previous) => {
-      for (const [key, data] of previous?.inbox ?? []) {
-        queryClient.setQueryData(key, data);
-      }
+      restoreOpenAsks(queryClient, previous?.openAsks);
       restoreMeInbox(queryClient, previous?.oneRead);
     },
     onSettled: (_data, _error, press) => {

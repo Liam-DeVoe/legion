@@ -1,78 +1,75 @@
 /**
- * The Inbox's switch to the one read, `GET /api/v1/me/inbox`. The page at `/` draws the
- * reader's own rows from it by default, with no opt-in: the address's `one=1`
- * (`InboxRoute.one`) and the browser preference `inbox.one_read`, which opted in while the
- * default was still the reads it replaces, change nothing now. The surfaces it moves are the
- * reader's own: the asks that wait on them (`useInboxAsks`), their Reply and Agent rows
- * (`useInboxThreadRows`), and the two numbers the Inbox entry adds up (`useNeedsYouCount`,
- * `useUnreadThreadCount`). Another person's asks are the Inbox read's either way.
+ * The open asks the Inbox lists. The reader's own come from the one read, `GET /api/v1/me/inbox`,
+ * as their Reply and Agent rows do (`useInboxThreadRows`) and as the two numbers the Inbox entry
+ * adds up (`useNeedsYouCount`, `useUnreadThreadCount`); every other person's come from the read of
+ * the open asks, `GET /api/v1/asks/open`, which the page makes only while its filter shows them.
  */
 
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
-import { meInboxQuery, whoAmIQuery } from "../../api/queries";
+import { meInboxQuery, openAsksQuery } from "../../api/queries";
 import type { OpenAskRow } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { meInboxAsks } from "./one-read-rows";
-import { isMine } from "./sections";
+import { isMine, isOwnList } from "./sections";
 
-/** Whether the reader's own rows come from the one read: always, on every page, the drawer's
- *  Inbox included, since the one read is the Inbox's default. */
-export function useOneRead(): boolean {
-  return true;
-}
-
-/** The open asks the Inbox lists (`useInboxAsks`), and the state of the one read they are drawn
- *  from behind the opt-in. */
+/** The open asks the Inbox lists (`useInboxAsks`), and the state of the reads they are drawn
+ *  from. */
 export interface InboxAsks {
+  /** Undefined until every read the list needs has answered. */
   readonly asks: OpenAskRow[] | undefined;
-  /** Whether the one read the reader's own asks come from has not answered yet: false without
-   *  the opt-in, where no such read is made. */
+  /** Whether a read the list needs has not answered yet: the one read always, and the read of
+   *  the open asks while the selection shows anyone's asks but the reader's own. */
   readonly pending: boolean;
-  /** Whether that read failed: false without the opt-in. */
+  /** Whether one of those reads failed. */
   readonly failed: boolean;
-  /** When the read `askId` is listed from answered, given when the Inbox read did
-   *  (`inboxUpdatedAt`): the one read's time for an ask drawn from it, the Inbox read's for every
-   *  other. A card seeds its thread from its row (`AskCard`'s `initialThreadUpdatedAt`), and that
-   *  seed is as old as the read the row came from, not as new as the other read. */
-  readonly updatedAtOf: (askId: string, inboxUpdatedAt: number) => number;
+  /** When the read `askId` is listed from answered: the one read's time for an ask drawn from it,
+   *  the open asks' for every other. A card seeds its thread from its row (`AskCard`'s
+   *  `initialThreadUpdatedAt`), and that seed is as old as the read the row came from, not as new
+   *  as the other read. */
+  readonly updatedAtOf: (askId: string) => number;
 }
 
 /**
- * The open asks the Inbox lists: `asks`, every one the Inbox read answered, as they are; and
- * behind the opt-in, those that wait on the reader taken from the one read in their place, each
- * once, with every other person's still the Inbox read's. The same array while neither read
- * moves, since the motion hold adopts what it is given by identity (`motion-hold.ts`); undefined
- * until the Inbox read has answered, as `asks` is. While the one read has not answered, or where
- * it failed, the list holds none of the reader's own asks, so it says so (`pending`, `failed`)
- * for the page to draw its loading state or its error rather than a list without them.
+ * The open asks the Inbox lists for `selection`, the assignees its filter names (empty for
+ * nobody): the reader's own from the one read, and - while the selection shows anyone's asks but
+ * the reader's own - every other person's from the read of the open asks, each once and none of
+ * them the reader's. The read of the open asks is every project's, once, whoever the selection
+ * names: the page narrows its rows itself, so a pick of another person asks for nothing new. A
+ * write that has just made an ask wait on the reader leaves it in the open asks until that read
+ * answers again, and the one read lists it (`patchMeInboxAsks`). The same array while neither
+ * read moves, since the motion hold adopts what it is given by identity (`motion-hold.ts`).
  */
-export function useInboxAsks(asks: OpenAskRow[] | undefined): InboxAsks {
-  const oneRead = useOneRead();
+export function useInboxAsks(selection: readonly string[], viewer: string | undefined): InboxAsks {
   const human = useIsHuman();
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const own = useQuery({ ...meInboxQuery(), enabled: oneRead && human });
+  const own = useQuery({ ...meInboxQuery(), enabled: human });
+  // Nobody is "anyone but the reader" until the reader's login resolves.
+  const othersShown = viewer !== undefined && !isOwnList(selection, viewer);
+  const others = useQuery({ ...openAsksQuery(), enabled: othersShown });
   const answer = own.data;
-  const { listed, ids } = useMemo(() => {
-    if (!oneRead || asks === undefined) return { ids: new Set<string>(), listed: asks };
+  const rows = others.data;
+  const { ids, listed } = useMemo(() => {
+    if (answer === undefined) return { ids: new Set<string>(), listed: undefined };
     const mine = meInboxAsks(answer);
     const ids = new Set(mine.map((ask) => ask.id));
-    const others = asks.filter(
+    if (!othersShown) return { ids, listed: mine };
+    if (rows === undefined) return { ids, listed: undefined };
+    const rest = rows.filter(
       (ask) => !ids.has(ask.id) && (viewer === undefined || !isMine({ ask, kind: "ask" }, viewer))
     );
-    return { ids, listed: [...others, ...mine] };
-  }, [asks, oneRead, answer, viewer]);
-  const oneReadAt = own.dataUpdatedAt;
+    return { ids, listed: [...rest, ...mine] };
+  }, [answer, othersShown, rows, viewer]);
+  const ownAt = own.dataUpdatedAt;
+  const othersAt = others.dataUpdatedAt;
   const updatedAtOf = useCallback(
-    (askId: string, inboxUpdatedAt: number) => (ids.has(askId) ? oneReadAt : inboxUpdatedAt),
-    [ids, oneReadAt]
+    (askId: string) => (ids.has(askId) ? ownAt : othersAt),
+    [ids, othersAt, ownAt]
   );
-  const reading = oneRead && human;
   return {
     asks: listed,
-    failed: reading && own.isError,
-    pending: reading && own.isPending,
+    failed: (human && own.isError) || (othersShown && others.isError),
+    pending: (human && own.isPending) || (othersShown && others.isPending),
     updatedAtOf,
   };
 }

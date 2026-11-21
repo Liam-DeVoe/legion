@@ -13,7 +13,7 @@ import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { type KeptTab, keptTab, keyMinted, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { agentMessagesQuery, meInboxKey } from "../../api/queries";
+import { agentConversationQuery, meInboxKey } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -145,7 +145,7 @@ test("a send that lands, with or without its answer, refreshes its session", asy
       await waitFor(() => expect(held.get(agentKey)).toBeUndefined());
       expect(outcomes).toEqual(["landed"]);
       expect(invalidate).toHaveBeenCalledWith({
-        queryKey: agentMessagesQuery("planner-session").queryKey,
+        queryKey: agentConversationQuery("planner-session").queryKey,
       });
     } finally {
       stop();

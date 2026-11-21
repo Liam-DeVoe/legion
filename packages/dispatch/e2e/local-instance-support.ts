@@ -495,7 +495,7 @@ export type SeededInboxRow =
       readonly made: string;
     };
 
-/** What the helper reads of an Inbox row; `getInbox`'s own rows satisfy it. */
+/** What the helper reads of an Inbox row; `listOpenAsks`'s own rows satisfy it. */
 export type InboxRowRead = Pick<OpenAskRow, "id" | "issue_key" | "block_id" | "document">;
 
 export interface SeededInboxOptions {
@@ -578,8 +578,8 @@ function shownInboxRead(diff: SeededInboxDiff): string {
 /**
  * Reads the Inbox with `read` until it lists exactly the rows `declared`, and answers the pass
  * line, or throws a block that names every missing and every unexpected row once `boundMs` has
- * passed. `read` is ONE UNFILTERED Inbox read (`GET /api/v1/inbox` with no query): the seed
- * declares that set, and a filtered read (`?assignee=unassigned`, say) holds another.
+ * passed. `read` is ONE UNFILTERED read of the open asks (`GET /api/v1/asks/open` with no query):
+ * the seed declares that set, and a narrowed read (`?waiting_on=bob`, say) holds another.
  *
  * Each declared row takes the first Inbox row it names that no declared row took before it; a
  * declared row that takes none is missing, and an Inbox row that none took is unexpected, a

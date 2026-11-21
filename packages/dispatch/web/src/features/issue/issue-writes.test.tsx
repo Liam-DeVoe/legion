@@ -12,6 +12,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { titleWrittenElsewhere } from "../issue-page/title-elsewhere-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
@@ -116,7 +117,7 @@ function narrowIssue(details: IssueDetails): Issue {
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
@@ -171,7 +172,7 @@ function stubIssueApi() {
     restore: () => {
       getIssue.mockRestore();
       getIssueEvents.mockRestore();
-      getInbox.mockRestore();
+      listOpenAsks.mockRestore();
       getIssueSubscribers.mockRestore();
       getMyState.mockRestore();
       getIssueCoverage.mockRestore();

@@ -75,8 +75,8 @@ jq -e '.anchor.quote == "brown" and (.anchor.mark_id | type == "string") and .st
   exit 1
 }
 
-inbox="$(request "${dispatch_url}/api/v1/inbox?project=${project_key}")"
-jq -e --arg id "$ask_id" 'length == 1 and .[0].id == $id and .[0].issue.key != "" and .[0].issue.title == "Dispatch API E2E"' <<<"$inbox" >/dev/null || {
+inbox="$(request "${dispatch_url}/api/v1/asks/open?project=${project_key}")"
+jq -e --arg id "$ask_id" '(.asks | length) == 1 and .asks[0].id == $id and .asks[0].issue.key != "" and .asks[0].issue.title == "Dispatch API E2E"' <<<"$inbox" >/dev/null || {
   printf 'inbox response was unexpected: %s\n' "$inbox" >&2
   exit 1
 }

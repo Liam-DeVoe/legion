@@ -27,7 +27,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { issueQuery, projectIssuesQuery } from "../../api/queries";
+import { issueQuery, openAsksQuery, projectIssuesQuery } from "../../api/queries";
 import type { DispatchQueryClient } from "../../api/query-client";
 import type {
   Issue,
@@ -122,7 +122,7 @@ const inboxRow: OpenAskRow = {
 
 const detailKey = issueQuery(issue.key).queryKey;
 const listKey = ["issues", "project", issue.project] as const;
-const inboxKey = ["inbox"] as const;
+const inboxKey = openAsksQuery().queryKey;
 
 /** What Dispatch stores of CORE-1 that a pick or a read of it carries. */
 type Stored = Pick<Issue, "assignee" | "priority" | "updated_at">;

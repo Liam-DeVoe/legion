@@ -114,8 +114,8 @@ function stoppedPickNote(refused: Refused<unknown>, stopped: SendStoppedError): 
  * line unsent, from this picker or another of the same field (an Inbox row and its reading
  * pane): two picks nobody has sent are one request, the newest, and the pick taken out shows no
  * error and puts nothing back. The write, not this hook, shows the pick on the issue, each list
- * of issues (a project's board and table, the Priorities view's tables), each Inbox row and each
- * ask of the one read behind the Inbox's opt-in, keeps the field shown as its newest live write -
+ * of issues (a project's board and table, the Priorities view's tables), each row of the open
+ * asks and each ask of the one read, keeps the field shown as its newest live write -
  * whichever control made it - over every answer while the pick is live, and when it ends without
  * landing puts back the newest live write of the field, or else the value Dispatch last answered
  * for it and reads the issue again (`issue-field-writes.ts`).

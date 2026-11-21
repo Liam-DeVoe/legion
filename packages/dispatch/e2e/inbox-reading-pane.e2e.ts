@@ -3,8 +3,8 @@ import {
   createIssue,
   createProject,
   getArtifact,
-  getInbox,
   getIssue,
+  listOpenAsks,
   patchIssue,
   resolveAsk,
 } from "./api";
@@ -111,7 +111,7 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
     await expect(list.locator(`[data-inbox-row="${seed.decisionAskId}"]`)).toHaveCount(0);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
     await expect
-      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .poll(async () => (await listOpenAsks()).some((row) => row.id === seed.decisionAskId))
       .toBe(false);
   } finally {
     await alice.close();
@@ -329,7 +329,7 @@ test("an options-only answer the server refuses keeps its question in the column
     await expect(list.locator(`[data-inbox-row="${seed.decisionAskId}"]`)).toHaveCount(1);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
     await expect
-      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .poll(async () => (await listOpenAsks()).some((row) => row.id === seed.decisionAskId))
       .toBe(true);
   } finally {
     await alice.close();

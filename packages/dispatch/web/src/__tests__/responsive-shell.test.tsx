@@ -8,7 +8,7 @@ import { ApiError, api } from "../api/client";
 import type { Agent, IssueDetails, OpenAskRow, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
-import { oneReadReply } from "../features/inbox/inbox-fixture";
+import { oneReadReply, openAsksAnswer } from "../features/inbox/inbox-fixture";
 import { replyRow } from "../features/threads/replies-fixture";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
@@ -88,13 +88,13 @@ const issue: IssueDetails = {
 
 const originalApi = {
   getAsk: api.getAsk,
-  getInbox: api.getInbox,
+  listOpenAsks: api.listOpenAsks,
   getMeInbox: api.getMeInbox,
   getIssue: api.getIssue,
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
-  listAgentMessages: api.listAgentMessages,
+  getAgentConversation: api.getAgentConversation,
   listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
@@ -120,9 +120,9 @@ function setViewport(width: number): void {
     }) as MediaQueryList) as typeof window.matchMedia;
 }
 
-/** The shell at `width` over `inbox` as every ask the Inbox read lists, with `unreadThreads` of
- *  the reader's threads unread. The reader's own asks and threads reach the header's count
- *  through the one read, which the Inbox draws them from. */
+/** The shell at `width` over `inbox` as every ask the read of the open asks lists, with
+ *  `unreadThreads` of the reader's threads unread. The reader's own asks and threads reach the
+ *  header's count through the one read, which the Inbox draws them from. */
 function renderShellAt(
   width: number,
   inbox: OpenAskRow[] = [],
@@ -169,7 +169,7 @@ function renderShellAt(
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   });
   api.getIssue = async () => issue;
-  api.getInbox = async () => inbox;
+  api.listOpenAsks = async () => openAsksAnswer(inbox);
   api.listProjects = async () => [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -471,7 +471,7 @@ test("the shell tells the live-view registry which agents the person pinned", as
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
   // The page of the view the registry mounts reads its session's messages; none are asserted.
-  api.listAgentMessages = async () => [];
+  api.getAgentConversation = async () => [];
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
 

@@ -25,7 +25,8 @@ import { type Browser, expect, type Page, test } from "./test";
  * rows, the same ids and the same moments.
  *
  * The corpus holds only rows both builds answer: open asks waiting on the reader, replies in
- * threads they wrote in that somebody else wrote in, and an agent's reply to their message. Each
+ * threads they wrote in that somebody else wrote in, an agent's reply to their message, and one
+ * open ask waiting on somebody else, which the reader's own list draws nothing of. Each
  * row's moment is a minute after the one before, so no two rows tie and no order is the
  * renderer's choice. The row signs the reader in on each build, opens the Inbox at `/` with the
  * default in force, and captures what each draws: every row in order (its kind, its icon's name,
@@ -35,6 +36,11 @@ import { type Browser, expect, type Page, test } from "./test";
  * accessible name. The two must be the same but for the one difference this row names and
  * requires: the fourth Type value reads `Reply` on the base build and `Threads` here, in the
  * Filter control, the band heading (`Replies` on the base) and every row icon.
+ *
+ * The read the Inbox's assignee filter moves to is compared beside the page: for the reader and
+ * for the other person, each read as themselves, this head's `GET /api/v1/asks/open?waiting_on=`
+ * answers the ask rows the base's `GET /api/v1/inbox?assignee=` answers - the reader two, the
+ * other person one - by id both ways, with every field the base answers equal.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
@@ -125,6 +131,16 @@ async function write<T>(
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
+/** One read of `path` from `server` as the person `writer` signed in as, answering its body. */
+async function read<T>(server: BaseServer, writer: Writer, path: string): Promise<T> {
+  if (writer === "session") throw new Error("a read of the assignee filter is a person's");
+  const response = await fetch(new URL(path, server.url), { headers: { Cookie: writer.cookie } });
+  if (!response.ok) {
+    throw new Error(`GET ${path} answered ${response.status}: ${await response.text()}`);
+  }
+  return (await response.json()) as T;
+}
+
 /** The moment the next row is written at: a minute after the one before. */
 async function nextRow(): Promise<void> {
   // The corpus gives every row a moment of its own a minute after the last, which the check
@@ -133,8 +149,9 @@ async function nextRow(): Promise<void> {
 }
 
 /** The corpus, written through `server`: two open asks waiting on the reader, a comment thread
- *  and an issue message thread the reader started that somebody else answered, and the session's
- *  reply to a message the reader sent it, each row's own write a minute after the last. */
+ *  and an issue message thread the reader started that somebody else answered, the session's
+ *  reply to a message the reader sent it, and one open ask waiting on somebody else, which the
+ *  reader's own list draws nothing of; each row's own write a minute after the last. */
 async function seedCorpus(server: BaseServer): Promise<void> {
   await setLiveSessions([THREAD_SESSION]);
   const alice = await signedIn(server, reader);
@@ -190,6 +207,12 @@ async function seedCorpus(server: BaseServer): Promise<void> {
   await write(server, "session", "POST", `/api/v1/messages/${direct.id}/reply`, {
     attempt: 1,
     body: "The staging gate is open.",
+  });
+  await nextRow();
+  const capacity = await issue("Capacity review");
+  await write(server, alice, "PATCH", `/api/v1/issues/${capacity.key}`, { assignee: other });
+  await write(server, "session", "POST", `/api/v1/issues/${capacity.key}/asks`, {
+    question: "Add a second runner?",
   });
 }
 
@@ -445,9 +468,39 @@ test("the inbox renders the same page before and after the one read, but for the
     ];
     expect(found, found.join("\n")).toEqual([]);
 
-    // The read the Inbox's assignee filter moves to - `GET /api/v1/asks/open?waiting_on=` on this
-    // head beside the base's `GET /api/v1/inbox?assignee=`, for each seeded person and for
-    // `unassigned` - is compared here once that key exists (dispatch://INFRA-1152's T18).
+    // The read the Inbox's assignee filter moves to: `GET /api/v1/asks/open?waiting_on=` on this
+    // head answers each seeded person, read as that person, the ask rows the base's
+    // `GET /api/v1/inbox?assignee=` answers them - the same rows by id both ways, and every field
+    // the base answers equal on this head's row.
+    for (const [login, count] of [
+      [reader, 2],
+      [other, 1],
+    ] as const) {
+      const onBase = await read<Record<string, unknown>[]>(
+        base,
+        await signedIn(base, login),
+        `/api/v1/inbox?assignee=${login}`
+      );
+      const onHead =
+        (
+          await read<{ asks: Record<string, unknown>[] | null }>(
+            head,
+            await signedIn(head, login),
+            `/api/v1/asks/open?waiting_on=${login}`
+          )
+        ).asks ?? [];
+      const ids = (rows: readonly Record<string, unknown>[]) =>
+        rows.map((row) => String(row.id)).sort();
+      expect(ids(onBase), `${login}'s asks on the base build`).toHaveLength(count);
+      expect(ids(onHead), `${login}'s asks on this head, by id`).toEqual(ids(onBase));
+      for (const row of onBase) {
+        const answered = onHead.find((candidate) => candidate.id === row.id) ?? {};
+        const shared = Object.fromEntries(Object.keys(row).map((key) => [key, answered[key]]));
+        expect(shared, `${login}'s ask ${String(row.id)}, every field the base answers`).toEqual(
+          row
+        );
+      }
+    }
   } finally {
     await base?.stop();
     await head?.stop();

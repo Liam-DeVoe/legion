@@ -13,7 +13,7 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -475,7 +475,7 @@ function InboxCardRow({
    *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
   onSnoozeLive: (askId: string, live: boolean) => void;
   /** When the read that supplied this row's initial thread answered: the one read for the
-   *  reader's own asks, the Inbox read for every other (`useInboxAsks`'s `updatedAtOf`). */
+   *  reader's own asks, the open asks for every other (`useInboxAsks`'s `updatedAtOf`). */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
@@ -697,10 +697,17 @@ export function Inbox({
   // in the drawer, the Inbox is the list of cards it has always been.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
   const paneShown = pane && wideEnoughForPane;
-  // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
-  // list below is a client-side partition of it, so an answered row leaves every surface at once.
-  const inbox = useQuery(inboxQuery());
   const whoAmI = useQuery(whoAmIQuery());
+  const viewer = whoAmI.data?.login;
+  // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
+  // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
+  // behind their back.
+  const selection = filter.assignees ?? (viewer === undefined ? [] : [viewer]);
+  // The asks this list holds: the reader's own from the one read, and every other person's from
+  // the open asks while the selection shows them (`useInboxAsks`, `one-read.ts`, which
+  // `useInboxThreadRows` below follows for the threads). The list is a client-side partition of
+  // those reads, so an answered row leaves every surface that reads them at once.
+  const inboxAsks = useInboxAsks(selection, viewer);
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
    *  it. A thread stays in the Inbox, read or not, until it is dismissed. */
   const show: InboxShow = filter.show ?? "inbox";
@@ -716,19 +723,12 @@ export function Inbox({
   const columnsRef = useRef<HTMLDivElement>(null);
   /** How much of that grid the reading column takes, kept for the reader's browser. */
   const [paneWidth, setPaneWidth] = usePaneWidth();
-  // The asks this list holds, from the read the opt-in names (`useInboxAsks`, `one-read.ts`, which
-  // `useInboxThreadRows` below follows for the threads); a refetch can land while a pointer
-  // travels between rows, so it is adopted once that pointer settles.
-  const inboxAsks = useInboxAsks(inbox.data);
+  // A refetch can land while a pointer travels between rows, so it is adopted once that pointer
+  // settles.
   const adoptedInbox = useMotionHold(inboxAsks.asks, listRef);
   // The credential requests the Inbox lists above its asks: the section, the banner and the empty
   // state all read this one answer.
   const credentials = useCredentialRequests();
-  const viewer = whoAmI.data?.login;
-  // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
-  // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
-  // behind their back.
-  const selection = filter.assignees ?? (viewer === undefined ? [] : [viewer]);
   const sort = filter.sort ?? "newest";
   const groupBy = filter.group ?? "priority";
   const filters: InboxFilters = filter.filters ?? {};
@@ -1467,13 +1467,12 @@ export function Inbox({
     },
   ]);
 
-  // Behind the opt-in the reader's own asks are the one read's, so the list waits for that read
-  // as it waits for the Inbox read, and says it could not load where that read failed, rather
-  // than drawing a list without them.
-  if (inbox.isPending || whoAmI.isPending || inboxAsks.pending) {
+  // The list waits for every read its asks come from, and says it could not load where one
+  // failed, rather than drawing a list without the rows that read answers for.
+  if (whoAmI.isPending || inboxAsks.pending) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
-  if (inbox.isError || inboxAsks.failed || viewer === undefined || place === undefined) {
+  if (inboxAsks.failed || viewer === undefined || place === undefined) {
     return <p className={dangerText}>Could not load your inbox.</p>;
   }
 
@@ -1825,7 +1824,7 @@ export function Inbox({
         onAnswered={recordAnswered}
         onAssignLive={onAssignLive}
         onSnoozeLive={onSnoozeLive}
-        threadUpdatedAt={inboxAsks.updatedAtOf(row.ask.id, inbox.dataUpdatedAt)}
+        threadUpdatedAt={inboxAsks.updatedAtOf(row.ask.id)}
         viewer={viewer}
       />
     ) : (

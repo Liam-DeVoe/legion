@@ -18,7 +18,7 @@ import {
   createProject,
   disconnectLiveSockets,
   dropAgentStreamViewers,
-  listAgentMessages,
+  getAgentConversation,
   publishAgentStreamFrame,
   replyToMessageDelivery,
   setAgentStreamResponder,
@@ -1240,7 +1240,7 @@ async function attemptOf(
   sessionID: string,
   body: string
 ): Promise<{ error: string | null; state: string } | undefined> {
-  const sent = (await listAgentMessages(sessionID))
+  const sent = (await getAgentConversation(sessionID))
     .flatMap((read) => [read.message, ...(read.replies ?? [])])
     .find((message) => message.body === body);
   const attempt = newestDeliveryOf(sent === undefined ? [] : [sent]);

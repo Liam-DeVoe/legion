@@ -29,10 +29,12 @@ beforeAll(async () => {
 const never = () => Promise.withResolvers<never>().promise;
 
 let whoAmI: Mock<typeof api.whoAmI>;
-let getInbox: Mock<typeof api.getInbox>;
 let getMeInbox: Mock<typeof api.getMeInbox>;
 let getCredentialPending: Mock<typeof api.getCredentialPending>;
 let getCredentialCapabilities: Mock<typeof api.getCredentialCapabilities>;
+/** How many times the page has read its list: the one read's `inbox` state, which is the reader's
+ *  own list and the only read of it the page makes. */
+const inboxReads = () => getMeInbox.mock.calls.filter(([query]) => query?.state === "inbox").length;
 beforeEach(() => {
   window.localStorage.clear();
   whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
@@ -40,7 +42,6 @@ beforeEach(() => {
     kind: "user",
     login: "alice",
   });
-  getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   getMeInbox = answerOneRead({});
   getCredentialPending = spyOn(api, "getCredentialPending")
     .mockResolvedValueOnce(null)
@@ -53,7 +54,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   whoAmI.mockRestore();
-  getInbox.mockRestore();
   getMeInbox.mockRestore();
   getCredentialPending.mockRestore();
   getCredentialCapabilities.mockRestore();
@@ -92,9 +92,8 @@ function watchEmptyState(): { blinks: number; stop: () => void } {
 }
 
 test("a Dispatch with no broker is asked once per load, even when that answer beats the inbox list", async () => {
-  const inbox = Promise.withResolvers<[]>();
-  getInbox.mockReturnValue(inbox.promise);
-  // The reader's own rows are the one read's, which answers no sooner than the Inbox read.
+  const inbox = Promise.withResolvers<void>();
+  // The reader's own rows are the one read's, which answers after the credential list does.
   answerOneRead(async () => {
     await inbox.promise;
     return {};
@@ -105,7 +104,7 @@ test("a Dispatch with no broker is asked once per load, even when that answer be
     await act(async () => {
       await Promise.resolve();
     });
-    inbox.resolve([]);
+    inbox.resolve();
     expect(await screen.findByText("Nothing needs you")).toBeTruthy();
     expect(screen.queryByText("Couldn't load credential requests.")).not.toBeInTheDocument();
     expect(getCredentialPending).toHaveBeenCalledTimes(1);
@@ -129,9 +128,9 @@ test("with no broker, a focus, a stream refresh and a return to the Inbox neithe
       await Promise.resolve();
     });
     act(() => refreshQueries(queryClient));
-    // The refresh refetches the inbox list; once that has landed, any credential refetch it
+    // The refresh reads the Inbox's list again; once that has landed, any credential refetch it
     // started would already be on the wire.
-    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(inboxReads()).toBe(2));
     await act(async () => {
       await Promise.resolve();
     });
@@ -206,9 +205,9 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
     // (`api/query-refresh.ts`), and the page loaded the Inbox well under a second ago; each wait
     // gives that interval room.
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2));
-    // The gap's whole-cache refresh refetches the inbox list; the held answer is not asked a
+    // The gap's whole-cache refresh reads the Inbox's list again; the held answer is not asked a
     // third time, and nothing blinks while the second call is out.
-    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(inboxReads()).toBe(2));
     await act(async () => {
       await Promise.resolve();
     });

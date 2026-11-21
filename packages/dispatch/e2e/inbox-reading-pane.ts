@@ -16,7 +16,7 @@ import {
   createProject,
   createProjectDocument,
   editArtifact,
-  getInbox,
+  listOpenAsks,
   patchIssue,
   requestApproval,
   withOpenedAsk,
@@ -150,7 +150,7 @@ async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskR
   let found: OpenAskRow | undefined;
   await expect
     .poll(async () => {
-      found = (await getInbox()).find(match);
+      found = (await listOpenAsks()).find(match);
       return found !== undefined;
     }, INDEX_PROBE)
     .toBe(true);

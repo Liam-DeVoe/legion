@@ -144,6 +144,10 @@ people as you like; the button then names the one you picked, or how many.
   every project names a default assignee, so it shows an empty list.
 - Clear the filter to see every open ask.
 
+Your own asks are read with your threads. The first time the filter shows anybody else's asks, the
+Inbox reads every open ask once; each pick after that, between one person and another, narrows
+what it holds and asks the server nothing.
+
 The **Assign to me** button is on an ask Dispatch names no person for, so no ask carries it while
 every project names a default assignee. Choosing it makes the issue yours, so the ask is in your
 own list, and your counts, from then on. An ask on a project document belongs to no issue and
@@ -169,12 +173,12 @@ document, which belongs to no issue, matches the document's name too. Capitals m
 difference. The `f` key puts the focus in the box from anywhere on the page, and `Escape` there
 puts it back on the selected row, or on the first row when no row is selected.
 
-The box narrows the list the Inbox already holds, as the **Assignee** filter does: nothing is
-asked of the server again, so the sections, their counts and the keys that walk the list all
-follow what you typed. An ask the text hides drops out of the count of ticked asks and out of the
-snooze that acts on them, and keeps its tick for when it comes back. The credential requests above
-the list and the **Blocked on you** summary are not narrowed. When no ask holds every word, the
-list reads **Nothing matches this text**.
+The box narrows the list the Inbox already holds: nothing is asked of the server again, so the
+sections, their counts and the keys that walk the list all follow what you typed. An ask the text
+hides drops out of the count of ticked asks and out of the snooze that acts on them, and keeps its
+tick for when it comes back. The credential requests above the list and the **Blocked on you**
+summary are not narrowed. When no ask holds every word, the list reads **Nothing matches this
+text**.
 
 The text is part of the address too, as `?q=`, so a link carries what you searched for as well as
 whose asks you were looking at.

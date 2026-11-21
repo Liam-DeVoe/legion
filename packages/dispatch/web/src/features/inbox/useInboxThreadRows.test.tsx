@@ -8,8 +8,7 @@
  * never settles - React ends that loop by throwing "Maximum update depth exceeded" and the page
  * draws its error boundary instead of the reader's dismissed threads.
  *
- * The Inbox draws these rows from the one read, with no opt-in (`one=1` on the page's address
- * is left over from when it was one), and the threads' own read is not asked.
+ * The Inbox draws these rows from the one read alone, and the read it replaced is not asked.
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -110,27 +109,26 @@ function threadsAnswer(rows: readonly MyReplyRow[]) {
   return oneReadAnswer(rows, { asOf: AS_OF });
 }
 
-test("behind one=1 the Inbox's threads and its dismissed ones are the one read's", async () => {
+test("the Inbox's threads and its dismissed ones are the one read's", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  const listMyReplies = spyOn(api, "listMyReplies");
-  restores.push(listMyReplies);
+  // A read of any route no handler answers fails the test that sent it (`__tests__/network.ts`),
+  // and none answers the read the one read replaced, so the page reaching it fails this test.
   const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async (query = {}) =>
     threadsAnswer(query.state === "dismissed" ? [replyRow("c7")] : [replyRow("c1"), replyRow("c9")])
   );
   restores.push(getMeInbox);
 
-  const view = render(page(client, "/?one=1", "inbox"));
+  const view = render(page(client, "/", "inbox"));
   try {
     await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
     expect(document.querySelector("ul")?.getAttribute("data-as-of")).toBe(AS_OF);
-    view.rerender(page(client, "/?one=1", "dismissed"));
+    view.rerender(page(client, "/", "dismissed"));
     await waitFor(() => expect(rowIds()).toEqual(["reply:c7"]));
     expect(getMeInbox.mock.calls.map(([query]) => query)).toEqual([
       { state: "inbox" },
       { limit: 200, state: "dismissed" },
     ]);
-    expect(listMyReplies).not.toHaveBeenCalled();
   } finally {
     view.unmount();
   }

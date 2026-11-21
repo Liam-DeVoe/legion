@@ -1,7 +1,7 @@
 import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
-import { createAsk, createIssue, createProject, listMyReplies } from "./api";
+import { createAsk, createIssue, createProject, meInboxThreads } from "./api";
 import { typeFilterCount } from "./inbox-filter";
 import {
   asSession,
@@ -64,9 +64,7 @@ async function seedMany(): Promise<Seeded> {
     reply: "Took it, and here is the answer.",
   });
   expect(await unreadThreadRows()).toBe(REPLY_THREADS);
-  expect((await listMyReplies({ kind: ["reply", "agent"], limit: 1 })).total).toBe(
-    REPLY_THREADS + AGENT_THREADS
-  );
+  expect((await meInboxThreads({ limit: 1 })).total).toBe(REPLY_THREADS + AGENT_THREADS);
   return { issueKey: threads.key };
 }
 

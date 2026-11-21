@@ -12,14 +12,14 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
-import { inboxQuery } from "../../api/queries";
+import { openAsksQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { Ask, AskRead, DispatchEvent, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
-import { issueAsk } from "./inbox-fixture";
+import { issueAsk, openAsksAnswer } from "./inbox-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -468,9 +468,9 @@ test("a read of the thread asked before a decline answered does not put back the
   }
 });
 
-/** The Inbox's own rows, by id, as its list draws them from its one read (`inboxQuery`). */
+/** The Inbox's rows of the open asks, by id, as its list draws them (`openAsksQuery`). */
 function InboxRows(): ReactNode {
-  const rows = useQuery(inboxQuery()).data;
+  const rows = useQuery(openAsksQuery()).data;
   return <output data-testid="inbox-rows">{rows?.map((row) => row.id).join(" ")}</output>;
 }
 
@@ -488,7 +488,9 @@ test("an Inbox read asked while a decline is out waits for its answer, and bring
   // a question asked since.
   let served: OpenAskRow[] = [issueAsk({ id: open.id }), other];
   const after = [other, issueAsk({ id: "ask-3" })];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
+    openAsksAnswer(served)
+  );
   // Dispatch's own client (`main.tsx`), whose reads a write's holds keep back.
   const queryClient = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -509,18 +511,18 @@ test("an Inbox read asked while a decline is out waits for its answer, and bring
   const listed = () => card.getByTestId("inbox-rows").textContent;
   try {
     await waitFor(() => expect(listed()).toBe("ask-1 ask-2"));
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     await user.click(await card.findByRole("button", { name: "Decline to answer" }));
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
     await waitFor(() => expect(listed()).toBe("ask-2"));
 
     await act(async () => {
-      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+      void queryClient.invalidateQueries({ queryKey: openAsksQuery().queryKey });
     });
     // The read has started, and has asked Dispatch nothing.
-    expect(getInbox).toHaveBeenCalledTimes(1);
-    expect(queryClient.getQueryState(inboxQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryState(openAsksQuery().queryKey)?.fetchStatus).toBe("fetching");
     expect(listed()).toBe("ask-2");
 
     served = after;
@@ -528,12 +530,12 @@ test("an Inbox read asked while a decline is out waits for its answer, and bring
       out.resolve(declined);
     });
     await waitFor(() => expect(listed()).toBe("ask-2 ask-3"));
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(listed()).toBe("ask-2 ask-3");
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -563,7 +565,9 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
   const out = Promise.withResolvers<Ask>();
   const other = issueAsk({ id: "ask-2" });
   let served: OpenAskRow[] = [issueAsk({ id: open.id }), other];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
+    openAsksAnswer(served)
+  );
   const queryClient = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -582,7 +586,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
   const card = within(view.container);
   const listed = () => card.getByTestId("inbox-rows").textContent;
   const readInboxAgain = () => {
-    void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void queryClient.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(listed()).toBe("ask-1 ask-2"));
@@ -596,7 +600,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // Neither another ask's decline nor a hand-on of this one is this decline.
     await act(async () => {
@@ -605,7 +609,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(listed()).toBe("ask-2");
 
     // Dispatch takes the decline, and somebody asks a new question meanwhile: the decline's event
@@ -616,7 +620,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(listed()).toBe("ask-2 ask-3"));
     // The decline is still out: its dialog stands until Dispatch answers it.
     expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeInTheDocument();
@@ -629,7 +633,7 @@ test("an Inbox read held behind a decline goes on the decline's own event, and s
     expect(listed()).toBe("ask-2 ask-3");
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 

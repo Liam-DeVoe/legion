@@ -1,3 +1,5 @@
+import type { Route } from "@playwright/test";
+
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { agentRow, setInterests, setLiveSessions } from "./agents";
@@ -10,9 +12,10 @@ import {
   createProjectDocument,
   disconnectLiveSockets,
   getAsk,
-  getInbox,
   getIssue,
   getIssueEvents,
+  getMeInbox,
+  listOpenAsks,
   patchIssue,
   putIssueState,
   putProjectDefaultAssignee,
@@ -32,6 +35,7 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
+import { inboxRead, openAsksRead } from "./pick-writes";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, test } from "./test";
@@ -45,6 +49,17 @@ const session = {
   },
   as: "agent" as const,
 };
+
+/** alice's list with somebody else in it beside her: the page reads the open asks, which carry a
+ *  question that waits on bob, and draws no card of it until the filter widens. */
+const WIDER_THAN_HER_OWN = "/?assignee=alice&assignee=unassigned";
+
+/** Answers a read of the open asks with `held` as its rows, in the server's answer of now. */
+async function fulfillOpenAsks(route: Route, held: readonly unknown[]): Promise<void> {
+  const response = await route.fetch();
+  const body = (await response.json()) as Record<string, unknown>;
+  await route.fulfill({ json: { ...body, asks: held }, response });
+}
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,
@@ -240,7 +255,7 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
     { question: "Which delayed thread should refresh?" },
     session
   );
-  const snapshot = await getInbox();
+  const snapshot = await getMeInbox({ state: "inbox" }, { login: "alice" });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   const listRequested = Promise.withResolvers<void>();
@@ -252,7 +267,7 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
   // Only the first response is held on the pre-event snapshot; a refresh the client issues
   // after the event reaches the real server, exactly as a browser's would.
   let heldFirstInbox = false;
-  await page.route("**/api/v1/inbox", async (route) => {
+  await page.route(inboxRead, async (route) => {
     if (heldFirstInbox) {
       await route.continue();
       return;
@@ -294,7 +309,10 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
-  const snapshot = await getInbox();
+  const snapshot = await listOpenAsks({}, { login: "alice" });
+  // The held answer carries the hidden ask, which waits on bob, so alice's list draws no card of
+  // it: its refresh is pending off screen.
+  expect(snapshot.some((row) => row.id === hiddenAsk.id)).toBe(true);
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   let inboxReads = 0;
@@ -305,13 +323,14 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
   page.on("request", (request) => {
     if (request.method() !== "GET") return;
     const path = new URL(request.url()).pathname;
-    if (path === "/api/v1/inbox") inboxReads += 1;
+    if (openAsksRead(new URL(request.url()))) inboxReads += 1;
     if (path === `/api/v1/asks/${hiddenAsk.id}`) hiddenAskReads += 1;
   });
-  await page.goto("/");
+  await page.goto(WIDER_THAN_HER_OWN);
   await expect(page.getByTestId(`ask-${visibleAsk.id}`)).toBeVisible();
+  await expect(page.getByTestId(`ask-${hiddenAsk.id}`)).toHaveCount(0);
   inboxReads = 0;
-  await page.route("**/api/v1/inbox", async (route) => {
+  await page.route(openAsksRead, async (route) => {
     if (!holdInbox) {
       await route.fallback();
       return;
@@ -319,7 +338,7 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
     holdInbox = false;
     listRequested.resolve();
     await releaseList.promise;
-    await route.fulfill({ contentType: "application/json", json: snapshot });
+    await fulfillOpenAsks(route, snapshot);
   });
 
   try {
@@ -354,12 +373,12 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
       { ask_id: hiddenAsk.id, body: "Fresh hidden reply." },
       session
     );
-    // The held Inbox response must not land until the browser has handled the hidden ask's
-    // event. A fixed delay is a race under load, and the hidden ask shows nothing to wait on.
-    // Nor can an Inbox card or the sidebar's rows, which wait for the held first load: it is
-    // never cancelled. alice's own pin, written after the reply, makes the page read the pinned
-    // list again, which the sidebar reads beside the held Inbox. Event ids are delivered in
-    // order, so that read proves the frame before it was processed.
+    // The held read of the open asks must not land until the browser has handled the hidden
+    // ask's event. A fixed delay is a race under load, and the hidden ask shows nothing to wait
+    // on. Nor can an Inbox card, which waits for the held first load: it is never cancelled.
+    // alice's own pin, written after the reply, makes the page read the pinned list again, which
+    // the sidebar reads beside the held read. Event ids are delivered in order, so that read
+    // proves the frame before it was processed.
     const pinnedReadAgain = page.waitForRequest(pinnedRead);
     await putIssueState(visibleIssue.key, { pinned: true });
     await pinnedReadAgain;
@@ -800,7 +819,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     await expect(banner).toBeHidden();
     await expectInboxCount(page, 0);
     await expect
-      .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
+      .poll(async () => (await listOpenAsks({}, { login: "alice" })).at(0)?.snoozed_until)
       .not.toBeNull();
 
     // The agent answers, handing the turn back: the row stays deferred and stays off both
@@ -840,7 +859,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     // What the page shows so far is the optimistic write; the reload reads the server, and a
     // reload while the DELETE is unanswered aborts it, so the un-snooze must be recorded first.
     await expect
-      .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
+      .poll(async () => (await listOpenAsks({}, { login: "alice" })).at(0)?.snoozed_until)
       .toBeNull();
 
     await page.reload();
@@ -1182,11 +1201,9 @@ test("Nothing needs you stays on screen through a focus and a return to the Inbo
     await page.evaluate(() =>
       document.dispatchEvent(new Event("visibilitychange", { bubbles: true }))
     );
-    // The gap's whole-cache refresh refetches the inbox list; once that has answered, and the held
-    // credential list has been asked again, every refetch the gap started is on the wire.
-    const refreshed = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/v1/inbox"
-    );
+    // The gap's whole-cache refresh reads the Inbox's list again; once that has answered, and the
+    // held credential list has been asked again, every refetch the gap started is on the wire.
+    const refreshed = page.waitForResponse((response) => inboxRead(new URL(response.url())));
     forceGap = true;
     await disconnectLiveSockets();
     // The jump repeats because the 1012 close may not have reached the page when the first one
@@ -1640,7 +1657,10 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
-  const snapshot = await getInbox();
+  const snapshot = await listOpenAsks({}, { login: "alice" });
+  // The held answer carries the hidden ask, which waits on bob, so alice's list draws no card of
+  // it until the filter widens.
+  expect(snapshot.some((row) => row.id === hiddenAsk.id)).toBe(true);
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -1653,23 +1673,24 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
       askReads += 1;
     }
   });
-  await page.goto("/");
+  await page.goto(WIDER_THAN_HER_OWN);
   await expect(page.getByTestId(`ask-${visibleAsk.id}`)).toBeVisible();
+  await expect(page.getByTestId(`ask-${hiddenAsk.id}`)).toHaveCount(0);
 
   let inboxLoads = 0;
   const secondRequested = Promise.withResolvers<void>();
   const releaseSecond = Promise.withResolvers<void>();
   const releaseRest = Promise.withResolvers<void>();
-  await page.route("**/api/v1/inbox", async (route) => {
+  await page.route(openAsksRead, async (route) => {
     inboxLoads += 1;
     if (inboxLoads === 1) {
       secondRequested.resolve();
       await releaseSecond.promise;
-      await route.fulfill({ contentType: "application/json", json: snapshot });
+      await fulfillOpenAsks(route, snapshot);
       return;
     }
     await releaseRest.promise;
-    await route.fulfill({ contentType: "application/json", json: snapshot });
+    await fulfillOpenAsks(route, snapshot);
   });
 
   try {
@@ -1694,8 +1715,8 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
     // below on a page that has been through the whole of it.
     await expect.poll(() => inboxLoads).toBeGreaterThan(1);
 
-    // Widening the filter lists the hidden ask without reloading: the page's one Inbox read is
-    // still held, and a client-side pick asks for no other.
+    // Widening the filter lists the hidden ask without reloading: the page's read of the open asks
+    // is still held, and a client-side pick asks for no other.
     await clearAssigneeFilter(page);
     await closeAssigneeFilter(page);
     const hiddenCard = await askCard(page, hiddenAsk.id);

@@ -17,25 +17,22 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
 import {
-  inboxQuery,
   meInboxCountQuery,
+  meInboxOwnerQuery,
   meInboxQuery,
-  myRepliesOwnerQuery,
+  openAsksQuery,
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type {
-  Agent,
-  Comment,
-  IssueDetails,
-  Message,
-  MessageRead,
-  MyRepliesResponse,
-  MyReplyRow,
-} from "../../api/types";
+import type { Agent, Comment, IssueDetails, Message, MyReplyRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import {
+  plannerAgentRow,
+  replyRow,
+  unreadSetAnswer,
+  withConversation,
+} from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { oneReadAnswer } from "./inbox-fixture";
@@ -103,10 +100,6 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
   };
 }
 
-function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
-}
-
 /** A client holding everything the Inbox reads but the thread's own comments: the reader's rows
  *  and their unread count are the one read's. */
 function seeded(rows: readonly MyReplyRow[]): QueryClient {
@@ -117,11 +110,11 @@ function seeded(rows: readonly MyReplyRow[]): QueryClient {
     },
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(inboxQuery().queryKey, []);
+  client.setQueryData(openAsksQuery().queryKey, []);
   client.setQueryData(meInboxQuery().queryKey, oneReadAnswer(rows, { asOf: AS_OF }));
   client.setQueryData(meInboxCountQuery().queryKey, rows.length);
   // The unread set `useMarkThreadRead` watches: without the thread in it nothing is marked.
-  client.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, threadsRead(rows));
+  client.setQueryData(meInboxOwnerQuery({ issue: "CORE-1" }).queryKey, unreadSetAnswer(rows));
   return client;
 }
 
@@ -365,18 +358,17 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
   const state = answerAgentStates().mockResolvedValue({ unread_replies: 0 });
   const threadMark = answerThreadReads().mockResolvedValue(undefined);
   spy("listAgents", [session]);
-  spy("listAgentMessages", [
-    {
-      message: message("message-1", "Have a look at the build"),
-      replies: [
-        message("reply-1", "Looked at it.", {
-          author: { id: "planner", kind: "session" },
-          created_at: NEWEST,
-          in_reply_to: "message-1",
-        }),
-      ],
-    } satisfies MessageRead,
-  ]);
+  // The row carries its conversation with the session, as the one read answers it.
+  const thread = withConversation(plannerAgentRow(), {
+    message: message("message-1", "Have a look at the build"),
+    replies: [
+      message("reply-1", "Looked at it.", {
+        author: { id: "planner", kind: "session" },
+        created_at: NEWEST,
+        in_reply_to: "message-1",
+      }),
+    ],
+  });
   const client = seeded([]);
   // The server still counts a reply of this session's unread, so the mark is wanted.
   client.setQueryData(userAgentStateQuery().queryKey, {
@@ -385,7 +377,7 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ThreadRowCard thread={plannerAgentRow()} />
+        <ThreadRowCard thread={thread} />
       </QueryClientProvider>
     </MemoryRouter>
   );

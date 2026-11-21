@@ -1,6 +1,6 @@
 /**
- * The snooze writes (`useAskSnooze`, `useAskSnoozeMany`) against the Inbox read they move the
- * rows in: a read asked while a snooze is out waits for Dispatch's answer.
+ * The snooze writes (`useAskSnooze`, `useAskSnoozeMany`) against the Inbox's read of the open
+ * asks they move the rows in: a read asked while a snooze is out waits for Dispatch's answer.
  */
 
 import { expect, spyOn, test } from "bun:test";
@@ -12,32 +12,34 @@ import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { openAsksQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, OpenAskRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { issueAsk } from "./inbox-fixture";
+import { issueAsk, openAsksAnswer } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
 
 /**
- * `use` beside the Inbox's read, under Dispatch's own client signed in as alice, with
- * `GET /api/v1/inbox` answering what `served.rows` holds when it is asked: what Dispatch holds,
- * which the test moves as Dispatch takes each write.
+ * `use` beside the Inbox's read of the open asks, under Dispatch's own client signed in as alice,
+ * with `GET /api/v1/asks/open` answering what `served.rows` holds when it is asked: what
+ * Dispatch holds, which the test moves as Dispatch takes each write.
  */
 function renderBesideInbox<T>(served: { rows: OpenAskRow[] }, use: () => T) {
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served.rows);
+  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
+    openAsksAnswer(served.rows)
+  );
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const hook = renderHook(() => ({ inbox: useQuery(inboxQuery()).data, write: use() }), {
+  const hook = renderHook(() => ({ inbox: useQuery(openAsksQuery()).data, write: use() }), {
     wrapper,
   });
-  return { client, getInbox, hook };
+  return { client, listOpenAsks, hook };
 }
 
 /** When each row of an Inbox read is snoozed until. */
@@ -52,7 +54,7 @@ test("a read of the Inbox asked while a snooze is out waits for its answer, and 
   const served = { rows: [issueAsk({ id: "ask-1" })] };
   const snooze = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = answerAskSnoozes().mockReturnValue(snooze.promise);
-  const { client, getInbox, hook } = renderBesideInbox(served, () => useAskSnooze("ask-1"));
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => useAskSnooze("ask-1"));
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null]));
     act(() => hook.result.current.write.submit(UNTIL));
@@ -63,10 +65,10 @@ test("a read of the Inbox asked while a snooze is out waits for its answer, and 
 
     // Dispatch has not taken the snooze, so a read that reached it now would answer no moment.
     await act(async () => {
-      void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+      void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL]);
 
     // Dispatch takes it, and somebody asks another question meanwhile: the read goes now, and
@@ -76,11 +78,11 @@ test("a read of the Inbox asked while a snooze is out waits for its answer, and 
       snooze.resolve({ snoozed_until: UNTIL });
       await settle();
     });
-    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -95,7 +97,7 @@ test("a read of the Inbox asked while a bulk snooze is out waits until the last 
     answers.set(id, answer);
     return answer.promise;
   });
-  const { client, getInbox, hook } = renderBesideInbox(served, useAskSnoozeMany);
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, useAskSnoozeMany);
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
     let submitted: Promise<{ failed: readonly AskSnoozeFailure[] }> | undefined;
@@ -107,10 +109,10 @@ test("a read of the Inbox asked while a bulk snooze is out waits until the last 
 
     // Dispatch has taken neither, so a read that reached it now would answer no moment for both.
     await act(async () => {
-      void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+      void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // It takes the first; the second is still out, so the read still waits.
     served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL }), issueAsk({ id: "ask-2" })];
@@ -118,7 +120,7 @@ test("a read of the Inbox asked while a bulk snooze is out waits until the last 
       answers.get("ask-1")?.resolve({ snoozed_until: UNTIL });
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
 
     // It refuses the second, and somebody asks another question meanwhile: that row is rolled
@@ -133,11 +135,11 @@ test("a read of the Inbox asked while a bulk snooze is out waits until the last 
     expect(await submitted).toEqual({
       failed: [{ askId: "ask-2", reason: "snoozed_until is too far", stopped: false }],
     });
-    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -165,9 +167,9 @@ test("a read of the Inbox held behind a snooze goes on the snooze's own event, a
   const served = { rows: [issueAsk({ id: "ask-1" })] };
   const snooze = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = answerAskSnoozes().mockReturnValue(snooze.promise);
-  const { client, getInbox, hook } = renderBesideInbox(served, () => useAskSnooze("ask-1"));
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => useAskSnooze("ask-1"));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null]));
@@ -182,7 +184,7 @@ test("a read of the Inbox held behind a snooze goes on the snooze's own event, a
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // Neither bob's snooze nor a change of alice's state that moves no snooze is this snooze.
     await act(async () => {
@@ -191,7 +193,7 @@ test("a read of the Inbox held behind a snooze goes on the snooze's own event, a
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL]);
 
     // Dispatch takes the snooze, and somebody asks another question meanwhile: the snooze's event
@@ -202,7 +204,7 @@ test("a read of the Inbox held behind a snooze goes on the snooze's own event, a
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
     expect(hook.result.current.write.pending).toBe(true);
 
@@ -215,7 +217,7 @@ test("a read of the Inbox held behind a snooze goes on the snooze's own event, a
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -231,9 +233,9 @@ test("a read of the Inbox held behind a bulk snooze goes once as many snooze eve
     answers.set(id, answer);
     return answer.promise;
   });
-  const { client, getInbox, hook } = renderBesideInbox(served, useAskSnoozeMany);
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, useAskSnoozeMany);
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
@@ -249,7 +251,7 @@ test("a read of the Inbox held behind a bulk snooze goes once as many snooze eve
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // It takes the first, whose event comes; bob's snooze and a change of alice's state that
     // moves no snooze come too. The second may not be in yet, so the read still waits.
@@ -260,7 +262,7 @@ test("a read of the Inbox held behind a bulk snooze goes once as many snooze eve
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
 
     // It takes the second, and somebody asks another question meanwhile: the second event comes,
@@ -275,7 +277,7 @@ test("a read of the Inbox held behind a bulk snooze goes once as many snooze eve
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
     expect(hook.result.current.write.pending).toBe(true);
 
@@ -289,7 +291,7 @@ test("a read of the Inbox held behind a bulk snooze goes once as many snooze eve
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -311,12 +313,12 @@ function heldSnoozeAnswers(): Map<string, (answer: AskSnooze) => void> {
 test("one snooze event ends the hold of one of two snoozes out, and a read of the Inbox waits for the other's", async () => {
   const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
   const answers = heldSnoozeAnswers();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     first: useAskSnooze("ask-1"),
     second: useAskSnooze("ask-2"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
@@ -333,7 +335,7 @@ test("one snooze event ends the hold of one of two snoozes out, and a read of th
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
 
     // It takes the other, and somebody asks another question meanwhile: the second event comes,
@@ -348,7 +350,7 @@ test("one snooze event ends the hold of one of two snoozes out, and a read of th
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -362,7 +364,7 @@ test("one snooze event ends the hold of one of two snoozes out, and a read of th
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -373,12 +375,12 @@ test("one snooze event ends the hold of one of two snoozes out, and a read of th
 test("a snooze answered before the one pressed ahead of it takes the next snooze event, and a read of the Inbox waits for the older one's", async () => {
   const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
   const answers = heldSnoozeAnswers();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     first: useAskSnooze("ask-1"),
     second: useAskSnooze("ask-2"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
@@ -394,7 +396,7 @@ test("a snooze answered before the one pressed ahead of it takes the next snooze
       await settle();
     });
     await waitFor(() => expect(hook.result.current.write.second.pending).toBe(false));
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
 
     // The second's event comes after its answer. The first is still out, and the read waits.
@@ -403,7 +405,7 @@ test("a snooze answered before the one pressed ahead of it takes the next snooze
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
 
     // Dispatch takes the first, whose event comes, and somebody asks another question meanwhile:
@@ -418,7 +420,7 @@ test("a snooze answered before the one pressed ahead of it takes the next snooze
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -430,7 +432,7 @@ test("a snooze answered before the one pressed ahead of it takes the next snooze
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -443,12 +445,12 @@ test("a bulk snooze of two asks and a snooze pressed after it hold the Inbox unt
     rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" }), issueAsk({ id: "ask-3" })],
   };
   const answers = heldSnoozeAnswers();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     many: useAskSnoozeMany(),
     one: useAskSnooze("ask-3"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() =>
@@ -471,7 +473,7 @@ test("a bulk snooze of two asks and a snooze pressed after it hold the Inbox unt
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL, UNTIL]);
 
     // The third comes, and the read goes.
@@ -486,7 +488,7 @@ test("a bulk snooze of two asks and a snooze pressed after it hold the Inbox unt
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -499,7 +501,7 @@ test("a bulk snooze of two asks and a snooze pressed after it hold the Inbox unt
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -513,12 +515,12 @@ test("a bulk snooze of two asks and a snooze pressed after it hold the Inbox unt
 async function snoozePastDeadlineThenAnother(eventAfterAnswer: number): Promise<void> {
   const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
   const answers = heldSnoozeAnswers();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     first: useAskSnooze("ask-1"),
     second: useAskSnooze("ask-2"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
@@ -540,7 +542,7 @@ async function snoozePastDeadlineThenAnother(eventAfterAnswer: number): Promise<
       await settle();
     });
     await waitFor(() => expect(hook.result.current.write.first.pending).toBe(false));
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // The first's event comes after its answer. It is the first's, and the read waits still.
     if (eventAfterAnswer > 0) await jump(eventAfterAnswer);
@@ -549,7 +551,7 @@ async function snoozePastDeadlineThenAnother(eventAfterAnswer: number): Promise<
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
 
     // Dispatch takes the second, whose event comes, and somebody asks another question meanwhile:
@@ -564,7 +566,7 @@ async function snoozePastDeadlineThenAnother(eventAfterAnswer: number): Promise<
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -576,7 +578,7 @@ async function snoozePastDeadlineThenAnother(eventAfterAnswer: number): Promise<
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 }
 
@@ -624,12 +626,12 @@ const refusal = () =>
 test("a snooze Dispatch refuses waits for no event, and the next snooze event ends the hold of the snooze pressed after it", async () => {
   const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
   const verdicts = heldSnoozeVerdicts();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     first: useAskSnooze("ask-1"),
     second: useAskSnooze("ask-2"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
@@ -643,7 +645,7 @@ test("a snooze Dispatch refuses waits for no event, and the next snooze event en
       await settle();
     });
     await waitFor(() => expect(hook.result.current.write.first.failed).toBe(true));
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // Dispatch takes the second, whose event comes, and somebody asks another question meanwhile:
     // the read goes.
@@ -657,7 +659,7 @@ test("a snooze Dispatch refuses waits for no event, and the next snooze event en
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -669,7 +671,7 @@ test("a snooze Dispatch refuses waits for no event, and the next snooze event en
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -686,12 +688,12 @@ async function snoozeRefusedAfterLostAnswer(
 ): Promise<void> {
   const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
   const verdicts = heldSnoozeVerdicts();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     first: useAskSnooze("ask-1"),
     second: useAskSnooze("ask-2"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     // Signed in as the app's shell signs in on each load of the page.
@@ -722,7 +724,7 @@ async function snoozeRefusedAfterLostAnswer(
       await settle();
     });
     await waitFor(() => expect(hook.result.current.write.first.failed).toBe(true));
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // The first snooze's event comes. It is the first's, and the read waits still.
     await act(async () => {
@@ -730,7 +732,7 @@ async function snoozeRefusedAfterLostAnswer(
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // Dispatch takes the second, whose event comes, and somebody asks another question
     // meanwhile: the read goes.
@@ -744,7 +746,7 @@ async function snoozeRefusedAfterLostAnswer(
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -756,7 +758,7 @@ async function snoozeRefusedAfterLostAnswer(
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 }
 
@@ -788,12 +790,12 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
     rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" }), issueAsk({ id: "ask-3" })],
   };
   const verdicts = heldSnoozeVerdicts();
-  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+  const { client, listOpenAsks, hook } = renderBesideInbox(served, () => ({
     many: useAskSnoozeMany(),
     one: useAskSnooze("ask-3"),
   }));
   const readInboxAgain = () => {
-    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    void client.invalidateQueries({ queryKey: openAsksQuery().queryKey });
   };
   try {
     await waitFor(() =>
@@ -817,7 +819,7 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
     expect(await submitted).toEqual({
       failed: [{ askId: "ask-1", reason: "snoozed_until is too far", stopped: false }],
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, UNTIL, UNTIL]);
 
     // The second ask's event comes. The later snooze is still out, and the read waits.
@@ -826,7 +828,7 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
       readInboxAgain();
       await settle();
     });
-    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(listOpenAsks).toHaveBeenCalledTimes(1);
 
     // Dispatch takes the later snooze, whose event comes, and somebody asks another question
     // meanwhile: the read goes.
@@ -841,7 +843,7 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
       readInboxAgain();
       await settle();
     });
-    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    expect(listOpenAsks.mock.calls.length).toBeGreaterThan(1);
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
 
     await act(async () => {
@@ -853,6 +855,6 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
     hook.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });

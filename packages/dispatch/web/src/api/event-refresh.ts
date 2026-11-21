@@ -5,14 +5,11 @@ import { agentConversation, meInboxCachedRows } from "../features/inbox/one-read
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
-  agentMessagesQuery,
+  agentConversationQuery,
   architectureSourcesQuery,
-  dismissedThreadsQuery,
-  inboxQuery,
-  inboxThreadsKey,
-  inboxThreadsQuery,
   meInboxKey,
-  myRepliesKey,
+  meInboxQuery,
+  openAsksKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectsQuery,
@@ -33,7 +30,6 @@ import type {
   EventType,
   GraphReferences,
   IssueSummary,
-  MyRepliesResponse,
   MyReplyRow,
   OpenAskRow,
 } from "./types";
@@ -50,7 +46,6 @@ import type {
  * existed, or by an older server mid-rollout - falls back to what any value could have moved.
  */
 
-const inboxKey = inboxQuery().queryKey;
 const projectsKey = projectsQuery().queryKey;
 const pinnedKey = ["issues", "pinned"] as const;
 
@@ -116,18 +111,19 @@ function issueSummaryOf(key: string, event: DispatchEvent): RefreshTarget {
     : { ...target, when: (_data, query) => !answeredNotFound(query) };
 }
 
-/** Every Inbox read (the Inbox and a project's) that holds a row of issue `key`'s open asks. */
+/** Every read of the open asks (the Inbox's and a project's) that holds a row of issue `key`'s
+ *  open asks. */
 function inboxRowsOf(key: string): RefreshTarget {
   return {
-    queryKey: inboxKey,
+    queryKey: openAsksKey,
     when: (data) => rowsOf<OpenAskRow>(data).some((row) => row.issue_key === key),
   };
 }
 
-/** Every Inbox read that holds the row of ask `id`. */
+/** Every read of the open asks that holds the row of ask `id`. */
 function inboxRowOfAsk(id: string): RefreshTarget {
   return {
-    queryKey: inboxKey,
+    queryKey: openAsksKey,
     when: (data) => rowsOf<OpenAskRow>(data).some((row) => row.id === id),
   };
 }
@@ -143,17 +139,17 @@ function openAndNotHandedOn(ask: Pick<Ask, "asked_of" | "state">): boolean {
   return ask.state === "open" && ask.asked_of === null;
 }
 
-/** Every Inbox read that holds an open ask of `project` whose person that project's default
- *  decides: the last step of `coalesce(a.asked_of, i.assignee, p.default_assignee)`, so an ask
- *  nobody handed on, on an issue nobody holds or on a project document. The Inbox read names no
- *  assignee (`inboxQuery`), so a reader's list holds every open ask she can see with the person
- *  the server resolved for it (`waiting_on_person`), whoever that is, and the assignee filter and
+/** Every read of the open asks that holds an open ask of `project` whose person that project's
+ *  default decides: the last step of `coalesce(a.asked_of, i.assignee, p.default_assignee)`, so an
+ *  ask nobody handed on, on an issue nobody holds or on a project document. The read names no
+ *  person (`openAsksQuery`), so it holds every open ask the reader can see with the person the
+ *  server resolved for it (`waiting_on_person`), whoever that is, and the assignee filter and
  *  the Asked-of badge read that field: moving the default moves it in every list holding such a
  *  row, not only in the two the event names. An issue row that does not say who holds its issue
  *  is counted as one nobody holds. */
 function inboxRowsDecidedByDefault(project: string): RefreshTarget {
   return {
-    queryKey: inboxKey,
+    queryKey: openAsksKey,
     when: (data) =>
       rowsOf<OpenAskRow>(data).some(
         (row) =>
@@ -271,26 +267,22 @@ function askThreadsDecidedByAssignee(key: string): RefreshTarget {
   };
 }
 
-/** The thread rows one of the Inbox's two reads holds: its own unpaged list, or the pages of
- *  what the reader has dismissed (`dismissedThreadsQuery`, an infinite read, whose data is its
- *  pages). */
+/** The reader's thread rows a cached read of the one read holds: the Reply and Agent rows of its
+ *  Inbox answer, of the pages of what the reader has dismissed (`meInboxDismissedQuery`, an
+ *  infinite read, whose data is its pages) and of an owner's unread set. */
 function threadRowsOf(data: unknown): readonly MyReplyRow[] {
-  const read = data as { pages?: readonly MyRepliesResponse[]; rows?: unknown } | undefined;
-  const pages = read?.pages;
-  if (Array.isArray(pages)) return pages.flatMap((page) => rowsOf<MyReplyRow>(page.rows));
-  return rowsOf<MyReplyRow>(read?.rows);
+  return meInboxCachedRows(data).flatMap((row) => (row.kind === "thread" ? [row.thread] : []));
 }
 
-/** The Inbox's own thread reads (`inboxThreadsQuery` and `dismissedThreadsQuery`, so both the
- *  Inbox and the Dismissed view), when one of their rows is a thread on issue `key`: a Reply row
- *  shows its issue's title and priority, and whether it is listed at all turns on who waits on
- *  the ask (`myRepliesOwner` in the server's replies.go leaves out an open ask on an open issue
- *  that waits on the reader, which the Inbox lists under Waiting on you instead), which an
- *  assignee move changes for every ask nobody has handed on. Built like
- *  `inboxRowsOf`: it needs no field of the event's, so an older server's event reaches it too. */
+/** The one read's reads of the reader's threads, when one of their rows is a thread on issue
+ *  `key`: a Reply row shows its issue's title and priority, and whether it is listed at all turns
+ *  on who waits on the ask (`myRepliesOwner` in the server's replies.go leaves out an open ask on
+ *  an open issue that waits on the reader, which the Inbox lists under Waiting on you instead),
+ *  which an assignee move changes for every ask nobody has handed on. Built like `inboxRowsOf`:
+ *  it needs no field of the event's, so an older server's event reaches it too. */
 function inboxThreadRowsOf(key: string): RefreshTarget {
   return {
-    queryKey: inboxThreadsKey,
+    queryKey: meInboxKey,
     when: (data) =>
       threadRowsOf(data).some((row) => row.kind !== "agent" && row.issue?.key === key),
   };
@@ -522,7 +514,7 @@ function movesInboxRows(event: DispatchEvent): boolean {
 // resolved) belongs to no conversation on that page.
 function agentConversationKey(target: string | undefined): readonly unknown[] | undefined {
   if (target?.startsWith("session:") && target.length > "session:".length) {
-    return agentMessagesQuery(target.slice("session:".length)).queryKey;
+    return agentConversationQuery(target.slice("session:".length)).queryKey;
   }
   return undefined;
 }
@@ -577,14 +569,14 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
 };
 
 /**
- * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
- * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
- * writes above) and a project's default moving all move the same rows for the same reason: whom
- * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
- * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
- * in the server's replies.go), so moving that person moves the ask's thread into one person's
- * Reply rows and out of the other's.
+ * Whether the viewer's Inbox thread rows (`["me", "inbox"]`: the one read's Inbox answer, the
+ * pages they dismissed, the unread count and every owner's unread set) can have moved: a write
+ * above, or an issue closing, reopening or being reassigned. A reassignment, a hand-on
+ * (`ask.asked_of`, among the writes above) and a project's default moving all move the same rows
+ * for the same reason: whom an open ask waits on is one expression,
+ * `coalesce(a.asked_of, i.assignee, p.default_assignee)`, and the Reply rows leave out an ask the
+ * Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so moving
+ * that person moves the ask's thread into one person's Reply rows and out of the other's.
  *
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
@@ -730,7 +722,7 @@ function issueWriteTargets(
   // no row of a closed issue to test, so that refreshes it whole.
   if (!created) {
     if (moved("closed_at") && !closed) {
-      targets.push({ queryKey: inboxKey });
+      targets.push({ queryKey: openAsksKey });
     } else if (
       closed ||
       moved("title") ||
@@ -981,13 +973,13 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
     appendCommentReads(targets, event);
   }
   if (movesInboxRows(event)) {
-    targets.push({ queryKey: inboxKey });
+    targets.push({ queryKey: openAsksKey });
   }
   if (movesOpenAsks(event)) {
     targets.push({ queryKey: projectsKey });
   }
   if (movesInboxThreads(event, viewer)) {
-    targets.push({ queryKey: myRepliesKey });
+    targets.push({ queryKey: meInboxKey });
   }
   appendAnswersPage(targets, event);
   appendDocumentPanel(targets, event);
@@ -1045,7 +1037,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       askThreadsDecidedByDefault(event.payload.project),
     ];
     if (movesInboxThreads(event, viewer)) {
-      targets.push({ queryKey: inboxKey }, { queryKey: myRepliesKey });
+      targets.push({ queryKey: openAsksKey }, { queryKey: meInboxKey });
     }
     return targets;
   }
@@ -1069,8 +1061,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // A pin, a read mark, a dismissal or a snooze in another tab or device of this viewer: the
     // state's own read always (its `seq` moved), the pinned list only for a pin. Of these the Inbox
     // reads only a snooze, its row's `snoozed_until`, from which its Later band, its banner and the
-    // Needs-you badge are all counted: every Inbox read, since the event names no ask (every
-    // signed-in feed carries it). An event without `changed` predates snooze events.
+    // Needs-you badge are all counted: every read of the open asks, and through it the one read's
+    // Inbox answer, since the event names no ask (every signed-in feed carries it). An event
+    // without `changed` predates snooze events.
     if (!isViewer(payloadString(event, "login"), viewer)) {
       return [];
     }
@@ -1080,7 +1073,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       targets.push({ exact: true, queryKey: pinnedKey });
     }
     if (changed?.includes("snoozed") === true) {
-      targets.push({ queryKey: inboxKey });
+      targets.push({ queryKey: openAsksKey });
     }
     return targets;
   }
@@ -1089,14 +1082,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // and the Inbox's thread rows with it - an Agent row's unread replies are that state's, so
     // a read made on the Agents page or in the live view takes the row out of the list here.
     return isViewer(payloadString(event, "login"), viewer)
-      ? [{ queryKey: userAgentStateQuery().queryKey }, { queryKey: myRepliesKey }]
+      ? [{ queryKey: userAgentStateQuery().queryKey }, { queryKey: meInboxKey }]
       : [];
   }
   if (event.type === "user_thread_state.updated") {
     // Another tab or device of this viewer read a thread: drop its row and its count here too.
     // The event names one thread, or none at all - a Mark all read names its project and no
     // thread - and either way every one of the viewer's thread reads is refreshed.
-    return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
+    return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: meInboxKey }] : [];
   }
   if (event.type === "priority.updated") {
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
@@ -1125,7 +1118,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       targets.push({ queryKey: userAgentStateQuery().queryKey });
     }
     if (movesInboxThreads(event, viewer)) {
-      targets.push({ queryKey: myRepliesKey });
+      targets.push({ queryKey: meInboxKey });
     }
     return targets;
   }
@@ -1144,7 +1137,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
   ];
   if (movesInboxThreads(event, viewer)) {
-    targets.push({ queryKey: myRepliesKey });
+    targets.push({ queryKey: meInboxKey });
   }
   if (changesReferenceGraph(event)) {
     targets.push({ exact: true, queryKey: ["issue", key, "references"] });
@@ -1235,7 +1228,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       { queryKey: ["artifacts", key] },
       { queryKey: ["artifact", event.payload.artifact_id] },
       { queryKey: ["asks", key] },
-      { queryKey: inboxKey }
+      { queryKey: openAsksKey }
     );
     if (event.payload.ask_id !== null) {
       targets.push(
@@ -1268,7 +1261,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return targets;
   }
   if (isAskEvent(event)) {
-    targets.push({ queryKey: inboxKey });
+    targets.push({ queryKey: openAsksKey });
     appendAskReads(targets, event);
     if (event.type === "ask.follower_added" || event.type === "ask.follower_removed") {
       return targets;
@@ -1292,7 +1285,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push(
       { queryKey: ["asks", key] },
       { queryKey: projectsKey },
-      { queryKey: inboxKey },
+      { queryKey: openAsksKey },
       pinnedRow(key)
     );
     return targets;
@@ -1303,7 +1296,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // block reads its turn from that list rather than from the Inbox. The Conversation's card
     // for that ask carries the reply itself.
     if (payloadString(event, "ask_id") !== undefined) {
-      targets.push({ queryKey: ["asks", key] }, { queryKey: inboxKey });
+      targets.push({ queryKey: ["asks", key] }, { queryKey: openAsksKey });
     }
     const document = eventDocument(event);
     if (document !== undefined) {
@@ -1352,7 +1345,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   // The branches above name every type an issue owns, so only a type added later reaches here,
   // and it refreshes what any issue write could have moved.
-  targets.push({ queryKey: ["issue"] }, { queryKey: projectsKey }, { queryKey: inboxKey });
+  targets.push({ queryKey: ["issue"] }, { queryKey: projectsKey }, { queryKey: openAsksKey });
   return targets;
 }
 
@@ -1370,7 +1363,7 @@ const EVERY_REFERENCE_READ: readonly RefreshTarget[] = [
   { queryKey: ["asks"] },
   { queryKey: ["ask-thread"] },
   { queryKey: ["artifact"] },
-  { queryKey: inboxKey },
+  { queryKey: openAsksKey },
   { queryKey: ["references", "to"] },
 ];
 
@@ -1390,7 +1383,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
       queryKey: ["artifact"],
       when: (data) => rowsOf<{ question?: unknown }>(data).some((row) => "question" in row),
     },
-    { queryKey: inboxKey },
+    { queryKey: openAsksKey },
     referencePanels(({ node }) => node.kind === "ask"),
   ],
   block: [referencePanels(({ node }) => node.kind === "block" || node.kind === "artifact")],
@@ -1525,47 +1518,38 @@ function reaches(target: RefreshTarget, key: QueryKey): boolean {
     : partialMatchKey(key, target.queryKey);
 }
 
-/** The reader's thread rows a cached read of the one read holds, in the shape the threads' reads
- *  answer (`MyRepliesResponse`), which a target's test of those reads takes (`threadRowsOf`). */
-function oneReadThreadRows(data: unknown): { rows: MyReplyRow[] } {
-  return {
-    rows: meInboxCachedRows(data).flatMap((row) => (row.kind === "thread" ? [row.thread] : [])),
-  };
+/** The one read's Inbox answer, which holds the reader's own open asks beside their threads. */
+const ONE_READ_INBOX = meInboxQuery().queryKey;
+
+/** The open asks one cached Inbox answer of the one read holds: its ask rows, in the shape the
+ *  reads of the open asks answer, which a target's test of those reads takes. */
+function oneReadAsks(data: unknown): OpenAskRow[] {
+  return meInboxCachedRows(data).flatMap((row) => (row.kind === "ask" ? [row.ask] : []));
 }
 
-/** The reads the one read stands in for behind the Inbox's opt-in, each with the rows of the one
- *  read it holds of that read, in that read's own shape. */
-const ONE_READ_STANDS_IN_FOR: readonly {
-  readonly key: QueryKey;
-  readonly rows: (data: unknown) => unknown;
-}[] = [
-  {
-    key: inboxKey,
-    rows: (data) => meInboxCachedRows(data).flatMap((row) => (row.kind === "ask" ? [row.ask] : [])),
-  },
-  { key: inboxThreadsQuery().queryKey, rows: oneReadThreadRows },
-  { key: dismissedThreadsQuery().queryKey, rows: oneReadThreadRows },
-];
-
 /**
- * What else an event's targets refresh: the one read (`meInboxKey`), which behind the Inbox's
- * opt-in (`useOneRead`) stands in for the reader's half of the Inbox read (`inboxQuery`), for
- * their thread reads (`inboxThreadsQuery`, `dismissedThreadsQuery`) and for the conversation of
- * each Agent row it holds (`agentMessagesQuery`). Every target that reaches one of those reaches
- * it, and one that tests what that read holds tests the same rule over the rows of that read the
- * one read holds. A target of the threads' own prefix (`myRepliesKey`) reaches it already, since
- * the one read sits under that prefix.
+ * What else an event's targets refresh: the one read, which holds the reader's own open asks
+ * and the conversation of each Agent row besides the reads those come from. A target that reaches
+ * the reads of the open asks (`openAsksKey`) reaches the one read's Inbox answer alone, the one
+ * of its reads that carries ask rows, and one that tests what those reads hold tests the same
+ * rule over that answer's ask rows. A target that reaches a session's conversation
+ * (`agentConversationQuery`) reaches every read of the one read holding that session's Agent
+ * row, tested over the conversation the row carries. A target of the one read's own prefix
+ * (`meInboxKey`) needs nothing here.
  */
 function oneReadTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
   const reached: RefreshTarget[] = [];
   for (const target of targets) {
     const when = target.when;
-    for (const read of ONE_READ_STANDS_IN_FOR) {
-      if (!reaches(target, read.key)) continue;
+    if (reaches(target, openAsksKey)) {
       reached.push(
         when === undefined
-          ? { queryKey: meInboxKey }
-          : { queryKey: meInboxKey, when: (data, query) => when(read.rows(data), query) }
+          ? { exact: true, queryKey: ONE_READ_INBOX }
+          : {
+              exact: true,
+              queryKey: ONE_READ_INBOX,
+              when: (data, query) => when(oneReadAsks(data), query),
+            }
       );
     }
     // An Agent row draws the conversation the one read carries for it, so a target that reaches
@@ -1573,7 +1557,9 @@ function oneReadTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
     // target that can reach no session's conversation, another read under the Agents page's key,
     // adds nothing.
     const session = target.queryKey[1];
-    if (!reaches(target, agentMessagesQuery(typeof session === "string" ? session : "").queryKey)) {
+    if (
+      !reaches(target, agentConversationQuery(typeof session === "string" ? session : "").queryKey)
+    ) {
       continue;
     }
     reached.push({
@@ -1584,7 +1570,7 @@ function oneReadTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
           const conversation = agentConversation(row.thread);
           return (
             conversation !== undefined &&
-            reaches(target, agentMessagesQuery(row.thread.session.id).queryKey) &&
+            reaches(target, agentConversationQuery(row.thread.session.id).queryKey) &&
             (when === undefined || when([conversation], query))
           );
         }),
@@ -1766,8 +1752,8 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
 /**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
- * viewer's: the per-viewer events and the Replies rule read it. The one read follows the reads it
- * stands in for (`oneReadTargets`).
+ * viewer's: the per-viewer events and the Replies rule read it. The one read follows the open
+ * asks and the conversations it holds the reader's half of (`oneReadTargets`).
  */
 export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string): RefreshTarget[] {
   const targets = [...ownerTargets(event, signedInLogin), ...changedReferenceTargets(event)];

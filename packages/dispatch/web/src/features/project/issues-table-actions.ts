@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams } from "../../api/queries";
+import { advancesIssuesParams, openAsksKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
@@ -201,7 +201,7 @@ export function useIssueTableActions({
       setBusy(false);
       void client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
-      void client.invalidateQueries({ queryKey: ["inbox"] });
+      void client.invalidateQueries({ queryKey: openAsksKey });
       // The Inbox draws the reader's own asks, which carry their issue's fields, from the one read.
       void invalidateMeInbox(client);
     }

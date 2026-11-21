@@ -1,5 +1,5 @@
 import { setLiveSessions } from "./agents";
-import { createIssue, createProject, listMyReplies } from "./api";
+import { createIssue, createProject, meInboxThreads } from "./api";
 import { hasReadingPane, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
 import { expect, test } from "./test";
@@ -46,7 +46,9 @@ test("a reply taller than the reading pane is marked read by reading it, and its
   // Whether the long thread itself is still unread. The other row is read as soon as the column
   // draws it, so the count of every unread thread would not say which of the two this is about.
   const longUnread = async (): Promise<boolean> =>
-    ((await listMyReplies({ state: "unread" })).rows ?? []).some((row) => row.thread_id === thread);
+    ((await meInboxThreads({ state: "unread" })).rows ?? []).some(
+      (row) => row.thread_id === thread
+    );
   expect(await longUnread()).toBe(true);
 
   const context = await asUser(browser, "alice");

@@ -10,7 +10,7 @@ import {
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentConversationQuery, openAsksKey } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
@@ -129,11 +129,11 @@ export interface HeldSendOutcome {
 /** What a send that landed wrote, refreshed whether or not its composer is still on screen: the
  *  caches it is named by its own request, and the one read, which the Inbox draws the reader's
  *  own rows from - an Agent row's conversation with the session, and the asks and Reply rows a
- *  comment moves. */
+ *  comment moves - with the open asks, whose threads a comment moves too. */
 function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void {
   void invalidateMeInbox(client);
   if (owner.kind === "session") {
-    void client.invalidateQueries({ queryKey: agentMessagesQuery(owner.sessionId).queryKey });
+    void client.invalidateQueries({ queryKey: agentConversationQuery(owner.sessionId).queryKey });
     return;
   }
   void client.invalidateQueries({
@@ -142,7 +142,7 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
         ? ["comments", owner.issueKey]
         : ["artifact", owner.artifactId, "comments"],
   });
-  void client.invalidateQueries({ queryKey: ["inbox"] });
+  void client.invalidateQueries({ queryKey: openAsksKey });
   if (anchor !== undefined) {
     void client.invalidateQueries({ queryKey: ["artifact", anchor.artifact, "blocks"] });
   }

@@ -1,11 +1,10 @@
 /**
- * The optimistic writes over the one read's cache, `meInboxKey` (dispatch://INFRA-1152). Behind the
- * Inbox's opt-in (`useOneRead`) the reader's own asks, their Reply and Agent rows and their unread
- * count are drawn from it, so every write that moves one of them on the press - a hand-on, an
- * assignee, a priority, a snooze, an answer or a decline, Mark all read, a dismissal - moves it
- * here as well as in the reads it moved before, puts it back where the server refuses the write,
- * and reads the one read again once the server has decided it. Without the opt-in none of these
- * reads is cached, and each edit below changes nothing.
+ * The optimistic writes over the one read's cache, `meInboxKey` (dispatch://INFRA-1152). The
+ * reader's own asks, their Reply and Agent rows and their unread count are drawn from it, so every
+ * write that moves one of them on the press - a hand-on, an assignee, a priority, a snooze, an
+ * answer or a decline, Mark all read, a dismissal - moves it here as well as in the open asks'
+ * reads it moves (`open-asks-cache.ts`), puts it back where the server refuses the write, and
+ * reads the one read again once the server has decided it.
  *
  * Each edit leaves alone what it does not name: the count where it is given no count edit, and an
  * answer none of whose entries it changes. Nothing here is a hook, so the writes call it from
@@ -114,9 +113,9 @@ export function meInboxAskEntry(ask: OpenAskRow): MeInboxEntry {
  * Edits the ask rows of every cached read of the one read: `edit` leaves each ask, or takes its
  * entry out with undefined. Each ask of `joined` - a row the write makes wait on the reader, whom
  * the one read will list it for once it reads again - the reader's own Inbox answer gains an entry
- * for where it holds none, so the row joins their list on the press as it joins it in the Inbox
- * read, and the list the opt-in draws keeps it (`useInboxAsks`, which draws the reader's own asks
- * from the one read alone).
+ * for where it holds none, so the row joins their list on the press as it does in the open asks'
+ * reads, and the list keeps it (`useInboxAsks`, which draws the reader's own asks from the one
+ * read alone).
  */
 export function patchMeInboxAsks(
   queryClient: QueryClient,
@@ -149,8 +148,7 @@ export function patchMeInboxAsks(
  * Edits the Reply and Agent rows of every cached read of the one read, and the unread count by
  * `count` where one is given: `edit` leaves each row, or takes its entry out with undefined. Each
  * read is written over a read of it still out (`replaceQueryData`): that read was asked before the
- * edit, and its answer would put the rows back as they stood. Mark all read, the one caller, gives
- * up its reads of the Inbox's threads and their count the same way.
+ * edit, and its answer would put the rows back as they stood. Mark all read is the one caller.
  */
 export function patchMeInboxThreads(
   queryClient: QueryClient,

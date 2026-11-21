@@ -10,7 +10,7 @@ import { answerInboxReads } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, NetworkError } from "../../api/client";
-import { meInboxCountQuery, meInboxQuery, myRepliesKey, whoAmIQuery } from "../../api/queries";
+import { meInboxCountQuery, meInboxKey, meInboxQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { DispatchEvent, MeInboxResponse, MyReplyRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -336,7 +336,7 @@ test("a read of the list or the count asked while Mark all read is out waits for
     expect(inboxCount()).toBe("0");
 
     await act(async () => {
-      void client.invalidateQueries({ queryKey: myRepliesKey });
+      void client.invalidateQueries({ queryKey: meInboxKey });
     });
     // Neither read has asked Dispatch anything, though both have started.
     expect(getMeInbox).not.toHaveBeenCalled();
@@ -421,7 +421,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
       hearLiveEvent(client, threadStateEvent({ login: "alice", thread_id: "c1" }), "alice");
       hearLiveEvent(client, threadStateEvent({ login: "bob" }), "alice");
       hearLiveEvent(client, agentStateEvent({ login: "alice", session_id: "planner" }), "alice");
-      void client.invalidateQueries({ queryKey: myRepliesKey });
+      void client.invalidateQueries({ queryKey: meInboxKey });
       await settle();
     });
     // None of those events is the press's: both reads have started, and neither has asked
@@ -433,7 +433,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
 
     await act(async () => {
       hearLiveEvent(client, threadStateEvent({ login: "alice" }), "alice");
-      void client.invalidateQueries({ queryKey: myRepliesKey });
+      void client.invalidateQueries({ queryKey: meInboxKey });
     });
     // The press's answer is still out, and the list and the count are what Dispatch holds: the
     // press's two rows read, and bob's thread unread.

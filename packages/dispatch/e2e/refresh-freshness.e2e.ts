@@ -378,7 +378,8 @@ test("budget: a document in another project citing 25 documents reads no issue d
     const unrelated = gets.filter(
       (path) =>
         path === `/api/v1/issues/${issue.key}` ||
-        path === "/api/v1/inbox" ||
+        path === "/api/v1/asks/open" ||
+        path === "/api/v1/me/inbox" ||
         /^\/api\/v1\/issues\/[^/]+\/(asks|comments|messages)$/.test(path)
     );
     expect(unrelated, "reads of what a citation in another project cannot change").toEqual([]);

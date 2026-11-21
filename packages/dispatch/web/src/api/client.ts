@@ -9,7 +9,6 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
-  type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
@@ -1293,8 +1292,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/priorities/{id}/history", { id });
   }
 
-  getInbox(project?: string) {
-    return this.read("/api/v1/inbox", {}, { project });
+  /** `GET /api/v1/asks/open`: the open asks the caller may see, by priority and then oldest
+   *  first, with their counts - every project's with no narrowing, one project's under `project`,
+   *  and only those that wait on one person under `waiting_on`. Each row carries the ask's thread
+   *  and the fields an Inbox row draws. */
+  listOpenAsks(query: Query<"/api/v1/asks/open", "get"> = {}) {
+    return this.read("/api/v1/asks/open", {}, query);
   }
 
   /** `GET /api/v1/inbox/comparison`: the newest run of `envoy-dispatch inbox-compare` as
@@ -1400,27 +1403,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
-  /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
-   *  `kind` is the comma list the route takes (`reply` alone by default, `reply,agent` for the
-   *  Inbox's own rows), `state` is `unread` (the default), `inbox` - every row of their Inbox,
-   *  read or not - or `dismissed`, `issue` or `artifact` narrows to one owner, and an absent
-   *  `limit` asks for every matching row. `state=dismissed` answers `INBOX_DISMISSED_PAGE` rows
-   *  at a time, newest dismissal first, and `cursor` reads the next page from its `next_cursor`,
-   *  which is also what says whether another page follows, since that state's `total` is the page
-   *  it answers rather than the whole pile; `limit` or `offset` there, and `cursor` anywhere else,
-   *  are refused. Needs the `person` scope. */
-  listMyReplies(
-    page: Omit<Query<"/api/v1/me/replies", "get">, "kind"> & {
-      kind?: readonly InboxThreadKind[];
-    }
-  ) {
-    // The route reads `kind` as one comma list, not as the repeated parameter `routeUrl` writes
-    // an array as (`?label=`), so the one key the document types as that list is folded here.
-    // Spreading `page` keeps the caller's own key order, so the request reads as the route
-    // documents it.
-    return this.read("/api/v1/me/replies", {}, { ...page, kind: page.kind?.join(",") });
-  }
-
   /** `PUT /api/v1/me/threads/{id}/read`: move the signed-in person's read mark on one thread
    *  forward to `readThrough` (RFC3339, the newest reply shown). Answers 204 whether or not it
    *  moved. */
@@ -1511,8 +1493,11 @@ export class DispatchApiClient {
     return this.send(agentMessageRequest(sessionID, input), bounds);
   }
 
-  listAgentMessages(sessionID: string) {
-    return this.read("/api/v1/agents/{session_id}/messages", { session_id: sessionID });
+  /** `GET /api/v1/agents/{session_id}/conversation`: the session's conversation as the reader
+   *  reads it - each root message that reaches the session, by its own target or by a delivery
+   *  attempt that names the session, with its replies - newest activity first. */
+  getAgentConversation(sessionID: string) {
+    return this.read("/api/v1/agents/{session_id}/conversation", { session_id: sessionID });
   }
 
   /** A person's message to many sessions. */
