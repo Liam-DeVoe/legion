@@ -259,10 +259,16 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 	}
 
 	// A name an OTHER issue held before ids, which PRIV's owner did not share.
-	if _, err := database.Pool.Exec(context.Background(), `
-		update issues set repo_id = null where key = $1;
-		update issues set repo = 'acme/privold2', repo_id = null where key = $2`, elsewhere, unconfirmed); err != nil {
-		t.Fatalf("write %s and %s as rows written before ids: %v", elsewhere, unconfirmed, err)
+	for _, statement := range []struct {
+		sql string
+		key string
+	}{
+		{`update issues set repo_id = null where key = $1`, elsewhere},
+		{`update issues set repo = 'acme/privold2', repo_id = null where key = $1`, unconfirmed},
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement.sql, statement.key); err != nil {
+			t.Fatalf("write %s as a row written before ids: %v", statement.key, err)
+		}
 	}
 	github.set("acme/privold2", 9003, "acme/privnew2")
 	requireStatus(t, "alice confirms PRIV's acme/privold2 as 9003, not shared", send("POST /api/v1/projects/{key}/repositories/confirm",
@@ -316,10 +322,11 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 	parent := create("carol@example.com", map[string]any{"project": "OTHER", "title": "The parent of a PRIV child", "repo": "acme/pubparent", "force": true})
 	above := create("carol@example.com", map[string]any{"project": "OTHER", "title": "Names acme/pubx before ids", "repo": "acme/pubx", "force": true})
 	child := create("alice", map[string]any{"project": "PRIV", "title": "A PRIV child of an OTHER issue", "force": true})
-	if _, err := database.Pool.Exec(context.Background(), `
-		update issues set parent_key = $1 where key = $2;
-		update issues set repo_id = null where key = $3`, parent, child, above); err != nil {
-		t.Fatalf("put %s under %s, and write %s as a row written before ids: %v", child, parent, above, err)
+	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
+		t.Fatalf("put %s under %s: %v", child, parent, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `update issues set repo_id = null where key = $1`, above); err != nil {
+		t.Fatalf("write %s as a row written before ids: %v", above, err)
 	}
 	patch("carol@example.com", parent, map[string]any{"repo": nil}, http.StatusOK)
 	patch("carol@example.com", parent, map[string]any{"parent": above}, http.StatusOK)
