@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestReduceFilterSubjects(t *testing.T) {
@@ -168,16 +169,38 @@ func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *S
 	return pull
 }
 
-// next returns the next message pull holds within 5 s.
+// next returns the next message pull holds, failing the test when the pull ends with an error, or
+// when none has come 30 s before the test binary's deadline (takeNext).
 func next(t *testing.T, pull *SessionPull) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := pull.Next(ctx)
+	msg, err := takeNext(t, pull, fmt.Sprintf("the pull of consumer %s to hand over its next message", pull.name))
 	if err != nil {
 		t.Fatalf("next message: %v", err)
 	}
 	return msg
+}
+
+// takeNext is what pull's Next answers: its next message, or the error it ended with. It sets no
+// span of its own, since how soon a delivery reaches the pull depends on the machine and not on
+// the code under test: Next runs on a goroutine of its own, and the wait for its answer is
+// testwait.Receive's, which gives up 30 s before the test binary's deadline naming what, and then
+// ends that Next. Next still ends of itself with ErrSessionPullStalled once the server has sent
+// nothing for twice the pull's heartbeat.
+func takeNext(t *testing.T, pull *SessionPull, what string) (SessionMessage, error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type answer struct {
+		msg SessionMessage
+		err error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		msg, err := pull.Next(ctx)
+		answered <- answer{msg, err}
+	}()
+	got := testwait.Receive(t, what, answered)
+	return got.msg, got.err
 }
 
 // requireNoMessage requires pull to hold no message for window.
@@ -614,24 +637,18 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	}
 }
 
-// waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
-// want, which is what the caller waited for, and the reading ready last took. One bound serves
-// every caller: each waits on a state that follows a publish the server answers nothing to -- an
-// ack, a nak, a delivery -- so the state arrives a moment after the call that caused it rather
-// than with it, and the server it arrives at is in this process.
+// waitUntil asks ready every 20 ms until it reports true, and fails the test naming want, which is
+// what the caller waited for, and the reading ready last took. Each caller waits on a state that
+// follows a publish the server answers nothing to -- an ack, a nak, a delivery -- so the state
+// arrives a moment after the call that caused it rather than with it, and how long that moment is
+// depends on the machine, not on the code under test. So the wait sets no span of its own: its one
+// bound is the test binary's deadline less testwait's margin (testwait.UntilPolling).
 func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, 20*time.Millisecond, want, func() (string, bool) {
 		done, got := ready()
-		if done {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waited 5s for %s; %s", want, got)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return got, done
+	})
 }
 
 // waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
@@ -1021,7 +1038,15 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them, so the row waits for the pull itself to hold both (waitForQueued). The server's count
+	// of the two awaiting an ack is no wait for that: nats-server counts a message delivered and
+	// awaiting its ack when the consumer queues it (consumer.deliverMsg), and the stream's own loop
+	// sends it to the pull's inbox after that, so a Release begun on that count can take the
+	// inbox's interest away first. The server then finds no interest for that message and puts it
+	// back for the consumer's next pull itself (consumer.didNotDeliver), and Release, which never
+	// held it, returns one (CI's envoy-go-race job 133892644405).
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned, err := pull.Release(); returned != 2 || err != nil {
