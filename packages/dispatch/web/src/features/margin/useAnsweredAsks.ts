@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
+import { useNewIssuePageFreshness } from "../refs/reference-target";
 import type { MarginOwner } from "./useMarginItems";
 
 /**
@@ -17,6 +18,7 @@ export function useAnsweredAsks(
   artifactID: string | undefined,
   allowed = true
 ) {
+  const freshness = useNewIssuePageFreshness();
   const query = useQuery({
     enabled: owner !== undefined && allowed,
     queryFn: () => {
@@ -31,6 +33,7 @@ export function useAnsweredAsks(
       owner?.kind === "document"
         ? ["artifact", owner.artifactId, "asks"]
         : ["asks", owner?.kind === "issue" ? owner.key : undefined],
+    ...freshness,
   });
   const asks = useMemo(
     () =>
