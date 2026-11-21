@@ -5649,8 +5649,11 @@ test("a pinned card unpinned on another device while its Unpin holds the focus h
 // set date in Chromium, Firefox and WebKit, and for a typed one in Firefox. WebKit's date box
 // takes no typed date from Playwright's keys, so the typed case is not read there. A focused
 // control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
-// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
-test("a date the reader gives the search bar's Updated since is their press, so the focus walks back to Author @firefox @webkit", async ({
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts). Since the
+// architect's ruling of 2026-11-20 20:5xZ a caused walk-back passes over Author, which takes typed
+// text, so the reader's date keeps the focus inside the Filter panel on no text field; a loss
+// misread as uncaused goes to the Search dialog's own stop, outside that panel.
+test("a date the reader gives the search bar's Updated since is their press, so the focus stays in the Filter panel @firefox @webkit", async ({
   browserName,
   page,
 }) => {
@@ -5691,16 +5694,13 @@ test("a date the reader gives the search bar's Updated since is their press, so 
     await nextFrames(page);
     await nextFrames(page);
     // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
-    const holder = await page.evaluate(() => {
-      const active = document.activeElement;
-      const field = active as HTMLInputElement | null;
-      return (
-        field?.labels?.[0]?.textContent?.trim() ||
-        active?.getAttribute("aria-label") ||
-        `${active?.tagName.toLowerCase()} "${active?.textContent?.trim().slice(0, 40)}"`
-      );
-    });
-    if (holder !== "Author") wrong.push(`a ${how} date: the focus is on ${holder}, not Author`);
+    const holder = await focusHolder(page);
+    // The same one read: the loss's hand-offs have all run, so where the focus is is settled.
+    const inFilter = await filters.evaluate((panel) => panel.contains(document.activeElement));
+    if (!inFilter)
+      wrong.push(`a ${how} date: the focus is on ${holder.name}, outside the Filter panel`);
+    else if (holder.takesText)
+      wrong.push(`a ${how} date: the focus is in ${holder.name}, which takes text`);
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
