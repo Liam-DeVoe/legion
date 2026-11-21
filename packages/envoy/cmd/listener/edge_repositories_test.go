@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -183,6 +184,59 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 	}
 }
 
+// The gap mark of a GitHub event the edge withheld while no fresh repository answer stood
+// outlives a move of the session's relay to another listener: the mark is kept on the session's
+// entry, a listener that took the session over drops what it noted in its own process, and the
+// next listener to relay the session - here this one again, with nothing of the mark left in its
+// process - sends it on the session's next frame and clears it from the entry. Control: with the
+// mark kept in the relaying process alone, the frame after the move carries none.
+func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_moved"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	// The withheld count moves before the relay writes the mark on the entry, so the row waits
+	// for the entry: the move below copies it, as another listener's registration does.
+	testwait.Eventually(t, "the edge to withhold the acme/pub event and mark the session's entry", func() bool {
+		return rig.withheld(t, "answer_unknown") >= 1 && storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap
+	})
+
+	// Another listener registers the session: its entry names that listener, so this one's relay
+	// stops and drops what its process noted.
+	moved := storedEdgeSessionEntry(t, rig, sessionID)
+	moved.MachineID = "another-listener"
+	if err := rig.deps.sessions.Put(sessionID, moved); err != nil {
+		t.Fatalf("move %s to another listener: %v", sessionID, err)
+	}
+	testwait.Eventually(t, "this listener's relay to drop the session", func() bool {
+		rig.relays.repositoryGapsMu.Lock()
+		defer rig.relays.repositoryGapsMu.Unlock()
+		_, noted := rig.relays.repositoryGaps[sessionID]
+		return !noted
+	})
+
+	rig.repositories.failWith(0)
+	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
+		http.StatusOK, "the registration that brings the session back to this listener")
+	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	frames := standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, next)
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapRepositoryWithheld {
+		t.Fatalf("the first frame after the withheld GitHub event and the move carries %s %q and %s %q, want true and %s",
+			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld)
+	}
+	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
+		return !storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap
+	})
+}
+
 // Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
 // edge compares owner and name ignoring case: an interest in Acme/Pub is admitted through an
 // answer of acme/pub, and the event the intake publishes for Acme/Pub reaches the session.
@@ -336,5 +390,34 @@ func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
 	}
 	if repositories, complete := reader.standing([]string{"PRIV"}); !complete || !slices.Equal(repositories, []string{"acme/pub"}) {
 		t.Fatalf("after the refresh PRIV stands %v (complete %t), want [acme/pub]", repositories, complete)
+	}
+}
+
+// A broker whose repository read never answers costs the session no more than one that answers
+// 503 at once: the heartbeat of a session following a GitHub topic is refused 503
+// repositories_unknown within the registration's budget, and its session entry is still renewed,
+// since the read ends edgeRegistrationReserve before the budget does. Control: with the read given
+// the whole budget, the renewal runs on a context that has ended and the entry is not renewed.
+func TestAHungRepositoryReadStillRenewsTheEdgeSession(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID, pub = "ses_edge_hung_broker", "notifications.github.acme.pub.>"
+	token := rig.personToken(sessionID, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, sessionID, pub), http.StatusOK, "the registration following acme/pub")
+	registered := storedEdgeSessionEntry(t, rig, sessionID).UpdatedAt
+
+	hung := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(hung.Close)
+	rig.deps.repositories = newEdgeRepositories(hung.URL, listenerBrokerAccount(edgeAccountToken), rig.projects,
+		newEdgeWithheldCounter(metrics.New()), logging.New("test"))
+	testwait.Eventually(t, "the clock to pass the registration's millisecond", func() bool { return time.Now().UnixMilli() > registered })
+	beat := time.Now().UnixMilli()
+	started := time.Now()
+	heartbeat := rig.subscribe(t, token, sessionID, pub)
+	requireEdgeRefusal(t, heartbeat, http.StatusServiceUnavailable, "repositories_unknown", "the heartbeat while the broker never answers")
+	if took := time.Since(started); took > sendRequestBudget+time.Second {
+		t.Errorf("the heartbeat was answered after %s, past the registration's budget of %s", took, sendRequestBudget)
+	}
+	if got := storedEdgeSessionEntry(t, rig, sessionID).UpdatedAt; got < beat {
+		t.Fatalf("the heartbeat while the broker never answers left the session entry at UpdatedAt %d, %d ms before the heartbeat: the entry ages out", got, beat-got)
 	}
 }
