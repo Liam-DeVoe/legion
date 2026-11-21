@@ -795,10 +795,10 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // nor raises one no withheld event owes. So the write is conditional on the revision of the entry
 // it replaces (writeEntryAt): the copy's own entry and revision first, with no bucket call, and
 // when the copy holds none, or another write landed since (another listener's mark among them),
-// the bucket's entry read again (readEntry) and entry written over it with that entry's mark,
-// until the write lands, ctx ends or entryWriteLosses writes are lost (writeEntryAt's stop rule).
-// Every other field is entry's, so against another listener's write it is last-writer-wins, as it
-// always was.
+// the bucket's entry read again (readEntry), from the bucket stream's leader after a lost write,
+// and entry written over it with that entry's mark, until the write lands, ctx ends or
+// entryWriteLosses writes are lost (writeEntryAt's stop rule). Every other field is entry's, so
+// against another listener's write it is last-writer-wins, as it always was.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
@@ -818,9 +818,10 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		entry.RepositoryGap = replaced.entry.RepositoryGap
 	}
 	r.mu.RUnlock()
+	fromLeader := false
 	for range entryWriteLosses {
 		if !known {
-			stored, at, err := readEntry(ctx, kv, sessionID)
+			stored, at, err := readEntry(ctx, kv, sessionID, fromLeader)
 			switch {
 			case errors.Is(err, errUndecodableEntry):
 				// A value no read decodes owes no mark anyone could read, and is written over.
@@ -838,31 +839,42 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		if !lost {
 			return nil
 		}
-		known = false
+		known, fromLeader = false, true
 	}
 	return fmt.Errorf("write session %s to the bucket: %w", sessionID, errEntryWritesLost)
 }
 
 // entryWriteLosses bounds the writes one write of an entry may lose (writeEntryAt's stop rule):
 // far more than the writers of one session's entry at once - its processes registering and
-// heartbeating, a relay marking the entry, an outage renewal - each of which lands in turn, and
-// few enough that a copy of the bucket which keeps answering its reads a write behind ends the
-// write at once rather than holding a registration, or a relay and the session's frames behind
-// it, at the bucket's round trip for as long as the caller's context lasts.
+// heartbeating, a relay marking the entry, an outage renewal - each of which lands in turn, so a
+// write that reaches it is one a run of other writers kept from landing, and it ends rather than
+// holding a registration, or a relay and the session's frames behind it, at the bucket's round
+// trip for as long as the caller's context lasts. A copy of the bucket that answers a write behind
+// spends one of them at most: a write reads the leader after it lost one (readEntry).
 const entryWriteLosses = 32
 
 // errEntryWritesLost is the error of a write of an entry that lost entryWriteLosses writes.
-var errEntryWritesLost = fmt.Errorf("%d conditional writes lost, to other writers or to a copy of the bucket that answers its reads a write behind", entryWriteLosses)
+var errEntryWritesLost = fmt.Errorf("%d conditional writes lost to other writers", entryWriteLosses)
 
 // errUndecodableEntry is readEntry's answer for a stored value no read decodes as an entry.
 var errUndecodableEntry = errors.New("the stored value is no session entry")
 
-// readEntry reads sessionID's entry from the bucket through kv, waiting no longer than ctx
-// (bus.Bounded), with the revision it was read at: revision 0 and no error for a key the bucket
-// holds no entry under, a delete or purge marker among them, and the revision with
-// errUndecodableEntry for a value no read decodes. Any other error is the read's.
-func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, error) {
-	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+// readEntry reads sessionID's entry from the bucket through kv, waiting no longer than ctx, with
+// the revision it was read at: revision 0 and no error for a key the bucket holds no entry under,
+// a delete or purge marker among them, and the revision with errUndecodableEntry for a value no
+// read decodes. Any other error is the read's. fromLeader reads it from the bucket stream's leader
+// (bus.KeyValue.GetFromLeader), which holds every write the bucket took, rather than by a direct
+// get (bus.Bounded), which any copy near enough to current answers (Refresh): a write that lost to
+// another reads so, since a copy that keeps answering a write behind would hand it the revision
+// it just lost on, and would spend the write's bound of lost writes (entryWriteLosses).
+func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (SessionEntry, uint64, error) {
+	var got nats.KeyValueEntry
+	var err error
+	if fromLeader {
+		got, err = kv.GetFromLeader(ctx, sessionID)
+	} else {
+		got, _, err = bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	}
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return SessionEntry{}, 0, nil
 	}
@@ -886,8 +898,9 @@ func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionE
 //
 // The stop rule of every caller: a conditional write loses to a write that landed, which is
 // another writer's progress, or to a read that a copy of a replicated bucket answered a write
-// behind (a direct get is answered by any copy near enough to current, Refresh). The caller reads
-// the entry again and writes again until its write lands, ctx ends, or it has lost
+// behind (a direct get is answered by any copy near enough to current, Refresh), which only the
+// first read can be, since every read after a lost write is the leader's (readEntry). The caller
+// reads the entry again and writes again until its write lands, ctx ends, or it has lost
 // entryWriteLosses writes, when it ends with errEntryWritesLost. Several processes of one session
 // claiming and heartbeating at once, and a relay marking the session's entry beside them, each
 // land in turn well inside that bound.
@@ -918,14 +931,15 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 // SetRepositoryGap, ClearRepositoryGap and RenewWithin share: the entry is read from the bucket
 // (readEntry), handed to change, and written back at the revision read when change reports it
 // changed (writeEntryAt), an update and never a create, so a registration or another write that
-// lands between the read and the write is never overwritten: the entry is read again and change
-// asked again, by writeEntryAt's stop rule. A key the bucket holds no entry under is missing,
-// the caller's error or nil, and a value no read decodes is an error. what names the change in
-// each error.
+// lands between the read and the write is never overwritten: the entry is read again, from the
+// bucket stream's leader, and change asked again, by writeEntryAt's stop rule. A key the bucket
+// holds no entry under is missing, the caller's error or nil, and a value no read decodes is an
+// error. what names the change in each error.
 func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
 	kv, epoch := r.watcher.Handle()
+	fromLeader := false
 	for range entryWriteLosses {
-		entry, revision, err := readEntry(ctx, kv, sessionID)
+		entry, revision, err := readEntry(ctx, kv, sessionID, fromLeader)
 		if err != nil {
 			return fmt.Errorf("read session %s to %s: %w", sessionID, what, err)
 		}
@@ -942,6 +956,7 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 		if !lost {
 			return nil
 		}
+		fromLeader = true
 	}
 	return fmt.Errorf("write session %s to %s: %w", sessionID, what, errEntryWritesLost)
 }
