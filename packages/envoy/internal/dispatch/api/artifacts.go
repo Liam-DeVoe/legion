@@ -223,33 +223,29 @@ var errMarkdownDocumentTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_
 // file, a multipart upload's file part. It makes the upload's checks in the upload's own order and
 // answers them in the upload's status, code and words, which writeHandlerError serves:
 //
-//   - inline content holding U+0000, refused as the JSON upload's decode refuses its `content`
-//     member (unstorableJSON), ahead of anything else of the text. A JSON string holds no byte
-//     that is not UTF-8, since decoding writes each as U+FFFD;
 //   - text longer than maxDocumentMarkdownBytes;
 //   - a file's bytes holding U+0000 or a byte that is not UTF-8, since a markdown document is
 //     stored as text. Any other file is stored as bytes and never reaches here.
 //
-// Two routes make these checks through it: the upload (uploadArtifactFor), and the round trip
-// (markdownRoundTrip), whose refusal of these checks `dispatch artifact` and its dry run take as
+// Inline content holding U+0000 never reaches here: the JSON upload's decode refuses it first
+// (unstorableJSON), and the inline round trip, whose decode does not, refuses it in the same words
+// before it comes here (postMarkdownRoundTrip).
+//
+// The upload (uploadArtifactFor) and the two round trips (markdownRoundTrip) make these checks
+// through it, and `dispatch artifact` and its dry run take a round trip's refusal of them as
 // the call's for every upload, a replacement included (contracts.TextRefusalUpload). So a check of
 // the text alone that every upload of a markdown document makes before its write is made here, and
-// the round trip makes it too. The upload's JSON decode has refused U+0000 in content already, so
-// for the upload the first check finds none; the round trip's body names the text `markdown`, and
-// this names it as the upload does.
+// the round trips make it too.
 //
 // The upload's other refusals of the text alone are its write's. A new document's seed parses the
-// text, holds its asks to their content rule, renders it and weighs that rendering against the
-// bytes and the elements one document holds (docs' SeedText); a replacement is held to looser
-// rules, against the document it replaces (docs' ReplaceText). The upload makes them once, in that
-// write (storeArtifact); the round trip makes the seed's through the same steps
-// (docs.SeedRendering), and marks them as a new document's (contracts.TextRefusalNewDocument).
+// text, holds its asks to their content rule, renders it, weighs that rendering against the bytes
+// and the elements one document holds and holds its checks CI proves to the rules their
+// attributes keep (docs' SeedText); a replacement makes some of these against the document it
+// replaces (docs' ReplaceText). The upload makes them once, in that write (storeArtifact); the
+// round trips make the seed's through the same steps (docs.SeedRendering), each marked with the
+// scope it holds for, and make those only a new document's seed makes for a request that asks for
+// them.
 func documentTextRefusal[T string | []byte](content T, file bool) error {
-	if !file {
-		if refusal := unstorableDocumentText("content", content); refusal != nil {
-			return refusal
-		}
-	}
 	if len(content) > maxDocumentMarkdownBytes {
 		return errMarkdownDocumentTooLarge
 	}

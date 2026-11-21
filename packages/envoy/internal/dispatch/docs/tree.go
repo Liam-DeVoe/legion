@@ -193,16 +193,25 @@ func parseReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, error) {
 // where the two render alike, which its caller compares markdown for.
 func parseWrittenReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, pmdoc.WrittenReadBack, error) {
 	parsed, read, err := pmdoc.ParseWritten(markdown, live)
-	// The ask rule reads the parse's own refusal, before uploadedInput names it the caller's
-	// (ErrInvalidMarkdown), since that naming does not carry the refusal it wraps.
-	if ask := askRefusalInstead(markdown, err); ask != err {
-		return nil, pmdoc.WrittenReadBack{}, ask
-	}
-	tree, err := uploadedInput(parsed, err)
+	tree, err := writtenInput(markdown, parsed, err)
 	if err != nil {
 		return nil, pmdoc.WrittenReadBack{}, err
 	}
 	return tree, read, nil
+}
+
+// writtenInput is parsed, the tree pmdoc.ParseWritten made of markdown, as a write takes it, or
+// the write's refusal of parseErr, that parse's own: the ask rule's for an ask written with its
+// options and no question (askRefusalInstead), and otherwise uploadedInput's. seedRendering reads
+// parseErr itself too, for the scope of its refusal, and parseWrittenReplacing serves every other
+// write.
+func writtenInput(markdown string, parsed *pmdoc.Node, parseErr error) (*pmdoc.Node, error) {
+	// The ask rule reads the parse's own refusal, before uploadedInput names it the caller's
+	// (ErrInvalidMarkdown), since that naming does not carry the refusal it wraps.
+	if ask := askRefusalInstead(markdown, parseErr); ask != parseErr {
+		return nil, ask
+	}
+	return uploadedInput(parsed, parseErr)
 }
 
 // askRefusalInstead is err, or the refusal of an ask written with its options and no question

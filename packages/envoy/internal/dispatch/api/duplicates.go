@@ -264,18 +264,19 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
 // document, taken as an upload is taken, then pmdoc.Render), without writing anything. Nothing
 // else of those writes is run here, since nothing else of them changes the markdown.
 //
-// The near-copy gate reads it (duplicateEqualLexemesQuery): it compares a new spec with
+// Two callers read it. The near-copy gate (duplicateEqualLexemesQuery) compares a new spec with
 // document_search.search, the vector of the markdown the seed stored, and a rendering differs from
 // the text it was parsed from wherever the renderer normalises one: an ordered list is renumbered,
 // and Postgres keeps a list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact
-// copy of that spec would hold different lexemes from the row it copies.
+// copy of that spec would hold different lexemes from the row it copies. The markdown round trip
+// answers it for a text only a new document's seed refuses, when its request does not ask for a
+// new document's refusals (markdownRoundTrip).
 //
 // An empty answer is what a create seeds for a spec of spaces, tabs, carriage returns and line
 // feeds alone; the seed keeps the other characters strings.TrimSpace empties, which this answers
-// empty all the same. Markdown the parse or the render refuses is handed back as it came. The
-// write that follows refuses it with the error of its own seed, which says what is wrong with it;
-// the gate answers on the text it was given rather than failing a write the seed would have let
-// through.
+// empty all the same. Markdown the parse or the render refuses is handed back as it came: the
+// write that follows refuses it with its own error, which says what is wrong with it, and neither
+// caller fails a write that the write itself would let through.
 func storedMarkdown(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""

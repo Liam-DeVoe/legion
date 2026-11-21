@@ -2,19 +2,36 @@ kind: Changed
 custom:
   Issue: pr4369
 body: |-
-  `POST /api/v1/markdown/round-trip` refuses every text that an upload of a new markdown document
-  refuses for the text alone, with that upload's own status, code and words: a NUL character
-  (`400 NUL_CHARACTER`), a file's byte that is not UTF-8 (`400 INVALID_UTF8`), a text past the
-  1 MiB one document holds, making more than 65,536 elements, or whose rendering is past either
+  `POST /api/v1/markdown/round-trip` refuses every text that every upload of a markdown document
+  refuses for the text alone, a replacement included, with that upload's own status, code and
+  words: a text past the 1 MiB one document holds or making more than 65,536 elements
   (`413 CAP_EXCEEDED`), markdown the parser refuses or whose rendering no reader reads back
-  (`400 INVALID_MARKDOWN`), an ask block that breaks its content rule (`400 INVALID_ASK_BLOCK`),
-  and any other failure of the upload's seed on the text. Each such refusal, whatever its status,
-  carries the response header `Dispatch-Text-Refusal`, valued with its scope: `upload` for a check
-  every upload of a markdown document makes before its write (the NUL, the UTF-8, the bytes), and
-  `new-document` for one a new document's seed makes, which a replacement, judged against the
-  document it replaces, need not. No other answer of the route carries it. The route makes the
-  upload's own checks of the text, in the upload's order, and the steps of a new document's seed
-  that read the text alone, so `dispatch artifact` and its dry run refuse such a text as the
-  upload does. Its body takes, in place of `markdown`, a file's bytes as base64 in `file`, which
-  it checks as an upload checks its file part. Every other text it answers with the markdown the
-  store would hold, and text of whitespace alone with the empty markdown.
+  (`400 INVALID_MARKDOWN`), an ask written with its options and no question
+  (`400 INVALID_ASK_BLOCK`), and a render that fails. It refused a NUL character before too, as
+  `400 NUL_CHARACTER` in the words `markdown holds …`; it now refuses it in the upload's words,
+  `content holds …`. A body with `new_document: true` asks too for the refusals only a new
+  document's seed makes, which a replacement, judged against the document it replaces, relaxes: a
+  block id named on two blocks or an element this build cannot create yet
+  (`400 INVALID_MARKDOWN`), an ask that breaks its content rule (`400 INVALID_ASK_BLOCK`), a
+  rendering past the bytes or the elements one document holds (`413 CAP_EXCEEDED`), and a check
+  proved by CI that carries a run, takes a `when` other than `before_merge` or names no negative
+  control (`400 INVALID_CI_CHECK`). A body without the member is answered for such a text, as
+  before, with the markdown its parse and render make, or with the text itself where either fails,
+  so a client that refuses its upload on any failure of the round trip is not refused a
+  replacement the store takes; a Dispatch that does not know the member ignores it. Each refusal,
+  whatever its status, carries the response header `Dispatch-Text-Refusal`, valued with its scope:
+  `upload` for one every upload makes, and `new-document` for one only a new document's seed makes.
+  No other answer of the route carries it. Its body is `{markdown, new_document}`; a body naming no
+  markdown asks about the empty text and is answered `""`, as before.
+
+  `POST /api/v1/markdown/file-round-trip` is new: the same answers for a file's bytes, base64 in
+  `{file, new_document}`, checked as an upload checks its file part, so a file holding a NUL
+  character or a byte that is not UTF-8 is refused `400 NUL_CHARACTER` or `400 INVALID_UTF8` in the
+  words `file holds …`. A body naming no file asks about an empty file. A Dispatch without the route
+  answers 404 or 405.
+
+  An upload of a new markdown document runs every check of its text alone before any check that
+  reads the database: the three rules of a check proved by CI that read its attributes now run in
+  the seed's steps, after the weigh of its rendering, and before a block pointer's target and a
+  check's recorded result are read, so a text that breaks both is refused `400 INVALID_CI_CHECK`.
+  An edit, a replacement and a rebuild from markdown run them in the same order.

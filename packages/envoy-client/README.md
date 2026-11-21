@@ -1010,43 +1010,51 @@ its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/tabl
 such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
 (`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
 Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for every
-text but the empty string), or one the call refuses for the text alone. Blank text (what Go's
-`strings.TrimSpace` empties, `goBlankPattern`) is asked for a refusal alone, never for its
-spelling, and a check of it that gets no answer leaves the upload to make its own refusal. Text
-past the 1 MiB of UTF-8 one document holds is refused with `CAP_EXCEEDED` and exit 1 without
-asking Dispatch anything (`documentTooLarge`): the call refuses it before it reads whether the
-owner holds the name, so the two answer alike under a held name too, and the dry run builds no
-client for it, so it refuses it with no Dispatch configured too. A round trip answer Dispatch
-marks as its refusal of the text (the `Dispatch-Text-Refusal` header, `TEXT_REFUSAL_HEADER`), at
-any status, is refused with Dispatch's own refusal (`<CODE>: <message>`) and exit 1, as the call
-refuses it, where the mark's scope holds for the call: the route makes, in the order, status, code
-and words of an upload of a new document, every check that upload makes of the text alone, and
-marks each refusal with its scope. `upload` marks the checks every upload of a markdown document
-makes before its write - a NUL character (`NUL_CHARACTER`), a byte that is not UTF-8
-(`INVALID_UTF8`), the bytes - which the call takes whatever it asks. `new-document` marks the
-checks a new document's seed makes - the parse (`INVALID_MARKDOWN`), an ask block's content rule
-(`INVALID_ASK_BLOCK`), the elements and the rendering (`CAP_EXCEEDED`), any failure of the seed
-on the text - which the call takes unless it asks `--force`: a replacement is judged against the
-document it replaces, by looser rules, so under `--force` the call uploads such a text and
-Dispatch answers, and the dry run passes with a warning naming the refusal. So the dry run of a
-`--force` upload does not give a new document's refusals. A check Dispatch adds to the upload
-reaches the dry run with no change here. An unmarked answer says nothing of the text, whatever its
-status. A `--path` file Dispatch stores as a Markdown document (a path ending in .md or .markdown,
-which the upload carries as `text/markdown`) is held to the same size before it is read: the call
-and its dry run refuse a file past 1 MiB, by its size or, where AskGate's check read it, by the
-bytes it holds, before anything is asked. It is then read once, as the call reads it
-(`documentFileBytes`), and its bytes measured again. The dry run then sends the round trip the
-file's bytes (`file`, base64), which Dispatch checks as it checks an upload's file part, and takes
-only its refusal (`storedFileCheck`), never a spelling, since the call stores a Markdown file as
-the store spells it and asks the round trip nothing about it; a file Dispatch stores as its bytes
-is asked nothing. What only the call checks, since it needs more than the text, stays the call's:
-whether the owner holds the name, the token of a replacement, a replacement's own rules, a block
-pointer's or a CI check block's target, and the issue's state. With no Dispatch configured, the
-dry run of blank inline text or of a Markdown file passes with a warning that the call is refused
-for the same reason. The step waits at most 5 s. When it gets no answer (no Dispatch configured,
-any other failure, no answer in
-time, or a Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on
-stderr says why and what the call does then, so the JSON stays alone on stdout. With
+text but the empty string), or one the call refuses for the text alone. The check is the one
+place that decides what blank text (what Go's `strings.TrimSpace` empties, `goBlankPattern`) is
+asked: a refusal alone, never its spelling, and a check of it that gets no answer leaves the upload
+to make its own refusal. Text past the 1 MiB of UTF-8 one document holds is refused with
+`CAP_EXCEEDED` and exit 1 without asking Dispatch anything (`documentTooLarge`): the call refuses
+it before it reads whether the owner holds the name, so the two answer alike under a held name
+too, and the dry run builds no client for it, so it refuses it with no Dispatch configured too. A
+round trip answer Dispatch marks as its refusal of the text (the `Dispatch-Text-Refusal` header,
+`TEXT_REFUSAL_HEADER`), at any status, is refused with Dispatch's own refusal (`<CODE>: <message>`)
+and exit 1, as the call refuses it. The route makes, in the order, status, code and words of an
+upload, every check that upload makes of the text alone, and marks each refusal with its scope.
+`upload` marks the checks every upload makes, a replacement included: a NUL character
+(`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the parse's own
+refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads back otherwise
+(`INVALID_MARKDOWN`), an ask written with its options and no question (`INVALID_ASK_BLOCK`).
+`new-document` marks the checks only a new document's seed makes, which a replacement relaxes: a
+block id written twice and an element this build cannot create yet (`INVALID_MARKDOWN`), an ask
+block that breaks its content rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the
+elements (`CAP_EXCEEDED`), and a check proved by CI that breaks the rules its attributes keep
+(`INVALID_CI_CHECK`). The route makes those only for a request that asks for them
+(`new_document: true`), and answers any other with the text's rendering. The check asks for them
+where the call makes a new document, without `--force`; with `--force` the upload may replace a
+document, judged by those looser rules, so the check asks for none of them and compares the
+rendering Dispatch answers as for any text, and every marked refusal it gets is the call's. A
+check Dispatch adds to the upload reaches the dry run with no change here. An unmarked answer says
+nothing of the text, whatever its status. A `--path` file Dispatch stores as a Markdown document
+(a path ending in .md or .markdown, which the upload carries as `text/markdown`) is held to the
+same size: it is read once, as the call reads it (`documentFileBytes`), which refuses a file past
+1 MiB by its size before it reads it, or, where AskGate's check read it, by the bytes it holds,
+and measures the bytes it read again, so its callers take bytes already checked. The dry run then
+sends the file's bytes to their own round trip (`POST /api/v1/markdown/file-round-trip`, `file`
+in base64, with `new_document` as for inline text), which Dispatch checks as it checks an upload's
+file part, and takes only its refusal (`storedFileCheck`), never a spelling, since the call stores
+a Markdown file as the store spells it and asks the round trip nothing about it; a file Dispatch
+stores as its bytes is asked nothing. What only the call checks, since it needs more than the
+text, stays the call's: whether the owner holds the name, the token of a replacement, a
+replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
+result, and the issue's state. With no Dispatch configured, the dry run of inline text or of a
+Markdown file passes with a warning that the call is refused for the same reason. The step waits
+at most 5 s. When it gets no answer (no Dispatch configured, any other failure, no answer in time,
+or a Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on stderr
+says why and what the call does then, as the check's kind says it: a Dispatch without the route
+cannot check the text or the file, which the call uploads unchecked; blank text or a file whose
+check got no answer goes up unchecked too; any other text the call refuses until Dispatch answers.
+The JSON stays alone on stdout. With
 `DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch nothing, for a caller that reads the
 arguments alone; the variable does not change a
 `dispatch result` record's dry run. That dry run asks Dispatch through

@@ -40,6 +40,7 @@ import type {
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
+  FileRoundTripInput,
   GraphEdgeKind,
   GraphReferences,
   Handoff,
@@ -1183,31 +1184,36 @@ export class DispatchClient {
   }
 
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
-   *  route writes nothing: it checks the text as an upload of a new document checks it, parses it
-   *  and renders it again, as that upload's write does, so a caller compares the answer with the
-   *  text it holds and refuses a text the store would change. A text the upload refuses for the
-   *  text alone is refused here in the upload's own words. */
-  async markdownRoundTrip(markdown: string): Promise<string> {
-    return this.#roundTrip({ markdown });
-  }
-
-  /** `markdownRoundTrip` of a file's bytes, sent as base64 in the body's `file`: Dispatch checks
-   *  them as bytes, as it checks an upload's file part, so a file holding a byte that is not UTF-8
-   *  is refused as its upload is. */
-  async fileRoundTrip(bytes: Uint8Array): Promise<string> {
-    return this.#roundTrip({
-      file: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
-    });
-  }
-
-  /** The round trip of `body`, which writes nothing (`writes: false`). */
-  async #roundTrip(body: MarkdownRoundTripInput): Promise<string> {
-    const { payload } = await this.#jsonAnswer<MarkdownRoundTripResponse>(
-      "POST",
+   *  route writes nothing: it checks the text as an upload checks it, parses it and renders it
+   *  again, as that upload's write does, so a caller compares the answer with the text it holds
+   *  and refuses a text the store would change. A text every upload refuses for the text alone is
+   *  refused here in the upload's own words. With `newDocument`, the request asks for the
+   *  refusals only a new document's seed makes too (`new_document`); without it, which is the body
+   *  every Dispatch with the route takes, Dispatch answers such a text with its rendering. */
+  async markdownRoundTrip(markdown: string, newDocument: boolean): Promise<string> {
+    return this.#roundTrip<MarkdownRoundTripInput>(
       ["api", "v1", "markdown", "round-trip"],
-      body,
-      { writes: false }
+      newDocument ? { markdown, new_document: true } : { markdown }
     );
+  }
+
+  /** `POST /api/v1/markdown/file-round-trip`: `markdownRoundTrip` of a file's bytes, sent as
+   *  base64 in the body's `file`, with `newDocument` as `markdownRoundTrip` takes it. Dispatch
+   *  checks them as bytes, as it checks an upload's file part, so a file holding a byte that is
+   *  not UTF-8 is refused as its upload is. A Dispatch without this route answers 404 or 405. */
+  async fileRoundTrip(bytes: Uint8Array, newDocument: boolean): Promise<string> {
+    const file = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+    return this.#roundTrip<FileRoundTripInput>(
+      ["api", "v1", "markdown", "file-round-trip"],
+      newDocument ? { file, new_document: true } : { file }
+    );
+  }
+
+  /** The round trip at `path` of `body`, which writes nothing (`writes: false`). */
+  async #roundTrip<Body extends object>(path: string[], body: Body): Promise<string> {
+    const { payload } = await this.#jsonAnswer<MarkdownRoundTripResponse>("POST", path, body, {
+      writes: false,
+    });
     return payload.markdown;
   }
 

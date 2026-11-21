@@ -8036,9 +8036,59 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/markdown/file-round-trip": {
+      "post": {
+        "description": "The markdown Dispatch would store for {file}, base64, the bytes of a file an upload sends as its file part and Dispatch stores as a markdown document: the checks, the parse and the render the upload of that file makes of its bytes alone. The route writes nothing and reads no row. A body naming no file asks about an empty file. It refuses and answers as POST /api/v1/markdown/round-trip does, {new_document} and the response header included, except that the bytes are checked as a file's, in the words the upload refuses its file with: 400 NUL_CHARACTER for a file holding U+0000 and 400 INVALID_UTF8 for one holding a byte that is not UTF-8. A Dispatch without this route answers 404 or 405, which a caller reads as a Dispatch that cannot check the file.",
+        "operationId": "postApiV1MarkdownFileRoundTrip",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileRoundTripInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkdownRoundTripResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
+      }
+    },
     "/api/v1/markdown/round-trip": {
       "post": {
-        "description": "The markdown Dispatch would store for the text a body gives it, exactly one of {markdown}, the text an inline upload sends, and {file}, the bytes of a file an upload sends, as base64: the checks, the parse and the render an upload of a new markdown document makes of the text alone. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text that upload refuses for the text alone is refused as that upload refuses it, with its status, code and words: 400 NUL_CHARACTER for text holding U+0000, 400 INVALID_UTF8 for a file holding a byte that is not UTF-8, 413 CAP_EXCEEDED for text past the bytes one document holds, for text making more elements than one document may, or for text whose rendering is past either, 400 INVALID_MARKDOWN for markdown the parser refuses or whose rendering no reader reads back, 400 INVALID_ASK_BLOCK for an ask block that breaks its content rule, and any other failure of the upload's seed on the text at the status the upload answers it with. Each such refusal, whatever its status, carries the response header Dispatch-Text-Refusal, valued with its scope: upload for a refusal every upload of a markdown document makes before its write (U+0000, a byte that is not UTF-8, the bytes one document holds), a replacement included, and new-document for a refusal a new document's seed makes, which a replacement, judged against the document it replaces, need not make. No other answer of the route carries it. Text of whitespace alone that none of these refuses is answered with the empty markdown.",
+        "description": "The markdown Dispatch would store for {markdown}, the text an inline upload sends as its content: the checks, the parse and the render an upload of a markdown document makes of the text alone. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. A body naming no markdown asks about the empty text. Text every upload of a markdown document refuses for the text alone is refused as that upload refuses it, with its status, code and words, whatever the body asks: 400 NUL_CHARACTER for text holding U+0000, in the words the upload refuses its content with (content holds ...; this route refused such text before too, in the words markdown holds ...), 413 CAP_EXCEEDED for text past the bytes one document holds or making more elements than one write may, 400 INVALID_MARKDOWN for markdown the parser refuses or whose rendering no reader reads back, 400 INVALID_ASK_BLOCK for an ask written with its options and no question, and a render that fails at the status the upload answers it with. A body with {new_document} true asks too for the refusals only a new document's seed makes, which a replacement, judged against the document it replaces, relaxes: 400 INVALID_MARKDOWN for a block id named on two blocks or an element this build cannot create yet, 400 INVALID_ASK_BLOCK for an ask that breaks its content rule, 413 CAP_EXCEEDED for text whose rendering is past the bytes or the elements one document holds, and 400 INVALID_CI_CHECK for a check proved by CI that carries a run, takes a when other than before_merge or names no negative control. A body without {new_document} is answered for such a text with the markdown its parse and render make, or with the text itself where either fails. Each refusal, whatever its status, carries the response header Dispatch-Text-Refusal, valued with its scope: upload for a refusal every upload makes, a replacement included, and new-document for one only a new document's seed makes. No other answer of the route carries it; the route's own 413 CAP_EXCEEDED for a body past its bound does not. Text of whitespace alone that none of these refuses is answered with the empty markdown.",
         "operationId": "postApiV1MarkdownRoundTrip",
         "parameters": [
           {
@@ -20489,6 +20539,21 @@
         ],
         "type": "object"
       },
+      "FileRoundTripInput": {
+        "properties": {
+          "file": {
+            "format": "base64",
+            "type": "string"
+          },
+          "new_document": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
       "FinishedIssue": {
         "properties": {
           "closed_at": {
@@ -23809,14 +23874,16 @@
       },
       "MarkdownRoundTripInput": {
         "properties": {
-          "file": {
-            "format": "base64",
-            "type": "string"
-          },
           "markdown": {
             "type": "string"
+          },
+          "new_document": {
+            "type": "boolean"
           }
         },
+        "required": [
+          "markdown"
+        ],
         "type": "object"
       },
       "MarkdownRoundTripResponse": {

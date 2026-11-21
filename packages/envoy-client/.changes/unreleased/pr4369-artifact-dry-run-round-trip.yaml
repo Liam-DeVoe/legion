@@ -12,16 +12,18 @@ body: |-
   by its size before it is read. They refuse a text whose round trip answer Dispatch marks as its
   refusal of the text (`Dispatch-Text-Refusal`), at any status, with Dispatch's own refusal
   (`<CODE>: <message>`), which is the upload's refusal of that text: a NUL character, a text or a
-  rendering too large, markdown the parser refuses, an ask block that breaks its content rule. A
-  refusal marked `new-document`, which only a new document's seed makes, is not the call's under
-  `--force`, since a replacement is judged against the document it replaces: the call uploads the
-  text and Dispatch answers, and the dry run passes with a warning naming the refusal. A refusal
-  marked `upload` holds for every upload. An answer it does not mark is no answer about the text.
-  Blank inline text, other than the empty string, is asked too, for a refusal alone and never for
-  its spelling. The dry run of such a Markdown file sends the round trip the file's bytes, so a
-  byte that is not UTF-8 is refused as the upload refuses it, and takes its refusal alone, never
-  a spelling, since the call stores a Markdown file as the store spells it; a file stored as its
-  bytes is asked nothing. Each of these refusals exits 1. The dry run refuses a text past the
+  rendering too large, markdown the parser refuses, an ask block that breaks its content rule, a
+  block id written twice, a check proved by CI that breaks its rules. Without `--force` the call
+  makes a new document, so the round trip asks for the refusals only a new document's seed makes
+  (`new_document: true`); with `--force`, which may replace a document judged by looser rules, it
+  asks for none of them, and Dispatch answers such a text with its rendering, whose spelling the
+  call and its dry run check as for any text. An answer it does not mark is no answer about the
+  text. Blank inline text, other than the empty string, is asked too, for a refusal alone and
+  never for its spelling. The dry run of such a Markdown file sends the file's bytes to their own
+  round trip (`POST /api/v1/markdown/file-round-trip`), so a byte that is not UTF-8 is refused as
+  the upload refuses it, and takes its refusal alone, never a spelling, since the call stores a
+  Markdown file as the store spells it; a file stored as its bytes is asked nothing. Each of these
+  refusals exits 1. The dry run refuses a text past the
   document limit without asking Dispatch, so with no Dispatch configured too. For any other text,
   when Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry
   run passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry

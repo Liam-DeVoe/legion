@@ -34,9 +34,9 @@ type RebuildReport struct {
 // rebuild or an append moved past the one this rebuild loaded (RebuildTx), a closed issue (for
 // supplied markdown, which changes the document), a latest version holding an element this build
 // does not know (ErrDocNewerContent, as every read of it answers), and markdown that is not a
-// Proof document, drops an open ask block, introduces a block pointer at a block the attribute
-// may not name (refuseBlockPointers), or introduces a check block that breaks a rule of a check CI
-// proves (refuseCICheckBlocks), both against the latest version. Supplied markdown is caller
+// Proof document, drops an open ask block, introduces a check block that breaks a rule of a check
+// CI proves (refuseCICheckText, refuseCICheckBlocks) or a block pointer at a block the attribute
+// may not name (refuseBlockPointers), both against the latest version. Supplied markdown is caller
 // text: it is parsed as an upload is, and its rendering is weighed as a new document's is
 // (SeedText). The latest version is the server's own rendering of the document, read back as
 // every stored rendering is (pmdoc.ParseRendering), so a document whose version is past what one
@@ -214,11 +214,15 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 		// Supplied markdown is a caller's write, so a block pointer or a check block it introduces
-		// over the latest version is checked. That version is read back as the tree before the
-		// write; one that does not read back holds no pointer and no check block.
+		// over the latest version is checked: the rules that read a check block alone first, then
+		// those that read the database. That version is read back as the tree before the write;
+		// one that does not read back holds no pointer and no check block.
 		var prior *pmdoc.Node
 		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
 			prior = latestTree
+		}
+		if err := refuseCICheckText(tree, prior); err != nil {
+			return RebuildReport{}, VersionResult{}, err
 		}
 		if err := refuseBlockPointers(ctx, tx, artifactID, tree, prior, offsets); err != nil {
 			return RebuildReport{}, VersionResult{}, err

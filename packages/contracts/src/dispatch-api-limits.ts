@@ -60,29 +60,33 @@ export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
 export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB; a larger file is stored as a binary artifact under another content type`;
 
 /**
- * The response header that `POST /api/v1/markdown/round-trip` puts on its refusal of a text for the
- * text alone, whatever the refusal's status, valued with the scope of the check that refused it:
- * TEXT_REFUSAL_UPLOAD or TEXT_REFUSAL_NEW_DOCUMENT. The route makes those checks in the order,
- * status, code and words of the upload that makes them. Generated into Go as
- * `contracts.TextRefusalHeader`. `dispatch artifact` reads an answer carrying it as the call's own
- * refusal where the scope holds for the call, and any other failure of the round trip as no answer
- * at all, so a check of the text Dispatch adds to that upload, at any status, reaches the call and
- * its dry run with no change to the client.
+ * The response header that the markdown round trips (`POST /api/v1/markdown/round-trip`, `POST
+ * /api/v1/markdown/file-round-trip`) put on their refusal of a text for the text alone, whatever
+ * the refusal's status, valued with the scope of the check that refused it: TEXT_REFUSAL_UPLOAD or
+ * TEXT_REFUSAL_NEW_DOCUMENT. The routes make those checks in the order, status, code and words of
+ * the upload that makes them, and make a new document's only for a request that asks for them
+ * (`new_document`). Generated into Go as `contracts.TextRefusalHeader`. `dispatch artifact` asks
+ * for a new document's refusals only where the call makes a new document, so it reads an answer
+ * carrying the header as the call's own refusal, and any other failure of the round trip as no
+ * answer at all, so a check of the text Dispatch adds to that upload, at any status, reaches the
+ * call and its dry run with no change to the client.
  */
 export const TEXT_REFUSAL_HEADER = "Dispatch-Text-Refusal";
 
 /**
- * TEXT_REFUSAL_HEADER's value on a refusal every upload of a markdown document makes before its
- * write: the text's encoding and its bytes. It holds for every such upload, a replacement included.
- * Generated into Go as `contracts.TextRefusalUpload`.
+ * TEXT_REFUSAL_HEADER's value on a refusal every upload of a markdown document makes of the text,
+ * a replacement included: its encoding, its bytes, and the parse's own refusals - its element
+ * budget, its schema, its read-back. Generated into Go as `contracts.TextRefusalUpload`.
  */
 export const TEXT_REFUSAL_UPLOAD = "upload";
 
 /**
- * TEXT_REFUSAL_HEADER's value on a refusal a new document's seed makes of the text: its parse, its
- * asks' content rule, its render and the weigh of that rendering. A replacement of a document is
- * judged against the document it replaces, by looser rules, so it holds only for an upload that
- * makes a new document. Generated into Go as `contracts.TextRefusalNewDocument`.
+ * TEXT_REFUSAL_HEADER's value on a refusal only a new document's seed makes of the text, which a
+ * replacement relaxes where the document it replaces holds the same or the write leaves the block
+ * unchanged: a block id named twice, an element this build cannot create yet, an ask that breaks
+ * its content rule, a rendering past the limits, a check proved by CI that breaks its rules. It
+ * holds only for an upload that makes a new document. Generated into Go as
+ * `contracts.TextRefusalNewDocument`.
  */
 export const TEXT_REFUSAL_NEW_DOCUMENT = "new-document";
 

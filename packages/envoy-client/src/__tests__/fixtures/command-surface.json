@@ -72,7 +72,8 @@
             "Content-Type": "application/json"
           },
           "body": {
-            "markdown": "# Design\n"
+            "markdown": "# Design\n",
+            "new_document": true
           }
         },
         {

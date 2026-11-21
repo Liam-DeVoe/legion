@@ -230,21 +230,39 @@ func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*N
 // for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
 // of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
 // without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// Those two refusals are the ones live relaxes, and each is marked so (RefusedUnlessLiveHolds).
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
 	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
 	if err != nil {
 		return nil, err
 	}
 	if err := RepeatedBlockID(live, doc, doc); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
+		return nil, liveHeldRefusal{fmt.Errorf("%w: %w", ErrSchema, err)}
 	}
 	// A write may keep an element live holds that this build cannot create, never add one.
 	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
-		return nil, err
+		return nil, liveHeldRefusal{err}
 	}
 	carryBlockIDs(doc, live)
 	EnsureBlockIDs(doc)
 	return doc, nil
+}
+
+// liveHeldRefusal is a refusal of the markdown a write parses that the document the write
+// replaces would not make where it holds the same already (RefusedUnlessLiveHolds). Its text and
+// what it wraps are the refusal's own.
+type liveHeldRefusal struct{ error }
+
+func (r liveHeldRefusal) Unwrap() error { return r.error }
+
+// RefusedUnlessLiveHolds reports whether err, a refusal of ParseWritten or ParseForWrite, is one
+// the document a write replaces relaxes where it holds the same already: a block id the markdown
+// names on two blocks (RepeatedBlockID), and an element this build cannot create yet
+// (refuseUncreatable). A new document holds nothing, so its parse makes every one of them, and a
+// replacement only those its live document does not hold.
+func RefusedUnlessLiveHolds(err error) bool {
+	var held liveHeldRefusal
+	return errors.As(err, &held)
 }
 
 // LineFeeds is text with each CR LF and each lone carriage return written as a line feed. Both

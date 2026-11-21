@@ -6073,7 +6073,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       expect(stdout).toStartWith("Uploaded brief.md as version 1");
       expect(requests).toEqual([
         { method: "GET", path: "/api/v1/issues/DSP-1/artifacts" },
-        { method: "POST", path: "/api/v1/markdown/round-trip", body: { markdown: BRIEF } },
+        {
+          method: "POST",
+          path: "/api/v1/markdown/round-trip",
+          body: { markdown: BRIEF, new_document: true },
+        },
         {
           method: "POST",
           path: "/api/v1/issues/DSP-1/artifacts",
