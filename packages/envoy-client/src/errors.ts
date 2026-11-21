@@ -44,8 +44,8 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
 }
 
 /**
- * The `name` of consumer delivery's refusal of a session that holds no relay subject
- * (`NoRelaySubjectError`, `./consumer-delivery`). Each plugin bundles its own copy of this package,
+ * The `name` of a registration's refusal of a session that holds no relay subject
+ * (`NoRelaySubjectError`, `./relay-registration`). Each plugin bundles its own copy of this package,
  * so the refusal pi-envoy throws is no `instanceof` of the class in pi-legion's copy: a caller that
  * hears it across that line reads its name (`isNoRelaySubjectRefusal`).
  */

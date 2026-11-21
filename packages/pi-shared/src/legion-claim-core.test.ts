@@ -1,7 +1,7 @@
 import { expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { NoRelaySubjectError } from "@legion/envoy-client/consumer-delivery";
+import { NoRelaySubjectError } from "@legion/envoy-client/relay-registration";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
