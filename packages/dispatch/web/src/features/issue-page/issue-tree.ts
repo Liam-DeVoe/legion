@@ -363,12 +363,37 @@ const CLOSING_MARK = /[)\]"'\u201d\u2019]/u;
 
 /** A numbered label at the start of a word: digits and one full stop, before a space or where
  *  the text stops. */
-const NUMBERED_LABEL = /^(\d+)\.(?=\s|$)/u;
+const NUMBERED_LABEL = /^\d+\.(?=\s|$)/u;
 
-/** The second item of a list somewhere after its first: a full stop, any closing quote or
- *  bracket after it, whitespace, then the numbered label `2.` before a space or where the text
- *  stops. */
-const SECOND_ITEM = new RegExp(`\\.${CLOSING_MARK.source}*\\s+2\\.(?=\\s|$)`, "u");
+/**
+ * The abbreviations a number may follow inside a sentence, each written in lower case and read
+ * in any case (`firstSentenceLength`): a full stop after one of these words, before a word that
+ * opens with a digit, ends no sentence, as in `see p. 4`, `See Fig. 3` or `Keep v. 1.2`. A text
+ * that uses another abbreviation before a number becomes a new row of the table that pins the
+ * rule (`SENTENCE_TABLE` in `spec-filter/spec-fixtures.ts`), not a new rule.
+ */
+const NUMBER_ABBREVIATIONS: ReadonlySet<string> = new Set([
+  "art",
+  "cf",
+  "ch",
+  "eq",
+  "eqs",
+  "fig",
+  "figs",
+  "no",
+  "nos",
+  "p",
+  "para",
+  "pp",
+  "sec",
+  "v",
+  "vol",
+  "vs",
+]);
+
+/** A letter or a decimal digit: what a whole word is made of, so that the word before a full
+ *  stop starts where the text does or after a character that is neither. */
+const WORD_CHARACTER = /[\p{L}\p{Nd}]/u;
 
 /**
  * How many characters of `text` its first sentence takes, its leading label included, or
@@ -381,32 +406,35 @@ const SECOND_ITEM = new RegExp(`\\.${CLOSING_MARK.source}*\\s+2\\.(?=\\s|$)`, "u
  * after it. A sentence end is a full stop, a question mark or an exclamation mark, with whatever
  * closing quote or bracket the writer put after it, which belongs to the sentence it ends. A
  * mark ends the sentence where the text stops after it, trailing whitespace aside, and ends none
- * where no whitespace follows it, inside a token such as `x.yyyy` or `example.com`. A question
- * or exclamation mark before a word ends the sentence whatever the word is, in lower case too. A
- * full stop before a word in lower case ends an abbreviation (`e.g. in`), not the sentence, and
- * so does a full stop before a number (`see p. 4`), unless the number is a numbered label that
- * opens the next sentence. A numbered label (`NUMBERED_LABEL`) is digits and one full stop
- * before whitespace or the end of the text, and after a full stop it opens a sentence in two
- * cases: where its number is one more than the text's own leading label, where that label is
- * digits and a full stop (a text that opens `1.` goes on at `2.`), and where its number is 1 and
- * the same text, after this `1.`, holds a `2.` after a full stop, any closing quote or bracket
- * and whitespace (`SECOND_ITEM`), since a list has two items. The full stop before such a label
- * ends this sentence. Any other number after a full stop is part of the sentence and the scan
- * goes on past it, so `as on p. 4. Then` ends at `4.` and `see fig. 1. It` ends at `1.`. A full
- * stop before any other word, one in upper case or one that opens with a symbol, ends the
- * sentence.
+ * where no whitespace follows it, inside a token such as `x.yyyy`, `1.2` or `example.com`. A
+ * question or exclamation mark before a word ends the sentence whatever the word is, in lower
+ * case too. A full stop before a word in lower case ends an abbreviation (`e.g. in`), not the
+ * sentence. A full stop before a word that opens with a digit ends the sentence, unless the word
+ * before the full stop is one of the abbreviations a number follows (`NUMBER_ABBREVIATIONS`),
+ * read in any case and standing as a whole word, as in `(see p. 4)`: there the number is part
+ * of the sentence and opens no label, and the scan goes on. A full stop before any other word,
+ * one in upper case or one that opens with a symbol, ends the sentence. A colon ends no
+ * sentence, and a numbered label (`NUMBERED_LABEL`) right after a colon and whitespace is a
+ * label: its full stop ends nothing, and the scan goes on after it, so `Steps: 1. Open it. 2.`
+ * ends at `it.`.
  *
- * The list rule misses two lists. One starts above 1 with no `1.` before it: `Do it now. 2. Then`
- * ends at `2.`, not at `now.`. The other is a list of one item after a sentence:
- * `Two steps follow. 1. Open it.` ends at `1.`, not at `follow.`. Both are rarer than the page
- * and figure numbers after a full stop that the rule reads right.
+ * One table pins this rule: each row of `SENTENCE_TABLE` (`spec-filter/spec-fixtures.ts`) is
+ * one text and the first sentence the page must find in it, and every reader of the rule is
+ * tested over every row. The rule has one accepted miss: `The answer is no. 3 rows changed.`
+ * runs as one sentence, since `no.` before a number is far more often "number" than a
+ * sentence's last word.
  */
 export function firstSentenceLength(text: string): number | undefined {
   const label = LEADING_LABEL.exec(text)?.[0] ?? "";
-  const listed = NUMBERED_LABEL.exec(label);
-  const nextInList = listed === null ? undefined : Number(listed[1]) + 1;
   for (let at = label.length; at < text.length; at += 1) {
     const mark = text.charAt(at);
+    if (mark === ":") {
+      let word = at + 1;
+      while (/\s/u.test(text.charAt(word))) word += 1;
+      const numbered = word === at + 1 ? null : NUMBERED_LABEL.exec(text.slice(word));
+      if (numbered !== null) at = word + numbered[0].length - 1;
+      continue;
+    }
     if (mark !== "." && mark !== "?" && mark !== "!") continue;
     let end = at + 1;
     while (CLOSING_MARK.test(text.charAt(end))) end += 1;
@@ -417,14 +445,18 @@ export function firstSentenceLength(text: string): number | undefined {
     if (mark !== ".") return end;
     const next = text.slice(word);
     if (/^\p{Ll}/u.test(next)) continue;
-    if (!/^\d/u.test(next)) return end;
-    const numbered = NUMBERED_LABEL.exec(next);
-    if (numbered === null) continue;
-    const number = Number(numbered[1]);
-    if (number === nextInList) return end;
-    if (number === 1 && SECOND_ITEM.test(next.slice(numbered[0].length))) return end;
+    if (/^\d/u.test(next) && abbreviationEndsAt(text, at)) continue;
+    return end;
   }
   return undefined;
+}
+
+/** Whether the whole word that ends at `at` in `text`, before the full stop there, is one of the
+ *  abbreviations a number follows (`NUMBER_ABBREVIATIONS`), in any case. */
+function abbreviationEndsAt(text: string, at: number): boolean {
+  let start = at;
+  while (start > 0 && WORD_CHARACTER.test(text.charAt(start - 1))) start -= 1;
+  return NUMBER_ABBREVIATIONS.has(text.slice(start, at).toLowerCase());
 }
 
 /**
@@ -433,8 +465,8 @@ export function firstSentenceLength(text: string): number | undefined {
  * near one. A sentence ends at a mark with any closing quote or bracket after it, where the words
  * stop or a word follows that the mark ends a sentence before: a question or exclamation mark
  * ends one before any word, and a full stop before a word in lower case (`e.g. in`), or before a
- * number that is no list's numbered label (`see p. 4`), ends an abbreviation, not the
- * sentence. A leading label - a first word of at most five characters that ends in `.` and
+ * number after one of the abbreviations a number follows (`see p. 4`), ends an abbreviation, not
+ * the sentence. A leading label - a first word of at most five characters that ends in `.` and
  * holds a digit, as `R1.`, `12.` or `1.2.` - is part of the line and no sentence end, so a
  * statement's line runs on to the first sentence end after its label. A line held to the limit
  * that holds no space past its label -
@@ -508,14 +540,18 @@ export function nodeWords(node: TreeNode): string {
 /**
  * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
  * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * the node has no reading the same of its stored text's reading (`storedReading`), in the shape
- * of the server's reading. A heading so ends at its own line and its marker is no word of it, so
- * `## # 1 rule` reads `# 1 rule`, and a list that follows a paragraph with no blank line ends
- * that paragraph, so the paragraph alone is the first block. A block that holds no words - a
- * horizontal rule, a paragraph that is only an image or a piece of HTML - is passed over, or the
- * line would be empty while the node has words. A decision's reading opens with its own `##`
- * heading, and `wordsOf` joins a heading and the paragraph after it with one space, so a line cut
- * from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
+ * that block is a bulleted or a numbered list, the words of the first of its items that holds
+ * any (`firstWords`), never the whole list's; and where the node has no reading the same of its
+ * stored text's reading (`storedReading`), in the shape of the server's reading. A heading so
+ * ends at its own line and its marker is no word of it, so `## # 1 rule` reads `# 1 rule`. A
+ * text typed as a numbered list on two lines, `1. Keep the old page.` over `2. Then drop it.`,
+ * reads `Keep the old page.`: its marker is no word, and its second item no part of its line. A
+ * list that follows a paragraph with no blank line ends that paragraph, so the paragraph alone
+ * is the first block. A block that holds no words - a horizontal rule, a paragraph that is only
+ * an image or a piece of HTML - is passed over, or the line would be empty while the node has
+ * words. A decision's reading opens with its own `##` heading, and `wordsOf` joins a heading and
+ * the paragraph after it with one space, so a line cut from the whole reading ran the heading
+ * into its body: "Keep it Keep the model pure.".
  *
  * A stored text is markdown, and its marks are no word of it, so its first block reads as that
  * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
@@ -589,11 +625,12 @@ function lineWordsBy(
   return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
 }
 
-/** The words of the first top-level block of a reading that holds any (`lineWords`), each bare
- *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
- *  for a reading none of whose blocks holds a word. */
+/** The words of the first top-level block of a reading that holds any, or of a list's first item
+ *  where that block is a list (`firstWords`, `lineWords`), each bare address outside code in them
+ *  written as its target's short form (`withShortAddresses`); `""` for a reading none of whose
+ *  blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
-  return firstBlockRead(reading, (block) => wordsOf(withShortAddresses(block)));
+  return firstWords(reading, (block) => wordsOf(withShortAddresses(block)))?.words ?? "";
 }
 
 /** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
@@ -601,18 +638,34 @@ function firstBlockWords(reading: DisplayTree): string {
  *  A caller that names each reference itself reads these, since a short form leaves it no
  *  address to name. `""` for a reading none of whose blocks holds a word. */
 export function firstBlockWordsRaw(reading: DisplayTree): string {
-  return firstBlockRead(reading, wordsOf);
+  return firstWords(reading)?.words ?? "";
 }
 
-/** The words of the first top-level block of `reading` that holds any, each block read to words
- *  by `read`; `""` for a reading none of whose blocks holds a word. */
-function firstBlockRead(reading: DisplayTree, read: (block: DisplayTree) => string): string {
-  const content = reading.content;
-  for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
-    const words = read(block);
-    if (words.trim() !== "") return words;
+/**
+ * The words a reading opens with, and whether they are a list's item: the words of the first
+ * top-level block of `reading` that holds any, each block read to words by `read`, and where that
+ * block is a bulleted or a numbered list, the words of the first of its items that holds any,
+ * never the whole list's. Markdown reads a leading `1. ` or `- ` as a list's marker, which is no
+ * word, and a list's items are read as items before any sentence end is looked for, so a first
+ * sentence never runs from one item into the next: a text typed as a list on one line is one
+ * item, and one typed on two lines is two. Undefined for a reading none of whose blocks holds a
+ * word. A node's one line (`firstBlockWords`, `firstBlockWordsRaw`) and a person's quote
+ * (`spec-decided-by.ts`) both read a reading's first block by this one walk.
+ */
+export function firstWords(
+  reading: DisplayTree,
+  read: (block: DisplayTree) => string = wordsOf
+): { readonly item: boolean; readonly words: string } | undefined {
+  const blocks = Array.isArray(reading.content) ? (reading.content as DisplayTree[]) : [];
+  for (const block of blocks) {
+    const list = block.type === "bullet_list" || block.type === "ordered_list";
+    const items = list && Array.isArray(block.content) ? (block.content as DisplayTree[]) : [block];
+    for (const each of items) {
+      const words = read(each);
+      if (words.trim() !== "") return { item: list, words };
+    }
   }
-  return "";
+  return undefined;
 }
 
 /** The line a chip names a block by, and the page publishes as the block's name: the line a row

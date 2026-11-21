@@ -23,9 +23,10 @@ import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { useIssueNames } from "./one-line";
-import { EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { CONTROL_LABELS, EMPTY_STATE_LINES, type NodeType } from "./page-words";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
+import { SENTENCE_TABLE } from "./spec-filter/spec-fixtures";
 import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords } from "./tree-drafts";
 import { nodeRowSelectorOf } from "./tree-focus";
@@ -387,40 +388,18 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
   }
 });
 
-// R1: the issue's three sentences read the same sentence end as a person's quote (`issue-tree.ts`'s
-// `firstSentenceLength`), so a full stop that a number follows ends an abbreviation, not a
-// sentence.
-test("a sentence is not ended at an abbreviation that a number follows", () => {
-  const { lines, unmount } = bullets(
-    summaryNode(
-      "The page keeps the old order (see p. 4) for now. It fits a phone. Done when it ships."
-    )
-  );
-  try {
-    expect(lines).toEqual([
-      "The page keeps the old order (see p. 4) for now.",
-      "It fits a phone.",
-      "Done when it ships.",
-    ]);
-  } finally {
-    unmount();
-  }
-});
-
-// The issue's three sentences read the same sentence end as a person's quote, so a full stop
-// that a page 1 follows ends an abbreviation, not a sentence, where no "2." follows it.
-test("a sentence is not ended at an abbreviation that 1 follows", () => {
-  const { lines, unmount } = bullets(
-    summaryNode("Draw it whole, as on p. 1. It fits a phone. Done when it ships.")
-  );
-  try {
-    expect(lines).toEqual([
-      "Draw it whole, as on p. 1.",
-      "It fits a phone.",
-      "Done when it ships.",
-    ]);
-  } finally {
-    unmount();
+// R1: the first of the issue's three sentences, after the page's own label, ends where the table
+// of sentence ends (`SENTENCE_TABLE`) ends a stored text's first sentence. A row whose text opens
+// with a list marker would make the summary a list, so it stands as no summary's sentence.
+test("a summary of each row of the sentence table draws the row's stored sentence first", () => {
+  for (const row of SENTENCE_TABLE.filter(({ summary }) => summary)) {
+    const { labels, lines, unmount } = bullets(summaryNode(row.text));
+    try {
+      expect(labels[0], `${row.id}: the label`).toBe(CONTROL_LABELS.in_short_what);
+      expect(lines[0], row.id).toBe(row.stored);
+    } finally {
+      unmount();
+    }
   }
 });
 

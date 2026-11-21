@@ -22,6 +22,7 @@ import {
   decisionNode,
   decisionsRead,
   issueDetails,
+  SENTENCE_TABLE,
   shaped,
   statement,
   statementRef,
@@ -683,29 +684,29 @@ test("a first sentence that opens with a numbered label holds the sentence after
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
 });
 
-// A number after a full stop starts the next sentence only where it continues a list.
-test("a numbered label continues a list, and any other number after a full stop is part of the sentence", () => {
-  expect(firstSentenceOf("Draw it whole, as on p. 4. Then more words follow.")).toBe(
-    "Draw it whole, as on p. 4."
-  );
-  expect(firstSentenceOf("See fig. 3. It shows the cut.")).toBe("See fig. 3.");
-  expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
-  // The rule's two known misses, each reading a list's first label as part of the sentence
-  // before it: a list that starts above 1 with no `1.` before it, and a list of one item after a
-  // sentence, whose `1.` no `2.` follows.
-  expect(firstSentenceOf("Do it now. 2. Then go.")).toBe("Do it now. 2.");
-  expect(firstSentenceOf("Two steps follow. 1. Open it.")).toBe("Two steps follow. 1.");
+// R5: a person's first sentence ends where the table of sentence ends (`SENTENCE_TABLE`) ends
+// each text's, read by the one function every reader splits words by, over the text as written.
+test("a first sentence ends where every row of the sentence table ends it", () => {
+  for (const row of SENTENCE_TABLE) {
+    expect(firstSentenceOf(row.text), row.id).toBe(row.first);
+  }
 });
 
-// R5: a person's first sentence ends where the issue's three sentences end one. A full stop
-// before a word in lower case ends an abbreviation, not the sentence, and a closing quote or
-// bracket after the mark belongs to the sentence it ends.
-test("a first sentence runs past an abbreviation, and holds the closing quote after its mark", () => {
-  expect(firstSentenceOf("Keep the memo, e.g. in the pane. Then more.")).toBe(
-    "Keep the memo, e.g. in the pane."
-  );
-  expect(firstSentenceOf('He said "go." Then he went.')).toBe('He said "go."');
-  expect(firstSentenceOf("Keep it (as written.) Then more.")).toBe("Keep it (as written.)");
+// R5: a person's quote is the first sentence of the answer they stored, as the table states it
+// for a stored text, in a decision tied to one statement: an answer that opens with a list is
+// quoted from its first item, whose marker markdown reads as no word of it.
+test("a person's quote of each row of the sentence table is the row's stored first sentence", () => {
+  for (const row of SENTENCE_TABLE) {
+    const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: row.text }), statement("r1")]), [
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      }),
+    ]);
+    expect(groups[0]?.runs[0]?.decision?.quote, row.id).toBe(row.stored);
+  }
 });
 
 // R5: a person's quote is their first sentence, word for word, so an abbreviation followed by a
