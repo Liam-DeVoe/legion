@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -93,7 +94,7 @@ func newStandInDispatch(t *testing.T) *standInDispatch {
 // decision of PUB's daemon. No refresh is made.
 func heldOnStandIn(t *testing.T, d *standInDispatch) (Deps, func() error) {
 	t.Helper()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: otherDaemonAccount}}
 	deps := Deps{Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: {"OTHER"}}), Access: d.client.Access}
 	deps.held = newHeldAccess(deps, services)
 	require.NotNil(t, deps.held)
@@ -230,7 +231,7 @@ func TestAnAnswerFromTheRefusingRefreshKeepsTheRefusal(t *testing.T) {
 func TestACachedNotFoundKeepsTheRefusalOfTheBrokersToken(t *testing.T) {
 	d := newStandInDispatch(t)
 	const thirdAccount = "system:serviceaccount:legion-third:legion-daemon"
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}, {Kind: KindDaemon, Account: thirdAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: otherDaemonAccount}, {Kind: config.NATSDaemon, Account: thirdAccount}}
 	deps := Deps{Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: {"GONE"}, thirdAccount: {"THIRD"}}), Access: d.client.Access}
 	deps.held = newHeldAccess(deps, services)
 	require.NotNil(t, deps.held)

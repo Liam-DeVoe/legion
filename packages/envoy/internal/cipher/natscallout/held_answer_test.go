@@ -8,7 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 )
 
 // otherFails is the error OTHER's question answers with in these tests.
@@ -23,7 +24,7 @@ var otherFails = errors.New(`projectaccess: dispatch answered /api/v1/access/pro
 // PUB's daemon is refused on the first refresh, and the test fails naming PUB.
 func TestAProjectIsAdmittedOnItsOwnAnswerWhileAnotherFails(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: otherDaemonAccount}}
 	tokens := map[string]platformToken{
 		"pub-token":   {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 		"other-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
@@ -65,7 +66,7 @@ func TestAProjectIsAdmittedOnItsOwnAnswerWhileAnotherFails(t *testing.T) {
 // the daemon on its answer from before the revocation, and the test fails naming PUB.
 func TestARevocationBesideARefusalOfTheBrokersTokenIsKept(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: otherDaemonAccount}}
 	tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{
 		projects: map[string]bool{"PUB": true, "OTHER": true},
@@ -76,7 +77,7 @@ func TestARevocationBesideARefusalOfTheBrokersTokenIsKept(t *testing.T) {
 	require.NoError(t, err, "PUB's daemon was refused on its first answer")
 
 	dispatch.mu.Lock()
-	dispatch.failingFor = map[string]error{"OTHER": fmt.Errorf("%w: dispatch answered /api/v1/access/projects/OTHER 403", projectaccess.ErrBrokerRefused)}
+	dispatch.failingFor = map[string]error{"OTHER": fmt.Errorf("%w: dispatch answered /api/v1/access/projects/OTHER 403", dispatchread.ErrBrokerRefused)}
 	dispatch.mu.Unlock()
 	dispatch.hide("PUB", true)
 	deps.held.refresh(t.Context())

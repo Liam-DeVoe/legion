@@ -9,13 +9,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // scopeGrant is grant, entry's kind's grant (serviceGrant), held to the projects entry may reach.
 //
-// An all-projects entry takes that grant whole.
+// An edge listener's entry lists its projects, and natsgrant holds no grant of an edge listener's
+// to hold to them, so its connection is refused by name. An all-projects entry takes that grant
+// whole.
 //
 // Any other entry is held to the projects the broker's own exchange list gives its account
 // (Deps.Exchange), the one list that also decides the projects of a token minted for that
@@ -29,8 +33,9 @@ import (
 // Dispatch refusing the broker's own account token, until Dispatch answers a question asked after
 // the refusal was seen (heldAccess); a project Dispatch has
 // not yet answered about; a project Dispatch does not hold, or whose answer says the entry's
-// person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
-// refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
+// person cannot see; and a grant entry natsgrant.WithinProjects cannot hold.
+// config.ParseNATSServices refuses a dispatch or listener entry with "-" at start, since their
+// grants carry KV calls.
 //
 // Dispatch is never asked inside a decision: a decision reads only the answers the service holds.
 //
@@ -65,12 +70,15 @@ import (
 // daemon-release-gate.sh is in packages/envoy/scripts; daemon-running-gate.sh comes with the
 // change that lands the daemon that opens its consumers per project. The change that lists daemon
 // entries with "-" waits on that precondition, with those readings quoted in its pull request.
-func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
+func scopeGrant(deps Deps, entry config.NATSService, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
+	if entry.Kind == config.NATSEdgeListener {
+		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service "+entry.Name())
+	}
 	if entry.AllProjects {
 		return grant, nil
 	}
 	if deps.Exchange == nil || deps.Access == nil {
-		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.Name())
 	}
 	person, projects, listed := deps.Exchange(entry.Account)
 	switch {
@@ -84,7 +92,7 @@ func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (nat
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account})
 	if err != nil {
-		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.Name()+": "+err.Error())
 	}
 	return scoped, nil
 }
@@ -106,7 +114,7 @@ const accessFetchTimeout = 10 * time.Second
 // timeout, an answer past its bound) keeps the answer held about it, logged at warn. A held answer
 // is used however old it is. A question no refresh has answered yet has no answer, and a held
 // connection that needs it is refused until one does. The one exception joins a whole refresh:
-// Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
+// Dispatch refusing the broker's own account token (a 401 or 403, dispatchread.ErrBrokerRefused)
 // on any question of a refresh refuses every held connection, since the token exchange refuses
 // every trade that asks Dispatch then; it is logged at error once a refresh. The refusal clears at
 // the first later refresh that gets no refusal of the broker's token and holds an answer whose
@@ -144,16 +152,17 @@ type heldKey struct{ project, person string }
 type heldAnswer struct{ notFound, visible bool }
 
 // newHeldAccess holds the answers about every project deps.Exchange gives an entry of services
-// that is not an all-projects one, each asked for the person its exchange entry acts for; nil when
-// the broker cannot read them (no exchange list, or no Dispatch client) or no entry can name a
-// project.
-func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
+// that is held to its exchange projects (not an all-projects one, nor an edge listener's, whose
+// connection scopeGrant refuses before it reads an answer), each asked for the person its exchange
+// entry acts for; nil when the broker cannot read them (no exchange list, or no Dispatch client)
+// or no entry can name a project.
+func newHeldAccess(deps Deps, services []config.NATSService) *heldAccess {
 	if deps.Exchange == nil || deps.Access == nil {
 		return nil
 	}
 	var asks []heldKey
 	for _, entry := range services {
-		if entry.AllProjects {
+		if entry.AllProjects || entry.Kind == config.NATSEdgeListener {
 			continue
 		}
 		person, projects, _ := deps.Exchange(entry.Account)
@@ -228,7 +237,7 @@ func (h *heldAccess) refresh(ctx context.Context) {
 	}
 	wait.Wait()
 	answersIn := time.Now()
-	refused := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, projectaccess.ErrBrokerRefused) })
+	refused := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, dispatchread.ErrBrokerRefused) })
 	h.mu.Lock()
 	for i, ask := range h.asks {
 		if errs[i] == nil {
@@ -261,7 +270,7 @@ func (h *heldAccess) refresh(ctx context.Context) {
 // refresh has cleared (brokerRefused), before any project; then the first project no refresh has
 // answered yet, one Dispatch does not hold, or one the person cannot see. projects is not empty.
 // On a nil heldAccess no project has an answer.
-func (h *heldAccess) refusal(entry ServiceEntry, person string, projects []string) error {
+func (h *heldAccess) refusal(entry config.NATSService, person string, projects []string) error {
 	if h == nil {
 		return refuse(labelProjectAccessUnknown, "project access not yet known: "+projects[0])
 	}
@@ -271,7 +280,7 @@ func (h *heldAccess) refusal(entry ServiceEntry, person string, projects []strin
 		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
 		// token (oauth's refusedByDispatch), so every held connection is refused too, whichever
 		// question of the refresh Dispatch refused.
-		return refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
+		return refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.Name())
 	}
 	for _, project := range projects {
 		held, known := h.answers[heldKey{project: project, person: person}]

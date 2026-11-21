@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 )
 
@@ -18,12 +20,12 @@ import (
 // project_access_unknown, and the test fails naming that label.
 func TestARefusalOfTheBrokersTokenBeforeAnyAnswerIsNamedSo(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	deps := Deps{
 		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}),
 		Access: func(context.Context, string, string) (projectaccess.Answer, error) {
-			return projectaccess.Answer{}, projectaccess.ErrBrokerRefused
+			return projectaccess.Answer{}, dispatchread.ErrBrokerRefused
 		},
 	}
 	deps.held = newHeldAccess(deps, services)
