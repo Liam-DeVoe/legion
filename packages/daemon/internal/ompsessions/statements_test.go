@@ -121,10 +121,15 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		name = helper.Name()
 	}
 	for _, p := range places {
-		position := fset.Position(p.pos)
-		outside = append(outside, fmt.Sprintf("%s:%d: %s runs a statement outside %s", filepath.Base(position.Filename), position.Line, p.what, name))
+		outside = append(outside, describePlace(fset.Position(p.pos), p.what, name))
 	}
 	return outside, inside
+}
+
+// describePlace is how statementsOutside names a place where a statement runs outside helper:
+// its file and line, what runs there, and the helper's name.
+func describePlace(position token.Position, what, helper string) string {
+	return fmt.Sprintf("%s:%d: %s runs a statement outside %s", filepath.Base(position.Filename), position.Line, what, helper)
 }
 
 // calledFunc is the function call names, or nil where it names none.
@@ -220,8 +225,7 @@ func wanted(fset *token.FileSet, file *ast.File) []string {
 	for _, group := range file.Comments {
 		for _, comment := range group.List {
 			if match := wantComment.FindStringSubmatch(comment.Text); match != nil {
-				position := fset.Position(comment.Pos())
-				want = append(want, fmt.Sprintf("%s:%d: %s runs a statement outside %s", filepath.Base(position.Filename), position.Line, match[1], helperName))
+				want = append(want, describePlace(fset.Position(comment.Pos()), match[1], helperName))
 			}
 		}
 	}

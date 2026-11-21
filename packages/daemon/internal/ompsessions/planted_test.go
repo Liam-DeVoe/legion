@@ -45,9 +45,9 @@ func (p planted) runs(t *testing.T) []string {
 // objects in: the role holds CREATE on the database and on its public schema, as the session
 // database's agent login and its owner do, and it owns public.plant_runs and the function
 // public.plant_ran(what), which records what in that table as the role, whoever calls it. With
-// tables the database holds Oh My Pi's two tables in public first, as Oh My Pi makes them. plant
-// is the role's statements, given the test's login as an identifier. The role and everything it
-// made are dropped when the test ends.
+// tables the database holds Oh My Pi's two tables in public first, as Oh My Pi makes them
+// (createTables). plant is the role's statements, given the test's login as an identifier. The
+// role and everything it made are dropped when the test ends.
 func plantDatabase(t *testing.T, prefix string, tables bool, plant func(login string) []string) planted {
 	t.Helper()
 	ctx := context.Background()
@@ -87,11 +87,7 @@ func plantDatabase(t *testing.T, prefix string, tables bool, plant func(login st
 	})
 	var statements []string
 	if tables {
-		statements = append(statements,
-			"CREATE TABLE public.omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, "+
-				"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",
-			"CREATE TABLE public.omp_session_files_parts (path TEXT NOT NULL, start_offset BIGINT NOT NULL, content TEXT NOT NULL, "+
-				"PRIMARY KEY (path, start_offset))")
+		statements = append(statements, createTables...)
 	}
 	statements = append(statements,
 		// A login that is no superuser may SET ROLE only to a role it is a member of with the SET

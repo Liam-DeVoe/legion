@@ -85,19 +85,15 @@ func throughThePool(t *testing.T, pool, direct string) string {
 	if err != nil {
 		t.Fatalf("read the test database's URL: %v", err)
 	}
-	asked, err := pgconn.ParseConfig(pool)
-	if err != nil {
-		t.Fatalf("%s is no URL pgx reads", poolVariable)
-	}
 	parsed, err := url.Parse(pool)
 	if err != nil || parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
 		t.Fatalf("%s is no postgres:// URL", poolVariable)
 	}
 	parsed.Path = "/" + database.Database
 	rewritten := parsed.String()
-	read, err := pgconn.ParseConfig(rewritten)
-	if err != nil || read.Host != asked.Host || read.Port != asked.Port || read.User != asked.User || read.Database != database.Database {
-		t.Fatalf("%s with the test database's name in it is no longer the same pool and login", poolVariable)
+	// A dbname query parameter would override the path.
+	if read, err := pgconn.ParseConfig(rewritten); err != nil || read.Database != database.Database {
+		t.Fatalf("%s with the test database's name as its path does not name that database", poolVariable)
 	}
 	return rewritten
 }
