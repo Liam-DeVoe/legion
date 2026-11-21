@@ -35,19 +35,21 @@ func TestTNOneProjectRefusingBrokerRefusesEveryHeldDaemon(t *testing.T) {
 	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
 }
 
-func TestTNMappingRefusalBesideFailedProjectMustRefuse(t *testing.T) {
+// A refusal of the broker's token on one project's question refuses every held daemon even when
+// the pass's other question failed: the refusal is the pass's outcome, failures included.
+func TestTNOneProjectRefusalBesideAFailedProjectMustRefuse(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}, "OPS": {"acme/ops"}}}
 	deps := heldDeps(t,
 		map[string]platformToken{"token": {
 			account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour),
 		}},
-		map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
-	deps.held.repoProjects = func(context.Context) ([]projectaccess.RepoProject, error) {
-		return nil, projectaccess.ErrBrokerRefused
-	}
-	deps.held.access = func(context.Context, string, string) (projectaccess.Answer, error) {
+		map[string][]string{pubDaemonAccount: {"OPS", "PUB"}}, dispatch, services)
+	deps.held.access = func(_ context.Context, project, _ string) (projectaccess.Answer, error) {
+		if project == "OPS" {
+			return projectaccess.Answer{}, projectaccess.ErrBrokerRefused
+		}
 		return projectaccess.Answer{}, errors.New("connection reset")
 	}
 	deps.held.refresh(t.Context())
