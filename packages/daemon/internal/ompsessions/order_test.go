@@ -106,9 +106,9 @@ func misordered(ctx context.Context, conn *pgx.Conn) error {
 // only then run their work, ending with commit or rollback: a statement before the pin would run
 // under the login's own search_path, which TestEveryPoolPinsItsSearchPath, reading inside the
 // work, cannot see. The order is read from a pgx QueryTracer on the package's own kind of
-// connection, ConnectURL's (pgx.Connect of the URL), for each exported call that runs a
-// statement. The control is a helper that runs a statement before the pin: the check must name
-// it.
+// connection, a Conn around pgx.Connect's as ConnectURL builds one, for each exported call that
+// runs a statement. The control is a helper that runs a statement before the pin: the check must
+// name it.
 func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 	ctx := context.Background()
 	dsn := testdb.Database(t, "legion_ompsessions_order")
@@ -123,6 +123,7 @@ func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	sessions := &Conn{c: conn}
 
 	live := t.Run("control: a statement before the pin", func(t *testing.T) {
 		traced.take()
@@ -144,25 +145,25 @@ func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"CreateTables", func() error { return CreateTables(ctx, conn) }},
+		{"CreateTables", func() error { return CreateTables(ctx, sessions) }},
 		{"Import", func() error {
-			_, err := Import(ctx, conn, podSessionFile, content, time.UnixMilli(podSessionWritten))
+			_, err := Import(ctx, sessions, podSessionFile, content, time.UnixMilli(podSessionWritten))
 			return err
 		}},
 		{"Written", func() error {
-			_, _, err := Written(ctx, conn, podSessionFile)
+			_, _, err := Written(ctx, sessions, podSessionFile)
 			return err
 		}},
 		{"FindByID", func() error {
-			_, _, err := FindByID(ctx, conn, podSessionID)
+			_, _, err := FindByID(ctx, sessions, podSessionID)
 			return err
 		}},
 		{"Read", func() error {
-			_, _, err := Read(ctx, conn, podSessionFile)
+			_, _, err := Read(ctx, sessions, podSessionFile)
 			return err
 		}},
-		{"Replace", func() error { return Replace(ctx, conn, claudeTranscript, Absent, content, time.Now()) }},
-		{"Append", func() error { return Append(ctx, conn, claudeTranscript, int64(len(content)), content, time.Now()) }},
+		{"Replace", func() error { return Replace(ctx, sessions, claudeTranscript, Absent, content, time.Now()) }},
+		{"Append", func() error { return Append(ctx, sessions, claudeTranscript, int64(len(content)), content, time.Now()) }},
 	} {
 		t.Run(call.name, func(t *testing.T) {
 			traced.take()

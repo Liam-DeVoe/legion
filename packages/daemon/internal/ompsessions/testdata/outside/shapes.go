@@ -75,7 +75,7 @@ type execer interface { // want "an interface a driver handle implements"
 }
 
 func throughInterface(ctx context.Context, conn *pgx.Conn) error {
-	var e execer = conn // want "conn (a *pgx.Conn held as execer)"
+	var e execer = conn
 	_, err := e.Exec(ctx, "SELECT 1")
 	return err
 }

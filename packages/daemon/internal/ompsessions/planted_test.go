@@ -61,7 +61,7 @@ func ranPlant(err error) string {
 // planted is a database another login has planted objects in, and what reads it.
 type planted struct {
 	// conn is the package's own client, ConnectURL, signed in as the test's login.
-	conn *pgx.Conn
+	conn *Conn
 	// admin is a second connection as the same login, for the test's own reads and writes.
 	admin *pgx.Conn
 }
@@ -245,6 +245,7 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		reading := &Conn{c: conn}
 
 		live := t.Run("control: a read with the search_path pin alone runs the policy", func(t *testing.T) {
 			err := pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -269,15 +270,15 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			}
 		}
 		t.Run("Written", func(t *testing.T) {
-			_, _, err := Written(ctx, conn, podSessionFile)
+			_, _, err := Written(ctx, reading, podSessionFile)
 			refused(t, "Written", err)
 		})
 		t.Run("FindByID", func(t *testing.T) {
-			_, _, err := FindByID(ctx, conn, podSessionID)
+			_, _, err := FindByID(ctx, reading, podSessionID)
 			refused(t, "FindByID", err)
 		})
 		t.Run("Read", func(t *testing.T) {
-			_, _, err := Read(ctx, conn, podSessionFile)
+			_, _, err := Read(ctx, reading, podSessionFile)
 			refused(t, "Read", err)
 		})
 	})
@@ -304,7 +305,7 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			}
 		})
 		live := t.Run("control: a read pinned as before the restrict line runs the view", func(t *testing.T) {
-			err := unrestricted(ctx, db.conn, func(tx pgx.Tx) error {
+			err := unrestricted(ctx, db.conn.c, func(tx pgx.Tx) error {
 				var mtime int64
 				return tx.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
 			})
@@ -385,16 +386,16 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		}{
 			{plantedFiles, "SELECT mtime_ms FROM omp_session_files WHERE path = $1", func() error {
 				var mtime int64
-				return db.conn.QueryRow(ctx, "SELECT mtime_ms FROM omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
+				return db.conn.c.QueryRow(ctx, "SELECT mtime_ms FROM omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
 			}},
 			{plantedParts, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)", func() error {
-				_, err := db.conn.Exec(ctx, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
+				_, err := db.conn.c.Exec(ctx, "INSERT INTO omp_session_files_parts (path, start_offset, content) VALUES ($1, $2, $3)",
 					podSessionFile, len(session), "")
 				return err
 			}},
 			{plantedRight, "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2", func() error {
 				var path string
-				return db.conn.QueryRow(ctx, "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
+				return db.conn.c.QueryRow(ctx, "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
 					utf8.RuneCountInString(suffix), suffix).Scan(&path)
 			}},
 		} {
@@ -488,8 +489,8 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 	suffix := "_" + podSessionID + ".jsonl"
 	findByID := "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 LIMIT 1"
 	nested := t.Run("control: a read inside another transaction ends it, and the next statement runs unpinned", func(t *testing.T) {
-		err := unchecked(ctx, db.conn, false, func(outer pgx.Tx) error {
-			if err := unchecked(ctx, db.conn, true, func(inner pgx.Tx) error {
+		err := unchecked(ctx, db.conn.c, false, func(outer pgx.Tx) error {
+			if err := unchecked(ctx, db.conn.c, true, func(inner pgx.Tx) error {
 				var mtime int64
 				return inner.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
 			}); err != nil {

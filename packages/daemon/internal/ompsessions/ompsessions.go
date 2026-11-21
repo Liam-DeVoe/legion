@@ -125,8 +125,8 @@ func (p pinned) query(ctx context.Context, sql string, arguments ...any) (pgx.Ro
 // another's fn on the same connection: pgx would send a second begin, which the server ignores
 // there, and its commit would end the outer transaction and every SET LOCAL of it, so the outer
 // fn's next statement would run alone under the login's own search_path.
-func inTransaction(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pinned) error) error {
-	if status := conn.PgConn().TxStatus(); status != 'I' {
+func inTransaction(ctx context.Context, conn *Conn, readOnly bool, fn func(pinned) error) error {
+	if status := conn.c.PgConn().TxStatus(); status != 'I' {
 		return fmt.Errorf("open a transaction on a connection already in a transaction (status %q): "+
 			"a call of the package runs on a connection of its own", status)
 	}
@@ -134,7 +134,7 @@ func inTransaction(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(p
 	if readOnly {
 		access = pgx.ReadOnly
 	}
-	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
+	return pgx.BeginTxFunc(ctx, conn.c, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, pinSearchPath); err != nil {
 			return fmt.Errorf("pin the transaction's search_path: %w", err)
 		}
@@ -166,7 +166,7 @@ var relationKinds = map[string]string{
 // writer of Append and Replace once per connection before its first. A relation of either name in
 // public that is no table, a view another login made in its place say, CREATE TABLE IF NOT EXISTS
 // leaves as it is, so CreateTables refuses it, naming it and its kind.
-func CreateTables(ctx context.Context, conn *pgx.Conn) error {
+func CreateTables(ctx context.Context, conn *Conn) error {
 	err := inTransaction(ctx, conn, false, func(p pinned) error {
 		for _, statement := range createTables {
 			if _, err := p.exec(ctx, statement); err != nil {
@@ -224,9 +224,22 @@ func ReadDSN(file string) (string, error) {
 	return dsn, nil
 }
 
+// Conn is a connection to the session database, which Connect and ConnectURL open and its caller
+// closes. It holds its pgx connection unexported, and inTransaction alone runs statements on it,
+// so code outside the package can neither run a statement on it nor hand it to code that would:
+// no other package's interface or function takes a Conn (TestNoStatementRunsOutsideTheHelper
+// holds the package to this).
+type Conn struct{ c *pgx.Conn }
+
+// Close closes the connection, its caller's to call once it has done with it.
+func (c *Conn) Close(ctx context.Context) error { return c.c.Close(ctx) }
+
+// IsClosed says whether the connection is closed: one that broke, a caller opens again.
+func (c *Conn) IsClosed() bool { return c.c.IsClosed() }
+
 // Connect opens the session database whose URL dsnFile holds. A refusal names the database's
 // address, never the URL's password (store.ConnectError).
-func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
+func Connect(ctx context.Context, dsnFile string) (*Conn, error) {
 	dsn, err := ReadDSN(dsnFile)
 	if err != nil {
 		return nil, err
@@ -234,21 +247,22 @@ func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
 	return ConnectURL(ctx, dsn)
 }
 
-// ConnectURL opens the session database at dsn, a URL ReadDSN read. A refusal names the
-// database's address, never the URL's password (store.ConnectError).
-func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
+// ConnectURL opens the session database at dsn, a URL ReadDSN read, and is the one place the
+// package opens a connection and builds a Conn. A refusal names the database's address, never the
+// URL's password (store.ConnectError).
+func ConnectURL(ctx context.Context, dsn string) (*Conn, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return nil, store.ConnectError(dsn, err)
 	}
-	return conn, nil
+	return &Conn{c: conn}, nil
 }
 
 // Written is when the session the table holds at path was last written: the row's mtime_ms, which
 // Oh My Pi sets on every write, an append included, and Import sets to the copied file's. ok is false
 // when the table holds no such session; a database no Oh My Pi has opened has no table yet, and so
 // holds none.
-func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok bool, err error) {
+func Written(ctx context.Context, conn *Conn, path string) (at time.Time, ok bool, err error) {
 	var mtime int64
 	err = inTransaction(ctx, conn, true, func(p pinned) error {
 		return p.queryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", path).Scan(&mtime)
@@ -270,7 +284,7 @@ func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok
 // itself. found is false when the table holds no such session; a database no Oh My Pi has opened
 // has no table yet, and so holds none, as Written answers. It refuses an id that is not a single
 // path element (empty, or holding `/` or NUL) before any query.
-func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, found bool, err error) {
+func FindByID(ctx context.Context, conn *Conn, id string) (path string, found bool, err error) {
 	if id == "" || strings.ContainsAny(id, "/\x00") {
 		return "", false, fmt.Errorf("look up session %q by its id: the id is not a single path element", id)
 	}
@@ -292,7 +306,7 @@ func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, foun
 // Read is the session the table holds at path as Oh My Pi reads it (readFull): the row's content,
 // then each of its parts in offset order, in one statement so both come from one snapshot. ok is
 // false when the table holds no such session.
-func Read(ctx context.Context, conn *pgx.Conn, path string) (content []byte, ok bool, err error) {
+func Read(ctx context.Context, conn *Conn, path string) (content []byte, ok bool, err error) {
 	var buffer bytes.Buffer
 	err = inTransaction(ctx, conn, true, func(p pinned) error {
 		rows, err := p.query(ctx,
@@ -373,7 +387,7 @@ func (e *ConflictError) Error() string {
 // it is: Identical when it is content byte for byte, a *ConflictError otherwise. Content Postgres
 // cannot keep as text, a byte sequence that is not UTF-8 or a NUL byte, Postgres refuses itself, and
 // the transaction writes nothing.
-func Import(ctx context.Context, conn *pgx.Conn, path string, content []byte, mtime time.Time) (Outcome, error) {
+func Import(ctx context.Context, conn *Conn, path string, content []byte, mtime time.Time) (Outcome, error) {
 	if err := CreateTables(ctx, conn); err != nil {
 		return "", err
 	}
@@ -444,7 +458,7 @@ func describeLength(n int64) string {
 // another writer moved, or none, is a *MovedError and nothing is written. The tables must exist
 // (CreateTables). Content Postgres cannot keep as text, a byte sequence that is not UTF-8 or a NUL
 // byte, Postgres refuses itself, naming the session, and the transaction writes nothing.
-func Append(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
+func Append(ctx context.Context, conn *Conn, path string, saved int64, content []byte, mtime time.Time) error {
 	if saved == Absent {
 		return fmt.Errorf("write session %s: the table holds no row to append to", path)
 	}
@@ -467,7 +481,7 @@ func Append(ctx context.Context, conn *pgx.Conn, path string, saved int64, conte
 // otherwise only when the locked row's byte_len is saved; any other row is a *MovedError and
 // nothing is written. The tables must exist (CreateTables), and content Postgres cannot keep as
 // text is refused as Append's is.
-func Replace(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
+func Replace(ctx context.Context, conn *Conn, path string, saved int64, content []byte, mtime time.Time) error {
 	return write(ctx, conn, path, saved, func(p pinned) error {
 		if _, err := p.exec(ctx, "UPDATE public.omp_session_files SET content = '', byte_len = $2, mtime_ms = $3 WHERE path = $1",
 			path, len(content), mtime.UnixMilli()); err != nil {
@@ -496,7 +510,7 @@ func Replace(ctx context.Context, conn *pgx.Conn, path string, saved int64, cont
 // saved Absent inserts an empty row in its place when path has none, and otherwise the row is
 // locked and its byte_len compared. A row it is not is a *MovedError. apply runs its statements on
 // the pinned transaction it is handed.
-func write(ctx context.Context, conn *pgx.Conn, path string, saved int64, apply func(p pinned) error) error {
+func write(ctx context.Context, conn *Conn, path string, saved int64, apply func(p pinned) error) error {
 	var moved *MovedError
 	err := inTransaction(ctx, conn, false, func(p pinned) error {
 		if saved == Absent {

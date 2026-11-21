@@ -46,13 +46,13 @@ const pinnedPath = "pg_catalog, pg_temp"
 
 // transaction is what the pin check runs its read in: a helper that opens a transaction on conn,
 // read-only where readOnly, and answers search_path as a statement inside it reads it.
-type transaction func(ctx context.Context, conn *pgx.Conn, readOnly bool) (string, error)
+type transaction func(ctx context.Context, conn *Conn, readOnly bool) (string, error)
 
 // readSearchPath is the statement each transaction of the pin check reads search_path with.
 const readSearchPath = "SELECT pg_catalog.current_setting('search_path')"
 
 // pinnedRead is the package's own helper, inTransaction, reading search_path in its transaction.
-func pinnedRead(ctx context.Context, conn *pgx.Conn, readOnly bool) (path string, err error) {
+func pinnedRead(ctx context.Context, conn *Conn, readOnly bool) (path string, err error) {
 	err = inTransaction(ctx, conn, readOnly, func(p pinned) error {
 		return p.queryRow(ctx, readSearchPath).Scan(&path)
 	})
@@ -61,12 +61,12 @@ func pinnedRead(ctx context.Context, conn *pgx.Conn, readOnly bool) (path string
 
 // unpinned is a transaction helper without the pin, the control TestEveryPoolPinsItsSearchPath
 // must catch.
-func unpinned(ctx context.Context, conn *pgx.Conn, readOnly bool) (path string, err error) {
+func unpinned(ctx context.Context, conn *Conn, readOnly bool) (path string, err error) {
 	access := pgx.ReadWrite
 	if readOnly {
 		access = pgx.ReadOnly
 	}
-	err = pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
+	err = pgx.BeginTxFunc(ctx, conn.c, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, readSearchPath).Scan(&path)
 	})
 	return path, err
@@ -74,20 +74,24 @@ func unpinned(ctx context.Context, conn *pgx.Conn, readOnly bool) (path string, 
 
 // startupPinned opens dsn with search_path as a startup parameter: a pin a direct connection
 // holds for its whole session, and a pool in transaction mode refuses.
-func startupPinned(ctx context.Context, dsn string) (*pgx.Conn, error) {
+func startupPinned(ctx context.Context, dsn string) (*Conn, error) {
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
 	config.RuntimeParams["search_path"] = pinnedPath
-	return pgx.ConnectConfig(ctx, config)
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	return &Conn{c: conn}, nil
 }
 
 // pinFailure is what is wrong with a client's pin on the database dsn names, "" for nothing. The
 // client opens its connection with open, and a read-only and a read-write transaction run through
 // within must each read pinnedPath as search_path inside it, where a statement of the package
 // runs: outside a transaction a client that pins each one reads the default.
-func pinFailure(ctx context.Context, dsn string, open func(context.Context, string) (*pgx.Conn, error), within transaction) string {
+func pinFailure(ctx context.Context, dsn string, open func(context.Context, string) (*Conn, error), within transaction) string {
 	conn, err := open(ctx, dsn)
 	if err != nil {
 		return fmt.Sprintf("the client cannot connect: %v", err)
@@ -366,7 +370,7 @@ func TestEveryPoolPinsItsSearchPath(t *testing.T) {
 	legs := []struct{ name, dsn string }{{directly, direct}, {pooled, throughFresh}, {reused, throughReusing}}
 	for _, client := range []struct {
 		name   string
-		open   func(context.Context, string) (*pgx.Conn, error)
+		open   func(context.Context, string) (*Conn, error)
 		within transaction
 		// fails is, by leg, what the check must name in its failure, and a leg it holds
 		// nothing for one the client must pass.

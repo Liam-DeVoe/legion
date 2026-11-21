@@ -2,6 +2,7 @@ package ompsessions
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -9,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,12 +29,24 @@ const helperName = "inTransaction"
 // one, and only its methods run a statement on it.
 const pinnedName = "pinned"
 
+// connName is the type Connect and ConnectURL answer, the connection a caller holds: only the
+// constructor builds one, and only the helper, the constructor and its connMethods reach the
+// connection it holds, so no other package can hand it to code of its own.
+const connName = "Conn"
+
+// constructorName is the one function that opens a connection and builds a Conn.
+const constructorName = "ConnectURL"
+
+// connMethods are the methods of Conn that may reach its connection: they close it, and say
+// whether it is closed, and run no statement.
+var connMethods = []string{"Close", "IsClosed"}
+
 // driverPackage reports whether path is a package whose methods and functions the check watches:
 // pgx and every package under it (pgconn, pgxpool, pgtype, pgproto3), and database/sql with its
 // driver package. Every method or function of these packages runs a statement, or may, unless
-// allowedMethods or allowedFunctions names it: the check denies by default, so a method pgx adds,
-// or one it has and nobody listed (LoadType, Prepare, ExecStatement, StartPipeline, Hijack, a large
-// object's Close), counts as a statement.
+// allowedMethods names it, or constructorFunctions names it in the constructor's body: the check
+// denies by default, so a method pgx adds, or one it has and nobody listed (LoadType, Prepare,
+// ExecStatement, StartPipeline, Hijack, a large object's Close), counts as a statement.
 func driverPackage(path string) bool {
 	return path == "github.com/jackc/pgx/v5" || strings.HasPrefix(path, "github.com/jackc/pgx/v5/") ||
 		path == "database/sql" || path == "database/sql/driver"
@@ -41,12 +55,14 @@ func driverPackage(path string) bool {
 // allowedMethods are the methods of those packages, each by the type that declares it, that send
 // no statement the server resolves a name in, and so may be called anywhere: ending a handle
 // (closing a connection, releasing a pooled one, ending a transaction with COMMIT or ROLLBACK,
-// which name nothing, closing a result set or a result reader), handing out the PgConn under a
-// connection (a statement on it is a method of its own, which the check reads), and reading a
-// result a statement already returned. A method of the same name on another type is not allowed:
-// a large object's Close runs select lo_close, and a PgConn's Conn is the raw socket.
+// which name nothing, closing a result set or a result reader), saying whether a connection is
+// closed, handing out the PgConn under a connection (a statement on it is a method of its own,
+// which the check reads), and reading a result a statement already returned. A method of the same
+// name on another type is not allowed: a large object's Close runs select lo_close, and a PgConn's
+// Conn is the raw socket.
 var allowedMethods = []string{
 	"github.com/jackc/pgx/v5.Conn.Close",
+	"github.com/jackc/pgx/v5.Conn.IsClosed",
 	"github.com/jackc/pgx/v5.Conn.PgConn",
 	"github.com/jackc/pgx/v5.Tx.Commit",
 	"github.com/jackc/pgx/v5.Tx.Rollback",
@@ -65,10 +81,12 @@ var allowedMethods = []string{
 	"database/sql.Rows.Close",
 }
 
-// allowedFunctions are the package functions of those packages that run no statement: pgx's
-// Connect, ConnectConfig and ParseConfig, which read a URL and open a connection with its startup
-// packet alone, and database/sql's Open, which opens nothing until a statement runs.
-var allowedFunctions = []string{
+// constructorFunctions are the package functions of those packages that run no statement, and
+// that the constructor alone may call: pgx's Connect, ConnectConfig and ParseConfig, which read a
+// URL and open a connection with its startup packet alone, and database/sql's Open, which opens
+// nothing until a statement runs. Each answers a raw connection, so a call of one anywhere else is
+// a connection no Conn holds, which the package's code could hand to another package's.
+var constructorFunctions = []string{
 	"github.com/jackc/pgx/v5.Connect",
 	"github.com/jackc/pgx/v5.ConnectConfig",
 	"github.com/jackc/pgx/v5.ParseConfig",
@@ -86,71 +104,74 @@ type place struct {
 // it. A place is:
 //
 //   - a call of, or a method value taken from, a method or a function of a driver package
-//     (driverPackage) that allowedMethods or allowedFunctions does not name, outside the helper's
-//     own body and the bodies of pinned's methods;
+//     (driverPackage) outside the helper's own body and the bodies of pinned's methods, unless
+//     allowedMethods names the method, or constructorFunctions the function and it is in the
+//     constructor's body;
 //   - a pinned built, by a composite literal or a conversion, outside the helper's body, since
-//     only the transaction the helper pinned may be one;
-//   - a field of pinned reached outside pinned's methods, which is how a pinned made from its
-//     zero value or by new would be given a transaction the helper did not pin;
+//     only the transaction the helper pinned may be one, and a Conn built outside the
+//     constructor's body, since only the connection the constructor opened may be one;
+//   - a field of pinned reached outside pinned's methods, and a field of Conn reached outside the
+//     helper's body, the constructor's and Conn's connMethods: how a pinned or a Conn made from
+//     its zero value or by new would be given a transaction or a connection of another's, and how
+//     a raw connection would leave the package's own code;
+//   - a field of Conn that is exported, or embedded, whose methods Conn promotes even where its
+//     name is unexported: code outside the package reaches the connection through it, where the
+//     rule above cannot see;
 //   - an interface, declared or written as a constraint anywhere in the files, that a type of a
 //     driver package implements: a driver handle held in one runs its statements through methods
-//     no driver package declares, which the first rule cannot see;
-//   - a driver handle (handleName) that leaves the package's own code outside those bodies:
-//     handed to a function or a method of another package that is no driver package's (whose
-//     calls the first rule reads), or held as an interface, by a conversion, an argument, an
-//     assignment, a variable's declaration or a return. Another package's code runs statements on
-//     it that no line of these files shows.
+//     no driver package declares, which the first rule cannot see.
 //
-// Inside is a watched call in the helper's body or a method of pinned. With no helper every place
-// is outside. What the last rule does not read is a handle stored in a composite literal, a map or
-// a channel; nothing in the package does either.
+// So the only raw connections in the package's code are the constructor's and the helper's, and a
+// caller holds a Conn no other package's interface or function takes. Inside is a watched call in
+// the helper's body or a method of pinned. With no helper every place is outside. What the check
+// does not follow is a driver handle a caller hands the package's code as an argument, which is
+// the caller's own, and nothing in the package takes one; nor what the helper's body, pinned's
+// methods and the constructor do with the handles they hold, which is the code a reader of the
+// package checks by eye: each is a few lines.
 func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) (outside []string, inside int) {
 	helper := helperOf(pkg)
-	pinnedType, _ := pkg.Scope().Lookup(pinnedName).(*types.TypeName)
-	var helperBody *ast.BlockStmt
-	var bodies, methodBodies []*ast.BlockStmt
-	// scopes are the package's functions, each body with its signature, for a return's results.
-	type scope struct {
-		body      *ast.BlockStmt
-		signature *types.Signature
+	lookupType := func(name string) *types.TypeName {
+		typeName, _ := pkg.Scope().Lookup(name).(*types.TypeName)
+		return typeName
 	}
-	var scopes []scope
+	pinnedType, connType := lookupType(pinnedName), lookupType(connName)
+	constructor, _ := pkg.Scope().Lookup(constructorName).(*types.Func)
+	var helperBody, constructorBody *ast.BlockStmt
+	var bodies, pinnedMethods, connMethodBodies []*ast.BlockStmt
+	// receiverOf is the type name a method declares its receiver as, nil for a function.
+	receiverOf := func(function *ast.FuncDecl) *types.TypeName {
+		if function.Recv == nil || len(function.Recv.List) != 1 {
+			return nil
+		}
+		receiver := info.Types[function.Recv.List[0].Type].Type
+		if pointer, ok := receiver.(*types.Pointer); ok {
+			receiver = pointer.Elem()
+		}
+		named, ok := receiver.(*types.Named)
+		if !ok {
+			return nil
+		}
+		return named.Obj()
+	}
 	for _, file := range files {
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
 			if !ok || function.Body == nil {
 				continue
 			}
-			if helper != nil && function.Recv == nil && info.Defs[function.Name] == helper {
+			switch receiver := receiverOf(function); {
+			case receiver == nil && helper != nil && info.Defs[function.Name] == helper:
 				helperBody = function.Body
 				bodies = append(bodies, function.Body)
-			}
-			if pinnedType != nil && function.Recv != nil && len(function.Recv.List) == 1 {
-				receiver := info.Types[function.Recv.List[0].Type].Type
-				if pointer, ok := receiver.(*types.Pointer); ok {
-					receiver = pointer.Elem()
-				}
-				if named, ok := receiver.(*types.Named); ok && named.Obj() == pinnedType {
-					bodies = append(bodies, function.Body)
-					methodBodies = append(methodBodies, function.Body)
-				}
+			case receiver == nil && constructor != nil && info.Defs[function.Name] == constructor:
+				constructorBody = function.Body
+			case receiver != nil && receiver == pinnedType:
+				bodies = append(bodies, function.Body)
+				pinnedMethods = append(pinnedMethods, function.Body)
+			case receiver != nil && receiver == connType && slices.Contains(connMethods, function.Name.Name):
+				connMethodBodies = append(connMethodBodies, function.Body)
 			}
 		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.FuncDecl:
-				if node.Body != nil {
-					if function, ok := info.Defs[node.Name].(*types.Func); ok {
-						scopes = append(scopes, scope{node.Body, function.Type().(*types.Signature)})
-					}
-				}
-			case *ast.FuncLit:
-				if signature, ok := info.Types[node].Type.(*types.Signature); ok {
-					scopes = append(scopes, scope{node.Body, signature})
-				}
-			}
-			return true
-		})
 	}
 	within := func(body *ast.BlockStmt, pos token.Pos) bool {
 		return body != nil && body.Pos() <= pos && pos < body.End()
@@ -158,21 +179,35 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 	inAny := func(list []*ast.BlockStmt, pos token.Pos) bool {
 		return slices.ContainsFunc(list, func(body *ast.BlockStmt) bool { return within(body, pos) })
 	}
-	inBodies := func(pos token.Pos) bool { return inAny(bodies, pos) }
-	var pinnedFields []*types.Var
-	if pinnedType != nil {
-		if fields, ok := pinnedType.Type().Underlying().(*types.Struct); ok {
-			for i := range fields.NumFields() {
-				pinnedFields = append(pinnedFields, fields.Field(i))
+	fieldsOf := func(typeName *types.TypeName) []*types.Var {
+		var fields []*types.Var
+		if typeName != nil {
+			if structure, ok := typeName.Type().Underlying().(*types.Struct); ok {
+				for i := range structure.NumFields() {
+					fields = append(fields, structure.Field(i))
+				}
 			}
 		}
+		return fields
 	}
+	pinnedFields, connFields := fieldsOf(pinnedType), fieldsOf(connType)
 	var places []place
+	for _, field := range connFields {
+		if field.Exported() || field.Embedded() {
+			places = append(places, place{field.Pos(), fmt.Sprintf("%s.%s (an exported or embedded field of %s, which code outside the package reaches)",
+				connName, field.Name(), connName)})
+		}
+	}
 	for selector, selection := range info.Selections {
-		if field, ok := selection.Obj().(*types.Var); ok && slices.Contains(pinnedFields, field) {
-			if !inAny(methodBodies, selector.Pos()) {
+		if field, ok := selection.Obj().(*types.Var); ok {
+			switch {
+			case slices.Contains(pinnedFields, field) && !inAny(pinnedMethods, selector.Pos()):
 				places = append(places, place{selector.Pos(), fmt.Sprintf("%s (the transaction a %s holds, reached outside %s's methods)",
 					types.ExprString(selector), pinnedName, pinnedName)})
+			case slices.Contains(connFields, field) && !within(helperBody, selector.Pos()) && !within(constructorBody, selector.Pos()) &&
+				!inAny(connMethodBodies, selector.Pos()):
+				places = append(places, place{selector.Pos(), fmt.Sprintf("%s (the connection a %s holds, reached outside %s, %s and %s's %s)",
+					types.ExprString(selector), connName, helperName, constructorName, connName, strings.Join(connMethods, " and "))})
 			}
 			continue
 		}
@@ -184,7 +219,7 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		if slices.Contains(allowedMethods, key+"."+method.Name()) {
 			continue
 		}
-		if inBodies(selector.Pos()) {
+		if inAny(bodies, selector.Pos()) {
 			inside++
 			continue
 		}
@@ -195,93 +230,35 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		if !ok || function.Pkg() == nil || !driverPackage(function.Pkg().Path()) || function.Type().(*types.Signature).Recv() != nil {
 			continue
 		}
-		if slices.Contains(allowedFunctions, function.Pkg().Path()+"."+function.Name()) {
+		if within(constructorBody, ident.Pos()) && slices.Contains(constructorFunctions, function.Pkg().Path()+"."+function.Name()) {
 			continue
 		}
-		if inBodies(ident.Pos()) {
+		if inAny(bodies, ident.Pos()) {
 			inside++
 			continue
 		}
 		places = append(places, place{ident.Pos(), fmt.Sprintf("%s.%s (a function of %s)", function.Pkg().Name(), function.Name(), function.Pkg().Name())})
 	}
-	qualify := func(other *types.Package) string {
-		if other == pkg {
-			return ""
+	// built names a value of pinned or Conn that expression builds outside the one body that may.
+	built := func(expression ast.Expr) {
+		named, ok := info.Types[expression].Type.(*types.Named)
+		switch {
+		case !ok:
+		case pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, expression.Pos()):
+			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(expression), pinnedName, helperName)})
+		case connType != nil && named.Obj() == connType && !within(constructorBody, expression.Pos()):
+			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s built outside %s)", types.ExprString(expression), connName, constructorName)})
 		}
-		return other.Name()
-	}
-	// held reports a handle the expression value is, held as the type target: an interface, and not
-	// the handle's own type.
-	held := func(value ast.Expr, target types.Type) {
-		name, ok := handleName(info.Types[value].Type)
-		if !ok || target == nil || !types.IsInterface(target) || types.Identical(target, info.Types[value].Type) || inBodies(value.Pos()) {
-			return
-		}
-		places = append(places, place{value.Pos(), fmt.Sprintf("%s (a %s held as %s)", types.ExprString(value), name, types.TypeString(target, qualify))})
 	}
 	handles := driverTypes(pkg)
 	for _, file := range files {
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.CompositeLit:
-				built := info.Types[node].Type
-				if named, ok := built.(*types.Named); ok && pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, node.Pos()) {
-					places = append(places, place{node.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(node), pinnedName, helperName)})
-				}
+				built(node)
 			case *ast.CallExpr:
 				if info.Types[node.Fun].IsType() {
-					built := info.Types[node].Type
-					if named, ok := built.(*types.Named); ok && pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, node.Pos()) {
-						places = append(places, place{node.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(node), pinnedName, helperName)})
-					}
-					if len(node.Args) == 1 {
-						held(node.Args[0], built)
-					}
-					return true
-				}
-				signature, ok := info.Types[node.Fun].Type.Underlying().(*types.Signature)
-				if !ok {
-					return true
-				}
-				callee := calledFunc(info, node)
-				if callee != nil && callee.Pkg() != nil && driverPackage(callee.Pkg().Path()) {
-					return true
-				}
-				foreign := callee != nil && callee.Pkg() != nil && callee.Pkg() != pkg
-				for i, argument := range node.Args {
-					name, isHandle := handleName(info.Types[argument].Type)
-					if !isHandle || inBodies(argument.Pos()) {
-						continue
-					}
-					if foreign {
-						places = append(places, place{argument.Pos(), fmt.Sprintf("%s (a %s handed to %s)", types.ExprString(argument), name, types.ExprString(node.Fun))})
-						continue
-					}
-					held(argument, parameterType(signature, i, node.Ellipsis.IsValid()))
-				}
-			case *ast.AssignStmt:
-				if len(node.Lhs) == len(node.Rhs) {
-					for i, value := range node.Rhs {
-						held(value, info.Types[node.Lhs[i]].Type)
-					}
-				}
-			case *ast.ValueSpec:
-				if node.Type != nil && len(node.Values) == len(node.Names) {
-					for _, value := range node.Values {
-						held(value, info.Types[node.Type].Type)
-					}
-				}
-			case *ast.ReturnStmt:
-				var innermost *scope
-				for i := range scopes {
-					if within(scopes[i].body, node.Pos()) && (innermost == nil || scopes[i].body.Pos() > innermost.body.Pos()) {
-						innermost = &scopes[i]
-					}
-				}
-				if innermost != nil && innermost.signature.Results().Len() == len(node.Results) {
-					for i, value := range node.Results {
-						held(value, innermost.signature.Results().At(i).Type())
-					}
+					built(node)
 				}
 			case *ast.InterfaceType:
 				iface, ok := info.Types[node].Type.Underlying().(*types.Interface)
@@ -300,71 +277,6 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		outside = append(outside, describePlace(fset.Position(p.pos), p.what, helperName))
 	}
 	return outside, inside
-}
-
-// calledFunc is the function or method call names, or nil where it names none (a function value).
-func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
-	var ident *ast.Ident
-	switch fun := ast.Unparen(call.Fun).(type) {
-	case *ast.Ident:
-		ident = fun
-	case *ast.SelectorExpr:
-		ident = fun.Sel
-	case *ast.IndexExpr:
-		if selector, ok := fun.X.(*ast.SelectorExpr); ok {
-			ident = selector.Sel
-		} else {
-			ident, _ = fun.X.(*ast.Ident)
-		}
-	default:
-		return nil
-	}
-	if ident == nil {
-		return nil
-	}
-	function, _ := info.Uses[ident].(*types.Func)
-	return function
-}
-
-// errorType is the universe's error interface.
-var errorType = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
-
-// handleName is how a reader writes the driver handle t is (*pgx.Conn, pgx.Tx), and whether t is
-// one: a type a driver package declares, or a pointer to one, that is no error. An error of the
-// driver's carries no connection, and goes where any error goes.
-func handleName(t types.Type) (string, bool) {
-	if t == nil || types.Implements(t, errorType) {
-		return "", false
-	}
-	base, pointer := t, ""
-	if p, ok := types.Unalias(t).(*types.Pointer); ok {
-		base, pointer = p.Elem(), "*"
-	}
-	named, ok := types.Unalias(base).(*types.Named)
-	if !ok || named.Obj().Pkg() == nil || !driverPackage(named.Obj().Pkg().Path()) {
-		return "", false
-	}
-	return pointer + named.Obj().Pkg().Name() + "." + named.Obj().Name(), true
-}
-
-// parameterType is the type signature gives its argument i, the element of a variadic last
-// parameter unless the call spreads a slice into it (ellipsis).
-func parameterType(signature *types.Signature, i int, ellipsis bool) types.Type {
-	parameters := signature.Params()
-	if parameters.Len() == 0 {
-		return nil
-	}
-	if signature.Variadic() && i >= parameters.Len()-1 {
-		last := parameters.At(parameters.Len() - 1).Type()
-		if ellipsis {
-			return last
-		}
-		return last.(*types.Slice).Elem()
-	}
-	if i >= parameters.Len() {
-		return nil
-	}
-	return parameters.At(i).Type()
 }
 
 // driverTypes is every named type the driver packages pkg imports, directly or not, declare, and
@@ -501,17 +413,21 @@ func wanted(fset *token.FileSet, file *ast.File) []string {
 // and the rest, before anything else runs in it (TestEveryTransactionPinsBeforeItsWork holds that
 // order, and TestEveryPoolPinsItsSearchPath reads the pin), so the pin covers every statement.
 // The helper hands its function a pinned, the one type whose methods run a statement, and only the
-// helper builds one. So outside the helper's body and pinned's methods no method or function of
-// pgx's or database/sql's packages is called, or taken as a value, but the few allowedMethods,
-// each named with its type, and allowedFunctions name; no pinned is built; and no interface the
-// package declares or writes is one a driver handle implements (statementsOutside). The check
-// type-checks the package's own files, test files aside, since those seed fixtures. Its controls
-// are the fixtures of testdata/outside, each type-checked alone with a helper and a pinned of its
-// own: a pgx call outside the helper, a database/sql call, a pool's connection acquired and run,
-// the other ways a transaction the helper did not open runs a statement, and the Go shapes that
-// carry one into the helper's function or a driver handle past the check. The check must name
-// exactly the lines their want comments mark and none of the calls inside their helper, and it
-// must find statements inside the helper in each, or it read nothing.
+// helper builds one; Connect and ConnectURL hand their caller a Conn, whose connection only the
+// helper, the constructor and Conn's Close and IsClosed reach, and only the constructor builds
+// one. So outside the helper's body and pinned's methods no method or function of pgx's or
+// database/sql's packages is called, or taken as a value, but the few allowedMethods, each named
+// with its type, and constructorFunctions in the constructor's body; no pinned or Conn is built
+// elsewhere, and no field of either is reached elsewhere; Conn exports and embeds no field; and
+// no interface the package declares or writes is one a driver handle implements
+// (statementsOutside). The check type-checks the package's own files, test files aside, since
+// those seed fixtures. Its controls are the fixtures of testdata/outside, each type-checked alone
+// with a helper and a pinned of its own: a pgx call outside the helper, a database/sql call, a
+// pool's connection acquired and run, the other ways a transaction the helper did not open runs a
+// statement, the Go shapes that carry one into the helper's function or a driver handle past the
+// check, and the ways a Conn's connection reaches other code. The check must name exactly the
+// lines their want comments mark and none of the calls inside their helper, and it must find
+// statements inside the helper in each, or it read nothing.
 func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	t.Run("this package", func(t *testing.T) {
 		entries, err := os.ReadDir(".")
@@ -535,6 +451,12 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 		if _, ok := pkg.Scope().Lookup(pinnedName).(*types.TypeName); !ok {
 			t.Errorf("the package declares no type %s, the transaction %s hands its function", pinnedName, helperName)
 		}
+		if _, ok := pkg.Scope().Lookup(connName).(*types.TypeName); !ok {
+			t.Errorf("the package declares no type %s, the connection only %s builds and only %s unwraps", connName, constructorName, helperName)
+		}
+		if _, ok := pkg.Scope().Lookup(constructorName).(*types.Func); !ok {
+			t.Errorf("the package declares no function %s, the one place a connection is opened", constructorName)
+		}
 		outside, inside := statementsOutside(fset, parsed, info, pkg)
 		for _, place := range outside {
 			t.Error(place)
@@ -543,6 +465,56 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 			t.Errorf("UNKNOWN: the check found no statement inside %s or %s's methods in %v, so it read none of the package's statements", helperName, pinnedName, files)
 		}
 		t.Logf("%d statements inside %s and %s's methods in %v", inside, helperName, pinnedName, files)
+	})
+
+	// Each shape that would carry the package's connection to another package's code, round 3's
+	// and round 4's: held as that package's interface, assigned to it as part of a tuple, returned
+	// as it as part of one, stored in a struct field of its type, and handed to its function. Each
+	// is a package outside this one that opens the connection with ConnectURL, type-checked against
+	// the package as the compiler left it, and each must be refused, since the connection
+	// ConnectURL answers is a Conn no other package's interface can hold. The control is each same
+	// shape with the connection pgx.Connect answers, which must type-check, so the refusal is the
+	// Conn's and no fault of the shape.
+	t.Run("the connection cannot leave the package", func(t *testing.T) {
+		shapes := map[string]string{
+			"held as another package's interface": `conn, err := OPEN(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	var q record.RowQuerier = conn
+	return q, nil`,
+			"assigned to it as part of a tuple": `var q record.RowQuerier
+	var err error
+	q, err = OPEN(ctx, dsn)
+	return q, err`,
+			"returned as it as part of a tuple": `return OPEN(ctx, dsn)`,
+			"stored in a struct field of its type": `conn, err := OPEN(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	return carrier{q: conn}.q, nil`,
+			"handed to its function": `conn, err := OPEN(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	_, err = record.PullRequestRecorded(ctx, conn, "owner/repo", 1)
+	return nil, err`,
+		}
+		const refusal = "does not implement record.RowQuerier (missing method QueryRow)"
+		for _, name := range slices.Sorted(maps.Keys(shapes)) {
+			for _, opener := range []string{"pgx.Connect", "ompsessions.ConnectURL"} {
+				err := typeCheckSource(t, strings.Replace(outsider, "BODY", strings.ReplaceAll(shapes[name], "OPEN", opener), 1),
+					"github.com/sjawhar/legion/daemon/internal/ompsessions", "github.com/sjawhar/legion/daemon/internal/record")
+				switch {
+				case opener == "pgx.Connect" && err != nil:
+					t.Errorf("control: %s, with pgx.Connect's connection, does not type-check: %v", name, err)
+				case opener == "ompsessions.ConnectURL" && (err == nil || !strings.Contains(err.Error(), refusal)):
+					t.Errorf("%s, with ConnectURL's connection: the type check answered %v, want it refused: %s", name, err, refusal)
+				default:
+					t.Logf("%s, with %s's connection: %v", name, opener, err)
+				}
+			}
+		}
 	})
 
 	fixtures, err := filepath.Glob(filepath.Join("testdata", "outside", "*.go"))
@@ -572,4 +544,61 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 			}
 		})
 	}
+}
+
+// outsider is a package outside this one whose function shape opens a connection and carries it
+// toward record's code: BODY is the shape, written with OPEN for the function that opens it.
+const outsider = `package outsider
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+var _, _ = pgx.Connect, ompsessions.ConnectURL
+
+type carrier struct{ q record.RowQuerier }
+
+func shape(ctx context.Context, dsn string) (record.RowQuerier, error) {
+	BODY
+}
+`
+
+// typeCheckSource type-checks source as a package of its own, reading what it imports from where
+// the compiler left it for each of patterns, and answers every error the type check found, joined,
+// nil for none. A parse error fails the test: the source is the test's own.
+func typeCheckSource(t *testing.T, source string, patterns ...string) error {
+	t.Helper()
+	var lookups []importer.Lookup
+	for _, pattern := range patterns {
+		lookup, err := testtypes.CompiledDependencies(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lookups = append(lookups, lookup)
+	}
+	lookup := func(path string) (io.ReadCloser, error) {
+		var errs []string
+		for _, lookup := range lookups {
+			opened, err := lookup(path)
+			if err == nil {
+				return opened, nil
+			}
+			errs = append(errs, err.Error())
+		}
+		return nil, fmt.Errorf("no compiled types for %s: %s", path, strings.Join(errs, "; "))
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "outsider.go", source, 0)
+	if err != nil {
+		t.Fatalf("parse the outside package: %v\n%s", err, source)
+	}
+	var found []error
+	config := types.Config{Importer: importer.ForCompiler(fset, "gc", lookup), Error: func(err error) { found = append(found, err) }}
+	_, _ = config.Check("outsider", fset, []*ast.File{file}, nil)
+	return errors.Join(found...)
 }
