@@ -311,9 +311,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	// So is whether its Oh My Pi starts under an id the runtime chose (trades): prepare chose one
 	// where the configuration trades, and a launch that keeps a pod that trades nothing drops it
-	// here, once, so each reader of l.omp reads it alone (ompInputs). A launch that resumes by id,
-	// with no id Oh My Pi can read as one, is refused here, before anything of the pod is touched,
-	// and a launch that trades nothing resumes by its file as before (ompResumeRefusal).
+	// here, once, so each reader of l.omp reads it alone (ompInputs), save agentArgv's first case,
+	// which owns a resume of a session the claim records with no file (spec.ResumeSession) as the
+	// one word `--resume=<id>` and needs no l.omp.resume. A launch that resumes by id, with no id
+	// Oh My Pi can read as one, is refused here, before anything of the pod is touched, and a
+	// launch that trades nothing resumes by its file as before (ompResumeRefusal).
 	if !l.trades(r) {
 		l.omp = ompInputs{}
 	}

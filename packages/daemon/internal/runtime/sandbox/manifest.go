@@ -686,7 +686,10 @@ type claudeInputs struct {
 // configuration trades, and relaunch clears it, once it knows the pod it keeps, for a launch into
 // a kept pod that trades nothing (keptPod.trades). So an Oh My Pi launch's is zero exactly when
 // the launch trades nothing, and each reader decides from it alone (agentArgv, nameSession,
-// ompResumeRefusal): such a launch names no id and keeps the argv it had before the runtime chose
+// ompResumeRefusal), save the lane agentArgv's first case owns: a resume of a session the claim
+// records with no file (spec.ResumeSession), which agentArgv passes as the one word
+// `--resume=<id>` whether the launch trades or not, so that lane needs no resume. A launch that
+// trades nothing names no id the runtime chose and keeps the argv it had before the runtime chose
 // one, since its pod may run the Oh My Pi of an image older than `--session-id`, which refuses a
 // flag it does not know, and a role that trades nothing gains nothing from a chosen id.
 type ompInputs struct {
@@ -694,8 +697,10 @@ type ompInputs struct {
 	// resumes, and a fresh UUIDv7 otherwise (ompSessionOf). It is "" for a resume that has no id
 	// to resume by, which a launch that trades is refused for (ompResumeRefusal).
 	session string
-	// resume is whether session is a recorded session's rather than a fresh one, which is the
-	// difference between the agent command's `--resume <id>` and its `--session-id <id>`.
+	// resume is whether agentArgv passes session as `--resume <id>`, a recorded session's id,
+	// rather than as `--session-id <id>`, a fresh one. It is false for a resume by
+	// spec.ResumeSession, which agentArgv's first case passes as `--resume=<id>` before it reads
+	// resume.
 	resume bool
 }
 
@@ -711,7 +716,7 @@ type ompInputs struct {
 // (ompResumeRefusal).
 func ompSessionOf(spec runtime.SpawnSpec) (ompInputs, error) {
 	if spec.ResumeSession != "" {
-		return ompInputs{session: spec.ResumeSession, resume: true}, nil
+		return ompInputs{session: spec.ResumeSession}, nil
 	}
 	if spec.ResumeSessionFile == "" {
 		id, err := uuid.NewV7()
@@ -738,11 +743,12 @@ func ompSessionOf(spec runtime.SpawnSpec) (ompInputs, error) {
 // (sessionIDFault), such as one an argument parser would take for a flag. relaunch asks it once
 // the pod it keeps is known and before anything of the pod is touched, so the refusal reaches the
 // supervisor as the launch's own. A launch that trades nothing resumes by the file as before and
-// is refused nothing, and neither is one that resumes a claim's session recorded with no file
-// (spec.ResumeSession): agentArgv passes that id as the one word `--resume=<id>`, which carries
-// any id a two-word `--resume <id>` cannot, one that begins with `-` included.
+// is refused nothing, and a resume of a claim's session recorded with no file (spec.ResumeSession)
+// is not l.omp.resume at all (ompSessionOf): agentArgv's first case owns it, passing that id as
+// the one word `--resume=<id>`, which carries any id a two-word `--resume <id>` cannot, one that
+// begins with `-` included.
 func (l launch) ompResumeRefusal() error {
-	if !l.omp.resume || l.spec.ResumeSession != "" {
+	if !l.omp.resume {
 		return nil
 	}
 	if l.omp.session == "" {
