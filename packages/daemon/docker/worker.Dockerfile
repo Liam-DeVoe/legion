@@ -409,8 +409,10 @@ COPY .omp-pin /omp-pin
 # `"omp" couldn't exec process: No such file or directory` (runs 44928923080, 44929049036 and
 # 44929265240). The pins are `github:<owner>/<repo>@<version>` (.omp-pin, ARG JJ_TOOL) and
 # `gh@<version>` (ARG GH_TOOL), each release's tag is `v` and that version, as the notices stage
-# reads them too, and a pin of another shape fails here rather than fetch an address it does not
-# name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
+# reads them too. Each part of a pin — owner, repository, version — is one or more of
+# [A-Za-z0-9._-] and holds no `..`, so no part can be a path of its own or climb out of the one
+# it stands in; a pin of any other shape fails here by its name rather than fetch an address it
+# does not name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
 # it: bin/omp. Each fetch refuses by the tool's name and the address it read: a digest ARG that is
 # no 64-hex sha256, a download curl did not complete (a 404, a truncated body), or an archive
 # whose sha256 is not the pinned one, so the log says which of the three failed and why, though
@@ -421,17 +423,23 @@ ARG JJ_SHA256
 ARG GH_SHA256
 RUN set -eu; \
     omp_pin="$(cat /omp-pin)"; \
-    for pin in "$omp_pin" "$JJ_TOOL"; do \
-      case "$pin" in github:?*/?*@?*) ;; *) echo "tools: '$pin' is no github:<owner>/<repo>@<version> pin" >&2; exit 1 ;; esac; \
-    done; \
-    case "$GH_TOOL" in gh@?*) ;; *) echo "tools: ARG GH_TOOL='$GH_TOOL' is no gh@<version> pin" >&2; exit 1 ;; esac; \
+    part() { case "$1" in "" | *[!A-Za-z0-9._-]* | *..*) return 1 ;; esac; }; \
+    pinned() { \
+      rest=${2#github:}; owner=${rest%%/*}; after=${rest#*/}; repo=${after%@*}; version=${after##*@}; \
+      [ "$rest" != "$2" ] && [ "$after" != "$rest" ] && [ "$version" != "$after" ] && \
+        part "$owner" && part "$repo" && part "$version" || \
+        { echo "tools: $1 is '$2', which is no github:<owner>/<repo>@<version> pin of [A-Za-z0-9._-] parts without '..'" >&2; exit 1; }; \
+    }; \
+    pinned .omp-pin "$omp_pin"; \
+    pinned "ARG JJ_TOOL" "$JJ_TOOL"; \
+    part "${GH_TOOL#gh@}" && [ "${GH_TOOL#gh@}" != "$GH_TOOL" ] || { echo "tools: ARG GH_TOOL is '$GH_TOOL', which is no gh@<version> pin of [A-Za-z0-9._-] without '..'" >&2; exit 1; }; \
     omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; omp_tag="v${omp_pin##*@}"; \
     jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
     gh_version="${GH_TOOL#gh@}"; \
     fetch() { \
       tool=$1; arg=$2; want=$3; url=$4; file=$5; \
       printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
-      curl -fsSLo "$file" "$url" || { echo "tools: $tool: the archive did not download from $url (curl exit $?)" >&2; exit 1; }; \
+      curl -fsSL --max-time 300 -o "$file" "$url" || { echo "tools: $tool: the archive did not download from $url (curl exit $?)" >&2; exit 1; }; \
       got=$(sha256sum "$file"); got=${got%% *}; \
       [ "$got" = "$want" ] || { echo "tools: $tool: the archive from $url has sha256 $got, and ARG $arg pins $want" >&2; exit 1; }; \
       echo "tools: $tool: $url, sha256 $got"; \
