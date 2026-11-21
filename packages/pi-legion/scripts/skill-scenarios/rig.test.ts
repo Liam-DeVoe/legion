@@ -2492,6 +2492,62 @@ describe("heads_fixture", () => {
       stdout: `${heads["702"]}\t${git(path.join(run, "remote.git"), "rev-parse", "main")}\n`,
       stderr: "",
     });
+    // A pull request's files, as GitHub lists them: each path, its status and its patch, the hunks
+    // of that path from the first @@ line. A reviewer of reviewer-own-head read #703's so, where the
+    // stand-in had no route for it.
+    const remote = path.join(run, "remote.git");
+    const changed = git(remote, "diff", "--name-status", "main", heads["703"])
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => line.split("\t"));
+    expect(changed.length).toBeGreaterThan(0);
+    const statuses: Record<string, string> = { A: "added", M: "modified", D: "removed" };
+    expect(
+      gh("gh api repos/example/widgets/pulls/703/files --jq .[] | [.filename, .status] | @tsv")
+    ).toEqual({
+      code: 0,
+      stdout: changed.map(([status, file]) => `${file}\t${statuses[status ?? ""]}\n`).join(""),
+      stderr: "",
+    });
+    for (const [, file] of changed) {
+      const diff = git(remote, "diff", "main", heads["703"], "--", file ?? "");
+      const patch = diff.slice(diff.indexOf("\n@@") + 1).replace(/\n$/, "");
+      expect(
+        gh(
+          `gh api repos/example/widgets/pulls/703/files --jq .[] | select(.filename == "${file}") | .patch`
+        )
+      ).toEqual({ code: 0, stdout: `${patch}\n`, stderr: "" });
+    }
+    expect(
+      gh("gh api repos/example/widgets/pulls/703/files --jq .[] | .filename, .patch").code
+    ).toBe(0);
+    // A check run by its id, as GitHub answers it, and GitHub's 404 for an id no head has a run of.
+    // A reviewer of the case ci-only read its named run so, where the stand-in had no route for it.
+    const runID = gh(
+      "gh api repos/example/widgets/commits/{702}/check-runs --jq .check_runs[0].id"
+    ).stdout.trim();
+    expect(
+      gh(
+        `gh api repos/example/widgets/check-runs/${runID} --jq [.id, .name, .head_sha, .conclusion] | @tsv`
+      )
+    ).toEqual({ code: 0, stdout: `${runID}\tlint\t${heads["702"]}\tsuccess\n`, stderr: "" });
+    expect(gh("gh api repos/example/widgets/check-runs/1 --jq .name")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
+    // A compare with a commit the repository does not hold: GitHub's 404. An architect of
+    // architect-pass-and-fail compared the base with such a commit, where the stand-in had no route
+    // for it. The control: the compare of the base with a head still answers.
+    expect(
+      gh(
+        "gh api repos/example/widgets/compare/main...cc14cd790a47ea73926f227bad9e00374e3424d1 --jq {status,ahead_by}"
+      )
+    ).toMatchObject({ code: 1, stderr: "gh: Not Found (HTTP 404)\n" });
+    expect(gh("gh api repos/example/widgets/compare/main...{702} --jq .status")).toEqual({
+      code: 0,
+      stdout: "ahead\n",
+      stderr: "",
+    });
     // Each body holds every line of the template's brief that the implementer writes, and the
     // Thermo line's row for each half, as skills/legion-worker/references/pr-body.md has them. A
     // reviewer of reviewer-own-head requested changes on a body that lacked the brief and had one
