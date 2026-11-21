@@ -577,7 +577,7 @@ func TestLegionVerdictMergeGroupAfterARestartTheBootSweepWritesTheMissingCheck(t
 		return len(rig.github.legionRuns("group-86")) > 0
 	})
 	rig.written(t)
-	groupConcluded(t, rig.verdictRig, "group-86", "success")
+	groupConcluded(t, rig.github, rig.pool, "group-86", "success")
 }
 
 // A restart lost the merge-state read the writer asks for after a success (writeVerdictOver's
