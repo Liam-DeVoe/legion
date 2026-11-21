@@ -106,7 +106,7 @@ func requireBootServes(t *testing.T, process *dispatchProcess, why string) {
 // byte for byte, since each confirmation would then hold that member. It starts with an empty
 // database, with the right domain, with full members' rows that record none, and with a restricted
 // member's row alone; and after `envoy-dispatch forget-hosted-domains` it starts under a new
-// domain it refused before.
+// domain it refused before. Each row boots on a database of its own, so the seven run in parallel.
 func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
@@ -116,6 +116,7 @@ func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	}
 
 	t.Run("a mistyped domain", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedBootDomainRows(t, database, members...)
 		requireBootRefused(t, startBootDomainProcess(t, database, issuer, "exampel.com"),
@@ -124,6 +125,7 @@ func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	})
 
 	t.Run("a domain that differs in case alone", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedBootDomainRows(t, database,
 			bootDomainRow{email: "ada@example.com", domain: "Example.com", kind: model.MemberFull},
@@ -134,10 +136,12 @@ func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	})
 
 	t.Run("an empty database", func(t *testing.T) {
+		t.Parallel()
 		requireBootServes(t, startBootDomainProcess(t, storetest.Open(t), issuer, "exampel.com"), "an empty database")
 	})
 
 	t.Run("the right domain", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedBootDomainRows(t, database, members...)
 		process := startBootDomainProcess(t, database, issuer, "example.com")
@@ -149,6 +153,7 @@ func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	})
 
 	t.Run("full members recording no domain", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedBootDomainRows(t, database,
 			bootDomainRow{email: "ada@example.com", kind: model.MemberFull},
@@ -158,6 +163,7 @@ func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	})
 
 	t.Run("a restricted member alone", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedBootDomainRows(t, database, bootDomainRow{email: "dana@outside.example", domain: "outside.example", kind: model.MemberRestricted})
 		requireBootServes(t, startBootDomainProcess(t, database, issuer, "example.com"),
@@ -165,6 +171,7 @@ func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	})
 
 	t.Run("an intended change of domain", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedBootDomainRows(t, database, members...)
 		requireBootRefused(t, startBootDomainProcess(t, database, issuer, "new.example"),

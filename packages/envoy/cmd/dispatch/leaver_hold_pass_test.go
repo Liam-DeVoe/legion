@@ -66,6 +66,7 @@ const (
 // asked each second from then on, answers 403 MEMBERSHIP_HELD at every ask from 55 seconds after
 // her refresh began, so under 180 seconds after her row came due.
 func TestLeaverHoldBoundByThePass(t *testing.T) {
+	t.Parallel()
 	var askDelay, sweepDelay atomic.Int64
 	sweeps := func(ctx context.Context) error {
 		wait := time.Duration(sweepDelay.Load())

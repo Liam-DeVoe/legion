@@ -69,6 +69,7 @@ func TestLeaverHoldBrokerCredentials(t *testing.T) {
 // production release on a fresh Google sign-in leaves the first post-release credential refused;
 // deleting or replacing a stored credential changes one of the five independent row snapshots.
 func TestLeaverHoldRelease(t *testing.T) {
+	t.Parallel()
 	r := newLeaverRig(t, withBrokerGate(), withPersonSignIns())
 	ada := r.person(t, adaEmail)
 	r.personSignIn(t, ada)
@@ -128,7 +129,13 @@ func TestLeaverHoldRelease(t *testing.T) {
 // his first request (waitForFirstRefusals), which logs the second each was first refused at. His
 // refresh starts at that request, so this is the spec's window from a refresh's start, which a
 // broker that kept Dispatch's answer about him longer than it allows misses.
+//
+// Each row, and the test, runs in parallel with the other real-time tests of the leaver hold,
+// which envoy-go runs in a step of their own (LEAVER_BOUND_TESTS in .github/scripts/ci_job_reads.py):
+// each builds a rig of its own, its Postgres databases, its servers and its processes, and shares
+// nothing with another.
 func TestLeaverHoldBound(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		delay time.Duration
@@ -140,6 +147,7 @@ func TestLeaverHoldBound(t *testing.T) {
 		{name: "a half-second Google refusal", delay: 500 * time.Millisecond, bound: 40 * time.Second},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			r := newLeaverRig(t, withBrokerGate(), withRefreshFlowOfItsOwn())
 			// bob is set up before ada. The broker answers ada held only from an answer it asked
 			// at least projectaccess.CacheTTL after her setup's ask, so by then its answer about

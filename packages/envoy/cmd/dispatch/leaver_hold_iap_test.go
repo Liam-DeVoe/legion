@@ -74,6 +74,7 @@ const iapLapseBound = 10 * time.Second
 // ciphertest.WithHoldRequiresDeadline refuses her held sessions in the words of a broker that
 // tells her to sign in.
 func TestIAPLeaverHoldThroughTheRealBroker(t *testing.T) {
+	t.Parallel()
 	r := newLeaverRig(t, withBrokerGate(), withPersonSignIns(), withIAP())
 	r.directoryAccount(adaEmail, false)
 	r.directoryAccount(bobEmail, false)
