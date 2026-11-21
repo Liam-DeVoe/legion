@@ -593,7 +593,7 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // would then be reading that load rather than the product (docs/testing.md). For the same reason
 // it runs alone in envoy-go: the unit step's package list skips it, and the step runs it by itself
 // once every other call of the step has ended (.github/scripts/ci_job_reads.py,
-// OUTBOX_ALONE_TESTS). Beside those calls it failed the 500 ms bound in the dispatch run at
+// UNIT_ALONE_TESTS). Beside those calls it failed the 500 ms bound in the dispatch run at
 // 3a4ffe0b (run 44939290502, job 136952816413), while 106 tests of internal/dispatch/pmdoc, whose
 // CPU-budget tests load the runner, ran beside it in the package list.
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {

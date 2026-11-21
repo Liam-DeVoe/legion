@@ -2036,20 +2036,33 @@ SHUTDOWN_DSN = service_dsn(5434)
 SHUTDOWN_PACKAGE = "cmd/dispatch"
 SHUTDOWN_TESTS = ["TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument"]
 SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
-# The one test of internal/dispatch/outbox that runs alone, after the unit step's other calls
-# have ended: TestAnOutboxThatLosesNATSReleasesThePublisher, whose assertion is a wall-clock time
-# measured in its own process, main's bound that the cut process releases the publisher hold
-# within 500 ms of natsLossGrace. Beside the step's other calls the load moved it: in the dispatch
-# run at 3a4ffe0b it timed out waiting for that release while 106 tests of internal/dispatch/pmdoc
-# ran beside it in the package list (run 44939290502, job 136952816413). The lane runs such a test
-# as main runs it, alone on the runner (ALONE_PREFIX, ALONE_TESTS and ALONE_STEPS below), but
-# those are the race lane's tests that the race build cannot run, and no race job runs this
-# package: so the package list skips the row by this one name, which is unique in the module,
-# and the step runs it by the same name once its waits are over, against the service the package
-# list uses (UNIT_TEST_SCRIPT).
-OUTBOX_ALONE_PACKAGE = "internal/dispatch/outbox"
-OUTBOX_ALONE_TESTS = ["TestAnOutboxThatLosesNATSReleasesThePublisher"]
-OUTBOX_ALONE_PATTERN = "^(" + "|".join(sorted(OUTBOX_ALONE_TESTS)) + ")$"
+# The tests the unit step runs alone, once its other calls have ended, keyed by their package's
+# directory as ALONE_TESTS is. Each is a test whose assertion is a wall-clock time measured in its
+# own process, with a bound under twice its slowest reading in the package list (the architect's
+# rule, dispatch://INFRA-1075), so the load of the list's other packages can carry it past its
+# bound. The lane runs such a test as main runs it, alone on the runner (ALONE_PREFIX, ALONE_TESTS
+# and ALONE_STEPS below), but those are the race lane's tests that the race build cannot run, and
+# no race job runs these packages. So the package list skips each by its name (UNIT_TEST_SKIP),
+# which must be unique in the module, since that -skip is read in every package of the list, and
+# the step's last call runs them by the same names, one package at a time, against the service
+# the package list uses (UNIT_ALONE_CALL, below). The -skip, that call's -run and packages, its
+# Runs and the pinned step text are all built from this dict, so a test joins with one entry here,
+# its reason beside it.
+UNIT_ALONE_TESTS = {
+    # Main's bound that the cut process releases the publisher hold within 500 ms of
+    # natsLossGrace: in the package list of the dispatch run at 3a4ffe0b it timed out waiting for
+    # that release while 106 tests of internal/dispatch/pmdoc ran beside it (run 44939290502, job
+    # 136952816413).
+    f"{ENVOY}/internal/dispatch/outbox": {"TestAnOutboxThatLosesNATSReleasesThePublisher"},
+    # Main's (#4568) bound that the standby writes the next event within standbyRetry + 5 s, 15 s,
+    # of the holder's stop: in the package list of the dispatch run at 4165260d it had no row
+    # within it (run 44953084676, job 136995819951), having read 10.022 s in run 44939290502,
+    # while main's envoy-go ran the package 24 times from 2026-11-21T17:20Z and passed each time.
+    f"{ENVOY}/internal/dispatch/textversions": {"TestAStandbyTakesAFreeHoldWithNoNotification"},
+}
+# The same, keyed by the package's path under packages/envoy, as alone_call and the step's Runs
+# take it.
+UNIT_ALONE_PACKAGES = {directory.removeprefix(f"{ENVOY}/"): names for directory, names in UNIT_ALONE_TESTS.items()}
 # The fourth service, 5435, and the package whose round trips the shared one pays most for:
 # internal/pgmigrate. Its redaction oracle asks a server about 158,364 (text, setting) pairs, and
 # a round trip of it cost 2.16 ms in this lane against 0.16 ms against an idle server, so the
@@ -2065,13 +2078,14 @@ PGMIGRATE_DSN = service_dsn(5435)
 EVENTS_DSN = service_dsn(5436)
 # The package list's one -skip, which go test reads once and so must name every test the list
 # leaves to another run: the shutdown feed test, which the shutdown call runs on a service of
-# its own, the outbox's NATS-loss row (OUTBOX_ALONE_TESTS), which the step runs alone after its
-# other calls, WEB_FIXTURE_TESTS, which the fixture step of envoy-go-checks runs under `--check`,
-# and the backend count's tests of cmd/cipher (BACKEND_COUNT_TESTS), which the count step
-# runs in this same job and env as their one run. Each name is built from its own list, so the
-# -skip cannot drift from the -run of the call or the step that runs the test. The package list
-# is the one call of the step that runs cmd/cipher, so it is the one that skips them.
-UNIT_TEST_SKIP = names_pattern(SHUTDOWN_TESTS + OUTBOX_ALONE_TESTS + WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])
+# its own, UNIT_ALONE_TESTS, which the step runs alone after its other calls, WEB_FIXTURE_TESTS,
+# which the fixture step of envoy-go-checks runs under `--check`, and the backend count's tests
+# of cmd/cipher (BACKEND_COUNT_TESTS), which the count step runs in this same job and env as
+# their one run. Each name is built from its own list, so the -skip cannot drift from the -run of
+# the call or the step that runs the test. The package list is the one call of the step that runs
+# cmd/cipher, so it is the one that skips them.
+UNIT_TEST_SKIP = names_pattern(SHUTDOWN_TESTS + [name for names in UNIT_ALONE_TESTS.values() for name in names]
+                               + WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])
 # -p 8 and -parallel 12, the nine calls the step starts in the background and the one it runs
 # after them, and the streams and logs they write, are ci-job-envoy-go.yaml's own comments' to
 # explain. The text itself is UNIT_TEST_SCRIPT, built below the walk the race-impossible call's
@@ -2412,11 +2426,12 @@ def alone_split(root, packages) -> tuple:
 
 def alone_call(packages, timeout) -> str:
     """A plain run of alone tests: one `go test` over every package of `packages` (an alone step's
-    share of alone_split's first half), their tests anchored and sorted in one -run, as
-    race_impossible_call builds the call it leaves them out of. -p 1 runs the packages one at a
-    time, each one's build and tests before the next one's, as main's one call per package did, so
-    no package's measurement runs beside another package's build or tests. -timeout `timeout`,
-    the step's own (AloneStep)."""
+    share of alone_split's first half, or UNIT_ALONE_PACKAGES for envoy-go's unit step), their
+    tests anchored and sorted in one -run, as race_impossible_call builds the call it leaves them
+    out of. -p 1 runs the packages one at a time, each one's build and tests before the next
+    one's, as main's one call per package did, so no package's measurement runs beside another
+    package's build or tests. -timeout `timeout`, the step's own (AloneStep) or the unit step's
+    call's (UNIT_ALONE_TIMEOUT)."""
     if not packages:
         return ""
     names = sorted(set().union(*packages.values()))
@@ -2506,6 +2521,11 @@ def alone_step(step):
 ALONE_PACKAGES, RACE_IMPOSSIBLE_PACKAGES = alone_split(ENVOY, race_impossible_tests(ENVOY))
 ALONE_SHARES = alone_jobs(ALONE_PACKAGES)
 RACE_IMPOSSIBLE_CALL = race_impossible_call(RACE_IMPOSSIBLE_PACKAGES)
+# The unit step's last call, run once its other calls have ended: the tests UNIT_ALONE_TESTS holds,
+# one package at a time. Its -timeout is by R6 from those tests' own readings, which the comment
+# on the call gives (UNIT_TEST_SCRIPT).
+UNIT_ALONE_TIMEOUT = "1m"
+UNIT_ALONE_CALL = alone_call(UNIT_ALONE_PACKAGES, UNIT_ALONE_TIMEOUT)
 
 
 # The whole unit step, comments and all: nine calls started in the background, the long ones
@@ -2740,22 +2760,31 @@ i=0
 wait "$integration" || i=$?
 v=0
 wait "$vet" || v=$?
-# The outbox's NATS-loss row, TestAnOutboxThatLosesNATSReleasesThePublisher, alone, once
-# every other call of the step has ended. Its assertion is a wall-clock time measured in
-# its own process, main's bound that the cut process releases the publisher hold within
-# 500 ms of natsLossGrace, and beside the calls above the load moved it: in the dispatch
-# run at 3a4ffe0b it timed out waiting for that release while 106 tests of
-# internal/dispatch/pmdoc ran beside it in the package list (run 44939290502, job
-# 136952816413). So it runs as main runs it, alone on the runner, as the race-impossible
-# call's comment says the race lane's tests of that kind do; no race job runs
-# internal/dispatch/outbox, so this step runs its row, after its waits. The package list
-# skips the row by its name, which is unique in the module (ci_job_reads.py's
-# OUTBOX_ALONE_TESTS), and this call, as that list does, names no server of its own and
-# runs against 5432. -timeout 1m, by R6 from the row's own reading: its slowest is 4.75 s
-# (run 44939290502 at 3a4ffe0b, job 136952816413), against 4.55 s and 3.41 s in the pair
-# at 8cfd2682, and 4.75 / 30 = 0.16, so 1m, the smallest whole minute there is.
-o=0
-go test -json -count=1 -timeout 1m -run '{OUTBOX_ALONE_PATTERN}' ./{OUTBOX_ALONE_PACKAGE} > "$RUNNER_TEMP/go-test-json/alone-outbox.json" 2> "$RUNNER_TEMP/go-test-logs/alone-outbox.log" || o=$?
+# The rows that run alone, once every other call of the step has ended, one package at a
+# time (-p 1). Each is a test whose assertion is a wall-clock time measured in its own
+# process, with a bound under twice its slowest reading in the package list, and beside
+# the calls above the load carried it past that bound. internal/dispatch/outbox's
+# TestAnOutboxThatLosesNATSReleasesThePublisher, main's bound that the cut process
+# releases the publisher hold within 500 ms of natsLossGrace, timed out waiting for that
+# release in the package list of the dispatch run at 3a4ffe0b while 106 tests of
+# internal/dispatch/pmdoc ran beside it (run 44939290502, job 136952816413).
+# internal/dispatch/textversions' TestAStandbyTakesAFreeHoldWithNoNotification, main's
+# (#4568) bound that the standby writes the next event within standbyRetry + 5 s, 15 s,
+# of the holder's stop, had no row within it in the package list of the dispatch run at
+# 4165260d (run 44953084676, job 136995819951), having read 10.022 s in run 44939290502,
+# while main's envoy-go ran that package 24 times from 2026-11-21T17:20Z and passed each
+# time. So they run as main runs them, alone on the runner, as the race-impossible call's
+# comment says the race lane's tests of that kind do; no race job runs these packages, so
+# this step runs them, after its waits. The package list skips each by its name, which is
+# unique in the module (ci_job_reads.py's UNIT_ALONE_TESTS, which a row joins with one
+# entry), and this call, as that list does, names no server of its own and runs against
+# 5432. -timeout 1m, by R6 from the rows' own readings, there being none yet of these
+# packages run alone but the outbox's: the textversions row read 15.12 s where it failed
+# (run 44953084676 at 4165260d, job 136995819951), and the outbox row 4.75 s (run
+# 44939290502 at 3a4ffe0b, job 136952816413) and 4.12 s alone, its package 4.179 s (run
+# 44953084676); 15.12 / 30 = 0.50, so 1m, the smallest whole minute there is.
+a=0
+{UNIT_ALONE_CALL} > "$RUNNER_TEMP/go-test-json/alone-unit.json" 2> "$RUNNER_TEMP/go-test-logs/alone-unit.log" || a=$?
 # One group per call, in the order the calls were started: the package list first,
 # then the rest. Each is its own log, then its stream - the package result lines
 # when it passed, the whole stream when it failed - and an ::error:: naming it when it
@@ -2787,7 +2816,7 @@ cat "$RUNNER_TEMP/go-test-logs/agentloop-vet.log"
 echo "::endgroup::"
 [ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
 [ "$status" -ne 0 ] || status=$v
-replay "the outbox's NATS-loss row, alone" "$o" alone-outbox
+replay "the rows that run alone" "$a" alone-unit
 exit "$status\""""
 
 
@@ -3896,7 +3925,8 @@ GATES = [
         # cannot make, internal/pgmigrate, the routes package, the events package, the shutdown
         # feed test, the natslive call, whose three go test commands run one after the other, the
         # integration suite and the agentloop vet beside it; then, once those nine have ended, the
-        # outbox's NATS-loss row alone. Its Runs together are everything the step compiles:
+        # rows that run alone (UNIT_ALONE_TESTS). Its Runs together are everything the step
+        # compiles:
         #   * the package list is the module but the race lane's packages, internal/integration,
         #     the text checks, the architecture-note and spec-file packages and
         #     LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks
@@ -3911,8 +3941,8 @@ GATES = [
         #     their test files and the files only those tests read on this job's filter, so a
         #     change to one of them would start a job that does not run the test it touches. Its
         #     -skip (UNIT_TEST_SKIP) takes out the shutdown feed test, which the shutdown call
-        #     runs, the outbox's NATS-loss row, which the step's last call runs alone
-        #     (OUTBOX_ALONE_TESTS), and WEB_FIXTURE_TESTS: without `--check` TestWebDisplayFixture
+        #     runs, UNIT_ALONE_TESTS, which the step's last call runs alone, and
+        #     WEB_FIXTURE_TESTS: without `--check` TestWebDisplayFixture
         #     writes the committed web display fixture rather than checking it, so a second run
         #     here asks nothing and can only pass, and TestTheWebFixtureFindsItsFilesFromAnyDirectory
         #     stats that same file, a read this job need not carry; the fixture step of envoy-go-checks
@@ -3927,9 +3957,8 @@ GATES = [
         #     what that split leaves;
         #   * internal/pgmigrate, internal/dispatch/routes, internal/dispatch/events and
         #     internal/integration, which the list leaves to calls of their own, get a Run each,
-        #     and so do the shutdown call and the outbox's alone call, whose packages cmd/dispatch
-        #     and internal/dispatch/outbox the list runs too, so a call left out of the step is a
-        #     Run with no command;
+        #     and so do the shutdown call and each package of the alone call (UNIT_ALONE_PACKAGES),
+        #     which the list runs too, so a call left out of the step is a Run with no command;
         #   * the natslive call's three commands run only what their tag adds, one package each:
         #     the rig's own matrix, the one test of internal/bus that needs a real server image,
         #     and the auth service's check that the deployed server lets an empty allow list
@@ -3954,7 +3983,8 @@ GATES = [
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
             (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
             (ENVOY, ["./agentloop/"], "go vet -tags modellive ./agentloop/", {"tags": "modellive", "mode": "vet"}),
-            (ENVOY, [f"./{OUTBOX_ALONE_PACKAGE}"], f"go test -run of the NATS-loss row alone in ./{OUTBOX_ALONE_PACKAGE}", {}),
+            *[(ENVOY, [f"./{under}"], f"go test -run of the rows that run alone in ./{under}", {})
+              for under in UNIT_ALONE_PACKAGES],
         ]),
         # The counter's test: its controls run database-skips.sh on DATABASE_SKIPS_TEST_PKGS, one
         # at a time, from packages/envoy (and the API package once more from a temporary checkout

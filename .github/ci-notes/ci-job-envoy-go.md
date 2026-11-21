@@ -52,7 +52,7 @@ The step below runs the module's packages in the background and, beside them, ei
 calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
 package, internal/dispatch/events, the shutdown feed test, the container-backed NATS
 matrix, the integration suite and the agentloop vet. Once all nine have ended it runs a
-tenth, the outbox's NATS-loss row, alone. The package list runs 104 test
+tenth, the rows that run alone. The package list runs 104 test
 binaries, beside 37 packages with no test files (both runs of the pair at 8cfd2682, read
 from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
 jobs 132732382594 and 132742525106) it took 519.5 s and 594.1 s from the first event of
@@ -68,14 +68,19 @@ and envoy-go-checks, rather than here.
 The shutdown feed test, internal/pgmigrate and internal/dispatch/events are each out of
 the package list on a Postgres service of its own, for the reasons their own calls and
 services give.
-TestAnOutboxThatLosesNATSReleasesThePublisher, of internal/dispatch/outbox, is out of the
-package list too, and runs alone after the other nine calls: its assertion is a wall-clock
-time measured in its own process, main's bound on how soon the cut process releases the
-publisher hold, and in the dispatch run 44939290502 at 3a4ffe0b (job 136952816413) it failed
-that bound in the package list while 106 tests of internal/dispatch/pmdoc ran beside it. The
-race lane's tests of that kind run alone in steps of their own; no race job runs this
-package, so its row runs at the end of this step instead (ci_job_reads.py's
-OUTBOX_ALONE_TESTS).
+The rows that run alone are out of the package list too, and run after the other nine
+calls, one package at a time: each is a test whose assertion is a wall-clock time measured
+in its own process, with a bound under twice its slowest reading in the package list, and
+the load beside it carried it past that bound there.
+TestAnOutboxThatLosesNATSReleasesThePublisher, of internal/dispatch/outbox, failed main's
+bound on how soon the cut process releases the publisher hold in the dispatch run
+44939290502 at 3a4ffe0b (job 136952816413), while 106 tests of internal/dispatch/pmdoc ran
+beside it; TestAStandbyTakesAFreeHoldWithNoNotification, of internal/dispatch/textversions,
+failed main's bound on how soon a standby takes a free hold in the dispatch run 44953084676
+at 4165260d (job 136995819951), where main's envoy-go had passed that package 24 times. The
+race lane's tests of that kind run alone in steps of their own; no race job runs these
+packages, so their rows run at the end of this step instead (ci_job_reads.py's
+UNIT_ALONE_TESTS, which a row joins with one entry).
 
 Each call but the vet writes a `go test -json` stream to a file of its own under
 $RUNNER_TEMP/go-test-json - the natslive call's three go test commands write one between
@@ -89,9 +94,9 @@ output. -count=1 keeps the restored build cache from replaying a stored result a
 `(cached)`. What a background call prints outside its stream cannot be left to interleave
 with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
 replayed with its stream; the package list, which prints as it goes, writes no log of
-its own. The step waits for all nine, runs the outbox row, replays one group per call, and
-exits with the first non-zero status of the ten, each failing call named in an ::error:: of
-its own.
+its own. The step waits for all nine, runs the rows that run alone, replays one group per
+call, and exits with the first non-zero status of the ten, each failing call named in an
+::error:: of its own.
 
 The API package used to run first and on its own in this job, because the per-test
 database clone and drop of every other package queued on the service's one checkpointer
