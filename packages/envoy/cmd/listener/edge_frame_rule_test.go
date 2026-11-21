@@ -226,6 +226,43 @@ func publishScopeFrame(t *testing.T, conn *natsgo.Conn, session, subject string)
 	return item
 }
 
+// watchRelay subscribes session's relay subject directly, as a session holding a NATS connection
+// of its own reads it, so a row sees what the relay itself published apart from what the socket,
+// which judges each frame again, forwards.
+func watchRelay(t *testing.T, rig *scopeRig, session string) *natsgo.Subscription {
+	t.Helper()
+	conn := testnats.Connect(t, rig.url)
+	sub, err := conn.SubscribeSync(bus.DeliverSubject(session))
+	if err != nil {
+		t.Fatalf("watch %s: %v", bus.DeliverSubject(session), err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the watch of %s: %v", bus.DeliverSubject(session), err)
+	}
+	return sub
+}
+
+// relayTopics is the envelope topic of every relay frame the watch received so far, in order: a
+// connection probe is no frame, and a message whose body is no envelope is named by its body.
+func relayTopics(t *testing.T, sub *natsgo.Subscription) []string {
+	t.Helper()
+	var topics []string
+	for {
+		msg, err := sub.NextMsg(200 * time.Millisecond)
+		if err != nil {
+			return topics
+		}
+		if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe || !strings.HasPrefix(msg.Reply, bus.RelayReplyPrefix) {
+			continue
+		}
+		topic, named := envelopeTopic(msg.Data)
+		if !named {
+			topic = string(msg.Data)
+		}
+		topics = append(topics, topic)
+	}
+}
+
 // requireWithheld fails the test unless the edge counted want frames withheld for a project its
 // token does not list.
 func requireWithheld(t *testing.T, rig *scopeRig, want int64) {
@@ -298,6 +335,7 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		const session = "ses_scope_forwards"
 		client, _ := registerScopeSession(t, rig, session)
 		own := contracts.LegacyAgentSubject(session)
+		relay := watchRelay(t, rig, session)
 		store := func(data []byte) {
 			t.Helper()
 			if _, err := rig.harness.client.JS().Publish(own, data); err != nil {
@@ -322,6 +360,10 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		}
 		noScopeFrame(t, client, time.Second, "after the message to the session")
 		requireWithheld(t, rig, 5)
+		// The relay withheld them itself: it published the message to the session alone.
+		if published := relayTopics(t, relay); !slices.Equal(published, []string{own}) {
+			t.Fatalf("the relay published frames of %v on the relay subject, want only the message to the session on %s", published, own)
+		}
 	})
 
 	t.Run("a frame another user publishes on its relay subject", func(t *testing.T) {
@@ -370,6 +412,7 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		rig := newScopeRig(t)
 		const session = "ses_scope_claimed"
 		client, token := registerScopeSession(t, rig, session)
+		relay := watchRelay(t, rig, session)
 		const own, other = "legion-priv-priv-2-tester", "legion-pub-pub-2-tester"
 		requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, session, own)),
 			http.StatusOK, "the claim of "+own)
@@ -401,6 +444,9 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		}
 		noScopeFrame(t, client, time.Second, "after the role message of "+scopeProject)
 		requireWithheld(t, rig, 1)
+		if published := relayTopics(t, relay); !slices.Equal(published, []string{contracts.RoleSubject(scopeProject, own)}) {
+			t.Fatalf("the relay published frames of %v on the relay subject, want only the role message of %s", published, contracts.RoleSubject(scopeProject, own))
+		}
 	})
 
 	t.Run("another project's subject added to its consumer", func(t *testing.T) {
@@ -414,6 +460,7 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		if frames := takeScopeFrames(t, client, 1, 10*time.Second); frames[0].item.EventID != first.EventID {
 			t.Fatalf("the socket's first frame is %s, want the event %s", frames[0].raw, first.EventID)
 		}
+		relay := watchRelay(t, rig, session)
 		name, ok := bus.SessionConsumerName(session)
 		if !ok {
 			t.Fatalf("no consumer name for %s", session)
@@ -443,6 +490,9 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		}
 		noScopeFrame(t, client, time.Second, "after the event of "+scopeProject)
 		requireWithheld(t, rig, 1)
+		if published := relayTopics(t, relay); !slices.Equal(published, []string{ownIssue}) {
+			t.Fatalf("the relay published frames of %v on the relay subject, want only %s's event", published, scopeProject)
+		}
 	})
 }
 
