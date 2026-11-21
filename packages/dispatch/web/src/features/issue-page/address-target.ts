@@ -213,7 +213,7 @@ function landingReadKey(route: ItemRoute): QueryKey {
   return messageQuery(route.key, route.id).queryKey;
 }
 
-/** What one following of an address - the location's own key, a new one at each navigation, a
+/** What one following of an address - `useFollowing`, a new one at each navigation, a
  *  link followed again to the same address among them - has seen so far
  *  (`useAddressFallback`). */
 interface Following {
@@ -249,7 +249,7 @@ interface Following {
  * naming no node or opening a document, and while the old page's landing reads the item
  * (`pending`) with no landing settled since the address was followed.
  *
- * Each following of the address (the location's own key) is decided on its own, once: a
+ * Each following of the address (`useFollowing`) is decided on its own, once: a
  * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
  * agents wrote in, draws no fallback for the rest of it, whatever the tree holds later - a block
  * deleted, the last child unlinked, the comment deleted while the reader is on its row leaves
