@@ -81,6 +81,19 @@ test("names a lock whose path holds a line break, which git and jj write as it i
   }
 });
 
+// git writes `Unable to create '<path>': <strerror>` for every errno, and only EEXIST's ends
+// `': File exists`: a report of another errno ahead of the EEXIST one still leaves the stale lock
+// named, by its own path, and the other report's path named not at all.
+test("names the lock after a report of another errno, not the span from that report", async () => {
+  const ref = await staleLock("main.lock", (2 * 3600 + 5) * 1000);
+  const denied = path.join(path.dirname(ref), "denied", "index.lock");
+  const output = [
+    `error: Unable to create '${denied}': Permission denied`,
+    `error: cannot lock ref 'refs/heads/main': Unable to create '${ref}': File exists.`,
+  ].join("\n");
+  expect(await staleGitLockNote(output, NOW)).toBe(daemonNote(ref, "2h0m5s"));
+});
+
 /**
  * The daemon's own wording, read out of the data file the two implementations share: one line
  * whose two `%s` are the lock's path and its age, in that order, and the newline that ends it,

@@ -2358,6 +2358,28 @@ describe("cliRefusals", () => {
     expect(requests).toEqual([]);
   });
 
+  // A usage refusal can end with the OpenCode-era user file's notice, `<file> is not read: mkdir -p
+  // …`, after its own reason: it is still one refusal, for a missing chosen file and for
+  // DISPATCH_TOKEN_FILE set with no DISPATCH_URL alike.
+  test("a usage refusal that ends with the OpenCode-era file's notice is still a refusal (exit 2)", async () => {
+    const old = join(stateDir, ".config", "opencode", "envoy.json");
+    mkdirSync(join(stateDir, ".config", "opencode"), { recursive: true });
+    writeFileSync(old, JSON.stringify({ dispatch: { enabled: true } }));
+    const tokenFile = join(stateDir, "token");
+    writeFileSync(tokenFile, "t\n");
+    const cases: [string, Record<string, string | undefined>][] = [
+      ["no envoy.json", fromFile],
+      ["DISPATCH_TOKEN_FILE with no DISPATCH_URL", { ...fromFile, DISPATCH_TOKEN_FILE: tokenFile }],
+    ];
+    for (const [name, env] of cases) {
+      const { code, stdout } = await run(["projects"], env);
+      expect(code, name).toBe(2);
+      expect(stdout, name).toContain(`; ${old} is not read: mkdir -p `);
+      expect(cliRefusals(stdout), name).toEqual(refusal(stdout, null));
+    }
+    expect(requests).toEqual([]);
+  });
+
   // The whole line is pinned, not its `dispatch: ` prefix: `opencode` was an accepted host until
   // it was removed, so the refusal naming it, and naming omp, claude and codex as the ones accepted, is the
   // user-visible behaviour that removal produces. A prefix-only assertion passes again the moment

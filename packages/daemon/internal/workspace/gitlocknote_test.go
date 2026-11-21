@@ -178,6 +178,21 @@ func TestStaleGitLockNoteNamesALockWhosePathHoldsALineBreak(t *testing.T) {
 	}
 }
 
+// git writes `Unable to create '<path>': <strerror>` for every errno, and only EEXIST's ends
+// `': File exists`: a report of another errno ahead of the EEXIST one still leaves the stale lock
+// named, by its own path, and the other report's path named not at all.
+func TestStaleGitLockNoteNamesTheLockAfterAReportOfAnotherErrno(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	ref := plantedLock(t, dir, "main.lock", now)
+	denied := filepath.Join(dir, "denied", "index.lock")
+	output := "error: Unable to create '" + denied + "': Permission denied\n" + gitLockFailure(ref)
+	note := StaleGitLockNote(output, now)
+	if want := "git lock " + ref + " was last written " + ageWords + " ago"; !strings.HasPrefix(note, want) || strings.Contains(note, "\n") {
+		t.Errorf("the note is %q, want one line naming %s and its age", note, ref)
+	}
+}
+
 func TestStaleGitLockNoteOffersNoPodReplacement(t *testing.T) {
 	note, _ := noteForOneLock(t, time.Now())
 	// Replacing the issue's pod takes the pod's disk with it, and every role in it: a remedy the

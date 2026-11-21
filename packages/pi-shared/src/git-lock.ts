@@ -4,17 +4,20 @@ import { lstat } from "node:fs/promises";
  * (gitoxide), and git's own lockfile API, which every git jj runs reports through. Each writes the
  * path between its opening text and its closing text and escapes nothing in it, so the path runs
  * to the message's fixed text after it, not to the next quote, and may hold any character a path
- * can, a `'` or a line break among them. */
+ * can, a `'` or a line break among them. git writes `Unable to create '<path>': <strerror>` for
+ * every errno, and only EEXIST's ends `': File exists`. */
 const GIT_LOCK_REPORTS: ReadonlyArray<readonly [opening: string, closing: string]> = [
   ["The lockfile at '", "' might need manual deletion"],
   ["Unable to create '", "': File exists"],
 ];
 
 /**
- * Each path `output` names between `opening` and `closing`, read as the daemon's pattern reads it
- * (`(?s:.+?)`, jjgit.go): at least one character, up to the first `closing` after it, each report
- * after the last. A scan, not a backtracking pattern, so output that repeats an opening with no
- * closing after it takes time in its length, not its square.
+ * Each path `output` names between `opening` and `closing`, read as the daemon reads it
+ * (`(?s:.+?)` and the text after the last opening in it, jjgit.go): at least one character, up to
+ * the first `closing` after it, each report after the last. A report of another errno, whose close
+ * is not `closing`, can come first, so the path is what follows the last `opening` in that span. A
+ * scan, not a backtracking pattern, so output that repeats an opening with no closing after it
+ * takes time in its length, not its square.
  */
 function reportedPaths(output: string, opening: string, closing: string): string[] {
   const paths: string[] = [];
@@ -22,7 +25,9 @@ function reportedPaths(output: string, opening: string, closing: string): string
     const start = at + opening.length;
     const end = output.indexOf(closing, start + 1);
     if (end < 0) break;
-    paths.push(output.slice(start, end));
+    const span = output.slice(start, end);
+    const last = span.lastIndexOf(opening);
+    paths.push(last < 0 ? span : span.slice(last + opening.length));
     at = output.indexOf(opening, end + closing.length);
   }
   return paths;
