@@ -1009,6 +1009,10 @@ export const CONTROL_LABELS = freeze({
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** Opens the editor of the issue's title: the button laid over the title's heading in the
+   *  header's second row (`IssueTitleRow.tsx`), which draws no words of its own and has the
+   *  title as its description. */
+  edit_title: "Edit title",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is

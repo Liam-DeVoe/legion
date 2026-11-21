@@ -36,15 +36,17 @@ import { useIssuePalette } from "./useIssuePalette";
  * the dialog shuts once its change request is read, so the reader stays on the document they
  * just reviewed rather than being sent to the top of the header. "Issue actions" comes next: the
  * header draws it in every state and no write disables it, and it opens the actions a reader
- * goes on with. The title's heading comes last, as the field the issue's refusal line stands for,
- * which is the place the decision names; it stands in the same block as "Issue actions", so it
- * is reached only should that control ever be missing.
+ * goes on with. The title's Edit title button comes last, as the control of the field the
+ * issue's refusal line stands for, which is the place the decision names: the heading itself
+ * takes no focus (decision 365). It stands in the same block as "Issue actions", so it is
+ * reached only should that control ever be missing.
  */
 const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
   chipOfLostAction,
   ({ root }) =>
     root.querySelector<HTMLElement>(`button[aria-label="${CONTROL_LABELS.issue_actions}"]`),
-  ({ root }) => root.querySelector<HTMLElement>("h1"),
+  ({ root }) =>
+    root.querySelector<HTMLElement>(`button[aria-label="${CONTROL_LABELS.edit_title}"]`),
 ];
 
 /**
