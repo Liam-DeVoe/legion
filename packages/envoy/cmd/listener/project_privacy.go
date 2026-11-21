@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -545,6 +546,13 @@ func (d *scopeDecision) sees(project string) (bool, error) {
 		return true, nil
 	}
 	return roles.Sees(d.ctx, d.privateOf, d.scope.listed, d.scope.restricted, project)
+}
+
+// requiredProjects is the stored projects the required mode reads from entry, the record at key:
+// its list when the record names its key, and none otherwise (session.SessionEntry.RequiredScope).
+func requiredProjects(entry session.SessionEntry, key string) []string {
+	projects, _ := entry.RequiredScope(key)
+	return projects
 }
 
 // seesSession reports whether the caller sees a session whose stored projects (K6) are projects:

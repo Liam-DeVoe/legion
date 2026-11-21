@@ -326,3 +326,45 @@ func TestTheReadinessRouteReadsAfresh(t *testing.T) {
 		t.Fatalf("the all-public listener answered %d %s, want 200 required false, source \"\", read none", recorder.Code, recorder.Body.String())
 	}
 }
+
+// TestAnOldTokenGetsOnlyItsList: in the required mode with PUB public, a token whose broker answer
+// carries no restricted claim (one a broker minted before the claim existed) reads as a restricted
+// member's: a session registered under it, listing PRIV, is recorded restricted, receives its PRIV
+// frame and no PUB frame, and is refused a PUB topic 403 project_not_listed; the same list under a
+// token whose answer says "restricted": false receives PUB's frame. A session record without the
+// restricted key (an earlier build's shape, still naming its key) reads the same way: its
+// session receives no PUB frame. Control (a mutant, run apart): an absent key read as not
+// restricted gives the old token's session, and the keyless record's, PUB's frame, and this test
+// fails naming each.
+func TestAnOldTokenGetsOnlyItsList(t *testing.T) {
+	rig := newPrivacyRig(t, true)
+	rig.source.answer(privacyListingPRIV)
+	const old, full, keyless = "ses_old_token", "ses_full_token", "ses_keyless_record"
+	oldStandIn := startSessionStandIn(t, rig.url, old, answerDone)
+	oldToken := rig.personToken(old, "PRIV")
+	requireStatus(t, rig.subscribe(t, oldToken, old, everyIssueTopic), http.StatusOK, "the old token's registration")
+	if entry, err := rig.deps.sessions.Get(old); err != nil || entry.Restricted == nil || !*entry.Restricted {
+		t.Errorf("the old token's session is recorded %+v, %v; want restricted true", entry, err)
+	}
+	fullStandIn := rig.session(t, full, false, []string{"PRIV"}, everyIssueTopic)
+	keylessStandIn := rig.session(t, keyless, false, []string{"PRIV"}, everyIssueTopic)
+	stored, err := rig.deps.sessions.Get(keyless)
+	if err != nil {
+		t.Fatalf("read the keyless session's record: %v", err)
+	}
+	stored.Restricted = nil
+	if err := rig.deps.sessions.Put(keyless, stored); err != nil {
+		t.Fatalf("rewrite the record without its restricted key: %v", err)
+	}
+
+	priv, _ := rig.storeEvent(t, privIssueSubject)
+	pub, _ := rig.storeEvent(t, pubIssueSubject)
+	expectOnly(t, oldStandIn, "the old token's session, listing PRIV", priv)
+	expectOnly(t, keylessStandIn, "the session whose record has no restricted key", priv)
+	expectOnly(t, fullStandIn, "the same list under \"restricted\": false", priv, pub)
+
+	answer := rig.subscribe(t, oldToken, old, everyIssueTopic, "notifications.dispatch.issue.PUB.>")
+	if answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), projectNotListed) {
+		t.Fatalf("the old token's PUB topic answered %d %s, want 403 %s", answer.Code, answer.Body.String(), projectNotListed)
+	}
+}

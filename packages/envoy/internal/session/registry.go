@@ -18,6 +18,15 @@ import (
 )
 
 type SessionEntry struct {
+	// SessionID is the key this record was written at: every writer of a session record sets it
+	// from the key it writes (PutWithin, SetHeld), so a record the server stored at another key -
+	// a JetStream answer, an empty status record, or a copy of another session's record, any of
+	// which a JetStream user can have the server write at any key of envoy_sessions - does not
+	// name the key it sits at. The required privacy mode reads a session's scope only from a
+	// record that names its key (BoundTo, RequiredScope). Empty for a record an earlier build
+	// wrote, which the all-public mode reads as today and the required mode reads as absent until
+	// the session's next registration rewrites it.
+	SessionID string `json:"session_id,omitempty"`
 	// Port is always 0 for an entry this build writes: a registration naming a serving port is
 	// refused (cmd/listener's subscribeHandler), and no delivery opens a connection to a
 	// session. The field is kept because every released client parses it in the listener's
@@ -119,6 +128,27 @@ type SessionEntry struct {
 // IsRestricted is e's Restricted, with an entry that carries none read as restricted.
 func (e SessionEntry) IsRestricted() bool {
 	return e.Restricted == nil || *e.Restricted
+}
+
+// BoundTo reports whether e, the record at key, is a session record written for that key: it
+// names its key (SessionID), names the listener that wrote it (MachineID), carries the moment it
+// was written (UpdatedAt) and holds the projects field (Projects, which every writer of this
+// build stores as a list, [] for none). A JetStream answer or an empty record stored at the key
+// holds none of these, and a copy of another session's record names that session; neither is
+// bound.
+func (e SessionEntry) BoundTo(key string) bool {
+	return e.SessionID == key && e.MachineID != "" && e.UpdatedAt > 0 && e.Projects != nil
+}
+
+// RequiredScope is the scope the required privacy mode reads from e, the record at key: its
+// projects and whether it is restricted when it is bound to key (BoundTo), and otherwise no
+// project's - no list, and restricted - so a record that does not name its key gets no frame of
+// any project and holds no role, and never the scope of the record it copies.
+func (e SessionEntry) RequiredScope(key string) (projects []string, restricted bool) {
+	if !e.BoundTo(key) {
+		return nil, true
+	}
+	return e.Projects, e.IsRestricted()
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
@@ -804,6 +834,13 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 	// follows whichever wrote last, and this write stamps the entry with the moment it was made,
 	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
 	entry.UpdatedAt = r.now().UnixMilli()
+	// The record names the key it is written at, and holds the projects field whatever the
+	// registration listed, so a required-mode reader can tell it from a record the server stored
+	// at the key (BoundTo).
+	entry.SessionID = sessionID
+	if entry.Projects == nil {
+		entry.Projects = []string{}
+	}
 	buf, err := json.Marshal(entry)
 	if err != nil {
 		return err
@@ -828,9 +865,11 @@ var ErrHeldNotWritten = errors.New("the session's held marker was not written")
 
 // SetHeld writes held into sessionID's record as an update at the revision it read
 // (compare-and-set), leaving every other field, UpdatedAt included, as the record holds it, so the
-// marker never makes a session look registered. A record that moved in between, and one there is
-// not, is ErrHeldNotWritten; a bus that did not answer is that read's or write's error. A record
-// that already holds held is left as it is.
+// marker never makes a session look registered. A record that moved in between, one there is
+// not, and one that is not bound to sessionID (BoundTo: the server stored it at the key, or an
+// earlier build wrote it) is ErrHeldNotWritten: the marker is never written over a record it
+// would make look like the session's own. A bus that did not answer is that read's or write's
+// error. A record that already holds held is left as it is.
 func (r *SessionRegistry) SetHeld(ctx context.Context, sessionID string, held bool) error {
 	kv, epoch := r.watcher.Handle()
 	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
@@ -846,6 +885,9 @@ func (r *SessionRegistry) SetHeld(ctx context.Context, sessionID string, held bo
 	var entry SessionEntry
 	if err := json.Unmarshal(got.Value(), &entry); err != nil {
 		return fmt.Errorf("%w: session %s's record does not decode: %w", ErrHeldNotWritten, sessionID, err)
+	}
+	if !entry.BoundTo(sessionID) {
+		return fmt.Errorf("%w: session %s's record does not name its key", ErrHeldNotWritten, sessionID)
 	}
 	if entry.Held == held {
 		return nil

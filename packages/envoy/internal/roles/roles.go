@@ -311,7 +311,13 @@ func resolveClaim(ctx context.Context, claims ClaimStore, sessions SessionLookup
 		return Resolution{Holder: holder}, &ReadError{Step: step, Holder: holder, Err: err}
 	}
 	// No record to read is no moment to measure the holder from: session.Gone, as session.StateOf
-	// judges an undated record, and dated by whatever the lookup still remembers.
+	// judges an undated record, and dated by whatever the lookup still remembers. In the required
+	// mode a record that does not name its key (session.SessionEntry.BoundTo: one the server
+	// stored at the holder's key, a copy of another session's record, or an earlier build's) is no
+	// record: its holder holds no role, and never the scope of the record it copies.
+	if err == nil && claims.Mode() == Required && !entry.BoundTo(holder) {
+		err = nats.ErrKeyNotFound
+	}
 	state := session.Gone
 	if err == nil {
 		state = sessions.EntryState(entry)
@@ -351,7 +357,8 @@ func resolveClaim(ctx context.Context, claims ClaimStore, sessions SessionLookup
 // entry's Projects and Restricted), and Unclaimed otherwise, so the message is kept for a holder
 // that can see it. An unknown privacy answer is a *ReadError at PrivacyRead.
 func holderSeesProject(ctx context.Context, claims ClaimStore, resolved Resolution, project string) (Resolution, error) {
-	sees, err := Sees(ctx, claims.Private, resolved.Entry.Projects, resolved.Entry.IsRestricted(), project)
+	projects, restricted := resolved.Entry.RequiredScope(resolved.Holder)
+	sees, err := Sees(ctx, claims.Private, projects, restricted, project)
 	if err != nil {
 		return Resolution{Holder: resolved.Holder}, &ReadError{Step: PrivacyRead, Holder: resolved.Holder,
 			Err: fmt.Errorf("read project %s's privacy for holder %s: %w", project, resolved.Holder, err)}

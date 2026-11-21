@@ -792,7 +792,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			sees, err := decision.sees(project)
 			targetSees := sees
 			if err == nil && sees {
-				targetSees, err = roles.Sees(ctx, decision.privateOf, target.Projects, target.IsRestricted(), project)
+				targetProjects, targetRestricted := target.RequiredScope(targetSession)
+				targetSees, err = roles.Sees(ctx, decision.privateOf, targetProjects, targetRestricted, project)
 			}
 			switch {
 			case err != nil:
@@ -1514,7 +1515,7 @@ func sessionsHandlerFor(registry *store.Registry, sessions *session.SessionRegis
 				}
 				continue
 			}
-			seen, err := decision.seesSession(entry.Projects)
+			seen, err := decision.seesSession(requiredProjects(entry.SessionEntry, entry.SessionID))
 			var roles []string
 			if err == nil && seen {
 				roles, err = decision.rolesSeen(held[entry.SessionID])
@@ -1580,7 +1581,7 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, session.Gone))
 	case err != nil:
 		writeBusUnavailable(w, err)
-	case !edge && d.privacy.decide(ctx, r).hidesSession(w, sessionID, entry.Projects):
+	case !edge && d.privacy.decide(ctx, r).hidesSession(w, sessionID, requiredProjects(entry, sessionID)):
 		// In the required privacy mode a session the caller does not see is answered as one no
 		// listener has heard of.
 	default:
@@ -1706,7 +1707,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			// In the required privacy mode a session the caller does not see is answered as one
 			// no listener has heard of, and a shown session's roles are those of projects it sees.
 			decision := d.privacy.decide(ctx, r)
-			if !edge && decision.hidesSession(w, sessionID, entry.Projects) {
+			if !edge && decision.hidesSession(w, sessionID, requiredProjects(entry, sessionID)) {
 				return
 			}
 			info, err := sessionInfoFor(ctx, d.registry, session.ListEntry{SessionID: sessionID, SessionEntry: entry, State: state})
@@ -1802,7 +1803,7 @@ func adminInterestsHandlerFor(registry *store.Registry, sessions *session.Sessio
 			rows := make([]listenerwire.InterestRow, 0, len(items))
 			for _, item := range items {
 				entry, _ := sessions.Lookup(item.SessionID)
-				seen, err := decision.seesSession(entry.Projects)
+				seen, err := decision.seesSession(requiredProjects(entry, item.SessionID))
 				if err != nil {
 					writePrivacyUnknown(w)
 					return
@@ -1842,7 +1843,7 @@ func adminInterestsHandlerFor(registry *store.Registry, sessions *session.Sessio
 			projects, edge := heldProjects(r)
 			if edge {
 				item.Topics = edgeShownTopics(repositories, projects, sessionID, item.Topics)
-			} else if entry, _ := sessions.Lookup(sessionID); decision.hidesSession(w, sessionID, entry.Projects) {
+			} else if entry, _ := sessions.Lookup(sessionID); decision.hidesSession(w, sessionID, requiredProjects(entry, sessionID)) {
 				return
 			}
 			row, err := decision.interestRowSeen(interestRowFor(sessions, item))
@@ -2119,7 +2120,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// project, or a shared credential claiming for a session, makes no claim the session it
 		// names could not hold, as the send route holds its target (census cell M3').
 		if d.privacy.isRequired() {
-			if sees, err := roles.Sees(ctx, decision.privateOf, entry.Projects, entry.IsRestricted(), claimed); err != nil {
+			claimantProjects, claimantRestricted := entry.RequiredScope(body.SessionID)
+			if sees, err := roles.Sees(ctx, decision.privateOf, claimantProjects, claimantRestricted, claimed); err != nil {
 				writePrivacyUnknown(w)
 				return
 			} else if !sees {
@@ -2243,7 +2245,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				// a session of another project gives the role back (census cell M6).
 				if err == nil && verdict != roleTakenFromHolder && verdict != roleTakenFromUnidentifiedPredecessor && d.privacy.isRequired() {
 					held, _ := d.sessions.Lookup(holder)
-					if sees, seesErr := roles.Sees(ctx, decision.privateOf, held.Projects, held.IsRestricted(), claimed); seesErr != nil {
+					holderProjects, holderRestricted := held.RequiredScope(holder)
+					if sees, seesErr := roles.Sees(ctx, decision.privateOf, holderProjects, holderRestricted, claimed); seesErr != nil {
 						return nil, claim, roleHolderUnread, seesErr
 					} else if !sees {
 						verdict = roleTakenFromHolder
@@ -2478,7 +2481,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			return
 		}
 		if result.Holder != "" {
-			if seen, err := decision.seesSession(result.Entry.Projects); err != nil {
+			if seen, err := decision.seesSession(requiredProjects(result.Entry, result.Holder)); err != nil {
 				writePrivacyUnknown(w)
 				return
 			} else if !seen {

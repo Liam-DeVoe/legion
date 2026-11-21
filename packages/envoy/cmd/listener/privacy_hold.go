@@ -200,12 +200,17 @@ func (m *sessionRelays) decideFrame(ctx context.Context, sessionID string, msg b
 	// A project the session's token lists is relayed in every state, with nothing read; a
 	// restricted member's session (or one whose record carries no restricted claim) is withheld
 	// every other project; a full member's session is relayed one a fresh read says is public
-	// (roles.Sees).
+	// (roles.Sees). The scope is read only from a record that names its key
+	// (session.SessionEntry.RequiredScope): any other record - a JetStream answer or empty record
+	// the server stored at the key, a copy of another session's record, an earlier build's - is no
+	// project's, so the session gets no frame of any project until its next registration writes
+	// its own record.
 	entry, _ := m.sessions.Lookup(sessionID)
-	if slices.Contains(entry.Projects, project) {
+	listed, restricted := entry.RequiredScope(sessionID)
+	if slices.Contains(listed, project) {
 		return []bus.SessionMessage{msg}
 	}
-	if entry.IsRestricted() {
+	if restricted {
 		m.withhold(sessionID, msg, true)
 		return nil
 	}
