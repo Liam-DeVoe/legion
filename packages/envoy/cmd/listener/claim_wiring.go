@@ -8,8 +8,8 @@ import (
 )
 
 // sessionEntryFromSubscribe is the session entry a registration writes: the body's fields, the
-// registering listener's machine id, the projects of the token that made the registration (K6:
-// registeringProjects, [] for none), and, when delivery says the listener holds the session's
+// registering listener's machine id, the projects of the token that made the registration
+// (registeringProjects, [] for none), and, when delivery says the listener holds the session's
 // consumer for it, consumer delivery, the plugin's epoch and the sequence that consumer starts
 // at. The entry's Port is left 0: a registration naming one is refused before it reaches here
 // (subscribeHandler).

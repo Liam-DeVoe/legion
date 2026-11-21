@@ -197,9 +197,10 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
-	// repositories is the edge listener's repository reader (K-E5), which holds each GitHub
-	// frame to its session's projects (relayNATS); nil on every listener but an edge one, which
-	// relays every frame as it always has. Set before the first relay starts and read-only after.
+	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
+	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
+	// one, which relays every frame as it always has. Set before the first relay starts and
+	// read-only after.
 	repositories *edgeRepositories
 
 	ctx    context.Context
@@ -1053,9 +1054,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return relayRetry
 		}
 		// At the edge a GitHub event reaches the session only while a fresh answer of its
-		// token's projects names the event's repository (E2, R15). One that does not is
-		// acknowledged undelivered and counted, and while no such answer can be read the
-		// session's next frame carries the gap mark, since the events withheld then are ones
+		// token's projects names the repository the event itself names (relayVerdict). One that
+		// does not is acknowledged undelivered and counted, and while no such answer can be read
+		// the session's next frame carries the gap mark, since the events withheld then are ones
 		// the session may have been owed.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
@@ -1082,7 +1083,7 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 		return false, ""
 	}
 	entry, _ := m.sessions.Lookup(sessionID)
-	withhold, reason := m.repositories.relayVerdict(entry.Projects, msg.Subject)
+	withhold, reason := m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
 	if !withhold {
 		return false, ""
 	}

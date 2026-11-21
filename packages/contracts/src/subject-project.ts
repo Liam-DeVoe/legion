@@ -350,7 +350,6 @@ export function roleClaimKey(project: string, role: string): string {
  * asks its Go twin of a role named in the new form and refuses a claim it refuses; a claim it
  * allows is keyed by `roleClaimKey` of that project, so a free-form role under a project
  * (`PRIV.lead-reviewer`) is that project's own claim beside the claim of the same name under none.
- * Plan C's t-c-6 reads Dispatch's claims through it.
  *
  * A Legion role token (`legion-<token>-…`) works for the project its own name gives
  * (`roleProject`), whatever the claim asks for, and a request naming another project is refused

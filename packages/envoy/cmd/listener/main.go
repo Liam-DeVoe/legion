@@ -99,7 +99,8 @@ type listenerDeps struct {
 	// listener, which answers the socket's path 404 (relaySocketRoute).
 	relaySockets *relaySockets
 	// repositories is the edge listener's reader of the repositories its projects' issues
-	// resolve to (K-E5, edge_repositories.go), nil on every listener but an edge one.
+	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
+	// listener but an edge one.
 	repositories *edgeRepositories
 }
 
@@ -1008,8 +1009,8 @@ func main() {
 		log.Fatal(err)
 	}
 	// An edge listener admits a broker token alone, so it refuses to start beside any other
-	// credential, beside webhooks, and without the broker-token settings (E6), before any of them
-	// is read below.
+	// credential, beside webhooks, and without the broker-token settings (validateEdgeMode),
+	// before any of them is read below.
 	if err := validateEdgeMode(cfg.EdgeProjects, os.Environ()); err != nil {
 		log.Fatal(err)
 	}
@@ -1612,9 +1613,10 @@ func main() {
 	if edge {
 		sockets = newRelaySockets(client, brokerTokenAuth, cfg.EdgeProjects, logger)
 	}
-	// An edge listener reads the repositories its projects' issues resolve to from the broker,
-	// with its own broker account (K-E5), and its relay holds every GitHub frame to them. It is
-	// set before the relay relays anything, which only the durable binding below starts.
+	// An edge listener reads the repositories its projects' issues resolve to from the broker's
+	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub
+	// frame to them. It is set before the relay relays anything, which only the durable binding
+	// below starts.
 	var repositories *edgeRepositories
 	if len(cfg.EdgeProjects) > 0 {
 		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
