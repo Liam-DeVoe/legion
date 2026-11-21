@@ -719,8 +719,7 @@ func (s *server) completeMessageDelivery(
 		// took, sent or queued (model.DeliveryTaken), is a delivery and its session is a node
 		// from this moment, a pending or failed one reached nobody and writes nothing.
 		func(b *store.WriteBatch, settled model.MessageDelivery) error {
-			_, err := graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
-			return err
+			return graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
 		},
 	)
 }
@@ -942,7 +941,7 @@ func (s *server) planMessageReply(
 		return plan, err
 	}
 	plan.changes, plan.write, err = s.planPendingItem(
-		ctx, tx, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
+		ctx, tx, who, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
 		plan.createdAt, message.IssueKey != nil,
 	)
 	return plan, err
@@ -1244,7 +1243,10 @@ func (s *server) insertSessionReply(
 	}
 	// The reply's node goes in before its row; what that write states is appended in the batch
 	// that appends the message.answered event below (appendCausingEvent).
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, plan.node) }); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, plan.node)
+		return nil
+	}); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	reply, err := scanMessage(tx.QueryRow(ctx, `

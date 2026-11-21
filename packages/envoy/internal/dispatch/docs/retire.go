@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -68,9 +69,9 @@ var retirementEvents = events.NewBroker()
 //
 // It takes the document's owner lock (store.LockOwner, through lockArtifactOwner) first, then
 // writes the store's lock order as a create writes it: the node, its projection row, the event,
-// and the node's facts under that event, the retractions among them (graphstore.WriteUncaused,
-// graphstore.Caused). A document already retired is refused with ErrDocumentRetired, and a reason
-// that is blank with errRetirementReason.
+// and the node's facts under that event, the retractions among them (graphstore.PlanUncaused and
+// QueueNodes, then graphstore.Caused). A document already retired is refused with
+// ErrDocumentRetired, and a reason that is blank with errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -169,11 +170,11 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that
-// causes it, with stated, the caller's own facts of the same write (graphstore.WriteUncaused). The
-// node keeps every other fact the store holds of it - its supertag, its visibility, its project
-// and who made it - and a document whose node no writer wrote yet takes the node its upload would
-// have written, made by creator when it was created. A ref_key past the store's address bound is
-// no node, as every writer of the store leaves such an address out.
+// causes it, with stated, the caller's own facts of the same write (graphstore.PlanUncaused,
+// QueueNodes). The node keeps every other fact the store holds of it - its supertag, its
+// visibility, its project and who made it - and a document whose node no writer wrote yet takes
+// the node its upload would have written, made by creator when it was created. A ref_key past the
+// store's address bound is no node, as every writer of the store leaves such an address out.
 func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, session *string, creator model.Actor, createdAt time.Time, stated []graphstore.Tuple) (graphstore.Uncaused, error) {
 	if !graphstore.AddressFits(refKey) {
 		return graphstore.Uncaused{}, nil
@@ -191,7 +192,14 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 	}
 	node.State = graphstore.StateGone
 	node.SourceEvent = graphstore.NoEvent
-	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, stated)
+	write := graphstore.PlanUncaused([]graphstore.Node{node}, stated)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, write)
+		return nil
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return write, nil
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves

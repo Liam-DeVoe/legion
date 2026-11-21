@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -118,7 +119,7 @@ func TestInteractionNodesAreTuplesReadByTheirOwnCredential(t *testing.T) {
 }
 
 // requireInteractionDeclared holds the kind's declarations: an entry of refs.nodeRegistry with a
-// loader (refs.VisibilityKinds, refs.ResolvesNodeKind), arms of refs.backlinkArms (refs.BacklinkKinds)
+// loader (refs.VisibilityKinds, refs.ResolvesNodeKind), arms of refs.backlinkArms (refstest.BacklinkKinds)
 // so refs.BacklinkCounts answers a count of it where it refuses a kind with none, and changed_by_run
 // and authored_by among the relation kinds the view's tuple arm answers (refs.TupleKinds).
 func requireInteractionDeclared(t *testing.T, database *store.Store) {
@@ -126,8 +127,8 @@ func requireInteractionDeclared(t *testing.T, database *store.Store) {
 	if !slices.Contains(refs.VisibilityKinds(), graphstore.KindInteraction) || !refs.ResolvesNodeKind(graphstore.KindInteraction) {
 		t.Errorf("refs.nodeRegistry holds no entry with a loader for %s: it holds %v", graphstore.KindInteraction, refs.VisibilityKinds())
 	}
-	if !slices.Contains(refs.BacklinkKinds(), graphstore.KindInteraction) {
-		t.Errorf("refs.backlinkArms declares no arms for %s: it declares %v", graphstore.KindInteraction, refs.BacklinkKinds())
+	if !slices.Contains(refstest.BacklinkKinds(), graphstore.KindInteraction) {
+		t.Errorf("refs.backlinkArms declares no arms for %s: it declares %v", graphstore.KindInteraction, refstest.BacklinkKinds())
 	}
 	counted, err := refs.BacklinkCounts(ctx, database.Pool, model.Actor{}, graphstore.KindInteraction, []string{uuid.NewString()}, nil)
 	t.Logf("a count of an interaction answers %v, %v", counted, err)

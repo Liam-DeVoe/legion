@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -26,7 +27,7 @@ import (
 // cannot answer one pair differently. Last, it holds the write half of the rule: a node reserved
 // for its author is refused on every credential that proves nobody, the shared bearer, a token
 // naming an empty owner and a session only a body named among them, and granted on every
-// credential that proves somebody.
+// credential that proves somebody (graphstoretest.VisibilityFor, handed ProvesAuthor's answer).
 func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -132,10 +133,10 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 		{"a session the broker proved owned by nobody", brokerUnowned, true},
 		{"a session only a body named", unowned, false},
 	} {
-		visibility, err := VisibilityFor(VisibilityAuthor, writer.actor)
+		visibility, err := graphstoretest.VisibilityFor(VisibilityAuthor, ProvesAuthor(writer.actor))
 		switch {
-		case !writer.proves && !errors.Is(err, ErrAuthorNamesNobody):
-			t.Errorf("a node reserved for its author, written on %s, gets %q (err %v), want the refusal ErrAuthorNamesNobody", writer.name, visibility, err)
+		case !writer.proves && !errors.Is(err, graphstoretest.ErrAuthorNamesNobody):
+			t.Errorf("a node reserved for its author, written on %s, gets %q (err %v), want the refusal graphstoretest.ErrAuthorNamesNobody", writer.name, visibility, err)
 		case writer.proves && (err != nil || visibility != VisibilityAuthor):
 			t.Errorf("a node reserved for its author, written on %s, gets %q (err %v), want %q", writer.name, visibility, err, VisibilityAuthor)
 		}

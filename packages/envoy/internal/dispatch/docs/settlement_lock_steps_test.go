@@ -161,7 +161,8 @@ func (r *docsWriterRig) settledRetraction() docsWriter {
 			docsVersionEventStep(holdDocsTableWrites("events")),
 			docsCausedTuplesStep("the block index's tuple append", docsVersionEvent, holdDocsTableWrites("graph_tuples")),
 			docsGatedEventStep(r, "the retraction's event", "ask.resolved"),
-			docsCausedTuplesStep("the retraction's facts", "the retraction's event", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
+			// The retraction writes no node, so its facts are graphstore's plain tuple append.
+			docsCausedPlainTuplesStep("the retraction's facts", "the retraction's event", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
 				return docsAnswerStateTuples(ask)
 			})),
 		},
@@ -194,8 +195,14 @@ func (r *docsWriterRig) settledRetraction() docsWriter {
 // settledCopy is the settlement of a document of the issue written with the ask block of another
 // document of it, whose ask is open: the block is a copy of that ask, opens none, and writes no
 // version, so the settlement states the block node's copied_from to its source as a claim at the
-// sentinel (claimCopies). That claim is the settlement's first write of graph_tuples, so the
-// table is held. Each run writes a copy of its own.
+// sentinel (claimCopies). A copy keeps its provenance in its bytes on a fleet of one build
+// (keptAskState: copied_from and copied_from_document, whatever its source's state), so the
+// copy's first settlement, which classifies it, writes that into the copy and versions it, and
+// states the claim under that version's event. The settlement this path holds is therefore the
+// next one, after a session's edit that versions itself (editAsVersion): it finds the copy as the
+// first left it, writes no version, and states the claim again at the sentinel, which appends
+// nothing the node does not hold. That claim is the settlement's first write of graph_tuples, so
+// the table is held. Each run writes a copy of its own.
 func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWriter {
 	const block = "lock-copied"
 	source := blockAskOn(t, r.service, r.settledDocument(t, ctx, "lock-steps-source", "# Source\n\n"+askBlockMarkdown(block)), block).ID
@@ -211,6 +218,11 @@ func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWrite
 		},
 		ready: func(t *testing.T, ctx context.Context) docsRun {
 			copied := writeDocumentThroughTheRequestPath(t, r.service, r.database, r.fresh("lock-steps-copy"), "# Copy\n\n"+askBlockMarkdown(block))
+			r.awaitDurable(t, copied)
+			if err := r.settle(ctx, copied); err != nil {
+				t.Fatalf("settle the copy's classification: %v", err)
+			}
+			r.editAsVersion(t, ctx, copied, model.Actor{Kind: "session", ID: r.fresh("lock-steps-copier")}, "A paragraph after the copy.\n")
 			r.awaitDurable(t, copied)
 			return docsRun{document: copied, write: func() error {
 				if err := r.settle(ctx, copied); err != nil {

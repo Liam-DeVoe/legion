@@ -30,10 +30,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// This file is the package's external test because the sites it drives live in packages that
-// import graphcensus - docs imports it for the block-index tick's comment write, api imports
-// docs, and grapherase imports api - so the package's own tests cannot import them. It hands its
-// drives to TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
+// This file is the package's external test because one site it drives lives in a package that
+// imports graphcensus - grapherase, whose erase reads the census's ProvedSessionComments - so the
+// package's own tests cannot import it, and the API's and the document service's drives run on the
+// same rig ahead of the erase's, which takes a comment they wrote. It hands its drives to
+// TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
 func init() { graphcensus.ImportedDrives = importedDrives }
 
 // writersServerURL is the public origin the writers' server serves under.
@@ -299,14 +300,14 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // alice's each written for a run she asked, a lens with a finding, a finding, a risk and a
 // constraint, a pointer appended and one retargeted, the lens's state, and the erase of the
 // issue's comment, which appends nothing. The comment path's drives name the sites the path runs
-// in turn (comment): the comment's node, its tuples under its event, and who wrote it.
+// in turn (comment): the path itself, which writes the comment's node and its tuples under its
+// event, and who wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
 	ctx := context.Background()
 	comment := func(name string, sites ...string) []string {
-		return append([]string{name, "api/comment_create.go#writeNode", "api/comment_create.go#caused",
-			"graphstore/people.go#QueueAuthored"}, sites...)
+		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
 	// What the drives of a run's writes and of the reasoning kinds leave for the drives after them:
 	// the run a write is made for, the ask and the comment the run rewords, the trade-off lens on the

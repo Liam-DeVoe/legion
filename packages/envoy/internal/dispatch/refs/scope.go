@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -430,9 +431,11 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // declares (a `:::ask{#id …}` line outside fenced code) to the reference a `dispatch://` address of
 // its ask makes, as text.Extract reads that address, so a `#id` edge is stored as that address's
 // edge is. The ask is the row settlement made for the block on doc, or, for a copied block, the ask
-// settlement wrote into it as copied_from. A block with neither (not settled yet) is absent. It
-// reads the latest version's directive lines (sourceText), never parsing the document, and takes
-// no lock.
+// its block node's copied_from tuple names, which settlement states (docs' claimCopies), or, for a
+// block whose node holds none - a copy no settlement of this build has claimed yet, in a version
+// the release before wrote - the ask its line names as copied_from. A block with neither (not
+// settled yet) is absent. It reads the latest version's directive lines (sourceText), never
+// parsing the document, and takes no lock.
 //
 // The map is the document's as the reading transaction leaves it: the version and the block asks
 // it has queued and not written yet are read from what those statements write (Pending), since
@@ -520,14 +523,34 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	}
 	copiedBy := map[string][]string{}
 	sources := []string{}
+	var unowned []string
 	for _, block := range blocks {
-		if _, own := questions[block.id]; own || block.copiedFrom == "" {
+		if _, own := questions[block.id]; !own {
+			unowned = append(unowned, block.id)
+		}
+	}
+	if len(unowned) == 0 {
+		return questions, nil
+	}
+	stated, err := copiedFromTuples(ctx, q, doc, unowned)
+	if err != nil {
+		return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
+	}
+	for _, block := range blocks {
+		if _, own := questions[block.id]; own {
 			continue
 		}
-		if _, listed := copiedBy[block.copiedFrom]; !listed {
-			sources = append(sources, block.copiedFrom)
+		source, held := stated[block.id]
+		if !held {
+			source = block.copiedFrom
 		}
-		copiedBy[block.copiedFrom] = append(copiedBy[block.copiedFrom], block.id)
+		if source == "" {
+			continue
+		}
+		if _, listed := copiedBy[source]; !listed {
+			sources = append(sources, source)
+		}
+		copiedBy[source] = append(copiedBy[source], block.id)
 	}
 	if len(sources) == 0 {
 		return questions, nil
@@ -549,6 +572,38 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		}
 	}
 	return questions, nil
+}
+
+// copiedFromTuples is, for each of blocks, block ids of document doc, whose block node the
+// document's block index holds (document_blocks), the ask that node's copied_from tuple names as it
+// stands now (graphstore.TupleCopiedFrom, graphstore.CurrentTupleRead), keyed by block id. A node
+// that holds no standing copied_from is absent, so a version the release before wrote, whose copy
+// no settlement of this build has claimed, is read from its line instead (questionMap).
+func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		select d.block_id, c.to_id
+		from document_blocks d
+		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
+			  and t.to_kind = '`+graphstore.KindAsk+`'`)+`
+		) c
+		where d.artifact_id = $1::uuid and d.block_id = any($2::text[]) and d.node_address is not null and c.asserted
+	`, doc, blocks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stated := map[string]string{}
+	for rows.Next() {
+		var block, ask string
+		if err := rows.Scan(&block, &ask); err != nil {
+			return nil, err
+		}
+		if parsed, err := uuid.Parse(ask); err == nil {
+			stated[block] = parsed.String()
+		}
+	}
+	return stated, rows.Err()
 }
 
 // AskRef is the `dispatch://` address of one ask a question map holds, as every writer of an
@@ -592,7 +647,8 @@ func scanQuestions(rows pgx.Rows, err error) (map[string]text.Ref, error) {
 }
 
 // questionBlock is one question block a document's text declares: its id and, for a copy, the
-// uuid of the ask settlement wrote into it as copied_from.
+// uuid of the ask settlement wrote into it as copied_from, which the copy's block node's
+// copied_from tuple holds too and the question map reads first (copiedFromTuples).
 type questionBlock struct {
 	id, copiedFrom string
 }

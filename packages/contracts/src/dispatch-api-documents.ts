@@ -235,8 +235,10 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
  *  approval ask open at that version. A third provenance is the carry: Dispatch records an
  *  `artifact.approved` in a human's name at a later version whose change since the version he
  *  approved is one the carry takes - a version whose text is byte for byte the approved
- *  version's with no ask block in it decided since, among others. A person's answer to an ask
- *  writes no version and carries no approval. Its `reason` names the carry and the version it
+ *  version's with no ask block in it decided since, among others. A person's answer, resolve or
+ *  decline of an ask writes one version, which changes only the server-owned attributes of the
+ *  ask's block, and the carry takes it; a closed issue's settlement carries nothing, so the
+ *  version an issue's close writes carries no approval. Its `reason` names the carry and the version it
  *  follows, and its `ask_id` is null unless a request was open at the carry, which it answers
  *  (see `ArtifactReview`). */
 export const artifactReviewEventPayloadFields = {

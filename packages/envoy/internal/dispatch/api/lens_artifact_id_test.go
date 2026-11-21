@@ -142,8 +142,11 @@ func movePartOf(t *testing.T, database *store.Store, issue, kind, id, toKind, to
 		if !caused {
 			return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{moved, placed})
 		}
-		write, err := graphstore.WriteUncaused(ctx, tx, nil, []graphstore.Tuple{moved, placed})
-		if err != nil {
+		write := graphstore.PlanUncaused(nil, []graphstore.Tuple{moved, placed})
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, write)
+			return nil
+		}); err != nil {
 			return err
 		}
 		event, err := appendIssueEventDirectly(ctx, tx, issue, kind+".moved", model.Artifact{ID: id})

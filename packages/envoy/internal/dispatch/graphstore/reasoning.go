@@ -508,8 +508,9 @@ func (e *NoDocumentRowError) Unwrap() error { return ErrNoDocumentRow }
 // move under a new parent alike, whichever writer appends the part_of, so no lens stands on a
 // document with the row of another (lensArtifactIDsStatement). A lens two part_of tuples of one
 // write place is placed by the last. A placement on a document no row stands at is refused, the
-// statement's result (NoDocumentRowError). A write that places no lens queues nothing.
-func queueLensArtifactIDs(b *store.WriteBatch, tuples []Tuple) error {
+// statement's result (NoDocumentRowError). A write that places no lens queues nothing. Its
+// arguments build at Send, as the append's do, so a placement that cannot be encoded fails Send.
+func queueLensArtifactIDs(b *store.WriteBatch, tuples []Tuple) {
 	last := map[string]int{}
 	for index := range tuples {
 		if tuple := &tuples[index]; tuple.Asserted && tuple.ToKind != KindValue && placesLens(tuple.Kind, tuple.FromKind) {
@@ -517,17 +518,15 @@ func queueLensArtifactIDs(b *store.WriteBatch, tuples []Tuple) error {
 		}
 	}
 	if len(last) == 0 {
-		return nil
+		return
 	}
 	placements := make([]Tuple, 0, len(last))
 	for _, lens := range slices.Sorted(maps.Keys(last)) {
 		placements = append(placements, tuples[last[lens]])
 	}
-	params, err := tupleParams(placements)
-	if err != nil {
-		return err
-	}
-	b.Queue("record the artifact_id of each lens the write places", lensArtifactIDsStatement, params...).Query(func(rows pgx.Rows) error {
+	b.QueueBuilt("record the artifact_id of each lens the write places", lensArtifactIDsStatement, func() ([]any, error) {
+		return tupleParams(placements)
+	}).Query(func(rows pgx.Rows) error {
 		if !rows.Next() {
 			return nil
 		}
@@ -537,7 +536,6 @@ func queueLensArtifactIDs(b *store.WriteBatch, tuples []Tuple) error {
 		}
 		return refused
 	})
-	return nil
 }
 
 // lensArtifactIDsStatement is queueLensArtifactIDs' statement, over the placements it binds as a

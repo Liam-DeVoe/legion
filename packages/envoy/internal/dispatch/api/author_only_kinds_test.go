@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -110,7 +110,7 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 //
 // The store's writer takes no comment reserved for its author (graphstore.ErrVisibilityNotAdmitted),
 // so each such comment's node is seeded as such a write would store it
-// (graphstoretest.SeedAuthorOnly), with its row and its authored_by tuple beside it. The lens is
+// (graphseedtest.SeedAuthorOnly), with its row and its authored_by tuple beside it. The lens is
 // written through the one write path of its kind (writeReasoningNodes), and each run through the
 // going POST's own record (recordGoingRequest), the token's as the token resolves.
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
@@ -247,7 +247,7 @@ func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, au
 		t.Fatalf("begin the comment's write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+	if err := graphseedtest.SeedAuthorOnly(ctx, tx, graphstore.Node{
 		Kind: graphstore.KindComment, ID: id, Supertag: graphstore.KindComment, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}); err != nil {
@@ -263,7 +263,9 @@ func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, au
 	`, id, issue, encoded, body, graphstore.KindComment, at); err != nil {
 		t.Fatalf("write the comment's row: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, id, author, at, graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, id, author, at, graphstore.NoEvent)
+	}); err != nil {
 		t.Fatalf("record who wrote the comment: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

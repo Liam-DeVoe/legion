@@ -59,9 +59,12 @@ func TestAWriteTakesANodeOnlyOfATypeTheStoreHolds(t *testing.T) {
 		{"Write", func(ctx context.Context, tx pgx.Tx, nodes []Node) error {
 			return Write(ctx, tx, nodes, nil)
 		}},
-		{"WriteUncaused", func(ctx context.Context, tx pgx.Tx, nodes []Node) error {
-			write, err := WriteUncaused(ctx, tx, nodes, nil)
-			if err != nil {
+		{"PlanUncaused and QueueNodes", func(ctx context.Context, tx pgx.Tx, nodes []Node) error {
+			write := PlanUncaused(nodes, nil)
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				QueueNodes(b, write)
+				return nil
+			}); err != nil {
 				return err
 			}
 			return Caused(ctx, tx, write, NoEvent)

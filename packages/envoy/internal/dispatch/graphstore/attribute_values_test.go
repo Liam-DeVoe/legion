@@ -80,10 +80,13 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return Write(ctx, tx, nil, []Tuple{stateTuple(node, misspelledState)})
 			}},
-		{"WriteUncaused, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
+		{"PlanUncaused and QueueNodes, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
-				write, err := WriteUncaused(ctx, tx, []Node{misstated(node)}, nil)
-				if err != nil {
+				write := PlanUncaused([]Node{misstated(node)}, nil)
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					QueueNodes(b, write)
+					return nil
+				}); err != nil {
 					return err
 				}
 				return Caused(ctx, tx, write, NoEvent)

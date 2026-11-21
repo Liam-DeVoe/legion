@@ -245,12 +245,15 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 					return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: hasKindAtAConstraint}}}, NoEvent)
 				},
 				message: "the has_kind tuple from a lens at a constraint breaks its type rule: " + hasKindRule},
-			{name: "WriteUncaused then Caused, constrained_by out of a paragraph",
+			{name: "PlanUncaused and QueueNodes then Caused, constrained_by out of a paragraph",
 				write: func(ctx context.Context, tx pgx.Tx) error {
-					write, err := WriteUncaused(ctx, tx, nil, []Tuple{
+					write := PlanUncaused(nil, []Tuple{
 						pointerTuple(blockKind, fixture.paragraph, TupleConstrainedBy, KindConstraint, constraintHeld),
 					})
-					if err != nil {
+					if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+						QueueNodes(b, write)
+						return nil
+					}); err != nil {
 						return err
 					}
 					return Caused(ctx, tx, write, NoEvent)

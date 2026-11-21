@@ -477,11 +477,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// writes, before the ledger's: the spec's version and block index run at Commit, and the
 	// index's projection rows name the spec's node. Both are nodes this write creates
 	// (graphstore.Created).
-	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
+	issueNodes := graphstore.PlanUncaused([]graphstore.Node{
 		graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt)),
 		graphstore.Created(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt)),
 	}, nil)
-	if err != nil {
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, issueNodes)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -569,10 +572,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// wait for the issue's own event, queued right after it: that event is the cause every node
 	// and tuple of both writes carries (graphstore.QueueCaused).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, issueNodes, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		return graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, issueNodes, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

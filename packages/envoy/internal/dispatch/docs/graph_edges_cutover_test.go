@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -817,8 +818,8 @@ func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Sto
 	t.Helper()
 	// The arm table declares a kind for each node kind the registry resolves and for no other, so
 	// its kinds are the node kinds this build reads, the list refs binds where the statement
-	// binds $3.
-	kinds := refs.BacklinkKinds()
+	// binds $3, read from refstest's copy of the table's keys, which refs' own test holds to it.
+	kinds := refstest.BacklinkKinds()
 	counts := make(map[string]map[string]int, len(kinds))
 	for _, kind := range kinds {
 		ids := backlinkTargets(t, database, kind)
@@ -1419,9 +1420,10 @@ func seededStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 
 // writeVersionAsAnOlderBuild replaces the document's live text with markdown and writes the
 // version a build without the block index wrote: the version row, the artifact.version event
-// that recorded it, and the settlement cleared. The trigger of migration 0122 leaves the
-// document owed a block index, and the tick indexes it, which is the one path in this package
-// that states a version's blocks and links in the store.
+// that recorded it, whose seq it takes off the issue's own counter as events.Append does
+// (documentEvent), and the settlement cleared. The trigger of migration 0122 leaves the document
+// owed a block index, and the tick indexes it, which is the one path in this package that states a
+// version's blocks and links in the store.
 func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, artifactID, name, markdown string) {
 	t.Helper()
 	ctx := context.Background()
@@ -1444,14 +1446,7 @@ func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Se
 	`, artifactID, live).Scan(&number); err != nil {
 		t.Fatalf("write the version of %s: %v", artifactID, err)
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', $3::text, 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-	`, artifactID, number, name); err != nil {
-		t.Fatalf("append the version's event: %v", err)
-	}
+	appendDocumentEvent(t, ctx, tx, "artifact.version", versionEventPayload(t, artifactID, name, number))
 	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, artifactID); err != nil {
 		t.Fatalf("settle %s: %v", artifactID, err)
 	}

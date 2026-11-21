@@ -601,7 +601,10 @@ func (s *server) queueNewArtifact(
 			}
 		}
 		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, stated)
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, documentNode) }); err != nil {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
 			return model.Artifact{}, graphstore.Uncaused{}, err
 		}
 	}
@@ -978,13 +981,15 @@ func (s *server) storeArtifact(
 		published = append(published, event)
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, documentNode, blockCause)
+		graphstore.QueueCaused(b, documentNode, blockCause)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1398,7 +1403,8 @@ func (s *server) commitArtifactVersionEvent(
 		return nil, err
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return nil, err
 	}

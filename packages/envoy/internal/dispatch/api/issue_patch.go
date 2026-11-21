@@ -631,7 +631,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, issueNode) }); err != nil {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, issueNode)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -642,7 +645,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import type { Artifact, DecisionEntry, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
@@ -16,8 +16,9 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { decisionName } from "../issue/decision-text";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
+import { anchorQuote, type ChangeAnchor, changeAnchor, decisionBlockId } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -80,7 +81,7 @@ function keepFocusOnRow(control: HTMLElement): void {
 }
 
 /**
- * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
+ * Each decision's Change the reader has open, by the decision's own address (`DecisionEntry.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
  * for a Change that is closed, or whose words are out or landed. A row's body closes once the focus
  * leaves the rows, and Keep and Change go with it; held here, above the rows, the open form and
@@ -111,8 +112,9 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * `POST /artifacts/{id}/blocks/{block}/keep` carrying the sum of the text this node drew, so a
  * decision the agent changed since is refused rather than agreed with, and Change is a comment
  * anchored to the words of the decision's first block (`anchorQuote`). They are read from the
- * decisions read the tree is already built from (`["decisions", <key>]`), so the node makes no
- * read of its own.
+ * entries of the decisions read the tree is already built from (`["decisions", <key>]`), so the
+ * node makes no read of its own. A decision whose entry names no block (`decisionBlockId`) takes
+ * neither.
  */
 export function DecisionActions({
   document,
@@ -125,7 +127,7 @@ export function DecisionActions({
    *  decision whose document the issue read does not carry. */
   document: Artifact | undefined;
   isClosed: boolean;
-  /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
+  /** The node's own `dispatch://` address, which is the decision's own (`DecisionEntry.ref`). */
   nodeReference: string | undefined;
   /** Whether Keep and Change keep their place in the tab order: false in a tree whose keys press
    *  them (`useTreeKeymap.ts`), true in a view that no tree's keys reach (R9). */
@@ -133,10 +135,14 @@ export function DecisionActions({
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
-  const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
-  if (decision === undefined || document === undefined || isClosed) return null;
+  const decision = (decisions.data?.entries ?? []).find((row) => row.ref === nodeReference);
+  const blockId = decision === undefined ? undefined : decisionBlockId(decision);
+  if (decision === undefined || blockId === undefined || document === undefined || isClosed) {
+    return null;
+  }
   return (
     <DecisionControls
+      blockId={blockId}
       decision={decision}
       documentId={document.id}
       issueKey={issueKey}
@@ -146,12 +152,15 @@ export function DecisionActions({
 }
 
 function DecisionControls({
+  blockId,
   decision,
   documentId,
   issueKey,
   tabStops,
 }: {
-  decision: Decision;
+  /** The block of the document the decision is, which the Keep is written against. */
+  blockId: string;
+  decision: DecisionEntry;
   documentId: string;
   issueKey: string;
   tabStops: boolean;
@@ -170,16 +179,17 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
-  // Read once per answer of the decisions read, which is when the decision is a new object.
+  // Read once per answer of the decisions read, which is when the decision is a new object: the
+  // words a Change quotes, and the decision's name as the server's read names it.
   const quote = useMemo(() => anchorQuote(decision), [decision]);
+  const heading = useMemo(() => decisionName(decision.text_tree, decision.text), [decision]);
   const keep = useKeyedWrite({
     inline: true,
-    label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
+    label: () => `${CONTROL_LABELS.keep_decision} ${heading}`,
     method: "POST",
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
-    write: (id: string, bounds) =>
-      api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
+    write: (id: string, bounds) => api.keepDecision(id, blockId, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       if (kept === null) {
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
@@ -191,10 +201,10 @@ function DecisionControls({
           : {
               ...view,
               // The Keep is of the text this node showed, which the server took, so it applies
-              // to the row that still holds that text.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
+              // to the entry of this node that still holds that text.
+              entries: (view.entries ?? []).map((row) =>
+                row.ref === decision.ref && row.text_sha256 === decision.text_sha256
+                  ? { ...row, kept, kept_by: kept.kept_by, waiting_review: false }
                   : row
               ),
             }
@@ -246,6 +256,7 @@ function DecisionControls({
         <ChangeComposer
           decision={decision}
           documentId={documentId}
+          heading={heading}
           issueKey={issueKey}
           focusField={!restored}
           onDone={() => change(false)}
@@ -262,15 +273,18 @@ function ChangeComposer({
   decision,
   documentId,
   focusField,
+  heading,
   issueKey,
   onDone,
   quote,
 }: {
-  decision: Decision;
+  decision: DecisionEntry;
   documentId: string;
   /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
    *  form, and not when the form comes back with its row's body. */
   focusField: boolean;
+  /** The decision's name, which the form's label and its send's are written with. */
+  heading: string;
   issueKey: string;
   onDone: () => void;
   quote: string;
@@ -283,7 +297,7 @@ function ChangeComposer({
   const fieldId = useId();
   const send = useKeyedWrite({
     inline: true,
-    label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
+    label: () => `${CONTROL_LABELS.change_decision} ${heading}`,
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
@@ -332,7 +346,7 @@ function ChangeComposer({
   // (`focusField`): the reader moved to the row, not into the field.
   return (
     <form
-      aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
+      aria-label={`${CONTROL_LABELS.change_decision} ${heading}`}
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();

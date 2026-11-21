@@ -343,6 +343,15 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	}
 	requireCaused(t, "d1's from_ask", fromAsk[0], "alice", uploaded)
 	requireCaused(t, "d1's decided_by", requireDecidedBy(t, database, "the upload", d1, "alice"), "alice", uploaded)
+	// The Decisions read answers the question d1 settles on d1's own entry, from its from_ask tuple,
+	// and an ask's own entry settles none.
+	entries := readEntries(t, handler, issue.Key)
+	if entry := requireEntry(t, entries, "d1", refs.BlockNodeKind+":"+d1); !slices.Equal(entry.FromAsk, []string{askID}) {
+		t.Errorf("d1's entry answers the from_ask %v, want the ask %s its from_ask tuple reaches", entry.FromAsk, askID)
+	}
+	if entry := requireEntry(t, entries, "the ask d1 settles", graphstore.KindAsk+":"+askID); entry.FromAsk == nil || len(entry.FromAsk) != 0 {
+		t.Errorf("the ask's own entry answers the from_ask %v, want [] (not null)", entry.FromAsk)
+	}
 	requireValue(t, database, d1, refs.ValueUncertainty, "low")
 	requireValue(t, database, d1, refs.ValueUncertaintyReason, "A client that needs streaming would change it.")
 	requireValueCaused(t, database, d1, refs.ValueUncertainty, "alice", uploaded)

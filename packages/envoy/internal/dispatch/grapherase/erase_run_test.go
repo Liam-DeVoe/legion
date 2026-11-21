@@ -13,7 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -250,7 +250,7 @@ func TestTheEraseOfARunOrAReasoningNodeHoldsItsOnlyAuthorToTheirNode(t *testing.
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "CORE",
 			MadeAt: at, MadeBy: written.author, SourceEvent: graphstore.NoEvent,
 		}
-		authors, tuples, err := graphstoretest.AuthoredFacts(node, written.tuples)
+		authors, tuples, err := graphseedtest.AuthoredFacts(node, written.tuples)
 		if err != nil {
 			t.Fatalf("state the author of %s:%s: %v", written.kind, written.id, err)
 		}

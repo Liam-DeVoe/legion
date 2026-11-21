@@ -792,7 +792,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 // as long as the walk takes. dispatch://INFRA-4704 rewrites the walk.
 const referencesClosureBound = 2 * time.Second
 
-// boundedClosure runs refs.Closure for who in a read transaction of its own under
+// boundedClosure runs refs.Closure, as who reads it, in a read transaction of its own under
 // referencesClosureBound, with JIT off. The rollback runs on a context of its own, as the near-copy
 // gate's does (duplicates.go): the read's context has expired exactly when the rollback matters,
 // and pgx answers a rollback on an expired context by destroying the connection instead of

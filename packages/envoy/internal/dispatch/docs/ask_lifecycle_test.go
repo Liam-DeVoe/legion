@@ -38,16 +38,12 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 	service, original := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
-	ctx := context.Background()
 	seedServiceText(t, service, original, "Context\n\n"+regionBlock+"\n"+transportBlock+"\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
 	region := blockAskOn(t, service, original, "region")
 	transport := blockAskOn(t, service, original, "transport")
 	ship := blockAskOn(t, service, original, "ship")
-	answer, _ := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)})
-	if _, err := service.store.Pool.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1`, ship.ID, answer); err != nil {
-		t.Fatalf("answer the ship ask: %v", err)
-	}
+	answerAskOnItsNode(t, service, ship.ID, model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)})
 
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
 	seedServiceText(t, service, copied, "Context\n\n"+regionBlock+"\n"+otherTransportBlock+"\n"+shipBlock)

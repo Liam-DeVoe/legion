@@ -136,8 +136,8 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 
 // requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
 // owner lock of its comments' issue, as every writer of a comments row and the erase do
-// (LockCommentOwners), and reads under it which comments still stand unmarked
-// (CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
+// (refs.LockCommentOwners), and reads under it which comments still stand unmarked
+// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
 // removed it writes nothing for it. It then writes every node it writes - its comments' and their
 // authors' - in one store write, which takes their rows in ascending (kind, id) and then appends
 // every tuple: the facts each comment row projects, and each author's authored_by and aliases
@@ -152,7 +152,7 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
-// author's node (graphstore.Authored), passes as well.
+// author's node (graphstore.QueueAuthored), passes as well.
 func requireTheCommentBatchLockOrder(t *testing.T) {
 	ctx := context.Background()
 	writes := newAddressingWrites(t)

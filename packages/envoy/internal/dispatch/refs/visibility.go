@@ -30,12 +30,16 @@ import (
 // The test is bound into the SQL of each read and never applied in Go, so a count and the list
 // behind it cannot disagree: a row the count includes is a row the list shows.
 //
-// nodeRegistry (below) is the registry: one entry per node kind, carrying that kind's
-// predicate beside the loader that reads its nodes, and every read binds its predicate from
-// there rather than writing a test of its own. The two live in one value so a kind cannot be
-// registered with a loader and no predicate: such an entry does not build, and one written as
-// a literal past the constructors is refused at init, where the kind is named (the three lines
-// nodeKind states).
+// nodeRegistry (below) is the registry: one entry per node kind, carrying that kind's predicate
+// beside the loader that reads its nodes, and every read binds its predicate through
+// VisibleKind, VisibleEnd, VisibleNode, VisibleRow or VisibleKindRow rather than writing a test of
+// its own. Every kind answers the same rule - the store's row for the node says whether the
+// acting person may see it (visibleWhere) - and an entry states only what its kind's rule
+// compares and the kind the store keys its nodes under (nodeVisibility). The loader and the
+// predicate live in one value so a kind cannot be registered with a loader and no predicate: such
+// an entry does not build, and one written as a literal past the constructors is refused at init,
+// where the kind is named (the three lines nodeKind states). Beside its rule, an artifact differs
+// in how the from side of an edge spells it, which VisibleEnd rewrites (artifactStoreAddress).
 // TestEveryNodeKindAnswersAVisibilityPredicate holds the registry's keys to the node kinds the
 // store resolves, in both directions, and holds every read's own SQL to predicates this file
 // rendered.
@@ -167,7 +171,7 @@ func init() {
 		// The kinds the projection tables hold, whose nodes the graph addresses by the id
 		// their own loader reads.
 		"issue":         resolvedKind(loadIssueNodes, nodeVisibility{}),
-		"artifact":      resolvedKind(loadArtifactNodes, nodeVisibility{fromAddress: artifactStoreAddress}),
+		"artifact":      resolvedKind(loadArtifactNodes, nodeVisibility{}),
 		"ask":           resolvedKind(loadAskNodes, nodeVisibility{}),
 		"comment":       resolvedKind(loadCommentNodes, nodeVisibility{}),
 		"message":       resolvedKind(loadMessageNodes, nodeVisibility{}),
@@ -178,7 +182,7 @@ func init() {
 		"message_block": resolvedKind(loadMessageBlockNodes, nodeVisibility{}),
 		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its three
 		// siblings, loadStoreNodes). None of them carries a `dispatch://` address, so the
-		// address rule does not reach them; the four other rules do.
+		// artifact's address rewrite does not reach them.
 		graphstore.KindPerson:  resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
@@ -203,9 +207,9 @@ func init() {
 		graphstore.KindInteraction: credentialAuthoredKind(loadInteractionNodes),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
-		// the graph resolves one, but they are nodes of the store like any other, so the
-		// registry answers for them rather than leaving the one read that lists them
-		// (pmdoc/schemanodes, through graphstore.NodesOfKind) with no predicate to bind the
+		// the graph resolves one, so neither has a loader; but they are nodes of the store like
+		// any other, so the registry answers for them rather than leaving the one read that lists
+		// them (pmdoc/schemanodes, through graphstore.NodesOfKind) with no predicate to bind the
 		// day a type is reserved for whoever drafted it.
 		"supertag":  unresolvedKind(nodeVisibility{}),
 		"attribute": unresolvedKind(nodeVisibility{}),
@@ -288,12 +292,6 @@ func (c comparison) authorIs(column, param string) string {
 // nodeVisibility is one node kind's visibility rule, the half of its registry entry that says
 // who may see its nodes.
 type nodeVisibility struct {
-	// fromAddress rewrites the id the from side of an edge carries into the id `graph_nodes`
-	// keys the node by, and is nil for every kind that spells the two the same. Only an
-	// artifact differs: an edge names it by uuid where it writes one and by ref_key where it
-	// is written at, and the store holds it under the ref_key its `dispatch://` address
-	// spells.
-	fromAddress func(expr string) string
 	// storedKind is the kind `graph_nodes` keys the kind's nodes by, and is empty for every kind
 	// the store keys under its own name. Only a finding of a lens differs: graph_edges and every
 	// reference name it lens_block, at its own id `lens/<uuid>#<block id>`, and the store holds
@@ -337,7 +335,11 @@ func storedKindSQL(kindExpr string) string {
 	return `(case ` + kindExpr + registrySQL.storedRewrites + ` else ` + kindExpr + ` end)`
 }
 
-// artifactStoreAddress is the ref_key of the artifact whose uuid expr names.
+// artifactStoreAddress is the ref_key of the artifact whose uuid expr names: the one rewrite of
+// the id the from side of an edge carries into the id `graph_nodes` keys the node by, which every
+// other kind spells the same. Only an artifact differs: an edge names it by uuid where it writes
+// one and by ref_key where it is written at, and the store holds it under the ref_key its
+// `dispatch://` address spells.
 func artifactStoreAddress(expr string) string {
 	return `(select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = ` + expr + `)`
 }
@@ -543,13 +545,14 @@ func (k NodeKinds) mayBeStanding() bool {
 
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a
 // literal: one read of `graph_nodes` keyed on that column and on the id beside it, with the
-// address rewrites the registry declares applied per kind, the kind read as the store keys it
-// (storedKindSQL: an edge's lens_block is the store's block), and the comparison of the kind of
-// the row it reads (authorIsOfRow). kinds is what the read knows the column can hold (NodeKinds):
-// an end that can be a node of a standing kind is held to not stale (staleOfKindSQL), as
-// VisibleKind holds one, and any other end is not tested at all. byRefKey says the ids are the
-// ones the to side of an edge carries, which are already the ids the store keys a node by; the
-// from side carries an artifact's uuid instead, and that kind's rewrite translates it.
+// artifact's address rewrite (artifactStoreAddress) applied where the column says artifact, the
+// kind read as the store keys it (storedKindSQL: an edge's lens_block is the store's block), and
+// the comparison of the kind of the row it reads (authorIsOfRow). kinds is what the read knows
+// the column can hold (NodeKinds): an end that can be a node of a standing kind is held to not
+// stale (staleOfKindSQL), as VisibleKind holds one, and any other end is not tested at all.
+// byRefKey says the ids are the ones the to side of an edge carries, which are already the ids
+// the store keys a node by; the from side carries an artifact's uuid instead, and the rewrite
+// translates it.
 //
 // A kind the registry does not hold passes: such an end resolves to no node and the read drops
 // its edge anyway (resolveNodes), and refusing here would refuse the whole read for one row a
@@ -557,17 +560,7 @@ func (k NodeKinds) mayBeStanding() bool {
 func VisibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string) string {
 	address := idExpr
 	if !byRefKey {
-		var rewrites strings.Builder
-		for _, kind := range VisibilityKinds() {
-			rewrite := nodeRegistry[kind].visibility.fromAddress
-			if rewrite == nil {
-				continue
-			}
-			rewrites.WriteString(` when '` + kind + `' then ` + rewrite(idExpr))
-		}
-		if rewrites.Len() > 0 {
-			address = `case ` + kindExpr + rewrites.String() + ` else ` + idExpr + ` end`
-		}
+		address = `case ` + kindExpr + ` when 'artifact' then ` + artifactStoreAddress(idExpr) + ` else ` + idExpr + ` end`
 	}
 	stale := ""
 	if kinds.mayBeStanding() {
