@@ -277,32 +277,20 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 }
 
 // removePerson is access.RemovePrincipal for a person, which also owes the broker the revocation of
-// a restricted member's machine logins when the removal leaves them on no project's access list:
-// the moment Dispatch stops admitting their cookie and personal tokens too (restrictedOwnerAdmitted,
-// access.Listed). Under the person's removal lock (access.LockPersonRemoval), so two removals of
-// one person read each other's commit, it reads in the removal's transaction whether the list named
-// the person (access.NamesPerson) and, after the removal, whether any project still names them;
-// only a removal that took the person off their last list records the debt
-// (recordMachineLoginRevocation), paid after the commit. A machine login belongs to no project,
-// since each trade of it names its own, so a removal that leaves the person on another list ends
-// nothing: each trade naming the project they left is refused once the broker's 30-second cache of
-// Dispatch's answer runs out, and the logins keep serving the projects that still list them. So no
-// project's owner ends the logins a person holds for another project by naming them on their own
-// list and taking them off it.
+// a restricted member's machine logins when the removal takes them off the list: it reads in the
+// removal's transaction whether the list named the person (access.NamesPerson), and only a removal
+// that took them off records the debt (recordMachineLoginRevocation), paid after the commit. Every
+// such removal owes it, whatever other project's list still names them, as R16's approved words
+// read: a machine login is no project's (each trade of it names its own project), so its revoke is
+// whole, and a person another list still names approves a new login, at their browser, for the
+// projects that list them.
 func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, email string, by model.Actor) (model.ProjectAccess, model.Event, error) {
-	if err := access.LockPersonRemoval(ctx, tx, email); err != nil {
-		return model.ProjectAccess{}, model.Event{}, err
-	}
 	named, err := access.NamesPerson(ctx, tx, key, email)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	answer, event, err := access.RemovePrincipal(ctx, tx, ev, key, kind, email, by)
 	if err != nil || !named {
-		return answer, event, err
-	}
-	listed, err := access.Listed(ctx, tx, email)
-	if err != nil || listed {
 		return answer, event, err
 	}
 	if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
@@ -317,10 +305,9 @@ func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker,
 // person as a restricted member (store.RecordMachineLoginRevocation); a full member, a person with
 // no row and a deployment with no broker (Deps.AgentSecrets nil, where no machine login exists) owe
 // nothing. The broker revocation loop pays it after the write commits (revokeOwedMachineLogins), so
-// the write never waits on the broker: an owner removes a person while the broker is down. A
-// removal that leaves the person on no list records it (removePerson); it is written to be the one
-// record any other write that takes a restricted member off their last project makes in its own
-// transaction.
+// the write never waits on the broker: an owner removes a person while the broker is down. Every
+// removal that takes the person off a list records it (removePerson); it is written to be the one
+// record any other write that takes a restricted member off a project makes in its own transaction.
 func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
 	person = model.CanonicalLogin(person)
 	if s.deps.AgentSecrets == nil || person == "" {

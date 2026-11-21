@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// A removal that takes a restricted member off their last access list owes the secrets broker the
+// A removal that takes a restricted member off a project's access list owes the secrets broker the
 // revocation of the member's machine logins (removePerson, recordMachineLoginRevocation, migration
 // 20261120150130), and the broker revocation loop pays it after the commit (revokeOwedMachineLogins),
 // beside the revocations of replaced accounts and on the same wake. Nothing the 325-second bound on
@@ -100,23 +100,22 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 	return nextPassAt(ctx, wait, due, err, "machine-login revocation")
 }
 
-// revokeMachineLoginsOf revokes at the broker the machine logins revocation's person approved for
-// their own machines (ownMachineLogins) before the removal that owes it (its RecordedAt), and
-// answers how many it revoked. A login approved after it, once the person was put back on a list,
-// is no debt of that removal's and survives. The broker's list holds every service's logins beside
-// the person's own, which it leaves. A machine login is no project's (each trade of it names its own
-// project), so every such login is revoked, and the person approves a new one for a project that
-// still lists them. A revoke ends the login's refresh and every token traded from it (the broker's
-// enroll.Service.RevokeCredential ends each access token naming the credential); a login the broker
-// revoked already is not listed again, so a pass that meets a failure revokes the rest next time.
+// revokeMachineLoginsOf revokes at the broker every machine login revocation's person approved for
+// their own machines (ownMachineLogins) and answers how many it revoked. Every one the broker lists
+// was approved before the removal that owes it: an approval Dispatch relays for a restricted member
+// holds their approval lock until the broker answers, a removal's record waits for it, and while
+// the revocation is owed no approval of theirs is relayed (store.HoldMachineLoginApprovals). So no
+// login's issued_at, the broker's clock, is compared with the record's, Dispatch's database's, and
+// a login approved in flight as the removal committed is revoked too. A person put back on a list,
+// or another project's list names, approves a new login once the pass has settled it. The broker's
+// list holds every service's logins beside the person's own, which it leaves. A machine login is no
+// project's (each trade of it names its own project), so every such login is revoked. A revoke ends
+// the login's refresh and every token traded from it (the broker's enroll.Service.RevokeCredential
+// ends each access token naming the credential); a login the broker revoked already is not listed
+// again, so a pass that meets a failure revokes the rest next time.
 //
 // It asks mayCall before every broker call, the list and each revoke, and stops with
 // errRevocationWindowSpent when it answers false.
-//
-// The login's issued_at is the broker's clock and RecordedAt is Dispatch's database's. Where the two
-// disagree, a login approved within that skew of the removal is judged by it: one approved just
-// before the removal can survive, and its tokens still end within the 325-second bound, since every
-// trade is checked against Dispatch's lists.
 func revokeMachineLoginsOf(ctx context.Context, client *agentsecrets.Client, revocation store.OwedMachineLoginRevocation, mayCall func() (bool, error)) (int, error) {
 	next := func() error {
 		ok, err := mayCall()
@@ -138,9 +137,6 @@ func revokeMachineLoginsOf(ctx context.Context, client *agentsecrets.Client, rev
 	}
 	revoked := 0
 	for _, login := range own {
-		if !login.IssuedAt.Before(revocation.RecordedAt) {
-			continue
-		}
 		if err := next(); err != nil {
 			return revoked, err
 		}

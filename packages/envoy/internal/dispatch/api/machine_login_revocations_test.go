@@ -8,106 +8,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestTwoRemovalsThatLeaveTheMemberOnNoListOweTheRevocation: alice and carol take erin off ACC's
-// and OTH's lists at once, her last two. Each removal reads, after its own delete, whether a list
-// still names her (removePerson), so with nothing ordering them each would read the other's row,
-// not yet deleted by a commit, and neither would owe the revocation of her machine logins. Removals
-// of one person take that person's lock in turn (access.LockPersonRemoval), so the second waits for
-// the first's commit, reads both rows gone, and owes the revocation.
-//
-// Control: removePerson without the person's lock, and the second removal reads ACC's row the first
-// has not committed, so nothing is owed, named.
-func TestTwoRemovalsThatLeaveTheMemberOnNoListOweTheRevocation(t *testing.T) {
-	rig := newFakeBrokerRig(t)
-	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
-		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
-	})
-	ctx := t.Context()
-	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
-		t.Fatalf("carol creates OTH: %d %s", created.Code, created.Body.String())
-	}
-	owners := map[string]string{"ACC": "alice", "OTH": accessCarol}
-	for key, owner := range owners {
-		if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/"+key+"/access/people/"+accessErin, nil, owner); listed.Code != http.StatusOK {
-			t.Fatalf("%s names erin on %s's list: %d %s", owner, key, listed.Code, listed.Body.String())
-		}
-	}
-	remove := func(tx pgx.Tx, key string) error {
-		_, _, err := registered.removePerson(ctx, tx, registered.deps.Events, key, access.PrincipalPerson, accessErin, model.Actor{Kind: "user", ID: owners[key]})
-		return err
-	}
-	waitingOnALock := func() bool {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read whether a removal waits on a lock: %v", err)
-		}
-		return n > 0
-	}
-
-	first, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = first.Rollback(ctx) }()
-	if err := remove(first, "ACC"); err != nil {
-		t.Fatalf("alice's removal of erin from ACC: %v", err)
-	}
-	second, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = second.Rollback(ctx) }()
-	done := make(chan error, 1)
-	go func() { done <- remove(second, "OTH") }()
-	// The second removal waits on the lock the first holds, or, with no lock, has already read.
-	finished, secondErr := false, error(nil)
-	for giveUp := time.Now().Add(30 * time.Second); !finished && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
-		select {
-		case secondErr = <-done:
-			finished = true
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("carol's removal of erin from OTH neither finished nor waited on a lock within 30 s")
-			}
-		}
-	}
-	if err := first.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if !finished {
-		secondErr = <-done
-	}
-	if secondErr != nil {
-		t.Fatalf("carol's removal of erin from OTH: %v", secondErr)
-	}
-	if err := second.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || !owed {
-		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after two removals at once took her off her last two lists, want it owed", owed, err)
-	}
-}
-
 // TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend: one owed revocation costs
-// the person's list and a revoke for each login they approved for their own machines before the
-// removal, and the pass asks before each of those calls whether its claim may still send one. Of
-// erin's three logins issued before the removal, her one issued after it, and a service's login she
-// approved, the pass revokes the three. A claim that may send two calls lists and revokes one, then
-// stops with errRevocationWindowSpent, and the next claim, given the broker's list without the one
-// it revoked, revokes the other two.
+// the person's list and a revoke for each login they approved for their own machines, and the pass
+// asks before each of those calls whether its claim may still send one. Of erin's four logins and a
+// service's login she approved, the pass revokes the four, whatever each one's issued_at: no
+// approval of hers was relayed since the removal (store.HoldMachineLoginApprovals). A claim that may
+// send two calls lists and revokes one, then stops with errRevocationWindowSpent, and the next
+// claim, given the broker's list without the one it revoked, revokes the other three.
 //
-// Control: revoke every own login whatever its issued_at, and the row fails naming cred-after; send
-// with no check, and the stopped pass revokes all three, named.
+// Control: send with no check, and the stopped pass revokes all four, named.
 func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	client := agentsecrets.New(rig.server.URL, accountTokenFile(t, credentialTestAccountToken))
@@ -119,18 +32,18 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 		}
 		return `{"credential_id":"` + id + `","host":"h","service":` + svc + `,"subject":null,"approved_by":"erin@other.example","issued_at":"` + issued + `","expires_at":"2026-12-20T00:00:00Z","expired":false}`
 	}
-	before := []string{
+	own := []string{
 		login("cred-1", "2026-11-20T09:00:00Z", ""),
 		login("cred-2", "2026-11-20T10:00:00Z", ""),
 		login("cred-3", "2026-11-20T11:59:59Z", ""),
+		login("cred-4", "2026-11-20T12:00:01Z", ""),
 	}
 	listing := func(logins ...string) string { return `{"credentials":[` + strings.Join(logins, ",") + `]}` }
-	after := login("cred-after", "2026-11-20T12:00:01Z", "")
 	service := login("cred-service", "2026-11-20T09:00:00Z", "legion-daemon")
 	owed := store.OwedMachineLoginRevocation{Email: "erin@other.example", Generation: 1, RecordedAt: removal}
 	ctx := t.Context()
 
-	rig.bodyByRoute["GET /v1/launcher-credentials"] = listing(append(slices.Clone(before), after, service)...)
+	rig.bodyByRoute["GET /v1/launcher-credentials"] = listing(append(slices.Clone(own), service)...)
 	calls := 0
 	twoCalls := func() (bool, error) { calls++; return calls <= 2, nil }
 	revoked, err := revokeMachineLoginsOf(ctx, client, owed, twoCalls)
@@ -139,12 +52,131 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 	}
 
 	rig.routes = nil
-	rig.bodyByRoute["GET /v1/launcher-credentials"] = listing(before[1], before[2], after, service)
+	rig.bodyByRoute["GET /v1/launcher-credentials"] = listing(own[1], own[2], own[3], service)
 	always := func() (bool, error) { return true, nil }
 	revoked, err = revokeMachineLoginsOf(ctx, client, owed, always)
-	want := []string{"POST /v1/launcher-credentials/cred-2/revoke-by-approver", "POST /v1/launcher-credentials/cred-3/revoke-by-approver"}
-	if err != nil || revoked != 2 || !slices.Equal(rig.revokes(), want) {
-		t.Errorf("the next claim revoked %d (%v), sending %v; want cred-2 and cred-3, and neither cred-after, issued after the removal, nor the service's", revoked, err, rig.revokes())
+	want := []string{"POST /v1/launcher-credentials/cred-2/revoke-by-approver", "POST /v1/launcher-credentials/cred-3/revoke-by-approver", "POST /v1/launcher-credentials/cred-4/revoke-by-approver"}
+	if err != nil || revoked != 3 || !slices.Equal(rig.revokes(), want) {
+		t.Errorf("the next claim revoked %d (%v), sending %v; want cred-2, cred-3 and cred-4, and not the service's", revoked, err, rig.revokes())
+	}
+}
+
+// TestARemovalRevokesALoginTheBrokersClockStampsAfterIt: the broker stamps a login's issued_at on
+// its own clock, and a removal's recorded_at is Dispatch's database's. carol takes erin, a
+// restricted member ACC's list still names, off OTH's list, and the broker, whose clock runs an hour
+// ahead of Dispatch's, lists erin's login approved before the removal as issued an hour after it.
+// The pass revokes it, comparing no clock, and the revocation is settled.
+//
+// Control: revoke only the logins issued before the removal's recorded_at, as the head before this
+// row did, and the pass revokes nothing, named.
+func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	ctx := t.Context()
+	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
+		t.Fatalf("carol creates OTH: %d %s", created.Code, created.Body.String())
+	}
+	for _, write := range []struct{ method, key, owner, does string }{
+		{http.MethodPut, "ACC", "alice", "names erin on"},
+		{http.MethodPut, "OTH", accessCarol, "names erin on"},
+		{http.MethodDelete, "OTH", accessCarol, "takes erin off"},
+	} {
+		if response := dispatchRequest(t, served, write.method, "/api/v1/projects/"+write.key+"/access/people/"+accessErin, nil, write.owner); response.Code != http.StatusOK {
+			t.Fatalf("%s %s %s's list: status=%d body=%s", write.owner, write.does, write.key, response.Code, response.Body.String())
+		}
+	}
+	ahead := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	rig.bodyByRoute["GET /v1/launcher-credentials"] = `{"credentials":[{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"` + ahead + `","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
+
+	registered.revokeBrokerDebts(ctx)
+	if !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
+		t.Errorf("the pass sent %v for erin, her login stamped an hour after the removal on the broker's clock; want it revoked", rig.revokes())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass, want it settled", owed, err)
+	}
+}
+
+// TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked: erin's browser approve of her own machine
+// login reaches the broker, which has not answered it when alice takes her off ACC's list. The
+// approval holds erin's approval lock until the broker answers (relayMachineLoginApproval), so the
+// removal waits for it, and records the revocation only after the login exists; the pass then lists
+// it and revokes it, and the revocation is settled.
+//
+// Control: record the revocation without taking the person's approval lock, and the removal commits
+// while the approval is in flight; the pass that follows lists no login and settles, the login the
+// approval then mints is never revoked, named.
+func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	const (
+		list    = "GET /v1/launcher-credentials"
+		approve = "POST /v1/credential-requests/rec-erin/approve"
+	)
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	rig.bodyByRoute[list] = `{"credentials":[]}`
+	reached, release := make(chan struct{}), make(chan struct{})
+	rig.beforeAnswer[approve] = func() {
+		close(reached)
+		<-release
+	}
+	approved := make(chan int, 1)
+	go func() {
+		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
+	}()
+	<-reached
+	removed := make(chan int, 1)
+	go func() {
+		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
+	}()
+	waitingOnALock := func() bool {
+		var n int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
+			t.Fatalf("read whether the removal waits on a lock: %v", err)
+		}
+		return n > 0
+	}
+	removedEarly := 0
+	for giveUp := time.Now().Add(30 * time.Second); removedEarly == 0 && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
+		select {
+		case removedEarly = <-removed:
+			// The removal did not wait: a pass now finds no login of erin's and settles.
+			registered.revokeBrokerDebts(ctx)
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("alice's removal of erin neither finished nor waited on a lock within 30 s")
+			}
+		}
+	}
+	rig.bodyByRoute[list] = `{"credentials":[{"credential_id":"cred-in-flight","host":"erin-desktop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"` + time.Now().UTC().Format(time.RFC3339) + `","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
+	close(release)
+	if code := <-approved; code != http.StatusOK {
+		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the removal", code)
+	}
+	if removedEarly == 0 {
+		removedEarly = <-removed
+	}
+	if removedEarly != http.StatusOK {
+		t.Fatalf("alice's removal of erin answered %d, want 200", removedEarly)
+	}
+
+	registered.revokeBrokerDebts(ctx)
+	if !slices.Contains(rig.revokes(), "POST /v1/launcher-credentials/cred-in-flight/revoke-by-approver") {
+		t.Errorf("the broker was sent %v; want the login erin's approval in flight minted revoked", rig.revokes())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass, want it settled", owed, err)
 	}
 }
 
