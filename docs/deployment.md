@@ -360,7 +360,7 @@ Where a commit's author is not the identity that the table gives the trailer's r
 runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
-own arguments, but for a revision argument that names a commit the step moved.
+own arguments, but for a revision argument whose meaning the rewrite changed.
 Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
 `--revisions` to the whole set of commits it names, and reads which of its mutable commits that no
 remote bookmark holds are hidden and which is the working-copy commit; a hidden commit whose change
@@ -368,28 +368,29 @@ has one visible commit stands for that commit, and for `@` where that commit is 
 commit.
 The set the push must send is that set with each commit the step rewrote or rebased, and each
 hidden one that stands for another, replaced by the commit that stands for it.
-An argument none of whose commits moved reaches the push as written, and so does one that jj,
-resolving it again after the rewrite, resolves to that set, such as `@`, a bookmark or a change id.
+Where the step rewrote nothing, every argument reaches the push as written, but for one that names
+a hidden commit standing for another, which gets that set as below.
+Where it rewrote something, every argument is held to its set, whether or not its own commits
+moved: one reaches the push as written only where jj, resolving it again after the rewrite,
+resolves it to that set, such as `@`, a bookmark or a change id of a rewritten commit.
 Any other argument can name other commits once the step has rewritten some, as a change offset
-`<change>/<n>`, `latest(...)` or `author(...)` can, so the push gets the primary form,
-`(<the argument as written>) ~ (<the old ids>) ~ (<the ids it now names and must not>) | <the new
-ids> | <the ids it must send and no longer names>`, with `@` for the working-copy commit, so that
-the push's own snapshot still resolves it, and with each empty part left out.
-The step has jj resolve the primary form once more and checks that it names the set; where it does
-not, where jj refuses one of those reads, or where the form would not be under 100,000 bytes and
-the step does not run the read, the push gets the set as ids joined by ` | `, `@` for the
-working-copy commit, and the step prints one `legion jj:` line that says so.
-Where that word would not be under 100,000 bytes either, a `--change` or `--revisions` argument
-becomes as many words of that same option as keep each under 100,000 bytes, each with a part of
-the ids, since `jj git push` pushes the union of a repeated option; `--named` names one commit.
+`<change>/<n>`, `latest(...)`, `mine()` or `author(...)` can, even through another argument's
+rewrite, so the push gets the set as ids joined by ` | `, `@` for the working-copy commit, so that
+the push's own snapshot still resolves it, while that word is under 100,000 bytes.
+Where it would not be, the push gets the primary form, `(<the argument as written>) [~ (<the old
+ids>)] [~ (<the ids it now names and must not>)] [| <the new ids>] [| <the ids it must send and no
+longer names>]`, with each empty part left out, where that word is under 100,000 bytes and jj,
+resolving it once more, finds that it names the set.
+Else a `--change` or `--revisions` argument becomes as many words of that same option as keep each
+under 100,000 bytes, each with a part of the ids, since `jj git push` pushes the union of a
+repeated option; `--named` names one commit.
+Each argument whose words the step wrote gets one `legion jj:` line that says so.
 No word the step writes passes 100,000 bytes, but for a role's own argument that is that long
-already, so none passes Linux's 131,072-byte limit on one argument, and a word the role wrote and
-the step leaves alone goes as written.
+already, so none passes Linux's 131,072-byte limit on one argument.
 Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
-environment together, about 48,000 ids less what the environment takes, with each argument that
-has a commit the step would move counted at the largest of the ids of its whole set, a word of
-100,000 bytes (the primary form's largest) and its own word, does the step decide, before any
-rewrite other than the fill of an empty author that a dry run refused, to set no other author:
+environment together, with each revision argument counted at the larger of its own word and the
+ids of its whole set, does the step decide, before any rewrite other than the fill of an empty
+author that a dry run refused, to set no other author:
 it prints one `legion jj: could not set the author:` line that names the argument, the count and
 the limit, and the push runs as written, but for an argument with a commit that fill moved.
 The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
