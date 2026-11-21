@@ -11,5 +11,8 @@ body: |-
   socket could then reach the durable that the standby had created again, and that message was
   delivered a second time. A hand-back that an intake makes while it runs is confirmed by a flush
   as soon as its publish ends, so a reconnect does not make a later stop leave the hold to lapse.
+  Each intake's NATS client now gives a write 5 s, not nats.go's default of a minute, so a frozen
+  link holds the close of the client for at most 5 s, and the standby takes the durable over at
+  most 22 s after the close began, not up to 77 s.
 custom:
   Issue: pr4432

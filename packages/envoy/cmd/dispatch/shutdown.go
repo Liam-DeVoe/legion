@@ -120,14 +120,18 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // at the intakes' deadline or up to delivery's intakeFlushWait (1 s) after it, so one that waits
 // out its bound and then releases its hold ends by 26 s after the signal: 15 s, then up to 1 s,
 // then 5 s, then a release of up to intakeHoldRenew (5 s), 1 s into that reserve and 4 s before the
-// kill at stopGrace. One exception can outlive that bound: Client.Close waits for
-// nats.go's connection lock, which a write can hold until its one-minute write deadline, while the
-// finalizer keeps the hold renewing. The kubelet's kill is safe in that case: it closes the
-// connection and the renewal, and the hold lapses. It comes before the pool closes because nothing
-// else keeps the pool open for a handler: one waiting on GitHub holds no connection, so
-// waitUntilIdle finds the pool idle and its writes would fail on the closed pool once GitHub
-// answered, with its message acknowledged all the same. Each hold's finalizer has released its
-// hold, or left it to lapse, before waitIntakes returns.
+// kill at stopGrace. Client.Close can add to that: it waits for nats.go's connection lock, which a
+// frozen write holds until delivery's IntakeWriteDeadline (5 s, the write deadline every intake's
+// client connects with) and a reconnect attempt through a frozen link until the bus's connect
+// timeout (5 s), while the finalizer keeps the hold renewing. The finalizer then leaves the hold
+// to lapse at once, and the standby takes the durable over at most 22 s after the close began: 5 s,
+// then the hold's 15 s TTL, then the standby's 2 s poll. A finalizer that releases after such a
+// close instead can outlast the kill only when that release also takes most of its 5 s; the kill is
+// safe then: it closes the connection and the renewal, and the hold lapses. It comes before the
+// pool closes because nothing else keeps the pool open for a handler: one waiting on GitHub holds
+// no connection, so waitUntilIdle finds the pool idle and its writes would fail on the closed pool
+// once GitHub answered, with its message acknowledged all the same. Each hold's finalizer has
+// released its hold, or left it to lapse, before waitIntakes returns.
 // The database pool closes once every request has answered and no connection of the shared,
 // document-rooms or room-appends pool is in use, and once the events outbox has stopped
 // (outboxStopped closes when its Run returns; nil is a process with no outbox), which it waits for

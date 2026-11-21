@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -18,6 +19,24 @@ const (
 	intakeConnectionName    = "dispatch-intake"
 	jobIntakeConnectionName = "dispatch-job-intake"
 )
+
+// IntakeWriteDeadline is the write deadline of every NATS connection of an intake's client
+// (bus.WithWriteDeadline): the GitHub intakes' and the Legion state intake's, which cmd/dispatch
+// connects with it. A write to a socket that takes no byte holds nats.go's connection lock until
+// its deadline (timeoutWriter, nats.go v1.55.0), and the client's Close and nats.go's ping timer
+// wait for that lock, so at nats.go's default of a minute a frozen link held the stop of the
+// process, and the standby with it, for that minute. With 5 s, the standby takes a durable over
+// at most 22 s after the stop begins to close the holder's client: the close waits at most 5 s for
+// the lock, which a frozen write holds up to this deadline and a reconnect attempt through a
+// frozen link up to the bus's connect timeout, also 5 s; then a hold left to lapse expires at most
+// intakeHoldTTL (15 s) after the finalizer leaves it; and the standby tries for it every
+// durableBindInterval (2 s). A stop whose finalizer waits out its window and then releases ends by
+// 26 s after SIGTERM when its close takes the lock at once (intakeFinalizerConfirmWait), 4 s
+// before the kill at cmd/dispatch's stopGrace (30 s); a close that waits for the lock adds at most
+// this deadline. nats.go's ping timer, which notices a silent cut, stalls at most 5 s behind a
+// frozen write. The intakes' clients publish only acknowledgements and hand-backs, a few hundred
+// bytes each, so a link that takes none of them for 5 s is not one that is merely slow.
+const IntakeWriteDeadline = 5 * time.Second
 
 // IntakeLeases is the lease-pool reservation of each intake's callers (ReserveIntakeLeases),
 // which StartIntakes hands the intake it was taken for.

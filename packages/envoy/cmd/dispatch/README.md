@@ -1700,7 +1700,9 @@ Dispatch shutdown waits for the finalizer with that client open, up to 5 s from 
 A finalizer whose hand-back a flush confirmed releases the hold through the still-open pool.
 A finalizer whose hand-back went out on a socket that has gone before a flush confirmed it does not release the hold: it stops renewing and leaves the row to lapse at its expiry (`duty.Hold.Abandon`), so the standby takes the durable over at most 17 s later, the hold's 15 s TTL and the standby's 2 s poll, rather than at once.
 A finalizer starts at the stop's deadline or up to 1 s after it, so one that waits out its 5 s and then releases the hold ends by 26 s after the signal, 1 s after the document service's latest end and 4 s before the kill.
-A write can hold nats.go's lock until its one-minute write deadline; `Client.Close` waits for that lock while the finalizer keeps the hold renewing.
+Each intake's client writes with a 5 s deadline (`delivery.IntakeWriteDeadline`, nats.go's `FlusherTimeout`), where nats.go's default is a minute: a write to a frozen link holds nats.go's connection lock, and `Client.Close` and nats.go's ping timer wait for that lock, at most 5 s, as they do for a reconnect attempt through that link, which the bus's 5 s connect timeout bounds.
+So the standby takes the durable over at most 22 s after the close began: 5 s for the close's wait, the hold's 15 s TTL, and the standby's 2 s poll.
+A finalizer that releases its hold after such a close outlasts the 30 s kill only when that release also takes most of its own 5 s bound.
 A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:
 a hand-back that reached the server after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
 Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).
@@ -1718,7 +1720,7 @@ A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
 The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then for each pending hand-back finalizer to confirm its hand-back with the intake client open, up to 5 s from the finalizer's start, then closes the intake client and waits for each finalizer to release its hold or leave it to lapse, before it deregisters the process and closes the database pool.
-That wait can outlive the usual shutdown reserve only while `Client.Close` waits for nats.go's one-minute write deadline; a kubelet kill then ends the client and renewal, and the hold lapses.
+That wait can outlive the usual shutdown reserve only while `Client.Close` waits up to the 5 s write deadline for nats.go's lock; a kubelet kill then ends the client and renewal, and the hold lapses.
 
 **The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
 A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.

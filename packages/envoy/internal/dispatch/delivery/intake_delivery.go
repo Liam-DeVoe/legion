@@ -179,15 +179,18 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // client only once the finalizer has ended or has had intakeFinalizerConfirmWait (5 s) from its
 // own start to confirm the hand-back with a flush, and the finalizer then releases the hold (up to
 // intakeHoldRenew) or leaves it to lapse. So that finalizer ends by 26 s after ctx ended, 1 s after
-// the document budget's latest end and 4 s before the kill at stopGrace. Only Client.Close can
-// outlast that: it waits for nats.go's connection lock, which a write can hold until its
-// one-minute write deadline, while the finalizer keeps the hold renewing; a kubelet kill then ends
-// the client and the renewal, and the hold's row lapses at its expiry. It is also well past what
-// a handler GitHub answers needs, a pull request and its commit pages with a page GitHub answered
-// 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so an ordinary handler finishes and
-// is acknowledged rather than redone. A call GitHub does not answer holds one attempt for up to
-// githubapp.RequestTimeout (20 s), and is then asked again,
-// which no budget inside stopGrace could wait out. A var so a test can shrink it.
+// the document budget's latest end and 4 s before the kill at stopGrace, when the close takes
+// nats.go's connection lock at once. A frozen write holds that lock until its write deadline,
+// IntakeWriteDeadline (5 s), and a reconnect attempt through a frozen link until the bus's connect
+// timeout (5 s), while the finalizer keeps the hold renewing; once the close has the lock, the
+// finalizer leaves the hold to lapse at once, or releases it within intakeHoldRenew. So a
+// finalizer outlasts the kill only when the close waits most of its 5 s and the release then most
+// of its own bound; the kill then ends the renewal, and the hold's row lapses at its expiry. 15 s is
+// also well past what a handler GitHub answers needs, a pull request and its commit pages with a
+// page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so an ordinary
+// handler finishes and is acknowledged rather than redone. A call GitHub does not answer holds one
+// attempt for up to githubapp.RequestTimeout (20 s), and is then asked again, which no budget
+// inside stopGrace could wait out. A var so a test can shrink it.
 var intakeStopBudget = 15 * time.Second
 
 // stopContext returns the stop deadline of an intake whose Run runs until ctx ends: a context that
