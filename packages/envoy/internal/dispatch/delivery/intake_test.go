@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,14 +205,24 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
-// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
-// answers the records written so far. Intake logs from NATS's delivery goroutine, so the buffer is
-// locked. Call it before startIntake, so the default logger is restored only once intake stops.
+// captureLogs sends every slog record from here on, DEBUG records included, to a buffer, as JSON,
+// until the test ends, and answers the records written so far. Intake logs from NATS's delivery
+// goroutine, so the buffer is locked. Call it before startIntake, so the default logger is restored
+// only once intake stops.
+//
+// A second call in the same test answers the reader of the first and installs nothing: a row helper
+// that records a trace (traceStops) and the test that calls the helper read one capture. A second
+// handler would replace the first, which then reads nothing more.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
+	captures.mu.Lock()
+	defer captures.mu.Unlock()
+	if logs, ok := captures.of[t]; ok {
+		return logs
+	}
 	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
-	return func() []map[string]any {
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logs := func() []map[string]any {
 		var records []map[string]any
 		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
 			var record map[string]any
@@ -221,7 +232,20 @@ func captureLogs(t *testing.T) func() []map[string]any {
 		}
 		return records
 	}
+	captures.of[t] = logs
+	t.Cleanup(func() {
+		captures.mu.Lock()
+		defer captures.mu.Unlock()
+		delete(captures.of, t)
+	})
+	return logs
 }
+
+// captures is the capture of each test that has one (captureLogs), by its test.
+var captures = struct {
+	mu sync.Mutex
+	of map[*testing.T]func() []map[string]any
+}{of: map[*testing.T]func() []map[string]any{}}
 
 // lockedBuffer is a buffer safe to write from one goroutine while another reads it.
 type lockedBuffer = logtest.Buffer

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -368,6 +369,60 @@ func init() { callNATSWait.Store(int64(bus.ConnLockWait)) }
 // callLeftRunning is the line callNATS logs for a call it goes on without.
 const callLeftRunning = "dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"
 
+// The DEBUG lines of a stop: each hand-back's course from its take to its settle, the stop's seal,
+// its read of whether the hand-backs reached NATS, the release of its hold, its finalizer, the close
+// of the intake's client, and a take-over's bind. Each names the delivery and the bus client as
+// pointers (tracePointer). A hand-back's lines also name the message's subject and its reply
+// subject, which is the subject its negative acknowledgement goes to. A test that fails prints them
+// in time order, so one failing run names its cause. Each line is made only while the default
+// logger writes DEBUG lines (tracing).
+const (
+	traceHandBackTaken        = "dispatch delivery: a hand-back is taken"
+	traceHandBackRefused      = "dispatch delivery: a hand-back is not taken, because the delivery is sealed"
+	traceHandBackHoldLapsed   = "dispatch delivery: a hand-back is withheld, because the hold no longer covers the delivery"
+	traceHandBackStopRule     = "dispatch delivery: a hand-back is withheld under the stop's rule"
+	traceOwnHandBackNoAnswer  = "dispatch delivery: a handler's own hand-back is withheld, because the delivery may no longer answer the durable"
+	traceOwnHandBackStopRule  = "dispatch delivery: a handler's own hand-back is withheld under the stop's rule"
+	traceStopRuleNotLetOut    = "dispatch delivery: the stop's rule withholds hand-backs, because the stop has not let them out"
+	traceStopRuleNotConnected = "dispatch delivery: the stop's rule withholds hand-backs, because NATS did not answer that the connection is connected"
+	traceHandBackPublishing   = "dispatch delivery: a hand-back's publish begins"
+	traceHandBackConnection   = "dispatch delivery: the client's connection as a hand-back's publish begins"
+	traceHandBackPublished    = "dispatch delivery: a hand-back's publish ends"
+	traceHandBackSettled      = "dispatch delivery: a hand-back is settled"
+	traceSeal                 = "dispatch delivery: the stop tries to seal the delivery"
+	traceHandBacksSettled     = "dispatch delivery: the stop reads whether its hand-backs reached NATS"
+	traceHoldReleased         = "dispatch delivery: the intake gives up its hold"
+	traceFinalizerStarts      = "dispatch delivery: a hand-back finalizer starts"
+	traceFinalizerEnds        = "dispatch delivery: a hand-back finalizer ends"
+	traceClientCloses         = "dispatch delivery: the intake's NATS client closes"
+	traceClientClosed         = "dispatch delivery: the intake's NATS client has closed"
+	traceTakeOverBound        = "dispatch delivery: a take-over bound the durable on this client"
+)
+
+// tracing reports whether the default logger writes DEBUG lines. A trace line builds its
+// attributes only when it does. So when DEBUG lines are off, as in production, each trace line
+// costs one level check.
+func tracing() bool {
+	return slog.Default().Enabled(context.Background(), slog.LevelDebug)
+}
+
+// tracePointer is p as the %p verb prints it. The trace lines name a delivery, a bus client and a
+// connection this way, so a reader can tell two of them apart.
+func tracePointer(p any) string { return fmt.Sprintf("%p", p) }
+
+// traceAttrs are the attributes of a trace line about this delivery: the delivery and its bus
+// client, then attrs.
+func (d *intakeDelivery) traceAttrs(attrs ...any) []any {
+	return append([]any{"delivery", tracePointer(d), "client", tracePointer(d.nats)}, attrs...)
+}
+
+// traceHandBack are the attributes of a trace line about msg's hand-back: the delivery and its bus
+// client, msg's subject and reply subject, then attrs. The reply subject names the one delivery of
+// msg that the hand-back answers.
+func (d *intakeDelivery) traceHandBack(msg *natsgo.Msg, attrs ...any) []any {
+	return d.traceAttrs(append([]any{"subject", msg.Subject, "reply", msg.Reply}, attrs...)...)
+}
+
 // giveBack hands msg back to NATS for the next holder: once no handler of this delivery is
 // running, at once (handBack); until then it is held, and the stop hands it back with the rest.
 // Handed back earlier, a message of a key whose handler is still running here could be
@@ -437,12 +492,18 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 	if !d.holdCovers() {
 		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
-		d.settleHandBack()
+		if tracing() {
+			slog.Debug(traceHandBackHoldLapsed, d.traceHandBack(msg)...)
+		}
+		d.settleHandBack(msg)
 		return
 	}
 	if !d.mayHandBack() {
 		slog.Info("dispatch delivery: the hand-back is withheld, so the message is left with the durable", "subject", msg.Subject)
-		d.settleHandBack()
+		if tracing() {
+			slog.Debug(traceHandBackStopRule, d.traceHandBack(msg)...)
+		}
+		d.settleHandBack(msg)
 		return
 	}
 	d.publishHandBack(msg, 0)
@@ -462,12 +523,18 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 	if !d.mayAnswer() {
 		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
-		d.settleHandBack()
+		if tracing() {
+			slog.Debug(traceOwnHandBackNoAnswer, d.traceHandBack(msg, "stopping", d.stopping.Load(), "hold_covers", d.holdCovers())...)
+		}
+		d.settleHandBack(msg)
 		return
 	}
 	if !d.mayHandBack() {
 		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
-		d.settleHandBack()
+		if tracing() {
+			slog.Debug(traceOwnHandBackStopRule, d.traceHandBack(msg)...)
+		}
+		d.settleHandBack(msg)
 		return
 	}
 	d.publishHandBack(msg, after)
@@ -478,7 +545,8 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 // the hold's release waits for that hand-back from this moment (heldDurable.handBacksReached). The
 // caller settles it once (settleHandBack): at once when a rule withholds it, or when its publish
 // call ends (publishHandBack). Once the delivery is sealed (seal), it takes nothing: it logs
-// handBackSealed at INFO and reports false, and the message stays with the durable.
+// handBackSealed at INFO and reports false, and the message stays with the durable. Its trace line
+// gives the delivery's counters after the take.
 func (d *intakeDelivery) takeHandBack(msg *natsgo.Msg) bool {
 	d.mu.Lock()
 	sealed := d.sealed
@@ -488,9 +556,17 @@ func (d *intakeDelivery) takeHandBack(msg *natsgo.Msg) bool {
 		}
 		d.handingBack++
 	}
+	taken, published := d.handingBack, d.published
 	d.mu.Unlock()
 	if sealed {
 		slog.Info(handBackSealed, "subject", msg.Subject)
+	}
+	if tracing() {
+		line := traceHandBackTaken
+		if sealed {
+			line = traceHandBackRefused
+		}
+		slog.Debug(line, d.traceHandBack(msg, "taken", taken, "sealed", sealed, "published", published)...)
 	}
 	return !sealed
 }
@@ -499,14 +575,18 @@ func (d *intakeDelivery) takeHandBack(msg *natsgo.Msg) bool {
 // (takeHandBack).
 const handBackSealed = "dispatch delivery: the stop has released the intake's hold, so the message is left with the durable for the next holder's take-over"
 
-// settleHandBack settles a hand-back takeHandBack took. It closes landed when no other hand-back of
-// this delivery is taken and not settled.
-func (d *intakeDelivery) settleHandBack() {
+// settleHandBack settles msg's hand-back, which takeHandBack took. It closes landed when no other
+// hand-back of this delivery is taken and not settled. Its trace line gives the count after it.
+func (d *intakeDelivery) settleHandBack(msg *natsgo.Msg) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.handingBack--
-	if d.handingBack == 0 {
+	taken := d.handingBack
+	if taken == 0 {
 		close(d.landed)
+	}
+	d.mu.Unlock()
+	if tracing() {
+		slog.Debug(traceHandBackSettled, d.traceHandBack(msg, "taken", taken)...)
 	}
 }
 
@@ -527,9 +607,28 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	d.published = true
 	d.mu.Unlock()
 	callNATS("hand a message back for redelivery", func() (struct{}, error) {
-		defer d.settleHandBack()
-		return struct{}{}, msg.NakWithDelay(after)
+		defer d.settleHandBack(msg)
+		if tracing() {
+			slog.Debug(traceHandBackPublishing, d.traceHandBack(msg, "delay", after)...)
+			go d.traceConnection(msg)
+		}
+		err := msg.NakWithDelay(after)
+		if tracing() {
+			slog.Debug(traceHandBackPublished, d.traceHandBack(msg, "error", err)...)
+		}
+		return struct{}{}, err
 	}, "subject", msg.Subject, "delay", after)
+}
+
+// traceConnection logs the bus client's connection as msg's hand-back's publish begins, and
+// whether that connection has closed (publishHandBack). It runs on a goroutine of its own. Both
+// reads take a lock: the client's own lock, and nats.go's connection lock. A write can hold each of
+// them for as long as it holds nats.go's lock, and the publish does not wait for them. So the line
+// is logged when both reads have answered, which can be after the publish has ended.
+func (d *intakeDelivery) traceConnection(msg *natsgo.Msg) {
+	conn := d.nats.Connection()
+	closed := conn != nil && conn.IsClosed()
+	slog.Debug(traceHandBackConnection, d.traceHandBack(msg, "conn", tracePointer(conn), "conn_closed", closed)...)
 }
 
 // handBacksLanded is closed once no hand-back of this delivery is taken and not settled
@@ -560,21 +659,26 @@ func (d *intakeDelivery) handedBack() bool {
 // (heldDurable.handBacksReached, heldDurable.finalizeHandBacks). From then on, no hand-back is
 // taken: a hand-back taken after the stop's last read of the count could be published after the
 // release, and reach a durable a standby recreated. While a hand-back is taken and not settled, it
-// seals nothing and reports false.
+// seals nothing and reports false. Its trace line gives the result and the delivery's counters.
 func (d *intakeDelivery) seal() bool {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.handingBack > 0 {
-		return false
+	sealed := d.handingBack <= 0
+	if sealed {
+		d.sealed = true
 	}
-	d.sealed = true
-	return true
+	taken, published := d.handingBack, d.published
+	d.mu.Unlock()
+	if tracing() {
+		slog.Debug(traceSeal, d.traceAttrs("sealed", sealed, "taken", taken, "published", published)...)
+	}
+	return sealed
 }
 
 // mayHandBack reports whether a hand-back may be published now (handBack): outside any stop, always;
 // once the stop has begun, only while handBackAllowed and NATS answers within bus.ConnLockWait
 // that the connection is connected. A read that does not answer, or answers that the connection is
-// not connected, clears handBackAllowed.
+// not connected, clears handBackAllowed. Each answer of false has a trace line that gives its
+// reason.
 func (d *intakeDelivery) mayHandBack() bool {
 	if !d.stopping.Load() {
 		return true
@@ -583,6 +687,9 @@ func (d *intakeDelivery) mayHandBack() bool {
 	allowed := d.handBackAllowed
 	d.mu.Unlock()
 	if !allowed {
+		if tracing() {
+			slog.Debug(traceStopRuleNotLetOut, d.traceAttrs()...)
+		}
 		return false
 	}
 	connected, answered := callNATS("read whether NATS is connected before a hand-back", func() (bool, error) {
@@ -590,6 +697,9 @@ func (d *intakeDelivery) mayHandBack() bool {
 	})
 	if answered && connected {
 		return true
+	}
+	if tracing() {
+		slog.Debug(traceStopRuleNotConnected, d.traceAttrs("answered", answered, "connected", connected)...)
 	}
 	d.mu.Lock()
 	d.handBackAllowed = false

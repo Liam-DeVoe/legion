@@ -40,6 +40,8 @@ type stopRow struct {
 	// entries counts the given-up handler's entries (startGivenUpRow): one for each message whose
 	// handler started.
 	entries *atomic.Int32
+	// trace is the row's trace (startGivenUpRow), and nil for a row that records none.
+	trace *stopTrace
 }
 
 // startStopRow subscribes a delivery keyed by key and handled by handle at the durable's deliver
@@ -171,8 +173,13 @@ func watchHandBacks(t *testing.T, uri string) func() int64 {
 // handling the stop gave up -- it waits for the give-up and hands the message back (handBack) --
 // and publishes two messages of one pull request, so the first is in its handler and the second
 // waits behind its key, held by the stop. The row counts each entry into the handler (entries).
+//
+// The row records a trace (traceStops), which the test prints only when it fails: the row's client
+// is named holder, the hold's relay reports each chunk with a -NAK or a +ACK, and at the failure
+// the trace reads the row's delivery.
 func startGivenUpRow(t *testing.T) *stopRow {
 	t.Helper()
+	trace := traceStops(t)
 	handling := make(chan struct{}, 2)
 	decided := make(chan struct{}, 2)
 	entries := new(atomic.Int32)
@@ -188,6 +195,12 @@ func startGivenUpRow(t *testing.T) *stopRow {
 	}, true)
 	row.decided = decided
 	row.entries = entries
+	row.trace = trace
+	trace.name(row.client, "holder")
+	trace.name(row.conn, "holder")
+	trace.name(row.delivery(), "holder")
+	trace.watchLink(row.hold, "holder")
+	trace.dump("holder delivery", func() string { return namedDeliveryState(trace, row.delivery(), "holder") })
 	row.publishPullRequestSeven(t)
 	select {
 	case <-handling:
@@ -197,6 +210,10 @@ func startGivenUpRow(t *testing.T) *stopRow {
 	waitFor(t, 30*time.Second, func() bool { return queuedBehindKeys(row.delivery()) == 1 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind their key's handler, want the second message", queuedBehindKeys(row.delivery()))
 	})
+	// Registered after every cleanup of the row's own, so a failure is read before they release the
+	// hold or close the client. A subtest that registers cleanups of its own after this calls
+	// printAtFailure again.
+	trace.printAtFailure(t)
 	return row
 }
 
@@ -452,6 +469,9 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		}
 		callNATSWait.Store(wait)
 		row.hold.HoldWriteLock(t, row.conn)
+		// Registered after the cleanups above, so a failure is read before they let the write or a
+		// held hand-back go on.
+		row.trace.printAtFailure(t)
 		close(held)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)
 		requireBothOutstanding(t, publisher, "once the stop returned while a write held nats.go's lock")
@@ -544,6 +564,9 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		}
 		stopGiveUpArmed.Store(&armed)
 		t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
+		// Registered after the cleanups above, so a failure is read before they let a held stop go
+		// on.
+		row.trace.printAtFailure(t)
 		stopped := row.stopUnder(cancelled())
 		select {
 		case <-reached:
@@ -785,6 +808,7 @@ func runningKeys(delivery *intakeDelivery) int {
 
 // outsideHold connects a client of the test's own to the row's server, outside the hold, so a read
 // on it, such as the delivery durable's consumer info, is answered while the row's link is frozen.
+// A row with a trace names it publisher there.
 func (r *stopRow) outsideHold(t *testing.T) *bus.Client {
 	t.Helper()
 	client, err := bus.Connect([]string{r.uri})
@@ -792,6 +816,9 @@ func (r *stopRow) outsideHold(t *testing.T) *bus.Client {
 		t.Fatalf("connect NATS at %s outside the hold: %v", r.uri, err)
 	}
 	t.Cleanup(client.Close)
+	if r.trace != nil {
+		r.trace.name(client, "publisher")
+	}
 	return client
 }
 

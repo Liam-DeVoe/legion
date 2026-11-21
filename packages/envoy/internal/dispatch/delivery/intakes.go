@@ -128,13 +128,14 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	}), nil
 }
 
-// stopIntakes waits for their Runs, closes their NATS clients through each durable, then waits for
-// any hand-back finalizer each Run left behind. A closed client makes such a finalizer settle, and
-// it releases its hold through the still-open database pool before this stop returns (StartIntakes).
+// stopIntakes waits for their Runs, closes their NATS clients through each durable (closeNATS),
+// then waits for any hand-back finalizer each Run left behind. A closed client makes such a
+// finalizer settle, and it releases its hold through the still-open database pool before this
+// stop returns (StartIntakes).
 func stopIntakes(running *sync.WaitGroup, durables ...*heldDurable) {
 	running.Wait()
 	for _, durable := range durables {
-		durable.nats.Close()
+		durable.closeNATS()
 	}
 	for _, durable := range durables {
 		durable.waitFinalizers()

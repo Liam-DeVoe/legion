@@ -51,6 +51,9 @@ type HandshakeHold struct {
 	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
 	// attempt whose answer the hold keeps.
 	attempts atomic.Int64
+	// observe, when set, is called with each chunk of a client's stream the relay has written to
+	// the server (Observe). It is nil by default.
+	observe atomic.Pointer[func(at time.Time, chunk []byte)]
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
@@ -95,6 +98,19 @@ func (h *HandshakeHold) Hold() <-chan struct{} {
 	h.Cut()
 	h.Restore()
 	return held
+}
+
+// Observe has the hold's relay call observe with each chunk of a client's stream that it writes to
+// the server, and the time that write ended, from now on. The relay of each connection calls it
+// from a goroutine of its own, so observe must be safe to call from more than one goroutine at a
+// time. The chunk is the relay's own buffer, which its next read writes over, so observe copies
+// what it keeps. A nil observe stops the calls.
+func (h *HandshakeHold) Observe(observe func(at time.Time, chunk []byte)) {
+	if observe == nil {
+		h.observe.Store(nil)
+		return
+	}
+	h.observe.Store(&observe)
 }
 
 // HoldReconnect holds (Hold) and waits until conn's reconnect handshake is held: a client's
@@ -447,7 +463,8 @@ func (h *HandshakeHold) serve() {
 // join relays client, a connection the proxy made for one of its clients, to the server, under the
 // hold when one is in force as client arrives, until either side ends; then it closes both. The
 // client's stream is read as NATS protocol (protocolStream) to find its CONNECT, which may come in
-// pieces.
+// pieces. Each chunk of the client's stream that it writes to the server goes to the observer, when
+// one is set (Observe).
 func (h *HandshakeHold) join(client net.Conn) {
 	defer client.Close()
 	server, err := net.DialTimeout("tcp", h.target, dialTimeout)
@@ -487,6 +504,9 @@ func (h *HandshakeHold) join(client net.Conn) {
 		if read > 0 {
 			if _, err := server.Write(buffer[:read]); err != nil {
 				return
+			}
+			if observe := h.observe.Load(); observe != nil {
+				(*observe)(time.Now(), buffer[:read])
 			}
 			if release != nil && !stream.connected {
 				stream.wrote(buffer[:read])

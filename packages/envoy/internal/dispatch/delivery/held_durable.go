@@ -317,8 +317,20 @@ func (h *HeldDurable) Run(ctx context.Context) {
 // closes the pool after Stop, as cmd/dispatch's shutdown does, closes it under no finalizer's
 // write.
 func (h *HeldDurable) Stop() {
-	h.nats.Close()
+	h.closeNATS()
 	h.waitFinalizers()
+}
+
+// closeNATS closes this intake's NATS client (HeldDurable.Stop, stopIntakes). A trace line marks
+// the start of the close and its end, with the client.
+func (d *heldDurable) closeNATS() {
+	if tracing() {
+		slog.Debug(traceClientCloses, "name", d.name, "client", tracePointer(d.nats))
+	}
+	d.nats.Close()
+	if tracing() {
+		slog.Debug(traceClientClosed, "name", d.name, "client", tracePointer(d.nats))
+	}
 }
 
 // Queue runs work on key's goroutine, in its turn among key's messages, and reports whether it
@@ -691,6 +703,13 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 	d.recorded, d.subject = bound, create.DeliverSubject
 	slog.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
 		"start_seq", create.OptStartSeq, "generation", bus.MetadataGeneration(create.Metadata, consumerGenerationKey))
+	if tracing() {
+		d.mu.Lock()
+		delivery := d.delivering
+		d.mu.Unlock()
+		slog.Debug(traceTakeOverBound, "name", d.name, "client", tracePointer(d.nats), "delivery", tracePointer(delivery),
+			"deliver_subject", create.DeliverSubject, "start_seq", create.OptStartSeq)
+	}
 	if d.bound != nil {
 		d.bound()
 	}
@@ -846,10 +865,14 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 // that can close the database pool. A lost hold ends it: another holder may then act, as after any
 // loss of the hold.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
+	if tracing() {
+		slog.Debug(traceFinalizerStarts, "name", d.name, "delivery", tracePointer(delivery), "client", tracePointer(d.nats), "lapse", lapse)
+	}
 	for {
 		select {
 		case <-delivery.handBacksLanded():
 		case <-hold.Lost():
+			d.traceFinalizerEnd(delivery, "the hold was lost before the seal")
 			return
 		}
 		if delivery.seal() {
@@ -865,16 +888,27 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 			}
 			select {
 			case <-hold.Lost():
+				d.traceFinalizerEnd(delivery, "the hold was lost before the release")
 			default:
 				d.releaseHold(hold, lapse)
+				d.traceFinalizerEnd(delivery, "released")
 			}
 			return
 		}
 		select {
 		case <-hold.Lost():
+			d.traceFinalizerEnd(delivery, "the hold was lost before the hand-backs reached NATS")
 			return
 		case <-retry.C:
 		}
+	}
+}
+
+// traceFinalizerEnd is the trace line of a finalizer's end (finalizeHandBacks), with outcome: the
+// release, or the loss of the hold that ended it first.
+func (d *heldDurable) traceFinalizerEnd(delivery *intakeDelivery, outcome string) {
+	if tracing() {
+		slog.Debug(traceFinalizerEnds, "name", d.name, "delivery", tracePointer(delivery), "client", tracePointer(d.nats), "outcome", outcome)
 	}
 }
 
@@ -887,7 +921,8 @@ var finalizerBeforeRelease atomic.Pointer[func()]
 // still-open database pool before its caller closes it (StartIntakes).
 func (d *heldDurable) waitFinalizers() { d.finalizers.Wait() }
 
-// releaseHold releases hold, or lapses it when the next holder must read a take-over's token.
+// releaseHold releases hold, or lapses it when the next holder must read a take-over's token. Its
+// trace line gives which of the two it did, and the error.
 func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	release := hold.Release
 	if lapse {
@@ -895,8 +930,12 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	}
 	releasing, cancel := context.WithTimeout(context.Background(), intakeHoldRenew)
 	defer cancel()
-	if err := release(releasing); err != nil {
+	err := release(releasing)
+	if err != nil {
 		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
+	}
+	if tracing() {
+		slog.Debug(traceHoldReleased, "name", d.name, "client", tracePointer(d.nats), "lapse", lapse, "error", err)
 	}
 }
 
@@ -965,9 +1004,29 @@ func (d *heldDurable) flushHandBacks() bool {
 // handBacksSettled reports whether no hand-back nats.go had queued can reach the server later: a
 // flush of the intake client's connection answered within intakeFlushWait, so each has reached it,
 // or the connection has closed, which sent its outbound buffer or dropped it with the connection.
+// Its trace line gives the answer and its reason: no connection, a closed connection, or the flush
+// and its error.
 func (d *heldDurable) handBacksSettled() bool {
 	conn := d.nats.Connection()
-	return conn == nil || conn.IsClosed() || conn.FlushTimeout(intakeFlushWait) == nil
+	if conn == nil {
+		d.traceSettled(conn, true, "no connection", nil)
+		return true
+	}
+	if conn.IsClosed() {
+		d.traceSettled(conn, true, "the connection has closed", nil)
+		return true
+	}
+	err := conn.FlushTimeout(intakeFlushWait)
+	d.traceSettled(conn, err == nil, "flush", err)
+	return err == nil
+}
+
+// traceSettled is the trace line of handBacksSettled's answer, settled, for reason, on conn.
+func (d *heldDurable) traceSettled(conn *natsgo.Conn, settled bool, reason string, err error) {
+	if tracing() {
+		slog.Debug(traceHandBacksSettled, "name", d.name, "client", tracePointer(d.nats), "conn", tracePointer(conn),
+			"settled", settled, "reason", reason, "error", err)
+	}
 }
 
 // intakeFlushWait bounds each flush that confirms a stop's hand-backs reached the server before its

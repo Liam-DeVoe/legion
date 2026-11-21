@@ -21,10 +21,14 @@ import (
 // in the order the server's messages arrive, so the record orders an answer against a creation.
 // That order cannot show a hand-back that made the recreated consumer deliver a message again: the
 // server sends a creation's advisory after the new consumer already takes answers, so the rows also
-// read that consumer itself (requireDeliveredOnceAfterTakeOver).
+// read that consumer itself (requireDeliveredOnceAfterTakeOver). For a row's trace (stopTrace), it
+// also keeps when it recorded each event and the subject of each: an answer's subject is the reply
+// subject of the delivery it answers.
 type durableEvents struct {
-	mu     sync.Mutex
-	events []string
+	mu       sync.Mutex
+	events   []string
+	at       []time.Time
+	subjects []string
 }
 
 const durableCreated = "created"
@@ -53,6 +57,8 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 			}
 			recorded.mu.Lock()
 			recorded.events = append(recorded.events, event)
+			recorded.at = append(recorded.at, time.Now())
+			recorded.subjects = append(recorded.subjects, msg.Subject)
 			recorded.mu.Unlock()
 		}
 	}()
@@ -70,6 +76,25 @@ func (r *durableEvents) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.events)
+}
+
+// durableEvent is one event durableEvents recorded: when, what, and the subject the server sent it
+// on.
+type durableEvent struct {
+	at      time.Time
+	event   string
+	subject string
+}
+
+// timed is every event recorded so far, with its time and its subject.
+func (r *durableEvents) timed() []durableEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	timed := make([]durableEvent, len(r.events))
+	for i, event := range r.events {
+		timed[i] = durableEvent{at: r.at[i], event: event, subject: r.subjects[i]}
+	}
+	return timed
 }
 
 // heldPublish names whose hand-back of the row's second message a row holds before its publish
@@ -103,8 +128,14 @@ const (
 //
 // It returns once the write is held, with the stop under way. The stop's deadline is
 // intakeStopBudget, set to budget.
+//
+// The row records a trace (traceStops), which the test prints only when it fails: the clients are
+// named holder, standby and publisher, the holder's link reports each chunk with a -NAK or a +ACK,
+// and at the failure the trace reads the holder's and the standby's deliveries and lists the
+// durable's events.
 func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) heldHandBack {
 	t.Helper()
+	trace := traceStops(t)
 	shrinkIntakeFlowControl(t)
 	before := intakeStopBudget
 	intakeStopBudget = budget
@@ -116,17 +147,26 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) h
 	natsURL := testnats.URL(t)
 	link := testnats.StartHandshakeHold(t, natsURL)
 	t.Cleanup(link.Restore)
+	trace.watchLink(link, "holder")
 	publisher := intakeTestClient(t)
+	trace.name(publisher, "publisher")
 	row.publisher = publisher
 	row.recorded = watchDurableEvents(t, natsURL)
+	trace.watchDurable(row.recorded)
 
 	const inFlight = 100
 	holder := startIntakeProcess(t, pool, link.URL(), func(number int) bool { return number == inFlight })
 	row.holder = holder
+	trace.name(holder.client, "holder")
 	awaitBoundDurable(t, publisher)
-	startIntakeProcess(t, pool, natsURL, nil)
+	standby := startIntakeProcess(t, pool, natsURL, nil)
+	trace.name(standby.client, "standby")
+	trace.name(standby.client.Connection(), "standby")
 	holderConn := holder.client.Connection()
+	trace.name(holderConn, "holder")
 	row.conn = holderConn
+	trace.dump("holder delivery", func() string { return namedDeliveryState(trace, subscribedDelivery(holder.intake), "holder") })
+	trace.dump("standby delivery", func() string { return namedDeliveryState(trace, subscribedDelivery(standby.intake), "standby") })
 
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
@@ -198,8 +238,10 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) h
 		})
 	}
 	row.delivery = subscribedDelivery(holder.intake)
+	trace.name(row.delivery, "holder")
 	row.delivery.beforeHandBackPublish.Store(&hook)
 	row.from = row.recorded.count()
+	trace.stopBegins(row.from)
 	done := make(chan struct{})
 	row.stopped = done
 	go func() {
@@ -228,6 +270,9 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) h
 		t.Fatal(unreached + consumerState(publisher))
 	}
 	row.thaw = link.HoldWriteLock(t, holderConn)
+	// Registered after every cleanup of the row's own, so a failure is read before they move the
+	// link, stop the processes or close the clients.
+	trace.printAtFailure(t)
 	if by == callbacksHandBack {
 		thaw := row.thaw
 		row.thaw = sync.OnceFunc(func() {
