@@ -82,8 +82,9 @@
 #        another; create of certificate signing requests, update of the approval of my-csr and
 #        approve of kubernetes.io/kube-apiserver-client; patch of the Deployment secrets-broker in
 #        secrets-broker; update of the CronJob nightly in envoy-operator; and create of pods/exec of
-#        secrets-broker-0: each exits 1 naming the name; create pods limited by name, which RBAC
-#        never allows, exits 0;
+#        secrets-broker-0: each exits 1 naming the name; create pods limited by name beside patch of
+#        that name, and rv14's create and patch of the namespace envoy-operator by name on another
+#        cluster, each exit 1 (server-side apply creates by patch); create limited by name alone exits 0;
 #   (bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN;
 #   (cc) legion/worker that may get, by name, a token Secret of envoy-operator that no ServiceAccount
 #        lists exits 1 naming it, and a refused list of the namespace's token Secrets reads UNKNOWN.
@@ -139,6 +140,7 @@ rbac_rights=(
   "list||secrets||envoy-operator|=list secrets in envoy-operator"
   "watch||secrets||envoy-operator|=watch secrets in envoy-operator"
   "create||secrets||envoy-operator|=create secrets in envoy-operator"
+  "patch||secrets||envoy-operator|=patch secrets in envoy-operator"
   "create||replicationcontrollers||envoy-operator|=create replicationcontrollers in envoy-operator"
   "patch||replicationcontrollers||envoy-operator|=patch replicationcontrollers in envoy-operator"
   "update||replicationcontrollers||envoy-operator|=update replicationcontrollers in envoy-operator"
@@ -820,10 +822,24 @@ name_limited_row() {
       subject_grant "$cluster" "$subject" create "" pods exec secrets-broker secrets-broker-0
       want="create pods/exec secrets-broker-0 in secrets-broker"
       ;;
+    create-patch)
+      subject_grant "$cluster" "$subject" create "" pods "" envoy-operator some-pod
+      subject_grant "$cluster" "$subject" patch "" pods "" envoy-operator some-pod
+      want="create pods some-pod in envoy-operator, which its patch or update of that name makes"
+      ;;
+    rv14)
+      add_cluster other-cluster us-east1
+      add_sa other-cluster ci runner
+      cluster=other-cluster subject="$(sa_subject ci runner)" who=system:serviceaccount:ci:runner
+      suffix=" on cluster $project/us-east1/other-cluster"
+      subject_grant "$cluster" "$subject" create "" namespaces "" "" envoy-operator
+      subject_grant "$cluster" "$subject" patch "" namespaces "" "" envoy-operator
+      want="create namespaces envoy-operator cluster-wide, which its patch or update of that name makes"
+      ;;
     create-named)
       subject_grant "$cluster" "$subject" create "" pods "" envoy-operator some-pod
       run
-      want_status 0 "create pods limited by name, which RBAC never allows"
+      want_status 0 "create pods limited by name alone, which no request is allowed"
       return
       ;;
   esac
@@ -832,8 +848,8 @@ name_limited_row() {
   want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
 }
 if row bu; then
-  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-named
-  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec) exits 1 naming the name; create limited by name exits 0"
+  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named
+  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name; create limited by name alone exits 0"
 fi
 
 # --- (bv) The roles' list, which the named rights are read from. ---

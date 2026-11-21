@@ -39,8 +39,12 @@
 #                     rights) is a finding naming the names: impersonating the group system:masters
 #                     by name is cluster-admin, RBAC lets one who may bind a role by name write a
 #                     binding to it, and an update of one webhook configuration or a patch of one
-#                     Deployment by name is the unnamed right's path. RBAC never limits a create of
-#                     a whole object or a deletecollection by name. A binding to a
+#                     Deployment by name is the unnamed right's path. RBAC never limits a
+#                     deletecollection by name, and a create limited by name answers no create;
+#                     but a patch that finds no object creates it (server-side apply), authorized
+#                     as a create of that name, as is an update of an RBAC object, so a create
+#                     limited by name is a finding for a subject that may also patch (or there
+#                     update) that name, by any of its bindings. A binding to a
 #                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
@@ -138,8 +142,9 @@
 #                     --guarded <namespace>/<service account>, such as a route password reader
 #                     reached the same way. On every cluster of the pool (the operator's, every other
 #                     cluster of the project, and every member cluster of the pool project's fleet)
-#                     no principal the step reviews may create a namespace cluster-wide, or a
-#                     ServiceAccount or a pod in a guarded pair's namespace, nor hold an escalation
+#                     no principal the step reviews may create or patch a namespace cluster-wide,
+#                     or a ServiceAccount or a pod in a guarded pair's namespace (a patch that finds
+#                     no object creates it), nor hold an escalation
 #                     right by which it grants itself one: impersonate users, groups and
 #                     serviceaccounts, escalate and bind clusterroles, and create, patch and update
 #                     clusterrolebindings, cluster-wide; bind and escalate roles and create, patch

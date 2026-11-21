@@ -68,6 +68,7 @@ get - secrets - ns
 list - secrets - ns
 watch - secrets - ns
 create - secrets - ns
+patch - secrets - ns
 '
 # The admission rights: create, update and patch of each resource of admissionregistration.k8s.io
 # a cluster's discovery lists, cluster-wide, on every cluster of the pool (admission_rights): a
@@ -132,6 +133,7 @@ CONTAINER_PERMISSIONS=(
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
   container.certificateSigningRequests.approve container.clusters.update container.secrets.create
+  container.secrets.update container.namespaces.update container.serviceAccounts.update
 )
 GSA_PERMISSIONS=(
   iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken iam.serviceAccounts.signJwt
@@ -147,7 +149,8 @@ IAM_WRITE_PERMISSIONS=(resourcemanager.projects.setIamPolicy resourcemanager.fol
 # the container.* permission of each guard right (a guarded namespace, ServiceAccount or pod, the
 # escalation rights by which a holder grants itself one, and the admission webhooks) and the IAM
 # writers there.
-MEMBER_PERMISSIONS=(container.namespaces.create container.serviceAccounts.create container.pods.create
+MEMBER_PERMISSIONS=(container.namespaces.create container.namespaces.update container.serviceAccounts.create
+  container.serviceAccounts.update container.pods.create container.pods.update
   container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind
   container.roles.escalate container.roleBindings.create container.roleBindings.update container.nodes.proxy
