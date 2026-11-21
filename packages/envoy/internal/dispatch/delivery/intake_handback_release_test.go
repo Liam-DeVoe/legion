@@ -92,7 +92,10 @@ const (
 // before the publish (beforeHandBackPublish), so that publish waits for nats.go's lock. by names
 // whose hand-back that is:
 //   - stopsHandBack: the second message waits behind its key's handler, and the stop hands it
-//     back. Its publish goes on once the write is held.
+//     back. Its publish goes on once the write is held. The row stops the holder only once the
+//     second message waits behind its key in the holder. Two messages outstanding at the server
+//     do not show that: the server counts a push message as delivered as soon as it sends it,
+//     before the message reaches the holder's client.
 //   - callbacksHandBack: the callback of the second message waits before it routes the message
 //     (beforeReceive) until the stop has handed back what it held (released), and then hands the
 //     message back itself. Its publish goes on only when the row thaws the link, so the stop
@@ -151,6 +154,12 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) h
 	}
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	awaitAckPending(t, publisher, 2)
+	if by == stopsHandBack {
+		waitFor(t, 20*time.Second, func() bool { return holder.keyedRunnerQueued() == 1 }, func() string {
+			return fmt.Sprintf("control: %d message(s) wait behind their key in the holder, want the second message: it has not reached the holder's handler queue, so the stop would have nothing to hand back: %s",
+				holder.keyedRunnerQueued(), consumerState(publisher))
+		})
+	}
 	if by == callbacksHandBack {
 		select {
 		case <-receiving:
