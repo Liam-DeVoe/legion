@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -169,9 +171,13 @@ func TestPublishPresentsTheDaemonsBrokerToken(t *testing.T) {
 		broker := newCredentialBroker(t, mintsTheDaemonsToken)
 		listener := newCredentialListener(t)
 		cfg := listenerBrokerConfig(listener.URL)
-		credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+		var logged bytes.Buffer
+		credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil {
 			t.Fatalf("settleCredentials: %v", err)
+		}
+		if line := `msg="legion daemon's Envoy listener credential" credential=broker session=legion-daemon:EXAMPLE`; !strings.Contains(logged.String(), line) || strings.Contains(logged.String(), daemonBrokerToken) {
+			t.Fatalf("the boot logged\n%s\nwant the line %s, and no token", logged.String(), line)
 		}
 		callListener(t, cfg, credentials.listener)
 		requests := listener.received()
@@ -193,9 +199,13 @@ func TestPublishPresentsTheDaemonsBrokerToken(t *testing.T) {
 		listener := newCredentialListener(t)
 		cfg := listenerBrokerConfig(listener.URL)
 		cfg.EnvoyTokenFile = "/var/run/legion/ENVOY_TOKEN"
-		credentials, err := settleCredentials(t.Context(), cfg, "", "envoy-bearer", getenvOf(podIdentity(t, broker.url)), quietLogger())
+		var logged bytes.Buffer
+		credentials, err := settleCredentials(t.Context(), cfg, "", "envoy-bearer", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil {
 			t.Fatalf("settleCredentials: %v", err)
+		}
+		if strings.Contains(logged.String(), "Envoy listener credential") {
+			t.Fatalf("a daemon that holds the bearer logged %s, want no listener credential line, as it never logged one", logged.String())
 		}
 		callListener(t, cfg, credentials.listener)
 		for _, request := range listener.received() {
