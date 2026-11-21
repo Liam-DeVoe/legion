@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/natsversion"
@@ -30,8 +31,10 @@ const Stream = "ENVOY_NOTIFICATIONS"
 // a clustered restore the servers can report different Created times (per nats-server's clustered
 // restore code), so it can change again at a later leader election. Every relay frame carries the
 // key's value in its Envoy-Stream-Id header (cmd/listener/session_relay.go), so a session can tell
-// a cursor of its own apart from one belonging to a stream that was restored.
-const StreamIDMetadataKey = "envoy_stream_id"
+// a cursor of its own apart from one belonging to a stream that was restored. It is the library's
+// key (consumernames.StreamIdentityMetadataKey), so a last floor every family records is read
+// against the one identity.
+const StreamIDMetadataKey = consumernames.StreamIdentityMetadataKey
 
 // The JetStream KV buckets Envoy's stores keep, each named for what it holds.
 const (
