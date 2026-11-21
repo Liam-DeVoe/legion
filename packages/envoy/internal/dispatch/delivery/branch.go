@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // branch.go owns every answer about whether one branch of one repository carries one commit,
@@ -121,14 +119,13 @@ const BranchCommitStaleAfter = 5 * time.Minute
 // shares them. What a branch holds of a commit is cached in the database instead
 // (branch_commits), since that answer outlives any one process; what the compare reads of a
 // pair did is not, since a refusal is a failure to learn anything rather than something learned.
-// A read-only caller's read stores nothing, so the answers its compare reads earn are kept here
-// instead, as the rows a writer's read would have written stand: a yes for good and a no for
-// BranchCommitStaleAfter, and at most ReadOnlyAnswerBound of them (ReadCommitOnBranch).
+// A read-only caller's read stores nothing and keeps nothing after its request: it reads what
+// this holds as a writer's read does, and carries what a writer's read would write here for the
+// rest of its own request alone (BranchCarry).
 type Branches struct {
 	mu       sync.Mutex
 	known    map[string]cachedBranch
 	compares map[repoBranch]compareHold
-	readOnly readOnlyAnswers[branchCommitKey, bool]
 }
 
 // repoBranch is one repository and one branch of it: the pair a compare read is made about, and
@@ -138,19 +135,16 @@ type repoBranch struct {
 	branch string
 }
 
-// branchCommitKey is one commit of one branch of one repository, keyed as branch_commits keys its
-// rows (readBranchCommit): the repository lowercased, the branch and the commit as they are. It
-// keys the answers a read-only read keeps in memory rather than in that table.
-type branchCommitKey struct {
-	repo   string
-	branch string
-	sha    string
-}
-
-// branchCommitKeyOf is the key of sha on branch of repoFull, the repository lowercased as
-// branch_commits' lower($1) reads it, so a kept answer and its recall key alike.
-func branchCommitKeyOf(repoFull, branch, sha string) branchCommitKey {
-	return branchCommitKey{repo: strings.ToLower(repoFull), branch: branch, sha: sha}
+// BranchCarry is what one read-only caller's results read carries for itself in place of what a
+// writer's read writes on Branches, since that read keeps nothing after its request: the
+// default branch its own read of a repository found, where a writer's read puts it in the cache,
+// and the repository-and-branch pairs a compare read of its own was refused as unseen, where a
+// writer's read holds them. Its later reads read them where a writer's later reads read what
+// that writer's read wrote, so the two make the same GitHub calls in one request. The request's
+// reader makes one and drops it with the request. Its zero value carries nothing.
+type BranchCarry struct {
+	known  map[string]cachedBranch
+	unseen map[repoBranch]bool
 }
 
 // compareHold is what the compare reads of one repository-and-branch pair last did: when one
@@ -208,7 +202,18 @@ type cachedBranch struct {
 func (c *Branches) DefaultBranchOf(
 	ctx context.Context, client *githubapp.Client, repoFull string, now time.Time,
 ) (string, bool) {
-	return c.branchOf(ctx, client, repoFull, now)
+	return c.branchOf(ctx, client, nil, repoFull, now)
+}
+
+// ReadDefaultBranchOf is DefaultBranchOf for a read-only caller's results read, which keeps
+// nothing after its request (api/results_comparison.go, comparisonReader.defaultBranchIn). It
+// reads the cache and GitHub exactly as DefaultBranchOf does, and where DefaultBranchOf would put
+// GitHub's answer in the cache it carries it in carry, for the rest of that request alone, which
+// its later reads read before the cache (branchOf).
+func (c *Branches) ReadDefaultBranchOf(
+	ctx context.Context, client *githubapp.Client, carry *BranchCarry, repoFull string, now time.Time,
+) (string, bool) {
+	return c.branchOf(ctx, client, carry, repoFull, now)
 }
 
 // CommitOnBranch answers what Dispatch can say about branch of repoFull carrying sha: one of
@@ -295,7 +300,7 @@ func (c *Branches) DefaultBranchOf(
 //
 // It is readCommitOnBranch, which reads all of the above and writes nothing, then the write of
 // the answer a compare read earned to branch_commits. ReadCommitOnBranch is the same read for a
-// read-only caller, which keeps that answer in memory instead.
+// read-only caller, which writes nothing.
 func (c *Branches) CommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
@@ -303,7 +308,7 @@ func (c *Branches) CommitOnBranch(
 	repoFull, branch, sha string,
 	now time.Time,
 ) BranchAnswer {
-	read := c.readCommitOnBranch(ctx, pool, client, KeptHeads{}, false, repoFull, branch, sha, now)
+	read := c.readCommitOnBranch(ctx, pool, client, HeadAnswers{}, nil, repoFull, branch, sha, now)
 	if read.asked {
 		if err := writeBranchCommit(ctx, pool, repoFull, read.branch, sha, read.onBranch, now); err != nil {
 			slog.Warn("dispatch: record a commit's branch answer", "repo", repoFull, "branch", read.branch, "commit", sha, "error", err)
@@ -312,76 +317,59 @@ func (c *Branches) CommitOnBranch(
 	return read.answer
 }
 
-// ReadCommitOnBranch is CommitOnBranch for a read-only caller's results read, which stores
-// nothing (api/results_comparison.go, comparisonReader.onBranch). It reads what CommitOnBranch
-// reads and answers what CommitOnBranch would answer on the same stored rows, with two
-// differences, both so that it writes no row:
+// ReadCommitOnBranch is CommitOnBranch for a read-only caller's results read, which stores nothing
+// and keeps nothing after its request (api/results_comparison.go, comparisonReader.onBranch). It
+// reads the stored row, the repository's readability, the unseen holds and the default-branch
+// cache exactly as CommitOnBranch does, asks GitHub where CommitOnBranch would, and answers what
+// CommitOnBranch would answer, and it writes nothing:
 //
-//   - learned is the heads that caller's memory keeps, found by read-throughs and stored nowhere
-//     (CommitPullAnswers.Learned). A merged pull request among them is its merge commit on its
-//     base branch, the yes a writer's store of it would have written by now
-//     (UpsertPullRequestHead), so it answers as that stored row would.
-//   - A compare read's answer is kept in this process's memory in place of the branch_commits row
-//     a writer's read writes, and read where that row is read, before the hold of a branch
-//     refused as unseen and before the repository's own unreadable read: a yes for good, as a
-//     stored yes stands, and a no for BranchCommitStaleAfter, as a stored no does. So a later
-//     read-only read of the same commit and branch is answered as a writer's read is answered by
-//     its row, with the same calls. The memory holds at most ReadOnlyAnswerBound answers. A
-//     writer's read never reads it, so a writer's read after it finds no row, asks GitHub and
-//     writes the row as it always did.
+//   - answers is what that caller's request learned from GitHub and stored nowhere (HeadAnswers).
+//     A merged pull request among them is its merge commit on its base branch, the yes a writer's
+//     store of it would have written by now (UpsertPullRequestHead), so it answers as that stored
+//     row would.
+//   - carry is what that request carries for itself (BranchCarry): the default branch its own read
+//     of the repository found, read before the cache, and the pairs a compare read of its own was
+//     refused as unseen, read before the holds. Where CommitOnBranch would put a default branch in
+//     the cache or hold a pair as unseen, this carries it instead, and where CommitOnBranch marks
+//     a pair seen, this marks nothing.
 //
-// The default branch this process resolved for a repository, and the compare reads it holds as
-// refused, are shared with every other read: both are what GitHub said about the repository,
-// kept in memory, and neither is a row.
+// A compare read's answer is written nowhere: the caller answers it for the rest of its request
+// (api's comparisonReader.onBranch memo), where a writer's later read in the same request reads
+// the row its own read wrote. The tidying these reads do of the holds (unseenHeld,
+// isDefaultBranch) stays, since it changes no answer and no call.
 func (c *Branches) ReadCommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
 	client *githubapp.Client,
-	learned KeptHeads,
+	answers HeadAnswers,
+	carry *BranchCarry,
 	repoFull, branch, sha string,
 	now time.Time,
 ) BranchAnswer {
-	read := c.readCommitOnBranch(ctx, pool, client, learned, true, repoFull, branch, sha, now)
-	if read.asked {
-		kept := readOnlyAnswer[bool]{value: read.onBranch, at: now}
-		if !read.onBranch {
-			kept.until = now.Add(BranchCommitStaleAfter)
-		}
-		c.readOnly.keep(read.key, kept, now)
-	}
-	return read.answer
-}
-
-// CountReadOnlyDrops has the memory of a read-only caller's compare answers (ReadCommitOnBranch)
-// count every answer it drops at ReadOnlyAnswerBound on dropped, as CommitPullAnswers.CountDrops
-// has its own.
-func (c *Branches) CountReadOnlyDrops(dropped *metrics.Counter) {
-	c.readOnly.countDrops(dropped)
+	return c.readCommitOnBranch(ctx, pool, client, answers, carry, repoFull, branch, sha, now).answer
 }
 
 // branchRead is what readCommitOnBranch found: the answer, and where a compare read was answered,
-// the branch it asked about under its resolved name and GitHub's yes or no, which the caller
-// keeps (asked). key is that commit's key in a read-only read's memory, made for a read-only read
-// alone, which reads its kept answer by it and keeps by it.
+// the branch it asked about under its resolved name and GitHub's yes or no, which a writer's read
+// writes (asked).
 type branchRead struct {
 	answer   BranchAnswer
 	asked    bool
 	branch   string
-	key      branchCommitKey
 	onBranch bool
 }
 
 // readCommitOnBranch is the whole of CommitOnBranch but its write, as that doc comment gives it.
-// learned and readOnly are ReadCommitOnBranch's: a read-only read reads the row as a writer's
-// read would have written it, a merge it learned as that merge's yes and a compare answer it
-// kept in memory as the compare read's row, at the one place a writer's read reads its row, so
-// both meet the exits after it on the same row. CommitOnBranch passes neither.
+// answers and carry are ReadCommitOnBranch's, and CommitOnBranch passes none, carry nil: a
+// read-only read reads a merge its request learned as that merge's yes at the one place a
+// writer's read reads its row, so both meet the exits after it on the same row, and it reads and
+// writes what it carries where a writer's read reads and writes this process's cache and holds.
 func (c *Branches) readCommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
 	client *githubapp.Client,
-	learned KeptHeads,
-	readOnly bool,
+	answers HeadAnswers,
+	carry *BranchCarry,
 	repoFull, branch, sha string,
 	now time.Time,
 ) branchRead {
@@ -393,34 +381,22 @@ func (c *Branches) readCommitOnBranch(
 	readable := true
 	switch {
 	case branch == DefaultBranch:
-		if branch, readable = c.branchOf(ctx, client, repoFull, now); branch == "" {
+		if branch, readable = c.branchOf(ctx, client, carry, repoFull, now); branch == "" {
 			return branchRead{answer: BranchUnknown}
 		}
-	case c.isDefaultBranch(repoBranch{repo: repoFull, branch: branch}):
+	case c.isDefaultBranch(carry, repoBranch{repo: repoFull, branch: branch}):
 		// The caller's own name stands: branchOf is read here for whether the repository can
 		// be read at all, and a default branch renamed away from this one since leaves it an
 		// ordinary named branch rather than quietly measuring against another branch.
-		_, readable = c.branchOf(ctx, client, repoFull, now)
+		_, readable = c.branchOf(ctx, client, carry, repoFull, now)
 	}
 	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
-	var key branchCommitKey
-	if readOnly {
-		key = branchCommitKeyOf(repoFull, branch, sha)
-	}
 	if err != nil {
 		slog.Warn("dispatch: read a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
-	} else if readOnly {
-		// A compare answer an earlier read-only read kept is the row that read would have
-		// written, where nothing is stored or what is stored is an older no: a stored yes is
-		// never asked about again, so no compare answer can be newer than it.
-		if kept, recalled := c.readOnly.recall(key, now); recalled && (!found || (!stored.OnBranch && kept.at.After(stored.CheckedAt))) {
-			stored, found = BranchCommit{OnBranch: kept.value, CheckedAt: kept.at}, true
-		}
-		// A merge the read-only read learned and stored nowhere: the row a writer's read would
-		// have stored for it by now holds a yes, written over whatever the row held before.
-		if mergeLearnedOnBranch(learned, repoFull, branch, sha) {
-			stored, found = BranchCommit{OnBranch: true, CheckedAt: now}, true
-		}
+	} else if mergeLearnedOnBranch(answers, repoFull, branch, sha) {
+		// A merge the request learned and stored nowhere: the row a writer's read would have
+		// stored for it by now holds a yes, written over whatever the row held before.
+		stored, found = BranchCommit{OnBranch: true, CheckedAt: now}, true
 	}
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
 		return branchRead{answer: branchAnswerOf(stored.OnBranch)}
@@ -438,8 +414,8 @@ func (c *Branches) readCommitOnBranch(
 	// default branch is not: that pair reads no hold and leaves none, under whichever name the
 	// caller reached it. It is read once, before the call goes out, so the refusal below is
 	// held on the same terms the hold above was read on.
-	holdable := !c.isDefaultBranch(pair)
-	if holdable && c.unseenHeld(pair, now) {
+	holdable := !c.isDefaultBranch(carry, pair)
+	if holdable && (carry.holdsUnseen(pair) || c.unseenHeld(pair, now)) {
 		return branchRead{answer: BranchUnseen}
 	}
 	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
@@ -448,15 +424,19 @@ func (c *Branches) readCommitOnBranch(
 			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
 			return branchRead{answer: BranchUnknown}
 		}
-		if holdable {
+		switch {
+		case !holdable:
+		case carry != nil:
+			c.carryUnseen(carry, pair, now)
+		default:
 			c.markUnseen(pair, now)
 		}
 		return branchRead{answer: BranchUnseen}
 	}
-	if holdable {
+	if holdable && carry == nil {
 		c.markSeen(pair, now)
 	}
-	return branchRead{answer: branchAnswerOf(answer), asked: true, branch: branch, key: key, onBranch: answer}
+	return branchRead{answer: branchAnswerOf(answer), asked: true, branch: branch, onBranch: answer}
 }
 
 // branchAnswerOf is GitHub's yes or no about a commit, read or stored, as the answer a caller is
@@ -478,8 +458,13 @@ func branchAnswerOf(onBranch bool) BranchAnswer {
 // CommitOnBranch wants the name even when the newest read could not say, since a
 // branch_commits row is keyed by a branch and the name has to come from somewhere before that
 // row can be asked for at all.
-func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) (string, bool) {
-	if held, fresh := c.get(repoFull, now); fresh {
+//
+// carry is a read-only read's (ReadDefaultBranchOf, ReadCommitOnBranch), and nil for a writer's:
+// what it carries for the repository is read before what this process holds, and what GitHub
+// answers is carried in it in place of the cache, so the read-only read's later steps read its
+// own read where a writer's later steps read the entry the writer's read put.
+func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, carry *BranchCarry, repoFull string, now time.Time) (string, bool) {
+	if held, fresh := c.get(carry, repoFull, now); fresh {
 		return held.branch, held.readable
 	}
 	branch := ""
@@ -493,15 +478,15 @@ func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoF
 			branch = read
 		}
 	}
-	return c.put(repoFull, branch, now), branch != ""
+	return c.put(carry, repoFull, branch, now), branch != ""
 }
 
 // get is what this process holds about repo's default branch, exactly as put left it, and
-// whether that answer still stands at now.
-func (c *Branches) get(repo string, now time.Time) (cachedBranch, bool) {
+// whether that answer still stands at now: carry's entry where carry holds one (heldLocked).
+func (c *Branches) get(carry *BranchCarry, repo string, now time.Time) (cachedBranch, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	held, found := c.known[repo]
+	held, found := c.heldLocked(carry, repo)
 	if !found || now.Sub(held.readAt) >= BranchCommitStaleAfter {
 		return cachedBranch{}, false
 	}
@@ -510,21 +495,41 @@ func (c *Branches) get(repo string, now time.Time) (cachedBranch, bool) {
 
 // put records what GitHub said about repo's default branch at now and answers the name held
 // afterwards. A read that could not say leaves the name standing and marks the repository
-// unreadable, for the reason cachedBranch gives.
-func (c *Branches) put(repo, branch string, now time.Time) string {
+// unreadable, for the reason cachedBranch gives. A read-only read's answer is recorded in carry,
+// on what heldLocked finds, and this process's cache is left as it was.
+func (c *Branches) put(carry *BranchCarry, repo, branch string, now time.Time) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.known == nil {
-		c.known = map[string]cachedBranch{}
-	}
-	held := c.known[repo]
+	held, _ := c.heldLocked(carry, repo)
 	held.readAt = now
 	held.readable = branch != ""
 	if branch != "" {
 		held.branch = branch
 	}
+	if carry != nil {
+		if carry.known == nil {
+			carry.known = map[string]cachedBranch{}
+		}
+		carry.known[repo] = held
+		return held.branch
+	}
+	if c.known == nil {
+		c.known = map[string]cachedBranch{}
+	}
 	c.known[repo] = held
 	return held.branch
+}
+
+// heldLocked is what a read finds of repo's default branch: what carry carries for it, where a
+// read-only read's carry holds anything, and else this process's entry. c.mu is held.
+func (c *Branches) heldLocked(carry *BranchCarry, repo string) (cachedBranch, bool) {
+	if carry != nil {
+		if held, found := carry.known[repo]; found {
+			return held, true
+		}
+	}
+	held, found := c.known[repo]
+	return held, found
 }
 
 // isDefaultBranch reports whether pair names the branch this process last resolved as that
@@ -548,11 +553,12 @@ func (c *Branches) put(repo, branch string, now time.Time) string {
 // before this process had resolved the repository's default branch can have left anything
 // there, and nothing reads such an entry again, so keeping it would leave the map one entry
 // per repository heavier for the life of the process — a read's own tidying, as unseenHeld's
-// is.
-func (c *Branches) isDefaultBranch(pair repoBranch) bool {
+// is. A read-only read's own read of the repository names the branch where its carry holds one
+// (heldLocked).
+func (c *Branches) isDefaultBranch(carry *BranchCarry, pair repoBranch) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.known[pair.repo].branch != pair.branch {
+	if held, _ := c.heldLocked(carry, pair.repo); held.branch != pair.branch {
 		return false
 	}
 	delete(c.compares, pair)
@@ -613,6 +619,29 @@ func (c *Branches) markUnseen(pair repoBranch, readAt time.Time) {
 	}
 	held.unseenAt = readAt
 	c.compares[pair] = held
+}
+
+// carryUnseen is markUnseen for a read-only read: it carries pair as unseen in carry, for the
+// rest of that read's request, on the terms markUnseen holds a pair on, and holds nothing in this
+// process, so its request's later steps are answered unseen where a writer's are answered from
+// its hold.
+func (c *Branches) carryUnseen(carry *BranchCarry, pair repoBranch, readAt time.Time) {
+	c.mu.Lock()
+	answered := c.compares[pair].answeredAt.After(readAt)
+	c.mu.Unlock()
+	if answered {
+		return
+	}
+	if carry.unseen == nil {
+		carry.unseen = map[repoBranch]bool{}
+	}
+	carry.unseen[pair] = true
+}
+
+// holdsUnseen is whether carry carries pair as unseen (carryUnseen). A nil carry, a writer's
+// read's, carries nothing.
+func (carry *BranchCarry) holdsUnseen(pair repoBranch) bool {
+	return carry != nil && carry.unseen[pair]
 }
 
 // markSeen records that a compare read of pair begun at readAt was answered, which drops

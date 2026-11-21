@@ -26,21 +26,23 @@ fill_types="issue.created issue.updated issue.closed artifact.version comment.cr
 # expected reads the version a redacted event starts as the first event of its item: its kind
 # and id, its issue, its text (an issue's title, a post's body, an ask's question), an ask's
 # options and answer, the issue's primary document and its version, and whether the event cut the
-# body, each as the event carries it and null where it carries none. The delete of a post starts a
-# version with empty text, which Go reads as null, as it reads every empty text (expectedOf); its
-# event carries no body. An issue.created's version holds version 1 of the issue's primary
-# document, which the create writes and which gets no event of its own; an
-# artifact.version's is the version it names, of the issue its envelope names. Read in Go, a
-# body_truncated of null is false. It is null for an event that starts no version: an
-# artifact.version of no issue (a project's document, never an issue's primary one) and a message
-# of no issue, which the keyword table leaves out.
+# body, each as the event carries it and null where it carries none. An issue event's empty
+# primary_artifact_id, which the API writes for an issue with no primary document, names none, as
+# an absent one does. The delete of a post starts a version with empty text, which Go reads as
+# null, as it reads every empty text (expectedOf); its event carries no body. An issue.created's
+# version holds version 1 of the issue's primary document, which the create writes and which gets
+# no event of its own; an artifact.version's is the version it names, of the issue its envelope
+# names. Read in Go, a body_truncated of null is false. It is null for an event that starts no
+# version: an artifact.version of no issue (a project's document, never an issue's primary one)
+# and a message of no issue, which the keyword table leaves out.
 read -r -d '' expected <<'JQ' || true
 .type as $type | .payload as $p
 | if $type == "issue.created" or $type == "issue.updated" or $type == "issue.closed" then
-    {kind: "issue", id: $p.key, issue_key: $p.key, title_or_body: $p.title, options: null,
-     answer: null, spec_artifact_id: $p.primary_artifact_id,
-     spec_version: (if $type == "issue.created" and $p.primary_artifact_id != null then 1 else null end),
-     body_truncated: null}
+    ($p.primary_artifact_id | if . == "" then null else . end) as $primary
+    | {kind: "issue", id: $p.key, issue_key: $p.key, title_or_body: $p.title, options: null,
+       answer: null, spec_artifact_id: $primary,
+       spec_version: (if $type == "issue.created" and $primary != null then 1 else null end),
+       body_truncated: null}
   elif ($type == "artifact.version" or ($type | startswith("message."))) and .issue_key == null then
     null
   elif $type == "artifact.version" then

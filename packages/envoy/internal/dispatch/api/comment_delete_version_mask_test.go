@@ -61,6 +61,27 @@ func nameVersion(t *testing.T, handler http.Handler, artifactID, summary string)
 	return number
 }
 
+// suggestProjectInsert has a browser mark insertedWords, and the space after them, in the project
+// document as an insert suggestion whose mark is markID, which alice then suggests; it answers her
+// comment.
+func suggestProjectInsert(t *testing.T, handler http.Handler, database *store.Store, documentService *docs.Service, document model.Artifact, markID string) model.Comment {
+	t.Helper()
+	writeBrowserMark(t, database, documentService, document.ID, docs.MarkSpec{
+		Kind:  docs.MarkSuggestion,
+		ID:    markID,
+		Attrs: pmdoc.Attrs{"id": markID, "by": "user:alice", "kind": "insert"},
+	}, insertedWords+" ")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{
+		"body":       "Add this word.",
+		"anchor":     map[string]any{"artifact": document.Slug, "mark_id": markID},
+		"suggestion": map[string]string{"replace_with": insertedWords + " "},
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("suggest the insert on the project document: status=%d body=%s", created.Code, created.Body.String())
+	}
+	return decodeBody[model.Comment](t, created)
+}
+
 // storedInsertTree is version number of artifactID's artifact_versions.insert_tree as text, nil
 // where the column is null.
 func storedInsertTree(t *testing.T, database *store.Store, artifactID string, number int) *string {
@@ -183,26 +204,9 @@ func artifactReviewsJSON(t *testing.T, handler http.Handler, artifactID, id stri
 // read by the project's slug masks it the same way: one read serves every version route.
 func TestAProjectDocumentsVersionGivesNoWordOfAPendingInsertDeletedSince(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "CORE", "name": "Core",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
+	createTestProject(t, handler, "CORE")
 	document := createProjectDocument(t, handler, "CORE", "Design notes", "The "+insertedWords+" brown fox jumps\n")
-	writeBrowserMark(t, database, documentService, document.ID, docs.MarkSpec{
-		Kind:  docs.MarkSuggestion,
-		ID:    "m-insert",
-		Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
-	}, insertedWords+" ")
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{
-		"body":       "Add this word.",
-		"anchor":     map[string]any{"artifact": document.Slug, "mark_id": "m-insert"},
-		"suggestion": map[string]string{"replace_with": insertedWords + " "},
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("suggest the insert on the project document: status=%d body=%s", created.Code, created.Body.String())
-	}
-	insert := decodeBody[model.Comment](t, created)
+	insert := suggestProjectInsert(t, handler, database, documentService, document, "m-insert")
 	pending := nameVersion(t, handler, document.ID, "With the insert pending")
 	path := fmt.Sprintf("/api/v1/projects/CORE/artifacts/%s/versions/%d", document.Slug, pending)
 	// The positive control: while the insert stands pending, the version gives its words.
@@ -233,11 +237,8 @@ func TestAVersionNamedAfterTheDeleteWritesNoWordOfTheInsertIntoItsDiff(t *testin
 		t.Fatalf("the version named after the delete is %d, want %d, so its diff is read from the version holding the insert", next, pending+1)
 	}
 	// The positive control: the version the diff is read from stores the words.
-	var markdown string
-	if err := f.database.Pool.QueryRow(context.Background(), `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, f.artifactID, pending).Scan(&markdown); err != nil || !strings.Contains(markdown, insertedWords) {
-		t.Fatalf("version %d stores %q (%v), want it holding %q, so the diff's check cannot fail", pending, markdown, err, insertedWords)
+	if markdown := versionText(t, f.database, f.artifactID, pending); !strings.Contains(markdown, insertedWords) {
+		t.Fatalf("version %d stores %q, want it holding %q, so the diff's check cannot fail", pending, markdown, insertedWords)
 	}
 	var diff *string
 	err := f.database.Pool.QueryRow(context.Background(), `

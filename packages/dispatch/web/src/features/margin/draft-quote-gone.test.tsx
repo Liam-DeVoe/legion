@@ -112,9 +112,23 @@ function land(client: QueryClient, read: ArtifactText, at?: number): void {
 
 const noop = () => {};
 
+/** The anchor of a compose at `quote`'s words of the document under the mark `markId`, naming the
+ *  pending inserts `insertMarks` names, or, where that is undefined, with no field for them at
+ *  all, as a draft an older build kept has none (`ComposerAnchor.insertMarks`). */
+function wordsAnchor(
+  markId: string,
+  quote: string,
+  insertMarks?: readonly string[]
+): ComposerAnchor {
+  return insertMarks === undefined
+    ? { artifact: DOCUMENT, mark_id: markId, quote }
+    : { artifact: DOCUMENT, insertMarks, mark_id: markId, quote };
+}
+
 /** A draft kept for `quote`'s words of the document under the mark `markId`, with `body`, by a
  *  compose that took those words at `anchoredAt`, or by an older release, which kept no time; the
- *  words lie in the pending inserts `insertMarks` names, where it names any. */
+ *  words lie in the pending inserts `insertMarks` names, where it names a list, and the anchor has
+ *  no such field where it names no list (`wordsAnchor`). */
 function keptDraft(
   markId: string,
   quote: string,
@@ -123,7 +137,7 @@ function keptDraft(
   insertMarks?: readonly string[]
 ): OfferedDraft {
   return {
-    anchor: { artifact: DOCUMENT, insertMarks, mark_id: markId, quote },
+    anchor: wordsAnchor(markId, quote, insertMarks),
     anchoredAt,
     draft: { body, mentions: [], replacement: "" },
     drop: noop,
@@ -139,7 +153,7 @@ function keptDraft(
  *  or none where it is undefined, and the issue's comment list `comments`, where it is given.
  *  `offeredAt` and `awayAt` are when the composes that kept the two drafts took the words, and
  *  `readAt` is when `read` landed; the words lie in the pending inserts `insertMarks` names on
- *  every surface, where it names any. */
+ *  every surface, where it names a list, and no anchor has such a field where it names no list. */
 function renderSurfaces(
   quote: string,
   read: ArtifactText | undefined,
@@ -172,7 +186,7 @@ function renderSurfaces(
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={client}>
         <MentionComposer
-          anchor={{ artifact: DOCUMENT, insertMarks, mark_id: "mark-open", quote }}
+          anchor={wordsAnchor("mark-open", quote, insertMarks)}
           kind="comment"
           onClose={noop}
           onSent={noop}
@@ -251,8 +265,13 @@ test("a draft quoting a deleted post's inserted words draws none of them once th
 
 // The control: words the document still holds are drawn, a selection across two blocks among
 // them, which the editor names with a line break where the document's words hold a space; and so
-// are they while the page holds no text of the document at all.
-test("a draft's words the document still holds are drawn, across a block break too, and so are they before the page reads the document", () => {
+// are they before the page reads the document, once it holds the margin's comment list, which
+// lists no insert of theirs deleted, for a draft that names the inserts its words lie in: none,
+// an empty list, as the selection bar names words in no insert (`insertMarksIn`). With neither
+// read held, none is drawn (the architect's ruling of 2026-11-21 00:17Z), and a draft an older
+// build kept, which names no list, waits for the text read (its ruling of 01:49Z); the tests at
+// the end of this file.
+test("a draft's words the document still holds are drawn, across a block break too, and so are words in no insert once the page holds its comments before it reads the document", () => {
   const across = "release.\nHold it";
   const held = renderSurfaces(across, textRead(AFTER));
   try {
@@ -262,7 +281,7 @@ test("a draft's words the document still holds are drawn, across a block break t
     held.view.unmount();
     held.client.clear();
   }
-  const unread = renderSurfaces(QUOTE, undefined);
+  const unread = renderSurfaces(QUOTE, undefined, { comments: [], insertMarks: [] });
   try {
     expect(timesDrawn(unread.view.container, QUOTE)).toBe(3);
   } finally {
@@ -275,11 +294,13 @@ test("a draft's words the document still holds are drawn, across a block break t
 // document, and the reader selected them: that read lacks them, and nothing has read the text
 // since. It is older than each compose that took the words - the open one, and the one that kept
 // a draft for them a second ago - so no surface takes it to say the words left: they are on
-// screen.
+// screen. The words lie in no insert, which this build's selection bar names by an empty list
+// (`insertMarksIn`); words that name no list are a row near the end of this file.
 test("words typed after the page last read the document are drawn though that read lacks them", () => {
   const now = Date.now();
   const { client, view } = renderSurfaces(QUOTE, textRead(AFTER), {
     awayAt: now - 1_000,
+    insertMarks: [],
     offeredAt: now - 1_000,
     readAt: now - 60_000,
   });
@@ -495,9 +516,11 @@ test("a composer that mounts again after the delete, while the page's next read 
 // comment's pending insert, so each draft's anchor keeps the insert's mark
 // (`ComposerAnchor.insertMarks`), and the page's read of the text is the one from before the
 // delete, which holds the words. The delete's correction writes the insert's comment deleted into
-// the issue's comment list (`markCorrectedPost`), and no read of the text lands after it: the open
-// composer, the offer of a draft kept for the words and the margin's list of what its compose kept
-// each draw none of them.
+// the issue's comment list (`markCorrectedPost`), and drops that read (census row V.40); no read
+// of the text lands after it. Here the read from before the delete is put back, as a page that
+// held it and heard of the delete only through its comment list would hold it: the open composer,
+// the offer of a draft kept for the words and the margin's list of what its compose kept each draw
+// none of them.
 test("a draft whose words lie in a pending insert draws none of them on any surface once the page holds the insert's comment deleted, with no read of the document since", () => {
   const { client, view } = renderSurfaces(QUOTE, textRead(BEFORE), {
     comments: [INSERT_COMMENT],
@@ -510,6 +533,8 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
     const readAt = client.getQueryState(textKey)?.dataUpdatedAt;
 
     act(() => markCorrectedPost(client, insertDeleted()));
+    const dropped = client.getQueryData(textKey);
+    act(() => land(client, textRead(BEFORE), readAt));
     const composer = screen.getByRole("form", { name: "Comment composer" });
     expect({
       composer:
@@ -517,23 +542,36 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
           "The words this draft was for are no longer in the document."
         ) !== null,
       drawn: timesDrawn(view.container, QUOTE),
+      dropped,
       kept: screen.getByTestId("kept").textContent,
       offered: screen.getByTestId("offered").textContent,
-      // The only read of the document's text is still the one from before the delete.
-      readSince: client.getQueryState(textKey)?.dataUpdatedAt !== readAt,
     }).toEqual({
       composer: true,
       drawn: 0,
+      dropped: undefined,
       kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
       offered:
         "You wrote this draft for other words, which are no longer in the document. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
-      readSince: false,
     });
   } finally {
     view.unmount();
     client.clear();
   }
 });
+
+/** The drafts `drafts`, kept in turn under `name` by a page signed in as alice, as the next page
+ *  reads them once a reload has brought it over the same tab with the query client `client` and
+ *  alice is signed in there: the store of unsent drafts that lives with `client`. */
+function keptOverReload(name: string, drafts: readonly AwayDraft[], client: QueryClient) {
+  const before = new QueryClient();
+  draftStoresSignedIn(before, "alice");
+  for (const draft of drafts) unsentDraftsOf(before).keepAway(name, draft);
+  // The reload: the next page loads over the same tab, with a query client of its own.
+  before.clear();
+  draftStoresReloaded();
+  draftStoresSignedIn(client, "alice");
+  return unsentDraftsOf(client);
+}
 
 // A reload after the delete: the tab kept the drafts the margin's compose kept for the words, each
 // with the insert's mark in its anchor (`keptAnchor`), and the page that loads holds no read of
@@ -543,12 +581,7 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
 // the other: none draws the words.
 test("after a reload, the drafts the tab kept for words in a deleted insert keep its mark and draw none of the words, with no read of the document", () => {
   const name = composerNameOf(marginComposeSendKey(DOCUMENT));
-  const wordsAt = (markId: string): ComposerAnchor => ({
-    artifact: DOCUMENT,
-    insertMarks: [INSERT_MARK],
-    mark_id: markId,
-    quote: QUOTE,
-  });
+  const wordsAt = (markId: string) => wordsAnchor(markId, QUOTE, [INSERT_MARK]);
   const keptFor = (markId: string, body: string): AwayDraft => ({
     anchor: wordsAt(markId),
     anchoredAt: Date.now(),
@@ -557,19 +590,15 @@ test("after a reload, the drafts the tab kept for words in a deleted insert keep
     owner: OWNER,
     replyTo: null,
   });
-  const before = new QueryClient();
-  draftStoresSignedIn(before, "alice");
-  unsentDraftsOf(before).keepAway(name, keptFor("mark-away", "Name who runs it."));
-  unsentDraftsOf(before).keepAway(name, keptFor("mark-insert", "Which review is this?"));
-  // The reload: the next page loads over the same tab, with a query client of its own.
-  before.clear();
-  draftStoresReloaded();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  draftStoresSignedIn(client, "alice");
+  const stored = keptOverReload(
+    name,
+    [keptFor("mark-away", "Name who runs it."), keptFor("mark-insert", "Which review is this?")],
+    client
+  );
   client.setQueryData(COMMENTS, [
     { ...INSERT_COMMENT, anchor: { ...INSERT_COMMENT.anchor, quote: "" }, body: "", ...DELETION },
   ]);
-  const stored = unsentDraftsOf(client);
   const atWords = stored.readAway(name, null, wordsAt("mark-insert"));
   const away = stored.readAway(name, null, wordsAt("mark-away"));
   if (atWords?.anchor === undefined || away?.anchor === undefined) {
@@ -627,6 +656,273 @@ test("after a reload, the drafts the tab kept for words in a deleted insert keep
     });
   } finally {
     others.unmount();
+    client.clear();
+  }
+});
+
+/** What each surface draws of a draft's quote: the composer's line in place of it, where it draws
+ *  one, how often the words stand in the page, and the two leads. */
+function drawnQuotes(container: HTMLElement) {
+  const composer = screen.getByRole("form", { name: "Comment composer" });
+  return {
+    composer: within(composer).queryByText(/^The words this draft was for /)?.textContent,
+    drawn: timesDrawn(container, QUOTE),
+    kept: screen.getByTestId("kept").textContent,
+    offered: screen.getByTestId("offered").textContent,
+  };
+}
+
+/** What `drawnQuotes` reads while no read that can check the words has landed. */
+const LOADING = {
+  composer: "The words this draft was for are still loading.",
+  drawn: 0,
+  kept: "You wrote this draft for words that are still loading. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+  offered:
+    "You wrote this draft for other words, which are still loading. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+};
+
+/** What `drawnQuotes` reads once the words are drawn on each surface again. */
+const DRAWN = {
+  composer: undefined,
+  drawn: 3,
+  kept: `You wrote this draft for the words “${QUOTE}”. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft`,
+  offered: `You wrote this draft for other words: “${QUOTE}”. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft`,
+};
+
+/** What `drawnQuotes` reads once each read that can check the words has failed with no answer. */
+const UNCHECKED = {
+  composer: "The words this draft was for cannot be checked now.",
+  drawn: 0,
+  kept: "You wrote this draft for words that cannot be checked now. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+  offered:
+    "You wrote this draft for other words, which cannot be checked now. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+};
+
+/** What `drawnQuotes` reads once a read of the document's text that can say so lacks the words. */
+const GONE = {
+  composer: "The words this draft was for are no longer in the document.",
+  drawn: 0,
+  kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+  offered:
+    "You wrote this draft for other words, which are no longer in the document. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+};
+
+// The architect's ruling of 2026-11-21 00:17Z on dispatch://INFRA-1523 (census rows RM.1-RM.3 and
+// 11.9). After a reload the page holds no read of the document's text and none of the margin's
+// comment list, and neither the time gate nor the deleted insert's fact can speak. While the
+// page's first reads of the two are out, each surface draws a draft's quote as loading, with none
+// of its words and no failure; the quote is drawn again once a read lands that holds the words.
+test("after a reload, while the page's first reads of the document and its comments are out, no surface draws a word of a draft's quote, and each draws it once the text read lands holding the words", async () => {
+  const { client, view } = renderSurfaces(QUOTE, undefined, { insertMarks: [INSERT_MARK] });
+  const text = Promise.withResolvers<ArtifactText>();
+  const comments = Promise.withResolvers<Comment[]>();
+  try {
+    act(() => {
+      void client.prefetchQuery({ ...liveTextQueryOptions(DOCUMENT), queryFn: () => text.promise });
+      void client.prefetchQuery({ queryFn: () => comments.promise, queryKey: COMMENTS });
+    });
+    const loading = drawnQuotes(view.container);
+
+    await act(async () => {
+      text.resolve(textRead(BEFORE));
+      await text.promise;
+    });
+    expect({ landed: drawnQuotes(view.container), loading }).toEqual({
+      landed: DRAWN,
+      loading: LOADING,
+    });
+  } finally {
+    comments.resolve([]);
+    view.unmount();
+    client.clear();
+  }
+});
+
+/** Dispatch's refusal of a read while it is unavailable. */
+const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "Dispatch is unavailable" });
+
+// The same reload, whose first reads fail. One failed read with the other still out is a load
+// still under way, and the quote still draws as loading; once both have failed, each surface says
+// the words cannot be checked now, and draws none of them. The comment list read again lands with
+// the insert's comment standing, and each surface draws the quote again, the text read still
+// failed.
+test("after a reload whose first reads of the document and its comments both fail, each surface says a draft's words cannot be checked now and draws none of them, and draws them once the comments read lands", async () => {
+  const { client, view } = renderSurfaces(QUOTE, undefined, { insertMarks: [INSERT_MARK] });
+  const comments = Promise.withResolvers<Comment[]>();
+  try {
+    await act(async () => {
+      void client.prefetchQuery({ queryFn: () => comments.promise, queryKey: COMMENTS });
+      await client.prefetchQuery({
+        ...liveTextQueryOptions(DOCUMENT),
+        queryFn: () => Promise.reject(UNAVAILABLE),
+      });
+    });
+    const oneFailed = drawnQuotes(view.container);
+
+    await act(async () => {
+      comments.reject(UNAVAILABLE);
+      await comments.promise.catch(() => undefined);
+    });
+    const bothFailed = drawnQuotes(view.container);
+
+    act(() => client.setQueryData(COMMENTS, [INSERT_COMMENT]));
+    expect({
+      bothFailed,
+      commentsRead: drawnQuotes(view.container),
+      oneFailed,
+      text: client.getQueryState(liveTextQueryOptions(DOCUMENT).queryKey)?.status,
+    }).toEqual({
+      bothFailed: UNCHECKED,
+      commentsRead: DRAWN,
+      oneFailed: LOADING,
+      text: "error",
+    });
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});
+
+// The architect's ruling of 2026-11-21 01:49Z on dispatch://INFRA-1523. A draft or held send an
+// older build kept names no list of the pending inserts its words lie in
+// (`ComposerAnchor.insertMarks` absent, which nothing reads as an empty list), so the page's
+// comment list cannot say that its words lie in no insert whose comment is deleted. A reload
+// after the delete: the issue's comment list lands as Dispatch answers it, with the insert's
+// comment deleted, which nothing ties to the draft's words, and the page's first read of the
+// document's text is out, then fails. For such a draft the list counts as no read: each surface
+// draws its quote as loading while the text read is out, says the words cannot be checked now
+// once it has failed, and draws none of them; the read that lands after the delete lacks them,
+// and each says they are gone.
+test("a draft an older build kept, which names no list of inserts, draws no word of its quote on any surface while the page holds its comments and its read of the document's text fails", async () => {
+  const start = Date.now();
+  setSystemTime(start);
+  const { client, view } = renderSurfaces(QUOTE, undefined);
+  const text = Promise.withResolvers<ArtifactText>();
+  try {
+    act(() => {
+      client.setQueryData(COMMENTS, [
+        {
+          ...INSERT_COMMENT,
+          anchor: { ...INSERT_COMMENT.anchor, quote: "" },
+          body: "",
+          ...DELETION,
+        },
+      ]);
+      void client.prefetchQuery({ ...liveTextQueryOptions(DOCUMENT), queryFn: () => text.promise });
+    });
+    const reading = drawnQuotes(view.container);
+
+    await act(async () => {
+      text.reject(UNAVAILABLE);
+      await text.promise.catch(() => undefined);
+    });
+    const failed = drawnQuotes(view.container);
+
+    setSystemTime(start + 1_000);
+    act(() => land(client, textRead(AFTER)));
+    expect({ failed, gone: drawnQuotes(view.container), reading }).toEqual({
+      failed: UNCHECKED,
+      gone: GONE,
+      reading: LOADING,
+    });
+  } finally {
+    setSystemTime();
+    view.unmount();
+    client.clear();
+  }
+});
+
+// The same ruling's two halves under the same reads: the page's first read of the document's text
+// fails, and then the issue's comment list lands, with no insert's comment deleted. A draft that
+// names the inserts its words lie in - none, an empty list, as the selection bar names words in
+// no insert (`insertMarksIn`) - draws its quote as soon as the list lands. One an older build
+// kept, which names no list, says the words cannot be checked now, the list landed or not, and
+// draws them only once a read of the text lands that holds them.
+test("a draft naming an empty list of inserts draws its quote as soon as the page's comments land, and one an older build kept draws it only once a text read lands holding the words", async () => {
+  /** What each surface draws of a draft whose words name the inserts `insertMarks`, or no list,
+   *  as the page's read of the document's text fails, as its comments land after that, and as a
+   *  text read holding the words lands. */
+  const drawnAsReadsLand = async (insertMarks?: readonly string[]) => {
+    const { client, view } = renderSurfaces(QUOTE, undefined, { insertMarks });
+    try {
+      await act(async () => {
+        await client.prefetchQuery({
+          ...liveTextQueryOptions(DOCUMENT),
+          queryFn: () => Promise.reject(UNAVAILABLE),
+        });
+      });
+      const textFailed = drawnQuotes(view.container);
+      act(() => client.setQueryData(COMMENTS, []));
+      const listed = drawnQuotes(view.container);
+      act(() => land(client, textRead(BEFORE)));
+      return { listed, textFailed, textLanded: drawnQuotes(view.container) };
+    } finally {
+      view.unmount();
+      client.clear();
+    }
+  };
+  expect({ empty: await drawnAsReadsLand([]), older: await drawnAsReadsLand() }).toEqual({
+    empty: { listed: DRAWN, textFailed: LOADING, textLanded: DRAWN },
+    older: { listed: UNCHECKED, textFailed: UNCHECKED, textLanded: DRAWN },
+  });
+});
+
+// The same ruling, carried to the time gate. The gate is for words a person has just selected in
+// a live editor, which this build names a list of inserts for (`insertMarksIn`): a read from
+// before the compose took them can lack them while they are on screen. Words that name no list -
+// a draft or held send an older build kept, or a selection the editor held no document for - may
+// lie in an insert whose comment is deleted, and a composer that mounts at them with an empty
+// field takes its mount as their time, later than a read that lacks them. Under the reads of the
+// row "words typed after the page last read the document …" - a read a minute old that lacks the
+// words, a composer mounted now, and two drafts whose composes took them a second ago - no
+// surface takes that read to be older than words that name no list: each says they are no longer
+// in the document, and draws none of them.
+test("words that name no list of inserts are gone on every surface once the page's read of the document lacks them, however old that read is", () => {
+  const now = Date.now();
+  const { client, view } = renderSurfaces(QUOTE, textRead(AFTER), {
+    awayAt: now - 1_000,
+    offeredAt: now - 1_000,
+    readAt: now - 60_000,
+  });
+  try {
+    expect(drawnQuotes(view.container)).toEqual(GONE);
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});
+
+// The same ruling: absent is not empty anywhere on the way, the tab's storage too. The tab keeps a
+// draft as its JSON, so after a reload a draft kept with no list of inserts, as an older build
+// kept every draft, reads back with no field for them, never an empty list, which would let the
+// page's comment list draw its words; and a draft kept with an empty list reads it back.
+test("after a reload, a draft kept with no list of inserts reads back with none, not an empty one, and one kept with an empty list reads it back", () => {
+  const name = composerNameOf(marginComposeSendKey(DOCUMENT));
+  const older = wordsAnchor("mark-older", QUOTE);
+  const empty = wordsAnchor("mark-empty", QUOTE, []);
+  const keptAt = (anchor: ComposerAnchor): AwayDraft => ({
+    anchor,
+    draft: { body: "Name who runs it.", mentions: [], replacement: "" },
+    kind: "comment",
+    owner: OWNER,
+    replyTo: null,
+  });
+  const client = new QueryClient();
+  const stored = keptOverReload(name, [keptAt(older), keptAt(empty)], client);
+  /** What the draft kept at `anchor`'s words names of the inserts they lie in, read back. */
+  const marksReadBack = (anchor: ComposerAnchor) => {
+    const kept = stored.readAway(name, null, anchor)?.anchor;
+    if (kept === undefined) return "no draft";
+    return "insertMarks" in kept ? kept.insertMarks : "no field";
+  };
+  try {
+    expect({ empty: marksReadBack(empty), older: marksReadBack(older) }).toEqual({
+      empty: [],
+      older: "no field",
+    });
+  } finally {
+    stored.forgetAway(name, { anchor: older, replyTo: null });
+    stored.forgetAway(name, { anchor: empty, replyTo: null });
     client.clear();
   }
 });

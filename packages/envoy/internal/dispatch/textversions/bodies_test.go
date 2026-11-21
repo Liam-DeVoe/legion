@@ -3,9 +3,12 @@ package textversions
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -126,13 +129,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		// the next batch, which is the one that warns of it.
 		batch := readLoggedEvents(t, database, comment.event, firstEdit, secondEdit)
 		var logs bytes.Buffer
-		tx, err := database.Pool.Begin(t.Context())
-		if err != nil {
-			t.Fatalf("begin the bounded batch: %v", err)
-		}
-		_, bounded, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
-		_ = tx.Rollback(t.Context())
-		if err != nil || bounded != 1 {
+		if bounded, err := decideBoundTo1Byte(t, database, &logs, batch); err != nil || bounded != 1 {
 			t.Fatalf("the batch bound to 1 byte decided %d of the comment's events (%v), want its comment.created alone", bounded, err)
 		}
 		got := decideAndWrite(t, database, &logs, batch)
@@ -190,118 +187,278 @@ func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
 // changes it, and A's edit does, so B's version keeps its event's cut text, since no source holds
 // B's whole body any more; A's version, which no later event changes, takes A's whole body from
 // the row.
+//
+// Its cases are a comment on an issue and a comment on a project's document of no issue, whose
+// events the document owns: they name the document and no issue, and take the document's seq
+// (api's ownerOf). So presentBody finds A's edit among the later events of each kind of owner.
+// Each case reads its batch as the fill's batch reads it (readBatch), which reads the document an
+// event names.
 func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
-	ctx := t.Context()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
-	long := longCommentBody()
-	aBody := "Edit A moves the rotation to the spring.\n\n" + long
-	bBody := "Edit B moves the rotation to the autumn.\n\n" + long
-	comment := writeComment(t, database, broker, "Rotate the staging key first.", true)
+	document := insertProjectDocument(t, database)
+	for _, test := range []struct {
+		name  string
+		owner commentOwner
+	}{
+		{"a comment on an issue", commentOwner{issue: new(textversionstest.Issue)}},
+		{"a comment on a project's document", commentOwner{document: &document}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			long := longCommentBody()
+			aBody := "Edit A moves the rotation to the spring.\n\n" + long
+			bBody := "Edit B moves the rotation to the autumn.\n\n" + long
+			comment := writeOwnedComment(t, database, broker, test.owner, "Rotate the staging key first.", true)
 
-	a, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin transaction A: %v", err)
-	}
-	defer a.Rollback(ctx)
-	b, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin transaction B: %v", err)
-	}
-	defer b.Rollback(ctx)
-	bEvent := writeEdit(t, b, broker, comment.id, bBody)
-	if err := b.Commit(ctx); err != nil {
-		t.Fatalf("commit transaction B: %v", err)
-	}
-	aEvent := writeEdit(t, a, broker, comment.id, aBody)
-	if err := a.Commit(ctx); err != nil {
-		t.Fatalf("commit transaction A: %v", err)
-	}
-	var aAt, bAt, editedAt time.Time
-	if err := database.Pool.QueryRow(ctx, `
-		select (select created_at from events where id = $1), (select created_at from events where id = $2),
-		       (select edited_at from comments where id = $3::uuid)
-	`, aEvent, bEvent, comment.id).Scan(&aAt, &bAt, &editedAt); err != nil {
-		t.Fatalf("read the times of the pair: %v", err)
-	}
-	if bEvent > aEvent || !bAt.After(aAt) || !editedAt.Equal(aAt) {
-		t.Fatalf("the pair is not reversed: B's event %d at %v, A's event %d at %v, the row edited at %v; want B's id lower, B's time later and the row edited at A's",
-			bEvent, bAt, aEvent, aAt, editedAt)
-	}
+			a, _ := textversionstest.BeginTransaction(t, database)
+			defer func() { _ = a.Rollback(context.Background()) }()
+			b, _ := textversionstest.BeginTransaction(t, database)
+			defer func() { _ = b.Rollback(context.Background()) }()
+			bEvent := writeEdit(t, b, broker, comment.id, bBody)
+			if err := b.Commit(ctx); err != nil {
+				t.Fatalf("commit transaction B: %v", err)
+			}
+			aEvent := writeEdit(t, a, broker, comment.id, aBody)
+			if err := a.Commit(ctx); err != nil {
+				t.Fatalf("commit transaction A: %v", err)
+			}
+			var aAt, bAt, editedAt time.Time
+			if err := database.Pool.QueryRow(ctx, `
+				select (select created_at from events where id = $1), (select created_at from events where id = $2),
+				       (select edited_at from comments where id = $3::uuid)
+			`, aEvent, bEvent, comment.id).Scan(&aAt, &bAt, &editedAt); err != nil {
+				t.Fatalf("read the times of the pair: %v", err)
+			}
+			if bEvent > aEvent || !bAt.After(aAt) || !editedAt.Equal(aAt) {
+				t.Fatalf("the pair is not reversed: B's event %d at %v, A's event %d at %v, the row edited at %v; want B's id lower, B's time later and the row edited at A's",
+					bEvent, bAt, aEvent, aAt, editedAt)
+			}
 
-	var logs bytes.Buffer
-	got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, bEvent, aEvent))
-	aCut, _ := model.EventBody(aBody)
-	bCut, _ := model.EventBody(bBody)
-	holds := func(v version) string {
-		switch v.Body {
-		case aBody:
-			return "A's whole body"
-		case bBody:
-			return "B's whole body"
-		case aCut:
-			return "A's cut text"
-		case bCut:
-			return "B's cut text"
-		}
-		return fmt.Sprintf("%d other bytes", len(v.Body))
+			batch := readBatch(t, database, comment.event-1, aEvent)
+			for _, e := range batch {
+				if read := (commentOwner{issue: e.IssueKey, document: e.ArtifactID}); read.String() != test.owner.String() {
+					t.Fatalf("event %d (%s) is read as owned by %s, want the comment's owner, %s", e.ID, e.Type, read, test.owner)
+				}
+			}
+			var logs bytes.Buffer
+			got := decideAndWrite(t, database, &logs, batch)
+			aCut, _ := model.EventBody(aBody)
+			bCut, _ := model.EventBody(bBody)
+			holds := func(v version) string {
+				switch v.Body {
+				case aBody:
+					return "A's whole body"
+				case bBody:
+					return "B's whole body"
+				case aCut:
+					return "A's cut text"
+				case bCut:
+					return "B's cut text"
+				}
+				return fmt.Sprintf("%d other bytes", len(v.Body))
+			}
+			versions := make([]string, 0, len(got.Versions))
+			for _, v := range got.Versions {
+				versions = append(versions, fmt.Sprintf("event %d: %s from %q", v.EventID, holds(v), v.BodyFrom))
+			}
+			if len(got.Versions) != 3 {
+				t.Fatalf("the comment's comment.created (event %d), B's edit (event %d) and A's edit (event %d) start %d versions, want 3: %v",
+					comment.event, bEvent, aEvent, len(got.Versions), versions)
+			}
+			requireKeptEventText(t, database, got, &logs, comment.id, bEvent, bBody)
+			if v := startedBy(t, got, aEvent); v.BodyFrom != bodyFromRow || v.Body != aBody {
+				t.Fatalf("A's version holds %s from %q, want A's whole body from %q", holds(v), v.BodyFrom, bodyFromRow)
+			}
+			var stored, bodyFrom string
+			if err := database.Pool.QueryRow(ctx, `
+				select body, body_from from search_text_versions where kind = 'comment' and id = $1 and event_id = $2
+			`, comment.id, aEvent).Scan(&stored, &bodyFrom); err != nil {
+				t.Fatalf("read the row of A's edit: %v", err)
+			}
+			if stored != aBody || bodyFrom != bodyFromRow {
+				t.Fatalf("the row of A's edit holds %d bytes from %q, want A's whole %d bytes from %q", len(stored), bodyFrom, len(aBody), bodyFromRow)
+			}
+		})
 	}
-	versions := make([]string, 0, len(got.Versions))
-	for _, v := range got.Versions {
-		versions = append(versions, fmt.Sprintf("event %d: %s from %q", v.EventID, holds(v), v.BodyFrom))
+}
+
+// TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead holds what Postgres does with the
+// statement that reads each kind of post's present body (presentBodyReads) under the plan the
+// fill's connection may keep once it caches the statement, a generic one, which orders a
+// statement's conditions by their cost alone. A kind whose text no later event changes reads no
+// event: the statement's generic plan reads no events relation. A kind whose text later events
+// change, a comment and a message, each with its edit and its delete (presentBodyReads),
+// unpacks the payload of no later event of another type: with its post's owner holding 3,000
+// later events of another type, each with a payload of about 3 KB, which Postgres stores out of
+// line (writePostWithLaterEvents), the statement reads fewer buffers than one for each 2 of those
+// events. Each kind runs on a database of its own, since the later events are written past the
+// issue's last_seq, which the next append of the issue would take again.
+//
+// That bound is stable, with a wide margin both ways. A buffer count does not depend on time or
+// on what the cache holds (the test sums buffers hit and read), only on how the rows lie on their
+// pages. Reading only the later events' types reads their rows, dozens to a page, and their
+// index: 77 buffers when this was written, 19 times under the bound. Unpacking each payload, as
+// the statement does with the payload's test outside the CASE, reads the out-of-line value's
+// index and pages for each event besides: 3 buffers an event, 9,077 in all, 6 times over it.
+func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) {
+	for _, kind := range slices.Sorted(maps.Keys(presentBodyReads)) {
+		read := presentBodyReads[kind]
+		t.Run(kind, func(t *testing.T) {
+			database := storetest.Open(t)
+			textversionstest.SeedIssue(t, database)
+			if len(read.laterTypes) == 0 {
+				relations := genericPlan(t, database, read.sql).relations()
+				if len(relations) == 0 || slices.Contains(relations, "events") {
+					t.Fatalf("the generic plan of the %s statement reads relations %v; want its rows' table and no events", kind, relations)
+				}
+				return
+			}
+			const later = 3000
+			id, e := writePostWithLaterEvents(t, database, events.NewBroker(), kind, later)
+
+			plan := analyzedGenericPlan(t, database, read, e, id)
+			if plan.ActualRows != 1 {
+				t.Fatalf("the %s statement answered %v rows; want the %s's row, which no later event changes", kind, plan.ActualRows, kind)
+			}
+			buffers := plan.SharedHit + plan.SharedRead
+			t.Logf("the %s statement read %d buffers past %d later events of another type", kind, buffers, later)
+			if buffers >= later/2 {
+				t.Fatalf("the %s statement read %d buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
+					kind, buffers, later, later/2)
+			}
+		})
 	}
-	if len(got.Versions) != 3 {
-		t.Fatalf("the comment's comment.created (event %d), B's edit (event %d) and A's edit (event %d) start %d versions, want 3: %v",
-			comment.event, bEvent, aEvent, len(got.Versions), versions)
+}
+
+// TestEachKindsHistoryBodyStatementReadsNoPayloadItNeedNotRead holds the statement that reads a
+// cut post's body from its body history (historyBodyQueries) to what
+// TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead holds the present body's to, under
+// the same generic plan and the same bound. The statement passes the events of the post's owner
+// twice, from the post's event to its next edit or delete and from the owner's first event to
+// that edit or delete, and must unpack the payload of no event of another type on either pass:
+// with 3,000 later events of another type, each with a payload of about 3 KB stored out of line
+// (writePostWithLaterEvents), and then the post's edit and the history row that keeps the body
+// it replaced, the statement answers that body and reads fewer buffers than one for each 2 of
+// those events. Reading only the events' types reads 159 buffers on the two passes when this was
+// written, 9 times under the bound. Unpacking each payload, as the statement does with the
+// payload's test outside its CASE, reads about 3 buffers an event on each pass: 18,159 in all,
+// 12 times over it.
+func TestEachKindsHistoryBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) {
+	for _, kind := range slices.Sorted(maps.Keys(historyBodyQueries)) {
+		t.Run(kind, func(t *testing.T) {
+			database := storetest.Open(t)
+			textversionstest.SeedIssue(t, database)
+			const later = 3000
+			id, e := writePostWithLaterEvents(t, database, events.NewBroker(), kind, later)
+			edit := kind + ".edited"
+			laterTypes := presentBodyReads[kind].laterTypes
+			if !slices.Contains(laterTypes, edit) {
+				t.Fatalf("the history of a %s is read by %v, which lack its edit %s", kind, laterTypes, edit)
+			}
+			ctx := t.Context()
+			if _, err := database.Pool.Exec(ctx, `
+				insert into events (issue_key, seq, type, actor, payload, notify)
+				values ($1, $2, $3, '{"kind":"user","id":"alice"}',
+				        jsonb_build_object('id', $4::text, 'issue_key', $1::text, 'body', 'Rotate the production key first.'), false)
+			`, e.IssueKey, e.Seq+later+1, edit, id); err != nil {
+				t.Fatalf("write the %s's edit: %v", kind, err)
+			}
+			if _, err := database.Pool.Exec(ctx, `insert into post_body_history (`+kind+`_id, body, edited_by) values ($1, $2, '{"kind":"user","id":"alice"}')`,
+				id, writtenPostBody); err != nil {
+				t.Fatalf("keep the body the %s's edit replaced: %v", kind, err)
+			}
+
+			tx, _ := textversionstest.BeginTransaction(t, database)
+			body, found, err := historyBody(ctx, tx, e, kind, id)
+			_ = tx.Rollback(context.Background())
+			if err != nil || !found || body != writtenPostBody {
+				t.Fatalf("historyBody of the %s answered %q, %v, %v; want the body its edit replaced, %q", kind, body, found, err, writtenPostBody)
+			}
+			plan := analyzedGenericPlanOf(t, database, historyBodyQueries[kind], "%s, %L, %L", "$1::bigint, $2::text[], $3::text",
+				e.ID, laterTypes, id)
+			if plan.ActualRows != 1 {
+				t.Fatalf("the %s's history statement answered %v rows; want the history row its edit wrote", kind, plan.ActualRows)
+			}
+			buffers := plan.SharedHit + plan.SharedRead
+			t.Logf("the %s's history statement read %d buffers past %d later events of another type", kind, buffers, later)
+			if buffers >= later/2 {
+				t.Fatalf("the %s's history statement read %d buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
+					kind, buffers, later, later/2)
+			}
+		})
 	}
-	requireKeptEventText(t, database, got, &logs, comment.id, bEvent, bBody)
-	if v := startedBy(t, got, aEvent); v.BodyFrom != bodyFromRow || v.Body != aBody {
-		t.Fatalf("A's version holds %s from %q, want A's whole body from %q", holds(v), v.BodyFrom, bodyFromRow)
+}
+
+// writtenPostBody is the body writePostWithLaterEvents writes a post with.
+const writtenPostBody = "Rotate the staging key first."
+
+// writePostWithLaterEvents writes a post of kind, a comment or a message, on
+// textversionstest.Issue with writtenPostBody, its event carrying the body whole, and then later
+// events of the post of a type that does not change its text, each with a payload of about 3 KB,
+// which Postgres stores out of line. It answers the post's id and its event. The later events are
+// written past the issue's last_seq, so the next append of the issue would take their seqs again.
+func writePostWithLaterEvents(t *testing.T, database *store.Store, broker *events.Broker, kind string, later int) (string, event) {
+	t.Helper()
+	var id, otherType string
+	var written int64
+	switch kind {
+	case kindComment:
+		comment := writeComment(t, database, broker, writtenPostBody, false)
+		id, written, otherType = comment.id, comment.event, "comment.resolved"
+	case kindMessage:
+		id, written = writeMessage(t, database, broker, writtenPostBody)
+		otherType = "message.accepted"
+	default:
+		t.Fatalf("the test writes a comment or a message, and the text of a %s now changes after its event too: write one of those", kind)
 	}
-	var stored, bodyFrom string
-	if err := database.Pool.QueryRow(ctx, `
-		select body, body_from from search_text_versions where kind = 'comment' and id = $1 and event_id = $2
-	`, comment.id, aEvent).Scan(&stored, &bodyFrom); err != nil {
-		t.Fatalf("read the row of A's edit: %v", err)
+	if slices.Contains(presentBodyReads[kind].laterTypes, otherType) {
+		t.Fatalf("%s changes a %s's text, so its payload is read: pick another type", otherType, kind)
 	}
-	if stored != aBody || bodyFrom != bodyFromRow {
-		t.Fatalf("the row of A's edit holds %d bytes from %q, want A's whole %d bytes from %q", len(stored), bodyFrom, len(aBody), bodyFromRow)
+	e := readLoggedEvents(t, database, written)[0]
+	ctx := t.Context()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		select $1, $2 + g, $3, '{"kind":"user","id":"alice"}',
+		       jsonb_build_object('id', $4::text, 'note',
+		         (select string_agg(md5(g::text || ':' || part::text), '') from generate_series(1, 96) part)),
+		       false
+		  from generate_series(1, $5::integer) g
+	`, e.IssueKey, e.Seq, otherType, id, later); err != nil {
+		t.Fatalf("write the %s's later events: %v", kind, err)
 	}
+	var outOfLine int64
+	if err := database.Pool.QueryRow(ctx,
+		`select pg_relation_size(reltoastrelid) from pg_class where oid = 'public.events'::regclass`).Scan(&outOfLine); err != nil {
+		t.Fatalf("measure the events' out-of-line values: %v", err)
+	}
+	if outOfLine < int64(later)*2048 {
+		t.Fatalf("the events' out-of-line values take %d bytes, under 2 KB for each of the %d later events, so their payloads are not stored out of line as the test needs",
+			outOfLine, later)
+	}
+	return id, e
 }
 
 // TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce writes issue ACME-1 with version
 // 1 of its primary document in a transaction of its own, before the one that appends its
 // issue.created, so version 1 was not made at the event's created_at; and between the two, issue
-// ACME-2 as the create route writes one, with version 1 in the transaction of its issue.created,
-// so ACME-1's issue.created is second in the batch. A batch bound to 1 byte decides ACME-2's
-// event alone and logs no warning; the whole batch then logs exactly one, which names ACME-1, its
-// event and when its version 1 was made, and none of ACME-2.
+// ACME-2 as the create route writes one (createIssue), with version 1 in the transaction of its
+// issue.created, so ACME-1's issue.created is second in the batch. The batch warns of ACME-1's
+// event once (requireWarnedOnceByItsBatch): bound to 1 byte, it decides ACME-2's event alone and
+// logs no warning, and whole, it logs exactly one, which names ACME-1 and its event, and none of
+// ACME-2. The warning names when ACME-1's version 1 was made, and the batch starts both versions.
 func TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
 
-	first, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin ACME-1's transaction: %v", err)
-	}
-	defer first.Rollback(ctx)
-	early := textversionstest.InsertIssue(t, first, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
-	if err := first.Commit(ctx); err != nil {
-		t.Fatalf("commit ACME-1's transaction: %v", err)
-	}
-	create, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin ACME-2's create: %v", err)
-	}
-	defer create.Rollback(ctx)
-	routed := textversionstest.InsertIssue(t, create, 2, "Audit the verifiers", "# Audit\n\nRead each verifier's key.")
-	routedEvent := textversionstest.AppendEvents(t, create, broker, routed.Event("issue.created", routed.Title))[0]
-	if err := create.Commit(ctx); err != nil {
-		t.Fatalf("commit ACME-2's create: %v", err)
-	}
+	var early textversionstest.WrittenIssue
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		early = textversionstest.InsertIssue(t, tx, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
+	})
+	routedEvent := createIssue(t, database, broker, 2, "Audit the verifiers", "# Audit\n\nRead each verifier's key.")
 	lateEvent := textversionstest.CommitEvents(t, database, broker, early.Event("issue.created", early.Title))[0]
 	batch := readLoggedEvents(t, database, routedEvent, lateEvent)
 	var made time.Time
@@ -313,33 +470,13 @@ func TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce(t *testing.T) 
 		t.Fatal("ACME-1's first document version was made at its issue.created's created_at, which tests no warning")
 	}
 
-	var logs bytes.Buffer
-	bounded, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the bounded batch: %v", err)
-	}
-	_, decidedEvents, err := decideVersions(ctx, bounded, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
-	_ = bounded.Rollback(ctx)
-	if err != nil || decidedEvents != 1 {
-		t.Fatalf("the batch bound to 1 byte decided %d of the two issue.created events (%v), want ACME-2's alone", decidedEvents, err)
-	}
-	if warnings := loggedWarnings(t, &logs); len(warnings) != 0 {
-		t.Fatalf("the batch bound to 1 byte, which leaves ACME-1's issue.created to the next batch, logged %d warnings, want none: %q",
-			len(warnings), logs.String())
-	}
-	if got := decideAndWrite(t, database, &logs, batch); len(got.Versions) != 2 {
+	got, warned := requireWarnedOnceByItsBatch(t, database, batch, "did not write version 1 of its primary document", early.Key, lateEvent)
+	if len(got.Versions) != 2 {
 		t.Fatalf("the two issue.created events start %d versions, want 2", len(got.Versions))
 	}
-	warnings := loggedWarnings(t, &logs)
-	if len(warnings) != 1 {
-		t.Fatalf("the batches logged %d warnings, want the one of ACME-1's first document version: %q", len(warnings), logs.String())
-	}
-	warned := warnings[0]
-	at, err := time.Parse(time.RFC3339Nano, warned["version_created_at"])
-	if !strings.Contains(warned["msg"], "did not write version 1 of its primary document") || warned["issue"] != early.Key ||
-		warned["event_id"] != fmt.Sprint(lateEvent) || err != nil || !at.Equal(made) {
-		t.Fatalf("the warning says %q of issue %s at event %s, version 1 made at %s; want the warning of %s's first document version at event %d, made at %s",
-			warned["msg"], warned["issue"], warned["event_id"], warned["version_created_at"], early.Key, lateEvent, made.Format(time.RFC3339Nano))
+	if at, err := time.Parse(time.RFC3339Nano, warned["version_created_at"]); err != nil || !at.Equal(made) {
+		t.Fatalf("the warning names version 1 of %s's primary document made at %q, want %s",
+			early.Key, warned["version_created_at"], made.Format(time.RFC3339Nano))
 	}
 }
 
@@ -363,29 +500,22 @@ func TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce(t *testing.T) {
 		// issue.created, as a reset of the log that kept them leaves them. A retitle is then
 		// written as the update route writes one, and version 2 of the document after it, so the
 		// document's version at the retitle's time is not its latest.
-		rows, _ := beginTransaction(t, database)
-		defer rows.Rollback(ctx)
-		issue := textversionstest.InsertIssue(t, rows, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
-		if err := rows.Commit(ctx); err != nil {
-			t.Fatalf("commit %s's rows: %v", issue.Key, err)
-		}
+		var issue textversionstest.WrittenIssue
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			issue = textversionstest.InsertIssue(t, tx, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
+		})
 		created := createIssue(t, database, broker, 2, "Audit the verifiers", "# Audit\n\nRead each verifier's key.")
-		retitle, _ := beginTransaction(t, database)
-		defer retitle.Rollback(ctx)
 		title := issue.Title + ", then audit the verifiers"
-		if _, err := retitle.Exec(ctx, `update issues set title = $2 where key = $1`, issue.Key, title); err != nil {
-			t.Fatalf("retitle %s: %v", issue.Key, err)
-		}
-		retitled := textversionstest.AppendEvents(t, retitle, broker, issue.Event("issue.updated", title))[0]
-		if err := retitle.Commit(ctx); err != nil {
-			t.Fatalf("commit %s's retitle: %v", issue.Key, err)
-		}
-		later, _ := beginTransaction(t, database)
-		defer later.Rollback(ctx)
-		textversionstest.AppendEvents(t, later, broker, issue.InsertVersion(t, later, 2, "# Rotation\n\nMove each signing key, then audit each verifier."))
-		if err := later.Commit(ctx); err != nil {
-			t.Fatalf("commit version 2 of %s's document: %v", issue.Key, err)
-		}
+		var retitled int64
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			if _, err := tx.Exec(ctx, `update issues set title = $2 where key = $1`, issue.Key, title); err != nil {
+				t.Fatalf("retitle %s: %v", issue.Key, err)
+			}
+			retitled = textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.updated", title))[0]
+		})
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			textversionstest.AppendEvents(t, tx, broker, issue.InsertVersion(t, tx, 2, "# Rotation\n\nMove each signing key, then audit each verifier."))
+		})
 
 		got, warned := requireWarnedOnceByItsBatch(t, database, readLoggedEvents(t, database, created, retitled),
 			"found no earlier version of the issue in the log", issue.Key, retitled)
@@ -468,14 +598,8 @@ func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs
 // warning, with every attribute as its text.
 func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []event, message, issue string, event int64) (decided, map[string]string) {
 	t.Helper()
-	ctx := t.Context()
 	var logs bytes.Buffer
-	bounded, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the bounded batch: %v", err)
-	}
-	_, decidedEvents, err := decideVersions(ctx, bounded, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
-	_ = bounded.Rollback(ctx)
+	decidedEvents, err := decideBoundTo1Byte(t, database, &logs, batch)
 	if err != nil || decidedEvents != 1 {
 		t.Fatalf("the batch bound to 1 byte decided %d of its %d events (%v), want the first alone", decidedEvents, len(batch), err)
 	}
@@ -496,19 +620,27 @@ func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []ev
 	return got, warned
 }
 
+// decideBoundTo1Byte decides the versions of batch as a batch bound to 1 byte decides them, with
+// the warnings logged to logs, in a transaction it rolls back, and answers how many of batch's
+// events it decided.
+func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) (int, error) {
+	t.Helper()
+	tx, _ := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	_, decidedEvents, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, 1)
+	return decidedEvents, err
+}
+
 // createIssue writes issue ACME-n of textversionstest.Project with title and its primary document
 // of markdown, and its issue.created event, in one transaction, as the create route writes one,
 // so version 1 of the document is made at the event's created_at, and answers the event's id.
 func createIssue(t *testing.T, database *store.Store, broker *events.Broker, n int, title, markdown string) int64 {
 	t.Helper()
-	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
-	issue := textversionstest.InsertIssue(t, tx, n, title, markdown)
-	event := textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", title))[0]
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the create of %s: %v", issue.Key, err)
-	}
+	var event int64
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		issue := textversionstest.InsertIssue(t, tx, n, title, markdown)
+		event = textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", title))[0]
+	})
 	return event
 }
 
@@ -534,43 +666,76 @@ func longCommentBody() string {
 	return strings.Join([]string{paragraph("alpha"), paragraph("bravo"), paragraph("charlie"), list.String()}, "\n\n")
 }
 
-// writtenComment is a comment writeComment wrote and the id of its comment.created event.
+// writtenComment is a comment writeOwnedComment wrote and the id of its comment.created event.
 type writtenComment struct {
 	id    string
 	event int64
 }
 
-// writeComment writes a comment of body on textversionstest.Issue with its comment.created event,
+// commentOwner is what owns a comment and its events, as the routes name it (api's ownerOf): an
+// issue, or a project's document of no issue, whose comments' events name the document and no
+// issue and take the document's seq. Exactly one of the two is set.
+type commentOwner struct {
+	issue, document *string
+}
+
+// String names the owner: its issue's key or its document's id.
+func (o commentOwner) String() string {
+	switch {
+	case o.issue != nil:
+		return "issue " + *o.issue
+	case o.document != nil:
+		return "document " + *o.document
+	}
+	return "no owner"
+}
+
+// writeComment writes a comment of body on textversionstest.Issue (writeOwnedComment).
+func writeComment(t *testing.T, database *store.Store, broker *events.Broker, body string, indexed bool) writtenComment {
+	t.Helper()
+	return writeOwnedComment(t, database, broker, commentOwner{issue: new(textversionstest.Issue)}, body, indexed)
+}
+
+// writeOwnedComment writes a comment of body that owner owns, with its comment.created event,
 // whose body the event carries as model.EventBody cuts it, in one transaction, as the create route
 // does; with indexed, its block index too, in that same transaction (refs.IndexItem), as every
 // route that writes a comment does, and without, none, as a build before the block index wrote
 // one.
-func writeComment(t *testing.T, database *store.Store, broker *events.Broker, body string, indexed bool) writtenComment {
+func writeOwnedComment(t *testing.T, database *store.Store, broker *events.Broker, owner commentOwner, body string, indexed bool) writtenComment {
 	t.Helper()
 	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the comment's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
 	var comment writtenComment
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `
-		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2)
-		returning id::text, created_at
-	`, textversionstest.Issue, body).Scan(&comment.id, &createdAt); err != nil {
-		t.Fatalf("insert the comment: %v", err)
-	}
-	if indexed {
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, createdAt, nil, nil); err != nil {
-			t.Fatalf("index the comment's blocks: %v", err)
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `
+			insert into comments (issue_key, artifact_id, author, body) values ($1, $2::uuid, '{"kind":"user","id":"alice"}', $3)
+			returning id::text, created_at
+		`, owner.issue, owner.document, body).Scan(&comment.id, &createdAt); err != nil {
+			t.Fatalf("insert the comment: %v", err)
 		}
-	}
-	comment.event = appendCommentEvent(t, tx, broker, "comment.created", comment.id, body, createdAt)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the comment: %v", err)
-	}
+		if indexed {
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, createdAt, nil, nil); err != nil {
+				t.Fatalf("index the comment's blocks: %v", err)
+			}
+		}
+		comment.event = appendOwnedCommentEvent(t, tx, broker, owner, "comment.created", comment.id, body, createdAt)
+	})
 	return comment
+}
+
+// insertProjectDocument writes the row of a document of textversionstest.Project that no issue
+// owns, which is all a comment on it needs, and answers its id.
+func insertProjectDocument(t *testing.T, database *store.Store) string {
+	t.Helper()
+	var id string
+	if err := database.Pool.QueryRow(t.Context(), `
+		insert into artifacts (project_key, slug, name, kind, created_by)
+		values ($1, 'runbook', 'runbook.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text
+	`, textversionstest.Project).Scan(&id); err != nil {
+		t.Fatalf("insert the project's document: %v", err)
+	}
+	return id
 }
 
 // indexComment indexes the blocks of comment id, whose body is body, in a transaction of its own,
@@ -578,68 +743,66 @@ func writeComment(t *testing.T, database *store.Store, broker *events.Broker, bo
 func indexComment(t *testing.T, database *store.Store, id, body string) {
 	t.Helper()
 	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the index's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select created_at from comments where id = $1::uuid`, id).Scan(&createdAt); err != nil {
-		t.Fatalf("read the comment: %v", err)
-	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, createdAt, nil, nil); err != nil {
-		t.Fatalf("index the comment's blocks: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the index: %v", err)
-	}
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `select created_at from comments where id = $1::uuid`, id).Scan(&createdAt); err != nil {
+			t.Fatalf("read the comment: %v", err)
+		}
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, createdAt, nil, nil); err != nil {
+			t.Fatalf("index the comment's blocks: %v", err)
+		}
+	})
 }
 
 // editComment writes body as comment id's new body in a transaction of its own, as the edit route
 // does (writeEdit), and answers the id of its comment.edited event.
 func editComment(t *testing.T, database *store.Store, broker *events.Broker, id, body string) int64 {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the edit's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	event := writeEdit(t, tx, broker, id, body)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the edit: %v", err)
-	}
+	var event int64
+	textversionstest.Commit(t, database, func(tx pgx.Tx) { event = writeEdit(t, tx, broker, id, body) })
 	return event
 }
 
 // writeEdit writes body as comment id's new body in tx, as the edit route does: its edited_at
-// tx's now(), its block index and its comment.edited event, whose id it answers.
+// tx's now(), its block index and its comment.edited event, which the comment's owner owns, and
+// whose id it answers.
 func writeEdit(t *testing.T, tx pgx.Tx, broker *events.Broker, id, body string) int64 {
 	t.Helper()
 	ctx := t.Context()
 	var editedAt time.Time
+	var owner commentOwner
 	if err := tx.QueryRow(ctx, `
-		update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at
-	`, id, body).Scan(&editedAt); err != nil {
+		update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at, issue_key, artifact_id::text
+	`, id, body).Scan(&editedAt, &owner.issue, &owner.document); err != nil {
 		t.Fatalf("edit the comment: %v", err)
 	}
 	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, editedAt, nil, nil); err != nil {
 		t.Fatalf("index the edited comment's blocks: %v", err)
 	}
-	return appendCommentEvent(t, tx, broker, "comment.edited", id, body, editedAt)
+	return appendOwnedCommentEvent(t, tx, broker, owner, "comment.edited", id, body, editedAt)
 }
 
 // appendCommentEvent appends the event of type of comment id on textversionstest.Issue, whose body
-// is body, through the broker, and answers its id.
+// is body, through the broker, and answers its id (appendOwnedCommentEvent).
 func appendCommentEvent(t *testing.T, tx pgx.Tx, broker *events.Broker, eventType, id, body string, createdAt time.Time) int64 {
 	t.Helper()
-	issue := textversionstest.Issue
+	return appendOwnedCommentEvent(t, tx, broker, commentOwner{issue: new(textversionstest.Issue)}, eventType, id, body, createdAt)
+}
+
+// appendOwnedCommentEvent appends the event of type of comment id, which owner owns, whose body
+// is body, through the broker, and answers its id. The event and the comment in its payload name
+// the owner, as the routes write them.
+func appendOwnedCommentEvent(t *testing.T, tx pgx.Tx, broker *events.Broker, owner commentOwner, eventType, id, body string, createdAt time.Time) int64 {
+	t.Helper()
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	payload := model.CommentEventPayload{Comment: model.Comment{
-		ID: id, IssueKey: &issue, Author: actor, CreatedAt: createdAt, Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
+		ID: id, IssueKey: owner.issue, ArtifactID: owner.document, Author: actor, CreatedAt: createdAt,
+		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
 	}}
 	payload.Body, payload.BodyTruncated = model.EventBody(body)
-	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: eventType, Actor: actor, Payload: payload})
+	appended, err := broker.Append(t.Context(), tx, model.Event{
+		IssueKey: owner.issue, ArtifactID: owner.document, Type: eventType, Actor: actor, Payload: payload,
+	})
 	if err != nil {
 		t.Fatalf("append %s: %v", eventType, err)
 	}
@@ -683,26 +846,40 @@ func readLoggedEvents(t *testing.T, database *store.Store, ids ...int64) []event
 	return read
 }
 
+// readBatch reads the events above after up to through as the fill's batch reads them, with the
+// production bounds (filler.readEvents, readEventsQuery), and fails the test where the bounds
+// leave any of them to a later batch.
+func readBatch(t *testing.T, database *store.Store, after, through int64) []event {
+	t.Helper()
+	ctx := t.Context()
+	tx, _ := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	read, _, err := newFiller(database.Pool, nil).readEvents(ctx, tx, after, through)
+	if err != nil {
+		t.Fatalf("read the events after event %d: %v", after, err)
+	}
+	if len(read) == 0 || read[len(read)-1].ID != through {
+		t.Fatalf("the fill's read took %d events after event %d, which end before event %d", len(read), after, through)
+	}
+	return read
+}
+
 // decideAndWrite decides the versions of a batch of events and writes them, in one transaction,
 // as the fill's batch does, with the warnings logged to logs.
 func decideAndWrite(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) decided {
 	t.Helper()
 	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the batch: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	got, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
-	if err != nil {
-		t.Fatalf("decide the versions: %v", err)
-	}
-	if err := insertVersions(ctx, tx, got.Versions); err != nil {
-		t.Fatalf("write the versions: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the batch: %v", err)
-	}
+	var got decided
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		decidedVersions, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
+		if err != nil {
+			t.Fatalf("decide the versions: %v", err)
+		}
+		if err := insertVersions(ctx, tx, decidedVersions.Versions); err != nil {
+			t.Fatalf("write the versions: %v", err)
+		}
+		got = decidedVersions
+	})
 	return got
 }
 
@@ -745,4 +922,98 @@ func loggedWarnings(t *testing.T, logs *bytes.Buffer) []map[string]string {
 		t.Fatalf("read the log: %v", err)
 	}
 	return warnings
+}
+
+// planNode is what the tests read of a node of a plan that explain (format json) answers: the
+// relation it reads, the buffers it and the nodes below it hit and read and the rows it answered
+// (with analyze and buffers), and the nodes below it, its subplans among them.
+type planNode struct {
+	Relation   string     `json:"Relation Name"`
+	SharedHit  int        `json:"Shared Hit Blocks"`
+	SharedRead int        `json:"Shared Read Blocks"`
+	ActualRows float64    `json:"Actual Rows"`
+	Plans      []planNode `json:"Plans"`
+}
+
+// relations is each relation p and the nodes below it read, in the plan's order.
+func (p planNode) relations() []string {
+	var relations []string
+	if p.Relation != "" {
+		relations = append(relations, p.Relation)
+	}
+	for _, below := range p.Plans {
+		relations = append(relations, below.relations()...)
+	}
+	return relations
+}
+
+// readPlan reads the plan of explained, what explain (format json) answers.
+func readPlan(t *testing.T, explained []byte) planNode {
+	t.Helper()
+	var plans []struct {
+		Plan planNode `json:"Plan"`
+	}
+	if err := json.Unmarshal(explained, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("read the plan %s: %v", explained, err)
+	}
+	return plans[0].Plan
+}
+
+// genericPlan is the generic plan of statement, the plan Postgres may keep for any arguments
+// once a connection caches the statement: explain (generic_plan), which takes the statement's
+// parameters with no values, so it is sent with no arguments, in the simple protocol.
+func genericPlan(t *testing.T, database *store.Store, statement string) planNode {
+	t.Helper()
+	connection, err := database.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	defer connection.Release()
+	results, err := connection.Conn().PgConn().Exec(t.Context(), "explain (generic_plan, format json) "+statement).ReadAll()
+	if err != nil || len(results) != 1 || len(results[0].Rows) != 1 {
+		t.Fatalf("explain the generic plan of %s: %v", statement, err)
+	}
+	return readPlan(t, results[0].Rows[0][0])
+}
+
+// analyzedGenericPlan runs read's statement for post id, whose event e cut its body, as
+// presentBody runs it (presentBodyRead.arguments) under a generic plan (analyzedGenericPlanOf).
+// The statement must read the later events, whose five arguments it formats.
+func analyzedGenericPlan(t *testing.T, database *store.Store, read presentBodyRead, e event, id string) planNode {
+	t.Helper()
+	return analyzedGenericPlanOf(t, database, read.sql, "%L, %L, %L, %s, %L", "$1::text, $2::text, $3::text, $4::integer, $5::text[]",
+		read.arguments(e, id)...)
+}
+
+// analyzedGenericPlanOf runs statement with arguments under a generic plan, the plan the fill's
+// connection may keep once it caches the statement: prepared and executed under plan_cache_mode
+// force_generic_plan, with explain (analyze, buffers, format json). It answers the plan. execute
+// takes its arguments as literals, which format writes: directives is format's directive of each
+// argument (%L, or %s for a number) and casts each argument as a parameter of its type, in the
+// statement's order, such as "%L, %s" and "$1::text, $2::integer".
+func analyzedGenericPlanOf(t *testing.T, database *store.Store, statement, directives, casts string, arguments ...any) planNode {
+	t.Helper()
+	ctx := t.Context()
+	tx, _ := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_generic_plan`); err != nil {
+		t.Fatalf("force generic plans: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `prepare explained as `+statement); err != nil {
+		t.Fatalf("prepare the statement: %v", err)
+	}
+	var execute string
+	if err := tx.QueryRow(ctx,
+		`select format('explain (analyze, buffers, format json) execute explained(`+directives+`)', `+casts+`)`,
+		arguments...).Scan(&execute); err != nil {
+		t.Fatalf("write the statement's arguments: %v", err)
+	}
+	var explained []byte
+	if err := tx.QueryRow(ctx, execute).Scan(&explained); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `deallocate explained`); err != nil {
+		t.Fatalf("deallocate the statement: %v", err)
+	}
+	return readPlan(t, explained)
 }

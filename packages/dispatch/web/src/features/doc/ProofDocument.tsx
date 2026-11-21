@@ -1,5 +1,5 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { isCancelledError, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -195,6 +195,12 @@ export interface ProofDocumentProps {
   /** Called beside the document's own refresh once the server has recorded an answer written in
    *  one of its decision blocks, so a host that selected the question learns it was answered. */
   onAskAnswered?(askId: string): void;
+  /** Called with this document's live editor as the document makes it, and with `undefined` as
+   *  it tears that editor down: a host that acts on the editor's view itself - a row of an
+   *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
+  onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
    *  outside the Proof schema, a history that cannot load, or any other failed admission. The
@@ -254,6 +260,7 @@ export function ProofDocument({
   isClosed,
   owner,
   onAskAnswered,
+  onEditorHandle,
   onToolbarChange,
   onUnavailable,
   onVersionChange,
@@ -285,6 +292,10 @@ export function ProofDocument({
   const activeMarkId = anchoredThread?.markId ?? undefined;
   const activeMarkIdRef = useRef(activeMarkId);
   activeMarkIdRef.current = activeMarkId;
+  // The host's hold on the editor, read through a ref like the mark above, so a host that
+  // re-renders reopens nothing.
+  const onEditorHandleRef = useRef(onEditorHandle);
+  onEditorHandleRef.current = onEditorHandle;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -450,7 +461,6 @@ export function ProofDocument({
     method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
-  const liveMarkdown = liveTextQuery.data?.markdown ?? "";
   const versionMarkdown =
     versionQuery.data !== undefined && "markdown" in versionQuery.data
       ? versionQuery.data.markdown
@@ -713,6 +723,7 @@ export function ProofDocument({
         connectionRef.current = undefined;
       }
       setEditorHandle((current) => (current === editor ? undefined : current));
+      if (editor !== undefined) onEditorHandleRef.current?.(undefined);
       disposeEditorBindings = undefined;
       editor = undefined;
       document = undefined;
@@ -817,29 +828,39 @@ export function ProofDocument({
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`). An admission that found
-    // content this build cannot read yet reads the text again on its own timer instead.
-    const admit = () => {
-      const textRead = queryClient
+    // content this build cannot read yet reads the text again on its own timer instead. A pending
+    // insert's delete gives up a read of the text still out (`dropUnmarkedText`), since what it
+    // would land can hold the deleted words; that read decides nothing, and the admission reads
+    // again.
+    const readText = (): Promise<unknown> =>
+      queryClient
         .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
-        .then(
-          () => undefined,
-          async (error: unknown) => {
-            if (isArtifactNotFound(error)) {
-              try {
-                const { deletePendingEdits } = await importWhenOnline(
-                  () => import("./pending-edits")
-                );
-                await deletePendingEdits(artifact.id);
-              } catch (deleteError) {
-                console.error(
-                  "Could not delete pending browser edits for a removed document",
-                  deleteError
-                );
-              }
-            }
-            return admissionBlock(error);
+        .catch((error: unknown) => {
+          if (mounted && isCancelledError(error)) {
+            return readText();
           }
-        );
+          throw error;
+        });
+    const admit = () => {
+      const textRead = readText().then(
+        () => undefined,
+        async (error: unknown) => {
+          if (isArtifactNotFound(error)) {
+            try {
+              const { deletePendingEdits } = await importWhenOnline(
+                () => import("./pending-edits")
+              );
+              await deletePendingEdits(artifact.id);
+            } catch (deleteError) {
+              console.error(
+                "Could not delete pending browser edits for a removed document",
+                deleteError
+              );
+            }
+          }
+          return admissionBlock(error);
+        }
+      );
       void Promise.all([textRead, loadTransport()])
         .then(([block, connect]) => {
           if (!mounted) {
@@ -935,7 +956,9 @@ export function ProofDocument({
                       // The margin owns the mark from here: it removes it when the composer ends
                       // unsaved and retypes it when the composer's kind changes. The anchor keeps
                       // the pending inserts the selected words lie in, whose comment's delete
-                      // takes them out of the document (`ComposerAnchor.insertMarks`).
+                      // takes them out of the document (`ComposerAnchor.insertMarks`): an empty
+                      // list where they lie in none, and none where the editor holds no document
+                      // to read them from, which leaves the words to a read of the text.
                       const doc = editor?.view.state.doc;
                       return marginRef.current.composeForMark({
                         anchor: {
@@ -1015,6 +1038,7 @@ export function ProofDocument({
                   editor = handle;
                   editorRef.current = handle;
                   setEditorHandle(handle);
+                  onEditorHandleRef.current?.(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
                 })
                 .catch(reportLoadFailure);
@@ -1273,6 +1297,7 @@ export function ProofDocument({
                   <button
                     aria-label={`${count} references on block`}
                     className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    data-block-references={block.id}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);
@@ -1315,8 +1340,12 @@ export function ProofDocument({
         </section>
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
+      ) : showDiff && liveTextQuery.data !== undefined ? (
+        <ChangeView after={liveTextQuery.data.markdown} before={versionMarkdown} />
+      ) : showDiff && liveTextQuery.isError ? (
+        <p>Could not load the current version to compare.</p>
       ) : showDiff ? (
-        <ChangeView after={liveMarkdown} before={versionMarkdown} />
+        <p>Loading the current version…</p>
       ) : (
         <div data-testid="version-view">
           <VersionView

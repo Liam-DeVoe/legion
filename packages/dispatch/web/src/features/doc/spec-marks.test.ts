@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { correction } from "../../__tests__/correction-feed";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -201,14 +201,14 @@ test("no read version, or nothing changed since it, shows no line and marks noth
 
 // N2 of test round 46 (at 8259e87d) on dispatch://INFRA-1523: the line names its sections from the
 // spec's `part_of` read, whose block texts are the ones the document's latest indexed version gave
-// them (`document_blocks`). A pending insert put words in the spec's first paragraph, and its
-// comment's delete took them out of the document; the read the page makes at the delete can land
-// before the version holding that reject is indexed, at the document's next settlement, so it
-// still holds the words, and nothing reads it again. The delete's correction withdraws the text of
-// the block the insert lay in, named by the delete's own anchor, from that read
-// (`markCorrectedPost`): the line names none of the words. The control: a delete that leaves its
-// quote - a replace suggestion's, a plain comment's, the document's own text - withdraws nothing.
-test("the line names none of a deleted insert's words once the delete's correction reaches the spec's part_of read", () => {
+// them (`document_blocks`). A pending insert put the spec's first paragraph in, and its comment's
+// delete took it out of the document; the read the page holds from before the delete still gives
+// its words, with no mark to tell them by. The delete's correction drops that read whole
+// (`markCorrectedPost`), and the page, which draws the line from it, reads it again: Dispatch
+// answers it as the delete left the spec, with no such paragraph, and the line names none of the
+// words. The control: a delete that leaves its quote - a replace suggestion's, a plain comment's,
+// the document's own text - drops nothing, and the page reads nothing again.
+test("the line names none of a deleted insert's words once the delete's correction reaches the spec's part_of read", async () => {
   const key = ["references", "to", "dispatch://CORE-1/spec", "part_of"];
   const parent = { id: "artifact-1", kind: "artifact", ref: "dispatch://CORE-1/spec" };
   const inserted = "Why we need notices at all, for the security review.";
@@ -227,28 +227,45 @@ test("the line names none of a deleted insert's words once the delete's correcti
           }
     ),
   };
-  const lineAfter = (quote: string): string | undefined => {
+  // The spec's parts as Dispatch reads them once the delete took the paragraph out.
+  const afterDelete: GraphReferences = {
+    ...references,
+    edges: (references.edges ?? []).filter((edge) => edge.node.block_id !== "p-intro"),
+  };
+  const lineAfter = async (quote: string): Promise<string | undefined> => {
     const client = new QueryClient();
     client.setQueryData(key, cached);
-    markCorrectedPost(
-      client,
-      correction("comment", "comment-insert", false, {
-        anchor: {
-          artifact_id: "artifact-1",
-          block_id: "p-intro",
-          mark_id: "mark-insert",
-          orphaned: false,
-          quote,
-          version: 1,
-        },
-      })
-    );
-    const read = client.getQueryData<GraphReferences>(key);
-    const changed =
-      read === undefined ? undefined : changedSinceRead(blocks, specBlockParts(read), 3);
-    return changed === undefined ? undefined : readLineText(changed);
+    // The page's read of the parts, which it draws the line from.
+    const page = new QueryObserver(client, {
+      queryFn: () => Promise.resolve(afterDelete),
+      queryKey: key,
+      staleTime: Number.POSITIVE_INFINITY,
+    });
+    const unsubscribe = page.subscribe(() => {});
+    try {
+      markCorrectedPost(
+        client,
+        correction("comment", "comment-insert", false, {
+          anchor: {
+            artifact_id: "artifact-1",
+            block_id: "p-intro",
+            mark_id: "mark-insert",
+            orphaned: false,
+            quote,
+            version: 1,
+          },
+        })
+      );
+      await client.getQueryCache().find({ exact: true, queryKey: key })?.promise;
+      const read = client.getQueryData<GraphReferences>(key);
+      const changed =
+        read === undefined ? undefined : changedSinceRead(blocks, specBlockParts(read), 3);
+      return changed === undefined ? undefined : readLineText(changed);
+    } finally {
+      unsubscribe();
+    }
   };
-  expect({ insert: lineAfter(""), kept: lineAfter("Why we need notices") }).toEqual({
+  expect({ insert: await lineAfter(""), kept: await lineAfter("Why we need notices") }).toEqual({
     insert: "Changed since you last read version 3: Plan",
     kept: `Changed since you last read version 3: ${inserted}, Plan`,
   });

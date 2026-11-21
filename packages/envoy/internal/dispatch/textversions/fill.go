@@ -26,14 +26,27 @@ import (
 // (filler.pass).
 const (
 	// batchEvents and batchBytes bound one batch: at most 500 events, and at most 2 MB of the text
-	// their vectors are made from. Each event of a type a rule reads counts its payload, and a
-	// post whose event cut its body its present row's body too (readEventsQuery); an event that
-	// starts a version counts what that version's vector reads besides (decideVersions): an
-	// issue's row the markdown of the primary document version it names, and a cut post the
-	// whole body the rules give it in place of its row's body where that is longer. The title an
-	// artifact.version's row carries forward is not counted, at most contracts.IssueTitleMax
-	// (about 3 KB) a row. An event that counts more than 2 MB alone is a batch alone. A full
-	// batch measured 0.6 to 1.3 s.
+	// their vectors are made from. This is the one statement of what the bytes count.
+	//
+	// The read of the events counts first (readEventsQuery): each event of a type a rule reads
+	// counts the bytes of its payload, and a post whose event cut its body counts that body as
+	// its present row holds it too, the one source a cut body is most often read from; an event
+	// of any other type makes no vector and counts nothing. The rules count the rest as they
+	// decide (decideVersions, decider.size): an event that starts a version counts what that
+	// version's vector reads besides, an issue's row the markdown of the primary document version
+	// it names (version 1 for an issue.created, the version carried forward for an issue.updated
+	// or an issue.closed, and the version named for an artifact.version), which the read cannot
+	// know before the rules carry an issue's primary document version forward, and a cut post the
+	// whole body the rules give it in place of its row's body where that is longer. An event that
+	// starts no version adds nothing to what the read counted. So the read bounds what the batch
+	// reads of the events and their rows' bodies, and the rules what its vectors read.
+	//
+	// Each of the two ends the batch at the first event after the first whose count would take
+	// the total past the bound, and the next batch starts at it: the first event is in the batch
+	// whatever its count, so an event that counts more than 2 MB alone is a batch alone. Neither
+	// counts the title an artifact.version's row carries forward, at most contracts.IssueTitleMax
+	// (about 3 KB) a row. The bytes counted bound each statement of the batch (statementTimeout).
+	// A full batch measured 0.6 to 1.3 s.
 	batchEvents = 500
 	batchBytes  = 2 << 20
 	// batchStatementBase and batchStatementPerMB bound each statement of a batch: 10 s, and 1 s
@@ -231,7 +244,7 @@ func (f *filler) batchesTo(ctx context.Context, safe int64) (bool, error) {
 // batchResult is what one batch did.
 type batchResult struct {
 	// events is how many events it wrote the rows of, from first to the cursor it moved to;
-	// bytes the text they count against the batch's bound (decideVersions), rows the rows they
+	// bytes the text they count against the batch's bound (batchBytes), rows the rows they
 	// started, cut how many of those hold a body cut short.
 	events      int
 	first       int64
@@ -316,8 +329,11 @@ const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.paylo
 // e of their CTE candidates: its row, the ask's body of an event of the types $6 (askBodySQL), and
 // for an event of the types $5 the bytes they count of it, those of its payload and, of a post
 // whose event cut its body, those of the body the post's present row holds. Each read of a
-// payload's value as a uuid is guarded, so a payload no rule can read reaches the rules, which
-// name it, rather than failing the statement.
+// payload's value as a uuid is guarded by Postgres's own uuid input (pg_input_is_valid), so a
+// payload no rule can read reaches the rules, which name it, rather than failing the statement.
+// The rules' guard (isUUID) passes only the canonical form, a subset of the forms Postgres reads
+// that holds each form a Dispatch writer writes: an id of any other form, even one Postgres
+// reads, stops the fill at its event, named.
 const eventColumns = `e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
               case when e.type = any($6::text[]) then ` + askBodySQL + ` end as ask_body,
               case when e.type = any($5::text[]) then octet_length(e.payload::text) else 0 end as payload_size,
@@ -353,21 +369,13 @@ select s.id, s.type, s.issue_key, s.artifact_id::text,
 
 // readEventsQuery reads one batch's events: those above the cursor ($1) and at or below the safe
 // horizon ($2), in id order, at most $3 of them, and of those the first whose bytes come to at
-// most $4, the first one whatever its size (sizedEvents). What it counts of an event is what it
-// can read of the text the event's vector is made from, for a type a rule reads ($5): the bytes
-// of its payload, and of a post whose event cut its body that body as the post's present row
-// holds it, the one source a cut body is most often read from (eventColumns); any other type
-// makes no vector and counts nothing. The rules count the rest as they decide and end the batch
-// at the same bound (decideVersions): the markdown each issue row's vector reads, which the read
-// cannot know before the rules carry an issue's primary document version forward, and a cut
-// post's whole body where it is longer than its row's. So this read bounds what the batch reads
-// of the events and their rows' bodies, and the rules what its vectors read. The title an
-// artifact.version's row carries forward is counted by neither: it is at most
-// contracts.IssueTitleMax, about 3 KB a row. Of an ask's event ($6, askTypes) it reads the ask's
-// body (askBodySQL), and null of every other event. Its project is the one the log names for it:
-// its own, its issue's or its document's. Its document is the one that owns it, for an event of a
-// document of no issue, through which presentBody finds the later events of a comment on that
-// document.
+// most $4, the first one whatever its size (sizedEvents). Of an event of a type a rule reads ($5)
+// it counts the bytes of its payload and, of a post whose event cut its body, that body as the
+// post's present row holds it (eventColumns): the read's part of the batch's bound, which
+// batchBytes states. Of an ask's event ($6, askTypes) it reads the ask's body (askBodySQL), and
+// null of every other event. Its project is the one the log names for it: its own, its issue's or
+// its document's. Its document is the one that owns it, for an event of a document of no issue,
+// through which presentBody finds the later events of a comment on that document.
 const readEventsQuery = `
 with candidates as (
        select ` + eventColumns + `
@@ -401,12 +409,12 @@ with candidates as (
 // (filler.reread), and otherwise reads the events above the cursor up to safe within the batch's
 // bounds on what that read counts (readEventsQuery); decides their versions with the rules, which
 // count what the versions read and end the batch where its bytes reach the bound
-// (decideVersions); bounds its statements by the bytes the rules counted (statementTimeout) and
-// writes the versions; moves the cursor to the last event decided; computes the reach
-// (store.ComputeTextVersionsReach) and stores it where it is later than the one stored; and
-// commits. A batch that reads no event still stores the reach, so a fill caught up keeps it
-// current. An event whose payload the rules cannot read stops the batch there: the events before
-// it are written and answered, with the error that names it.
+// (decideVersions, batchBytes); bounds its statements by the bytes the rules counted
+// (statementTimeout) and writes the versions; moves the cursor to the last event decided;
+// computes the reach (store.ComputeTextVersionsReach) and stores it where it is later than the
+// one stored; and commits. A batch that reads no event still stores the reach, so a fill caught
+// up keeps it current. An event whose payload the rules cannot read stops the batch there: the
+// events before it are written and answered, with the error that names it.
 func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	started := time.Now()
 	ctx = store.WithTransactionTracking(ctx)
@@ -614,7 +622,7 @@ func (f *filler) holderArg() any {
 }
 
 // statementTimeout is the statement_timeout of a batch that counts bytes of text against its
-// bound (decideVersions): 10 s and 1 s more for each MB, as set_config takes it.
+// bound (batchBytes): 10 s and 1 s more for each MB, as set_config takes it.
 func statementTimeout(bytes int64) string {
 	const mb = 1 << 20
 	timeout := batchStatementBase + time.Duration((bytes+mb-1)/mb)*batchStatementPerMB

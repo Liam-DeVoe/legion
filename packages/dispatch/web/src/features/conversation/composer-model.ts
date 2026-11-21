@@ -1,3 +1,5 @@
+import type { QueryKey } from "@tanstack/react-query";
+
 import type { Actor, DeliveryCapability } from "../../api/types";
 import type { RecordMarkPlacement } from "../doc/editor";
 import type { DeletablePost } from "../refs/post-marks";
@@ -10,6 +12,14 @@ export type ComposerOwner =
   | { readonly kind: "issue"; readonly issueKey: string }
   | { readonly kind: "artifact"; readonly artifactId: string; readonly project: string }
   | { readonly kind: "session"; readonly sessionId: string };
+
+/** The key of the comment list a draft's `owner` reads: an issue's (`["comments", key]`) or a
+ *  project document's (`["artifact", id, "comments"]`). */
+export function commentListKey(owner: Exclude<ComposerOwner, { kind: "session" }>): QueryKey {
+  return owner.kind === "issue"
+    ? ["comments", owner.issueKey]
+    : ["artifact", owner.artifactId, "comments"];
+}
 
 export type ComposerKind = "ask" | "comment" | "suggestion";
 
@@ -25,7 +35,11 @@ export type ComposerAnchor =
        *  the editor held them when the selection bar named the words (`insertMarksIn`). An
        *  insert's words are its comment's own, and the comment's delete takes them out of the
        *  document: once the page holds that comment deleted, they are a deleted post's words, which
-       *  no surface draws (`useQuoteInDocument`). Absent where the words lie in no insert. */
+       *  no surface draws (`useQuoteInDocument`). Empty where the words lie in no insert. Absent
+       *  where nothing named them: a draft or held send an older build kept, or a selection the
+       *  editor held no document for. Absent is not empty, and nothing reads it as empty: words
+       *  that name no list may lie in an insert whose comment is deleted, which no comment list
+       *  can show, so only a read of the document's text checks them. */
       readonly insertMarks?: readonly string[];
       readonly mark_id: string;
       readonly occurrence?: never;
@@ -41,7 +55,8 @@ export type ComposerAnchor =
     }
   | {
       readonly artifact: string;
-      /** As a mark's anchor keeps them: the pending inserts the words lie in. */
+      /** As a mark's anchor keeps them, empty and absent each saying what they say there: the
+       *  pending inserts the words lie in. */
       readonly insertMarks?: readonly string[];
       readonly mark_id?: never;
       readonly occurrence: number;

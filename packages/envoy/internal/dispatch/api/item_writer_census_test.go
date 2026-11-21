@@ -306,15 +306,15 @@ func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
 			if located.function == "" {
 				return
 			}
-			file, function := censusEntry(path, located.function)
-			if file == "" {
+			file, _, listed := censusEntryIn(itemRowWriters, path, located.function)
+			if !listed {
 				unlisted = append(unlisted, fmt.Sprintf("%s %s: %s", path, located.function, located.statement))
 				return
 			}
 			if answered[file] == nil {
 				answered[file] = map[string]bool{}
 			}
-			answered[file][function] = true
+			answered[file][located.function] = true
 		}
 		for _, located := range sqlStatementsByFunction(source.file, constants) {
 			if writesAnItemRow(located.statement) {
@@ -489,20 +489,21 @@ func writesAnItemRow(statement string) bool {
 	return itemRowWrite.MatchString(statement) || formattedTableWrite.MatchString(statement)
 }
 
-// censusEntry is the entry of itemRowWriters that covers function, declared in the file at path,
-// as the file and function keys that found it; the file is empty when no entry does. The census
-// is keyed by the path within the module, so a file is matched by its suffix, as the lock-level
-// guard's allowlist matches one (ownerRowLockSite).
-func censusEntry(path, function string) (string, string) {
-	for file, functions := range itemRowWriters {
+// censusEntryIn is the entry of census that covers function, declared in the file at path, with
+// the file key that found it; false when no entry does. A census (itemRowWriters,
+// versionRowWriters) is keyed by the path within the module, so a file is matched by its suffix,
+// as the lock-level guard's allowlist matches one (ownerRowLockSite).
+func censusEntryIn[E any](census map[string]map[string]E, path, function string) (string, E, bool) {
+	for file, functions := range census {
 		if !strings.HasSuffix(path, "/"+file) {
 			continue
 		}
-		if _, listed := functions[function]; listed {
-			return file, function
+		if entry, listed := functions[function]; listed {
+			return file, entry, true
 		}
 	}
-	return "", ""
+	var none E
+	return "", none, false
 }
 
 // unspelledTableWrites is every write of this file whose table a runtime value fills: a `+` chain

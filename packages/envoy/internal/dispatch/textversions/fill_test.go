@@ -119,11 +119,8 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 				t.Fatalf("catch the fill up: %v", err)
 			}
 
-			holding, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin the transaction that holds the horizon: %v", err)
-			}
-			defer holding.Rollback(context.Background())
+			holding, _ := textversionstest.BeginTransaction(t, database)
+			defer func() { _ = holding.Rollback(context.Background()) }()
 			if _, err := holding.Exec(ctx, `select pg_current_xact_id()`); err != nil {
 				t.Fatalf("take a transaction id: %v", err)
 			}
@@ -331,20 +328,19 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 	broker := events.NewBroker()
 	ctx := t.Context()
 	before := textversionstest.WriteIssue(t, database, broker, 1)
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(context.Background())
 	key := textversionstest.Project + "-1"
-	unreadable, err := broker.Append(ctx, tx, model.Event{IssueKey: &key, Type: "comment.created",
-		Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"id": uuid.NewString(), "issue_key": key}})
-	if err != nil {
-		t.Fatalf("append the unreadable event: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the unreadable event: %v", err)
-	}
+	var unreadable model.Event
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		appended, err := broker.Append(ctx, tx, model.Event{IssueKey: &key, Type: "comment.created",
+			Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"id": uuid.NewString(), "issue_key": key}})
+		if err != nil {
+			t.Fatalf("append the unreadable event: %v", err)
+		}
+		unreadable = appended
+	})
 	after := textversionstest.WriteIssue(t, database, broker, 2)
 
-	err = FillToHorizon(ctx, database, events.NewHorizon(database.Pool))
+	err := FillToHorizon(ctx, database, events.NewHorizon(database.Pool))
 	if !errors.Is(err, errUnreadablePayload) || !strings.Contains(err.Error(), fmt.Sprintf("event %d", unreadable.ID)) {
 		t.Fatalf("the fill answered %v; want the rules' unreadable payload, naming event %d", err, unreadable.ID)
 	}
@@ -354,6 +350,152 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 	}
 	if rows := textversionstest.RowsOf(t, database, after[0].ID); rows != 0 {
 		t.Fatalf("an event after the unreadable one has %d rows", rows)
+	}
+}
+
+// TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone writes an issue with no primary
+// document as the API writes one: its issue.created, and an issue.updated that retitles it, each
+// name "" as the issue's primary_artifact_id. Each starts a version that names no document
+// version, and the fill writes both and moves its cursor past them.
+func TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	broker := events.NewBroker()
+	ctx := t.Context()
+	key := textversionstest.Issue
+	event := func(eventType, title string) model.Event {
+		return model.Event{IssueKey: &key, Type: eventType, Actor: model.Actor{Kind: "user", ID: "alice"},
+			Payload: map[string]any{"key": key, "title": title, "primary_artifact_id": ""}}
+	}
+	ids := textversionstest.CommitEvents(t, database, broker,
+		event("issue.created", "Rotate the signing keys"), event("issue.updated", "Rotate the signing keys, then audit"))
+
+	if err := FillToHorizon(ctx, database, events.NewHorizon(database.Pool)); err != nil {
+		t.Fatalf("the fill answered %v; want the issue's two versions written", err)
+	}
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
+	var named int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from search_text_versions where spec_artifact_id is not null or spec_version is not null
+	`).Scan(&named); err != nil {
+		t.Fatalf("count the versions that name a document version: %v", err)
+	}
+	if named != 0 {
+		t.Fatalf("%d of the issue's versions name a document version; want none", named)
+	}
+	if got := readCursorRow(t, database).eventID; got != ids[len(ids)-1] {
+		t.Fatalf("the cursor is at event %d; want %d, the issue's last", got, ids[len(ids)-1])
+	}
+}
+
+// TestOnlyAnIDTheFillCastsMustBeAUUID holds each id a statement of the batch casts to uuid to
+// the rules: an issue's primary_artifact_id, an artifact.version's artifact_id and a cut post's
+// id. The rules pass only a uuid's canonical form, a subset of the forms Postgres's uuid input
+// reads, which holds each form a Dispatch writer writes: Postgres reads as a uuid each id of the
+// test that the rules pass, and the rules pass the canonical form in lower, upper and mixed case.
+// Any other id is a payload the rules cannot read, so the fill writes the rows of every event
+// before it and stops there, with an error that names it, rather than failing a statement on
+// every retry: one that is no uuid, and one that holds a uuid in a form uuid.Parse reads and
+// Postgres refuses (a urn:uuid:, or a uuid between two spaces, between two letters, or between a
+// brace and a parenthesis). A whole post's id, which the fill never casts, need not be a uuid: its
+// version is written, and the fill moves past it.
+func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
+	const canonical = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+	key := otherIssue
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	issueEvent := func(eventType string) func(primary string) model.Event {
+		return func(primary string) model.Event {
+			return model.Event{IssueKey: &key, Type: eventType, Actor: actor,
+				Payload: map[string]any{"key": key, "title": "Audit the verifiers", "primary_artifact_id": primary}}
+		}
+	}
+	artifactVersion := func(artifactID string) model.Event {
+		return model.Event{IssueKey: &key, Type: "artifact.version", Actor: actor,
+			Payload: map[string]any{"artifact_id": artifactID, "version": map[string]any{"number": 1, "size": 40}}}
+	}
+	post := func(eventType string, cut bool) func(id string) model.Event {
+		return func(id string) model.Event {
+			return model.Event{IssueKey: &key, Type: eventType, Actor: actor, Payload: map[string]any{
+				"id": id, "issue_key": key, "body": "The verifiers read the old key until Monday.", "body_truncated": cut}}
+		}
+	}
+	type testCase struct {
+		name  string
+		event func(id string) model.Event
+		id    string
+		stops bool
+	}
+	tests := []testCase{
+		{"an issue.created whose primary_artifact_id is no uuid", issueEvent("issue.created"), "spec.md", true},
+		{"an artifact.version whose artifact_id is no uuid", artifactVersion, "spec.md", true},
+		{"a cut comment.created whose id is no uuid", post("comment.created", true), "comment-1", true},
+		{"a cut message.created whose id is no uuid", post("message.created", true), "message-1", true},
+		{"a whole comment.created whose id is no uuid", post("comment.created", false), "comment-1", false},
+	}
+	for _, form := range []struct{ name, id string }{
+		{"a urn:uuid:", "urn:uuid:" + canonical},
+		{"a uuid between two spaces", " " + canonical + " "},
+		{"a uuid between two letters", "x" + canonical + "y"},
+		{"a uuid between a brace and a parenthesis", "{" + canonical + ")"},
+	} {
+		tests = append(tests,
+			testCase{"an issue.updated whose primary_artifact_id is " + form.name, issueEvent("issue.updated"), form.id, true},
+			testCase{"an artifact.version whose artifact_id is " + form.name, artifactVersion, form.id, true},
+			testCase{"a cut comment.created whose id is " + form.name, post("comment.created", true), form.id, true})
+	}
+
+	t.Run("Postgres reads as a uuid each id the rules pass", func(t *testing.T) {
+		database := storetest.Open(t)
+		ids := []string{canonical, strings.ToUpper(canonical), "a0EEbc99-9C0b-4eF8-Bb6d-6bB9bd380A11"}
+		for _, id := range ids {
+			if !isUUID(id) {
+				t.Errorf("the rules refuse %q, a uuid's canonical form", id)
+			}
+		}
+		for _, test := range tests {
+			ids = append(ids, test.id)
+		}
+		for _, id := range ids {
+			var reads bool
+			if err := database.Pool.QueryRow(t.Context(), `select pg_input_is_valid($1, 'uuid')`, id).Scan(&reads); err != nil {
+				t.Fatalf("ask Postgres whether its uuid input reads %q: %v", id, err)
+			}
+			if isUUID(id) && !reads {
+				t.Errorf("the rules pass %q, which Postgres's uuid input refuses", id)
+			}
+		}
+	})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			textversionstest.SeedProject(t, database)
+			broker := events.NewBroker()
+			before := textversionstest.WriteIssue(t, database, broker, 1)
+			seedOtherIssue(t, database)
+			event := test.event(test.id)
+			id := textversionstest.CommitEvents(t, database, broker, event)[0]
+			after := textversionstest.WriteIssue(t, database, broker, 3)
+
+			err := FillToHorizon(t.Context(), database, events.NewHorizon(database.Pool))
+			if !test.stops {
+				if err != nil {
+					t.Fatalf("the fill answered %v; want every event's rows written", err)
+				}
+				textversionstest.RequireOnlyRowsOf(t, database, slices.Concat(before, textversionstest.OneEach(id), after))
+				return
+			}
+			named := fmt.Sprintf("event %d (%s)", id, event.Type)
+			if !errors.Is(err, errUnreadablePayload) || !strings.Contains(err.Error(), named) {
+				t.Fatalf("the fill answered %v; want the rules' unreadable payload, naming %s", err, named)
+			}
+			textversionstest.RequireOnlyRowsOf(t, database, before)
+			if got := readCursorRow(t, database).eventID; got != before[len(before)-1].ID {
+				t.Fatalf("the cursor is at event %d; want %d, the event before the unreadable one", got, before[len(before)-1].ID)
+			}
+			if rows := textversionstest.RowsOf(t, database, after[0].ID); rows != 0 {
+				t.Fatalf("an event after the unreadable one has %d rows", rows)
+			}
+		})
 	}
 }
 
@@ -413,14 +555,12 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 		}
 		comment := writeComment(t, database, broker, body, true)
 		want := []textversionstest.Written{{ID: comment.event, Versions: 1}}
-		tx, startedAt := beginTransaction(t, database)
-		defer tx.Rollback(context.Background())
-		for range 400 {
-			want = append(want, textversionstest.Written{ID: appendCommentEvent(t, tx, broker, "comment.edited", comment.id, body, startedAt)})
-		}
-		if err := tx.Commit(t.Context()); err != nil {
-			t.Fatalf("commit the edits: %v", err)
-		}
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			startedAt := textversionstest.TransactionStart(t, tx)
+			for range 400 {
+				want = append(want, textversionstest.Written{ID: appendCommentEvent(t, tx, broker, "comment.edited", comment.id, body, startedAt)})
+			}
+		})
 		if batches := fillWithinTheBound(t, database, want); len(batches) < 2 {
 			t.Fatalf("the fill wrote the comment and its 400 edits in %d batch: their payloads, about 4 MB, take two at least", len(batches))
 		}
@@ -604,21 +744,16 @@ func rotationParagraphs(n, size int) string {
 // issue and its event, which starts one version.
 func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, n int) (textversionstest.WrittenIssue, textversionstest.Written) {
 	t.Helper()
-	ctx := t.Context()
 	spec := specMarkdown(n, 1)
 	if len(spec) >= pmdoc.MaxDocumentBytes {
 		t.Fatalf("the spec is %d bytes, at or over pmdoc.MaxDocumentBytes, %d", len(spec), pmdoc.MaxDocumentBytes)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin issue %s-%d: %v", textversionstest.Project, n, err)
-	}
-	defer tx.Rollback(ctx)
-	issue := textversionstest.InsertIssue(t, tx, n, fmt.Sprintf("Rotate the signing keys of region %d", n), spec)
-	created := textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", issue.Title))
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit issue %s: %v", issue.Key, err)
-	}
+	var issue textversionstest.WrittenIssue
+	var created []int64
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		issue = textversionstest.InsertIssue(t, tx, n, fmt.Sprintf("Rotate the signing keys of region %d", n), spec)
+		created = textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", issue.Title))
+	})
 	return issue, textversionstest.Written{ID: created[0], Versions: 1}
 }
 
@@ -626,16 +761,10 @@ func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, 
 // artifact.version event, in one transaction, and answers the event, which starts one version.
 func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker, issue textversionstest.WrittenIssue, number int) textversionstest.Written {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin version %d of %s's primary document: %v", number, issue.Key, err)
-	}
-	defer tx.Rollback(ctx)
-	appended := textversionstest.AppendEvents(t, tx, broker, issue.InsertVersion(t, tx, number, specMarkdown(issue.N, number)))
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit version %d of %s's primary document: %v", number, issue.Key, err)
-	}
+	var appended []int64
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		appended = textversionstest.AppendEvents(t, tx, broker, issue.InsertVersion(t, tx, number, specMarkdown(issue.N, number)))
+	})
 	return textversionstest.Written{ID: appended[0], Versions: 1}
 }
 
@@ -684,16 +813,7 @@ const otherIssue = "ACME-2"
 // (textversionstest.InsertIssue).
 func seedOtherIssue(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin issue %s: %v", otherIssue, err)
-	}
-	defer tx.Rollback(ctx)
-	textversionstest.InsertIssue(t, tx, 2, "Audit the verifiers")
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit issue %s: %v", otherIssue, err)
-	}
+	textversionstest.Commit(t, database, func(tx pgx.Tx) { textversionstest.InsertIssue(t, tx, 2, "Audit the verifiers") })
 }
 
 // commitComment commits a comment.created event of a new comment on issue, in a transaction of
@@ -702,37 +822,21 @@ func seedOtherIssue(t *testing.T, database *store.Store) {
 // commits gives them two issues.
 func commitComment(t *testing.T, database *store.Store, broker *events.Broker, issue string) committedEvent {
 	t.Helper()
-	tx, startedAt := beginTransaction(t, database)
-	defer tx.Rollback(context.Background())
-	actor := model.Actor{Kind: "user", ID: "alice"}
-	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
-		Payload: model.CommentEventPayload{Comment: model.Comment{
-			ID: uuid.NewString(), IssueKey: &issue, Author: actor, Body: "The signing keys rotate on Monday.", CreatedAt: startedAt,
-			Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
-		}}})
-	if err != nil {
-		t.Fatalf("append a comment.created of %s: %v", issue, err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit the comment's event: %v", err)
-	}
-	return committedEvent{id: appended.ID, startedAt: startedAt}
-}
-
-// beginTransaction begins a transaction on database and reads its start, which is the
-// xact_start pg_stat_activity shows for it and the created_at of every event it writes.
-func beginTransaction(t *testing.T, database *store.Store) (pgx.Tx, time.Time) {
-	t.Helper()
-	tx, err := database.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin a transaction: %v", err)
-	}
-	var startedAt time.Time
-	if err := tx.QueryRow(t.Context(), `select now()`).Scan(&startedAt); err != nil {
-		_ = tx.Rollback(context.Background())
-		t.Fatalf("read the transaction's start: %v", err)
-	}
-	return tx, startedAt
+	var committed committedEvent
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		startedAt := textversionstest.TransactionStart(t, tx)
+		actor := model.Actor{Kind: "user", ID: "alice"}
+		appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
+			Payload: model.CommentEventPayload{Comment: model.Comment{
+				ID: uuid.NewString(), IssueKey: &issue, Author: actor, Body: "The signing keys rotate on Monday.", CreatedAt: startedAt,
+				Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
+			}}})
+		if err != nil {
+			t.Fatalf("append a comment.created of %s: %v", issue, err)
+		}
+		committed = committedEvent{id: appended.ID, startedAt: startedAt}
+	})
+	return committed
 }
 
 // countRows counts the keyword table's rows.

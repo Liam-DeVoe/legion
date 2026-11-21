@@ -3,7 +3,6 @@ package textversions
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -46,19 +45,12 @@ const (
 )
 
 // ReserveLeases reserves the fill's two connections of the lease pool, its own goroutine's and its
-// hold's renewal's, and answers the pool they are taken from, which is the Config.Leases Run takes.
-// The server reserves them while it wires itself, as every caller of the lease pool does, so the
-// count it checks against store.LeasePoolSize is the one the pool is sized for.
+// hold's renewal's (store.LeaseCallers.ForAll), and answers the pool they are taken from, which is
+// the Config.Leases Run takes. The server reserves them while it wires itself, as every caller of
+// the lease pool does, so the count it checks against store.LeasePoolSize is the one the pool is
+// sized for.
 func ReserveLeases(callers *store.LeaseCallers) (*pgxpool.Pool, error) {
-	var leases *pgxpool.Pool
-	for _, caller := range []string{fillCaller, fillRenewalCaller} {
-		reserved, err := callers.For(caller)
-		if err != nil {
-			return nil, fmt.Errorf("reserve the lease pool for the %s: %w", caller, err)
-		}
-		leases = reserved
-	}
-	return leases, nil
+	return callers.ForAll(fillCaller, fillRenewalCaller)
 }
 
 // Config is what a serving process runs the fill with (Run).

@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -104,17 +103,6 @@ var versionRules = map[string]rule{
 	"ask.opened":       askVersion,
 	"ask.edited":       askVersion,
 	"ask.answered":     askVersion,
-}
-
-// laterTextChanges names, of each kind of post, the event types that change its text after the
-// event that created it: its edit and its delete, the post's rewrite types of the asof package
-// (asof.CommentRewriteTypes, asof.MessageRewriteTypes). A post's present row holds the text of
-// one of its events only where no committed event of these types of the same post comes after
-// that one (presentBody). From the time post_body_history began, each event of these types keeps
-// the body it replaced there (historyBody).
-var laterTextChanges = map[string][]string{
-	kindComment: asof.CommentRewriteTypes(),
-	kindMessage: asof.MessageRewriteTypes(),
 }
 
 // unchangingTypes names each event type that changes no searchable text, with the reason.
@@ -219,6 +207,25 @@ func missing(field string) error {
 	return fmt.Errorf("%w: it has no %s", errUnreadablePayload, field)
 }
 
+// notUUID is the error of a payload whose field holds an id that a statement of the batch casts
+// to uuid and that is not one (isUUID).
+func notUUID(field string) error {
+	return fmt.Errorf("%w: its %s is not a uuid", errUnreadablePayload, field)
+}
+
+// isUUID is whether id is a uuid in its canonical form: 36 characters, 8-4-4-4-12 hex digits of
+// either case with a hyphen between each two groups. That form is one of those Postgres's uuid
+// input reads, so a statement can cast an id that passes to uuid, and it is the form each
+// Dispatch writer writes, since every payload id is an id::text. A rule sends each id the batch
+// casts through it, so any other id stops the fill at its event (errUnreadablePayload), named,
+// rather than failing the batch's statement on every retry: one Postgres refuses, and also one
+// it reads, such as the braced form or 32 hex digits, which no writer writes. At 36 characters
+// uuid.Validate checks exactly the hyphens and the hex digits; at other lengths it reads more
+// forms, the urn:uuid: one among them, which Postgres refuses.
+func isUUID(id string) bool {
+	return len(id) == 36 && uuid.Validate(id) == nil
+}
+
 // newVersion is the version e starts of item (kind, id) of issueKey, with the columns every row
 // takes from its event. Its project is the event's, which a version of any kind needs.
 func newVersion(e event, kind, id string, issueKey *string) (version, error) {
@@ -248,8 +255,23 @@ func issueKeyOf(e event, p issuePayload) (string, error) {
 	return "", missing("key")
 }
 
+// primaryDocumentOf is the primary document an issue.* payload names, whose id the batch casts
+// to uuid: nil for none, where the payload has no primary_artifact_id or an empty one, which the
+// API writes for an issue with no primary document. An id that is not a uuid (isUUID) is a
+// payload the rules cannot read, whatever the issue's latest version, so the batch's first pass
+// meets it (decideVersions).
+func primaryDocumentOf(p issuePayload) (*string, error) {
+	switch {
+	case p.PrimaryArtifactID == nil || *p.PrimaryArtifactID == "":
+		return nil, nil
+	case !isUUID(*p.PrimaryArtifactID):
+		return nil, notUUID("primary_artifact_id")
+	}
+	return p.PrimaryArtifactID, nil
+}
+
 // issueCreated starts an issue's first version: its title, and version 1 of its primary
-// document, which the create wrote in its own transaction.
+// document (primaryDocumentOf), which the create wrote in its own transaction.
 func issueCreated(e event, _ latestVersion) (version, bool, error) {
 	var p issuePayload
 	if err := decodePayload(e, &p); err != nil {
@@ -262,22 +284,26 @@ func issueCreated(e event, _ latestVersion) (version, bool, error) {
 	if p.Title == nil {
 		return version{}, false, missing("title")
 	}
+	primary, err := primaryDocumentOf(p)
+	if err != nil {
+		return version{}, false, err
+	}
 	v, err := newVersion(e, kindIssue, key, &key)
 	if err != nil {
 		return version{}, false, err
 	}
 	v.Body = *p.Title
-	if p.PrimaryArtifactID != nil {
+	if primary != nil {
 		first := int32(1)
-		v.SpecArtifactID, v.SpecVersion = p.PrimaryArtifactID, &first
+		v.SpecArtifactID, v.SpecVersion = primary, &first
 	}
 	return v, true, nil
 }
 
 // issueRetitled starts a version at an issue.updated or an issue.closed whose title differs from
 // the title of the issue's latest version, carrying that version's primary document version
-// forward; an issue with no version yet takes the payload's primary document, and no version of
-// it.
+// forward; an issue with no version yet takes the payload's primary document
+// (primaryDocumentOf), and no version of it.
 func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 	var p issuePayload
 	if err := decodePayload(e, &p); err != nil {
@@ -290,6 +316,10 @@ func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 	if p.Title == nil {
 		return version{}, false, missing("title")
 	}
+	primary, err := primaryDocumentOf(p)
+	if err != nil {
+		return version{}, false, err
+	}
 	prior := latest(kindIssue, key)
 	if prior != nil && prior.Body == *p.Title {
 		return version{}, false, nil
@@ -299,7 +329,7 @@ func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 		return version{}, false, err
 	}
 	v.Body = *p.Title
-	v.SpecArtifactID = p.PrimaryArtifactID
+	v.SpecArtifactID = primary
 	if prior != nil && prior.SpecArtifactID != nil {
 		v.SpecArtifactID, v.SpecVersion = prior.SpecArtifactID, prior.SpecVersion
 	}
@@ -312,7 +342,10 @@ func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 // document (no issue), starts none. An issue whose latest version names no primary document, or
 // that has no version yet, cannot tell its primary document from its versions: the version
 // starts with the artifact the event names, and no title (an empty Body) where no version gives
-// one, and decide reads which document is the issue's primary one from its rows.
+// one, and decide reads which document is the issue's primary one from its rows. An artifact id
+// of an issue's document that is not a uuid (isUUID), which the batch casts to one, is a payload
+// the rules cannot read, whatever the issue's latest version, so the batch's first pass meets it
+// (decideVersions).
 func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error) {
 	if e.IssueKey == nil {
 		return version{}, false, nil
@@ -323,6 +356,9 @@ func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error
 	}
 	if p.ArtifactID == nil {
 		return version{}, false, missing("artifact_id")
+	}
+	if !isUUID(*p.ArtifactID) {
+		return version{}, false, notUUID("artifact_id")
 	}
 	if p.Version == nil || p.Version.Number == nil {
 		return version{}, false, missing("version.number")
@@ -347,7 +383,10 @@ func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error
 // body the event carries, which decide reads whole from another source where the event cut it.
 // onlyWhenChanged is an edit's rule, which starts a version only when the body differs from the
 // item's latest version's; where the event cut the body, decide compares the whole one. A
-// message of no issue starts none.
+// message of no issue starts none. The id of a post whose event cut its body must be a uuid
+// (isUUID): reading the whole body casts it to one (presentBody, firstRevisionBody). No statement
+// casts the id of a post whose event carries its body whole, which the version's row holds as
+// text, so that id need not be one.
 func postVersion(kind string, onlyWhenChanged bool) rule {
 	return func(e event, latest latestVersion) (version, bool, error) {
 		var p postPayload
@@ -366,6 +405,9 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 		}
 		if p.Body == nil {
 			return version{}, false, missing("body")
+		}
+		if p.BodyTruncated && !isUUID(*p.ID) {
+			return version{}, false, notUUID("id")
 		}
 		if onlyWhenChanged && !p.BodyTruncated {
 			if prior := latest(kind, *p.ID); prior != nil && prior.Body == *p.Body {
@@ -453,8 +495,8 @@ type item struct{ kind, id string }
 // decided is what decideVersions made of a batch of events: the versions they start, in event id
 // order, each with its body whole where a source holds it; Cut, how many of them hold a post's
 // body cut short because no source held it whole (bodyFromCut), the count the fill's progress
-// line reads; and Bytes, the text the events decided count against the batch's bound, which
-// bounds the batch's statements (statementTimeout).
+// line reads; and Bytes, what the events decided count against the batch's bound (batchBytes),
+// which bounds the batch's statements (statementTimeout).
 type decided struct {
 	Versions []version
 	Cut      int
@@ -476,7 +518,7 @@ type decided struct {
 //
 //   - A post whose event cut its body (body_truncated) takes it whole, in this order: from its
 //     present row where, in the one snapshot that reads the row, no committed event of the post
-//     after the event changes its text (laterTextChanges: the post's edit, and its delete, which
+//     after the event changes its text (presentBodyReads: the post's edit, and its delete, which
 //     clears the body), so the row still holds the text the event wrote (presentBody,
 //     bodyFromRow); for a comment.created, from revision 1 of its blocks when every block of that
 //     revision was inserted by the comment's own transaction (firstRevisionBody, bodyFromBlocks);
@@ -494,17 +536,10 @@ type decided struct {
 //     title, the issue's present title (bodyFromRow). An artifact.version of an issue whose
 //     latest version names no primary document is held to artifacts.is_primary the same way.
 //
-// Each event counts against maxBytes, in order, the bytes readEventsQuery counted of it
-// (event.PayloadBytes and event.RowBodyBytes) and, where it starts a version, the text that
-// version's vector reads besides (decider.size): an issue's row the markdown of the primary
-// document version it names, version 1 for an issue.created, the version carried forward for an
-// issue.updated or an issue.closed and the version named for an artifact.version, measured in one
-// statement before the rules decide (readSpecVersions); and a post whose event cut its body the
-// whole body the rules give it, in place of its row's body where that is longer. An event that
-// starts no version adds nothing to what the read counted. The first event after the first whose
-// count would take the total past maxBytes ends the events decided, and the next batch starts at
-// it; the first is decided whatever its count. Only an event decided is warned of, so the batch
-// that writes an event warns of it once, and Cut counts the versions decided alone.
+// Each event counts against maxBytes, in order, what decider.size gives it, the count batchBytes
+// states. The first event after the first whose count would take the total past maxBytes ends the
+// events decided, and the next batch starts at it. Only an event decided is warned of, so the
+// batch that writes an event warns of it once, and Cut counts the versions decided alone.
 //
 // logger takes the warnings. The first event whose payload a rule cannot read
 // (errUnreadablePayload) ends the events decided too, where the bound has not ended them before
@@ -513,14 +548,16 @@ type decided struct {
 // every event decided, that count is len(events). Any other error, a statement that failed,
 // events out of id order or an ask's event read with no body (askVersion), answers no version.
 func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event, maxBytes int64) (decided, int, error) {
-	// A first pass gives each rule no latest version, as versionOf does, and names the item of
-	// each version it starts, with the seq of the first event that names it, the batch's first
-	// event of the item, so the table's latest rows of all of them before those seqs are read in
-	// one statement. That names every item the second pass reads the latest version of: with no
+	// A first pass runs each event through the rule of its type with no latest version
+	// (noLatest), as though the event were its item's first, and names the item of each version
+	// it starts, with the seq of the first event that names it, the batch's first event of the
+	// item, so the table's latest rows of all of them before those seqs are read in one
+	// statement. That names every item the second pass reads the latest version of: with no
 	// latest version, each rule that reads one starts a version of that same item, and the item a
 	// rule's version names does not depend on the latest version, so the second pass starts
-	// versions only of the items named here. The first pass reads every field a rule can find
-	// missing, so it meets the first unreadable payload.
+	// versions only of the items named here. Each rule reads every field it can find missing or
+	// not a uuid whatever the latest version, so the first pass meets the first unreadable
+	// payload.
 	//
 	// It names, too, the primary document version each version it starts reads. With those of
 	// the latest rows read, these are every version a row of the batch can read the markdown of,
@@ -705,12 +742,11 @@ func (d *decider) complete(ctx context.Context, e event, v *version) (bool, erro
 	return true, nil
 }
 
-// size is what e counts against the batch's bound (decideVersions): the bytes readEventsQuery
-// counted of it (event.PayloadBytes and event.RowBodyBytes) and, where e starts the version v,
-// the text v's vector reads that those do not hold: the markdown of the primary document version
-// an issue's row names, and the whole body of a post whose event cut it, in place of the row's
-// body where that is longer. A version that names a document version no statement measured is
-// a bug of the fill, answered with an error that says so rather than counted as nothing.
+// size is what e counts against the batch's bound, as batchBytes states it: the bytes
+// readEventsQuery counted of it (event.PayloadBytes and event.RowBodyBytes) and, where e starts
+// the version v, what v's vector reads that those do not hold. A version that names a document
+// version no statement measured is a bug of the fill, answered with an error that says so rather
+// than counted as nothing.
 func (d *decider) size(e event, v version, starts bool) (int64, error) {
 	size := e.PayloadBytes + e.RowBodyBytes
 	if !starts {
@@ -826,181 +862,6 @@ func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (is
 		return issueRows{}, false, fmt.Errorf("read issue %s: %w", key, err)
 	}
 	return rows, true, nil
-}
-
-// wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
-// first source that holds it (decideVersions): the post's present row where no later event of
-// the post changes its text (presentBody), then, for a comment.created, revision 1 of its blocks
-// (firstRevisionBody), then the post's body history, the body that its next edit or delete
-// replaced (historyBody). Else it keeps the event's text (bodyFromCut), which complete warns of
-// where it keeps v.
-func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
-	body, found, err := presentBody(ctx, d.tx, e, v.Kind, v.ID)
-	if err != nil {
-		return err
-	}
-	if found {
-		v.Body, v.BodyFrom = body, bodyFromRow
-		return nil
-	}
-	if e.Type == "comment.created" {
-		body, ok, err := firstRevisionBody(ctx, d.tx, v.ID, e.CreatedAt)
-		if err != nil {
-			return err
-		}
-		if ok {
-			v.Body, v.BodyFrom = body, bodyFromBlocks
-			return nil
-		}
-	}
-	if body, found, err = historyBody(ctx, d.tx, e, v.Kind, v.ID); err != nil {
-		return err
-	}
-	if found {
-		v.Body, v.BodyFrom = body, bodyFromHistory
-		return nil
-	}
-	v.BodyFrom = bodyFromCut
-	return nil
-}
-
-// presentBodyQuery reads the body of post $1 from its present row in the table its kind names
-// (%s), where no event after the one read, of the event's owner (issue $2, or document $3 for a
-// comment on a document of no issue) at a seq above that event's ($4), is of a type that changes
-// the post's text ($5, laterTextChanges) and names the post: the row and the later events are
-// read in the statement's one snapshot, so a row that answers holds the text the event wrote, and
-// no row answers where a later event changes it or the post has no row. The later events are read
-// through the owner's unique (issue_key, seq) or (artifact_id, seq) index, from the event's seq
-// up, not through the log: an owner's events take their ids and their seqs in the same order,
-// since each append takes the owner's lock before either and holds it until its transaction ends
-// (events.Broker), so they are the owner's events whose id is above the event's.
-const presentBodyQuery = `
-	select p.body from public.%s p
-	 where p.id = $1::text::uuid
-	   and not exists (
-	         select from public.events l
-	          where (l.issue_key = $2 and l.seq > $4 or l.artifact_id = $3::uuid and l.seq > $4)
-	            and l.type = any($5::text[])
-	            and l.payload->>'id' = $1)`
-
-// presentBodyQueries is presentBodyQuery of each kind of post, over the table of its rows.
-var presentBodyQueries = map[string]string{
-	kindComment: fmt.Sprintf(presentBodyQuery, "comments"),
-	kindMessage: fmt.Sprintf(presentBodyQuery, "messages"),
-}
-
-// presentBody reads the whole body of post id of kind, whose event e cut it, from the post's
-// present row where that row holds the text e wrote: where no committed event of the post after
-// e changes its text (presentBodyQuery). found is false where one does, and where the post has no
-// row.
-func presentBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
-	var body string
-	err := tx.QueryRow(ctx, presentBodyQueries[kind], id, e.IssueKey, e.ArtifactID, e.Seq, laterTextChanges[kind]).Scan(&body)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", false, nil
-	case err != nil:
-		return "", false, fmt.Errorf("read %s %s: %w", kind, id, err)
-	}
-	return body, true, nil
-}
-
-// historyBodyQuery reads the body the version that event $1 started of post $3 held, from the
-// post's body history (column names the post's column): the body that the post's next edit or
-// delete event replaced. That event is the post's first event of the types $2 (its edit and
-// delete, laterTextChanges) after $1 in their owner's seq order, and it must have begun at or
-// after the history began (asof.PostHistoryBegan). The j-th history row of a post in (edited_at,
-// id) order is written by its j-th edit or delete event that began at or after the history
-// began; the asof package reads a post's body at a cut by the same count. No row is answered
-// where no such event or row is.
-func historyBodyQuery(column string) string {
-	return `
-	select h.body
-	  from public.events o
-	  cross join lateral (
-	        select r.seq, r.created_at from public.events r
-	         where (r.issue_key = o.issue_key or r.artifact_id = o.artifact_id) and r.seq > o.seq
-	           and r.type = any($2::text[]) and r.payload->>'id' = $3
-	         order by r.seq limit 1) r
-	  cross join lateral (
-	        select count(*) as j from public.events c
-	         where (c.issue_key = o.issue_key or c.artifact_id = o.artifact_id) and c.seq <= r.seq
-	           and c.type = any($2::text[]) and c.payload->>'id' = $3
-	           and c.created_at >= ` + asof.PostHistoryBegan + `) n
-	  cross join lateral (
-	        select h.body from public.post_body_history h
-	         where h.` + column + ` = $3::uuid
-	         order by h.edited_at, h.id
-	        offset greatest(n.j - 1, 0) limit 1) h
-	 where o.id = $1 and r.created_at >= ` + asof.PostHistoryBegan
-}
-
-// historyBodyQueries is historyBodyQuery of each kind of post, over the column of its history
-// rows.
-var historyBodyQueries = map[string]string{
-	kindComment: historyBodyQuery("comment_id"),
-	kindMessage: historyBodyQuery("message_id"),
-}
-
-// historyBody is the body the version that e started of post id of kind held, from the post's
-// body history (historyBodyQuery), and false where the history holds none.
-func historyBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
-	var body string
-	err := tx.QueryRow(ctx, historyBodyQueries[kind], e.ID, laterTextChanges[kind], id).Scan(&body)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", false, nil
-	case err != nil:
-		return "", false, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
-	}
-	return body, true, nil
-}
-
-// firstRevisionQuery reads the blocks of revision 1 of comment $1, the comment's first indexing,
-// in the order of their ids' numbers (b2 before b10), which the first indexing mints in body
-// order: each block's text and whether its block was inserted by the transaction whose start is
-// $2.
-const firstRevisionQuery = `
-	select t.text, b.created_at = $2
-	  from public.comment_block_texts t
-	  join public.comment_blocks b on b.comment_id = t.comment_id and b.block_id = t.block_id
-	 where t.comment_id = $1::uuid and t.revision = 1
-	 order by length(t.block_id), t.block_id`
-
-// firstRevisionBody is comment id's first body as revision 1 of its blocks holds it: their
-// texts, in their order, joined by one blank line. ok is false unless every block of revision 1
-// was inserted by the transaction that started at createdAt, the comment's own (a comment is
-// indexed in the transaction that writes it, so revision 1 is then its first body), and holds a
-// text. A block's text keeps the body's words and drops only the white space that ends it
-// (itemblocks.Split), so the body differs from the one the comment was written with only in the
-// white space between blocks, which changes no lexeme of its vector.
-func firstRevisionBody(ctx context.Context, tx pgx.Tx, id string, createdAt time.Time) (string, bool, error) {
-	rows, err := tx.Query(ctx, firstRevisionQuery, id, createdAt)
-	if err != nil {
-		return "", false, fmt.Errorf("read the first revision of comment %s: %w", id, err)
-	}
-	var texts []string
-	whole := true
-	for rows.Next() {
-		var text *string
-		var own bool
-		if err := rows.Scan(&text, &own); err != nil {
-			rows.Close()
-			return "", false, fmt.Errorf("read the first revision of comment %s: %w", id, err)
-		}
-		if text == nil || !own {
-			whole = false
-			continue
-		}
-		texts = append(texts, *text)
-	}
-	if err := rows.Err(); err != nil {
-		return "", false, fmt.Errorf("read the first revision of comment %s: %w", id, err)
-	}
-	if !whole || len(texts) == 0 {
-		return "", false, nil
-	}
-	return strings.Join(texts, "\n\n"), true, nil
 }
 
 // specVersion names a version of an issue's primary document as the rules carry it: the

@@ -10,7 +10,7 @@ import {
   quoteBodyText,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
-import { useQuoteInDocument } from "../doc/quote-in-document";
+import { UNDRAWN_QUOTE_WORDS, useQuoteInDocument } from "../doc/quote-in-document";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
 import { useHeldSend, useHeldSends } from "./held-sends";
@@ -106,8 +106,8 @@ export function DraftOffer({
 /** The line an offered draft is led by: the kind it was written as, where the compose is of
  *  another, and the words it was written for, while the page's text of the document still holds
  *  them (`useQuoteInDocument`, as of a read from after the draft's compose took them); otherwise
- *  it says they are no longer in the document and draws none of them, since words a delete took
- *  out are a deleted post's. */
+ *  it says they are no longer in the document, still loading, or cannot be checked now, and draws
+ *  none of them, since words a delete took out are a deleted post's. */
 function OfferedDraftLead({
   kind,
   offered,
@@ -115,12 +115,12 @@ function OfferedDraftLead({
   readonly kind: ComposerKind;
   readonly offered: OfferedDraft;
 }): ReactNode {
-  const held = useQuoteInDocument(offered.anchor, offered.anchoredAt);
+  const inDocument = useQuoteInDocument(offered.anchor, offered.anchoredAt, offered.owner);
   const asKind =
     offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`;
-  return held
+  return inDocument === "held"
     ? `You wrote this draft${asKind} for other words: “${offered.anchor.quote}”. It is kept here:`
-    : `You wrote this draft${asKind} for other words, which are no longer in the document. It is kept here:`;
+    : `You wrote this draft${asKind} for other words, which ${UNDRAWN_QUOTE_WORDS[inDocument]}. It is kept here:`;
 }
 
 /**

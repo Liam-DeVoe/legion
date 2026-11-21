@@ -83,6 +83,10 @@ export interface ReferenceTarget {
   /** The reading Go made of `description`, which a card draws (`MarkdownPreview`); absent for a
    *  description Dispatch does not store, a GitHub body among them. */
   readonly descriptionTree: DisplayTree | undefined;
+  /** Whether the read of a document's text failed with no answer to draw - a refetch after a
+   *  pending insert's delete dropped the answer the page held (`dropUnmarkedText`), among others:
+   *  a card says so in place of `description`. False for every other target. */
+  readonly textFailed: boolean;
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
@@ -262,6 +266,8 @@ export interface ReferenceData {
   readonly markdown: string | undefined;
   /** The reading Go made of `markdown`, which a card draws. */
   readonly markdownTree: DisplayTree | undefined;
+  /** Whether the read of the document's text into `markdown` failed with no answer to draw. */
+  readonly textFailed: boolean;
   readonly ask: AskRead | undefined;
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
@@ -532,6 +538,7 @@ export function useReferenceData(
     markdown: text.data !== undefined && "markdown" in text.data ? text.data.markdown : undefined,
     markdownTree:
       text.data !== undefined && "markdown_tree" in text.data ? text.data.markdown_tree : undefined,
+    textFailed: text.isLoadingError,
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
@@ -615,8 +622,18 @@ export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, blockDeletion, comment, issue, markdown, markdownTree, message } =
-    useReferenceData(route, options);
+  const {
+    artifact,
+    ask,
+    block,
+    blockDeletion,
+    comment,
+    issue,
+    markdown,
+    markdownTree,
+    message,
+    textFailed,
+  } = useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
   let authoredTree: DisplayTree | undefined;
@@ -660,6 +677,7 @@ export function useReferenceTarget(
       edited,
       descriptionTree: message?.message.body_tree,
       picture: undefined,
+      textFailed: false,
     };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
@@ -670,6 +688,7 @@ export function useReferenceTarget(
       edited,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
+      textFailed: false,
     };
   }
   const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
@@ -681,6 +700,7 @@ export function useReferenceTarget(
     edited,
     descriptionTree: text === undefined ? undefined : markdownTree,
     picture: named === undefined ? undefined : picturePath(named, artifact),
+    textFailed,
   };
 }
 

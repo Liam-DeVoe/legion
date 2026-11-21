@@ -40,13 +40,15 @@ import (
 // Beside a document's text, and an issue's, which holds its primary document's, the statement reads
 // the comments whose words that text holds as a pending insert suggestion's: each comment whose
 // anchor names a mark that the insert tree of the version read holds as an insert
-// (artifact_versions.insert_tree, found by docs.InsertMarkPath, the rule the version's mask finds
-// an insert by). The version is the one the text arm read - the latest, by the same order, of the
-// document or of the issue's primary document as issue_embedding_spec reads it - in the same
-// statement, which reads one snapshot, so no version written between two reads can part the
-// comments from the text. The comments of a version whose tree holds no insert are not read at
-// all. A pending insert's words are its comment's own (R3 of dispatch://INFRA-1523,
-// docs.MaskedVersionText), so a run given that text was given the comment's (recordGoingPosts).
+// (artifact_versions.insert_tree, found by docs.InsertMarkIDsPath, the rule the version's mask
+// finds an insert by). The ids of those marks are read once a hit, by a sub-select that reads the
+// version alone, so Postgres runs it once for all the document's comments and not once for each.
+// The version is the one the text arm read - the latest, by the same order, of the document or of
+// the issue's primary document as issue_embedding_spec reads it - in the same statement, which
+// reads one snapshot, so no version written between two reads can part the comments from the
+// text. The comments of a version whose tree holds no insert are not read at all. A pending
+// insert's words are its comment's own (R3 of dispatch://INFRA-1523, docs.MaskedVersionText), so
+// a run given that text was given the comment's (recordGoingPosts).
 var goingItemTextQuery = `with wanted as (
   select w.kind, w.id, ` + store.CastableUUID("w.id") + ` as uuid
     from unnest($1::text[], $2::text[]) as w(kind, id)
@@ -74,7 +76,7 @@ select w.kind, w.id, left(txt.text, $3::int), pending.inserts
       from comments c
      where latest.insert_tree is not null
        and (c.anchor->>'artifact_id')::uuid = latest.artifact_id
-       and jsonb_path_exists(latest.insert_tree, $4::jsonpath, jsonb_build_object('id', c.anchor->>'mark_id'))
+       and to_jsonb(c.anchor->>'mark_id') = any(array(select jsonb_path_query(latest.insert_tree, $4::jsonpath)))
   ) pending on true
  where txt.text is not null`
 
@@ -98,7 +100,7 @@ func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, rune
 	for position, hit := range hits {
 		kinds[position], ids[position] = hit.Kind, hit.ID
 	}
-	rows, err := pool.Query(ctx, goingItemTextQuery, kinds, ids, runes, docs.InsertMarkPath)
+	rows, err := pool.Query(ctx, goingItemTextQuery, kinds, ids, runes, docs.InsertMarkIDsPath)
 	if err != nil {
 		return nil, nil, err
 	}

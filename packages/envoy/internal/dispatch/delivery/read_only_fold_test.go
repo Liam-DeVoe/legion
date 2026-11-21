@@ -2,168 +2,161 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/build"
 	"go/parser"
 	"go/token"
-	"go/types"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // resultsHeadsRead is one entry of resultsHeadsReads: one read of pull_request_heads on the
-// results path, which plan D30 makes one statement for both of its callers (headsStatement). A
-// writer's results read runs it over the stored rows alone, and a read-only caller's over the
-// stored rows with the heads the read-only memory keeps laid on (KeptHeads, keptHeadsRelation).
+// results path, which plan D30 makes one statement for both of its callers (headsStatement). Its
+// one function takes the request's answers (requestAnswers): a writer's results read passes none
+// and runs the statement over the stored rows alone, and a read-only caller's passes what its own
+// request's read-throughs learned and runs it over the stored rows with those answers laid on.
 type resultsHeadsRead struct {
 	// read is the read as plan D30 names it: the name of its statement where the statement has
-	// one (headsAttributedQuery), and else the name of the writer's function (HeadStoredAt).
+	// one (headsAttributedQuery), and else the name of its function (HeadStoredAt).
 	read string
-	// writer is the function a writer's results read calls for the read.
-	writer string
+	// function is the read's one entry point, which both callers call.
+	function string
 	// statement is the name of the package-level constant or variable that holds the read's one
-	// statement text: the text after its WITH list, which writer and every entry point of
-	// readOnly run. Each of them must reach it through the package's own functions and values.
-	// It is "" only while readOnly is empty.
+	// statement text: the text after its WITH list. function must reach it through the package's
+	// own functions and values, and no other exported function may reach it but through function.
 	statement string
-	// readOnly is the read's read-only entry points: each function or method of the package that
-	// takes the memory's answers (memoryAnswerTypes) and runs statement over them for a read-only
-	// caller. A function is named by its name, and a method as Type.Method.
-	readOnly []string
 }
 
 // resultsHeadsReads is the registry of the reads of pull_request_heads on the results path: the
-// five reads of plan D30. An entry is one read, with the writer's function, the read's one
-// statement after its WITH list, and its read-only entry point, which takes what the memory gives
-// (CommitPullAnswers.Learned) and runs that statement's read-only form. A function that takes the
-// memory's answers to read these rows for a read-only caller is named here, among the read-only
-// entry points of the read whose statement it runs, and nowhere else.
-// TestEachHeadsReadOnTheResultsPathIsOneStatement fails on every function of the package that
-// takes the memory's answers, or whose name ends in With, and that neither this registry nor
-// keptBranchReads names: such a function is a second copy of a writer's read, which no test holds
-// to the writer's statement. TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of the
-// registry its questions (foldQuestions).
+// five reads of plan D30, each with its one function and its one statement.
+// TestEachHeadsReadOnTheResultsPathIsOneStatement holds the package to it, and
+// TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its questions (foldQuestions).
 var resultsHeadsReads = []resultsHeadsRead{
-	{read: "headsAttributedQuery", writer: "HeadsAttributedTo", statement: "headsAttributedQuery",
-		readOnly: []string{"ReadOnlyHeadsAttributedTo"}},
-	{read: "HeadStoredAt", writer: "HeadStoredAt", statement: "headStoredAtQuery",
-		readOnly: []string{"ReadOnlyHeadStoredAt"}},
-	{read: "BaseBranchMergedFor", writer: "BaseBranchMergedFor", statement: "baseBranchMergedForQuery",
-		readOnly: []string{"ReadOnlyBaseBranchMergedFor"}},
-	{read: "baseBranchMergedInQuery", writer: "BaseBranchMergedIn", statement: "baseBranchMergedInQuery",
-		readOnly: []string{"ReadOnlyBaseBranchMergedIn"}},
-	{read: "NewestPullRequestHead", writer: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery",
-		readOnly: []string{"ReadOnlyNewestPullRequestHead"}},
+	{read: "headsAttributedQuery", function: "HeadsAttributedTo", statement: "headsAttributedQuery"},
+	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery"},
+	{read: "BaseBranchMergedFor", function: "BaseBranchMergedFor", statement: "baseBranchMergedForQuery"},
+	{read: "baseBranchMergedInQuery", function: "BaseBranchMergedIn", statement: "baseBranchMergedInQuery"},
+	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery"},
 }
 
-// keptBranchReads is the functions and methods that may take the memory's answers and read no
-// pull_request_heads row: the branch reads plan D5 keeps, which read a merge the memory learned as
-// the yes a writer's store of it would have written (Branches.ReadCommitOnBranch). Each is named
-// as resultsHeadsRead.readOnly names an entry point.
-var keptBranchReads = []string{
+// answeredReads is the functions and methods besides the reads' own that take the request's
+// answers: the one that passes them to a read's statement as its parameters
+// (headsStatement.query), and the branch reads, which read no pull_request_heads row and read a
+// merge the request's read-throughs learned as the yes a writer's store of it would have written
+// (Branches.ReadCommitOnBranch). A function is named by its name, and a method as Type.Method.
+var answeredReads = []string{
+	"headsStatement.query",
 	"Branches.ReadCommitOnBranch",
 	"Branches.readCommitOnBranch",
 	"mergeLearnedOnBranch",
 }
 
-// memoryAnswerTypes is each type a parameter carries the memory's answers in, written as Go
-// writes the type: KeptHeads, the heads CommitPullAnswers.Learned gives, which every read-only
-// entry point takes; and []CommitPulls, the answers as the read-throughs found them, which the Go
-// copies of the reads this test replaced took. A pointer is read as the type it points to, and a
-// variadic parameter as the slice it is (answerType).
-var memoryAnswerTypes = []string{"KeptHeads", "[]CommitPulls"}
+// requestAnswers is the type the reads of the results path take one request's answers in: the
+// heads its read-throughs learned from GitHub and stored nowhere.
+const requestAnswers = "HeadAnswers"
+
+// answerShapes is each type that holds GitHub's answers to one results read: the heads one
+// request's read-throughs learned (HeadAnswers), the default branch and the unseen pairs its
+// branch reads carry (BranchCarry), and one read-through's answer as GitHub gave it (CommitPulls).
+// A request makes each of them and drops it with the request. Any other type of the package whose
+// fields hold one, directly or through another such type, keeps answers past the request that
+// read them.
+var answerShapes = []string{"HeadAnswers", "BranchCarry", "CommitPulls"}
 
 // TestEachHeadsReadOnTheResultsPathIsOneStatement is plan D30's inventory of the reads of
-// pull_request_heads on the results path. It parses the package's non-test files, as go build
-// selects them, and fails on three things, naming each:
+// pull_request_heads on the results path, and plan D32's rule that a read-only read keeps nothing
+// after its request. It parses the package's non-test files, as go build selects them, and fails
+// on each of these, naming it:
 //
-//   - a function or method that takes the memory's answers (memoryAnswerTypes), or whose name
-//     ends in With, and that the registry does not name (resultsHeadsReads, keptBranchReads);
-//   - a name in the registry that the package does not declare, so the registry keeps no place
-//     for a copy that has gone;
-//   - a read with a read-only entry point whose statement is not a constant or variable of the
-//     package, or is not reached from the read's writer and from each of its entry points.
+//   - a type that keeps answers past the request that read them (answerShapes), and every function
+//     or method that takes one, as a parameter or as its receiver;
+//   - a function or method that takes the request's answers (requestAnswers) and that the registry
+//     does not name (resultsHeadsReads, answeredReads);
+//   - a name in the registry that the package does not declare;
+//   - a read whose statement is not a constant or variable of the package, or is not reached from
+//     the read's function, or is reached from another exported function: a second entry point.
 func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 	source := parsePackageSource(t)
 
+	keeping := source.keepingTypes()
+	for _, name := range slices.Sorted(maps.Keys(keeping)) {
+		t.Errorf("%s: the type %s holds %s, so it keeps answers past the request that read them. "+
+			"A read-only results read keeps nothing after its request (plan D32): pass the answers to that request's reads alone",
+			source.positions.Position(source.types[name].Pos()), name, keeping[name])
+	}
 	registered := map[string]bool{}
-	for _, name := range keptBranchReads {
+	for _, name := range answeredReads {
 		registered[name] = true
 	}
 	for _, read := range resultsHeadsReads {
-		for _, name := range read.readOnly {
-			registered[name] = true
-		}
+		registered[read.function] = true
 	}
 	for _, function := range source.functions {
+		if kept := function.takes(keeping, true); kept != "" {
+			t.Errorf("%s: %s takes answers kept across requests, in %s (plan D32)",
+				source.positions.Position(function.decl.Pos()), function.key, kept)
+		}
 		if registered[function.key] {
 			continue
 		}
-		var why []string
-		if takes := function.memoryAnswers(); takes != "" {
-			why = append(why, "takes the memory's answers as "+takes)
+		if takes := function.takes(map[string]string{requestAnswers: requestAnswers}, false); takes != "" {
+			t.Errorf("%s: %s takes the request's answers as %s, and the registry names it nowhere (resultsHeadsReads, answeredReads): "+
+				"it is a second copy of a writer's read, which no test holds to the writer's statement. "+
+				"Run the read's one statement instead, through the read's one function",
+				source.positions.Position(function.decl.Pos()), function.key, takes)
 		}
-		if strings.HasSuffix(function.decl.Name.Name, "With") {
-			why = append(why, "has a name that ends in With")
-		}
-		if len(why) == 0 {
-			continue
-		}
-		t.Errorf("%s: %s %s, and the registry names it nowhere (resultsHeadsReads, keptBranchReads): "+
-			"it is a second copy of a writer's read, which no test holds to the writer's statement. "+
-			"Run the read's one statement instead, and name the function among that read's read-only entry points",
-			source.positions.Position(function.decl.Pos()), function.key, strings.Join(why, " and "))
 	}
 
-	for _, name := range keptBranchReads {
+	for _, name := range answeredReads {
 		if !source.declaresFunction(name) {
-			t.Errorf("keptBranchReads names %s, which is no function or method of the package", name)
+			t.Errorf("answeredReads names %s, which is no function or method of the package", name)
 		}
 	}
 	for _, read := range resultsHeadsReads {
 		if !source.declaresFunction(read.read) && !source.values[read.read] {
 			t.Errorf("resultsHeadsReads names the read %s, which the package does not declare", read.read)
 		}
-		if !source.declaresFunction(read.writer) {
-			t.Errorf("the read %s names its writer %s, which is no function of the package", read.read, read.writer)
-		}
-		for _, name := range read.readOnly {
-			if !source.declaresFunction(name) {
-				t.Errorf("the read %s names the read-only entry point %s, which is no function or method of the package", read.read, name)
-			}
-		}
-		if len(read.readOnly) == 0 {
-			continue
+		if !source.declaresFunction(read.function) {
+			t.Errorf("the read %s names its function %s, which is no function of the package", read.read, read.function)
 		}
 		if !source.values[read.statement] {
-			t.Errorf("the read %s has read-only entry points and names its statement %q, which is no constant or variable of the package",
-				read.read, read.statement)
+			t.Errorf("the read %s names its statement %q, which is no constant or variable of the package", read.read, read.statement)
 			continue
 		}
-		for _, caller := range append([]string{read.writer}, read.readOnly...) {
-			if source.declaresFunction(caller) && !source.reaches(caller, read.statement) {
-				t.Errorf("%s does not run %s, the one statement of the read %s", caller, read.statement, read.read)
+		if source.declaresFunction(read.function) && !source.reaches(read.function, read.statement, "") {
+			t.Errorf("%s does not run %s, the one statement of the read %s", read.function, read.statement, read.read)
+		}
+		for _, function := range source.functions {
+			if function.key == read.function || !token.IsExported(function.decl.Name.Name) {
+				continue
+			}
+			if source.reaches(function.key, read.statement, read.function) {
+				t.Errorf("%s: %s runs %s, the one statement of the read %s, and not through %s: "+
+					"it is a second entry point of the read, which a caller can pick in place of the other. "+
+					"Give the read one function, which a writer calls with no answers",
+					source.positions.Position(function.decl.Pos()), function.key, read.statement, read.read, read.function)
 			}
 		}
 	}
 }
 
 // packageSource is the package's non-test files as TestEachHeadsReadOnTheResultsPathIsOneStatement
-// reads them: every function and method in source order, every package-level constant and
-// variable, and the names each of them refers to.
+// reads them: every function and method in source order, every package-level constant, variable
+// and type, and the names each function, method, constant and variable refers to.
 type packageSource struct {
 	positions *token.FileSet
 	functions []packageFunction
 	// values is every package-level constant and variable, by name.
 	values map[string]bool
+	// types is every package-level type, by name.
+	types map[string]*ast.TypeSpec
 	// refers is the names each function, method, constant and variable refers to, by its key.
 	refers map[string]map[string]bool
 	// declared is the keys a name may refer to: a function, a constant or a variable of that
@@ -189,6 +182,7 @@ func parsePackageSource(t *testing.T) *packageSource {
 	source := &packageSource{
 		positions: token.NewFileSet(),
 		values:    map[string]bool{},
+		types:     map[string]*ast.TypeSpec{},
 		refers:    map[string]map[string]bool{},
 		declared:  map[string][]string{},
 	}
@@ -207,17 +201,18 @@ func parsePackageSource(t *testing.T) *packageSource {
 				source.functions = append(source.functions, packageFunction{key: key, decl: decl})
 				source.declare(decl.Name.Name, key, decl.Body)
 			case *ast.GenDecl:
-				if decl.Tok != token.CONST && decl.Tok != token.VAR {
-					continue
-				}
 				for _, spec := range decl.Specs {
-					value := spec.(*ast.ValueSpec)
-					for _, name := range value.Names {
-						if name.Name == "_" {
-							continue
+					switch spec := spec.(type) {
+					case *ast.TypeSpec:
+						source.types[spec.Name.Name] = spec
+					case *ast.ValueSpec:
+						for _, name := range spec.Names {
+							if name.Name == "_" {
+								continue
+							}
+							source.values[name.Name] = true
+							source.declare(name.Name, name.Name, spec)
 						}
-						source.values[name.Name] = true
-						source.declare(name.Name, name.Name, value)
 					}
 				}
 			}
@@ -252,11 +247,12 @@ func (s *packageSource) declaresFunction(key string) bool {
 }
 
 // reaches is whether from refers to target, directly or through the package's functions,
-// methods, constants and variables. A name is read as every declaration of the package it could
-// refer to, so a method call reaches every method of that name: the test asks whether the
-// statement is run at all, not by which path.
-func (s *packageSource) reaches(from, target string) bool {
-	seen := map[string]bool{from: true}
+// methods, constants and variables, never through the declaration keyed avoid ("" avoids none).
+// A name is read as every declaration of the package it could refer to, so a method call reaches
+// every method of that name: the test asks whether the statement is run at all, not by which
+// path.
+func (s *packageSource) reaches(from, target, avoid string) bool {
+	seen := map[string]bool{from: true, avoid: true}
 	next := []string{from}
 	for len(next) > 0 {
 		key := next[0]
@@ -276,27 +272,64 @@ func (s *packageSource) reaches(from, target string) bool {
 	return false
 }
 
-// memoryAnswers is the type in which a parameter of the function carries the memory's answers
-// (memoryAnswerTypes), and "" where no parameter does.
-func (f packageFunction) memoryAnswers() string {
-	for _, field := range f.decl.Type.Params.List {
-		written := answerType(field.Type)
-		for _, answers := range memoryAnswerTypes {
-			if written == answers {
-				return written
+// keepingTypes is every type of the package but answerShapes whose fields hold an answer shape,
+// directly or through another such type, each with the shape or the type it holds.
+func (s *packageSource) keepingTypes() map[string]string {
+	keeping := map[string]string{}
+	shapes := map[string]bool{}
+	for _, shape := range answerShapes {
+		shapes[shape] = true
+	}
+	names := slices.Sorted(maps.Keys(s.types))
+	for changed := true; changed; {
+		changed = false
+		for _, name := range names {
+			if shapes[name] || keeping[name] != "" {
+				continue
+			}
+			for _, held := range slices.Sorted(maps.Keys(typeMentions(s.types[name].Type))) {
+				if shapes[held] || keeping[held] != "" {
+					keeping[name], changed = held, true
+					break
+				}
+			}
+		}
+	}
+	return keeping
+}
+
+// takes is the first of names that a parameter of the function mentions in its type, or its
+// receiver where receiver is true, and "" where none does.
+func (f packageFunction) takes(names map[string]string, receiver bool) string {
+	fields := slices.Clone(f.decl.Type.Params.List)
+	if receiver && f.decl.Recv != nil {
+		fields = append(fields, f.decl.Recv.List...)
+	}
+	for _, field := range fields {
+		for _, mentioned := range slices.Sorted(maps.Keys(typeMentions(field.Type))) {
+			if _, named := names[mentioned]; named {
+				return mentioned
 			}
 		}
 	}
 	return ""
 }
 
-// answerType is a parameter's type as memoryAnswerTypes writes one: as Go writes it, with every
-// pointer read as the type it points to, and a variadic parameter's as the slice it is.
-func answerType(expr ast.Expr) string {
-	if variadic, isVariadic := expr.(*ast.Ellipsis); isVariadic {
-		return "[]" + answerType(variadic.Elt)
-	}
-	return strings.ReplaceAll(types.ExprString(expr), "*", "")
+// typeMentions is every name a type expression mentions, the names of a struct's fields left out:
+// the types it is made of, a pointer, a slice, a map and a type argument read through.
+func typeMentions(expr ast.Expr) map[string]bool {
+	mentioned := map[string]bool{}
+	ast.Inspect(expr, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.Field:
+			maps.Copy(mentioned, typeMentions(node.Type))
+			return false
+		case *ast.Ident:
+			mentioned[node.Name] = true
+		}
+		return true
+	})
+	return mentioned
 }
 
 // receiverName is the name of a method's receiver type, without its pointer or its type
@@ -312,7 +345,7 @@ func receiverName(expr ast.Expr) string {
 	case *ast.Ident:
 		return expr.Name
 	}
-	return types.ExprString(expr)
+	return ""
 }
 
 // foldIssue is the issue of deliveryRepo the fold histories attribute pull requests to, and
@@ -331,20 +364,14 @@ const (
 	foldDelivery foldWriter = "a delivery"
 	// foldReadThrough is a writer's read-through (StoreCommitPulls).
 	foldReadThrough foldWriter = "a writer's read-through"
-	// foldLearned is no writer: an answer a read-only read learned and kept in its memory.
-	foldLearned foldWriter = "an answer learned"
+	// foldAnswered is no writer: an answer the read-only read's request learned from GitHub.
+	foldAnswered foldWriter = "an answer of the request"
 )
 
 // foldStep is one step of a fold history, in time order.
 type foldStep struct {
 	writer foldWriter
 	pulls  CommitPulls
-	// changes is whether a writer's write changes its pull request's row: it inserts it, or its
-	// event-time guard holds. The test fails where PostgreSQL did otherwise.
-	changes bool
-	// sha and at are the commit an answer was learned for and the moment it was learned.
-	sha string
-	at  time.Time
 }
 
 // foldQuestion is one question asked of one read of resultsHeadsReads: the read's name there and
@@ -360,24 +387,17 @@ func (q foldQuestion) String() string {
 
 // TestTheReadOnlyFoldAnswersAsTheWritersPath holds the read-only form of each read of the results
 // path (resultsHeadsReads) to the writer's own path, history by history (plan D30). A history is
-// a sequence of writes in time order: the writers' writes, each run through the writer's own
-// statement on the history's database, and the answers a read-only read learned, each kept in its
-// memory the way the production code keeps one (foldLearn). The oracle applies D30's rule with the
-// writer's own statements (foldOracle): where no writer's write changed a pull request's row after
-// an answer for it was learned, the answer is stored as a writer's read would have stored it then,
-// the whole history run through upsertHeadRow in a transaction rolled back once the writer's read
-// has run in it; where one did, the answer gives way, and where no answer stands the writer's read
-// runs on the writers' rows. The read-only form runs on the rows the writers' writes alone left,
-// with the memory's heads, and must give the oracle's answer to every question (foldQuestions).
-//
-// Whether a writer's write changed a row is what PostgreSQL did, read from the row's xmin before
-// and after the write (foldRowVersions), and each writer step says what it means to do
-// (foldStep.changes), so a history meant to leave its answer standing fails where it does not.
+// the writers' writes, each run through the writer's own statement on the history's database, and
+// then the answers one read-only request learned from GitHub, in the order it read them. The
+// oracle is the writer's own path (foldOracle): the request's answers stored on the rows the
+// writers left, as a writer's read-throughs store them, in a transaction rolled back once the
+// writer's read has run in it. The read-only form runs on the rows the writers left, with the
+// request's answers, and must give the oracle's answer to every question (foldQuestions).
 func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 	at := func(minute int) time.Time { return time.Date(2026, 11, 20, 9, minute, 0, 0, time.UTC) }
 	read := func(minute int) *time.Time { moment := at(minute); return &moment }
 	sha := func(digit string) string { return strings.Repeat(digit, 40) }
-	// The heads a history writes or learns: deliveryRepo's pull request number at a commit, open,
+	// The heads a history writes or answers: deliveryRepo's pull request number at a commit, open,
 	// credited to nobody by a read of every source and carrying no time, then changed by the
 	// functions after it.
 	head := func(number int, commit string) PullRequestHead {
@@ -399,150 +419,96 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 		head.State, head.BaseRef, head.MergeCommitSHA = "merged", base, commit
 		return head
 	}
-	delivered := func(changes bool, head PullRequestHead) foldStep {
-		return foldStep{writer: foldDelivery, changes: changes,
-			pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
+	delivered := func(head PullRequestHead) foldStep {
+		return foldStep{writer: foldDelivery, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
 	}
-	readThrough := func(changes bool, head PullRequestHead) foldStep {
-		return foldStep{writer: foldReadThrough, changes: changes,
-			pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
+	readThrough := func(head PullRequestHead) foldStep {
+		return foldStep{writer: foldReadThrough, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: head.Repo}}
 	}
-	learnedUnder := func(under, commit string, when time.Time, head PullRequestHead) foldStep {
-		return foldStep{writer: foldLearned, sha: commit, at: when,
-			pulls: CommitPulls{Heads: []PullRequestHead{head}, AtHead: head.HeadSHA == commit, storedUnder: under}}
+	answeredUnder := func(under string, head PullRequestHead) foldStep {
+		return foldStep{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{head}, storedUnder: under}}
 	}
-	learned := func(commit string, when time.Time, head PullRequestHead) foldStep {
-		return learnedUnder(head.Repo, commit, when, head)
+	answered := func(head PullRequestHead) foldStep {
+		return answeredUnder(head.Repo, head)
 	}
 
 	for _, history := range []struct {
 		name  string
 		steps []foldStep
 	}{
-		{"a writer's row and nothing learned", []foldStep{
-			delivered(true, timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
+		{"a writer's row and no answer", []foldStep{
+			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
 		}},
-		{"an answer learned and no row", []foldStep{
-			learned(sha("1"), at(20), timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
+		{"an answer and no row", []foldStep{
+			answered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
 		}},
 		// The row credits nobody; the answer is the merge, credited to the issue.
-		{"an answer learned, then nothing written", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(1), read(10))),
-			learned(sha("1"), at(20), timed(credited(merged(head(5, sha("1")), "release", sha("m")), foldIssue), at(2), read(20))),
+		{"an answer over a row that credits nobody", []foldStep{
+			delivered(timed(head(5, sha("1")), at(1), read(10))),
+			answered(timed(credited(merged(head(5, sha("1")), "release", sha("m")), foldIssue), at(2), read(20))),
 		}},
 		// The same event, read again later.
-		{"an answer learned after a writer's read-through row", []foldStep{
-			readThrough(true, timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
-			learned(sha("1"), at(20), timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
-		}},
-		// The read-through reads the same event later and credits nobody, as a re-judge that
-		// keeps updated_at does: its write moves the row's xmin.
-		{"a writer's read-through after an answer learned", []foldStep{
-			delivered(true, timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
-			learned(sha("1"), at(20), timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
-			readThrough(true, timed(head(5, sha("1")), at(1), read(30))),
-		}},
-		{"a complete answer learned, then an incomplete delivery with a newer event", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(1), read(10))),
-			learned(sha("1"), at(20), timed(credited(head(5, sha("1")), foldIssue), at(2), read(20))),
-			delivered(true, timed(incomplete(head(5, sha("2"))), at(3), nil)),
-		}},
-		{"a complete answer learned, then an incomplete read-through with a newer event", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(1), read(10))),
-			learned(sha("1"), at(20), timed(credited(head(5, sha("1")), foldIssue), at(2), read(20))),
-			readThrough(true, timed(incomplete(head(5, sha("2"))), at(3), nil)),
-		}},
-		// The delivery's event is older than the row's, so its guard fails, the row's xmin stays
-		// and the answer stands.
-		{"a delivery delivered after an answer learned whose event is older than the answer's, complete", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(2), read(10))),
-			learned(sha("2"), at(20), timed(credited(head(5, sha("2")), foldIssue), at(3), read(20))),
-			delivered(false, timed(head(5, sha("0")), at(1), nil)),
-		}},
-		{"a delivery delivered after an answer learned whose event is older than the answer's, incomplete", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(2), read(10))),
-			learned(sha("2"), at(20), timed(credited(head(5, sha("2")), foldIssue), at(3), read(20))),
-			delivered(false, timed(incomplete(head(5, sha("0"))), at(1), nil)),
-		}},
-		// The delivery's event is the answer's and newer than the row's, so its guard holds and
-		// the row is the writer's.
-		{"a late delivery whose event equals the answer's, complete", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(1), read(10))),
-			learned(sha("2"), at(20), timed(credited(head(5, sha("2")), foldIssue), at(2), read(20))),
-			delivered(true, timed(head(5, sha("2")), at(2), nil)),
-		}},
-		{"a late delivery whose event equals the answer's, incomplete", []foldStep{
-			delivered(true, timed(head(5, sha("1")), at(1), read(10))),
-			learned(sha("2"), at(20), timed(credited(head(5, sha("2")), foldIssue), at(2), read(20))),
-			delivered(true, timed(incomplete(head(5, sha("3"))), at(2), nil)),
+		{"an answer over a writer's read-through row of the same event", []foldStep{
+			readThrough(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
+			answered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
 		}},
 		// The row is credited to the linking issue, as a stale attribution leaves it, so both of
 		// that issue's arms read it.
 		{"an answer whose attribution was incomplete over a row attributed to an issue", []foldStep{
-			delivered(true, timed(credited(head(5, sha("1")), foldLinkingIssue), at(1), read(10))),
-			learned(sha("2"), at(20), timed(incomplete(head(5, sha("2"))), at(2), nil)),
+			delivered(timed(credited(head(5, sha("1")), foldLinkingIssue), at(1), read(10))),
+			answered(timed(incomplete(head(5, sha("2"))), at(2), nil)),
 		}},
 		// Both carry the same times, so the number orders them.
-		{"a merged pull request learned and an open one stored after it", []foldStep{
-			learned(sha("1"), at(20), timed(credited(merged(head(5, sha("1")), "release", sha("m")), foldIssue), at(1), read(20))),
-			delivered(true, timed(credited(head(6, sha("6")), foldIssue), at(1), read(20))),
+		{"a merged pull request answered beside an open one stored", []foldStep{
+			delivered(timed(credited(head(6, sha("6")), foldIssue), at(1), read(20))),
+			answered(timed(credited(merged(head(5, sha("1")), "release", sha("m")), foldIssue), at(1), read(20))),
 		}},
 		// The second, of the pull request's next push, read no commit message: the issue stays
 		// the first's, as the upsert keeps it when it stores both in turn.
-		{"two answers learned for one pull request", []foldStep{
-			learned(sha("1"), at(20), timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
-			learned(sha("2"), at(25), timed(incomplete(head(5, sha("2"))), at(2), nil)),
+		{"two answers of the request for one pull request", []foldStep{
+			answered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(20))),
+			answered(timed(incomplete(head(5, sha("2"))), at(2), nil)),
 		}},
 		// A row kept under the name the repository was renamed away from, and the answer of a read
 		// asked under that name, keyed by the canonical one: the store drops the old row.
-		{"an answer learned under a name its repository was renamed away from", []foldStep{
-			delivered(true, timed(credited(foldHead(gadgetsOldRepo, 9, sha("7")), foldLinkingIssue), at(1), read(10))),
-			learnedUnder(gadgetsOldRepo, sha("8"), at(20),
-				timed(credited(foldHead(gadgetsRepo, 9, sha("8")), foldLinkingIssue), at(2), read(20))),
+		{"an answer of a read asked under a name its repository was renamed away from", []foldStep{
+			delivered(timed(credited(foldHead(gadgetsOldRepo, 9, sha("7")), foldLinkingIssue), at(1), read(10))),
+			answeredUnder(gadgetsOldRepo, timed(credited(foldHead(gadgetsRepo, 9, sha("8")), foldLinkingIssue), at(2), read(20))),
+		}},
+		// A webhook stored the pull request's newer event; GitHub's commit-pulls answer carries an
+		// older updated_at. The upsert's event-time guard refuses the answer, so the row stands.
+		{"a stored row whose event is newer than the request's answer", []foldStep{
+			delivered(timed(head(5, sha("1")), at(3), read(10))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(20))),
+		}},
+		// The request reads two commits whose answers name one pull request, the second answer
+		// older: the guard refuses it laid on after the first, as it refuses the second upsert.
+		{"two answers of the request out of event order", []foldStep{
+			answered(timed(credited(head(5, sha("1")), foldIssue), at(3), read(20))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(25))),
 		}},
 	} {
 		t.Run(history.name, func(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
 			seedFoldIssues(t, ctx, pool)
-			var answers CommitPullAnswers
-			// standing holds, for each learned step, whether each of its heads still stands: no
-			// writer's write after it changed its pull request's row.
-			standing := make([][]bool, len(history.steps))
+			var request foldRequest
+			answering := false
 			for index, step := range history.steps {
-				if step.writer == foldLearned {
-					if err := foldLearn(ctx, pool, &answers, step); err != nil {
-						t.Fatalf("step %d, %s: %v", index, step.writer, err)
-					}
-					standing[index] = make([]bool, len(step.pulls.Heads))
-					for kept := range standing[index] {
-						standing[index][kept] = true
-					}
+				if step.writer == foldAnswered {
+					answering = true
+					foldAnswer(&request, step)
 					continue
 				}
-				before := foldRowVersions(t, ctx, pool, step.pulls.Heads)
-				foldWrite(t, ctx, pool, step)
-				after := foldRowVersions(t, ctx, pool, step.pulls.Heads)
-				for written, head := range step.pulls.Heads {
-					if changed := before[written] != after[written]; changed != step.changes {
-						t.Fatalf("step %d, %s of %s#%d: the row's xmin went from %q to %q, so its write changed it: %v, want %v",
-							index, step.writer, head.Repo, head.Number, before[written], after[written], changed, step.changes)
-					}
-					if !step.changes {
-						continue
-					}
-					for earlier := range index {
-						for kept, keptHead := range history.steps[earlier].pulls.Heads {
-							if standing[earlier] != nil && keptHead.Repo == head.Repo && keptHead.Number == head.Number {
-								standing[earlier][kept] = false
-							}
-						}
-					}
+				if answering {
+					t.Fatalf("step %d, %s, comes after an answer of the request: the fold lays one request's answers "+
+						"on the rows stored when its statements run, so every writer's step comes first", index, step.writer)
 				}
+				foldWrite(t, ctx, pool, step)
 			}
 			questions := foldQuestions(t, history.steps)
-			want := foldOracle(t, ctx, pool, history.steps, standing, questions)
+			want := foldOracle(t, ctx, pool, history.steps, questions)
 			for _, question := range questions {
-				got, err := foldReadOnly(ctx, pool, &answers, question)
+				got, err := foldRead(ctx, pool, request.answers, question)
 				if err != nil {
 					t.Errorf("%s, the read-only read: %v", question, err)
 					continue
@@ -607,22 +573,6 @@ func foldWrite(t *testing.T, ctx context.Context, pool *store.Pool, step foldSte
 	}
 }
 
-// foldRowVersions is the xmin of the row stored for the pull request of each of heads, under the
-// name the head carries, and "" where no row is stored.
-func foldRowVersions(t *testing.T, ctx context.Context, pool *store.Pool, heads []PullRequestHead) []string {
-	t.Helper()
-	versions := make([]string, len(heads))
-	for index, head := range heads {
-		err := pool.QueryRow(ctx, `
-			select xmin::text from pull_request_heads where repo = $1 and number = $2
-		`, head.Repo, head.Number).Scan(&versions[index])
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("read the row of %s#%d: %v", head.Repo, head.Number, err)
-		}
-	}
-	return versions
-}
-
 // foldQuestions is every question the fold test asks of each read of resultsHeadsReads in a
 // history: the heads of each issue, whether each commit of each repository a step names heads a
 // stored pull request, the merged branch of each issue and of foldLinkingIssue in deliveryRepo,
@@ -655,52 +605,37 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 	return questions
 }
 
-// foldOracle is the writer's path's answer to each question, by its String: D30's rule applied
-// with the writer's own statements. Where no learned head stands (standing), the writer's read
-// runs on the writers' rows. Otherwise, in one transaction rolled back once the reads have run,
-// the stored rows are deleted and the whole history is run through upsertHeadRow, each learned
-// head that stands among the writers' writes as a writer's read-through would have stored it then,
-// and a read-through's or a learned answer's old-name row dropped as upsertHeadUnderCanonicalName
-// drops it; then the writer's read runs in the transaction.
-func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, steps []foldStep, standing [][]bool, questions []foldQuestion) map[string]string {
+// foldOracle is the writer's path's answer to each question, by its String. In one transaction,
+// rolled back once the reads have run, each answer of the request is stored on the rows the
+// writers left, in the order the request read them, as a writer's read-through stores it: through
+// upsertHeadRow, and with the row a read asked under an old name kept under that name dropped, as
+// upsertHeadUnderCanonicalName drops it. Then the writer's read runs in the transaction.
+func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, steps []foldStep, questions []foldQuestion) map[string]string {
 	t.Helper()
-	answers := map[string]string{}
-	stands := false
-	for _, heads := range standing {
-		for _, kept := range heads {
-			stands = stands || kept
-		}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the oracle's transaction: %v", err)
 	}
-	var q refs.Queryer = pool
-	if stands {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("open the oracle's transaction: %v", err)
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	for index, step := range steps {
+		if step.writer != foldAnswered {
+			continue
 		}
-		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-		if _, err := tx.Exec(ctx, `delete from pull_request_heads`); err != nil {
-			t.Fatalf("clear the oracle's rows: %v", err)
-		}
-		for index, step := range steps {
-			for written, head := range step.pulls.Heads {
-				if step.writer == foldLearned && !standing[index][written] {
-					continue
-				}
-				if _, err := upsertHeadRow(ctx, tx, head); err != nil {
-					t.Fatalf("the oracle's step %d, %s of %s#%d: %v", index, step.writer, head.Repo, head.Number, err)
-				}
-				if step.writer != foldDelivery && !strings.EqualFold(step.pulls.storedUnder, head.Repo) {
-					if _, err := tx.Exec(ctx, `delete from pull_request_heads where repo = $1 and number = $2`,
-						step.pulls.storedUnder, head.Number); err != nil {
-						t.Fatalf("the oracle's step %d, drop %s#%d: %v", index, step.pulls.storedUnder, head.Number, err)
-					}
+		for _, head := range step.pulls.Heads {
+			if _, err := upsertHeadRow(ctx, tx, head); err != nil {
+				t.Fatalf("the oracle's step %d, %s of %s#%d: %v", index, step.writer, head.Repo, head.Number, err)
+			}
+			if !strings.EqualFold(step.pulls.storedUnder, head.Repo) {
+				if _, err := tx.Exec(ctx, `delete from pull_request_heads where repo = $1 and number = $2`,
+					step.pulls.storedUnder, head.Number); err != nil {
+					t.Fatalf("the oracle's step %d, drop %s#%d: %v", index, step.pulls.storedUnder, head.Number, err)
 				}
 			}
 		}
-		q = tx
 	}
+	answers := map[string]string{}
 	for _, question := range questions {
-		answer, err := foldWriterRead(ctx, q, question)
+		answer, err := foldRead(ctx, tx, HeadAnswers{}, question)
 		if err != nil {
 			t.Fatalf("%s, the writer's read: %v", question, err)
 		}
@@ -709,68 +644,44 @@ func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, steps []fol
 	return answers
 }
 
-// The fold test reaches the read-only reads, and the writer's reads its oracle runs, through the
-// three functions below alone, so the histories can be run against another form of the reads by
-// changing these and nothing else.
+// The fold test reaches the reads, the read-only one and the writer's one its oracle runs, through
+// foldRequest, foldAnswer and foldRead alone, so the histories can be run against another form of
+// the reads by changing these and nothing else.
 
-// foldLearn keeps step, an answer a read-only read learned, in answers as the production code
-// keeps one (api's comparisonReader.learnCommitPulls): what is stored for its pull requests, read
-// right after GitHub answered (ReadStoredRows), then Keep.
-func foldLearn(ctx context.Context, pool *store.Pool, answers *CommitPullAnswers, step foldStep) error {
-	pulls, err := ReadStoredRows(ctx, pool, step.pulls)
-	if err != nil {
-		return err
-	}
-	answers.Keep(step.pulls.storedUnder, step.sha, pulls, step.at)
-	return nil
+// foldRequest is the answers one read-only request learned, as the fold test hands them to the
+// reads.
+type foldRequest struct {
+	answers HeadAnswers
 }
 
-// foldReadOnly asks question of the read-only entry point of its read, over the heads answers
-// keeps.
-func foldReadOnly(ctx context.Context, pool *store.Pool, answers *CommitPullAnswers, question foldQuestion) (string, error) {
-	kept, args := answers.Learned(), question.args
-	switch question.read {
-	case "headsAttributedQuery":
-		heads, err := ReadOnlyHeadsAttributedTo(ctx, pool, args[0], kept)
-		return describeAttributedHeads(heads), err
-	case "HeadStoredAt":
-		stored, err := ReadOnlyHeadStoredAt(ctx, pool, args[0], args[1], kept)
-		return fmt.Sprint(stored), err
-	case "BaseBranchMergedFor":
-		branch, err := ReadOnlyBaseBranchMergedFor(ctx, pool, args[0], kept)
-		return fmt.Sprintf("%q", branch), err
-	case "baseBranchMergedInQuery":
-		branch, err := ReadOnlyBaseBranchMergedIn(ctx, pool, args[0], args[1], kept)
-		return fmt.Sprintf("%q", branch), err
-	case "NewestPullRequestHead":
-		head, found, err := ReadOnlyNewestPullRequestHead(ctx, pool, args[0], kept)
-		return describeNewestHead(head, found), err
-	}
-	return "", fmt.Errorf("no read-only read answers %s", question.read)
+// foldAnswer adds step, an answer the request learned from GitHub, to request, in the order the
+// request read it.
+func foldAnswer(request *foldRequest, step foldStep) {
+	request.answers.Add(step.pulls)
 }
 
-// foldWriterRead asks question of the writer's form of its read, on q: the pool, or the oracle's
-// transaction.
-func foldWriterRead(ctx context.Context, q refs.Queryer, question foldQuestion) (string, error) {
+// foldRead asks question of its read on q, with answers: the pool and the request's answers for
+// the read-only read, and the oracle's transaction and none for the writer's.
+func foldRead(ctx context.Context, q refs.Queryer, answers HeadAnswers, question foldQuestion) (string, error) {
 	args := question.args
 	switch question.read {
 	case "headsAttributedQuery":
-		heads, err := headsAttributedTo(ctx, q, headsAttributedRead.writer, args[0])
+		heads, err := HeadsAttributedTo(ctx, q, args[0], answers)
 		return describeAttributedHeads(heads), err
 	case "HeadStoredAt":
-		stored, err := headStoredAt(ctx, q, headStoredAtRead.writer, args[0], args[1])
+		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(stored), err
 	case "BaseBranchMergedFor":
-		branch, err := baseBranchMergedFor(ctx, q, baseBranchMergedForRead.writer, args[0])
+		branch, err := BaseBranchMergedFor(ctx, q, args[0], answers)
 		return fmt.Sprintf("%q", branch), err
 	case "baseBranchMergedInQuery":
-		branch, err := baseBranchMergedIn(ctx, q, baseBranchMergedInRead.writer, args[0], args[1])
+		branch, err := BaseBranchMergedIn(ctx, q, args[0], args[1], answers)
 		return fmt.Sprintf("%q", branch), err
 	case "NewestPullRequestHead":
-		head, found, err := newestPullRequestHead(ctx, q, newestPullRequestHeadRead.writer, args[0])
+		head, found, err := NewestPullRequestHead(ctx, q, args[0], answers)
 		return describeNewestHead(head, found), err
 	}
-	return "", fmt.Errorf("no writer's read answers %s", question.read)
+	return "", fmt.Errorf("no read answers %s", question.read)
 }
 
 // describeAttributedHeads is heads in short, in their order: each pull request's number, head,

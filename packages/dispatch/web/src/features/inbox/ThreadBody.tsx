@@ -51,7 +51,7 @@ import {
 import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
-import type { ComposerOwner } from "../conversation/composer-model";
+import { type ComposerOwner, commentListKey } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
@@ -308,10 +308,7 @@ function CommentThreadBody({
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   // The reads the issue's Conversation and the document's margin already hold, under their own
   // keys: the same request, shared rather than made a second time.
-  const commentsKey =
-    owner.kind === "issue"
-      ? ["comments", owner.issueKey]
-      : ["artifact", owner.artifactId, "comments"];
+  const commentsKey = commentListKey(owner);
   const comments = useQuery({
     queryKey: commentsKey,
     queryFn: () =>
