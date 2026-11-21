@@ -61,7 +61,10 @@ revision:
     sentinel is the row `envoy.sentinel/F` (`PGSentinelKey`): for example
     `daemon/<project>/legion-go-<project>-github` and `envoy.sentinel/daemon/<project>`, or
     `dispatch/delivery-events` and `envoy.sentinel/dispatch`. `List` returns only the family's
-    records, never a sentinel.
+    records, never a sentinel. `NewPGStore` and `DaemonFamily(project)` refuse any family but
+    `session`, `dispatch` and `daemon/<project>` with a project that is not empty and holds no `/`,
+    white space or control character (`ErrInvalidFamily`, naming it): a store of `daemon` alone
+    would list every project's records, and one of `daemon/p/b` would write into `daemon/p`'s.
 - **The sentinel** (`StoreState`) names its store's family (`session`, `dispatch` or
   `daemon/<project>`) and holds the cutover marker (`cutover`: empty, `done` or `rolled_back`), the
   cutover boundary B (`boundary`), the stream's identity, and a recovery's inputs (`replay_from`,

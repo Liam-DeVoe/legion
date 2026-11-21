@@ -66,7 +66,7 @@ func tableKeys(t *testing.T, pool *pgxpool.Pool) []string {
 // family's records.
 func TestPGStoresOfSeveralFamiliesShareARealPostgresDatabase(t *testing.T) {
 	ctx := context.Background()
-	p, q := DaemonFamily("a_b"), DaemonFamily("aXb")
+	p, q := daemonFamily(t, "a_b"), daemonFamily(t, "aXb")
 	families := []string{p, q, DispatchFamily}
 	logicals := map[string]string{p: "legion-go-a_b-github", q: "legion-go-aXb-github", DispatchFamily: "delivery-events"}
 
@@ -74,7 +74,7 @@ func TestPGStoresOfSeveralFamiliesShareARealPostgresDatabase(t *testing.T) {
 		pool := pgTestDatabase(t)
 		stores := map[string]*PGStore{}
 		for _, family := range families {
-			stores[family] = NewPGStore(family, pool)
+			stores[family] = pgStore(t, family, pool)
 			if _, err := stores[family].WriteSentinel(ctx, StoreState{Family: family}, 0); err != nil {
 				t.Fatalf("the %s store's first sentinel beside the others' = %v", family, err)
 			}

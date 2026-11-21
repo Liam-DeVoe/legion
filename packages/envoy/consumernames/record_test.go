@@ -101,7 +101,7 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 		`{"key":"envoy.bucket","family":"session"}`:                                                                                                     SessionFamily,
 		`{"key":"envoy.bucket","family":"session","cutover":"done","boundary":1,"stream_id":"stream"}`:                                                  SessionFamily,
 		`{"key":"envoy.bucket","family":"dispatch","cutover":"rolled_back","replay_from":7,"orphans":["session~A"],"backup_sha256":"none","hold":"h1"}`: DispatchFamily,
-		`{"key":"envoy.bucket","family":"daemon/legion-go"}`:                                                                                            DaemonFamily("legion-go"),
+		`{"key":"envoy.bucket","family":"daemon/legion-go"}`:                                                                                            daemonFamily(t, "legion-go"),
 	} {
 		t.Run("takes "+value, func(t *testing.T) {
 			state, err := decodeSentinel(SentinelKey, family, []byte(value))
@@ -151,8 +151,8 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 // gives is what State reads back, and CreateSessionBucket names the session family alone.
 func TestASentinelsFamilyRoundTrips(t *testing.T) {
 	ctx := context.Background()
-	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
-		store := NewPGStore(family, newMemPG())
+	for _, family := range []string{DispatchFamily, daemonFamily(t, "legion-go")} {
+		store := pgStore(t, family, newMemPG())
 		if _, err := store.WriteSentinel(ctx, StoreState{Family: family, Cutover: CutoverDone}, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -185,9 +185,9 @@ func TestASentinelsFamilyRoundTrips(t *testing.T) {
 func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 	ctx := context.Background()
 	others := map[string][]string{
-		SessionFamily:             {DispatchFamily, DaemonFamily("legion-go")},
-		DispatchFamily:            {SessionFamily, DaemonFamily("legion-go")},
-		DaemonFamily("legion-go"): {DaemonFamily("legion-other"), DispatchFamily, SessionFamily},
+		SessionFamily:                {DispatchFamily, daemonFamily(t, "legion-go")},
+		DispatchFamily:               {SessionFamily, daemonFamily(t, "legion-go")},
+		daemonFamily(t, "legion-go"): {daemonFamily(t, "legion-other"), DispatchFamily, SessionFamily},
 	}
 	refused := func(t *testing.T, store, family string, state StoreState, err error) {
 		t.Helper()
@@ -198,10 +198,10 @@ func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 			t.Fatalf("%s reading a sentinel of the family %q = %v; want ErrSentinelFamily naming it", store, family, err)
 		}
 	}
-	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
+	for _, family := range []string{DispatchFamily, daemonFamily(t, "legion-go")} {
 		t.Run("PGStore of "+family, func(t *testing.T) {
 			db := newMemPG()
-			store := NewPGStore(family, db)
+			store := pgStore(t, family, db)
 			sentinel := func(of string) {
 				data, err := json.Marshal(StoreState{Key: PGSentinelKey(family), Family: of, Cutover: CutoverDone})
 				if err != nil {
@@ -278,14 +278,14 @@ func TestAMalformedSentinelIsNeverNoMarker(t *testing.T) {
 	}
 	t.Run("PGStore", func(t *testing.T) {
 		db := newMemPG()
-		store := NewPGStore(DispatchFamily, db)
+		store := pgStore(t, DispatchFamily, db)
 		pgRows(t, store, func(data string) {
 			db.rows[PGSentinelKey(DispatchFamily)] = pgRow{data: []byte(data), revision: 1}
 		})
 	})
 	t.Run("PGStore on a real Postgres", func(t *testing.T) {
 		pool := pgTestDatabase(t)
-		store := NewPGStore(DispatchFamily, pool)
+		store := pgStore(t, DispatchFamily, pool)
 		pgRows(t, store, func(data string) {
 			if _, err := pool.Exec(ctx, `insert into `+IntakeConsumersTable+` (logical, record, revision) values ($1, $2, 1)
 				on conflict (logical) do update set record = excluded.record`, PGSentinelKey(DispatchFamily), data); err != nil {
@@ -334,8 +334,8 @@ func (r pgRow) Scan(dest ...any) error {
 func TestThePGStoreWritesAndReadsOnlySelfKeyedRecords(t *testing.T) {
 	ctx := context.Background()
 	db := newMemPG()
-	family := DaemonFamily("legion-go")
-	store := NewPGStore(family, db)
+	family := daemonFamily(t, "legion-go")
+	store := pgStore(t, family, db)
 	if _, err := store.Write(ctx, "legion-go-CAPTURE-wake", Record{Current: "legion-go-CAPTURE-wake~A"}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func (r *memRows) Scan(dest ...any) error {
 func TestStoresOfSeveralFamiliesShareOneDatabase(t *testing.T) {
 	ctx := context.Background()
 	db := newMemPG()
-	p, q, d := NewPGStore(DaemonFamily("p"), db), NewPGStore(DaemonFamily("q"), db), NewPGStore(DispatchFamily, db)
+	p, q, d := pgStore(t, daemonFamily(t, "p"), db), pgStore(t, daemonFamily(t, "q"), db), pgStore(t, DispatchFamily, db)
 	for name, store := range map[string]*PGStore{"p": p, "q": q, "dispatch": d} {
 		if _, err := store.WriteSentinel(ctx, StoreState{Family: store.family}, 0); err != nil {
 			t.Fatalf("the %s store's first sentinel beside the others' = %v", name, err)
@@ -455,10 +455,10 @@ func TestStoresOfSeveralFamiliesShareOneDatabase(t *testing.T) {
 		}
 	}
 	// p's convert marks p's store converted.
-	if _, err := p.WriteSentinel(ctx, StoreState{Family: DaemonFamily("p"), Cutover: CutoverDone}, 1); err != nil {
+	if _, err := p.WriteSentinel(ctx, StoreState{Family: daemonFamily(t, "p"), Cutover: CutoverDone}, 1); err != nil {
 		t.Fatalf("p's convert writing done to p's sentinel = %v", err)
 	}
-	if state, err := p.State(ctx); err != nil || state.Family != DaemonFamily("p") || state.Cutover != CutoverDone {
+	if state, err := p.State(ctx); err != nil || state.Family != daemonFamily(t, "p") || state.Cutover != CutoverDone {
 		t.Fatalf("p's sentinel after p's convert = %+v, %v; want p's, done", state, err)
 	}
 	for _, store := range []*PGStore{q, d} {
@@ -480,8 +480,55 @@ func TestStoresOfSeveralFamiliesShareOneDatabase(t *testing.T) {
 		}
 	}
 	// q's record copied whole into p's place for the same name.
-	db.rows[DaemonFamily("p")+"/legion-go-q-github"] = db.rows[DaemonFamily("q")+"/legion-go-q-github"]
+	db.rows[daemonFamily(t, "p")+"/legion-go-q-github"] = db.rows[daemonFamily(t, "q")+"/legion-go-q-github"]
 	if _, _, err := p.Read(ctx, "legion-go-q-github"); !errors.Is(err, ErrMalformedRecord) {
 		t.Fatalf("p reading q's record copied into p's place = %v; want ErrMalformedRecord", err)
 	}
+}
+
+// A store is made only for a family it can keep, so no store reads, writes or lists the rows of a
+// family it does not keep: NewPGStore and DaemonFamily refuse any other, as ErrInvalidFamily naming
+// it. Before, a store of "daemon", with no project, listed every project's records, each well
+// formed under its own key, and a store of daemon/p/b wrote rows that daemon/p's store then listed
+// as its own. The control is today's acceptance of every family a store keeps.
+func TestAStoreIsMadeOnlyForAFamilyItCanKeep(t *testing.T) {
+	db := newMemPG()
+	for _, family := range []string{"daemon", "daemon/", "daemon/p/b", "daemon/p q", "", "sessions", "dispatch/x"} {
+		if store, err := NewPGStore(family, db); !errors.Is(err, ErrInvalidFamily) || !strings.Contains(err.Error(), fmt.Sprintf("%q", family)) || store != nil {
+			t.Fatalf("NewPGStore(%q) = %v, %v; want ErrInvalidFamily naming it", family, store, err)
+		}
+	}
+	for _, project := range []string{"", "p/b", "p q"} {
+		if family, err := DaemonFamily(project); !errors.Is(err, ErrInvalidFamily) || !strings.Contains(err.Error(), fmt.Sprintf("%q", "daemon/"+project)) || family != "" {
+			t.Fatalf("DaemonFamily(%q) = %q, %v; want ErrInvalidFamily naming daemon/%s", project, family, err, project)
+		}
+	}
+	for _, family := range []string{SessionFamily, DispatchFamily, "daemon/p", "daemon/legion-go_a.b"} {
+		if store, err := NewPGStore(family, db); err != nil || store.family != family {
+			t.Fatalf("control: NewPGStore(%q) = %v, %v; want the store of that family", family, store, err)
+		}
+	}
+	if family, err := DaemonFamily("legion-go"); err != nil || family != "daemon/legion-go" {
+		t.Fatalf("control: DaemonFamily(legion-go) = %q, %v; want daemon/legion-go", family, err)
+	}
+}
+
+// pgStore is NewPGStore's store of family on db, failing the test when NewPGStore refuses it.
+func pgStore(t testing.TB, family string, db PGQuerier) *PGStore {
+	t.Helper()
+	store, err := NewPGStore(family, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+// daemonFamily is DaemonFamily(project), failing the test when DaemonFamily refuses it.
+func daemonFamily(t testing.TB, project string) string {
+	t.Helper()
+	family, err := DaemonFamily(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return family
 }

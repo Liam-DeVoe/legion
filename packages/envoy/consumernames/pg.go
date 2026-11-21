@@ -60,8 +60,14 @@ type PGStore struct {
 
 // NewPGStore is the store of family's selection records on db: DispatchFamily for Dispatch's,
 // DaemonFamily(project) for a daemon's. It reads and writes only family's sentinel and records,
-// and its sentinel must name family (StoreState.Family).
-func NewPGStore(family string, db PGQuerier) *PGStore { return &PGStore{db: db, family: family} }
+// and its sentinel must name family (StoreState.Family). A family no store keeps is refused, as
+// ErrInvalidFamily naming it (checkFamily), since its keys could reach another family's rows.
+func NewPGStore(family string, db PGQuerier) (*PGStore, error) {
+	if err := checkFamily(family); err != nil {
+		return nil, err
+	}
+	return &PGStore{db: db, family: family}, nil
+}
 
 // State implements Store: it reads the family's sentinel row. No row is a missing sentinel
 // (ErrNoSentinel); a row whose record is not the family's sentinel (decodeSentinel) is

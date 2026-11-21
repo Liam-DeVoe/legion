@@ -158,8 +158,26 @@ const (
 	daemonFamilyPrefix = "daemon/"
 )
 
-// DaemonFamily is the family of a Legion daemon's store for project: "daemon/<project>".
-func DaemonFamily(project string) string { return daemonFamilyPrefix + project }
+// DaemonFamily is the family of a Legion daemon's store for project: "daemon/<project>". A project
+// that is empty or holds a '/', white space or a control character makes no family a store keeps
+// (storeFamily): its keys could begin another project's, so it is refused as ErrInvalidFamily,
+// naming the family.
+func DaemonFamily(project string) (string, error) {
+	family := daemonFamilyPrefix + project
+	if err := checkFamily(family); err != nil {
+		return "", err
+	}
+	return family, nil
+}
+
+// checkFamily refuses, as ErrInvalidFamily naming it, a family no store keeps (storeFamily).
+func checkFamily(family string) error {
+	if !storeFamily(family) {
+		return fmt.Errorf("%w: %q is none of %s, %s or %s<project>, with a project that is not empty and holds no '/', white space or control character",
+			ErrInvalidFamily, family, SessionFamily, DispatchFamily, daemonFamilyPrefix)
+	}
+	return nil
+}
 
 // StoreState is what a store's sentinel holds.
 type StoreState struct {
@@ -283,6 +301,11 @@ var (
 	// family than the store's own (KVStore's SessionFamily, NewPGStore's family): a malformed
 	// sentinel, ErrMalformedSentinel.
 	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
+	// ErrInvalidFamily is a family no store keeps: none of SessionFamily, DispatchFamily and
+	// DaemonFamily of a project that is not empty and holds no '/', white space or control
+	// character. NewPGStore and DaemonFamily refuse it, so no store reads, writes or lists the rows
+	// of a family it does not keep: a store of "daemon" alone would list every project's records.
+	ErrInvalidFamily = errors.New("consumer names: no store keeps that family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
 	// creates it: its start differs from what the operation reserved, or a setting no correction in
 	// place reaches from what the family's create gives (Names.adoptable, Config.Adopt). Such a
@@ -436,8 +459,8 @@ func (s StoreState) check(key, family string) error {
 	return nil
 }
 
-// storeFamily reports whether family is one a sentinel may name: SessionFamily, DispatchFamily, or
-// DaemonFamily of a project name with no space, control character or '/'.
+// storeFamily reports whether family is one a store keeps and a sentinel may name: SessionFamily,
+// DispatchFamily, or DaemonFamily of a project name with no space, control character or '/'.
 func storeFamily(family string) bool {
 	if family == SessionFamily || family == DispatchFamily {
 		return true
