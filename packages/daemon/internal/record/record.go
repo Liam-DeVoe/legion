@@ -1866,6 +1866,29 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// PutCheckState keeps state as the newest state of its check at its head of its issue, over a
+	// state of a lower Dispatch sequence only, and answers whether it changed the row: a state
+	// event delivered late, behind a newer one of the same check at the same head, changes nothing.
+	PutCheckState(ctx context.Context, tx pgx.Tx, state CheckState) (bool, error)
+	// PutCheckSet keeps checks as the set of checks of issue at head of repo, behind the same
+	// guard as PutCheckState, and answers whether it changed the row. A nil set is a head with no
+	// check.
+	PutCheckSet(ctx context.Context, tx pgx.Tx, issue, repo, head string, checks []string, seq int64) (bool, error)
+	// HeadStates is what the store holds of issue's checks at head of repo: the head's set, nil
+	// where none is held, and the newest state of each check it holds a state of.
+	HeadStates(ctx context.Context, tx pgx.Tx, issue, repo, head string) (HeadStates, error)
+	// DeleteCheckStates deletes every state, set and serial the store holds of issue, which the
+	// merge that closes it ends the use of.
+	DeleteCheckStates(ctx context.Context, tx pgx.Tx, issue string) error
+	// PutCheckStateSerial records that the daemon applied the issue's state event of serial,
+	// refusing a serial below 1.
+	PutCheckStateSerial(ctx context.Context, tx pgx.Tx, issue string, serial int64) error
+	// StatesFenceReached says whether a tester's handoff at serial may be judged on the states the
+	// store holds: true where serial is 0, a handoff that carries none, or where the daemon holds
+	// every serial of the issue from the lowest it holds through serial. A serial below the lowest
+	// held is reached, since its event came before the first the daemon applied; with none held,
+	// no serial above 0 is.
+	StatesFenceReached(ctx context.Context, tx pgx.Tx, issue string, serial int64) (bool, error)
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)

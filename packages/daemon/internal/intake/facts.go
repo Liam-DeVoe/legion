@@ -433,6 +433,35 @@ type DispatchClaim struct {
 
 func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 
+// DispatchCheckState is Dispatch's check.state_changed, which it appends on a check's issue each
+// time the state of one of the issue's `before_merge` checks at an open head changes: the state of
+// Check at Head of Repo, the head of PullRequests, with the head's whole set of checks (Checks).
+// In the set form, which tells a head's set of checks where no check's own event tells it (a head
+// with no check, a check removed), Check and State are "" and CheckVersion is 0. State is `yes`,
+// `no` or `unknown`; Reason is why it is not yes (`fail`, `no_result`, `pass_and_fail`,
+// `read_failed`), "" for yes; Roles are the roles whose pass counts there; CICase is the `ci.case`
+// of a check CI proves (`not_completed` while its run goes on), "" for every other check. Serial
+// counts the issue's check.state_changed events from 1, one counter across all its heads, and Mark
+// places the event in the issue's Dispatch event log: the store keeps the state of the newest
+// sequence (record.Store.PutCheckState), and the tester's move waits for every serial through its
+// handoff's (record.Store.StatesFenceReached).
+type DispatchCheckState struct {
+	Key          string
+	Mark         record.EventMark
+	Repo, Head   string
+	PullRequests []int
+	Checks       []string
+	Check        string
+	CheckVersion int
+	State        string
+	Reason       string
+	Roles        []string
+	CICase       string
+	Serial       int64
+}
+
+func (f DispatchCheckState) namedIssue() (string, bool) { return f.Key, true }
+
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
 // redeliveries and naks included — and whether it is idle, nothing pending or unacknowledged at
