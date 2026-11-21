@@ -600,10 +600,12 @@ func routes() []apiRoute {
 		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
 		// with the same hold id, which the row keeps. The body is signed by a key of
 		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
-		// A move from a row the floor reads so is 409 gen_mismatch with no row; a gen the row no
-		// longer holds is 409 gen_mismatch and a hold id not the row's 409 hold_mismatch, each with
-		// the row, and any other move 400 bad_transition. The move commits before it answers, so
-		// every decision of the auth service that starts after the answer reads the new phase.
+		// A move from a row the floor reads so is 409 gen_mismatch with no row, and one whose gen
+		// the log already holds (a row put back below the log) 409 below_floor with no row; a gen
+		// the row no longer holds is 409 gen_mismatch and a hold id not the row's 409
+		// hold_mismatch, each with the row, and any other move 400 bad_transition. The move commits
+		// before it answers, so every decision of the auth service that starts after the answer
+		// reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
 		// deleted: held with a hold id, or released, unless the log's latest entry is held (400

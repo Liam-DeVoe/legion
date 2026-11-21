@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -28,6 +29,9 @@ var (
 	ErrBadTransition = errors.New("natshold: the hold row may not move to that phase with that hold id")
 	// ErrRowExists is a restore while the hold row is there.
 	ErrRowExists = errors.New("natshold: the hold row exists, so there is nothing to restore")
+	// ErrGenLogged is a move whose gen nats_hold_log already holds: the row it moves from is an
+	// older one a database writer put back, below the log.
+	ErrGenLogged = errors.New("natshold: the log already holds the gen the move would store, so the row it moves from is an older one put back")
 )
 
 // Conflict is a write a store refused for what the tables held: Err is which refusal, Current the
@@ -211,7 +215,9 @@ func moveRefusal(current Row, phase, holdID string, used bool) error {
 // move is checked, and the write is one statement: the update, which still names expectedGen, and
 // its nats_hold_log row. accept sees the locked row first, and its error, the routes' floor of the
 // row refusing an older row put back, is answered as it is. It refuses with a Conflict: ErrNoRow,
-// ErrGenMismatch when the row's gen is not expectedGen, and moveRefusal's refusal.
+// ErrGenMismatch when the row's gen is not expectedGen, moveRefusal's refusal, and ErrGenLogged
+// when the log already holds the gen the move would store, which only a row put back below the log
+// leads to.
 func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept func(current Row) error) (Row, error) {
 	var moved Row
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
@@ -248,8 +254,12 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 			)
 			select `+rowColumns+` from moved`,
 			int64(expectedGen), next.Phase, next.HoldID, next.Reason, next.UpdatedBy, next.SignedAt, next.Sig))
-		if errors.Is(err, pgx.ErrNoRows) {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
 			return &Conflict{Err: ErrGenMismatch, Current: &current}
+		case store.IsUniqueViolation(err):
+			// The statement's one unique key it can break is nats_hold_log's gen.
+			return &Conflict{Err: fmt.Errorf("%w: gen %d", ErrGenLogged, expectedGen+1)}
 		}
 		return err
 	})
