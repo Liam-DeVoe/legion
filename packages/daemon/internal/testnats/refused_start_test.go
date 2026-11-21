@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/testcontainers/testcontainers-go"
+
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -19,8 +21,22 @@ import (
 // its address, so Docker refuses that publish as in use, and the server of the second start must
 // refuse a client with no credential (answering, inside StartNkeyAuthorizedUsers) and hold the
 // configuration naming the user. It counts the starts, so a run in which Docker was never refused
-// cannot pass for one that was.
+// cannot pass for one that was. Docker refuses only where this process can hold the port it
+// publishes: on a daemon on this machine. On a daemon on another machine the row fails as UNKNOWN,
+// naming the daemon, rather than fail on a start count that says nothing of the configuration.
 func TestARefusedStartIsStartedAgainOnItsOwnConfiguration(t *testing.T) {
+	if local, err := localDaemon(context.Background()); err != nil {
+		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
+	} else if !local {
+		daemon := "another machine"
+		if provider, err := testcontainers.NewDockerProvider(); err == nil {
+			if host, err := provider.DaemonHost(context.Background()); err == nil {
+				daemon = host
+			}
+			provider.Close()
+		}
+		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon)
+	}
 	choose := choosePorts
 	var held net.Listener
 	t.Cleanup(func() {
