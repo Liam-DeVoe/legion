@@ -312,24 +312,6 @@
         "capture": "oidc.check-client"
       },
       {
-        "row": "site-ts-token-type-minted",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/cipher-client/src/__tests__/boundary-leaks.test.ts"],
-        "capture": "leak"
-      },
-      {
-        "row": "site-ts-issuer-said",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/cipher-client/src/__tests__/boundary-leaks.test.ts"],
-        "capture": "leak"
-      },
-      {
-        "row": "site-ts-signin-ended",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/cipher-client/src/__tests__/boundary-leaks.test.ts"],
-        "capture": "leak"
-      },
-      {
         "row": "leak-launcher-exchange-failed",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
@@ -346,42 +328,6 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "oidc.discovery"
-      },
-      {
-        "row": "site-gcloud-stderr",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/envoy/cmd/cipher/remote_boundary_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "agent-secrets.gcloud-sign-in"
-      },
-      {
-        "row": "site-gcp-userinfo",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/envoy/cmd/cipher/remote_boundary_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "agent-secrets.userinfo"
-      },
-      {
-        "row": "site-gcp-secret-manager-token",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/envoy/cmd/cipher/secret_gcp_token_refusal_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "agent-secrets.secret-manager-token"
-      },
-      {
-        "row": "leak-proxy-echo-impersonation",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
-        "files": [
-          "packages/envoy/internal/cipherclient/proxy_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.proxy-echo-impersonation"
       },
       {
         "row": "leak-loadtest-events.go_verdict_and_its_page_read",
@@ -574,15 +520,6 @@
           "packages/envoy/internal/redact/testdata/remote.json"
         ],
         "capture": "fixture/split-user-info-after-equals"
-      },
-      {
-        "row": "split-refusal-helper",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
-        "files": [
-          "packages/envoy/internal/cipher/helper/oauth_refusal_split_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "helper.split-refusal"
       },
       {
         "row": "split-inside-slashes-go",
@@ -1469,42 +1406,6 @@
         "capture": "loadtest.error-json/code-quotes-url"
       },
       {
-        "row": "error-json-brokertest-echo-member",
-        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokertest.error-json/echo-member"
-      },
-      {
-        "row": "error-json-brokertest-error-quotes-url",
-        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokertest.error-json/error-quotes-url"
-      },
-      {
-        "row": "error-json-brokertest-error-echoes-token",
-        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokertest.error-json/error-echoes-token"
-      },
-      {
-        "row": "error-json-brokertest-code-quotes-url",
-        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokertest.error-json/code-quotes-url"
-      },
-      {
         "row": "request-echo-cookie",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
@@ -1604,21 +1505,6 @@
         "capture": "launcher.exchange-echo"
       },
       {
-        "row": "brokerclient-trade-echo",
-        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/envoy/internal/cipherclient/trade_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.trade-echo/run"
-      },
-      {
-        "row": "ts-request-echo-description",
-        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": ["packages/cipher-client/src/__tests__/request-echo.test.ts"],
-        "capture": "ts.request-echo/description/message"
-      },
-      {
         "row": "record-interleaved",
         "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
         "files": [
@@ -1662,15 +1548,6 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "redact.no-record"
-      },
-      {
-        "row": "record-userinfo-echo",
-        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
-        "files": [
-          "packages/envoy/cmd/cipher/remote_boundary_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "agent-secrets.userinfo"
       },
       {
         "row": "record-admin-api-echo",
@@ -1764,42 +1641,6 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "redact.url-error/op"
-      },
-      {
-        "row": "brokerclient-answer-echo-302",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
-        "files": [
-          "packages/envoy/internal/cipherclient/answer_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.answer-echo/302-words"
-      },
-      {
-        "row": "brokerclient-answer-echo-502",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
-        "files": [
-          "packages/envoy/internal/cipherclient/answer_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.answer-echo/502-words"
-      },
-      {
-        "row": "brokerclient-answer-echo-token-type",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
-        "files": [
-          "packages/envoy/internal/cipherclient/answer_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.answer-echo/200-token-type"
-      },
-      {
-        "row": "brokerclient-answer-echo-credential-expires-at",
-        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
-        "files": [
-          "packages/envoy/internal/cipherclient/answer_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.answer-echo/200-credential-expires-at"
       },
       {
         "row": "agentsecrets-answer-echo-body",
@@ -3095,7 +2936,14 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/echo-member",
-      "production": "ciphertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON",
+      "function": "github.com/sjawhar/envoy/internal/cipher/ciphertest.answerText",
+      "capture": "brokertest.error-json/echo-member",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/ciphertest/answertext.go",
+        "preimage": "\t\treturn text\n",
+        "replacement": "\t\treturn text + string(body)\n"
+      }
     },
     {
       "id": "error-json-loadtest-error-quotes-url",
@@ -3109,7 +2957,14 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-quotes-url",
-      "production": "ciphertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON",
+      "function": "github.com/sjawhar/envoy/internal/cipher/ciphertest.answerText",
+      "capture": "brokertest.error-json/error-quotes-url",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/ciphertest/answertext.go",
+        "preimage": "\t\treturn text\n",
+        "replacement": "\t\treturn text + string(body)\n"
+      }
     },
     {
       "id": "error-json-loadtest-error-echoes-token",
@@ -3123,7 +2978,14 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-echoes-token",
-      "production": "ciphertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON",
+      "function": "github.com/sjawhar/envoy/internal/cipher/ciphertest.answerText",
+      "capture": "brokertest.error-json/error-echoes-token",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/ciphertest/answertext.go",
+        "preimage": "\t\treturn text\n",
+        "replacement": "\t\treturn text + string(body)\n"
+      }
     },
     {
       "id": "error-json-loadtest-code-quotes-url",
@@ -3137,7 +2999,14 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/code-quotes-url",
-      "production": "ciphertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON",
+      "function": "github.com/sjawhar/envoy/internal/cipher/ciphertest.answerText",
+      "capture": "brokertest.error-json/code-quotes-url",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/ciphertest/answertext.go",
+        "preimage": "\t\treturn text\n",
+        "replacement": "\t\treturn text + string(body)\n"
+      }
     },
     {
       "id": "excerpt-error-json-field",
@@ -3179,7 +3048,14 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/helper",
       "test": "TestASplitRefusalPrintsNoCredentialItsWordsQuote",
-      "production": "helper oauthBrokerError, redact.NewOAuthRefusal"
+      "production": "helper oauthBrokerError, redact.NewOAuthRefusal",
+      "function": "github.com/sjawhar/envoy/internal/cipher/helper.oauthBrokerError",
+      "capture": "helper.split-refusal",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/helper/broker.go",
+        "preimage": "code, message := redact.NewOAuthRefusal(re.ErrorCode, re.ErrorDescription)",
+        "replacement": "code, message := func() (redact.RemoteText, redact.RemoteText) { c, m, ok := strings.Cut(re.ErrorDescription, \": \"); if !ok { return redact.NewOAuthRefusal(re.ErrorCode, re.ErrorDescription) }; return redact.NewRemoteText(c), redact.NewRemoteText(m) }()"
+      }
     },
     {
       "id": "split-refusal-machine-login",
@@ -3515,7 +3391,14 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials/impersonation",
-      "production": "cipherclient.ExternalAccountIdentity.Token, redact.RefusalClient"
+      "production": "cipherclient.ExternalAccountIdentity.Token, redact.RefusalClient",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.ExternalAccountIdentity).Token",
+      "capture": "brokerclient.proxy-echo-impersonation",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/detect.go",
+        "preimage": "\tcreds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), e.CredentialsJSON, google.ExternalAccount, poolScope)))\n\tif err != nil {\n\t\treturn \"\", \"\", fmt.Errorf(\"the external_account credential %s names is not one this client reads\", credentialsFileVar)\n\t}\n\taccess, err := redact.OAuth2(creds.TokenSource.Token())\n\tif err != nil {\n\t\treturn \"\", \"\", fmt.Errorf(\"mint an access token as %s with the external_account credential %s names: %s\", e.account(), credentialsFileVar, externalAccountFailure(e.CredentialsJSON, answered, err))",
+        "replacement": "\tcreds, err := google.CredentialsFromJSONWithType(s.Context(), e.CredentialsJSON, google.ExternalAccount, poolScope)\n\tif err != nil {\n\t\treturn \"\", \"\", fmt.Errorf(\"the external_account credential %s names is not one this client reads\", credentialsFileVar)\n\t}\n\taccess, err := creds.TokenSource.Token()\n\tif err != nil {\n\t\treturn \"\", \"\", fmt.Errorf(\"mint an access token as %s with the external_account credential %s names: %s\", e.account(), credentialsFileVar, err)"
+      }
     },
     {
       "id": "site-proxy-echo-sts",
@@ -3893,35 +3776,70 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
-      "production": "cipherclient Client.post, redact.Carried, RemoteText.WithoutTokens"
+      "production": "cipherclient Client.post, redact.Carried, RemoteText.WithoutTokens",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
+      "capture": "brokerclient.trade-echo/run",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "read, err := redact.ReadAnswer(resp, 1<<20)",
+        "replacement": "read, err := redact.ReadAnswer(&http.Response{StatusCode: resp.StatusCode, Body: resp.Body}, 1<<20)"
+      }
     },
     {
       "id": "brokerclient-answer-echo-302",
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/302-words",
-      "production": "cipherclient Client.post: a 3xx's words, through the record taken once before the status switch (redact.Carried)"
+      "production": "cipherclient Client.post: a 3xx's words, through the record taken once before the status switch (redact.Carried)",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
+      "capture": "brokerclient.answer-echo/302-words",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "read, err := redact.ReadAnswer(resp, 1<<20)",
+        "replacement": "read, err := redact.ReadAnswer(&http.Response{StatusCode: resp.StatusCode, Body: resp.Body}, 1<<20)"
+      }
     },
     {
       "id": "brokerclient-answer-echo-502",
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/502-words",
-      "production": "cipherclient Client.post: a 5xx's words, through the record taken once before the status switch (redact.Carried)"
+      "production": "cipherclient Client.post: a 5xx's words, through the record taken once before the status switch (redact.Carried)",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
+      "capture": "brokerclient.answer-echo/502-words",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "read, err := redact.ReadAnswer(resp, 1<<20)",
+        "replacement": "read, err := redact.ReadAnswer(&http.Response{StatusCode: resp.StatusCode, Body: resp.Body}, 1<<20)"
+      }
     },
     {
       "id": "brokerclient-answer-echo-token-type",
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-token-type",
-      "production": "cipherclient Client.read: a refusal quotes no value the broker wrote"
+      "production": "cipherclient Client.read: a refusal quotes no value the broker wrote",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
+      "capture": "brokerclient.answer-echo/200-token-type",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "return c.read(shown, answer)",
+        "replacement": "return c.read(fmt.Sprintf(\"%s: %s\", shown, func() string { var b strings.Builder; _, _ = read.StreamTo(&b); return b.String() }()), answer)"
+      }
     },
     {
       "id": "brokerclient-answer-echo-credential-expires-at",
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-credential-expires-at",
-      "production": "cipherclient Client.read: a refusal quotes no value the broker wrote"
+      "production": "cipherclient Client.read: a refusal quotes no value the broker wrote",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
+      "capture": "brokerclient.answer-echo/200-credential-expires-at",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
+        "preimage": "return c.read(shown, answer)",
+        "replacement": "return c.read(fmt.Sprintf(\"%s: %s\", shown, func() string { var b strings.Builder; _, _ = read.StreamTo(&b); return b.String() }()), answer)"
+      }
     },
     {
       "id": "brokerclient-refusal-beside-credential",
@@ -5762,6 +5680,54 @@
       "site": "loadtest replay-fetch: an artifact listing that did not decode printed the decoder's error, which quoted the bearer an answer echoed into a time",
       "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
       "guard": "loadtest-listing-decode-echo"
+    },
+    {
+      "site": "gcpBackend.signInWithGcloud, runGcloud",
+      "source": "control 19 leak row site-gcloud-stderr at 87112a0b71",
+      "guard": "site-gcloud-stderr",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at dd9e8c5c22 (#4566), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "gcpUserinfo, redact.TokenSource",
+      "source": "control 19 leak row site-gcp-userinfo at 87112a0b71",
+      "guard": "site-gcp-userinfo",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at dd9e8c5c22 (#4566), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "gcpCredentialsFile, gcpClientDial, redact.TokenSource",
+      "source": "control 19 leak row site-gcp-secret-manager-token at 87112a0b71",
+      "guard": "site-gcp-secret-manager-token",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at dd9e8c5c22 (#4566), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "gcpUserinfo, redact.Carried off the answer",
+      "source": "control 19 leak row record-userinfo-echo at 0cef0dcfd2",
+      "guard": "record-userinfo-echo",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at dd9e8c5c22 (#4566), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "BrokerTokenClient #trade, #refusal",
+      "source": "control 19 leak row site-ts-token-type-minted at 87112a0b71",
+      "guard": "site-ts-token-type-minted",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at e5e4900fe7 (#4140), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "personIdentity issuerSaid",
+      "source": "control 19 leak row site-ts-issuer-said at 87112a0b71",
+      "guard": "site-ts-issuer-said",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at e5e4900fe7 (#4140), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "personIdentity, SignInEndedError",
+      "source": "control 19 leak row site-ts-signin-ended at 87112a0b71",
+      "guard": "site-ts-signin-ended",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at e5e4900fe7 (#4140), so the merge base holds no such leak; the row stays in the check at the head"
+    },
+    {
+      "site": "broker-client token-client, refusalFetch, LibraryError",
+      "source": "control 19 leak row ts-request-echo-description at ee316f783d",
+      "guard": "ts-request-echo-description",
+      "note": "out of control 19: main fixed this leak on its own before the merge base, at e5e4900fe7 (#4140), so the merge base holds no such leak; the row stays in the check at the head"
     }
   ]
 }
