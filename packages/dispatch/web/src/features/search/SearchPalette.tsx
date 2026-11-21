@@ -494,14 +494,16 @@ function SearchNarrowing({
                   // A date the reader types is taken once its year is whole: an engine reports a
                   // valid date from the year's first digit (Chromium reads `2` as the year 0002),
                   // and taking that would narrow to a year the reader is still typing and draw
-                  // the box away from under their next keys.
+                  // the box away from under their next keys. The box holds no `value` of its
+                  // own: React puts a controlled empty value back after every change it hands
+                  // here, so Chromium's date would be emptied at each digit before its year is
+                  // whole.
                   const { value } = event.target;
                   if (value !== "" && Number(value.slice(0, 4)) >= 1000) {
                     set({ updatedSince: value });
                   }
                 }}
                 type="date"
-                value=""
               />
             </label>
           ) : null}
