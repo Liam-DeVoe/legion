@@ -238,6 +238,13 @@ func planHold(issue record.Issue, stored bool) bool {
 // from and an escalation would overwrite the reason, so each is refused with what starts the work
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
 // for its children the last of them to leave (RetryOfHeldParent, naming each one still open).
+//
+// A parent held for its children with none of them open waits for its tree alone: the settle of
+// every fact releases such a parent in a tree that runs (releaseHeldParents), so its tree runs
+// nothing, and the answer says why (RetryOfHeldParentUntilTreeRuns). Either its root lingers after
+// its close, or its root is one a re-admission put in the line, a hand-over among them, since every
+// leave of a root arms its linger (beginLinger) and only a re-admission clears it: such a root
+// waits in the line for the promotion that opens its tree (record.TreeRuns, record.QueuedRoot).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
 	if issue.Phase != phase.Held || issue.Hold == nil {
 		return nil, nil
@@ -251,7 +258,14 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 		if err != nil {
 			return nil, err
 		}
-		return intake.RetryOfHeldParent(issue.Key, beneath), nil
+		if len(beneath) > 0 {
+			return intake.RetryOfHeldParent(issue.Key, beneath), nil
+		}
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return nil, err
+		}
+		return intake.RetryOfHeldParentUntilTreeRuns(issue.Key, issue.Tree, lingers), nil
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
 }
