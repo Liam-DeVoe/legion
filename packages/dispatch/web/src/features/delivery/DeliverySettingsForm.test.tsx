@@ -454,6 +454,53 @@ test("a held Save keeps the keyboard focus, and a press or a submit while it is 
   }
 });
 
+// The save has its answer, and Save stays held until the Delivery page, which holds the record,
+// draws what the save changed in the form's place (`useHoldUntilDrawn`). That hold is part of the
+// Save press's action, so the form's going while it is on is the reader's doing: the page's
+// rescue gives the focus to what the page drew in the form's place, not to the page's body.
+test("the form its caller replaces after a save hands the focus to what the caller drew in its place", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = (replaced: boolean) => (
+    <QueryClientProvider client={queryClient}>
+      <RescuedMain>
+        {replaced ? (
+          <section aria-label="Delivery timeline">
+            <button type="button">Open the latest deploy</button>
+          </section>
+        ) : (
+          <DeliverySettingsForm initial={record} />
+        )}
+      </RescuedMain>
+    </QueryClientProvider>
+  );
+  try {
+    const view = render(page(false));
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    act(() => save.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    for (const _ of [0, 1, 2]) await afterRescue();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+
+    view.rerender(page(true));
+    await afterRescue();
+    expect(screen.getByRole("button", { name: "Open the latest deploy" })).toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
 // `DispatchQueryClient` answers the invalidation of the idle record after a save with the
 // record's own fetch, which TanStack pauses while the browser is offline, and no request deadline
 // runs while a fetch is paused. So Save's hold through that read has a timer of its own, the

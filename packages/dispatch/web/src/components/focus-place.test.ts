@@ -1,11 +1,14 @@
 import { expect, jest, spyOn, test } from "bun:test";
+import { QueryClient } from "@tanstack/react-query";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useRef } from "react";
 
+import { useReadBound } from "../api/read-bound";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { plainWrite, type Writes, writesOf } from "../features/writes/write-store";
 import { CONTROL } from "./control-names";
 import { FRAME_WAIT_MS, SHOWN_ITEM_ATTRIBUTE, useFocusPlace, useFocusRescue } from "./focus-place";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
@@ -15,6 +18,10 @@ import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 // (measured, INFRA-3135 round 7) nor in happy-dom: `lose` fires it as Chromium does before the
 // element goes, and a bare `remove()` is the Firefox case, which the rescue sees by watching the
 // page. A `blur()` fires its own.
+// The rescue is handed no writes unless a case hands it the page's (`withRescue`'s `writes`), so a
+// press there starts no write, and it stays live while a control it reads as is held by a hold
+// that began after it: a case that holds a control by `aria-disabled` while its write is out reads
+// that rule. The cases that hand the rescue writes read a press's action (`signedInWrites`).
 // A component's own hand-off (`useFocusPlace`) is read here too, in a line of buttons React draws
 // (`HandOffLine`).
 
@@ -56,9 +63,10 @@ async function settled(): Promise<void> {
   }
 }
 
-/** Runs `body` with the rescue mounted, and takes the page and the rescue away after it. */
-async function withRescue(body: () => Promise<void>): Promise<void> {
-  const rescue = renderHook(() => useFocusRescue(mainRef));
+/** Runs `body` with the rescue mounted, handed `writes` as the page's writes where a case gives
+ *  them, and takes the page and the rescue away after it. */
+async function withRescue(body: () => Promise<void>, writes?: Writes): Promise<void> {
+  const rescue = renderHook(() => useFocusRescue(mainRef, writes));
   try {
     await body();
   } finally {
@@ -1712,6 +1720,208 @@ test("a row its list's pick held, taken away after the hold ended, hands the foc
       expect(rows[2]?.mark).not.toHaveFocus();
     });
   });
+});
+
+/** The page's writes, signed in as the app's are, for a case to hand the rescue as `app.tsx`
+ *  hands it the app's (`useFocusRescue`'s `writes`). */
+function signedInWrites(): Writes {
+  const client = new QueryClient();
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  return writesOf(client);
+}
+
+/** A write `writes` makes at the reader's press, as a press's handler makes one, out until the
+ *  case lands it: `land` answers it and waits until the press that awaits it has its answer. */
+function writeOf(writes: Writes): { land: () => Promise<void> } {
+  const answer = Promise.withResolvers<object>();
+  const made = writes.run({
+    detail: null,
+    kind: plainWrite,
+    label: "The rename of the group Crew",
+    method: "PATCH",
+    presentation: "indicator",
+    write: () => answer.promise,
+  });
+  // A write the case leaves out is let go after it (`setup.ts`), which refuses its press.
+  made.catch(() => undefined);
+  return {
+    land: async () => {
+      answer.resolve({});
+      await made;
+    },
+  };
+}
+
+// (cl) A press is the cause only of the loss of its own control and of what its own action takes
+// away. Its action is the write it started and the holds on what answers that write. Once the
+// write has landed with no such hold on, the press is answered a frame and a task later. A
+// control it reads as that is held after that is held for nothing the press does: the session
+// groups editor's Rename, once the update that carries its rename is drawn, held by
+// `aria-disabled` because the name is the stored one. The card deleted on another device after
+// that is a loss the reader did not cause, so the focus goes to the open modal dialog's own stop
+// with no scroll, never to the control before the lost place, by Chromium's `focusout` as by none.
+test("a press whose write has landed, its control then held with nothing to do, causes no later loss in its dialog", async () => {
+  for (const withFocusout of [true, false]) {
+    const writes = signedInWrites();
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        const { buttons, dialog } = modalOf("Close", "Members", "Rename");
+        const [, members, rename] = buttons as [HTMLButtonElement, HTMLButtonElement, HTMLElement];
+        rename.focus();
+        enterPress(rename);
+        const write = writeOf(writes);
+        // Held while its write is out, and, once the update that carries it is drawn, because the
+        // name it would set is the stored one.
+        rename.setAttribute("aria-disabled", "true");
+        await settled();
+        await write.land();
+        for (const _ of [0, 1, 2]) await settled();
+        expect(rename).toHaveFocus();
+        if (withFocusout) lose(rename);
+        else rename.remove();
+        await settled();
+        expect(dialog).toHaveFocus();
+        expect(members).not.toHaveFocus();
+      }, writes);
+    });
+  }
+});
+
+// (cm) So for a press on another control of the dialog, as in (cl): Create group, its write
+// landed, and the button held after it, disabled with its name box emptied. Its press is answered
+// once the write has landed, so the card deleted on another device while the focus rests on its
+// Rename, put there with no press, is no doing of the reader's, though a press in a dialog counts
+// for a loss anywhere in it (`pressPlaces`). The focus goes to the dialog's own stop with no
+// scroll, by Chromium's `focusout` as by none.
+test("a press on another control of a dialog, its write landed and that control then held, causes no later loss in the dialog", async () => {
+  for (const withFocusout of [true, false]) {
+    const writes = signedInWrites();
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        const { buttons, dialog } = modalOf("Close", "Create group", "Rename");
+        const [close, create, rename] = buttons as [HTMLElement, HTMLButtonElement, HTMLElement];
+        create.focus();
+        pointerPress(create);
+        const write = writeOf(writes);
+        // Disabled while its write is out, and after it, with its name box emptied.
+        create.disabled = true;
+        await settled();
+        await write.land();
+        rename.focus();
+        for (const _ of [0, 1, 2]) await settled();
+        if (withFocusout) lose(rename);
+        else rename.remove();
+        await settled();
+        expect(dialog).toHaveFocus();
+        expect(close).not.toHaveFocus();
+      }, writes);
+    });
+  }
+});
+
+// (cn) A press whose write is out is live while that write is out, however many frames it takes
+// and whether or not a control shows it held: the row the write takes away - Dismiss answered -
+// is the reader's doing, and the focus goes to the control now at the row's place, as in (ar).
+test("a press whose write is out makes the going of its control's row the reader's", async () => {
+  const writes = signedInWrites();
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    const dismiss = buttonIn(second.row, "Dismiss");
+    dismiss.focus();
+    placeAt(dismiss, 200);
+    box.dispatchEvent(new Event("scroll"));
+    pointerPress(dismiss);
+    writeOf(writes);
+    for (const _ of [0, 1, 2]) await settled();
+    expect(dismiss).toHaveFocus();
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  }, writes);
+});
+
+// (co) A control held through the re-read that draws what its write changed (`useReadBound`'s
+// `holdThrough`) is held for the press's action while that read is out: the row the read takes
+// away after the write has landed - the List's row whose Start next moved its issue up the queue
+// - is still the reader's doing, and the focus goes to the control now at the row's place, as in
+// (ar).
+test("a press whose control is held through its write's re-read makes the going of its row the reader's", async () => {
+  const writes = signedInWrites();
+  const bound = renderHook(() => useReadBound());
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+      const startNext = buttonIn(second.row, "Start next");
+      startNext.focus();
+      placeAt(startNext, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(startNext);
+      const write = writeOf(writes);
+      // Held while its write is out and through the read after it (`heldPress`).
+      startNext.setAttribute("aria-disabled", "true");
+      await settled();
+      await write.land();
+      // The write's `onSuccess` holds it through the list's read, as it lands.
+      const reread = Promise.withResolvers<void>();
+      const held = bound.result.current[1](reread.promise);
+      for (const _ of [0, 1, 2]) await settled();
+      expect(startNext).toHaveFocus();
+      second.row.remove();
+      await waitFor(() => expect(third.mark).toHaveFocus());
+      reread.resolve();
+      await held;
+    }, writes);
+  } finally {
+    bound.unmount();
+  }
+});
+
+// (cp) A press that starts no write keeps the rule of a control it holds, with the page's writes
+// handed to the rescue as well: the pager's Next, held on the last page it led to, keeps its press
+// live while it is held, so the pager drawn again without it is the reader's doing, and the focus
+// walks back to Previous.
+test("a press that starts no write stays live while it holds its own control, the page's writes handed to the rescue", async () => {
+  const writes = signedInWrites();
+  await withRescue(async () => {
+    const [previous, next] = mainOf("Previous", "Next").buttons as [
+      HTMLButtonElement,
+      HTMLButtonElement,
+    ];
+    next.focus();
+    pointerPress(next);
+    await holdFor(next);
+    expect(next).toHaveFocus();
+    lose(next);
+    await waitFor(() => expect(previous).toHaveFocus());
+  }, writes);
+});
+
+// (cq) A press in a dialog counts for a loss anywhere in that dialog (`pressPlaces`), and the
+// dialog a lost control was in is the one the rescue noted around it as it took the focus. Read
+// from that note, a control taken away with no `focusout`, as Firefox and WebKit take it, is read
+// in its dialog, as Chromium's `focusout` reads it while the control is still there. Right after
+// the reader's press on another control of the dialog, the focus walks back inside the dialog to
+// the control before the lost one, by Chromium's `focusout` as by none.
+test("a control taken away with no focusout is read in the dialog the rescue noted it in, as with one", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { buttons } = modalOf("First", "Second", "Third");
+      const [first, second, third] = buttons as [
+        HTMLButtonElement,
+        HTMLButtonElement,
+        HTMLButtonElement,
+      ];
+      third.focus();
+      pointerPress(first);
+      if (withFocusout) lose(third);
+      else third.remove();
+      await settled();
+      expect(second).toHaveFocus();
+    });
+  }
 });
 
 // (ai) A control focused below the fold is one the engine is still to scroll into view - WebKit

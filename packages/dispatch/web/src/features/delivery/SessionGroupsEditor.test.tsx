@@ -484,6 +484,97 @@ test("Delete group of the only group walks the focus back past the New group nam
   }
 });
 
+// A press is the cause of what its write and the live update carrying it take away, and of
+// nothing after. Once that update is drawn the card's hold has let go (`useHoldUntilDrawn`), and
+// Rename is held only because the name is now the stored one, which is nothing the press does. So
+// the card deleted on another device after that is a loss the reader did not cause: the focus
+// goes to the open modal dialog's own stop, never to the session list's link before the card's
+// place, where a walk back would land.
+test("a card deleted on another device after its Rename by Enter was drawn leaves the focus on the dialog", async () => {
+  const user = userEvent.setup();
+  const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(renamed);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    const name = within(group).getByLabelText("Name") as HTMLInputElement;
+    await user.clear(name);
+    await user.click(name);
+    await user.paste("Ship crew");
+    await user.tab();
+    const rename = within(group).getByRole("button", { name: "Rename" }) as HTMLButtonElement;
+    expect(rename).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await landAndDraw(rename, [renamed], editor);
+    await waitFor(() => expect(rename).toHaveFocus());
+    await afterRescue();
+    expect(rename).toHaveAttribute("aria-disabled", "true");
+
+    editor.draw([]);
+    await afterRescue();
+    expect(screen.getByRole("dialog", { name: "Session groups" })).toHaveFocus();
+    expect(
+      screen.getByRole("link", { name: "Open live conversation with Reviewer" })
+    ).not.toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// So for a press on another control of the dialog: Create group, its group made and drawn, and
+// the button disabled after it with its name box emptied. The press is the cause of what its write
+// takes away and of nothing after the write has landed, though a press in the dialog counts for a
+// loss anywhere in it. With the focus put on the other card's Rename with no press, that card
+// deleted on another device leaves the focus on the dialog's own stop, whether the engine fires a
+// `focusout` for Rename as the card goes (Chromium) or none (Firefox and WebKit).
+test("a card deleted on another device after a Create group landed leaves the focus on the dialog", async () => {
+  for (const withFocusout of [true, false]) {
+    const user = userEvent.setup();
+    const made: DeliverySessionGroup = {
+      ...crew,
+      id: "22222222-2222-2222-2222-222222222222",
+      name: "Night crew",
+      sessions: ["s1"],
+    };
+    const create = spyOn(api, "createDeliverySessionGroup").mockResolvedValue(made);
+    const editor = renderEditor([crew], { rescued: true });
+    try {
+      await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
+      await user.click(screen.getByLabelText("New group name"));
+      await user.paste("Night crew");
+      await user.click(screen.getByRole("button", { name: "Create group" }));
+      await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+      editor.draw([crew, made]);
+      await afterRescue();
+      expect(screen.getByRole("button", { name: "Create group" })).toBeDisabled();
+      const rename = within(screen.getByRole("group", { name: "Release crew" })).getByRole(
+        "button",
+        { name: "Rename" }
+      );
+      act(() => rename.focus());
+      act(() => {
+        // happy-dom fires no `focusout` for a focused element taken away; Chromium fires one
+        // during the removal, while the element is still in the page.
+        if (withFocusout) rename.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        editor.draw([made]);
+      });
+      await afterRescue();
+      expect(screen.getByRole("dialog", { name: "Session groups" })).toHaveFocus();
+      expect(
+        within(screen.getByRole("group", { name: "Night crew" })).getByRole("button", {
+          name: "Rename",
+        })
+      ).not.toHaveFocus();
+    } finally {
+      cleanup();
+      create.mockRestore();
+    }
+  }
+});
+
 // Each member is an agent linked to its live conversation; one no pull request of the window
 // names has no stored title, so it reads by its short id.
 test("group members link to their live conversations, an untitled one by its short id", () => {

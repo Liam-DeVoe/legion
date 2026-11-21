@@ -1,6 +1,7 @@
 import { onlineManager } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
+import { beginAnswerHold } from "../components/focus-place";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } from "./client";
 
 /**
@@ -36,9 +37,11 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
  * A control's hold through the re-read that draws what its write changed, bounded by
  * `readWithinBound`. `holdThrough` answers once its read settles or the bound runs out, whichever
  * is first, so a write that returns it from `onSuccess` stays pending, and its control held, for
- * that long and no longer. `unsettled` is why the read of the latest hold that ran out has not
- * settled. The page shows it beside the sentence it shows for a read that failed. It goes once
- * that read settles, and a later hold that runs out puts its own reason in its place.
+ * that long and no longer. While it waits, the hold is part of the action of the reader's press
+ * that made the write (`beginAnswerHold`), so a row or a form that read takes away is still the
+ * press's doing (`causedByReader`). `unsettled` is why the read of the latest hold that ran out
+ * has not settled. The page shows it beside the sentence it shows for a read that failed. It goes
+ * once that read settles, and a later hold that runs out puts its own reason in its place.
  */
 export function useReadBound(): readonly [
   unsettled: string | undefined,
@@ -49,7 +52,9 @@ export function useReadBound(): readonly [
     readonly reason: string;
   }>();
   const holdThrough = useCallback(async (read: Promise<unknown>) => {
+    const answered = beginAnswerHold();
     const reason = await readWithinBound(read);
+    answered();
     if (reason === undefined) return;
     setUnsettled({ read, reason });
     const settled = () => setUnsettled((current) => (current?.read === read ? undefined : current));

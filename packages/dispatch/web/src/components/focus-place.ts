@@ -3,6 +3,7 @@ import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } f
 import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { isLive, type Writes } from "../features/writes/write-store";
 import { CONTROL } from "./control-names";
 import { ROW_SELECTOR } from "./row-marker";
 
@@ -434,16 +435,31 @@ const HELD = '[aria-disabled="true"], :disabled';
  *  them: where it landed, the dialog or panel it landed in (`DIALOG`) and the loss that region was
  *  opened from (`openedFrom`), the elements it can read as (`pressedOn`) that were already held
  *  when it was made (`heldBefore`, `heldAt`), its own release while that is still to come
- *  (`Release`; none for a pick's `change` or `input`), whether it can still be the cause of a loss
- *  (`live`, `answerPress`), and what stops the timers and the watch that end it. */
+ *  (`Release`; none for a pick's `change` or `input`), its action - the writes it started and the
+ *  holds still on over what answers them (`writes`, `answers`) - whether it can still be the cause
+ *  of a loss (`live`, `answerPress`), and what stops the timers and the watch that end it. */
 interface Press {
+  /** The holds begun while the press is live that are still on (`beginAnswerHold`). */
+  readonly answers: Set<object>;
+  /** Reads again whether the press's action is still out, at each change of the page's writes
+   *  and of `answers`, while the watch on that action is on (`watchAction`); else it does
+   *  nothing. */
+  changed: () => void;
   readonly heldBefore: ReadonlySet<Element>;
   live: boolean;
+  /** The page's writes that were live as the press was made (`isLive`), by id: none of them is
+   *  the press's. */
+  readonly liveBefore: ReadonlySet<number>;
   readonly opener: Loss | null;
   readonly region: Element | null;
   release: Release | null;
+  /** Whether a write that goes live now is the press's (`noteWrites`): from the press, and again
+   *  from its release, until a frame and a task after it (`answerPress`). */
+  starting: boolean;
   stop: () => void;
   readonly target: Element;
+  /** The writes the press started, by id (`noteWrites`). */
+  readonly writes: Set<number>;
 }
 
 /** The release a press waits for: the event that releases it (`pointerup`, `keyup`) from the
@@ -535,7 +551,7 @@ function isHeld(element: Element): boolean {
 /** The elements a press on `target` can read as (`pressedOn`) - `target`, and the control each
  *  region around it was opened from, `opener` and each opener before it - that are held now
  *  (`isHeld`). Read as the press is made, before what it does: a control held then takes the
- *  press without a write, so its hold is no doing of the press (`answerPress`). */
+ *  press without a write, so its hold is no doing of the press (`watchHold`). */
 function heldAt(target: Element, opener: Loss | null): ReadonlySet<Element> {
   const held = new Set<Element>();
   if (isHeld(target)) held.add(target);
@@ -571,26 +587,154 @@ function onHeldControl(press: Press, target: Element): boolean {
   );
 }
 
-/** Keeps `press` live while the update that answers it is still to run: a press is the cause only
- *  of the change it leads to. That is a frame and a task from now (`afterComponents`) - from the
- *  press, and again from its own release, which a click answers (`noteRelease`) - by when React
- *  has committed what the press did and run its effects, and longer only while a control it reads
- *  as (`pressedOn`) is held (`HELD`) by any hold that began after the press - its write out, or
- *  what the press did to its own control, as a pager's Next is held on the last page it led to -
- *  and then until a frame and a task after that hold ends: the control taken away, or its
- *  `aria-disabled` or `disabled` gone. A control already held when the press was made
- *  (`heldBefore`) - the pager's Next on its last page, a select or a trigger held while an
- *  earlier write is out - took the press without a write, so its hold keeps the press live no
- *  longer than a press on a control held by nothing. The hold's end is watched rather than
- *  polled, since a write's latency is the server's, and the watch ends at the app's write
- *  deadline (`SEND_DEADLINE_MS`), past which a write is late, counted from the press's release -
- *  from the press itself for a pick's `change` or `input`, which has none - so a hold that never
- *  ends keeps no watch over the page and no press live past it. A press past that is no cause, so
- *  an update after it - a live update taking the row away, a refetch emptying the selection bar -
- *  is a loss the reader did not cause. */
+/** The page's writes (`Writes`), as the page's rescue was handed them (`useFocusRescue`), else
+ *  null: a press's action is the writes it starts among them (`noteWrites`). */
+let pageWrites: Writes | null = null;
+
+/** The ids of the page's writes that are live now (`isLive`). */
+function liveWriteIds(): Set<number> {
+  const ids = new Set<number>();
+  for (const write of pageWrites?.rows() ?? []) {
+    if (isLive(write)) ids.add(write.id);
+  }
+  return ids;
+}
+
+/** Whether the write `id` is still live among the page's writes (`isLive`): waiting its turn, or
+ *  out, within its deadline or past it. One that landed, was refused or was discarded is not. */
+function writeLive(id: number): boolean {
+  for (const write of pageWrites?.rows() ?? []) {
+    if (write.id === id) return isLive(write);
+  }
+  return false;
+}
+
+/** Whether `press`'s action is still out: a hold begun while it is live is still on (`answers`),
+ *  or a write it started is still live (`writeLive`). */
+function actionOut(press: Press): boolean {
+  if (press.answers.size > 0) return true;
+  for (const id of press.writes) {
+    if (writeLive(id)) return true;
+  }
+  return false;
+}
+
+/** Run at every change of the page's writes: notes into the reader's latest press, while a write
+ *  that goes live is its own (`starting`), each write live now that was not as it was made
+ *  (`liveBefore`), and has the press read its action again (`changed`). */
+function noteWrites(): void {
+  const press = lastPress;
+  if (press === null) return;
+  if (press.starting) {
+    for (const write of pageWrites?.rows() ?? []) {
+      if (isLive(write) && !press.liveBefore.has(write.id)) press.writes.add(write.id);
+    }
+  }
+  press.changed();
+}
+
+/**
+ * Notes a hold on a control that is part of what answers a write: the control held while the
+ * write is out and through the commit after its answer (`useHeldThroughAnswer`), through the
+ * re-read that draws what the write changed (`useReadBound`), or until the update that carries
+ * the write is drawn (`useHoldUntilDrawn`). A hold begun while the reader's press is live
+ * (`recentPress`) is part of that press's action, which keeps the press live while the hold is on
+ * (`watchAction`): the row or the form that update takes away is still the press's doing
+ * (`causedByReader`). A hold begun while no press is live is no press's. Answers what ends the
+ * hold; ending it again does nothing.
+ */
+export function beginAnswerHold(): () => void {
+  const press = recentPress();
+  if (press === null) return () => undefined;
+  const hold = {};
+  press.answers.add(hold);
+  press.changed();
+  return () => {
+    if (press.answers.delete(hold)) press.changed();
+  };
+}
+
+/**
+ * Keeps `press` live while what answers it is still to run: a press is the cause only of the loss
+ * of its own control and of what its own action takes away. It is live from the press, and again
+ * from its own release, which a click answers (`noteRelease`), until a frame and a task later
+ * (`afterComponents`), by when React has committed what the press did and run its effects. Every
+ * write that goes live among the page's writes in that time is the press's (`starting`,
+ * `noteWrites`). A press that started a write stays live while its action is out
+ * (`watchAction`); a press that started none stays live while a control it reads as is held by a
+ * hold that began after it (`watchHold`). Where the rescue was handed no writes, no press starts
+ * one.
+ */
 function answerPress(press: Press): void {
   press.stop();
   press.live = true;
+  press.starting = true;
+  press.stop = afterComponents(() => {
+    press.starting = false;
+    if (press.writes.size > 0) watchAction(press);
+    else watchHold(press);
+  });
+}
+
+/**
+ * Keeps `press`, which started a write, live while its action is out (`actionOut`): a write it
+ * started is still live, or a hold begun while the press is live is still on
+ * (`beginAnswerHold`). The press ends a frame and a task after the last of these ends
+ * (`afterComponents`), so the commit that draws the answer and its effects are still the
+ * press's. A hold or a write's turn that begins again in that time keeps the press live. Once its
+ * action is answered, a control the press reads as that is held keeps it live no longer: a
+ * control held because there is nothing to do - Rename once the name is the group's, Create group
+ * with no name, a Save with nothing changed - is no part of the action, so an update that takes
+ * it away after that is a loss the reader did not cause. The watch ends at the app's write
+ * deadline (`SEND_DEADLINE_MS`), counted from the press's release, as the hold's does
+ * (`watchHold`).
+ */
+function watchAction(press: Press): void {
+  /** What cancels the press's end, from the moment its action is answered until the end runs. */
+  let ending: (() => void) | null = null;
+  const stop = () => {
+    press.changed = () => undefined;
+    window.clearTimeout(bound);
+    ending?.();
+    ending = null;
+  };
+  const read = () => {
+    if (actionOut(press)) {
+      ending?.();
+      ending = null;
+      return;
+    }
+    ending ??= afterComponents(() => {
+      stop();
+      press.live = false;
+    });
+  };
+  const bound = window.setTimeout(() => {
+    stop();
+    press.stop = afterComponents(() => {
+      press.live = false;
+    });
+  }, SEND_DEADLINE_MS);
+  press.changed = read;
+  press.stop = stop;
+  read();
+}
+
+/**
+ * Keeps `press`, which started no write, live while a control it reads as (`pressedOn`) is held
+ * (`HELD`) by any hold that began after the press - what the press did to its own control, as a
+ * pager's Next is held on the last page it led to - and then until a frame and a task after that
+ * hold ends: the control taken away, or its `aria-disabled` or `disabled` gone. A control already
+ * held when the press was made (`heldBefore`) - the pager's Next on its last page, a select or a
+ * trigger held while an earlier write is out - took the press without a write, so its hold keeps
+ * the press live no longer than a press on a control held by nothing. The hold's end is watched
+ * rather than polled, and the watch ends at the app's write deadline (`SEND_DEADLINE_MS`), counted
+ * from the press's release - from the press itself for a pick's `change` or `input`, which has
+ * none - so a hold that never ends keeps no watch over the page and no press live past it. A
+ * press past that is no cause, so an update after it - a live update taking the row away, a
+ * refetch emptying the selection bar - is a loss the reader did not cause.
+ */
+function watchHold(press: Press): void {
   // Once the press's target and its region have left the page, which they never come back to,
   // what the press reads as is kept rather than walked again at every change the watch sees.
   let kept: Element[] | null = null;
@@ -602,34 +746,32 @@ function answerPress(press: Press): void {
     return now;
   };
   const held = () => pressed().some((each) => !press.heldBefore.has(each) && isHeld(each));
-  press.stop = afterComponents(() => {
-    if (!held()) {
+  if (!held()) {
+    press.live = false;
+    return;
+  }
+  const end = () => {
+    watcher.disconnect();
+    window.clearTimeout(bound);
+    press.stop = afterComponents(() => {
       press.live = false;
-      return;
-    }
-    const end = () => {
-      watcher.disconnect();
-      window.clearTimeout(bound);
-      press.stop = afterComponents(() => {
-        press.live = false;
-      });
-    };
-    // The whole document is watched, so that the control going with a parent of it, a fieldset
-    // around it enabled again, or the region the press landed in going, ends the hold too.
-    const watcher = new MutationObserver(() => {
-      if (!held()) end();
     });
-    const bound = window.setTimeout(end, SEND_DEADLINE_MS);
-    watcher.observe(document.body, {
-      attributeFilter: ["aria-disabled", "disabled"],
-      childList: true,
-      subtree: true,
-    });
-    press.stop = () => {
-      watcher.disconnect();
-      window.clearTimeout(bound);
-    };
+  };
+  // The whole document is watched, so that the control going with a parent of it, a fieldset
+  // around it enabled again, or the region the press landed in going, ends the hold too.
+  const watcher = new MutationObserver(() => {
+    if (!held()) end();
   });
+  const bound = window.setTimeout(end, SEND_DEADLINE_MS);
+  watcher.observe(document.body, {
+    attributeFilter: ["aria-disabled", "disabled"],
+    childList: true,
+    subtree: true,
+  });
+  press.stop = () => {
+    watcher.disconnect();
+    window.clearTimeout(bound);
+  };
 }
 
 /** The reader's latest press while it can still be the cause of a loss (`answerPress`). */
@@ -637,23 +779,41 @@ function recentPress(): Press | null {
   return lastPress?.live ? lastPress : null;
 }
 
+/** The element the focus was last noted on by the page's rescue (`useFocusRescue`), with the
+ *  dialog, panel or selection bar around it then (`PRESS_REGION`), read as it took the focus,
+ *  while it was in the page; null while no rescue is mounted. */
+let noted: { readonly element: Element; readonly region: Element | null } | null = null;
+
+/** The dialog, panel or selection bar (`PRESS_REGION`) `element`'s focus was lost from: the one
+ *  around it while it is in the page, and for one that has left the page the one the rescue
+ *  noted around it as it took the focus (`noted`). Chromium's `focusout` reads a control taken
+ *  away while it is still in the page; Firefox and WebKit fire none, so their loss is read once it
+ *  has gone, where the region around it has gone from it unless it went with it. Read from the
+ *  note, one loss is read in the same region in every engine, and so is the going a component's
+ *  hand-off reads after its commit (`useFocusPlace`, `SelectionBar`). */
+function pressRegionOf(element: Element): Element | null {
+  if (!element.isConnected && noted?.element === element) return noted.region;
+  return element.closest(PRESS_REGION);
+}
+
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
  *  the element itself, every row around it (`rowsAround`, by the rule `inRow` reads), and the
- *  dialog, panel or selection bar it was lost from. Every row counts, not the nearest alone: a
- *  press in an Inbox row outside the ask card it holds is a press in that row, so a loss inside
- *  the card is the reader's own. A press in a list's panel is in that panel, so a pick that takes
- *  the panel away is the reader's own, and the focus goes back to the trigger that opened it. */
+ *  dialog, panel or selection bar it was lost from (`pressRegionOf`). Every row counts, not the
+ *  nearest alone: a press in an Inbox row outside the ask card it holds is a press in that row, so
+ *  a loss inside the card is the reader's own. A press in a list's panel is in that panel, so a
+ *  pick that takes the panel away is the reader's own, and the focus goes back to the trigger
+ *  that opened it. */
 function pressPlaces(element: Element): Element[] {
   const places: Element[] = [element, ...rowsAround(element)];
-  const region = element.closest(PRESS_REGION);
+  const region = pressRegionOf(element);
   if (region !== null) places.push(region);
   return places;
 }
 
 /**
  * Whether the reader caused the loss of `element`'s focus: their latest press (`isPress`) - a
- * pointer press, a key that acts rather than edits a field's text, or a pick - is still live, its
- * answer not yet run (`answerPress`), and landed on the element, inside any row it was in, or
+ * pointer press, a key that acts rather than edits a field's text, or a pick - is still live, what
+ * answers it not yet run (`answerPress`), and landed on the element, inside any row it was in, or
  * inside the dialog, panel or selection bar it was lost from (`pressPlaces`), read at every element
  * the press reads as now (`pressedOn`): a pick in a list, a confirm in a dialog, that has gone
  * counts as a press on the trigger the list or the dialog was opened from as well. A loss the
@@ -1236,18 +1396,21 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * Every element that takes the focus is noted as it does (`focusin`), with its region - the
  * dialog or panel holding it (`DIALOG`), modal or not, else the shell's main content (`main`),
  * else the document - the path of the page it was focused on, which a navigation does not change
- * before the old page goes, where it stands (`spotsOf`), and the item it is in (`itemOf`). A
- * dialog or panel the focus enters for the first time notes where it came from: the loss of the
- * element that handed it over - a list's trigger, for the list's text box - or none when it came
- * from the body. A loss is seen two ways.
+ * before the old page goes, where it stands (`spotsOf`), the item it is in (`itemOf`), and the
+ * dialog, panel or selection bar around it that a press is counted in (`noted`). A dialog or
+ * panel the focus enters for the first time notes where it came from: the loss of the element
+ * that handed it over - a list's trigger, for the list's text box - or none when it came from the
+ * body. A loss is seen two ways.
  * A control disabled, hidden or left by the reader fires a `focusout` in every engine, while it is
  * still in the page. A control taken away, itself or with a parent, is seen by watching the page
  * (a MutationObserver over the document) in every engine, since Firefox and WebKit fire no
  * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
  * Each loss holds its element, its region, the path, whether the page took the element (`taken`),
  * whether the reader caused the loss (`causedByReader`), and its dialog's opener. The reader caused
- * it when a press of theirs (`isPress`) is still live in its row, dialog or panel; a key, a
- * `change` or an `input` that is no press neither starts a press nor ends the live one
+ * it when a press of theirs (`isPress`) is still live in its row, dialog or panel (`answerPress`):
+ * a press that started a write among the page's `writes` is live while that write, or a hold on
+ * what answers it, is out, and a press that started none while a control it reads as is held. A
+ * key, a `change` or an `input` that is no press neither starts a press nor ends the live one
  * (`notePress`). A loss the reader caused holds its place among the controls the region draws too,
  * and where the element stood in the page: the parent it stood in and the siblings either side of
  * it, and the same for each parent of it up to the region (`spotsOf`). For a `focusout` they are
@@ -1373,10 +1536,16 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * such a loss before the rescue's check. Only an element a read has found in sight since it took
  * the focus can be read out of it (`readSight`): one focused below the fold, which a scroll the
  * page made before the engine's own left there, was never in the reader's sight.
+ *
+ * `writes` is the page's write store (`writesOf`): the writes a press starts there are its action,
+ * which keeps it live (`answerPress`). Where none is handed - a unit case read without the app's
+ * store - no press starts a write, and each keeps the rule of a control it holds (`watchHold`).
  */
-export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
+export function useFocusRescue(main: RefObject<HTMLElement | null>, writes?: Writes): void {
   useEffect(() => {
     rescueMounted = true;
+    pageWrites = writes ?? null;
+    const unsubscribe = writes?.subscribe(noteWrites);
     /** The element holding the focus, its region, the path it was focused on, and where it stood
      *  (`spotsOf`) and the item it was in (`itemOf`) as it took the focus, until it loses the
      *  focus by a `focusout`; one still noted here once it has left the page went with no
@@ -1511,6 +1680,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         region,
         spots: spotsOf(element, region),
       };
+      noted = { element, region: element.closest(PRESS_REGION) };
       // The same element taking the focus again - the window given back the focus - keeps what
       // the scrolls since it was first noted saw. A new one is read where it took the focus,
       // before the engine has scrolled it into view.
@@ -1673,21 +1843,21 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  made under them (`causedByReader`), with the dialog or panel it landed in and the loss that
      *  region was opened from, read now, while the region is still in the page, for when a pick or
      *  a confirm takes it away (`pressedOn`), the controls it can read as that are already held
-     *  (`heldAt`), read before the act runs, and the release it waits for (`Release`). A key, a
-     *  `change` or an `input` that is no press - a character typed in a field, the field's commit
-     *  on blur, the `input` of its typing - neither starts an act nor ends the live one. A newer
-     *  act ends the one before it, and the watch on that one's hold with it, except an act on a
-     *  control the live act holds by a hold that began after it, or on anything inside that
-     *  control (`onHeldControl`) - a double click, a repeated Enter, any other key or pointer press
-     *  on that control or on a span or an icon of it: the held control takes the act without a
-     *  write, so the act before it stays the cause, with its release and its write deadline as
-     *  they were (`noteRelease`). Tab, with Shift or without, is the one key the rescue reads as a
-     *  new act on a held control: it moves the focus off that control to another, and an act is
-     *  the cause only of the loss of its own control and of what it takes away, so the Tab ends
-     *  the act before it and is noted as a new act, and a loss of the control it moved the focus
-     *  to is judged on its own. Other keys that move the focus away, such as the Inbox's j and k,
-     *  are passed over like any other key on the held control. Answers whether `event` is a
-     *  press. */
+     *  (`heldAt`), read before the act runs, the page's writes live as it is made (`liveBefore`),
+     *  and the release it waits for (`Release`). A key, a `change` or an `input` that is no press -
+     *  a character typed in a field, the field's commit on blur, the `input` of its typing -
+     *  neither starts an act nor ends the live one. A newer act ends the one before it, and the
+     *  watch on that one's action or hold with it, except an act on a control the live act holds
+     *  by a hold that began after it, or on anything inside that control (`onHeldControl`) - a
+     *  double click, a repeated Enter, any other key or pointer press on that control or on a span
+     *  or an icon of it: the held control takes the act without a write, so the act before it
+     *  stays the cause, with its release and its write deadline as they were (`noteRelease`).
+     *  Tab, with Shift or without, is the one key the rescue reads as a new act on a held control:
+     *  it moves the focus off that control to another, and an act is the cause only of the loss of
+     *  its own control and of what it takes away, so the Tab ends the act before it and is noted
+     *  as a new act, and a loss of the control it moved the focus to is judged on its own. Other
+     *  keys that move the focus away, such as the Inbox's j and k, are passed over like any other
+     *  key on the held control. Answers whether `event` is a press. */
     const notePress = (event: Event): boolean => {
       if (!isPress(event)) return false;
       const movesOff = event instanceof KeyboardEvent && event.key === "Tab";
@@ -1699,13 +1869,18 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const opener = region === null ? null : (openedFrom.get(region) ?? null);
       const release = RELEASE[event.type];
       lastPress = {
+        answers: new Set(),
+        changed: () => undefined,
         heldBefore: heldAt(event.target, opener),
         live: true,
+        liveBefore: liveWriteIds(),
         opener,
         region,
         release: release === undefined ? null : { by: pressedBy(event), type: release },
+        starting: true,
         stop: () => undefined,
         target: event.target,
+        writes: new Set(),
       };
       answerPress(lastPress);
       return true;
@@ -1763,6 +1938,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     document.addEventListener("scroll", noteScroll, { capture: true, passive: true });
     window.addEventListener("resize", noteResize);
     return () => {
+      unsubscribe?.();
       watcher.disconnect();
       document.removeEventListener("focusin", noteFocus, true);
       document.removeEventListener("focusout", record, true);
@@ -1776,9 +1952,11 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       window.removeEventListener("resize", noteResize);
       pending?.cancel();
       sight = null;
+      noted = null;
+      pageWrites = null;
       rescueMounted = false;
       lastPress?.stop();
       lastPress = null;
     };
-  }, [main]);
+  }, [main, writes]);
 }

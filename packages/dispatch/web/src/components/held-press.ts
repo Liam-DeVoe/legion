@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { beginAnswerHold } from "./focus-place";
+
 /**
  * What a button spreads onto itself to be held while it cannot be pressed - its write is out,
  * its step has no page to go to - rather than disabled: `aria-disabled`, and a press that does
@@ -27,9 +29,10 @@ export function heldPress(
  * control go one commit after the answer, and a hold let go by those same effects ends in that
  * commit too. A list that holds the write itself, as the Inbox does a row's snooze
  * (`useAskSnoozeWrites`), lets go of the row in the answer's own commit, while this hold is still
- * on. Either way the control is held as its row goes, so the page's rescue reads the row's going
- * as the press's doing (`causedByReader`) while the press is still live, and the focus goes to
- * the control now at the row's place rather than to the body.
+ * on. The hold is part of the action of the reader's press that started the write while it is on
+ * (`beginAnswerHold`), so the page's rescue reads the row's going as the press's doing
+ * (`causedByReader`), and the focus goes to the control now at the row's place rather than to
+ * the body.
  */
 export function useHeldThroughAnswer(pending: boolean): boolean {
   const [answering, setAnswering] = useState(false);
@@ -38,5 +41,7 @@ export function useHeldThroughAnswer(pending: boolean): boolean {
     setAnswering(true);
     return () => setAnswering(false);
   }, [pending]);
-  return pending || answering;
+  const held = pending || answering;
+  useEffect(() => (held ? beginAnswerHold() : undefined), [held]);
+  return held;
 }

@@ -1,13 +1,16 @@
+import { QueryClientContext } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useContext, useRef } from "react";
 
 import { useFocusRescue } from "../components/focus-place";
+import { writesOf } from "../features/writes/write-store";
 
 /** The shell's main content holding `children`, with the page's focus rescue mounted on it as
- *  `app.tsx` mounts it. */
+ *  `app.tsx` mounts it: handed the writes of the client around it, where there is one. */
 export function RescuedMain({ children }: { children: ReactNode }): ReactNode {
   const main = useRef<HTMLElement>(null);
-  useFocusRescue(main);
+  const client = useContext(QueryClientContext);
+  useFocusRescue(main, client === undefined ? undefined : writesOf(client));
   return <main ref={main}>{children}</main>;
 }
 
