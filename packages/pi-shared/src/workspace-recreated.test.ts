@@ -24,10 +24,11 @@ function daemonWorkspaceAfterRelease(): string {
 }
 
 // A role woken after an idle release reads two texts about its workspace: the daemon's wake task
-// and this notice. They say the same thing in the same words: the release took the pod only because
-// nothing unpushed was in it, and a workspace made again holds what was pushed and nothing else.
-// The daemon embeds the text from its data file; this test holds the notice to that file, so
-// neither text moves alone.
+// and this notice. They say the same thing in the same words: what the release keeps (a commit on a
+// working copy or a bookmark that no remote branch or tag holds, or a working-copy change, keeps
+// the pod), what a workspace made again holds, and the one work the release can take. The daemon
+// embeds the text from its data file; this test holds the notice to that file, so neither text
+// moves alone.
 test("the notice says of the workspace what the daemon's wake task says, in the same words", () => {
   const daemon = daemonWorkspaceAfterRelease();
   expect(WORKSPACE_AFTER_RELEASE).toBe(daemon);
@@ -36,9 +37,10 @@ test("the notice says of the workspace what the daemon's wake task says, in the 
 });
 
 // The daemon keeps no copy of a workspace, so the notice never says that work which was not pushed
-// came back. Not even an older launcher that still sets LEGION_WORKSPACE_RESTORED earns such a
-// sentence.
-test("the notice never says that work which was not pushed was kept", () => {
+// came back, and the release can take a commit no working copy and no bookmark reaches, so it never
+// says that nothing unpushed was lost: it names that commit as not kept. Not even an older launcher
+// that still sets LEGION_WORKSPACE_RESTORED earns another sentence.
+test("the notice never says that work which was not pushed was kept, nor that none was lost", () => {
   for (const environment of [
     { [WORKSPACE_RECREATED_VARIABLE]: "true" },
     { [WORKSPACE_RECREATED_VARIABLE]: "true", LEGION_WORKSPACE_RESTORED: "true" },
@@ -47,6 +49,10 @@ test("the notice never says that work which was not pushed was kept", () => {
     expect(content).not.toContain("put back");
     expect(content).not.toContain("saved");
     expect(content).not.toContain("as you left them");
+    expect(content).not.toContain("holds nothing that was not pushed");
+    expect(content).toContain(
+      "A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept."
+    );
   }
 });
 

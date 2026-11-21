@@ -171,13 +171,24 @@ type IdleView struct {
 	// Releasing is whether a release of this pod is already marked in progress, which no second
 	// release starts behind.
 	Releasing bool
+	// WorkspaceCheckQueued is whether a workspace check of the issue still waits in the outbox
+	// (record.IssueWorkspaceCheck): an idle release's first act, or the read the close of a pod
+	// whose issue left the workflow makes before it stops any live role. The close's rule reads it
+	// (workflow.LeftPodClose), so that it queues no second read while the first is on the lane.
+	WorkspaceCheckQueued bool
 	// Declined is the idle release the daemon last declined for this issue, and the zero
 	// IdleDecline where none stands: the release's check read the workspace and found work that no
-	// branch or tag on origin holds, or could not read it (store's idle_release_declines). The rule
-	// keeps the pod under that reason until a role of it starts a turn or a process again
-	// (IdleDecline.Stands), so the pass neither marks a release nor asks the pod again while
-	// nothing it reads has changed.
+	// branch or tag on origin holds on a working copy or a local bookmark, or could not read it
+	// (store's idle_release_declines). The rules keep the pod under that reason while the decline
+	// stands (IdleDecline.Stands, HoldsUnpushedWork), so a pass neither marks a release nor asks
+	// the pod again while nothing it reads has changed.
 	Declined IdleDecline
+	// PodUID is the uid of the pod the runtime holds for the issue now, and "" where the runtime
+	// cannot say. The store does not hold it: the daemon's pass reads it from the runtime
+	// (runtime.IssuePodReader) and sets it on the view before a rule reads the view, so that a
+	// decline taken in another pod ends (IdleDecline.Stands): that pod's disk, and the work the
+	// decline names, went with it.
+	PodUID string
 	// Paused is whether the daemon's project is paused (a project_pauses row of that project
 	// stands open), read by the project's token whatever project the issue's key names (store's
 	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release
@@ -275,37 +286,86 @@ const (
 // decline for it waits for the role.
 const DeclineUnreadRetry = time.Hour
 
-// IdleDecline is the idle release the daemon last declined for an issue, as the idle view reads it:
-// when the check declined it (At, the daemon's clock), why (Reason, one of the two above), and the
-// newest start row of the issue's claims at that moment (StartedRow). The zero IdleDecline is no
-// decline.
+// IdleDecline is the idle release the daemon last declined for an issue, as the idle view reads it.
+// At is when the check first found the work the decline names, by the daemon's clock, and the
+// moment the role was told; CheckedAt is when a check last read the workspace and found that same
+// work, or any work at all. Reason is one of the two above. StartedRow is the newest start row of
+// the issue's claims at the last check, and PodUID the pod the last check read, "" where the
+// runtime could not say. The zero IdleDecline is no decline.
+//
+// A check that reads the same work again (the same working-copy commit, the same count of commits
+// and the same change) keeps At and tells nobody (store's DeclineIssueRelease): the role was told
+// at At, and telling it again would start another turn for nothing.
 type IdleDecline struct {
 	At         time.Time
+	CheckedAt  time.Time
 	Reason     string
 	StartedRow int64
+	PodUID     string
 }
 
-// Stands is whether the decline still holds the pod at now. It ends at the first of three facts the
-// pass reads without asking the pod anything. A live claim of the issue started a turn after the
-// decline: a turn is the only way a role changes the workspace, and a role told that the release
-// waits for its push answers in a turn. A claim's process was started again after it (a start row
-// above StartedRow): a new process can run in a new pod, whose workspace was made again. Or, for a
-// read that failed, DeclineUnreadRetry has passed. Until one of them, the pass marks no release, so
-// it writes no outbox row, asks no shim and sends no message.
+// Stands is whether the decline still holds the pod at now, so that the pass marks no release,
+// writes no outbox row, asks no shim and sends no message. It ends at the first of four facts the
+// pass reads without asking the pod anything:
+//
+//   - a live claim of the issue started a turn after the last check: a role changes its
+//     workspace only in a turn, so only after one can a read find anything other than what the
+//     last check found. The one turn the decline's own message starts ends the decline once, and
+//     the read it allows finds the same work, which keeps the decline's moment and sends no
+//     second message, so no message starts the next turn;
+//   - a claim's process was started again after the last check (a start row above StartedRow);
+//   - the runtime holds another pod for the issue than the one the last check read (podMoved):
+//     the disk the check read went with that pod, and with it the work the decline names;
+//   - for a read that failed, DeclineUnreadRetry has passed since the last check.
 func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
-	if d.At.IsZero() {
+	if d.At.IsZero() || d.podMoved(v) {
 		return false
 	}
-	if d.Reason == DeclineWorkspaceUnread && !now.Before(d.At.Add(DeclineUnreadRetry)) {
+	checked := d.checked()
+	if d.Reason == DeclineWorkspaceUnread && !now.Before(checked.Add(DeclineUnreadRetry)) {
 		return false
 	}
 	for _, c := range v.Claims {
 		if c.LastStartRow > d.StartedRow {
 			return false
 		}
-		if c.Live() && c.LastTurnStart.After(d.At) {
+		if c.Live() && c.LastTurnStart.After(checked) {
 			return false
 		}
 	}
 	return true
+}
+
+// HoldsUnpushedWork is whether the decline says the disk of the pod that stands now holds work
+// that no branch or tag on origin holds: the last check found such work, no start row has followed
+// it, and the pod is the one that check read. The release of a pod no claim owns reads it
+// (workflow.UnownedPodRelease): such a pod runs no role to read through, so the decline on record
+// is the one word the daemon has of its disk. A turn does not end it, since a pod no claim owns
+// runs no turn, and a read that failed says nothing of the disk.
+func (d IdleDecline) HoldsUnpushedWork(v IdleView) bool {
+	if d.At.IsZero() || d.Reason != DeclineUnpushedWork || d.podMoved(v) {
+		return false
+	}
+	for _, c := range v.Claims {
+		if c.LastStartRow > d.StartedRow {
+			return false
+		}
+	}
+	return true
+}
+
+// podMoved is whether the runtime holds another pod for the issue than the one the decline's last
+// check read. Where either uid is unknown it is not: holding the pod keeps the work, and a pass
+// that cannot tell must not delete a disk a decline says holds work.
+func (d IdleDecline) podMoved(v IdleView) bool {
+	return d.PodUID != "" && v.PodUID != "" && d.PodUID != v.PodUID
+}
+
+// checked is the moment of the decline's last check, which is its first moment where no later
+// check has read the same work.
+func (d IdleDecline) checked() time.Time {
+	if d.CheckedAt.Before(d.At) {
+		return d.At
+	}
+	return d.CheckedAt
 }

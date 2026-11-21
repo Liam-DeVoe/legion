@@ -23,7 +23,7 @@ import (
 // writes neither: it suspended nothing, every claim of its issue is failed, retired or
 // suspended, and the pod is gone for good.
 const (
-	idleRigIdleTeardown = "outbox: released the idle pod of an issue, whose workspace held nothing unpushed; its roles resume in the same sessions at the next wake"
+	idleRigIdleTeardown = "outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake"
 	idleRigIdleCancel   = "outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod"
 )
 

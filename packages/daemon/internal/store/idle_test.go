@@ -104,11 +104,12 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 }
 
 // The view carries three facts beside the rule's own conditions: the release the daemon last
-// declined for the issue, with the newest start row of its claims when it declined; each claim's
-// newest turn start, which a decline is ended by (pods.IdleDecline.Stands); and whether a hold
-// streak of the pod is running, which is what the daemon's pass reads before it ends one. The last
-// is in the view because the pass already takes this read, and ending streaks a pod does not have
-// would cost a write transaction per pod per tick.
+// declined for the issue, with its last check's moment, the newest start row of its claims at that
+// check and the pod it read; each claim's newest turn start, which a decline is ended by
+// (pods.IdleDecline.Stands); and whether a hold streak of the pod is running, which is what the
+// daemon's pass reads before it ends one. The last is in the view because the pass already takes
+// this read, and ending streaks a pod does not have would cost a write transaction per pod per
+// tick.
 func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -131,16 +132,17 @@ func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t
 
 	markRelease(t, st, 18, 20, 22, 12)
 	if declined, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, IdleReleaseDecline{At: now, Role: claim.RoleArchitect,
-		Reason: pods.DeclineUnpushedWork, Head: "abc", Commits: 1}, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: now}); err != nil || !declined.Declined {
+		Reason: pods.DeclineUnpushedWork, Head: "abc", Commits: 1, PodUID: "pod-a"}, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: now}); err != nil || !declined.Declined {
 		t.Fatalf("decline the release of %s = %+v, %v; want it declined", rootIssue, declined, err)
 	}
 	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "unpushed_work", At: now}); err != nil {
 		t.Fatalf("record a hold of %s: %v", rootIssue, err)
 	}
 	view = idleViewOf(t, st, rootIssue)
-	want := pods.IdleDecline{At: now, Reason: pods.DeclineUnpushedWork, StartedRow: 12}
-	if !view.Declined.At.Equal(want.At) || view.Declined.Reason != want.Reason || view.Declined.StartedRow != want.StartedRow || !view.Holding {
-		t.Fatalf("view = %+v, want the decline %+v and the running streak", view, want)
+	want := pods.IdleDecline{At: now, CheckedAt: now, Reason: pods.DeclineUnpushedWork, StartedRow: 12, PodUID: "pod-a"}
+	if !view.Declined.At.Equal(want.At) || !view.Declined.CheckedAt.Equal(want.CheckedAt) || view.Declined.Reason != want.Reason ||
+		view.Declined.StartedRow != want.StartedRow || view.Declined.PodUID != want.PodUID || view.PodUID != "" || !view.Holding {
+		t.Fatalf("view = %+v, want the decline %+v, no pod of the runtime's (the daemon's pass reads that), and the running streak", view, want)
 	}
 	if view.Releasing {
 		t.Fatal("the view reads a release in progress after its decline deleted the mark")

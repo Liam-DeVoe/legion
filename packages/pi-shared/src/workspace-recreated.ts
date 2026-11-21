@@ -16,18 +16,22 @@ export const WORKSPACE_RECREATED_VARIABLE = "LEGION_WORKSPACE_RECREATED";
 
 /**
  * What the notice says of a workspace made again, in the words of the task the daemon gives a role
- * its idle release woke (`WorkspaceAfterRelease` in packages/daemon/internal/workflow/wake.go): the
- * idle release takes a pod only when nothing unpushed is in its workspace, and a workspace made
- * again holds what was pushed and nothing else. The daemon keeps no copy of a workspace, so neither
- * text says that unpushed work was kept. The launcher cannot tell an idle release from any other
- * end of the pod, so the notice says this beside what any other end costs.
+ * its idle release woke (`WorkspaceAfterRelease` in packages/daemon/internal/workflow/wake.go): what
+ * the idle release keeps (a commit on a working copy or a bookmark that no remote branch or tag
+ * holds, or a working-copy change, keeps the pod), what a workspace made again holds, and the one
+ * work the release can take, a commit no working copy and no bookmark reaches. The daemon keeps no
+ * copy of a workspace, so neither text says that unpushed work was kept, nor that nothing unpushed
+ * was lost. The launcher cannot tell an idle release from any other end of the pod, so the notice
+ * says this beside what any other end costs.
  * `workspace-recreated.test.ts` holds this text to the daemon's data file
  * `packages/daemon/internal/workflow/workspace-after-release.txt`.
  */
 export const WORKSPACE_AFTER_RELEASE =
-  "The idle release takes a pod only when its workspace holds nothing that was not pushed. " +
+  "The idle release does not take a pod whose workspace holds a commit on a working copy or a bookmark " +
+  "that no remote branch or tag holds, or a working-copy change: such work stays in the pod. " +
   "When the pod's disk goes with it, the next pod's workspace is made again from what was pushed to this issue's branch " +
-  "(the repository's default branch if nothing was), so it holds nothing that was not pushed.";
+  "(the repository's default branch if nothing was). " +
+  "A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept.";
 
 /**
  * One process's notice: its text, and the id every copy it sends carries (`details.id`), which
@@ -60,8 +64,9 @@ export function workspaceRecreatedNotice(
     content:
       `Your workspace was recreated since your last turn, from what was pushed to legion/${issue}. ` +
       `${WORKSPACE_AFTER_RELEASE} ` +
-      "If anything other than the idle release ended your pod (an eviction, a pod update or a reset), " +
-      "work you had not pushed is gone. What no commit held is gone in every case: the files your scratch " +
+      "If anything else ended your pod (an eviction, a pod update, a reset, or an idle release made by a " +
+      "Legion release before this one), work you had not pushed is gone. " +
+      "What no commit held is gone in every case: the files your scratch " +
       "directory held, files git ignores, and anything you started that was running. " +
       "Before you continue, check the workspace against what you remember doing and re-read the " +
       `last handoff recorded on ${issue} with \`dispatch handoff-read --issue ${issue} --phase <phase>\` ` +

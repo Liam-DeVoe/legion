@@ -120,7 +120,9 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
+	podUID := w.runningPod(issue)
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		view.PodUID = podUID
 		decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
@@ -256,9 +258,12 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	var decision workflow.IdleDecision
 	var quiet, holding bool
+	podUID := w.runningPod(issue)
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 		// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
-		// rather than reading the runtime again under the transaction's lock.
+		// rather than reading the runtime again under the transaction's lock. So is the pod a
+		// decline on record is read against.
+		view.PodUID = podUID
 		decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
@@ -324,7 +329,9 @@ func (w *workflowRuntime) closeLeftPod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
 	var decision workflow.IdleDecision
 	var quiet, holding bool
+	podUID := w.runningPod(issue)
 	closed, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		view.PodUID = podUID
 		decision = workflow.LeftPodClose(view, now, w.idlePeriod)
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
@@ -348,15 +355,34 @@ func (w *workflowRuntime) closeLeftPod(ctx context.Context, issue string) {
 }
 
 // closedLeftPod is what follows the close of a pod whose issue left the workflow, whichever pass
-// wrote it: one line, the end of the pod's hold streak, since the pod is going and whatever kept
-// it is over, and the wake of the issue's lane, which runs the close's rows.
+// wrote it: one line, the end of the pod's hold streak, since whatever kept the pod is over, and
+// the wake of the issue's lane, which runs the close's rows. Where a live role stands, the row the
+// pass wrote is the workspace check alone (leftPodCloseRows), and the line says so: the close
+// follows only where that read finds nothing that origin does not hold.
 func (w *workflowRuntime) closedLeftPod(ctx context.Context, issue string, decision workflow.IdleDecision, holding bool) {
-	w.log.Info("left pod close: closing the pod of an issue that left the workflow while its tree runs on; nothing else stops it",
-		"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+	if len(decision.Roles) > 0 {
+		w.log.Info("left pod close: reading the workspace of the pod of an issue that left the workflow while its tree runs on, before its close stops a live role",
+			"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+	} else {
+		w.log.Info("left pod close: closing the pod of an issue that left the workflow while its tree runs on; nothing else stops it",
+			"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+	}
 	if holding {
 		endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
 	}
 	w.wakeOutbox(issue, record.OutboxKindIssueSuspend)
+}
+
+// runningPod is the uid of the pod the runtime holds for issue now, read before a pass's
+// transaction as the pod's image is, and "" where the runtime cannot say
+// (runtime.IssuePodReader). The rules read it against a decline's own (pods.IdleView.PodUID): a
+// decline taken in another pod ends, since that pod's disk went with it.
+func (w *workflowRuntime) runningPod(issue string) string {
+	pod, read := w.idleRuntime.IssuePod(issue)
+	if !read {
+		return ""
+	}
+	return pod
 }
 
 // recordableHold is whether a hold is one a deployment reads as "release would have taken this
@@ -413,7 +439,9 @@ func (w *workflowRuntime) closedLeftPod(ctx context.Context, issue string, decis
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
 // a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that sees one of the three
-// every tick is reading capacity held by something that is not work.
+// every tick is reading capacity held by something that is not work. IdleHoldUnownedUnpushedWork
+// is recorded too: its pod stands with no live claim because its disk holds work origin does not
+// hold, and the record is where an operator finds the pod whose roles must come back to push it.
 //
 // A project's pause's three holds are recorded too (IdleHoldPaused, IdleHoldPauseHeld,
 // IdleHoldUnownedPauseHeld, decision 12 of dispatch://INFRA-3759): each is a pod release would
@@ -593,13 +621,51 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 }
 
 // leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
-// (workflow.LeftPodClose), the rows that issue's departure wrote (the workflow's leave): one
-// `suspend` supervise row per live role, at the issue's generation, which suspends the claim for
-// the daemon with its session kept, and then the issue's Sandbox suspension (record.IssueSuspend),
-// which deletes the Sandbox, the pod and the disk once every role has stopped
-// (store.IssueSuspension). A pod with no live claim gets the suspension alone. The rows carry no
-// release and the store writes them with no mark (store.IdleReleaseMark.Close).
+// (workflow.LeftPodClose). A pod with no live claim gets the issue's Sandbox suspension alone
+// (leftPodStopRows). A pod with a live claim gets one row first, and no other: the workspace check
+// (record.IssueWorkspaceCheck with CloseRoles), read through the open phase's worker where it is
+// live, else the first live role, which queues the stops and the suspension only where the read
+// finds nothing that origin does not hold (checkLeftPodWorkspace), since those delete a disk a role
+// worked on. The rows carry no release and the store writes them with no mark
+// (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
+	if len(decision.Roles) == 0 {
+		return leftPodStopRows(view, decision, now)
+	}
+	told := decision.Roles[0]
+	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
+		told = open
+	}
+	row, err := record.NewOutboxRow(view.Issue, record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
+		TreeGeneration: view.Root.Generation, Role: told, CloseRoles: decision.Roles}, now)
+	if err != nil {
+		return store.IdleReleaseMark{}, fmt.Errorf("encode the workspace check of %s's close: %w", view.Issue, err)
+	}
+	return store.IdleReleaseMark{Generation: view.Generation, Close: true,
+		Rows: []store.IdleReleaseRow{{Kind: string(row.Kind), Payload: row.Payload}}}, nil
+}
+
+// leftPodStopsAfterCheck is the decision the close's workspace check makes once its read found
+// nothing that origin does not hold (checkLeftPodWorkspace): the close's stops and suspension
+// (leftPodStopRows) over a view read again in the store's transaction, where the close still
+// stands there (workflow.LeftPodCloseAfterCheck), and no rows where it does not.
+func leftPodStopsAfterCheck(now time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
+	return func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		decision := workflow.LeftPodCloseAfterCheck(view)
+		if !decision.Close {
+			return store.IdleReleaseMark{}, nil
+		}
+		return leftPodStopRows(view, decision, now)
+	}
+}
+
+// leftPodStopRows is the close itself, the rows that issue's departure wrote (the workflow's leave):
+// one `suspend` supervise row per live role, at the issue's generation, which suspends the claim
+// for the daemon with its session kept, and then the issue's Sandbox suspension
+// (record.IssueSuspend), which deletes the Sandbox, the pod and the disk once every role has
+// stopped (store.IssueSuspension). A pod with a live claim reaches it only through the workspace
+// check (leftPodCloseRows, checkLeftPodWorkspace).
+func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Close: true}
 	add := func(payload record.OutboxPayload) error {
 		row, err := record.NewOutboxRow(view.Issue, payload, now)

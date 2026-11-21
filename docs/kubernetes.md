@@ -3241,7 +3241,7 @@ The migrations recorded above this one are these.
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
-20261121150941_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and deletes its version row.
+20261121150941_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -7015,11 +7015,12 @@ This release runs the third act below and no other: it deletes the pod, the disk
 Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 It reads no workspace and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
 The daemon cannot read that workspace: it reads a workspace only over a role process, and a pod with no live claim runs none.
+It reads the decline of the issue's idle release instead: where the last read found a commit or a change that origin does not hold, no start row has followed it and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
-Of the reasons that hold such a pod past the idle period, the daemon writes three to its hold records, each under a name of its own:
-a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), and a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`).
-A project's pause adds a fourth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
+Of the reasons that hold such a pod past the idle period, the daemon writes four to its hold records, each under a name of its own:
+a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), and a decline says the disk holds unpushed work (`unowned_unpushed_work`).
+A project's pause adds a fifth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
@@ -7036,8 +7037,10 @@ The operator ends that pod by resuming the claim, which starts the role in the p
 The daemon also closes the pod of a child that has left the workflow while its tree runs on, which neither release takes.
 The child's park or close is its one close: it suspends or closes each claim of the child and deletes the child's Sandbox, and nothing of its running tree closes it again.
 An operator's resume, task or retry and the controller's fresh session start a claim without reading the standing of its issue, so a claim of such a child can run again after that close, in a pod built again for it.
-Once that pod has had no turn in progress, no delivery waiting for a role of it and no background work reported for the idle period, the idle pass makes the close's own stop again (`workflow.LeftPodClose`): it suspends each live claim for the daemon, which keeps the claim's session, and suspends the issue's Sandbox, which deletes it with the pod and the disk.
-The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, which no pass decided before; a child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
+Once that pod has had no turn in progress, no delivery waiting for a role of it and no background work reported for the idle period, the idle pass finishes the close (`workflow.LeftPodClose`): it suspends each live claim for the daemon, which keeps the claim's session, and suspends the issue's Sandbox, which deletes it with the pod and the disk.
+Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it: a read that finds nothing origin does not hold queues the stops and the suspension, and a read that finds work, or fails, records a decline and keeps the pod under `unpushed_work` or `workspace_unread`, with the role told once, as below.
+While that check waits on the lane the pass holds the pod as its own act under way (`releasing`), which no record counts.
+The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, with no read, since no role runs to read through, which no pass decided before; a child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
 A pause keeps the pod (`paused`, `pause_held`), and so do a stopped claim that still records a process (`unowned_claim_process`) and an operator's suspension (`unowned_operator_suspended`).
 Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running: a lingering tree is closed when its linger ends, a root that has left the workflow has had its tree's close already or belongs to the operator, an open look of the issue's production check ends with a close of its own, and a role stop or a Sandbox suspension of the issue that is still queued is that close at work.
 
@@ -7129,14 +7132,18 @@ Such a release arms no backstop, and it leaves the issue's wake marks and the op
 What the read counts is every commit under a working copy or a local bookmark that no remote branch or tag reaches, and a change in the working copy (`workspaceWorkRevset`, `internal/shim/workspace_work.go`).
 A commit with no change and no description counts for nothing, and so does a commit that a remote branch or tag reaches: it is on GitHub, and the next pod's workspace fetch brings it back.
 So the heads of branches the remote deleted after their merge, which Legion's clones keep visible (`git.abandon-unreachable-commits = false`), and `main`'s commits newer than the issue's branch read as nothing unpushed.
-The one work the read does not count is a side head of the issue's own that no working copy and no bookmark reaches.
+The one work the read does not count is a commit that no working copy and no local bookmark reaches, such as a side head a role left with `jj new <base>` over its own change, so a release can take such a commit; counting every visible head would count the deleted branches above.
+The wake task of a release and the plugin's recreated-workspace notice say so in the same words (`internal/workflow/workspace-after-release.txt`).
+The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits: the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
 A read that finds work declines the release: the daemon cancels it before any role stops, so the pod stays as it was with the work in it, and the role the release read through — the worker of the issue's open phase where it is live, else the first live role — gets one Envoy message on its role topic naming the commits and the change and saying that the release waits for its push.
 The daemon pushes nothing on a role's behalf and keeps no copy of the workspace.
 A read that fails declines the release too, since it cannot show the workspace holds nothing, and tells nobody.
-The decline is recorded in `idle_release_declines` in the cancel's own transaction, with the hold `unpushed_work` or `workspace_unread`.
+The decline is recorded in `idle_release_declines` in the cancel's own transaction, with the hold `unpushed_work` or `workspace_unread`, the work the read found and the pod it read.
 While it stands, every idle pass holds the pod under that reason and marks no release, writes no outbox row, asks no shim and sends no second message.
-It ends when a role of the issue starts a turn after it (`claims.last_turn_start`) or a role process is started again; a `workspace_unread` decline also ends an hour after it.
+It ends when a role of the issue starts a turn after the last read (`claims.last_turn_start` against `checked_at`), when a role process is started again, or when the runtime holds another pod for the issue than the one the read was made in (a relaunch that rebuilt the pod); a `workspace_unread` decline also ends an hour after the last read.
 The next pass after its end that finds the pod idle again reads the workspace once more.
+A read that finds the same work as the decline on record (the same working-copy commit, count of commits and change) keeps the decline's moment, `declined_at`, and tells nobody: the role was told already, and the turn its message starts is the turn that allowed this read, so the message, the turn and the read do not come back every idle period.
+A whole turn that starts after the read and ends before a role's stop cancels the release too: the mark records the newest turn of the pod's claims (`issue_releases.turn_start`), and a later one is the pod given work since.
 Before this release, the daemon saved the workspace's unpushed work as a git bundle in its database and restored it into the next pod; nothing reads or writes such a bundle now ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
 On an ephemeral disk nothing else is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
 A kept volume keeps the parts of that list that are on the volume: `$TMPDIR`, the ignored files, the files jj does not snapshot and the CodeGraph index.
@@ -7188,7 +7195,7 @@ An earlier daemon (`legion-v19.0.0`, or any release at daemon API contract 47 or
 
 - its launcher knows neither `launcher_bundle` frame (they arrive at daemon API contract 48), so no pod it starts restores a saved bundle.
 
-A release since the workspace check (migration `20261121150941`) took only pods whose workspace held nothing unpushed, so a pod it released holds no work to lose.
+A release since the workspace check (migration `20261121150941`) took only pods whose workspace held no commit on a working copy or a bookmark that origin does not hold and no working-copy change, so a pod it released holds no such work to lose.
 A pod an earlier release took may have left its work in a saved bundle; such a bundle is gone with `workspace_bundles` once this release has migrated ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace) says how to copy one out first).
 
 Then stop this release's daemon, and leave the claims in a state the earlier release acts on:
@@ -7235,13 +7242,15 @@ An issue whose pod this rule has already released stands with no Sandbox and no 
 
 #### Rolling back the release that keeps no saved workspace
 
-Migration `20261121150941_idle_release_keeps_no_workspace.up.sql` drops `workspace_bundles`, where the release before saved a released pod's unpushed work, and adds `idle_release_declines`.
+Migration `20261121150941_idle_release_keeps_no_workspace.up.sql` drops `workspace_bundles`, where the release before saved a released pod's unpushed work, adds `idle_release_declines` and adds `issue_releases.turn_start`.
 Before the upgrade, drain the releases in flight, and copy out every saved bundle worth keeping:
 a release that the earlier daemon marked and whose save ran, but whose teardown had not run, would take its pod after the upgrade with its bundle dropped.
 With the earlier daemon still running, wait until `select issue from issue_releases` prints no row, then stop it.
 For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, check it with `git bundle list-heads <KEY>.bundle`, and fetch it into a clone of the repository; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
+A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, so let the outbox run dry of `issue_bundle` rows first: `select count(*) from outbox where kind = 'issue_bundle'` prints 0.
 It is the last paragraph of the migration's header, and the two say the same statements:
 
 ```sh
@@ -7249,13 +7258,14 @@ psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 create table public.workspace_bundles (issue text primary key, bundle bytea not null, size_bytes bigint not null, at timestamptz not null, head text not null, tips jsonb not null default '[]'::jsonb, bookmarks jsonb not null default '{}'::jsonb, release_id bigint not null check (release_id > 0), attempt_pod_uid text, attempt_at timestamptz, source_pod_uid text not null check (source_pod_uid <> ''), attempt_outcome text, constraint workspace_bundles_attempt_whole check ((attempt_pod_uid is null) = (attempt_at is null)), constraint workspace_bundles_attempt_outcome check (case when attempt_pod_uid is null then attempt_outcome is null else attempt_outcome in ('sent', 'refused_older') end));
 drop table public.idle_release_declines;
+alter table public.issue_releases drop column if exists turn_start;
 delete from public.schema_version where version = 20261121150941;
 commit;
 SQL
 ```
 
-It makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines`, which the release before never reads, and deletes the migration's version row, so the next start of this release runs the migration again.
-Every daemon that shares the database moves together, on the way up and on the way back, since both tables hold every project's rows.
+It makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines` and `issue_releases.turn_start`, which the release before never reads, and deletes the migration's version row, so the next start of this release runs the migration again.
+Every daemon that shares the database moves together, on the way up and on the way back, since these tables hold every project's rows.
 A bundle the earlier daemon saves after the rollback is dropped by that roll forward, so copy it out first as above.
 A pod this release started still runs a launcher with no restore: the earlier daemon's `launcher_bundle` slices close that launcher's connection, its start fails once, and the retry starts the role with the workspace the pod has, since the earlier daemon spent the bundle's one attempt on the first send.
 An earlier daemon's `bundle-workspace` frame reaches this release's shim as an unknown command and is refused, so that daemon cancels the release and keeps the pod.

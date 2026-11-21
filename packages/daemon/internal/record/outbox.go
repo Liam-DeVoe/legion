@@ -1297,11 +1297,19 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs still cancels
 // the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+//
+// CloseRoles, where it names any role, makes the row the first act of another act: the close of a
+// pod whose issue left the workflow while its tree runs on (workflow.LeftPodClose), which marks no
+// release. Those are the live roles the close stops. The check reads the same way and declines the
+// same way, and on a read that finds nothing origin does not hold it queues the close's stops and
+// the Sandbox suspension itself (internal/daemon's checkLeftPodWorkspace). A row with no
+// CloseRoles is a release's, and its JSON is the one an earlier release wrote.
 type IssueWorkspaceCheck struct {
-	Tree           string     `json:"tree"`
-	Generation     uint64     `json:"generation"`
-	TreeGeneration uint64     `json:"treeGeneration"`
-	Role           claim.Role `json:"role"`
+	Tree           string       `json:"tree"`
+	Generation     uint64       `json:"generation"`
+	TreeGeneration uint64       `json:"treeGeneration"`
+	Role           claim.Role   `json:"role"`
+	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
 }
 
 func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }

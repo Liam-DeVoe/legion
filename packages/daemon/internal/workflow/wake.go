@@ -125,8 +125,9 @@ type WakeStop int
 
 const (
 	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
-	// brings back as a fresh pod. The release took the pod only because its workspace held nothing
-	// that was not pushed (WorkspaceAfterRelease).
+	// brings back as a fresh pod. The release took the pod only because no working copy and no
+	// bookmark of its workspace held a commit origin does not hold and no working-copy change was in
+	// it (WorkspaceAfterRelease).
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
@@ -138,11 +139,14 @@ const (
 // finds the workspace made again (WORKSPACE_AFTER_RELEASE in
 // packages/pi-shared/src/workspace-recreated.ts). The two say it in the same words, so a woken
 // role reads one account of its workspace, and what they say is what the daemon knows: the
-// release's check took the pod only because the workspace held nothing that no branch or tag on
-// origin holds (internal/daemon's checkIssueWorkspace), and a pod whose disk went with it comes
-// back with a workspace that provisioning made from the issue's pushed branch. Neither says that
-// unpushed work was kept, since the daemon keeps none. A kept volume is the one disk that does not
-// go, which is why the second sentence is conditional. The text is the data file
+// release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
+// that no branch or tag on origin holds, or a working-copy change (internal/daemon's
+// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// back with a workspace that provisioning made from the issue's pushed branch. The read does not
+// count a commit that no working copy and no bookmark reaches, a side head a role left with
+// `jj new <base>`, so the release can take one, and the text says so: it never says that nothing
+// unpushed was lost, nor that unpushed work was kept, since the daemon keeps none. A kept volume is
+// the one disk that does not go, which is why the second sentence is conditional. The text is the data file
 // workspace-after-release.txt beside this one, embedded here and read by the plugin's test
 // (packages/pi-shared/src/workspace-recreated.test.ts), which holds its copy to it byte for byte;
 // the file's one line ends in a newline, which the text does not carry.

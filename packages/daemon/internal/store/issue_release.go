@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -119,6 +120,10 @@ type releaseMark struct {
 	// wake is the newest wake this pod had when the mark was written (max pod_resumes.id), so a
 	// resume row above it is a wake taken since (releaseOvertaken).
 	wake int64
+	// turn is the newest turn of the pod's claims when the mark was written
+	// (issue_releases.turn_start, the greatest claims.last_turn_start), nil where none had one,
+	// so a claim whose last turn started after it ran a turn since (releaseOvertaken).
+	turn *time.Time
 	// suspended are the roles whose claims this release's own role stops have suspended as
 	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim).
 	suspended []string
@@ -136,9 +141,9 @@ func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.l
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
-	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind from issue_releases
-		where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind)
+	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind, turn_start
+		from issue_releases where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
+		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.turn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -181,6 +186,10 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //     set. Either way the pod is coming back, so the release goes rather than the pod, whichever
 //     claim the wake was for and whatever that claim looks like by the time this reads it;
 //   - a claim of the issue started since the newest start the mark was taken at;
+//   - a claim of the issue started a turn since the newest turn the mark was taken at
+//     (releaseMark.turn): a whole turn that began after the workspace check's read and ended
+//     before that role's stop is a turn the next state check would not see, and it can have left
+//     work the read did not find;
 //   - a live claim in a turn, starting, or whose launch is not yet known — the states the idle
 //     rule refuses to release a pod in (workflow's idleStateReleasable);
 //   - a claim this release suspended that is no longer suspended as `released`: something
@@ -199,8 +208,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 	err := tx.QueryRow(ctx, `select exists (
 		select 1 from claims where project = $1 and issue = $2
 		and (last_start_row > $3 or state not in ('ready', 'idle', 'suspended', 'failed', 'retired')
+			or last_turn_start > coalesce($5::timestamptz, '-infinity')
 			or (role = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
-		project, issue, mark.started, mark.suspended).Scan(&overtaken)
+		project, issue, mark.started, mark.suspended, mark.turn).Scan(&overtaken)
 	return overtaken, err
 }
 

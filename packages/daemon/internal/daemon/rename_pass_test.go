@@ -395,8 +395,8 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 // refreshCacheRepositories) then caches the `to`, and the issue's next launch's spec
 // (specs.repository, workflowRuntime.launchRepository) names the `to` at the record's default
 // branch, which is where the next pod's workspace is made from: the release took the pod only
-// because its workspace held nothing unpushed, so nothing of it is left to carry across the
-// rename. Control: with the pass at that hook deleted (releaseIssue's endPods), the next launch's
+// because no working copy or bookmark of its workspace held a commit origin does not hold, so no
+// such work is left to carry across the rename. Control: with the pass at that hook deleted (releaseIssue's endPods), the next launch's
 // spec names the `from`.
 func TestTheNextPodAfterARenameWorksTheNewName(t *testing.T) {
 	rig := newIdleRig(t)

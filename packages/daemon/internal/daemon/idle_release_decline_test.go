@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,10 +74,12 @@ func roleMessages(publisher *outboxPublisher, token string) []string {
 // and declines: one hold of the pod under unpushed_work and one message to the role the workspace
 // was read through, the open phase's worker. The passes after it do nothing at all.
 //
-// turn_after_hold: then the role starts a turn after the decline, which also makes the pod
-// recorded-to and so not idle. Once the pod is idle again, the pass marks a release and its check
-// reads the workspace again, once: the work is still there, the check declines again, and the
-// passes after that ask nothing more.
+// turn_after_hold: then the role starts a turn after the decline, the turn the decline's own
+// message starts in the role's session, which also makes the pod recorded-to and so not idle. Once
+// the pod is idle again, the pass marks a release and its check reads the workspace again, once:
+// the same work is still there, so the check declines again, keeps the decline's moment and tells
+// nobody. No second message means no second turn, so the passes after that ask nothing more: the
+// message, the turn and the read do not come back every idle period.
 func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
 	ctx := context.Background()
 	// declined is a rig whose first pass has run and whose release the check has declined, with
@@ -147,7 +150,7 @@ func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
 	})
 
 	t.Run("turn_after_hold", func(t *testing.T) {
-		rig, _, at := declined(t)
+		rig, publisher, at := declined(t)
 		rig.passes(t, 2)
 		if read, _ := rig.rt.reads(); len(read) != 1 {
 			t.Fatalf("the workspace was read %d times before the turn, want only the first pass's read", len(read))
@@ -180,10 +183,25 @@ func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
 		if rig.marked(t) {
 			t.Fatal("the second release's decline left its mark behind")
 		}
-		var again time.Time
-		if err := rig.pool.QueryRow(ctx, `select declined_at from idle_release_declines where issue = $1`, rig.issue.Key).Scan(&again); err != nil ||
-			!again.After(turn) {
-			t.Fatalf("the decline after the turn reads %s (%v), want a decline later than the turn at %s", again, err, turn)
+		var again, checked time.Time
+		if err := rig.pool.QueryRow(ctx, `select declined_at, checked_at from idle_release_declines where issue = $1`,
+			rig.issue.Key).Scan(&again, &checked); err != nil || !again.Equal(at) || !checked.After(turn) {
+			t.Fatalf("the decline after the turn reads declined at %s and checked at %s (%v), want the first decline's moment %s kept and a check after the turn at %s",
+				again, checked, err, at, turn)
+		}
+		if messages := roleMessages(publisher, string(rig.token)); len(messages) != 1 {
+			t.Fatalf("messages to %s after the read that found the same work = %d, want the first decline's one and no second", rig.token, len(messages))
+		}
+
+		// No message started another turn, so the passes after the second read ask nothing more.
+		releases, rows := rig.sequenceValue(t, "issue_releases"), rig.sequenceValue(t, "outbox")
+		rig.passes(t, idleRigPasses)
+		if read, _ := rig.rt.reads(); len(read) != 2 {
+			t.Fatalf("the workspace was read %d times in all after the passes that followed the second read, want 2: the read came back with no turn", len(read))
+		}
+		if r, o := rig.sequenceValue(t, "issue_releases"), rig.sequenceValue(t, "outbox"); r != releases || o != rows {
+			t.Fatalf("the passes after the second read moved the mark sequence %d to %d and the outbox sequence %d to %d, want neither moved",
+				releases, r, rows, o)
 		}
 	})
 }
@@ -244,6 +262,103 @@ func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *t
 	}
 }
 
+// A pod whose release the check declined for unpushed work can lose every live claim after that
+// decline: the role's relaunches run out, or the daemon stops it. The pod then runs no role to read
+// its disk through, and the release of a pod no claim owns reads the decline instead
+// (pods.IdleDecline.HoldsUnpushedWork): the disk holds the work the check found, so the pass holds
+// the pod as unowned_unpushed_work, records that hold, marks no release and asks for no teardown,
+// for as long as nothing of the issue starts again. A start row of a claim after the decline is a
+// role process started again, which can run in a pod made again; once that claim has stopped too,
+// the decline says nothing of the disk, and the pass releases the pod.
+func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
+	ctx := context.Background()
+	rig := newIdleRig(t)
+	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+	rig.passes(t, 1)
+	var started int64
+	var pod string
+	if err := rig.pool.QueryRow(ctx, `select started_row, pod_uid from idle_release_declines where issue = $1 and reason = $2`,
+		rig.issue.Key, pods.DeclineUnpushedWork).Scan(&started, &pod); err != nil || pod != "pod-a" {
+		t.Fatalf("the decline = start row %d in pod %q (%v), want one for unpushed work read in pod-a", started, pod, err)
+	}
+
+	// The implementer's relaunches run out after the decline, and the pod stands past the quiet
+	// period with no live claim.
+	rig.stoppedImplementer(t, false)
+	unownedPasses := func(n int) {
+		t.Helper()
+		for range n {
+			rig.w.releaseUnownedPods(ctx)
+			rig.drain(t)
+		}
+	}
+	releases := rig.sequenceValue(t, "issue_releases")
+	unownedPasses(idleRigPasses)
+	if asked := rig.rt.teardownsAsked(); len(asked) != 0 {
+		t.Fatalf("teardowns asked = %v, want none: the pod's disk holds work origin does not", asked)
+	}
+	if after := rig.sequenceValue(t, "issue_releases"); after != releases || rig.marked(t) {
+		t.Fatalf("the unowned passes marked a release (the mark sequence moved from %d to %d, marked now %t), want none",
+			releases, after, rig.marked(t))
+	}
+	if read, _ := rig.rt.reads(); len(read) != 1 {
+		t.Fatalf("the workspace was read %d times, want only the declined release's read: no role is left to read through", len(read))
+	}
+	if held := holdsOf(t, rig, workflow.IdleHoldUnownedUnpushedWork); len(held) != 1 || held[0].Passes < 2 {
+		t.Fatalf("holds = %+v, want one %s streak the unowned passes counted on", rig.records(t).Holds, workflow.IdleHoldUnownedUnpushedWork)
+	}
+
+	// A start of the implementer after the decline, whose relaunches ran out again: its process
+	// may have run in a pod made again, so the decline no longer speaks for the disk.
+	if _, err := rig.pool.Exec(ctx, `update claims set last_start_row = $2, updated_at = now() - interval '30 minutes'
+		where token = $1`, string(rig.token), started+1); err != nil {
+		t.Fatalf("record a start of the implementer after the decline: %v", err)
+	}
+	if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(queued, []string{"issue_release"}) {
+		t.Fatalf("the pass after the start queued %v, want the unowned release's teardown alone", queued)
+	}
+	rig.drain(t)
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+		t.Fatalf("teardowns asked = %v, want the release of the pod no claim owns", asked)
+	}
+}
+
+// A decline holds the pod its check read, and that pod's disk is where the work it found lives. A
+// relaunch that builds the issue's pod again takes that disk, and the work with it, with no turn
+// and no start row a pass could read: the runtime answers another pod for the issue
+// (runtime.IssuePodReader), and the decline ends there (pods.IdleDecline.Stands). The next pass
+// marks the release again and its check reads the new pod once; that read finds nothing, and the
+// release takes the pod.
+func TestADeclineInAReplacedPodEndsWithThePod(t *testing.T) {
+	rig := newIdleRig(t)
+	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+	rig.passes(t, 1+idleRigPasses)
+	if read, suspended := rig.rt.reads(); len(read) != 1 || suspended != 0 {
+		t.Fatalf("pod-a was read %d times and %d pods were taken, want one read and the decline keeping the pod", len(read), suspended)
+	}
+	if !rig.declined(t) {
+		t.Fatal("the read of pod-a's unpushed commit recorded no decline")
+	}
+
+	// The relaunch built pod-b in pod-a's place: its workspace was made again from origin.
+	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b")
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{})
+	rig.passes(t, 1)
+	read, suspended := rig.rt.reads()
+	if len(read) != 2 || suspended != 1 {
+		t.Fatalf("after the pod was replaced the workspace was read %d times in all and %d pods were taken, want one more read and the release of pod-b",
+			len(read), suspended)
+	}
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+		t.Fatalf("teardowns asked = %v, want the release's", asked)
+	}
+	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {
+		t.Fatalf("the implementer = %s by %s, want it suspended by the release", got.State, got.SuspendedBy)
+	}
+}
+
 // R5 of the release that keeps no saved workspace, its second test: the wake task of a role whose
 // clean pod was released says what the role's plugin notice says. The release's check reads no
 // work, its role stop and its teardown take the pod, and a message published to the role's topic
@@ -301,8 +416,13 @@ func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the plugin's notice: %v", err)
 	}
-	const takes = "The idle release takes a pod only when its workspace holds nothing that was not pushed."
-	if !strings.HasPrefix(workflow.WorkspaceAfterRelease, takes) || !strings.Contains(string(notice), takes) {
-		t.Fatalf("the wake task's text and the plugin's notice do not both say %q", takes)
+	// The notice spells the text across string pieces; its first and last sentences each sit in one.
+	for _, said := range []string{
+		"such work stays in the pod.",
+		"A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept.",
+	} {
+		if !strings.Contains(workflow.WorkspaceAfterRelease, said) || !strings.Contains(string(notice), said) {
+			t.Fatalf("the wake task's text and the plugin's notice do not both say %q", said)
+		}
 	}
 }

@@ -209,6 +209,8 @@ type outboxTrees interface {
 	DeclineIssueRelease(ctx context.Context, project, issue string, decline store.IdleReleaseDecline, resume store.ReleaseResumeRow,
 		outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ForgetIdleDecline(ctx context.Context, project, issue string) error
+	DeclineLeftPodClose(ctx context.Context, project, issue string, decline store.IdleReleaseDecline) (bool, error)
+	ReleaseIdleIssue(ctx context.Context, project, issue string, decide store.IdleReleaseDecide) (bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
@@ -3333,6 +3335,9 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 		// A runtime with no shared issue resources has no pod to release, so nothing to read.
 		return nil
 	}
+	if len(payload.CloseRoles) > 0 {
+		return r.checkLeftPodWorkspace(ctx, row, payload)
+	}
 	decision, err := r.trees.IssueReleaseCheck(ctx, r.project, row.Issue, row.ID)
 	if err != nil {
 		return err
@@ -3349,49 +3354,111 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
-	reader, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceWorkReader)
-	if !ok {
-		return r.declineRelease(ctx, row.Issue, payload, runtime.WorkspaceWork{}, errors.New("the runtime cannot read the issue workspace"))
-	}
-	work, err := reader.WorkspaceWork(ctx, row.Issue, payload.Role)
-	if err != nil || work.HoldsWork() {
-		return r.declineRelease(ctx, row.Issue, payload, work, err)
+	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
+	if failed != nil || work.HoldsWork() {
+		return r.declineRelease(ctx, row.Issue, payload, work, failed)
 	}
 	r.log.Info("outbox: the idle release read the issue's workspace and found nothing that no branch or tag on origin holds; its roles stop next",
 		"issue", row.Issue, "role", payload.Role, "head", work.Head)
 	return nil
 }
 
-// declineRelease ends a release whose workspace check found work that no branch or tag on origin
-// holds (failed nil), or could not read the workspace (failed, the read's error). The release is
-// cancelled before any role stopped, so the pod stays exactly as it was, and in the cancel's own
-// transaction the store records the decline (store.DeclineIssueRelease), which the idle rule reads
-// to keep the pod under that reason with no new mark and no new read until a role of the issue
-// starts a turn or a process again (pods.IdleDecline.Stands). So a pod that keeps its work is
-// asked once, and its role is told once, rather than at every pass.
-//
-// The role the workspace was read through is told, in that same transaction, that the release
-// waits for its push (declineMessage): one declined release, one message. A read that failed
-// tells nobody, since there is nothing the role can push on its word; it is a log line and a hold
-// record, and the decline lets the pass ask again after an hour (pods.DeclineUnreadRetry). The
-// decline's reason is its hold's name (workflow's idleHoldNames spells the two by the reasons).
-func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork, failed error) error {
-	hold, why := workflow.IdleHoldUnpushedWork, declineReason(work)
-	decline := store.IdleReleaseDecline{At: r.now().UTC(), Role: payload.Role, Reason: hold.String(),
-		Head: work.Head, Commits: work.Count, Changed: work.Changed}
+// readIssueWorkspace is the workspace check's one read, through role's shim
+// (runtime.WorkspaceWorkReader), and the error of a read that could not be made: a runtime that
+// cannot read a workspace is one.
+func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	reader, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceWorkReader)
+	if !ok {
+		return runtime.WorkspaceWork{}, errors.New("the runtime cannot read the issue workspace")
+	}
+	return reader.WorkspaceWork(ctx, issue, role)
+}
+
+// checkLeftPodWorkspace is the first act of the close of a pod whose issue left the workflow while
+// its tree runs on (workflow.LeftPodClose), where a live role runs in the pod: the close deletes a
+// disk that role worked on, so the disk is read first, as the idle release reads it. A read that
+// finds work that origin does not hold, or that fails, declines the close (declineFor,
+// store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through is
+// told once, and the rule holds the pod while the decline stands. A read that finds nothing queues
+// the close's stops and the issue's Sandbox suspension (leftPodStopRows) in one transaction with a
+// view read again (workflow.LeftPodCloseAfterCheck), so a role that started a turn or was given work
+// since the pass queued this check is not stopped; the next pass decides that pod again.
+func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
+	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
+	if failed != nil || work.HoldsWork() {
+		decline, hold, why, err := r.declineFor(row.Issue, payload.Role, work, failed)
+		if err != nil {
+			return err
+		}
+		told, err := r.trees.DeclineLeftPodClose(ctx, r.project, row.Issue, decline)
+		if err != nil {
+			return err
+		}
+		r.log.Info("outbox: the close of the pod of an issue that left the workflow is declined, and the pod stays with its workspace",
+			"issue", row.Issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", told)
+		recordIdleHold(ctx, r.supervisor.store, r.project, row.Issue, hold, why, r.now().UTC(), r.log)
+		return nil
+	}
+	now := r.now().UTC()
+	closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now))
+	if err != nil {
+		return err
+	}
+	r.log.Info("outbox: the close of the pod of an issue that left the workflow read its workspace and found nothing that no branch or tag on origin holds",
+		"issue", row.Issue, "role", payload.Role, "head", work.Head, "closing", closed)
+	return nil
+}
+
+// declineFor is the decline a workspace check records for what its read found (work, failed nil)
+// or for a read that failed (failed), and the hold and the sentence it is recorded under. The
+// decline's reason is its hold's name (workflow's idleHoldNames spells the two by the reasons), and
+// its pod is the one the runtime holds for the issue now, so a later pass can tell a decline taken
+// in a pod a relaunch since replaced (pods.IdleDecline.Stands). The role the workspace was read
+// through is told that the release waits for its push (declineMessage), and the store queues that
+// message only where the decline names other work than the decline on record
+// (store's recordDecline). A read that failed tells nobody, since there is nothing the role can push
+// on its word; it is a log line and a hold record, and the decline lets the pass ask again after
+// an hour (pods.DeclineUnreadRetry).
+func (r *outbox) declineFor(issue string, role claim.Role, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
+	pod := ""
+	if podRuntime, ok := r.supervisor.deps.Runtime.(issuePods); ok {
+		if uid, read := podRuntime.IssuePod(issue); read {
+			pod = uid
+		}
+	}
+	at := r.now().UTC()
 	if failed != nil {
-		hold, why = workflow.IdleHoldWorkspaceUnread, "the workspace could not be read: "+storetext.FarSideError(failed.Error())
-		decline = store.IdleReleaseDecline{At: decline.At, Role: payload.Role, Reason: hold.String()}
-	} else {
-		token, err := claim.NewToken(r.project, issue, payload.Role)
-		if err != nil {
-			return fmt.Errorf("name the role told of %s's declined release: %w", issue, err)
-		}
-		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(token), Body: declineMessage(issue, work)}, decline.At)
-		if err != nil {
-			return fmt.Errorf("encode the message of %s's declined release: %w", issue, err)
-		}
-		decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
+		hold := workflow.IdleHoldWorkspaceUnread
+		return store.IdleReleaseDecline{At: at, Role: role, Reason: hold.String(), PodUID: pod}, hold,
+			"the workspace could not be read: " + storetext.FarSideError(failed.Error()), nil
+	}
+	hold := workflow.IdleHoldUnpushedWork
+	decline := store.IdleReleaseDecline{At: at, Role: role, Reason: hold.String(),
+		Head: work.Head, Commits: work.Count, Changed: work.Changed, PodUID: pod}
+	token, err := claim.NewToken(r.project, issue, role)
+	if err != nil {
+		return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("name the role told of %s's declined release: %w", issue, err)
+	}
+	message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(token), Body: declineMessage(issue, work)}, at)
+	if err != nil {
+		return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("encode the message of %s's declined release: %w", issue, err)
+	}
+	decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
+	return decline, hold, declineReason(work), nil
+}
+
+// declineRelease ends a release whose workspace check found work that no branch or tag on origin
+// holds on a working copy or a local bookmark (failed nil), or could not read the workspace
+// (failed, the read's error). The release is cancelled before any role stopped, so the pod stays
+// exactly as it was, and in the cancel's own transaction the store records the decline
+// (store.DeclineIssueRelease, declineFor), which the idle rule reads to keep the pod under that
+// reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
+// keeps its work is asked once, and its role is told once: a read after a turn that finds the same
+// work keeps the decline and tells nobody.
+func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork, failed error) error {
+	decline, hold, why, err := r.declineFor(issue, payload.Role, work, failed)
+	if err != nil {
+		return err
 	}
 	declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
 		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
@@ -3404,14 +3471,14 @@ func (r *outbox) declineRelease(ctx context.Context, issue string, payload recor
 		return nil
 	}
 	r.log.Info("outbox: the idle release of an issue's pod is declined, and the pod stays with its workspace; no release is asked again until a role of the issue starts a turn",
-		"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", failed == nil)
+		"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", declined.Told)
 	recordIdleHold(ctx, r.supervisor.store, r.project, issue, hold, why, r.now().UTC(), r.log)
 	return nil
 }
 
 // declineReason is what the hold record and the log line say a read that found work found: the
-// count of commits that no branch or tag on origin holds, and whether the working copy holds a
-// change, on the working-copy commit the read was made at.
+// count of commits on a working copy or a local bookmark that no branch or tag on origin holds, and
+// whether the working copy holds a change, on the working-copy commit the read was made at.
 func declineReason(work runtime.WorkspaceWork) string {
 	return fmt.Sprintf("%d commit(s) not on origin, working-copy change %t, head %s", work.Count, work.Changed, work.Head)
 }
@@ -3419,7 +3486,8 @@ func declineReason(work runtime.WorkspaceWork) string {
 // declineMessage is what the role is told when the release's check finds work in the workspace
 // that origin does not hold: what the read found, that the release waits for the role's push, and
 // that the daemon pushes nothing. The role reads it in its session; people read it in the role's
-// history, so it follows ASD-STE100.
+// history, so it follows ASD-STE100. The commit ids in it are 40 hexadecimal digits each, since the
+// daemon reads no other answer from the shim (shimwire.WorkspaceWorkResult.Validate).
 func declineMessage(issue string, work runtime.WorkspaceWork) string {
 	found := []string{"The daemon did not release this issue's idle pod. Its workspace holds work that no branch or tag on origin holds."}
 	if work.Changed {
@@ -3428,18 +3496,18 @@ func declineMessage(issue string, work runtime.WorkspaceWork) string {
 	commits := strings.Join(work.Commits, ", ")
 	switch {
 	case work.Count > len(work.Commits):
-		found = append(found, fmt.Sprintf("The workspace holds %d commits that origin does not hold. The first %d of these commits are: %s.",
+		found = append(found, fmt.Sprintf("The workspace holds %d commits on a working copy or a bookmark that origin does not hold. The first %d of these commits are: %s.",
 			work.Count, len(work.Commits), commits))
 	case work.Count == 1:
-		found = append(found, fmt.Sprintf("The workspace holds one commit that origin does not hold: %s.", commits))
+		found = append(found, fmt.Sprintf("The workspace holds one commit on a working copy or a bookmark that origin does not hold: %s.", commits))
 	case work.Count > 1:
-		found = append(found, fmt.Sprintf("The workspace holds %d commits that origin does not hold: %s.", work.Count, commits))
+		found = append(found, fmt.Sprintf("The workspace holds %d commits on a working copy or a bookmark that origin does not hold: %s.", work.Count, commits))
 	}
 	found = append(found,
-		"The idle release takes a pod only when its workspace holds nothing that was not pushed, so the pod stays and the release waits for your push. "+
+		"The idle release does not take a pod whose workspace holds such work, so the pod stays and the release waits for your push. "+
 			"The daemon does not push for you.",
 		fmt.Sprintf("Push the work that you keep to legion/%s, and abandon the work that you do not keep. "+
-			"After the next turn of a role of this issue, the release reads the workspace again.", issue))
+			"You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work.", issue))
 	return strings.Join(found, " ")
 }
 
@@ -3555,11 +3623,12 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil)
 		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
 	}
-	// The check before the role stops read the workspace and found nothing that origin does not
-	// hold, or this teardown would not run (store.IssueRelease waits for the check, and a check
-	// that found work cancelled the release): the line says so, which is what tells a reader of
-	// the log that every released pod held nothing unpushed.
-	r.log.Info("outbox: released the idle pod of an issue, whose workspace held nothing unpushed; its roles resume in the same sessions at the next wake",
+	// The check before the role stops read the workspace and found no commit on a working copy or
+	// a local bookmark that origin does not hold and no working-copy change, or this teardown would
+	// not run (store.IssueRelease waits for the check, and a check that found work cancelled the
+	// release): the line says so, which is what tells a reader of the log what every released pod
+	// held.
+	r.log.Info("outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake",
 		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation)
 	r.recordPodRelease(ctx, row.Issue, payload.Generation, decision.Suspended)
 	// The pod is gone, so the backstop is armed now and not before: a release that stopped short

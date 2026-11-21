@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -339,5 +340,80 @@ func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T
 	leftPodGone(rig)
 	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); len(queued) != 0 {
 		t.Fatalf("the passes after the close queued %v, want nothing: the runtime holds no pod of the issue", queued)
+	}
+}
+
+// The close of a left pod with a live role deletes a disk that role worked on, so it reads that
+// disk first, as the idle release does (workflow.LeftPodClose). The test stands the parked child
+// whose planner an operator's resume brought back, live and idle, in a pod built again, with one
+// commit origin does not hold in its workspace. The passes queue the close's workspace check
+// alone, which reads the workspace through the planner, finds the commit and declines: the
+// planner stays live in its pod, no stop and no Sandbox suspension is queued or run, the pod is
+// held as unpushed_work, and the planner is told once which commit keeps it. The passes after the
+// decline ask nothing more.
+func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
+	rig := newLeftPodRig(t, false)
+	parkChild(t, rig)
+	rig.drain(t)
+	leftPodGone(rig)
+	resumeAsOperator(t, rig)
+	publisher := &outboxPublisher{}
+	rig.runner.notices = publisher
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+	parkTeardowns := rig.rt.teardownsAsked()
+
+	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+		t.Fatalf("the passes queued %v, want the close's workspace check alone: a live role's disk is read before anything stops it", queued)
+	}
+	rig.drain(t)
+
+	if read, suspended := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) || suspended != 1 {
+		t.Fatalf("the workspace was read through %v and %d Sandbox teardowns were authorized, want one read through the planner and the park's teardown alone",
+			read, suspended)
+	}
+	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+		t.Fatalf("the planner = %s by %s, want it live in the pod its work is in", got.State, got.SuspendedBy)
+	}
+	if got := rig.storedClaim(t, rig.token); got.State == supervise.StateSuspended || got.Locator == nil {
+		t.Fatalf("the stored planner = %s with process %+v, want it live with the process it had", got.State, got.Locator)
+	}
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, parkTeardowns) {
+		t.Fatalf("teardowns asked = %v, want the park's %v alone", asked, parkTeardowns)
+	}
+	for _, left := range rig.rows(t) {
+		if left == "issue_suspend" || left == "supervise:suspend" {
+			t.Fatalf("rows left after the check = %v, want no stop and no Sandbox suspension queued", rig.rows(t))
+		}
+	}
+	if rig.marked(t) {
+		t.Fatal("the close's check left a release mark: a close is no release")
+	}
+	if !rig.declined(t) {
+		t.Fatal("the check that found the commit recorded no decline")
+	}
+	if held := holdsOf(t, rig, workflow.IdleHoldUnpushedWork); len(held) != 1 {
+		t.Fatalf("holds = %+v, want one %s", rig.records(t).Holds, workflow.IdleHoldUnpushedWork)
+	}
+	messages := roleMessages(publisher, string(rig.token))
+	if len(messages) != 1 || !strings.Contains(messages[0], idleRigUnpushed.Commits[0]) {
+		t.Fatalf("messages to %s = %q, want one naming the commit %s", rig.token, messages, idleRigUnpushed.Commits[0])
+	}
+
+	rows := rig.sequenceValue(t, "outbox")
+	for range idleRigPasses {
+		idlePasses(rig)
+		rig.drain(t)
+	}
+	if read, _ := rig.rt.reads(); len(read) != 1 {
+		t.Fatalf("the workspace was read %d times in all, want only the first check's read", len(read))
+	}
+	if after := rig.sequenceValue(t, "outbox"); after != rows {
+		t.Fatalf("the passes after the decline queued outbox rows (the sequence moved from %d to %d), want none", rows, after)
+	}
+	if messages := roleMessages(publisher, string(rig.token)); len(messages) != 1 {
+		t.Fatalf("messages to %s after the passes = %d, want the decline's one", rig.token, len(messages))
+	}
+	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+		t.Fatalf("the planner after the passes = %s, want it still live", got.State)
 	}
 }

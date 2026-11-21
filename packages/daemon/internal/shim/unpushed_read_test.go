@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// The idle release takes a pod only when the workspace read finds nothing that is not on the
-// remote, so the read must count only that. The release before measured the workspace with the
+// The idle release takes no pod whose workspace read finds work that is not on the remote, so the
+// read must count only that. The release before measured the workspace with the
 // save's revset, which kept every visible head no remote bookmark reached; a clone that keeps
 // unreachable commits (git.abandon-unreachable-commits = false) keeps every commit of a branch the
 // remote deleted after its merge as such a head, and the quiet workspaces of issues whose roles
@@ -16,6 +16,8 @@ import (
 // remote's main moved past the issue's branch and fetched, both of them on the remote's side. The
 // first holds that the shape alone reads as nothing unpushed; the other two add one commit, and one
 // change in the working copy, that the remote does not hold, and hold that the read counts each.
+// The last adds a side head that no working copy and no bookmark reaches, and holds that the read
+// does not count it.
 func TestTheUnpushedReadCountsOnlyWorkNotOnTheRemote(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -33,6 +35,18 @@ func TestTheUnpushedReadCountsOnlyWorkNotOnTheRemote(t *testing.T) {
 		// fixture 4 reads it).
 		{name: "one_working_copy_change", commits: 1, changed: true, add: func(f *workFixture) {
 			f.write("change.txt")
+		}},
+		// The exception the spec's R5 names: a commit that no working copy and no local bookmark
+		// reaches, a side head a role left with `jj new <base>` over its own change, is not
+		// counted, though no remote branch or tag holds it. Counting every visible head off the
+		// remote would count the deleted branches above, which is the cause the first subtest
+		// holds out, so the read leaves such a head out and a release can take it.
+		{name: "side_head", add: func(f *workFixture) {
+			head := f.sideHead()
+			f.requireVisibleHead(head, "the side head jj new left")
+			if got := f.jjRead(head + " & ::(remote_bookmarks() | tags())"); got != "" {
+				f.t.Fatalf("a remote branch or tag holds the side head %s: it must be work no remote holds", head)
+			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

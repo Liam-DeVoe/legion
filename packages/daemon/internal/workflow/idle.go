@@ -60,15 +60,16 @@ const (
 	// word for "my release is already running", never a release that stopped short: a release
 	// cancelled at one of its own rows records IdleHoldOvertaken or IdleHoldUnauthorized.
 	IdleHoldReleasing
-	// IdleHoldUnpushedWork: the release's check read the issue's workspace and found work that no
-	// branch or tag on origin holds, a commit or a working-copy change, so the release was declined
-	// and the pod stays with the work in it. The daemon pushes nothing for a role: it tells the role
-	// once that the release waits for its push, and the pod stays until a role of it starts a turn
-	// or a process again (pods.IdleDecline.Stands).
+	// IdleHoldUnpushedWork: the release's check read the issue's workspace and found a commit on a
+	// working copy or a local bookmark that no branch or tag on origin holds, or a working-copy
+	// change, so the release was declined and the pod stays with the work in it. The daemon pushes
+	// nothing for a role: it tells the role once that the release waits for its push, and the pod
+	// stays until a role of it starts a turn or a process again or the pod is replaced
+	// (pods.IdleDecline.Stands). A read after such a turn that finds the same work tells nobody.
 	IdleHoldUnpushedWork
 	// IdleHoldWorkspaceUnread: the release's check could not read the issue's workspace, so it
 	// could not show that the workspace holds nothing unpushed, and the release was declined. The
-	// pod stays until a role of it starts a turn or a process again, or until
+	// pod stays until a role of it starts a turn or a process again, the pod is replaced, or
 	// pods.DeclineUnreadRetry has passed.
 	IdleHoldWorkspaceUnread
 	// IdleHoldOvertaken: the pod was given work after its release was marked — a claim of it was
@@ -146,6 +147,13 @@ const (
 	// IdleHoldUnownedPauseHeld: a pause holds the pod no claim can use now. Its roles are the
 	// pause's to bring back in this pod, so the second rule leaves it to them.
 	IdleHoldUnownedPauseHeld
+
+	// IdleHoldUnownedUnpushedWork: the second rule's hold of a pod whose disk a decline of the
+	// issue's idle release says holds work that no branch or tag on origin holds
+	// (pods.IdleDecline.HoldsUnpushedWork). No role runs in the pod to read it again, so the
+	// decline on record is the one word the daemon has of that disk, and the pod stays with the
+	// work until a start of a role of the issue brings a role back to it.
+	IdleHoldUnownedUnpushedWork
 )
 
 var idleHoldNames = map[IdleHold]string{
@@ -184,6 +192,8 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldPaused:           "paused",
 	IdleHoldPauseHeld:        "pause_held",
 	IdleHoldUnownedPauseHeld: "unowned_pause_held",
+
+	IdleHoldUnownedUnpushedWork: "unowned_unpushed_work",
 }
 
 // String is the hold's recorded name, which a reader of the daemon's release records reads.
@@ -270,8 +280,11 @@ type IdleDecision struct {
 //     the workspace before any role stops, and declines where it finds work that no branch or tag
 //     on origin holds, or cannot read it (IdleHoldUnpushedWork, IdleHoldWorkspaceUnread). The
 //     decline holds the pod, with no new mark and no new read, until a role of it starts a turn
-//     or a process again, so a pod that keeps its work is asked once and not at every pass. It
-//     comes last, so a pod whose period has not passed reads not_idle rather than the decline.
+//     or a process again or the runtime holds another pod for the issue, so a pod that keeps its
+//     work is asked once and not at every pass; the read after a turn that finds the same work
+//     keeps the decline and tells nobody, so the turn the decline's message starts is followed by
+//     one read and no second message. It comes last, so a pod whose period has not passed reads
+//     not_idle rather than the decline.
 //
 // A pod round is a live claim's, as the claim records it, and a claim that left the round keeps
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
@@ -406,12 +419,56 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - a task, notice, message or start waits for delivery to a role of the pod (IdleHoldDelivery);
 //   - a live role's session has reported nothing since its last turn, or reported background
 //     work of its own running (IdleHoldUnreported, IdleHoldBackgroundWork);
-//   - the pod did something inside the idle period (IdleHoldNotIdle).
+//   - the pod did something inside the idle period (IdleHoldNotIdle);
+//   - a live claim stands and a decline of the issue's idle release stands (pods.IdleDecline.Stands):
+//     the last read of the workspace found work that origin does not hold, or could not read it
+//     (IdleHoldUnpushedWork, IdleHoldWorkspaceUnread).
+//
+// A close with a live claim deletes a disk that a role worked on, so it reads that disk first, as
+// the idle release does: the decision names the live roles, and the daemon queues the workspace
+// check alone (record.IssueWorkspaceCheck, CloseRoles), which reads through one of them and queues
+// the stops and the suspension only where it finds nothing that origin does not hold
+// (LeftPodCloseAfterCheck). A read that finds work, or that fails, records a decline instead, and
+// the pod stays with its work. While that check waits on the lane, the pod is held as this
+// daemon's own act under way (IdleHoldReleasing, pods.IdleView.WorkspaceCheckQueued), which no
+// record counts. A pod with no live claim runs no role to read through, and is closed as before.
 //
 // It reads nothing of the image, the plugin contract, an update round or a person's wait: each
 // of those is about the pod a release brings back, and this close brings no pod back. The issue's
 // next run, a todo that re-enters it, builds its pod afresh.
 func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDecision {
+	if view.Found && view.WorkspaceCheckQueued {
+		return IdleDecision{Hold: IdleHoldReleasing}
+	}
+	decision := leftPodStops(view)
+	if !decision.Close {
+		return decision
+	}
+	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
+		return IdleDecision{Hold: IdleHoldNotIdle}
+	}
+	if len(decision.Roles) > 0 && view.Declined.Stands(view, now) {
+		if view.Declined.Reason == pods.DeclineWorkspaceUnread {
+			return IdleDecision{Hold: IdleHoldWorkspaceUnread}
+		}
+		return IdleDecision{Hold: IdleHoldUnpushedWork}
+	}
+	return decision
+}
+
+// LeftPodCloseAfterCheck decides, once the close's workspace check has read the workspace and found
+// nothing that origin does not hold, whether the close still stops the pod's roles and suspends its
+// Sandbox (internal/daemon's checkLeftPodWorkspace). It reads every conjunct of LeftPodClose but
+// three: the check is the one queued, the quiet period was read when the check was queued, and the
+// read it made is newer than any decline on record. A role that started a turn since the read is a
+// claim in a turn here, so the close waits for the next pass and its next read.
+func LeftPodCloseAfterCheck(view pods.IdleView) IdleDecision {
+	return leftPodStops(view)
+}
+
+// leftPodStops is LeftPodClose's conjuncts on what works in the pod, in its order, and the live
+// roles of a close none of them holds.
+func leftPodStops(view pods.IdleView) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -465,9 +522,6 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 			return IdleDecision{Hold: IdleHoldBackgroundWork, HoldKinds: c.ActivityKinds}
 		}
 	}
-	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
-		return IdleDecision{Hold: IdleHoldNotIdle}
-	}
 	return IdleDecision{Close: true, Roles: roles}
 }
 
@@ -493,9 +547,10 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 // no turn and no reminder. Each of those is a fact about a live role — the image a released pod
 // would come back on, the contract a live claim speaks, the turn a process is in, the reminder
 // armed in a phase worker's session — and this rule acts only where there is no live role to
-// have one. The idle rule's decline is not a conjunct here either, and this release makes no
-// check of its own: the workspace read is made by a role's process (runtime.WorkspaceWorkReader),
-// and a pod this rule reads runs none. Nor is the idle rule's hold for a root waiting on a
+// have one. This release makes no check of its own: the workspace read is made by a role's process
+// (runtime.WorkspaceWorkReader), and a pod this rule reads runs none. It reads the idle rule's
+// decline instead, where that decline says the pod's disk holds work (below). Nor is the idle
+// rule's hold for a root waiting on a
 // person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
 // idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
 // live architect to answer in any pod. The answer promotes the root and the daemon queues the
@@ -546,15 +601,22 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //     claim row of the issue (view.QuietSince, compared as IdleRelease compares it)
 //     (IdleHoldUnownedNotIdle);
 //
+//   - no decline of the issue's idle release says the disk of this pod holds work that no branch
+//     or tag on origin holds (pods.IdleDecline.HoldsUnpushedWork): a check found such work, no
+//     start row has followed it and the pod is the one that check read. A role whose claims all
+//     stopped after such a decline — relaunches that ran out, say — left that work on this disk,
+//     and the release would delete it (IdleHoldUnownedUnpushedWork);
+//
 //   - the daemon's project is not paused (pods.IdleView.Paused). The release's own transaction
 //     marks no release while the project is paused (store.Store.ReleaseIdleIssue, decision 12 of
 //     dispatch://INFRA-3759), so a pod this rule would otherwise release is kept, and the hold
 //     says what kept it (IdleHoldPaused).
 //
-// The quiet conjunct comes last but one, where the idle rule's comes last, so that a pass records
-// a hold only for a pod that has already stood past the period: a pod inside it is simply not this
-// rule's yet, while every other hold names something true of a pod that has stood past it. The
-// pause's comes last, since a pause keeps only a pod this rule would release.
+// The quiet conjunct comes before the last two, where the idle rule's comes last but for its
+// decline, so that a pass records a hold only for a pod that has already stood past the period: a
+// pod inside it is simply not this rule's yet, while every other hold names something true of a
+// pod that has stood past it. The pause's comes last, since a pause keeps only a pod this rule
+// would release.
 //
 // The decision names no roles. There is no live claim to suspend and no workspace to read through
 // one, so the release this answers changes no claim at all: it takes the Sandbox, the pod and
@@ -595,6 +657,9 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	}
 	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldUnownedNotIdle}
+	}
+	if view.Declined.HoldsUnpushedWork(view) {
+		return IdleDecision{Hold: IdleHoldUnownedUnpushedWork}
 	}
 	if view.Paused {
 		return IdleDecision{Hold: IdleHoldPaused}

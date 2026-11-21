@@ -1227,7 +1227,14 @@ func (f WorkspaceWork) Validate() error {
 
 // Validate refuses a workspace read's answer the daemon could not act on: one answering no
 // request, a refusal with no reason, a reading with no working-copy commit, more commits than
-// MaxWorkspaceWorkCommits, or a count below the commits it lists.
+// MaxWorkspaceWorkCommits, a count below the commits it lists, or a head or a commit that is not a
+// commit id.
+//
+// A commit id is 40 lowercase hexadecimal digits (commitIDShape), the ids jj prints for a git
+// repository, and the daemon reads no other: the head and the commits come from the jj of the pod,
+// which the pod's agent controls, and the daemon writes them into a hold record that every issue
+// pod's agent reads (read_release_records) and into the message it sends the role (ASVS
+// v5.0.0-2.2.1). A refusal's head and commits are read as nothing, and are checked all the same.
 func (f WorkspaceWorkResult) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1236,12 +1243,32 @@ func (f WorkspaceWorkResult) Validate() error {
 		return fmt.Errorf("%w: workspace-work-result refuses without a reason", ErrMalformedFrame)
 	case f.OK && f.Head == "":
 		return fmt.Errorf("%w: workspace-work-result carries no head", ErrMalformedFrame)
+	case f.Head != "" && !commitIDShape.MatchString(f.Head):
+		return fmt.Errorf("%w: workspace-work-result head %q is not a commit id", ErrMalformedFrame, cutForError(f.Head))
 	case len(f.Commits) > MaxWorkspaceWorkCommits:
 		return fmt.Errorf("%w: workspace-work-result lists %d commits, limit %d", ErrMalformedFrame, len(f.Commits), MaxWorkspaceWorkCommits)
 	case f.Count < len(f.Commits):
 		return fmt.Errorf("%w: workspace-work-result counts %d commits and lists %d", ErrMalformedFrame, f.Count, len(f.Commits))
 	}
+	for i, commit := range f.Commits {
+		if !commitIDShape.MatchString(commit) {
+			return fmt.Errorf("%w: workspace-work-result commit %d, %q, is not a commit id", ErrMalformedFrame, i, cutForError(commit))
+		}
+	}
 	return nil
+}
+
+// commitIDShape is a commit id as jj prints one for a git repository: 40 lowercase hexadecimal
+// digits.
+var commitIDShape = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// cutForError is at most the first 64 bytes of a value a refusal names, so a refusal of a long
+// value stays one short line.
+func cutForError(value string) string {
+	if len(value) <= 64 {
+		return value
+	}
+	return value[:64] + "…"
 }
 
 // digestShape is a hex-encoded SHA-256: 64 lowercase hex characters.

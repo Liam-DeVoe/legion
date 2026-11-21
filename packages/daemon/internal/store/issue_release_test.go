@@ -422,6 +422,58 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 	}
 }
 
+// A whole turn between the mark and a role's stop — a message the role answered after the check
+// read the workspace and before its stop ran, its turn over by then — leaves no claim in a turn
+// and no start row, and can have left work the check did not read. The mark records the newest
+// turn its claims had when it was taken (issue_releases.turn_start, read through the idle view), so
+// a claim whose last turn started after it cancels the release at the stop, as a turn in progress
+// does (releaseOvertaken). The control keeps the turn the mark was taken at, and the stop acts.
+func TestATurnBetweenTheMarkAndAStopCancelsTheRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		later time.Duration
+		want  ReleaseAct
+		cause ReleaseCause
+	}{
+		{name: "a turn that started after the mark", later: time.Second, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
+		{name: "control: the turn the mark was taken at", want: ReleaseActs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+				Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1,
+				State: supervise.StateIdle}); err != nil {
+				t.Fatal(err)
+			}
+			turnAt := func(at time.Time) {
+				t.Helper()
+				if _, err := st.Pool().Exec(ctx, `update claims set last_turn_start = $2 where issue = $1`, rootIssue, at); err != nil {
+					t.Fatalf("stamp the architect's turn: %v", err)
+				}
+			}
+			turned := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+			turnAt(turned)
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+			var marked time.Time
+			if err := st.Pool().QueryRow(ctx, `select turn_start from issue_releases where issue = $1`, rootIssue).Scan(&marked); err != nil || !marked.Equal(turned) {
+				t.Fatalf("the mark's turn = %s, %v; want the architect's turn %s, read through the view", marked, err, turned)
+			}
+
+			// The turn is over by the stop: the claim is idle again, as it was at the mark.
+			turnAt(turned.Add(tc.later))
+			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+			if err != nil {
+				t.Fatalf("IssueReleaseStop: %v", err)
+			}
+			if decision.Act != tc.want || decision.Cause != tc.cause {
+				t.Fatalf("the boundary = %s for %s, want %s for %s", decision.Act, decision.Cause, tc.want, tc.cause)
+			}
+		})
+	}
+}
+
 // A release's rows are still on the lane after it is cancelled, and the pod can be released
 // again before they run. Such a row names a release the mark is not, and acting on it would
 // suspend a claim of the live release, or tear its pod down with the workspace on its disk. The
@@ -684,6 +736,135 @@ func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
 	}
 	if queued := startRows(t, st); len(queued) != 1 {
 		t.Fatalf("starts queued = %v, want the first decline's one resume", queued)
+	}
+}
+
+// A check that reads the same work the decline on record names — the same working-copy commit,
+// the same count of commits and the same change — is a read the role was already told of. The
+// message of the first decline starts a turn, the turn ends the decline, and the next pass's check
+// finds the same work: a second message would start the next turn, and so on for as long as the
+// work stays unpushed. So that decline keeps its first moment, moves only what the last check read
+// (checked_at, started_row, pod_uid) and tells nobody. A check that finds other work replaces the
+// row at its own moment and tells the role again.
+func TestADeclineOfTheSameWorkKeepsItsMomentAndTellsNobody(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	message := IdleReleaseRow{Kind: "role_message", Payload: []byte(`{"role":"legion-legion-legion-208-architect","body":"push your work"}`)}
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	decline := IdleReleaseDecline{At: at, Role: claim.RoleArchitect, Reason: pods.DeclineUnpushedWork,
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1, PodUID: "pod-a", Message: &message}
+	// declineAt marks a release whose stop has suspended the architect, with the architect's newest
+	// start row at started, and declines it.
+	declineAt := func(first, started int64, d IdleReleaseDecline) ReleaseCancelled {
+		t.Helper()
+		markRelease(t, st, first, first+2, first+4, started, claim.RoleArchitect)
+		releasedClaim(t, st, claim.RoleArchitect)
+		if _, err := st.Pool().Exec(ctx, `update claims set last_start_row = $2 where issue = $1`, rootIssue, started); err != nil {
+			t.Fatal(err)
+		}
+		declined, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, d, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: d.At})
+		if err != nil || !declined.Declined {
+			t.Fatalf("decline the release at %s = %+v, %v; want it declined", d.At, declined, err)
+		}
+		return declined
+	}
+	type declineRow struct {
+		declined, checked time.Time
+		commits           int
+		started           int64
+		pod               string
+		messages          int
+	}
+	read := func() declineRow {
+		t.Helper()
+		var row declineRow
+		if err := st.Pool().QueryRow(ctx, `select declined_at, checked_at, commits, started_row, pod_uid,
+			(select count(*) from outbox where issue = $1 and kind = 'role_message')
+			from idle_release_declines where issue = $1`, rootIssue).Scan(
+			&row.declined, &row.checked, &row.commits, &row.started, &row.pod, &row.messages); err != nil {
+			t.Fatalf("read the decline of %s: %v", rootIssue, err)
+		}
+		return row
+	}
+
+	if first := declineAt(18, 9, decline); !first.Told {
+		t.Fatalf("the first decline = %+v, want its message queued", first)
+	}
+	if row := read(); !row.declined.Equal(at) || !row.checked.Equal(at) || row.started != 9 || row.pod != "pod-a" || row.messages != 1 {
+		t.Fatalf("after the first decline the row = %+v, want it declined and checked at %s in pod-a at start row 9, with one message", row, at)
+	}
+
+	// The role's turn ended the decline, and the next release's check read the same work again, in
+	// the pod a relaunch made, after a start row.
+	again := decline
+	again.At, again.PodUID = at.Add(20*time.Minute), "pod-b"
+	if second := declineAt(30, 11, again); second.Told {
+		t.Fatalf("the decline of the same work = %+v, want nobody told", second)
+	}
+	if row := read(); !row.declined.Equal(at) || !row.checked.Equal(again.At) || row.started != 11 || row.pod != "pod-b" || row.messages != 1 {
+		t.Fatalf("after the decline of the same work the row = %+v, want it declined at %s, checked at %s in pod-b at start row 11, and still one message",
+			row, at, again.At)
+	}
+
+	// The role committed again without pushing: other work, so the role is told of it.
+	other := decline
+	other.At, other.Commits = at.Add(40*time.Minute), 2
+	if third := declineAt(40, 11, other); !third.Told {
+		t.Fatalf("the decline of other work = %+v, want its message queued", third)
+	}
+	if row := read(); !row.declined.Equal(other.At) || !row.checked.Equal(other.At) || row.commits != 2 || row.messages != 2 {
+		t.Fatalf("after the decline of other work the row = %+v, want it declined and checked at %s with 2 commits, and a second message",
+			row, other.At)
+	}
+}
+
+// The close of a pod whose issue left the workflow marks no release (workflow.LeftPodClose), so
+// a check that declines it has nothing to cancel: DeclineLeftPodClose writes the decline row and
+// its message and touches no mark, under the same rule for the same work as a release's decline.
+func TestALeftPodCloseDeclineRecordsWithNoMark(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+		Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1,
+		State: supervise.StateIdle, LastStartRow: 7}); err != nil {
+		t.Fatal(err)
+	}
+	message := IdleReleaseRow{Kind: "role_message", Payload: []byte(`{"role":"legion-legion-legion-208-architect","body":"push your work"}`)}
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	decline := IdleReleaseDecline{At: at, Role: claim.RoleArchitect, Reason: pods.DeclineUnpushedWork,
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1, PodUID: "pod-a", Message: &message}
+	read := func() (declined, checked time.Time, started int64, messages, marks int) {
+		t.Helper()
+		if err := st.Pool().QueryRow(ctx, `select declined_at, checked_at, started_row,
+			(select count(*) from outbox where issue = $1 and kind = 'role_message'),
+			(select count(*) from issue_releases where issue = $1)
+			from idle_release_declines where issue = $1`, rootIssue).Scan(&declined, &checked, &started, &messages, &marks); err != nil {
+			t.Fatalf("read the decline of %s: %v", rootIssue, err)
+		}
+		return declined, checked, started, messages, marks
+	}
+
+	if _, err := st.DeclineLeftPodClose(ctx, "", rootIssue, decline); err == nil {
+		t.Fatal("a decline with no project was taken")
+	}
+	if told, err := st.DeclineLeftPodClose(ctx, "legion", rootIssue, decline); err != nil || !told {
+		t.Fatalf("decline the close = %t, %v; want the role told", told, err)
+	}
+	if declined, checked, started, messages, marks := read(); !declined.Equal(at) || !checked.Equal(at) || started != 7 || messages != 1 || marks != 0 {
+		t.Fatalf("after the decline: declined %s, checked %s, start row %d, %d messages, %d marks; want %s, %s, 7, one message and no mark",
+			declined, checked, started, messages, marks, at, at)
+	}
+
+	again := decline
+	again.At = at.Add(20 * time.Minute)
+	if told, err := st.DeclineLeftPodClose(ctx, "legion", rootIssue, again); err != nil || told {
+		t.Fatalf("decline the close over the same work = %t, %v; want nobody told", told, err)
+	}
+	if declined, checked, _, messages, _ := read(); !declined.Equal(at) || !checked.Equal(again.At) || messages != 1 {
+		t.Fatalf("after the same work: declined %s, checked %s, %d messages; want %s, %s and still one message",
+			declined, checked, messages, at, again.At)
 	}
 }
 

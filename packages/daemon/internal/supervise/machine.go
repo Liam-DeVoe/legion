@@ -105,7 +105,8 @@ const (
 	// SuspendedByExit: the tree root's agent reported its own exit, which suspends a root.
 	SuspendedByExit SuspendSource = "exit"
 	// SuspendedByReleased: the daemon released the claim's idle issue pod, whose disk and Sandbox
-	// went with it; a release takes a pod only when its workspace holds nothing unpushed. The
+	// went with it; a release takes no pod whose workspace holds a commit on a working copy or a
+	// bookmark that origin does not hold, or a working-copy change. The
 	// claim keeps its phase and its pending task, and the next wake for its role resumes the same
 	// session; the boot's resume by rule resumes no such claim, since only that wake brings the pod
 	// back (workflow's booted).
