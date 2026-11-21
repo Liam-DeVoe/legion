@@ -390,8 +390,8 @@ func TestAPodGoneOnARepositoryRoundReadsThePodsRepositoryOffTheRound(t *testing.
 // repository the message names the old workspace and issue branch of podUpdateRepo, the pod's
 // own, and the third repository as the new pod's origin, and names podUpdateCorrectedRepo only in
 // the reasons. A second move back onto podUpdateRepo is no move at all: the next pod is built from
-// the repository the gone pod was, so the message is the one of a round no move opened, but for
-// its reasons.
+// the repository the gone pod was, so the message is the one of an issue that never moved, but
+// for its reasons.
 func TestAPodGoneAfterASecondCorrectionNamesThePodsRepositoryAndTheRecordsNow(t *testing.T) {
 	const third = "zeta/gadgets"
 	for _, tc := range []struct {
@@ -421,6 +421,53 @@ func TestAPodGoneAfterASecondCorrectionNamesThePodsRepositoryAndTheRecordsNow(t 
 				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
 			}
 			if want := implementerLostWith(podUpdateRepositoryReason, tc.disk, tc.pushed); messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			}
+		})
+	}
+}
+
+// A correction can land while a round that another drift opened runs. The round here opens for
+// the image alone, over a pod built from podUpdateRepo while the record still holds that
+// repository, and Dispatch moves the issue to podUpdateCorrectedRepo before the pod goes. The
+// round records the repository its pod was built from at its open, whatever drift opened it
+// (supervise.Claim.UpdateRepository), so the message on the gone pod still names the issue branch
+// of podUpdateRepo, and on a kept volume its workspace, and names podUpdateCorrectedRepo as the
+// new pod's origin. Its reasons name the image alone: a round's terms are fixed at its open.
+func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// created is when the issue's kept Sandbox was made, zero for an ephemeral volume.
+		created time.Time
+		disk    string
+	}{
+		{"a kept volume", podUpdateStart.Add(-time.Hour), keptVolumeMovedTo(podUpdateCorrectedRepo)},
+		{"an ephemeral volume", time.Time{}, podUpdateDiskLost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.drifts(podUpdateDrift)
+			if !tc.created.IsZero() {
+				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
+			}
+
+			rig.tick()
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				c := rig.awaitRound(role, podUpdateRound)
+				if c.UpdateReasons != podUpdateDrift || c.UpdateRepository != ghrepo.MustParse(podUpdateRepo) {
+					t.Errorf("the %s's round records the reasons %q and the repository %q, want %q and %s, its pod's",
+						role, c.UpdateReasons, c.UpdateRepository, podUpdateDrift, podUpdateRepo)
+				}
+			}
+			rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			rig.signal(claim.RoleTester, "a1b2c3d")
+			rig.tickBackIn(podUpdateReplacementPod)
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+			}
+			if want := implementerLostWith(podUpdateDrift, tc.disk, pushedMovedTo(podUpdateCorrectedRepo)); messages[0] != want {
 				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
 			}
 		})

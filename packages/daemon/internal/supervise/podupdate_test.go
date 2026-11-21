@@ -262,12 +262,12 @@ func TestPodUpdateALaterOpenOfTheSameRoundKeepsTheTermsItOpenedWith(t *testing.T
 	h.wantPrompts(0)
 }
 
-// A round that a repository move opened records the repository its pod was built from beside its
-// reasons, and keeps it as it keeps them: a later post of the same round that carries another
+// A round records the repository its pod was built from beside its reasons, as its first post
+// carries it, and keeps it as it keeps them: a later post of the same round that carries another
 // repository, or none, writes nothing. A round that replaces it records only its own, here none,
 // and the end of a round clears it in the claim and in the store. So no round of the claim reads
-// a repository that it was not opened for.
-func TestPodUpdateKeepsTheRepositoryItsRoundOpenedForUntilTheRoundEnds(t *testing.T) {
+// a repository that it was not opened with.
+func TestPodUpdateKeepsTheRepositoryItsRoundOpenedWithUntilTheRoundEnds(t *testing.T) {
 	const second = "pod:1f0b4c8d-7e21-4a55-8c3b-9d2e6f0a4b13"
 	const third = "pod:6a2d9e14-0b57-4c83-b1f6-3e8a5c7d2f90"
 	built := ghrepo.MustParse("acme/widgets")
@@ -280,7 +280,7 @@ func TestPodUpdateKeepsTheRepositoryItsRoundOpenedForUntilTheRoundEnds(t *testin
 	h.openUpdate(testRound, testReasons)
 
 	if c := h.wantRound(testRound); c.UpdateRepository != built {
-		t.Errorf("UpdateRepository = %q, want %q, the repository the round opened for", c.UpdateRepository, built)
+		t.Errorf("UpdateRepository = %q, want %q, the repository the round opened with", c.UpdateRepository, built)
 	}
 	if stored := h.store.load(h.token); stored.UpdateRepository != built {
 		t.Errorf("stored repository = %q, want %q", stored.UpdateRepository, built)
@@ -291,7 +291,7 @@ func TestPodUpdateKeepsTheRepositoryItsRoundOpenedForUntilTheRoundEnds(t *testin
 
 	h.openUpdate(second, testReasons)
 	if c := h.wantRound(second); !c.UpdateRepository.IsZero() {
-		t.Errorf("the round that replaced it records the repository %q, want none: no repository move opened it", c.UpdateRepository)
+		t.Errorf("the round that replaced it records the repository %q, want none: its post carried none", c.UpdateRepository)
 	}
 
 	h.must(PodUpdateOpen{Claim: h.token, Round: third, Reasons: testReasons, Repository: built})

@@ -131,7 +131,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "UpdateReasons", Column: ColumnAgents, Keys: []string{"updateReasons"},
 		Reason: "why the daemon must replace this pod, which the worker answering the round is told to act on"},
 	{Field: "UpdateRepository", Column: ColumnWithheld,
-		Reason: "the repository a round's pod was built from, which the round's reasons already name to the worker and to the operator; the daemon reads it for its own message on the issue alone"},
+		Reason: "the repository a round's pod was built from, which the round's reasons name to the worker and to the operator on a round that a correction of the issue's repository opened; the daemon reads it for its own message on the issue alone"},
 	{Field: "UpdateOpenedAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateTaskedAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateSignalledAt", Column: ColumnWithheld, Reason: BookkeepingReason},

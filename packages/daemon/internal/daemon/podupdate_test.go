@@ -1198,16 +1198,14 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
 // both of those cases the message is the one every other pod's issue is told, word for word.
 //
-// A round that a corrected repository opened says more of a kept volume: the work is in the
-// workspace of the repository the issue has left, and the next pod makes a workspace of the new
-// repository beside it, where every role works. So the message names the old workspace's path
-// and tells a role how to keep the work, with other reasons in the round or without them. On
-// such a round, whatever the disk, the pushed work is on the old repository's issue branch and
-// the new pod's origin is the new repository, so the last sentence names both. The message of
-// every other round, and the disk's part of it for an ephemeral volume, is the one above, word
-// for word.
+// A round whose pod was built from a repository the issue's record has left says more of a kept
+// volume: the work is in the workspace of that repository, and the next pod makes a workspace of
+// the new repository beside it, where every role works. So the message names the old workspace's
+// path and tells a role how to keep the work, with other reasons in the round or without them. On
+// such a round, whatever the disk, the pushed work is on the old repository's issue branch and the
+// new pod's origin is the new repository, so the last sentence names both. The message of every
+// other round, and the disk's part of it for an ephemeral volume, is the one above, word for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
-	const lost = "The pod's disk went with the pod. Work that these roles did not push is lost."
 	moved := keptVolumeMovedTo(podUpdateCorrectedRepo)
 	before, after := podUpdateStart.Add(-time.Hour), podUpdateStart.Add(time.Minute)
 	for _, tc := range []struct {
@@ -1221,12 +1219,12 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 		disk               string
 	}{
 		{"a kept volume made before the round opened", before, true, false, podUpdateKeptVolumeStays},
-		{"a kept volume made after the round opened", after, true, false, lost},
-		{"an ephemeral volume", time.Time{}, true, false, lost},
+		{"a kept volume made after the round opened", after, true, false, podUpdateDiskLost},
+		{"an ephemeral volume", time.Time{}, true, false, podUpdateDiskLost},
 		{"a kept volume of a repository the issue has left", before, false, true, moved},
 		{"a kept volume of a repository the issue has left, with another drift",
 			before, true, true, moved},
-		{"an ephemeral volume of a repository the issue has left", time.Time{}, false, true, lost},
+		{"an ephemeral volume of a repository the issue has left", time.Time{}, false, true, podUpdateDiskLost},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -1273,12 +1271,14 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 const podUpdateOldWorkspace = "/legion/workspaces/acme/widgets/legion-484"
 
 // podUpdateKeptVolumeStays is what the message on a gone pod says of a kept volume that is still
-// there, on a round of an issue that moved to no other repository, and podUpdateAtOrigin is that
-// message's last sentence on such a round, whatever the disk.
+// there, on a round of an issue that moved to no other repository, podUpdateDiskLost what it says
+// of a disk that went with the pod, whatever the repository, and podUpdateAtOrigin that message's
+// last sentence on a round of an issue that moved to no other repository, whatever the disk.
 const (
 	podUpdateKeptVolumeStays = "The pod's disk is a kept volume, and the volume is still there. " +
 		"Work that these roles did not push is on that volume. " +
 		"The next pod of this issue mounts the volume."
+	podUpdateDiskLost = "The pod's disk went with the pod. Work that these roles did not push is lost."
 	podUpdateAtOrigin = "Each role must read its issue branch at origin " +
 		"to see the work that it pushed."
 )
@@ -1297,8 +1297,8 @@ func implementerLostWith(reasons, disk, pushed string) string {
 }
 
 // keptVolumeMovedTo is what that message says of a kept volume that is still there, on a round
-// that a corrected repository opened: the pod was built from podUpdateRepo, and the issue's record
-// holds the repository to when the message is written.
+// whose pod was built from podUpdateRepo while the issue's record holds the repository to when
+// the message is written, whatever drift opened the round.
 func keptVolumeMovedTo(to string) string {
 	return "The pod's disk is a kept volume, and the volume is still there. " +
 		"This issue moved from the repository `" + podUpdateRepo + "` " +

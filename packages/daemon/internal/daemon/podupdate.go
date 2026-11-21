@@ -1322,10 +1322,11 @@ type repositoryMove struct {
 // roundMove is the move the message on a gone pod names: the repository the round's pod was built
 // from, as the round recorded it at its open (roundRepository), and the repository the issue's
 // record holds when the message is written (recordedLeft). The record is read now and not taken
-// from the round's reasons, which give it as it stood at the round's open: a correction while the
-// round ran moved the record on, and the issue's next pod is built from the record as it stands
-// now. It is no move for a round that no repository move opened, and for a round whose issue's
-// record holds the pod's repository again or cannot say which repository it holds.
+// from the round's reasons, which name it only on a round a correction opened, and as it stood at
+// the round's open: a correction while the round ran moved the record on, whatever drift opened
+// the round, and the issue's next pod is built from the record as it stands now. It is no move for
+// a round that recorded no repository, whose pod named none, and for a round whose issue's record
+// holds the pod's repository or cannot say which repository it holds.
 func (s *supervision) roundMove(ctx context.Context, issue string, group []supervise.Claim, round string) repositoryMove {
 	built := roundRepository(group, round)
 	recorded := s.recordedLeft(ctx, issue, built)
@@ -1393,8 +1394,8 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // reaches the role's session, since an ask that reached none is asked again (askRound). Every
 // claim that blocks the round is posted PodUpdateOpen at every tick while the round runs: the
 // event is idempotent, and it is what records the round on the claim (supervise's openPodUpdate),
-// with its reasons, the repository its pod was built from where a repository move opened it
-// (repository, the zero Repository otherwise) and its clock fixed at the post that opens it.
+// with its reasons, the repository its pod was built from (repository, the zero Repository where
+// the pod named none) and its clock fixed at the post that opens it.
 //
 // The ask is the sweep's own, enqueued on the reading that finds the round recorded (askRound).
 // The post is asynchronous (supervisor.post), so the tick that opens a round asks nothing, and a
@@ -1709,10 +1710,9 @@ type podDrift struct {
 	// reasons is why the pod has drifted, in the claims' own order and without repeats, empty
 	// for a pod that has drifted from nothing.
 	reasons []string
-	// repository is the repository the pod was built from where the issue's record has left it
-	// (repositoryDrift), which the round this drift opens records
-	// (supervise.Claim.UpdateRepository), and the zero Repository where the record has not left it
-	// or nothing could say.
+	// repository is the repository the pod was built from, as the pod names it (repositoryDrift),
+	// which the round this drift opens records whatever drift opened it
+	// (supervise.Claim.UpdateRepository), and the zero Repository where nothing could say.
 	repository ghrepo.Repository
 	// reading is what could be read of the pod at all (podReading).
 	reading podReading
@@ -1741,6 +1741,11 @@ type podDrift struct {
 // reads the pod through the same claim (podRepositoryDrifted). A runtime that answers nothing —
 // one whose processes share no such place, a pod that clones no repository — and a group no
 // claim of which records a process end the question there.
+//
+// The pod's repository goes with the drift whatever the record holds, so every round records the
+// repository its pod was built from at its open, and not only a round a correction opened: a
+// correction can land while a round that another drift opened runs, and the message on that
+// round's pod, should the pod go, reads the record against that repository then (roundMove).
 func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) podDrift {
 	var reasons []string
 	for _, c := range group {
@@ -1790,15 +1795,14 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 // and a configured rename's two names as one repository, so re-pointing an issue at the name a
 // transfer moved its repository to replaces no pod.
 //
-// Nothing is a reason but two names that are both there and differ. A pod that answers nothing,
-// a pod whose answer is no repository, a deployment with no workflow (plan.recordedRepository
-// nil), an issue the record does not hold and a record that cannot be read each add none
-// (recordedLeft): an unknown is never a statement that something drifted, which is the rule this
-// sweep already reads an error by. It answers the pod's repository, parsed, beside the reason, so
-// the round the reason opens records the repository as a value rather than as text
-// (supervise.Claim.UpdateRepository), and the zero Repository with no reason.
+// Nothing is a reason but two names that are both there and differ. A pod that answers no name
+// and a name that is no repository add none here, and recordedLeft says where the record adds
+// none: an unknown is never a statement that something drifted, which is the rule this sweep
+// already reads an error by. It answers the pod's repository, parsed, beside the reason and with
+// no reason too, so every round records its pod's repository as a value rather than as text
+// (supervise.Claim.UpdateRepository), whatever drift opened it (groupDrift).
 func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) (ghrepo.Repository, string) {
-	if pod == "" || s.plan.recordedRepository == nil {
+	if pod == "" {
 		return ghrepo.Repository{}, ""
 	}
 	built, err := ghrepo.Parse("the repository this issue's pod was built from", pod)
@@ -1809,7 +1813,7 @@ func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) (g
 	}
 	recorded := s.recordedLeft(ctx, issue, built)
 	if recorded.IsZero() {
-		return ghrepo.Repository{}, ""
+		return built, ""
 	}
 	return built, repositoryReason(built, recorded)
 }
@@ -1925,8 +1929,8 @@ func roundReasons(group []supervise.Claim, round string) string {
 }
 
 // roundRepository is the repository the round's pod was built from, as its claims recorded it at
-// the round's open (supervise.Claim.UpdateRepository), and the zero Repository for a round that
-// no repository move opened.
+// the round's open (supervise.Claim.UpdateRepository), and the zero Repository for a round whose
+// pod named none.
 func roundRepository(group []supervise.Claim, round string) ghrepo.Repository {
 	for _, c := range group {
 		if c.UpdateRound == round && !c.UpdateRepository.IsZero() {
@@ -2254,11 +2258,12 @@ func roleStates(claims []supervise.Claim) string {
 // true, its disk is a kept volume that is still there and holds what the roles did not push. The
 // issue's spec requires this message. Another agent reads it, so it follows ASD-STE100.
 //
-// On a round that a corrected repository opened, "its issue branch at origin" would send a role
-// to the wrong place, whatever the disk: every push a role made before the pod went is on the
-// issue branch of the repository the pod was built from, and the new pod's origin is the one the
-// issue's record holds now. So where moved is a move (roundMove), the last sentence names both
-// repositories and sends a role to the old one's issue branch.
+// Where the issue's record has left the repository the round's pod was built from, "its issue
+// branch at origin" would send a role to the wrong place, whatever the disk and whatever drift
+// opened the round: every push a role made before the pod went is on the issue branch of the
+// repository the pod was built from, and the new pod's origin is the one the issue's record holds
+// now. So where moved is a move (roundMove), the last sentence names both repositories and sends
+// a role to the old one's issue branch.
 func podWentMessage(issue, round, reasons string, lost []supervise.Claim, kept bool, moved repositoryMove) string {
 	opened := "The daemon did not record why."
 	if reasons != "" {

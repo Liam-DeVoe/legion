@@ -51,23 +51,25 @@
 -- message on the issue names, and deletes it once the work is carried out.
 --
 -- claims.update_repository is the repository the pod of the claim's update round was built from,
--- on a round opened because the issue's record has left that repository
--- (supervise.Claim.UpdateRepository, the daemon's repositoryDrift), and '' on every other round
--- and while no round is open. The message the daemon writes on an issue whose pod went before
--- its round was over names that repository's workspace and issue branch, beside the repository
--- the record holds when the message is written (the daemon's podWentMessage). The round's reasons
--- name both repositories too, but as text for a reader, and the record's as it stood at the
--- round's open. claims.update_repository_round is the round the name was written with, and the
--- claim store reads the name only while that round is the one update_round holds (store's
--- roundRepositoryOf). A name it reads that is no repository refuses the read of the claims and
--- names the claim, as a stored locator that does not validate does.
+-- as that pod named it at the round's open, whatever drift opened the round
+-- (supervise.Claim.UpdateRepository, the daemon's groupDrift), and '' on a round whose pod named
+-- none and while no round is open. A correction can land while any round runs, so where the
+-- record holds another repository when the daemon writes the message on an issue whose pod went
+-- before its round was over, that message names this repository's issue branch, and its
+-- workspace where the pod's disk is a kept volume that is still there, beside the repository the
+-- record holds then (the daemon's podWentMessage). On a round that a correction opened, the
+-- round's reasons name both repositories too, but as text for a reader, and the record's as it
+-- stood at the round's open. claims.update_repository_round is the round the name was written
+-- with, and the claim store reads the name only while that round is the one update_round holds
+-- (store's roundRepositoryOf). A name it reads that is no repository refuses the read of the
+-- claims and names the claim, as a stored locator that does not validate does.
 --
--- An older daemon binary on this schema writes none of the seven columns and reads none of them:
--- its issue reads, its claim reads and writes and its bundle writes name the columns it knows,
--- and the new ones take their defaults. Its write of a claim this release wrote leaves the two
--- claims columns as they stood, through the end of a round this release opened for a repository
+-- An older daemon binary on this schema writes none of the columns this migration adds and reads
+-- none of them: its issue reads, its claim reads and writes and its bundle writes name the
+-- columns it knows, and the new ones take their defaults. Its write of a claim this release wrote
+-- leaves the two claims columns as they stood, through the end of a round this release opened
 -- and the open of the claim's next round, which is why the name carries the round it was written
--- with: this release reads that next round as one no repository opened. It never reads
+-- with: this release reads that next round as one that recorded no repository. It never reads
 -- workspace_bundles_refused, so the refused work stays there for an operator through a roll back,
 -- and no row of workspace_bundles is a refused one for its idle rule to count. It still carries
 -- the write-once guard, so it refuses a corrected repository as it always did, and a correction

@@ -536,10 +536,10 @@ func TestTheRoundAClaimLeftRoundTrips(t *testing.T) {
 }
 
 // The repository a round's pod was built from is read back as the repository it was written as
-// (supervise.Claim.UpdateRepository): a restart has nothing else to name the workspace and the
-// issue branch of a gone pod's message from. The round's end clears it, and a claim with no
-// repository reads back with none.
-func TestTheRepositoryARoundWasOpenedForRoundTrips(t *testing.T) {
+// (supervise.Claim.UpdateRepository): a restart has nothing else to name the issue branch of a
+// gone pod's message from, nor the workspace on a kept volume. The round's end clears it, and a
+// claim with no repository reads back with none.
+func TestTheRepositoryARoundsPodWasBuiltFromRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-repositoryround")
@@ -558,10 +558,10 @@ func TestTheRepositoryARoundWasOpenedForRoundTrips(t *testing.T) {
 }
 
 // A daemon of an earlier release names neither repository column in its claim write, so it ends
-// a round this release opened for a repository and opens the claim's next round with the name
-// still standing. That name is read for the round it was written with alone: the next round reads
-// as one no repository opened, since read as this one's it would name a repository that the next
-// pod was not built from.
+// a round this release opened and opens the claim's next round with the name still standing.
+// That name is read for the round it was written with alone: the next round reads as one that
+// recorded no repository, since read as this one's it would name a repository that the next pod
+// was not built from.
 func TestClaimsReadARoundsRepositoryForTheRoundItWasWrittenWithAlone(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -579,7 +579,7 @@ func TestClaimsReadARoundsRepositoryForTheRoundItWasWrittenWithAlone(t *testing.
 
 	got := onlyClaim(t, store)
 	if got.UpdateRound != next || !got.UpdateRepository.IsZero() {
-		t.Fatalf("the claim reads round %q opened for the repository %q, want %q opened for none",
+		t.Fatalf("the claim reads round %q with the repository %q, want %q with none",
 			got.UpdateRound, got.UpdateRepository, next)
 	}
 }

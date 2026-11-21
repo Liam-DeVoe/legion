@@ -1021,7 +1021,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	return c, nil
 }
 
-// roundRepositoryColumns is the repository the claim's update round was opened for
+// roundRepositoryColumns is the repository the pod of the claim's update round was built from
 // (supervise.Claim.UpdateRepository) as claims.update_repository and update_repository_round
 // hold it: its name and the round it was written with, both empty for no repository
 // (20261112012123_issue_repository_correction).
@@ -1036,7 +1036,7 @@ func roundRepositoryColumns(c supervise.Claim) (repository, round string) {
 // records now, and the zero Repository where they hold none for it: an empty name, and a name
 // written with another round. A daemon of an earlier release names neither column, so its write
 // of the claim leaves both standing through the end of the round they were written with and the
-// open of the next, and that next round was opened for no repository this release knows of. A
+// open of the next, and this release recorded no repository for that next round's pod. A
 // name written with round that is no repository is an error rather than no repository, as a
 // locator that does not validate is (Claims): the daemon writes only a name it parsed, so such a
 // value is a row somebody edited, and read as none it would send the roles of a gone pod to the

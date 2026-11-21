@@ -264,8 +264,8 @@ type StallBackstop struct {
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
 // (Claim.UpdateRound), Reasons the drift the daemon read of the pod it runs in, and Repository
-// the repository that pod was built from where the issue's record has left it
-// (Claim.UpdateRepository), the zero Repository on every other round.
+// the repository that pod was built from, whatever drift opened the round, the zero Repository
+// where the pod named none (Claim.UpdateRepository).
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
 // so the action is idempotent: the first post of a round records the round, its reasons, its

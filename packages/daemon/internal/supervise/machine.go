@@ -467,13 +467,17 @@ type Claim struct {
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
 	UpdateReasons string
-	// UpdateRepository is the repository the round's pod was built from, on a round opened
-	// because the issue's record has left that repository (internal/daemon's repositoryDrift),
-	// and the zero Repository on every other round and while no round is open. The reasons name
-	// it too, but as text for a reader. The daemon reads this field instead where it acts on the
-	// repository: the message on an issue whose pod went before its round was over names this
-	// repository's workspace and issue branch (internal/daemon's podWentMessage). It is fixed at
-	// the round's open with the reasons, and the round's end clears it (clearUpdate).
+	// UpdateRepository is the repository the round's pod was built from, as that pod named it at
+	// the round's open (runtime.Runtime.PodRepository), whatever drift opened the round, and the
+	// zero Repository on a round whose pod named none, as a runtime with no such pod answers,
+	// and while no round is open. On a round that a correction of the issue's repository opened,
+	// the reasons name it too, but as text for a reader. The daemon reads this field instead
+	// where it acts on the repository, on every round, because a correction can land while any
+	// round runs: where the issue's record has left this repository, the message on an issue
+	// whose pod went before its round was over names this repository's issue branch, and its
+	// workspace where the pod's disk is a kept volume that is still there (internal/daemon's
+	// podWentMessage, keptDiskMessage). It is fixed at the round's open with the reasons, and the
+	// round's end clears it (clearUpdate).
 	UpdateRepository ghrepo.Repository
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
