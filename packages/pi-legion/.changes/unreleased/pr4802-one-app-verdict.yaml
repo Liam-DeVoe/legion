@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    The `legion` tool's `handoff_complete` takes `approve` or `changes` from a reviewer, with the
+    commit it reviewed and a `testedCommit`. `review_verdict`, offered to a reviewer session alone,
+    sends a verdict on a head that moved past review. A controller session gets
+    `pull_request_reviewer` and `pull_request_verdict` for side reviews of pull requests no Legion
+    tree opened. Each needs a daemon of the matching contract.
+time: 2026-11-21T23:55:33Z
+custom:
+    Issue: pr4802

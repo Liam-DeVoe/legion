@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+    Envoy and Dispatch serve the one-App deployment, where the daemon's `legion-verdict` check decides
+    each merge.
+
+    - The listener publishes `merge_group` on `notifications.github.OWNER.REPO.merge_group`, with the
+      pull request's number read from the queue branch. It still drops `status`.
+    - The CI record, the CI store and Dispatch's reconcile pass leave out the verdict App's own check
+      suites and every `legion-verdict` run, so a head does not wait on the check that waits on it.
+    - The `github sender` line names the webhook's target type and id.
+    - `ENVOY_VERDICT_APP_ID` and `DISPATCH_VERDICT_APP_ID` replace the reviewer-App settings; the old
+      names are still read while the new ones are unset. The Pulumi input is `verdictAppId` and the
+      flag `--verdict-app-id`, with no old name: a stack that sets `reviewerAppId` renames it in the
+      same change that takes this release.
+    - Dispatch's installation token asks for seven permissions, each at read, and refuses a wider
+      answer, so an installation that lacks one of them gets no Dispatch token.
+time: 2026-11-21T23:55:33Z
+custom:
+    Issue: pr4802

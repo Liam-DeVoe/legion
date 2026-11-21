@@ -1,0 +1,30 @@
+kind: Changed
+body: |-
+    One GitHub App serves every role, and the daemon writes one check, `legion-verdict`, from each
+    head's verdicts, so that check (not an approving review) decides a merge.
+
+    - `github_apps.implement` is the one App. `github_apps.review` still loads, with a warning that
+      it changes nothing; remove it from `legion.yaml`. Each role's token holds that role's own
+      write set; only the daemon's writer of `legion-verdict` mints a token that writes checks and
+      statuses, so the App needs Checks and Commit statuses at write.
+    - `verdict_repositories` (`repository`, `ci_reviewer`, `side_reviews`) names the repositories
+      whose `legion-verdict` this daemon writes. On a `legion/<KEY>` head of its own project the
+      verdict is the tester's pass and the reviewer's approve at that head; on another head it is
+      the named CI reviewer's or a side reviewer's review, or a person's approval; a person's
+      request for changes refuses either. The daemon writes over another writer's run or status of
+      that name, sweeps the repositories at boot and every 10 minutes, and writes on each merge
+      group's commit. In token mode it writes nothing and logs why once.
+    - The reviewer completes with `approve` or `changes`, the `commit` it reviewed and, where the
+      tester's pass still holds, `testedCommit`; a reviewer's completion with no verdict is refused.
+      `POST /legion/v1/review-verdict` takes the recorded reviewer's verdict on a head that moved
+      past review. A review by the App, and a person's approval, decide no round.
+    - `POST /legion/v1/pull-request-reviewer` and `/pull-request-verdict` let the controller name a
+      side reviewer for a pull request no Legion tree opened, and take only that reviewer's verdict.
+    - The reviewer works in a git clone of its own, and its git runs no program a repository's
+      configuration names. A reviewer starts only in a pod on the configured image; an older pod is
+      replaced first. The daemon API contract changes with it.
+    - One migration adds tables and indexes only; a build from before this change still boots on
+      the database and reads every row.
+time: 2026-11-21T23:55:33Z
+custom:
+    Issue: pr4802
