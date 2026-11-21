@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
@@ -376,5 +379,132 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 	registered.revokeBrokerDebts(ctx)
 	if owing() {
 		t.Errorf("the revocation of erin's machine logins is owed after a pass whose claim came %s after the removal, want it settled", machineLoginSettleAfter)
+	}
+}
+
+// TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked: the runbook's block for a broker
+// restored alone owes again a machine-login revocation Dispatch settled since the backup, and a
+// login the member approves while it runs must be revoked too. alice takes erin off ACC's list,
+// a pass settles that revocation, and alice puts erin back. erin's browser approve of a new machine
+// login reaches the broker, which has not answered it when an operator runs the block: the block
+// takes erin's approval lock as a removal does, so it waits for the approve, and records the debt
+// anew with its own moment as its removal. The pass after it lists the login the approve minted and
+// revokes it, and leaves the debt owed until a claim comes machineLoginSettleAfter after the block.
+//
+// Control: the block as it was, with no approval lock and recorded_at kept, and it commits while
+// the approve is in flight; the pass that follows lists no login and settles the old removal's
+// debt, so the login the approve then mints is never revoked, named.
+func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	ctx := t.Context()
+	const (
+		list    = "GET /v1/launcher-credentials"
+		approve = "POST /v1/credential-requests/rec-erin/approve"
+	)
+	rig.bodyByRoute[list] = `{"credentials":[]}`
+	for _, write := range []struct{ method, does string }{
+		{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}, {http.MethodPut, "puts erin back on"},
+	} {
+		if write.does == "puts erin back on" {
+			removalAged(t, database, machineLoginSettleAfter)
+			registered.revokeBrokerDebts(ctx)
+		}
+		if response := dispatchRequest(t, served, write.method, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("alice %s ACC's list: status=%d body=%s", write.does, response.Code, response.Body.String())
+		}
+	}
+	revocations := store.NewMachineLoginRevocations(database.Pool)
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || owed {
+		t.Fatalf("the revocation of erin's machine logins is owed %t (%v) before the restore, want it settled", owed, err)
+	}
+	// Each pass below runs as if the claim before it were past the retry window.
+	claimable := func() {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = clock_timestamp() - make_interval(secs => $1)`, brokerRevocationRetry.Seconds()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	reached, release := make(chan struct{}), make(chan struct{})
+	rig.beforeAnswer[approve] = func() {
+		close(reached)
+		<-release
+	}
+	commit := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(commit)
+	approved := make(chan int, 1)
+	go func() {
+		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
+	}()
+	<-reached
+
+	block := runbookBlockAfter(t, brokerRestoredLead)
+	if len(block.statements) < 2 || block.statements[0] != "begin" || block.statements[len(block.statements)-1] != "commit" {
+		t.Fatalf("the runbook's block for a broker restored alone is %q; want one transaction", block.statements)
+	}
+	restored := make(chan error, 1)
+	go func() {
+		restored <- func() error {
+			background := context.Background()
+			tx, err := database.Pool.Begin(background)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tx.Rollback(background) }()
+			args := pgx.NamedArgs{"backup": time.Now().Add(-30 * time.Minute)}
+			for _, statement := range block.statements[1 : len(block.statements)-1] {
+				if _, err := tx.Exec(background, statement, args); err != nil {
+					return err
+				}
+			}
+			return tx.Commit(background)
+		}()
+	}()
+	waitingOnALock := func() bool {
+		var n int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
+			t.Fatalf("read whether the block waits on a lock: %v", err)
+		}
+		return n > 0
+	}
+	finishedEarly, early := false, error(nil)
+	for giveUp := time.Now().Add(30 * time.Second); !finishedEarly && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
+		select {
+		case early = <-restored:
+			// The block did not wait: a pass now finds no login of erin's.
+			finishedEarly = true
+			claimable()
+			registered.revokeBrokerDebts(ctx)
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("the runbook's block neither finished nor waited on a lock within 30 s")
+			}
+		}
+	}
+	rig.bodyByRoute[list] = erinsLoginListed("cred-in-flight")
+	commit()
+	if code := <-approved; code != http.StatusOK {
+		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the block", code)
+	}
+	if !finishedEarly {
+		early = <-restored
+	}
+	if early != nil {
+		t.Fatalf("the runbook's block: %v", early)
+	}
+
+	claimable()
+	registered.revokeBrokerDebts(ctx)
+	if !slices.Contains(rig.revokes(), "POST /v1/launcher-credentials/cred-in-flight/revoke-by-approver") {
+		t.Errorf("the broker was sent %v; want the login erin approved while the block ran revoked", rig.revokes())
+	}
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || !owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass at once, want it owed until a claim comes %s after the block", owed, err, machineLoginSettleAfter)
 	}
 }
