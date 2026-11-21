@@ -12,7 +12,9 @@
 # bindings of clusterroles, impersonating users and groups and a node's proxy are cluster-scoped,
 # which only a ClusterRoleBinding grants. A node's proxy reaches the kubelet's API, whose exec and
 # attach enter any pod on the node, the guarded ones included. A binding is written by create,
-# patch or update, and RBAC lets one who may bind its role, by name, update it, so each is asked.
+# patch or update, and RBAC lets one who may bind its role, by name, update it, so each is asked. A
+# Secret of type kubernetes.io/service-account-token naming a ServiceAccount is filled with its
+# token, so create secrets is asked beside get, list and watch.
 RIGHTS_TABLE='
 create - serviceaccounts token named
 impersonate - serviceaccounts - named
@@ -65,6 +67,7 @@ update batch cronjobs - ns
 get - secrets - ns
 list - secrets - ns
 watch - secrets - ns
+create - secrets - ns
 '
 # The admission rights: create, update and patch of each resource of admissionregistration.k8s.io
 # a cluster's discovery lists, cluster-wide, on every cluster of the pool (admission_rights): a
@@ -107,7 +110,7 @@ CONTAINER_PERMISSIONS=(
   container.secrets.list container.namespaces.create container.serviceAccounts.create
   container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update
   container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
-  container.certificateSigningRequests.approve container.clusters.update
+  container.certificateSigningRequests.approve container.clusters.update container.secrets.create
 )
 GSA_PERMISSIONS=(
   iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken iam.serviceAccounts.signJwt

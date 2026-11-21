@@ -206,7 +206,8 @@
 # A ServiceAccount a binding names is reviewed whether it exists or not: whoever can make it and a
 # pod in its namespace takes the binding's rights. On every cluster a ServiceAccount list that holds
 # none outside the system namespaces is UNKNOWN, since every cluster has default/default. A refused
-# list of bindings is UNKNOWN, naming the permission.
+# list of bindings is UNKNOWN, naming the permission, and so is a list without the bootstrap
+# cluster-admin ClusterRoleBinding, its witness: every cluster has it.
 #
 # Group and User subjects. Kubernetes' own groups take their members from Kubernetes, whatever
 # Google Groups for RBAC says: system:authenticated, system:serviceaccounts and
@@ -254,7 +255,10 @@
 # and update pods/ephemeralcontainers; create, patch and update replicationcontrollers, deployments,
 # replicasets, statefulsets, daemonsets, jobs and cronjobs, each of which runs a pod as the
 # ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
-# node; get, list and watch secrets; and, cluster-wide on every cluster of the pool, create, update
+# node; get, list, watch and create secrets (a Secret of type kubernetes.io/service-account-token
+# naming a ServiceAccount is filled with its token), and on the operator's cluster get, by name, of
+# each token Secret a guarded pair's ServiceAccount lists; and, cluster-wide on every cluster of the
+# pool, create, update
 # and patch of each admissionregistration.k8s.io resource its discovery lists, and the certificate
 # signing chain: a certificate signed for kubernetes.io/kube-apiserver-client authenticates as any
 # user and groups its request names but system:masters, and GKE cannot turn the certificates API

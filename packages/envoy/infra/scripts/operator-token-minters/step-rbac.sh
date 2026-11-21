@@ -26,6 +26,13 @@ else
   rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
   admission_rights "$KUBE" || unknown "$step" "$ADMISSION_ERROR"
   rights="$(with_rights "$rights" "$ADMISSION_RIGHTS")"
+  # Each token Secret a guarded pair's ServiceAccount lists (its `secrets`), by name: a review that
+  # names no Secret is refused for a get limited to the name, and the Secret holds the pair's token.
+  rights="$(with_rights "$rights" "$(jq -c '[.items[]?
+      | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
+      | .metadata.namespace as $ns | (.secrets // [])[] | .name as $n
+      | {verb: "get", group: "", resource: "secrets", sub: "", ns: $ns, name: $n, label: "get secrets \($n) in \($ns)"}
+      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}")")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"

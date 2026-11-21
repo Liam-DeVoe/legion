@@ -70,7 +70,10 @@
 #        cluster each exit 1 naming the chain; create alone exits 0;
 #   (bo) legion/worker that may impersonate, by name, a user whose power is IAM's (owner@example.com,
 #        who holds roles/owner on the organization, or admin@example.com, a member of a group holding
-#        roles/container.admin) exits 1 naming that user.
+#        roles/container.admin) exits 1 naming that user;
+#   (br) legion/worker that may get, by name, a token Secret the operator's ServiceAccount lists
+#        exits 1 naming it; a list of bindings without the bootstrap cluster-admin binding, on the
+#        operator's cluster or another, reads UNKNOWN.
 
 # --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
 # (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
@@ -122,6 +125,7 @@ rbac_rights=(
   "get||secrets||envoy-operator|=get secrets in envoy-operator"
   "list||secrets||envoy-operator|=list secrets in envoy-operator"
   "watch||secrets||envoy-operator|=watch secrets in envoy-operator"
+  "create||secrets||envoy-operator|=create secrets in envoy-operator"
   "create||replicationcontrollers||envoy-operator|=create replicationcontrollers in envoy-operator"
   "patch||replicationcontrollers||envoy-operator|=patch replicationcontrollers in envoy-operator"
   "update||replicationcontrollers||envoy-operator|=update replicationcontrollers in envoy-operator"
@@ -692,4 +696,41 @@ iam_user_row() {
 if row bo; then
   each iam_user_row owner@example.com admin@example.com
   passed "(bo) a ServiceAccount that may impersonate, by name, a user holding the GKE IAM permissions exits 1 naming the user"
+fi
+
+# --- (br) A token Secret by name, and the bindings' witness. A review naming no Secret is refused for
+# a get limited to a name, so each token Secret a guarded ServiceAccount lists is asked by name; and
+# every cluster has the bootstrap cluster-admin binding, so a list without it is not whole. ---
+secret_witness_row() {
+  base_world
+  case "$1" in
+    named-secret)
+      edit "$world/clusters/operator-cluster/serviceaccounts.json" \
+        'map(if .namespace == "envoy-operator" and .name == "envoy-operator" then . + {secrets: [{name: "envoy-operator-token-x7k2p"}]} else . end)'
+      subject_grant operator-cluster "$(sa_subject legion worker)" get "" secrets "" envoy-operator envoy-operator-token-x7k2p
+      run
+      want_status 1 "legion/worker may get the operator's token Secret by name"
+      want_line "FINDING system:serviceaccount:legion:worker: get secrets envoy-operator-token-x7k2p in envoy-operator" \
+        "legion/worker may get the operator's token Secret by name"
+      ;;
+    no-bootstrap)
+      : >"$world/clusters/operator-cluster/no-bootstrap-binding"
+      run
+      want_status 2 "a bindings' list without the bootstrap binding"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the bindings' list holds no bootstrap cluster-admin ClusterRoleBinding, which every cluster has, so it is not the cluster's whole list" \
+        "a bindings' list without the bootstrap binding"
+      ;;
+    no-bootstrap-other)
+      add_cluster other-cluster us-east1
+      : >"$world/clusters/other-cluster/no-bootstrap-binding"
+      run
+      want_status 2 "another cluster's bindings' list without the bootstrap binding"
+      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the bindings' list holds no bootstrap cluster-admin ClusterRoleBinding" \
+        "another cluster's bindings' list without the bootstrap binding"
+      ;;
+  esac
+}
+if row br; then
+  each secret_witness_row named-secret no-bootstrap no-bootstrap-other
+  passed "(br) a get of the operator's token Secret by name exits 1, and a list of bindings without the bootstrap binding reads UNKNOWN"
 fi

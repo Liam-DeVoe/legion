@@ -230,16 +230,17 @@ case "${args[*]}" in
       echo "<html>502 Bad Gateway</html>"
       exit 0
     fi
-    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))}]}' "$dir/serviceaccounts.json"
+    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
     ;;
   "get clusterrolebindings,rolebindings --all-namespaces -o json")
-    # The built-in cluster-admin binding, and one binding of each grant, naming its subject.
+    # The built-in cluster-admin binding (unless the world drops it), and one binding of each grant,
+    # naming its subject.
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
-    jq '{apiVersion: "v1", kind: "List", items: (
+    jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
         metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
-        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]}]
+        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]} | select($boot == "on")]
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),

@@ -213,7 +213,9 @@ admission_rights() {
 # subject, a Group subject that is not Kubernetes' own (groups_verdict judges those) and
 # system:masters (masters_bindings) are left out. Sets BOUND to how many it added, and BINDINGS_OK to
 # whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
-# server refused the list or answered no JSON.
+# server refused the list or answered no JSON, or when the list lacks the bootstrap cluster-admin
+# ClusterRoleBinding, its witness: every cluster has it, so a list without it is not whole (its
+# subjects are still added).
 bound_subjects() {
   local kind ns name label
   local -A held=()
@@ -261,6 +263,12 @@ bound_subjects() {
     fi
     BOUND=$((BOUND + 1))
   done 7<"$WORK/bindings.rec"
+  if ! jq -e 'any(.items[]?; .kind == "ClusterRoleBinding" and .metadata.name == "cluster-admin" and .roleRef.kind == "ClusterRole"
+      and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")' \
+    "$WORK/bindings.json" >/dev/null; then
+    BOUND_ERROR="the bindings' list holds no bootstrap cluster-admin ClusterRoleBinding, which every cluster has, so it is not the cluster's whole list"
+    return 1
+  fi
 }
 # namespace_groups: Kubernetes' own groups, each reviewed alone and added to $WORK/principals.rec
 # when the file does not hold it: system:authenticated, system:serviceaccounts, and

@@ -46,7 +46,9 @@
 #   (bn) grade-ci, bound to cluster-admin on a fleet member, is an RBAC finding, so an agent's
 #        Google service account that may mint its token is a finding too, naming grade-ci's account;
 #   (bq) container.clusters.update, by which a holder turns on legacy ABAC, held on the project by
-#        an agent's Google service account exits 1.
+#        an agent's Google service account exits 1;
+#   (bs) container.secrets.create, by which a holder makes a token Secret for a guarded
+#        ServiceAccount, held on the project by an agent's Google service account exits 1.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -178,6 +180,9 @@ new_container_row() {
   run
   want_status 1 "$1 held by $worker_gsa"
   want_line "FINDING serviceAccount:$worker_gsa: $1 on $project_res through projects/$project/roles/only.$1, granted at $project_res" "$1 held by $worker_gsa"
+  # An UNKNOWN beside the finding (a permission name the role does not hold) leaves exit 1 but means
+  # the world is not the clean one plus this grant.
+  [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "$1 held by $worker_gsa: an UNKNOWN beside the finding"
 }
 if row ad; then
   each new_container_row container.replicationControllers.create container.replicationControllers.update container.nodes.proxy
@@ -351,4 +356,11 @@ fi
 if row bq; then
   each new_container_row container.clusters.update
   passed "(bq) container.clusters.update held by an agent's Google service account exits 1"
+fi
+
+# --- (bs) container.secrets.create, through IAM: a Secret of type kubernetes.io/service-account-token
+# naming a ServiceAccount is filled with that ServiceAccount's token. ---
+if row bs; then
+  each new_container_row container.secrets.create
+  passed "(bs) container.secrets.create held by an agent's Google service account exits 1"
 fi
