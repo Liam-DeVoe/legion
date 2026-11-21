@@ -454,12 +454,9 @@ func (b enrollmentBody) withoutNewFields() enrollmentBody {
 // field, since its readJSON decodes the body with DisallowUnknownFields. It is decided on the
 // broker's code and words as they came (Answer.Decode), never on what a refusal prints.
 func refusesAnUnknownField(status int, answered oauth2call.Answer) bool {
-	var body struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
-	}
+	var body oauth2call.CodedRefusal
 	return status == http.StatusBadRequest && answered.Decode(&body) == nil &&
-		body.Code == "INVALID_ENROLLMENT" && strings.Contains(body.Error, "unknown field")
+		body.Code.Equal("INVALID_ENROLLMENT") && body.Error.Contains("unknown field")
 }
 
 type enrollmentAnswer struct {
