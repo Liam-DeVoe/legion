@@ -34,7 +34,8 @@
 #   (ar) a kube-system ServiceAccount that may mint the operator's token is no finding, but
 #        legion/worker, which may create pods in kube-system, is one naming the chain (rv6); on
 #        another cluster, ci/runner, which may create pods in kube-system, becomes its namespace
-#        controller and is one too;
+#        controller and is one too; and legion/worker allowed, by name in kube-system, a patch of one
+#        Deployment, an exec of one pod or an ephemeral container of it is one naming the chain (N3);
 #   (aw) a User that is no email is reviewed: deployer-bot bound to cluster-admin on a non-GKE fleet
 #        member, a principal:// User allowed to create pods in envoy-operator, and a render binding
 #        deployer-bot to cluster-admin each exit 1 naming it;
@@ -386,6 +387,22 @@ if row ar; then
   want_line "FINDING system:serviceaccount:ci:runner: create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster $project/us-east1/other-cluster" \
     "ci/runner may create pods in kube-system on another cluster"
   passed "(ar) on another cluster, who may create pods in kube-system becomes its namespace controller and is a finding"
+
+  # N3: a right limited by name in a seed's namespace becomes the seed too: a patch of one Deployment
+  # there sets its serviceAccountName, and an exec or ephemeral container of one pod enters it.
+  for named in "patch|apps|deployments||gc-controller=patch deployments.apps gc-controller" \
+    "create||pods|exec|gc-controller-0=create pods/exec gc-controller-0" \
+    "patch||pods|ephemeralcontainers|gc-controller-0=patch pods/ephemeralcontainers gc-controller-0"; do
+    IFS='|' read -r verb group resource sub name <<<"${named%%=*}"
+    base_world
+    subject_grant operator-cluster "$(sa_subject kube-system generic-garbage-collector)" create "" serviceaccounts token envoy-operator envoy-operator
+    subject_grant operator-cluster "$(sa_subject legion worker)" "$verb" "$group" "$resource" "$sub" kube-system "$name"
+    run
+    want_status 1 "legion/worker may ${named#*=} in kube-system, by name"
+    want_line "FINDING system:serviceaccount:legion:worker: ${named#*=} in kube-system, so it can become system:serviceaccount:kube-system:generic-garbage-collector, which can create serviceaccounts/token envoy-operator in envoy-operator" \
+      "legion/worker may ${named#*=} in kube-system, by name"
+  done
+  passed "(ar) a right limited by name in the seed's namespace (patch of one Deployment, exec or an ephemeral container of one pod) is a finding naming the chain (N3)"
 fi
 
 # --- (aw) A User that is no email is reviewed, not taken for a person. ---
