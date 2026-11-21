@@ -21,7 +21,7 @@
 #   script that reads the base and exits non-zero, a command that exits 0, a command and a
 #   directory the base lacks, a script the line does not copy, an interpreter that is not there, a
 #   command that exits 127 itself, a script bash finds on PATH, the line's own TMPDIR, a bash
-#   command string);
+#   command string, exported BASHOPTS and SHELLOPTS unchanged by the launcher);
 # - each test that must read red at the base passes in the checkout first, so the base is what
 #   fails;
 # - a list whose every line is red, a BUILD-FAILED among them, exits 0;
@@ -128,9 +128,7 @@ func TestLiveIsReady(t *testing.T) {
 		t.Fatal("not ready")
 	}
 }'
-# Three programs of the base a cmd line runs: a script bash finds on PATH and runs to a pass, an
-# executable whose interpreter is not there, so its exec fails, and one that starts and exits 127
-# itself, the status a shell gives a command it cannot start.
+# Programs of the base exercise PATH lookup, a failed exec, and the command's own exit status.
 write bin/pass-on-path.sh 'echo "pass-on-path ran"'
 write bin/bad-interpreter '#!/no/such/interpreter
 echo "the interpreter ran"'
@@ -138,6 +136,14 @@ write bin/exits-127 '#!/usr/bin/env bash
 echo "about to exit 127"
 exit 127'
 chmod +x "${repo}/bin/bad-interpreter" "${repo}/bin/exits-127"
+write bin/exec-then-continue.sh 'exec /no/such/program-for-launch-probe
+echo "continued after failed exec"
+exit 0'
+# shellcheck disable=SC2016 # the script reports its own inherited options
+write bin/shell-options.sh 'printf "BASHOPTS=%s\nSHELLOPTS=%s\nend-of-options\n" "$BASHOPTS" "$SHELLOPTS"'
+write bin/pass-executable '#!/usr/bin/env bash
+echo "pass-executable ran"'
+chmod +x "${repo}/bin/pass-executable"
 write version.txt '1'
 scratch_git add -A
 scratch_git commit -q -m 'the base'
@@ -669,39 +675,84 @@ run_tool "$(list cmd \
   'cmd . own-tmpdir scripts/tmp-check.sh -- bash scripts/tmp-check.sh' \
   'cmd . a-command-string -- bash -c true' \
   'cmd . bad-interpreter -- ./bin/bad-interpreter' \
-  'cmd . exits-127 -- ./bin/exits-127')"
+  'cmd . exits-127 -- ./bin/exits-127' \
+  'cmd . no-permission -- ./bin/pass-on-path.sh')"
 expect_status 1
-expect_lines 10
+expect_lines 11
 # Red only when the script reads the base's version.txt, which holds 1; the checkout's holds 2.
 expect_verdict 1 RED 'exit 4 from bash scripts/version-check.sh: reading version.txt | version.txt holds 1 | want 2'
 expect_verdict 2 GREEN 'exit 0 from test -f version.txt'
 # The exec itself returned: nothing of the command ran.
-expect_verdict 3 BUILD-FAILED 'the command never started: the exec of no-such-command-anywhere failed (status 127)'
+expect_verdict 3 BUILD-FAILED 'the command never started: the exec of no-such-command-anywhere failed:'
 # The script is the change's, and only a line that lists it copies it to the base. Bash started and
 # found no script, so the run is bash's own, a RED: a line that proves nothing of the change, which
 # is why a cmd line lists each script of the change its command runs.
 expect_verdict 4 RED 'exit 127 from bash scripts/version-check.sh: bash: scripts/version-check.sh: No such file or directory'
 expect_verdict 5 GREEN 'exit 0 from test -f src/count.test.ts'
-# fresh is the change's directory, and the line copies nothing into it: the boundary never reached
-# its exec.
-expect_verdict 6 BUILD-FAILED 'the command never started: it never reached its exec'
-[[ $output == *'fresh: No such file or directory'* ]] || fail 'expected line 6 to quote why the directory could not be entered'
+# fresh is the change's directory, and the line copies nothing into it: the launcher cannot enter it.
+expect_verdict 6 BUILD-FAILED 'the command never started: could not enter '
+[[ $output == *'fresh: no such file or directory'* ]] || fail 'expected line 6 to quote why the directory could not be entered'
 expect_verdict 7 GREEN "TMPDIR is the line's own, and empty"
 expect_verdict 8 GREEN 'exit 0 from bash -c true'
 # The file is there and executable, and the exec of it fails, since its interpreter is not there.
-expect_verdict 9 BUILD-FAILED 'the command never started: the exec of ./bin/bad-interpreter failed (status 127)'
-[[ $output == *'cannot execute: required file not found'* ]] || fail 'expected line 9 to quote why the exec failed'
+expect_verdict 9 BUILD-FAILED 'the command never started: the exec of ./bin/bad-interpreter failed:'
+[[ $output == *'fork/exec ./bin/bad-interpreter: no such file or directory'* ]] || fail 'expected line 9 to quote why the exec failed'
 # It started and exited 127 itself, the status of a command that cannot start: its own run, a RED.
 expect_verdict 10 RED 'exit 127 from ./bin/exits-127: about to exit 127'
+expect_verdict 11 BUILD-FAILED 'fork/exec ./bin/pass-on-path.sh: permission denied'
 expect_nothing_left
 
 case_name='cmd: a script bash finds on PATH runs at the base'
 # PATH holds bin, relative to the line's directory, the top of the worktree; bash, given a script
 # name with no slash that is no file of that directory, searches PATH for it.
-run_tool "$(list path 'cmd . path-script -- bash pass-on-path.sh')" PATH="bin:${PATH}"
+run_tool "$(list path \
+  'cmd . path-script -- bash pass-on-path.sh' \
+  'cmd . path-executable -- pass-executable')" PATH="bin:${PATH}"
 expect_status 1
-expect_lines 1
+expect_lines 2
 expect_verdict 1 GREEN 'exit 0 from bash pass-on-path.sh: pass-on-path ran'
+expect_verdict 2 GREEN 'exit 0 from pass-executable: pass-executable ran'
+expect_nothing_left
+
+# Compare with a direct run as well as literal verdicts: the launcher must not add execfail,
+# remove the caller's execfail, or add its own errexit, nounset and pipefail to a measured bash.
+for bashopts in extquote execfail:extquote; do
+  case_name="cmd: exported BASHOPTS=$bashopts preserves a failed exec and the caller's options"
+  set +e
+  (cd "$repo" && env BASHOPTS="$bashopts" bash bin/exec-then-continue.sh) >"${scratch}/direct" 2>&1
+  direct_status=$?
+  set -e
+  echo "-- direct BASHOPTS=$bashopts (exit $direct_status)"
+  cat "${scratch}/direct"
+  if [[ $bashopts == extquote ]]; then
+    [[ $direct_status == 127 ]] || fail "expected the direct exec failure to exit 127, got $direct_status"
+    expected_verdict=RED
+  else
+    [[ $direct_status == 0 ]] || fail "expected the caller's execfail to continue, got $direct_status"
+    expected_verdict=GREEN
+  fi
+  direct_options="$(cd "$repo" && env BASHOPTS="$bashopts" bash bin/shell-options.sh)"
+  run_tool "$(list bashopts \
+    'cmd . exec-then-continue -- bash bin/exec-then-continue.sh' \
+    'cmd . shell-options -- bash bin/shell-options.sh')" BASHOPTS="$bashopts"
+  expect_status 1
+  expect_lines 2
+  expect_verdict 1 "$expected_verdict" "exit $direct_status from bash bin/exec-then-continue.sh"
+  expect_verdict 2 GREEN "${direct_options//$'\n'/ | }"
+  expect_nothing_left
+done
+
+case_name='cmd: exported errexit distinguishes a failed start from the command exiting 127'
+direct_options="$(cd "$repo" && env SHELLOPTS=errexit bash bin/shell-options.sh)"
+run_tool "$(list errexit \
+  'cmd . bad-interpreter -- ./bin/bad-interpreter' \
+  'cmd . exits-127 -- ./bin/exits-127' \
+  'cmd . shell-options -- bash bin/shell-options.sh')" SHELLOPTS=errexit
+expect_status 1
+expect_lines 3
+expect_verdict 1 BUILD-FAILED
+expect_verdict 2 RED 'exit 127 from ./bin/exits-127: about to exit 127'
+expect_verdict 3 GREEN "${direct_options//$'\n'/ | }"
 expect_nothing_left
 
 case_name='e2e: each verdict of an e2e line'

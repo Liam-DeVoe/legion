@@ -85,11 +85,11 @@
 #        nothing else. The command runs with no input and with TMPDIR set to an empty directory of
 #        its own under the tool's, removed with the worktree, so that what it writes there (a work
 #        directory a script defaults under TMPDIR, say) starts fresh for each line and is gone
-#        after. The command starts through a small bash boundary (launch, below) that enters <dir>
-#        and execs the command's words, and the tool predicts nothing about the command: the line
-#        is BUILD-FAILED, a command that never started, only when the boundary never reached its
-#        exec (<dir> is no directory of the base) or when the exec itself returned (the first word
-#        is no command PATH holds, no executable file, or a script whose interpreter is not there).
+#        after. A small Go launcher (command_launcher_source, below) enters <dir> and starts the
+#        command without a shell or shell options of its own. It passes the environment through,
+#        including the caller's exported BASHOPTS and SHELLOPTS, and resolves PATH after entering
+#        <dir>, including relative entries. BUILD-FAILED means only that entering <dir> or starting
+#        the command failed (a missing command, missing shebang interpreter, or no permission).
 #        Every other run is the command's own: an exit of 0 is GREEN, and any other exit, 127
 #        included, is RED, the run's last lines quoted. So `bash missing.sh` started, since bash
 #        ran, and reads RED with bash's own words: a cmd line names among its files each script of
@@ -125,6 +125,11 @@
 #   <VERDICT> line <n>: <kind> <dir> <test> -- <what decided it>
 # where <n> is the line's number in the list file. stderr holds each run's own output, and a count
 # at the end.
+# Save exported options before set changes SHELLOPTS; the tool's options are not the command's.
+command_environment=()
+[[ ${BASHOPTS@a} != *x* ]] || command_environment+=("BASHOPTS=$BASHOPTS")
+[[ ${SHELLOPTS@a} != *x* ]] || command_environment+=("SHELLOPTS=$SHELLOPTS")
+
 set -euo pipefail
 
 usage() {
@@ -812,28 +817,74 @@ remove_tree() {
 
 readonly command_tmp="${tmp}/cmd-tmp"
 readonly start_mark="${tmp}/cmd-start"
-# The boundary a cmd line's command starts through, which decides "never started" from the exec
-# itself and predicts nothing. It is a bash of its own, since a subshell of the tool ends at an exec
-# that fails, whatever execfail says, while this bash, with execfail, returns from it. It enters the
-# command's directory, marks that it reached the exec, and execs the command's words; only when that
-# exec returns, which it does only when the command did not start, does it mark the exec's status.
-# shellcheck disable=SC2016 # the boundary's own expansions, run by its bash
-readonly launch='shopt -s execfail
-mark=$1
-cd -- "$2" || exit 127
-: >"$mark.reached"
-shift 2
-exec "$@"
-printf "%s\n" "$?" >"$mark.failed"
-exit 127'
+# The launcher observes Start, not a command's exit status or an interpreter's arguments. It
+# changes directory before PATH lookup, and permits relative PATH entries as a direct exec does.
+command_launcher_source() {
+  cat <<'GO'
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+)
+
+func recordStart(path, failure string) {
+	if err := os.WriteFile(path, []byte(failure), 0600); err != nil {
+		fmt.Fprintln(os.Stderr, "command-launch: recording process start:", err)
+		os.Exit(2)
+	}
+}
+
+func main() {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: command-launch <start record> <directory> <command> [<argument>...]")
+		os.Exit(2)
+	}
+	mark, directory, name := os.Args[1], os.Args[2], os.Args[3]
+	if err := os.Chdir(directory); err != nil {
+		recordStart(mark, fmt.Sprintf("could not enter %s: %v", directory, err))
+		os.Exit(127)
+	}
+	command := exec.Command(name, os.Args[4:]...)
+	if errors.Is(command.Err, exec.ErrDot) {
+		command.Err = nil
+	}
+	command.Env = os.Environ()
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := command.Start(); err != nil {
+		recordStart(mark, fmt.Sprintf("the exec of %s failed: %v", name, err))
+		os.Exit(127)
+	}
+	recordStart(mark, "")
+	if err := command.Wait(); err != nil {
+		if status, ok := command.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			os.Exit(128 + int(status.Signal()))
+		}
+		os.Exit(command.ProcessState.ExitCode())
+	}
+}
+GO
+}
+
+readonly command_launcher="${tmp}/command-launch/command-launch"
+build_command_launcher() {
+  mkdir -- "${tmp}/command-launch"
+  printf 'module redatbase/commandlaunch\n\ngo 1.21\n' >"${tmp}/command-launch/go.mod"
+  command_launcher_source >"${tmp}/command-launch/main.go"
+  run_logged "${tmp}/command-launch" env -u GOWORK -u GOFLAGS GOTOOLCHAIN=local GOPROXY=off go build -o "$command_launcher" .
+  ((status == 0)) || refuse "the tool could not build its command launcher (its build is above)"
+}
+
 start_failure=''
-# run_command <directory> <command>...: the command of a cmd line, through the boundary above, its
-# output in the run's log and its exit status in status. When it never started, start_failure says
-# so; the log then holds what the boundary's bash printed.
+# run_command <directory> <command>...: the command of a cmd line, its output in the run's log
+# and its exit status in status. A nonempty start record describes a failure to start it.
 run_command() {
   local directory=$1
   shift
-  rm -f -- "${start_mark}.reached" "${start_mark}.failed"
+  rm -f -- "$start_mark"
   remove_tree "$command_tmp"
   mkdir -- "$command_tmp"
   {
@@ -842,14 +893,10 @@ run_command() {
     echo
   } >&2
   status=0
-  TMPDIR="$command_tmp" "$BASH" -c "$launch" red-at-base-launch "$start_mark" "$directory" "$@" \
+  TMPDIR="$command_tmp" env "${command_environment[@]}" "$command_launcher" "$start_mark" "$directory" "$@" \
     </dev/null >"$log" 2>&1 || status=$?
-  start_failure=''
-  if [[ ! -e ${start_mark}.reached ]]; then
-    start_failure="it never reached its exec"
-  elif [[ -e ${start_mark}.failed ]]; then
-    start_failure="the exec of $1 failed (status $(<"${start_mark}.failed"))"
-  fi
+  [[ -f $start_mark ]] || refuse "the command launcher recorded no start outcome (exit $status): $(last_lines)"
+  start_failure="$(<"$start_mark")"
   cat -- "$log" >&2
   echo "   exit $status" >&2
 }
@@ -877,10 +924,10 @@ command_verdict() {
 # ---- each line, at the base ---------------------------------------------------------------------------
 echo "red-at-base.sh: ${#kinds[@]} lines of $list, at the base $base ($base_commit), from the checkout $repo" >&2
 for kind in "${kinds[@]}"; do
-  if [[ $kind == go ]]; then
-    build_go_reader
-    break
-  fi
+  case $kind in
+  go) [[ -x $go_reader ]] || build_go_reader ;;
+  cmd) [[ -x $command_launcher ]] || build_command_launcher ;;
+  esac
 done
 red=0
 build_failed=0
