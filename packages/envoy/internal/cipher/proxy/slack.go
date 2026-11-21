@@ -261,7 +261,7 @@ func (s fenceSkip) on(rule fenceRule) bool { return !s[rule] }
 // so no list of methods to refuse could be complete, and a method this file does not know of
 // cannot reach Slack.
 var fencedMethods = map[string]bool{
-	"/api/chat.postMessage":      true,
+	slackPostPath:                true,
 	"/api/conversations.replies": true,
 	"/api/auth.test":             true,
 }
@@ -442,10 +442,13 @@ func (s fenceSkip) jsonExcluded(body []byte, excluded []string) string {
 			}
 			continue
 		}
-		if seen[strings.ToLower(key)] && !s.on(fenceEvery) {
-			continue
+		if !s.on(fenceEvery) {
+			folded := strings.ToLower(key)
+			if seen[folded] {
+				continue
+			}
+			seen[folded] = true
 		}
-		seen[strings.ToLower(key)] = true
 		if s.namesExcluded(value, excluded) {
 			return "the JSON body names a private project's channel under " + key
 		}

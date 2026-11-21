@@ -340,8 +340,8 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	// SlackChannels is json:"-", so the key reaches this field and no other.
 	var wire struct {
 		Answer
-		SlackChannels          *[]string  `json:"slack_channels"`
-		SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+		SlackChannels          *[]string `json:"slack_channels"`
+		SlackChannelsChangedAt time.Time `json:"slack_channels_changed_at"`
 	}
 	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, maxAnswerBytes, &wire)
 	switch {
@@ -363,9 +363,7 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
 	}
-	if wire.SlackChannelsChangedAt != nil {
-		answer.SlackChannelsChangedAt = *wire.SlackChannelsChangedAt
-	}
+	answer.SlackChannelsChangedAt = wire.SlackChannelsChangedAt
 	answer.AskedAt = asked
 	c.keepAnswer(key, cachedAnswer{answer: answer, at: asked})
 	return answer, nil
@@ -537,9 +535,9 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 		return nil, fmt.Errorf("projectaccess: dispatch's answer to %s carries projects %.64s, which is not a list", privateProjectsPath, raw)
 	}
 	var entries []struct {
-		Project                string     `json:"project"`
-		SlackChannels          *[]string  `json:"slack_channels"`
-		SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+		Project                string    `json:"project"`
+		SlackChannels          *[]string `json:"slack_channels"`
+		SlackChannelsChangedAt time.Time `json:"slack_channels_changed_at"`
 	}
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return nil, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", privateProjectsPath, err)
@@ -549,12 +547,9 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 		if entry.Project == "" {
 			return nil, fmt.Errorf("projectaccess: dispatch's answer to %s lists an entry with no project key, at %d", privateProjectsPath, i)
 		}
-		project := PrivateProject{Key: entry.Project}
+		project := PrivateProject{Key: entry.Project, SlackChannelsChangedAt: entry.SlackChannelsChangedAt}
 		if entry.SlackChannels != nil {
 			project.SlackChannels, project.SlackChannelsPresent = *entry.SlackChannels, true
-		}
-		if entry.SlackChannelsChangedAt != nil {
-			project.SlackChannelsChangedAt = *entry.SlackChannelsChangedAt
 		}
 		projects = append(projects, project)
 	}
@@ -599,7 +594,6 @@ func duplicateIn(decoder *json.Decoder) (string, error) {
 			return key, err
 		}
 	}
-	// The closing delimiter.
 	_, err = decoder.Token()
 	return "", err
 }
