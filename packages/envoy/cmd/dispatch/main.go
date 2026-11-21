@@ -2069,6 +2069,7 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
+	built.DevRestrictedAdmission = devRestrictedAdmission(boot, built.Store)
 	return built
 }
 

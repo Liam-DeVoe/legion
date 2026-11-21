@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -402,7 +403,9 @@ func errNoBrokerConfigured() *apiError {
 //     revoked or expired).
 //   - 401 BROKER_TOKEN_PROOF_INVALID — the proof did not meet RFC 9449 Section 4.3: a bad
 //     signature, a method or target URI that is not this request's, an 'iat' outside the window,
-//     a missing or wrong 'ath', or a proof already spent.
+//     a missing or wrong 'ath', or a proof already spent; or its 'jti' holds a control character,
+//     which the replay store records nothing of (store.ErrUnstorableProof) and the library reports
+//     as its own failure, so it is answered here as the caller's.
 //   - 401 BROKER_TOKEN_KEY_MISMATCH — a sound proof signed by a key that is not the token's
 //     'jkt', which is what makes a stolen token useless.
 //   - 401 BROKER_TOKEN_NOT_A_SESSION — the broker holds the token live, but it is not a
@@ -442,7 +445,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	case errors.Is(err, brokertoken.ErrKeyMismatch):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
 			"the DPoP proof's key is not the key this access token is bound to")
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
+	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented), errors.Is(err, store.ErrUnstorableProof):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
 			"the DPoP proof did not verify")
 	case errors.Is(err, brokertoken.ErrNotASession):

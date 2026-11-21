@@ -48,8 +48,7 @@ const (
 	// internalColumn is a column no read answers: a queue, a backfill's cursor, a projection's
 	// bookkeeping.
 	internalColumn = "no read answers it"
-	// deploymentColumn is a deployment row's, read only by an open viewer (readclass.Deployment),
-	// which sees every session and person.
+	// deploymentColumn is a deployment row's, read only by an open viewer (readclass.Deployment).
 	deploymentColumn = "deployment row"
 	// filteredReference can name an object its reader does not see, and every read that answers
 	// it leaves such an object out: the reason names the reads and the filter.
