@@ -6632,7 +6632,8 @@ test("k-threads: in the Inbox drawer, each comment, reply and message of an issu
 // after the margin was hidden and shown again, and below 1280 px, where the margin is a modal
 // sheet the reader closes before the next comment. Escape in the empty box, and a sent comment,
 // put the caret back in the document inside the commented word; below 1280 px they close the
-// sheet too.
+// sheet too. A sent comment does so as well when the page's frames come later than its focus
+// rescue waits for one.
 // ---------------------------------------------------------------------------
 
 /** k-comment-focus' spec: three paragraphs, each with the word the rows comment on. */
@@ -6726,6 +6727,23 @@ async function expectCaretInDocument(page: Page, word: string, message: string):
     .toBe(`inside "${word}"`);
 }
 
+/** How late the late-frame rows make each animation frame: three times the 100 ms the page's focus
+ *  rescue waits for one before it goes on without it (`FRAME_WAIT_MS` in
+ *  `web/src/components/focus-place.ts`). */
+const LATE_FRAME_MS = 300;
+
+/** Runs every animation frame the page asks for from here on `ms` late. This is how a loaded
+ *  machine's late frame reaches the page: its timers run while its frames wait. */
+async function delayFrames(page: Page, ms: number): Promise<void> {
+  await page.evaluate((delay) => {
+    const frame = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) =>
+      frame((time) => {
+        window.setTimeout(() => callback(time), delay);
+      });
+  }, ms);
+}
+
 // SLOW(>=2s): the spec opened and connected, four comments started on it, and one of them sent.
 test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin's box, with a box open and after the margin was hidden, and Escape and a send put it back in the commented word", async ({
   page,
@@ -6771,6 +6789,53 @@ test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin
     FIRST_WORD,
     step("after the margin was hidden and shown, Ctrl+Alt+M puts the caret in the box")
   );
+});
+
+// SLOW(>=2s): the spec opened and connected, and one comment started on it and sent with every
+// frame of the page late.
+test("k-comment-focus: at 1440x900 a sent comment puts the caret back in the commented word when the page's frames come later than its focus rescue waits for one", async ({
+  page,
+}) => {
+  const seed = await seedCommentFocus();
+  const step = (text: string) => `k-comment-focus: at 1440x900 with late frames, ${text}`;
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+
+  await selectEditorText(page, THIRD_WORD);
+  await barAction(page, "Comment");
+  await expectCaretInBox(page, THIRD_WORD, step("the bar's Comment puts the caret in the box"));
+  await page.keyboard.type("Why does the lease return at noon?");
+  await delayFrames(page, LATE_FRAME_MS);
+  await page.keyboard.press("Control+Enter");
+  await expect(commentBox(page), step("a sent comment closes the box")).toHaveCount(0);
+  await expectCaretInDocument(page, THIRD_WORD, step("a sent comment"));
+});
+
+// SLOW(>=2s): the spec opened and connected at a sheet's width, and one comment started on it and
+// sent with every frame of the page late.
+test("k-comment-focus: at 1024x768 a sent comment closes the sheet and puts the caret back in the commented word when the page's frames come later than its focus rescue waits for one", async ({
+  page,
+}) => {
+  const seed = await seedCommentFocus();
+  const step = (text: string) => `k-comment-focus: at 1024x768 with late frames, ${text}`;
+  const sheet = page.getByTestId("margin-sheet");
+  await page.setViewportSize(SHEET_VIEWPORT);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+
+  await commentByKey(
+    page,
+    THIRD_WORD,
+    step("Ctrl+Alt+M on the third word puts the caret in the box")
+  );
+  await expect(sheet, step("the comment opens the sheet")).toHaveAttribute("data-expanded", "true");
+  await page.keyboard.type("Why does the lease return at noon?");
+  await delayFrames(page, LATE_FRAME_MS);
+  await page.keyboard.press("Control+Enter");
+  await expect(sheet, step("a sent comment closes the sheet")).toHaveAttribute(
+    "data-expanded",
+    "false"
+  );
+  await expectCaretInDocument(page, THIRD_WORD, step("a sent comment"));
 });
 
 // SLOW(>=2s): the spec opened and connected at a sheet's width, three comments started on it, the

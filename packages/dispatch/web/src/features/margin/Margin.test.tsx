@@ -1007,23 +1007,31 @@ test("composeForMark rejects when the composer is dismissed unsaved", async () =
   }
 });
 
+/** When the margin put the caret back in the document: while the composer's box was still in the
+ *  page, or once it had gone. */
+type CaretReturn = "with the box" | "after the box";
+
 function fakeBridge(
   retype: (markId: string, kind: string) => RetypeOutcome,
   artifactId = specArtifact.id
 ): {
   bridge: DocumentBridge;
-  /** How many times the margin put the caret back in the document. */
-  readonly focused: number;
+  /** Each time the margin put the caret back in the document, in order. */
+  readonly focuses: readonly CaretReturn[];
   removed: string[];
   retyped: [string, string][];
 } {
-  let focused = 0;
+  const focuses: CaretReturn[] = [];
   const removed: string[] = [];
   const retyped: [string, string][] = [];
   return {
     bridge: stubDocumentBridge(artifactId, {
       focus() {
-        focused += 1;
+        focuses.push(
+          screen.queryByRole("form", { name: "Comment composer" }) === null
+            ? "after the box"
+            : "with the box"
+        );
       },
       removeMark(markId) {
         removed.push(markId);
@@ -1033,9 +1041,7 @@ function fakeBridge(
         return retype(markId, kind);
       },
     }),
-    get focused() {
-      return focused;
-    },
+    focuses,
     removed,
     retyped,
   };
@@ -1224,8 +1230,8 @@ test("the margin removes the composer's mark when the composer is cancelled or r
   }
 });
 
-/** Lets the page draw one frame: the margin puts the caret back in the document a frame after a
- *  comment ends, once a dialog that closed with it has put back the focus it took. */
+/** Lets the page draw one frame: below 1280 px the margin puts the caret back in the document once
+ *  more a frame after a comment ends, once the sheet's dialog has put back the focus it took. */
 function nextFrame(): Promise<void> {
   return act(() => {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -1233,6 +1239,46 @@ function nextFrame(): Promise<void> {
     return promise;
   });
 }
+
+/** The frames the page asked for while `holdFrames` holds them. */
+interface HeldFrames {
+  /** Gives the frames back to happy-dom and runs the ones held, as the next frame would. */
+  readonly release: () => Promise<void>;
+  /** Gives the frames back to happy-dom and runs none of the ones held. */
+  readonly restore: () => void;
+}
+
+/** Holds every frame the page asks for from here on, so a row reads what happened before the next
+ *  frame; a frame cancelled first is not run. */
+function holdFrames(): HeldFrames {
+  const held = new Map<number, FrameRequestCallback>();
+  let last = 0;
+  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    last += 1;
+    held.set(last, callback);
+    return last;
+  });
+  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+    held.delete(frame);
+  });
+  const restore = () => {
+    request.mockRestore();
+    cancel.mockRestore();
+  };
+  return {
+    release: () => {
+      restore();
+      return act(async () => {
+        for (const callback of held.values()) callback(performance.now());
+        held.clear();
+      });
+    },
+    restore,
+  };
+}
+
+/** A width below 1280 px and above a phone's, where the margin is a sheet over the document. */
+const SHEET_WIDTH = 1024;
 
 // Each comment request puts the caret in its compose's field, wherever the reader took the focus
 // since. A newer compose on the document is a composer of its own, so the open compose's draft
@@ -1268,46 +1314,85 @@ test("a compose while the document's composer is open puts the caret in the new 
 });
 
 // A comment ends - Escape in its empty field, or its send landing - and the reader goes back to
-// the words they commented on, where the editor kept its selection.
-test("Escape in the empty composer and a sent comment put the caret back in the commented document", async () => {
-  const user = userEvent.setup();
-  const fake = fakeBridge((markId, kind) => ({
-    markId: `${markId}-${kind}`,
-    placement: null,
-    quote: "selected",
-  }));
-  const createComment = spyOn(api, "createComment").mockResolvedValue({
-    ...comment,
-    body: "Why?",
+// the words they commented on, where the editor kept its selection. The caret goes back at once,
+// while the composer's box is still in the page, so the box's going leaves the page's focus rescue
+// no loss to answer: a frame can come later than the rescue waits for one, and the rescue would
+// put the focus on a control of the margin before it. Below 1280 px the sheet closes too, and its
+// dialog gives the focus to the body as the box goes, so the next frame puts the caret back again.
+for (const { frame, name, width } of [
+  { frame: [], name: "at 1440 px", width: DESKTOP_WIDTH },
+  {
+    frame: ["after the box"],
+    name: "at 1024 px, where the margin is a sheet,",
+    width: SHEET_WIDTH,
+  },
+] satisfies readonly {
+  /** What the frame after the comment's end adds to the caret's returns. */
+  frame: CaretReturn[];
+  name: string;
+  width: number;
+}[]) {
+  test(`${name} Escape in the empty composer and a sent comment put the caret back in the commented document before the next frame, with the box still there`, async () => {
+    const user = userEvent.setup();
+    const restoreViewport = stubViewport(width);
+    const fake = fakeBridge((markId, kind) => ({
+      markId: `${markId}-${kind}`,
+      placement: null,
+      quote: "selected",
+    }));
+    const createComment = spyOn(api, "createComment").mockResolvedValue({
+      ...comment,
+      body: "Why?",
+    });
+    const view = renderMarginWithBridge(fake.bridge);
+    let frames: HeldFrames | undefined;
+
+    try {
+      await user.click(screen.getByRole("button", { name: "Compose first" }));
+      const field = await screen.findByLabelText("Comment");
+      await waitFor(() => expect(field).toHaveFocus());
+      frames = holdFrames();
+      await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+      );
+      expect(fake.focuses, "Escape puts the caret back before any frame").toEqual(["with the box"]);
+      await frames.release();
+      frames = undefined;
+      await nextFrame();
+      expect(fake.focuses, "the frame after Escape").toEqual(["with the box", ...frame]);
+
+      await user.click(screen.getByRole("button", { name: "Compose second" }));
+      const composer = await screen.findByRole("form", { name: "Comment composer" });
+      await user.click(within(composer).getByLabelText("Comment"));
+      await user.paste("Why?");
+      frames = holdFrames();
+      await user.click(within(composer).getByRole("button", { name: "Send" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+      );
+      expect(fake.focuses, "the landed send puts the caret back before any frame").toEqual([
+        "with the box",
+        ...frame,
+        "with the box",
+      ]);
+      await frames.release();
+      frames = undefined;
+      await nextFrame();
+      expect(fake.focuses, "the frame after the landed send").toEqual([
+        "with the box",
+        ...frame,
+        "with the box",
+        ...frame,
+      ]);
+    } finally {
+      frames?.restore();
+      view.unmount();
+      createComment.mockRestore();
+      restoreViewport();
+    }
   });
-  const view = renderMarginWithBridge(fake.bridge);
-
-  try {
-    await user.click(screen.getByRole("button", { name: "Compose first" }));
-    const field = await screen.findByLabelText("Comment");
-    await waitFor(() => expect(field).toHaveFocus());
-    await user.keyboard("{Escape}");
-    await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
-    );
-    await nextFrame();
-    expect(fake.focused).toBe(1);
-
-    await user.click(screen.getByRole("button", { name: "Compose second" }));
-    const composer = await screen.findByRole("form", { name: "Comment composer" });
-    await user.click(within(composer).getByLabelText("Comment"));
-    await user.paste("Why?");
-    await user.click(within(composer).getByRole("button", { name: "Send" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
-    );
-    await nextFrame();
-    expect(fake.focused).toBe(2);
-  } finally {
-    view.unmount();
-    createComment.mockRestore();
-  }
-});
+}
 
 // A send can land long after the press: by then the reader may be working somewhere else, and
 // the comment's end takes nothing from them.
@@ -1340,7 +1425,7 @@ test("a comment whose send lands after the reader went elsewhere leaves the focu
       expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
     );
     await nextFrame();
-    expect(fake.focused).toBe(0);
+    expect(fake.focuses).toEqual([]);
     expect(elsewhere).toHaveFocus();
   } finally {
     view.unmount();
@@ -1351,7 +1436,9 @@ test("a comment whose send lands after the reader went elsewhere leaves the focu
 // Below 1280 px the margin is a modal sheet over the document, so a second comment starts only
 // once the reader has closed it: the compose keeps its draft under the closed sheet, and the next
 // compose opens the sheet again with the caret in its own field and that draft offered beside it.
-// The comment's end closes the sheet over the document and puts the caret back there.
+// The comment's end closes the sheet over the document and puts the caret back there: at once,
+// with the box still there, and again on the next frame, once the sheet's dialog has put the focus
+// on the body as the box went.
 test("below 1280 px each compose puts the caret in the sheet's composer, and Escape in the empty box closes the sheet for the document", async () => {
   const user = userEvent.setup();
   const restoreViewport = stubViewport(PHONE_WIDTH);
@@ -1386,7 +1473,7 @@ test("below 1280 px each compose puts the caret in the sheet's composer, and Esc
     await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
     expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
     await nextFrame();
-    expect(fake.focused).toBe(1);
+    expect(fake.focuses).toEqual(["with the box", "after the box"]);
   } finally {
     view.unmount();
     restoreViewport();

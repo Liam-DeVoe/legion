@@ -407,20 +407,30 @@ export function useMarginSheet(): MarginSheetModel {
   // (`MarginProvider` takes the mark). A draft the compose offered beside its field the
   // composer's own Discard has dropped already (`dropOffered`), since Close and Escape ask over
   // it. A send still out is not the reader's to drop, and one that landed has left the store
-  // already. The comment is over, so the reader goes back to the words they commented on: below
-  // 1280 px the sheet over the document closes, and a frame later - once the dialog has put back
-  // the focus it took - the commented document takes the caret at the selection its editor kept.
-  // Only while the reader is still at the comment, the focus in its composer or on nothing and no
-  // phone thread over it: a send that lands after they went on elsewhere takes neither the sheet
-  // nor the focus from them.
+  // already. The comment is over, so the reader goes back to the words they commented on: the
+  // commented document takes the caret at once, at the selection its editor kept, before the
+  // composer's box goes. The focus then moves from the box to the editor directly, and the box's
+  // going leaves no loss of focus for the page's rescue to answer (`useFocusRescue`). The rescue
+  // reads a loss on the next frame, or after `FRAME_WAIT_MS` where no frame comes; with a frame
+  // later than that, it would take the loss for the reader's, whose press is still live, and put
+  // the focus on a control of the margin. Below 1280 px the sheet over the document closes too,
+  // and its dialog gives the focus back to what held it as the sheet opened (`useDialog`): that
+  // was the box, which is gone, so it focuses the body. That loss is not the reader's, whose
+  // press was in the box, and the rescue leaves the focus there; a frame later, with the focus
+  // still on nothing, the editor takes the caret again. Only while the reader is still at the
+  // comment, the focus in its composer or on nothing and no phone thread over it: a send that
+  // lands after they went on elsewhere takes neither the sheet nor the focus from them.
   const closeComposer = useCallback(
     (composer: MarginComposer) => {
       if (composer.seq !== undefined) cancelCompose(composer.anchor.artifact, composer.seq);
       store.discard(marginComposeSendKey(composer.anchor.artifact));
       if (sheetThreadKey !== undefined || !focusAtComposer()) return;
-      if (window.matchMedia(COMPACT_VIEWPORT_QUERY).matches) setExpandedOwnerId(undefined);
+      const compact = window.matchMedia(COMPACT_VIEWPORT_QUERY).matches;
+      if (compact) setExpandedOwnerId(undefined);
       const bridge = documentBridge;
       if (bridge?.artifactId !== composer.anchor.artifact) return;
+      bridge.focus();
+      if (!compact) return;
       window.requestAnimationFrame(() => {
         if (focusAtComposer()) bridge.focus();
       });
