@@ -4117,11 +4117,14 @@ earlier gen than a replica saw, reads as unknown on each replica that saw it.
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
 (`restore_gen`), which `Bootstrap` answers as a `RestoreGenError` once the log holds entries. A row
 lost mid-hold is restored `held` with its hold id (`RestoreRow`, which follows `restore_gen` for that
-shape on its own). A row lost after a hold ended, or before the first, is restored `released`:
-take the gen the `RestoreGenError` names and run `RestoreRow` with it, `released` and no hold id
-(or the ended hold's), which sends it once at that gen. The route stores a `released` row only while
-the log's latest entry is `released`, and refuses it `bad_transition` after a `held` or `prepare`
-entry, so no restore frees every client while a command of a hold may run.
+shape on its own); `RestoreRow` reads the hold's journal first and refuses `held` for a hold whose
+`hold release` or `hold abort` is done, since no command is admitted after the end. A row lost
+after a hold ended, or before the first, is restored `released`: take the gen the
+`RestoreGenError` names and run `RestoreRow` with it, `released` and no hold id (or the ended
+hold's), which sends it once at that gen. The route stores a `released` row only while the log's
+latest entry is `released`, and refuses it `bad_transition` after a `held` or `prepare` entry, so no
+restore frees every client while a command of a hold may run. Both checks read the log, which is
+the broker database's: a database writer who empties it lets `Bootstrap` write gen 1 again.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

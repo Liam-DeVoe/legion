@@ -226,13 +226,27 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // other gen 409 `gen_mismatch` naming that one in `restore_gen`. For a `held` row with its hold id
 // RestoreRow then signs the row afresh at `restore_gen` and sends it once more, and answers a
 // second refusal, another writer's restore between the two, as it is; for any other row it answers
-// the first as a RestoreGenError. A `released` row, the one a completed hold left or the first
-// row's shape with no hold id, is sent once, at gen alone, the gen a RestoreGenError named: the
-// route stores it only while the log's latest entry is released, and refuses it 400
-// `bad_transition` after a held or prepare entry, so a released row never lands mid-hold.
+// the first as a RestoreGenError. Before it restores a `held` row it reads the hold's journal, and
+// refuses a hold that has ended, a done `hold release` or `hold abort` (ErrAlreadyDone): no command
+// is admitted after the end, so a held row restored for it would keep every client out with no
+// command left to release it. A `released` row, the one a completed hold left or the first row's
+// shape with no hold id, is sent once, at gen alone, the gen a RestoreGenError named: the route
+// stores it only while the log's latest entry is released, and refuses it 400 `bad_transition`
+// after a held or prepare entry, so a released row never lands mid-hold.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
+	}
+	if phase == natsgrant.OperatorPhaseHeld && holdID != "" {
+		d, _, err := c.Journal(ctx, holdID)
+		if err != nil {
+			return Row{}, err
+		}
+		for _, end := range []string{CommandRelease, CommandAbort} {
+			if hasDone(d.Ops, end) {
+				return Row{}, wrap(ErrAlreadyDone, fmt.Sprintf("hold %s has ended (%s is done), so its row is not restored held; restore the row released", holdID, end))
+			}
+		}
 	}
 	row, err := c.restore(ctx, gen, phase, holdID, reason)
 	var mismatch *RestoreGenError
@@ -244,10 +258,11 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 
 // Bootstrap writes the first row, `released` with no hold id at gen 1, through `POST
 // /v1/nats-hold/restore`, once. It answers any refusal as it is: `row_exists` while a row is
-// there, and a RestoreGenError when the log holds entries, so a lost row is never replaced by the
-// first row's at a gen it did not name. The operator restores a lost row with RestoreRow: held
-// with its hold id mid-hold, and released, at the RestoreGenError's gen, once the log's latest
-// entry is released.
+// there, and a RestoreGenError when the log holds entries, so a lost row is not replaced by the
+// first row's at a gen it did not name. That holds only as long as nats_hold_log keeps its
+// entries: the log is the broker database's, and a database writer who empties it lets Bootstrap
+// write gen 1 again. The operator restores a lost row with RestoreRow: held with its hold id
+// mid-hold, and released, at the RestoreGenError's gen, once the log's latest entry is released.
 func (c *Client) Bootstrap(ctx context.Context) error {
 	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
 	return err

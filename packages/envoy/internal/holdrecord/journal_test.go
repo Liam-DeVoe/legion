@@ -682,6 +682,27 @@ func TestTheHoldJournal(t *testing.T) {
 		hold(t, c, "h-next", holdrecord.WorkflowBucketsCreate, nil)
 	})
 
+	// A hold that has ended is not held again: with the row lost after a done hold release,
+	// RestoreRow of held with that hold's id reads the journal and is refused ErrAlreadyDone,
+	// writing nothing. Fails while RestoreRow reads no journal: the row lands held for a hold no
+	// command can be admitted to, and EndIsFinal keeps every client out.
+	t.Run("RestoreRow of held for a hold whose release is done is refused", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-ended-restore", holdrecord.WorkflowBucketsCreate, nil)
+		run(t, c, "h-ended-restore", cmd("buckets create"), nil, nil)
+		release(t, c, "h-ended-restore")
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-ended-restore", "restored after a delete")
+		refused(t, "RestoreRow of held after the hold's done release", err, holdrecord.ErrAlreadyDone, "hold release is done")
+		var refusal *holdrecord.RouteError
+		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
+			t.Fatalf("after the refused restore (%+v) Row answered %v, want no_row", got, err)
+		}
+	})
+
 	// Bootstrap writes the first row, gen 1, released, no hold id, once. With the row there it
 	// answers row_exists; with the row deleted mid-hold, the log holds entries, and it answers the
 	// route's 409 as it is, a RestoreGenError naming restore_gen, writing nothing.
