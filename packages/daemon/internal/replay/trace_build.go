@@ -45,6 +45,11 @@ type Trace struct {
 	// Passed is every candidate of the line a pass passed over, which the record line alone names:
 	// none for a window that does not hold that kind.
 	Passed []PassedOver
+	// InferredSlots is how many issues the trace infers held a slot from before the reach that no
+	// slot line names (SlotSpan.Inferred, assumption 34), and SlotCount the check of the slots it
+	// holds, seen and inferred, against the record's own count at the first slot line.
+	InferredSlots int
+	SlotCount     SlotCount
 	// Controller is the turns of the project's controller, whose claim names no issue.
 	Controller []Turn
 	// Boots is each daemon process, in order: each start the log holds, and, where the log opens
@@ -264,17 +269,39 @@ type SlotMove struct {
 }
 
 // SlotSpan is one slot an issue held, from its Start to its End (zero while held at the window's
-// end). Before is a slot the issue already held where the log begins. Reason is the path that took
-// it back where the record line says it, and ForWait a slot taken back because the issue waited
-// on another issue (a link or its children), read from the reason or from a wait the trace holds
-// at that moment: the issue then stands in the line for a slot of its own again.
+// end). Before is a slot the issue already held where the log begins: one its first slot line gives
+// back, or one no slot line names that the trace infers from the phase the log first shows it in
+// (Inferred, assumption 34). Reason is the path that took it back where the record line says it,
+// and ForWait a slot taken back because the issue waited on another issue (a link or its
+// children), read from the reason or from a wait the trace holds at that moment: the issue then
+// stands in the line for a slot of its own again.
 type SlotSpan struct {
 	Start, End time.Time
 	Before     bool
+	Inferred   bool
 	Kind       string
 	Reason     record.SlotTakenReason
 	ForWait    bool
 }
+
+// SlotCount is the check of the slots the trace holds against the record's own count of them
+// (assumption 34). Each line of a slot move, `admission: slot taken|released` and a pass's record
+// line alike, carries the slots the project held once the move was made (SlotMove.Slots), so at the
+// first slot move the log holds, the slots the trace holds right after it, each seen in a line or
+// inferred held from before the reach, are counted beside that count.
+type SlotCount struct {
+	// At is the moment of the first slot move the log holds, zero where it holds none.
+	At time.Time
+	// Recorded is the slots in use that move's line says the project held once it was made, and
+	// Held the slots the trace holds right after it.
+	Recorded, Held int
+}
+
+// Difference is the slots the trace holds right after the first slot move less the slots its line
+// says were in use: zero where the trace accounts for every slot the record held, below zero by
+// each slot the record held for an issue the trace holds none for, and above it by each slot the
+// trace holds that the record did not.
+func (c SlotCount) Difference() int { return c.Held - c.Recorded }
 
 // PassedOver is one candidate of the line a pass passed over, as its record line names it.
 type PassedOver struct {
@@ -366,9 +393,13 @@ const (
 	// own, …`).
 	TurnEndDisplaced TurnEnd = "displaced"
 	// TurnEndLetGo is a turn the let-go of its process cut off — a relaunch, a suspension, a
-	// failure or a retirement stopping it (`supervise: the relaunch ended work the agent had
-	// running`).
+	// failure or the retirement a stop makes stopping it (`supervise: the relaunch ended work the
+	// agent had running`).
 	TurnEndLetGo TurnEnd = "let_go"
+	// TurnEndRetired is a turn of the claim a production check is for, which the check's close
+	// retires with no line of the retirement's own (`workflow: production check closed`,
+	// CheckClosed): the issue stands outside the workflow, so the turn is the check's.
+	TurnEndRetired TurnEnd = "retired"
 	// TurnEndLeft is a turn its issue's leaving the workflow ended.
 	TurnEndLeft TurnEnd = "left"
 	// TurnEndOpen is a turn that stands at the window's end.
@@ -377,8 +408,9 @@ const (
 
 // Turn is one turn of a claim's session, joined to its issue and role by the claim token: from its
 // `supervise: a turn started` to its `supervise: a turn ended`, its claim's failure or suspend, the
-// end of the process it ran on (ProcessEnded), or its issue's leave; End zero while it stands at
-// the window's end.
+// end of the process it ran on (ProcessEnded), the close of its issue's production check that
+// retires its claim (CheckClosed), or its issue's leave; End zero while it stands at the window's
+// end.
 type Turn struct {
 	Claim      ClaimRef
 	Generation uint64
@@ -875,6 +907,8 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.turnEnds(l.Claim, at, TurnEndSuspended, false)
 	case ProcessEnded:
 		b.turnEnds(l.Claim, at, l.By, false)
+	case CheckClosed:
+		b.checkClosed(b.issue(l.Issue), at)
 	case QueueLeftNothingRead:
 		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
 	case QueueLeftReadOnce:
@@ -1140,6 +1174,23 @@ func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
 	}
 }
 
+// checkClosed reads the close of iss's production check at at. Where the issue stands outside the
+// workflow, closeCheck retires the claim of the role the check is for (issue_close), which writes
+// no line of the retirement's own in any release (CheckClosed), so the open turn of that claim ends
+// here. The role is the tester, the one role a deployment's production_check names (config's
+// readProject). An issue back in the workflow keeps its claims for the run it is in (closeCheck),
+// and their turns go on.
+func (b *traceBuilder) checkClosed(iss *IssueTrace, at time.Time) {
+	if iss.openVisit() != nil {
+		return
+	}
+	for _, token := range slices.Sorted(maps.Keys(b.turns)) {
+		if open := b.turns[token]; open.issue == iss.Key && iss.Turns[open.index].Claim.Role == claim.RoleTester {
+			b.turnEnds(iss.Turns[open.index].Claim, at, TurnEndRetired, false)
+		}
+	}
+}
+
 // turnStarts opens a turn of a claim.
 func (b *traceBuilder) turnStarts(l TurnStarted) {
 	if _, open := b.turns[l.Claim.Token]; open {
@@ -1178,13 +1229,17 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 }
 
 // finish builds what the reading left to build once every line and event is read: the per-slot
-// moves no record line took, each issue's slot spans, its link, children and person waits'
-// ends, its worker starts and segments, and the ticks; and it ends what stands at the window's end.
+// moves no record line took, each issue's slot spans, the slots it infers held from before the
+// reach and its check of them against the record's count, each issue's link, children and person
+// waits' ends, its worker starts and segments, and the ticks; and it ends what stands at the
+// window's end.
 func (b *traceBuilder) finish() {
 	b.t.Slots = append(b.t.Slots, b.buffered...)
 	b.buffered = nil
 	slices.SortStableFunc(b.t.Slots, func(x, y SlotMove) int { return x.At.Compare(y.At) })
 	b.spans()
+	b.inferSlots()
+	b.countSlots()
 	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
 		iss := b.t.Issues[key]
 		if len(iss.Visits) > 0 && len(iss.Dispatch) == 0 {
@@ -1236,6 +1291,73 @@ func (b *traceBuilder) spans() {
 			iss.Slots = append(iss.Slots, SlotSpan{Start: b.t.Start, End: move.At, Before: true, Reason: move.Reason})
 		}
 	}
+}
+
+// inferSlots gives each issue the log first shows in a phase that keeps a slot, and that no slot
+// line names, the slot it held from before the reach (assumption 34). The log first shows it in a
+// phase where the visit it stands in at Start was read from a line: begun before the log
+// (Visit.Before) or ended by a move out of that phase. The phase keeps a slot under the rule of
+// the window's first part, or main where the window names none (Trace.ruleAt). An issue whose
+// first slot line gives a slot back held one from before the reach too, which spans reads from that
+// line. With no line of it, the slot is held until the rule would give it back: the first move of
+// that run into a phase the rule keeps no slot in, or the run's end, its move to done or its leave;
+// zero while the run goes on at the window's end. Each such slot is counted (Trace.InferredSlots).
+func (b *traceBuilder) inferSlots() {
+	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
+		iss := b.t.Issues[key]
+		first := slices.IndexFunc(iss.Visits, func(visit Visit) bool {
+			return !visit.Enter.After(b.t.Start) && (visit.Exit.IsZero() || visit.Exit.After(b.t.Start))
+		})
+		if len(iss.Slots) > 0 || first < 0 {
+			continue
+		}
+		standing := iss.Visits[first]
+		shown := standing.Before || standing.Out != nil // read from a line: begun before the log, or ended by a move it holds
+		if !shown || !b.t.ruleAt(standing.Enter).PhaseKeepsSlot(standing.Phase) {
+			continue
+		}
+		span := SlotSpan{Start: b.t.Start, Before: true, Inferred: true}
+		for i := first; i < len(iss.Visits); i++ {
+			visit := iss.Visits[i]
+			if i > first && visit.In == nil {
+				break // a later run, which began with an entry of its own
+			}
+			if !b.t.ruleAt(visit.Enter).PhaseKeepsSlot(visit.Phase) {
+				span.End = visit.Enter
+				break
+			}
+			if span.End = visit.Exit; span.End.IsZero() {
+				break
+			}
+		}
+		iss.Slots = append(iss.Slots, span)
+		b.t.InferredSlots++
+	}
+}
+
+// countSlots checks the slots the trace holds against the record's own count at the first slot
+// move the log holds (SlotCount): the slots that stand just before that move, begun before it or
+// before the reach and not given back before it, seen and inferred alike, and that move's own slot,
+// given out or taken back.
+func (b *traceBuilder) countSlots() {
+	if len(b.t.Slots) == 0 {
+		return
+	}
+	first := b.t.Slots[0]
+	held := 0
+	for _, iss := range b.t.Issues {
+		for _, span := range iss.Slots {
+			if (span.Before || span.Start.Before(first.At)) && (span.End.IsZero() || !span.End.Before(first.At)) {
+				held++
+			}
+		}
+	}
+	if first.Given {
+		held++
+	} else {
+		held--
+	}
+	b.t.SlotCount = SlotCount{At: first.At, Recorded: first.Slots, Held: held}
 }
 
 // holdsSlotAt says whether iss holds a slot at at: a slot that began at or before it and ends
@@ -1589,11 +1711,12 @@ func (b *traceBuilder) personWaitEnds(iss *IssueTrace) {
 
 // forWait marks each of iss's slots that a pass took back for a wait on another issue: by the
 // reason its record line gives, or, where the window holds no record line, by a link or children
-// wait of the issue that stands at the moment the slot went back.
+// wait of the issue that stands at the moment the slot went back. A slot the trace infers went back
+// where the rule gives it back (inferSlots), never for a wait, which a pass writes a line of.
 func (b *traceBuilder) forWait(iss *IssueTrace) {
 	for i := range iss.Slots {
 		span := &iss.Slots[i]
-		if span.End.IsZero() {
+		if span.End.IsZero() || span.Inferred {
 			continue
 		}
 		switch span.Reason {

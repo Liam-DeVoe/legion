@@ -227,6 +227,21 @@ type Divergence struct {
 	// Retried is how many times the stub gave an outbox row back to wait on its backoff, as a lane
 	// gives back a row whose executor waits on something.
 	Retried int `json:"retried"`
+	// TurnsLeftOut is how many recorded turns the replay wrote no claim of, by the assumption each
+	// rests on: a turn of an issue outside the workflow, a production check's (assumption 30),
+	// standing at the window's start (SeedReport.LeftOut) or begun in a tree that runs no lifecycle
+	// in the replay (ensureClaim).
+	TurnsLeftOut map[int]int `json:"turnsLeftOut"`
+	// NoLifecycleTurns is how many recorded turns of an issue in the workflow, or of one the replay
+	// does not record, began in the replay while the issue's tree ran no lifecycle there, which the
+	// replay wrote no claim of and went on (ensureClaim).
+	NoLifecycleTurns int `json:"noLifecycleTurns"`
+	// InferredSlots is how many of the start state's slots the trace inferred an issue held from
+	// before the reach (assumption 34), and SlotCountDifference the slots the trace holds right
+	// after the first slot line less the slots in use that line says (SlotCount.Difference), for
+	// which the start state names no issue.
+	InferredSlots       int `json:"inferredSlots"`
+	SlotCountDifference int `json:"slotCountDifference"`
 }
 
 // RefusedMove is one recorded move the daemon's code refused in a replay.
@@ -531,15 +546,27 @@ func (d *driver) down(at time.Time) bool {
 	return false
 }
 
-// seed writes the start state at the window's start (Seed), on the trace whose ranks the branch
-// shows, and reads back the claims it wrote for the stub.
+// seed writes the start state at the window's start (SeedAndReport), on the trace whose ranks the
+// branch shows, reads its report into the run — the issues it named, and into the divergence the
+// turns it wrote no claim of under each assumption, the slots the trace inferred and the difference
+// of the trace's slots from the record's count, the assumptions of the turns and of the slots being
+// named among those the run rests on where it counted any — and reads back the claims it wrote for
+// the stub.
 func (d *driver) seed() error {
 	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		unplaced, err := Seed(d.ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
+		report, err := SeedAndReport(d.ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
 		if err != nil {
 			return err
 		}
-		d.unplaced = unplaced
+		d.unplaced = report.Unplaced
+		for number, turns := range report.LeftOut {
+			d.counters.TurnsLeftOut[number] += turns
+			d.used[number] = d.used[number] || turns > 0
+		}
+		d.counters.InferredSlots, d.counters.SlotCountDifference = report.InferredSlots, report.SlotCount.Difference()
+		if report.InferredSlots > 0 {
+			d.used[assumeSlotFromBeforeTheReach] = true
+		}
 		issues, err := d.records.Issues(d.ctx, tx)
 		if err != nil {
 			return err

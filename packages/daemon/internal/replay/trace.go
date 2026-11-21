@@ -149,6 +149,10 @@ const (
 	workEndedLine        = "supervise: the relaunch ended work the agent had running"
 )
 
+// checkClosedLine is the msg of the line the close of an issue's production check writes
+// (workflow's markCheckClosed, CheckClosed), in every release since the check began (d321c422).
+const checkClosedLine = "workflow: production check closed"
+
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
 // daemon wrote it under and the time the daemon wrote it, the line's own time attribute. A Cloud
 // Logging export's timestamp is when the log store took the line in, a moment later, and is not
@@ -413,9 +417,11 @@ type ClaimFailed struct {
 // died), the process found gone, or found to be another runtime's, through no fault of its own
 // (displaced), and `supervise: the relaunch ended work the agent had running` (recordEnd), which
 // the let-go of a process that ran work writes as it stops it — a relaunch, a suspension, a
-// failure, a retirement — and which died and displaced write after their own line. By is how the
-// line ends the claim's open turn: the trace ends it there, and a line of a claim with no turn
-// open ends nothing.
+// failure, the retirement a stop makes (from 86218fbc, #3983, on: no release before it wrote the
+// line) — and which died and displaced write after their own line. The retirement the close of an
+// issue or a tree makes writes none of them in any release (CheckClosed). By is how the line ends
+// the claim's open turn: the trace ends it there, and a line of a claim with no turn open ends
+// nothing.
 //
 // The lines the same decisions write beside these end no turn of their own, and the trace does
 // not read them: died's `supervise: the process died in the task's turn; …` (interrupted) and
@@ -428,6 +434,18 @@ type ProcessEnded struct {
 	LineHead
 	Claim ClaimRef
 	By    TurnEnd
+}
+
+// CheckClosed is a `workflow: production check closed` line (workflow's markCheckClosed): the
+// production check of an issue's merge closed. Where the issue stands outside the workflow,
+// closeCheck then has the claim of the role the check is for retired (issue_close), and that
+// retirement writes no line of its own in any release: before 86218fbc (#3983) a retirement wrote
+// none, and from it on the close of an issue retires its claim with noEnd, for which recordEnd
+// writes nothing (supervise's issueClose, Machine.retire). So the trace ends the open turn of
+// that claim at this line, the last line the record holds of the check (traceBuilder.checkClosed).
+type CheckClosed struct {
+	LineHead
+	Issue string
 }
 
 // DaemonStarted is a `legion daemon started` line: a daemon process of Project finished its boot
@@ -751,6 +769,9 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	},
 	workEndedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndLetGo}
+	},
+	checkClosedLine: func(h LineHead, a *lineAttrs) LogLine {
+		return CheckClosed{LineHead: h, Issue: a.str("issue")}
 	},
 	"legion daemon started": func(h LineHead, a *lineAttrs) LogLine {
 		return DaemonStarted{LineHead: h, Project: a.str("project"), AdmissionCap: a.count("admissionCap")}

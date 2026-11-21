@@ -20,9 +20,10 @@ type Assumption struct {
 // Assumptions is every assumption a replay makes, by number, in order: the spec's eighteen, then
 // the seven the plan added, from the mapping of the release at 9542c6fb onto today's workflow (19
 // to 22), the conflict path of the rule main (23), a daemon's downtime (24) and its reading of
-// outside blockers (25), then the tool's own, each a reason a fact is left out of a replay or an
-// outbox row is finished without acting (26 to 33: FactSources, OutboxHandling). A run names the
-// ones its measures rest on by these numbers.
+// outside blockers (25), then the tool's own: each a reason a fact is left out of a replay or an
+// outbox row is finished without acting (26 to 33: FactSources, OutboxHandling), and the trace's
+// inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred). A run
+// names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -123,4 +124,12 @@ var Assumptions = []Assumption{
 	{Number: assumeBootRepairsNothing,
 		Text:      "The repairs a boot or a read of the repository mapping makes, a merger the cutover left released, a design gate's request found again, a repository's mapping changed, change nothing of a window.",
 		Direction: "Sound for a window recorded under one release and one mapping: a repair the record made shows as its own move or start, which the replay enters as recorded."},
+	{Number: assumeSlotFromBeforeTheReach,
+		Text:      "An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back.",
+		Direction: "Doubtful where the reach begins with slots in use and no line names them: the slot is read from the phase alone. If such an issue held no slot, the slots held, with no worker in a turn above all, are overstated by its span; started work that waits for a slot is understated, its time read as held; in a replay its slot keeps another issue from starting until it goes back, which delays that issue and understates the issues finished; the priority taken by holders is overstated where it ranks below an issue that waits; and of the other delays, a link wait it opens counts from its slot, which lengthens the waits, the loops being read from their own lines. A holder the inference misses moves each the other way. The reading that would test it is the slots in use the first slot line after the reach carries against the slots the trace holds right after that line: the start state reports the difference and the inferred holders it wrote, and the run carries both in its divergence."},
 }
+
+// assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
+// the record first shows in a phase that keeps a slot held one from before the window's reach
+// (inferSlots, SlotSpan.Inferred), which the start state and a run name where they rest on it.
+const assumeSlotFromBeforeTheReach = 34

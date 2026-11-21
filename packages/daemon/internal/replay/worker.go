@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -942,39 +944,57 @@ func (d *driver) turnOpen(c supervise.Claim) bool {
 
 // ensureClaim is key's role's claim, admitted where the stub holds none: a segment under way at
 // the window's start whose claim the start state did not write, since no turn of it stood then.
-func (d *driver) ensureClaim(key string, role claim.Role) (supervise.Claim, error) {
+// It answers false, with no claim and no error, where no claim can be admitted for the turn: the
+// replay does not record the issue, or the issue's tree runs no lifecycle in the replay now —
+// none opened, its cleanup reserved or its cleanup confirmed (treelifecycle.BindWork) — which a
+// recorded turn in a tree the record never opened meets. Such a turn is counted, under assumption
+// 30 where the issue stands outside the workflow, a production check's turn, and otherwise as a
+// turn begun with no lifecycle (Divergence.NoLifecycleTurns), and the replay goes on.
+func (d *driver) ensureClaim(key string, role claim.Role) (supervise.Claim, bool, error) {
 	token, err := claim.NewToken(d.token, key, role)
 	if err != nil {
-		return supervise.Claim{}, err
+		return supervise.Claim{}, false, err
 	}
 	if c, ok := d.claims[token]; ok {
-		return c, nil
+		return c, true, nil
 	}
 	issue, err := d.recorded(key)
 	if err != nil {
-		return supervise.Claim{}, err
+		return supervise.Claim{}, false, err
 	}
 	if issue == nil {
-		return supervise.Claim{}, fmt.Errorf("a turn of %s's %s at %s: the replay does not record %s", key, role, stamp(d.clock.Instant()), key)
+		d.counters.NoLifecycleTurns++
+		return supervise.Claim{}, false, nil
 	}
 	c, err := d.st.AdmitClaim(d.ctx, supervise.Claim{Token: token, Project: d.token, Tree: issue.Tree, Issue: key, Role: role,
 		State: supervise.StateQueued})
-	if err != nil {
-		return supervise.Claim{}, fmt.Errorf("a turn of %s's %s at %s: %w", key, role, stamp(d.clock.Instant()), err)
+	switch {
+	case errors.Is(err, treelifecycle.ErrLifecycleAbsent) || errors.Is(err, treelifecycle.ErrCleanupReserved) ||
+		errors.Is(err, treelifecycle.ErrLifecycleClosed):
+		if record.InWorkflow(*issue) {
+			d.counters.NoLifecycleTurns++
+		} else {
+			d.counters.TurnsLeftOut[assumeNoProductionCheck]++
+			d.used[assumeNoProductionCheck] = true
+		}
+		return supervise.Claim{}, false, nil
+	case err != nil:
+		return supervise.Claim{}, false, fmt.Errorf("a turn of %s's %s at %s: %w", key, role, stamp(d.clock.Instant()), err)
 	}
 	d.launch(&c, false)
 	if err := d.putClaim(c); err != nil {
-		return supervise.Claim{}, err
+		return supervise.Claim{}, false, err
 	}
-	return c, nil
+	return c, true, nil
 }
 
 // writeTurnStart is a turn of key's role's worker beginning, in p: its claim in the turn
 // (supervise.StateWorking) from now, the step the turn records, and the line the turn writes
-// (`supervise: a turn started`, with the delivery the turn works where the claim holds one).
+// (`supervise: a turn started`, with the delivery the turn works where the claim holds one). A turn
+// no claim can be admitted for writes nothing (ensureClaim).
 func (d *driver) writeTurnStart(key string, role claim.Role, p *piece) error {
-	c, err := d.ensureClaim(key, role)
-	if err != nil {
+	c, held, err := d.ensureClaim(key, role)
+	if err != nil || !held {
 		return err
 	}
 	if d.turnOpen(c) || c.State == supervise.StateFailed || c.State == supervise.StateRetired {

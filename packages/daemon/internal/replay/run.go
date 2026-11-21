@@ -78,12 +78,14 @@ type RunResult struct {
 	// Unplaced is each issue the start state could not place at the window's start.
 	Unplaced []Unplaced
 	// Divergence is what the replay counted of where it left the record's course: refused moves
-	// with their reasons, reassertion starts, events a sequence fence dropped, and the outbox rows
-	// finished under each assumption (design 10.9).
+	// with their reasons, reassertion starts, events a sequence fence dropped, the outbox rows
+	// finished under each assumption, the recorded turns it wrote no claim of, and what its start
+	// state counted of the slots the trace inferred and of the record's own count (design 10.9).
 	Divergence Divergence
 	// Assumptions is every assumption the run rests on, by number: the spec's and the plan's,
-	// which the scorecard names too, and the tool's own (26 on), under which it left a fact out or
-	// finished an outbox row without acting, which run.json names beside them.
+	// which the scorecard names too, and the tool's own (26 on), under which it left a fact or a
+	// turn out, finished an outbox row without acting or seeded a slot the trace inferred, which
+	// run.json names beside them.
 	Assumptions []int
 }
 
@@ -194,7 +196,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		claims: map[claim.Token]supervise.Claim{}, working: map[claim.Token]*piece{},
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
 		signOffs: map[string]bool{}, used: map[int]bool{1: true},
-		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}},
+		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
 	}
 	runErr := d.run()
 	flushErr := written.Flush()

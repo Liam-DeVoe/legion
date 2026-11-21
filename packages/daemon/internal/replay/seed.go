@@ -38,54 +38,106 @@ const seedSession = "replay-seed"
 // trace holds that wait at at), Dispatch status, rank, parent, tree, generation, hold, awaiting and
 // whether it is handed to Legion, and a lingering root's linger; the design gate rows of each such
 // issue's current run, and the mirror row of each ask on such a root; the slots the issues hold,
-// and the mark of an issue whose slot went back for a wait on another issue; the tree lifecycle of
-// each tree that runs or lingers; the claims of the turns under way, as the outbox's start writes a
-// claim (its given entry and a confirmed delivery); the owed start of each issue whose work came
-// back while it held no slot, marked to wait for one and created at the moment its work came back;
-// and a synthetic open pull request for each issue the trace has seen one of. records writes the
+// the trace's inferred slots among them (assumption 34), and the mark of an issue whose slot went
+// back for a wait on another issue; the tree lifecycle of each tree that runs or lingers; the
+// claims of the turns under way of the issues in the workflow, as the outbox's start writes a claim
+// (its given entry and a confirmed delivery); the owed start of each issue whose work came back
+// while it held no slot, marked to wait for one and created at the moment its work came back; and
+// a synthetic open pull request for each issue the trace has seen one of. records writes the
 // record's tables and claims the claims.
 //
 // It names each issue it cannot place, with the reason: one Dispatch shows no event or no
-// repository of, one whose turn stands in a tree the record shows running no lifecycle, one a fact
-// the trace could not place before at leaves in doubt, and one the daemon's own judgement of the
-// line, read back from what Seed wrote, finds held by no word it has (record.HeldUnclassified).
-// A fact leaves an issue in doubt where it bears on what Seed writes for it — its phase and entry,
-// its slot, its hold, its linger — which a fact of every kind but a turn's does (UnplacedKind). A
-// turn fact is of a turn that ended at the fact's own moment, before at, so it bears on no claim
-// Seed writes, which are of the turns standing at at; a turn the trace holds open at at in a tree
-// that runs no lifecycle is named on its own, above.
+// repository of, one in the workflow whose turn stands in a tree the record shows running no
+// lifecycle, one a fact the trace could not place leaves in doubt, and one the daemon's own
+// judgement of the line, read back from what Seed wrote, finds held by no word it has
+// (record.HeldUnclassified). A fact leaves an issue in doubt where it bears on what Seed writes for
+// it (bearsOnStart): its phase and entry, its slot, its hold, its linger. A turn fact bears on none,
+// and a fact of a linger only where the linger it closes stands at at.
+//
+// A turn that stands at at of an issue outside the workflow then — one that left it, or a member
+// of a tree that closed — is a production check's, which changes nothing of a replay (assumption
+// 30): Seed writes no claim of it and names no issue for it, and SeedAndReport counts it. Seed
+// answers the issues it names; SeedAndReport answers its whole report (SeedReport).
 func Seed(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, t Trace, at time.Time) ([]Unplaced, error) {
+	report, err := SeedAndReport(ctx, tx, records, claims, t, at)
+	if err != nil {
+		return nil, err
+	}
+	return report.Unplaced, nil
+}
+
+// SeedReport is what a start state reports beside what it writes (SeedAndReport): the issues it
+// names, the turns it wrote no claim of, the slots it wrote that the trace inferred, and the
+// trace's check of its slots against the record's own count, for which it names no issue.
+type SeedReport struct {
+	// Unplaced is each issue the start state could not place, once for each reason (Seed).
+	Unplaced []Unplaced
+	// LeftOut is how many turns standing at the start the start state wrote no claim of, by the
+	// number of the assumption each rests on: the turns of the issues outside the workflow, a
+	// production check's (assumption 30).
+	LeftOut map[int]int
+	// InferredSlots is how many of the slots the start state wrote the trace inferred an issue held
+	// from before the reach (SlotSpan.Inferred, assumption 34).
+	InferredSlots int
+	// SlotCount is the trace's check of the slots it holds against the slots in use its first slot
+	// line says (Trace.SlotCount), whose difference is no issue's.
+	SlotCount SlotCount
+}
+
+// SeedAndReport writes the start state Seed writes and answers its whole report (SeedReport).
+func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, t Trace, at time.Time) (SeedReport, error) {
 	token, err := claim.ProjectToken(t.Project)
 	if err != nil {
-		return nil, fmt.Errorf("replay: seed the start state of %s: %w", t.Project, err)
+		return SeedReport{}, fmt.Errorf("replay: seed the start state of %s: %w", t.Project, err)
 	}
 	s := seeder{ctx: ctx, tx: tx, records: records, claims: claims, t: t, at: at, rule: t.ruleAt(at), token: token,
-		placed: map[string]record.Issue{}, epochs: map[string]uint64{}}
+		placed: map[string]record.Issue{}, epochs: map[string]uint64{}, leftOut: map[int]int{}}
 	keys := slices.Sorted(maps.Keys(t.Issues))
 	for _, key := range keys {
 		if err := s.mirror(t.Issues[key]); err != nil {
-			return nil, err
+			return SeedReport{}, err
 		}
 	}
 	for _, key := range keys {
 		if err := s.issue(t.Issues[key]); err != nil {
-			return nil, err
+			return SeedReport{}, err
 		}
 	}
 	for _, fn := range []func() error{s.gates, s.asks, s.slots, s.lifecycles, s.turns, s.owedStarts, s.pullRequests, s.unclassified} {
 		if err := fn(); err != nil {
-			return nil, err
+			return SeedReport{}, err
 		}
 	}
 	for _, fact := range t.Unplaced {
-		if _, considered := t.Issues[fact.Issue]; considered && fact.At.Before(at) && fact.Kind != UnplacedTurn {
+		if _, considered := t.Issues[fact.Issue]; !considered || !bearsOnStart(fact, at) {
+			continue
+		}
+		if fact.At.Before(at) {
 			s.unplaced(fact.Issue, "the trace could not place a fact of it before the window's start: %s", fact.Reason)
+		} else {
+			s.unplaced(fact.Issue, "the trace could not place a fact of it that stands at the window's start: %s", fact.Reason)
 		}
 	}
-	return s.report, nil
+	return SeedReport{Unplaced: s.report, LeftOut: s.leftOut, InferredSlots: s.inferred, SlotCount: t.SlotCount}, nil
 }
 
-// seeder is Seed's state while it writes one start state.
+// bearsOnStart says whether fact, which the trace could not place, leaves in doubt what a start
+// state at at writes. A fact of a turn bears on none: it is of a turn that ended at the fact's own
+// moment (UnplacedTurn), and the claims written are of the turns standing at at. A fact of a linger,
+// the close of one the trace does not hold, bears on the start where that linger stands at at, its
+// close at or after it: a linger closed before at leaves its tree closed at at whether the trace
+// held its start or not. Every other fact bears on the start where it came before at.
+func bearsOnStart(fact UnplacedFact, at time.Time) bool {
+	switch fact.Kind {
+	case UnplacedTurn:
+		return false
+	case UnplacedLinger:
+		return !fact.At.Before(at)
+	}
+	return fact.At.Before(at)
+}
+
+// seeder is SeedAndReport's state while it writes one start state.
 type seeder struct {
 	ctx     context.Context
 	tx      pgx.Tx
@@ -100,7 +152,11 @@ type seeder struct {
 	// opened, by its root.
 	placed map[string]record.Issue
 	epochs map[string]uint64
-	report []Unplaced
+	// report is each issue named, leftOut the turns written no claim of by assumption, and
+	// inferred the slots written that the trace inferred (SeedReport).
+	report   []Unplaced
+	leftOut  map[int]int
+	inferred int
 }
 
 // unplaced names an issue the start state cannot place, once for each reason.
@@ -427,9 +483,9 @@ func (s *seeder) asks() error {
 
 // slots writes the slot of each placed issue that holds one at the start, in the order the slots
 // were given out, each with the moment a link or children wait of its holder began where one stands
-// beside it; and the mark of each issue in the workflow whose last slot went back for a wait on
-// another issue and that has taken none since, which stands it in the line for a slot of its own
-// again (record.Issue.ReleasedForWaitAt).
+// beside it, counting each the trace inferred (SeedReport.InferredSlots); and the mark of each issue
+// in the workflow whose last slot went back for a wait on another issue and that has taken none
+// since, which stands it in the line for a slot of its own again (record.Issue.ReleasedForWaitAt).
 func (s *seeder) slots() error {
 	type holder struct {
 		key  string
@@ -452,6 +508,9 @@ func (s *seeder) slots() error {
 		}
 		if err := s.records.PutSlot(s.ctx, s.tx, slot); err != nil {
 			return fmt.Errorf("replay: seed the slot of %s: %w", h.key, err)
+		}
+		if h.span.Inferred {
+			s.inferred++
 		}
 	}
 	next := len(holders)
@@ -516,15 +575,21 @@ func (s *seeder) lifecycles() error {
 	return nil
 }
 
-// turns writes the claim of each turn under way at the start of a placed issue, as the outbox's
-// start and the turn's confirmation write it: working in its turn since the turn began, bound to its
-// tree's lifecycle, the entry it was given and a delivery confirmed at that moment. A turn whose
-// tree runs no lifecycle the record shows open is one the start state cannot place.
+// turns writes the claim of each turn under way at the start of a placed issue in the workflow, as
+// the outbox's start and the turn's confirmation write it: working in its turn since the turn
+// began, bound to its tree's lifecycle, the entry it was given and a delivery confirmed at that
+// moment. A turn whose tree runs no lifecycle the record shows open is one the start state cannot
+// place. A turn of an issue outside the workflow at the start is a production check's: it is
+// written no claim and counted under assumption 30 (SeedReport.LeftOut), not named.
 func (s *seeder) turns() error {
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
 		for _, turn := range iss.Turns {
 			if !standsAt(turn.Start, turn.End, s.at) {
+				continue
+			}
+			if !inWorkflow(issue) {
+				s.leftOut[assumeNoProductionCheck]++
 				continue
 			}
 			epoch, open := s.epochs[issue.Tree]
