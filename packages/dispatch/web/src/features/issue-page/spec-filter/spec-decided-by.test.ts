@@ -755,6 +755,20 @@ test("a person's quote that cites a labelled statement ends where their sentence
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("Keep it as R2. Every address… says.");
 });
 
+// R5: an answer the person wrote as a numbered list on one line, "1. Keep the old page. 2. Then
+// drop it.", ends its first sentence at "page.", as the tree's rule for a list of two items reads
+// the same words. On a running build at b0a0892f that answer was quoted "Keep the old page. 2.":
+// the quote is cut from the answer's plain words, where the list's "1." is no longer a word, so
+// the "2." after the first item read as no label.
+test("a person's answer written as a numbered list on one line is quoted to its first item", () => {
+  const stored = "1. Keep the old page. 2. Then drop it.";
+  const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: stored }, [statement("r1")])]));
+  const quote = groups[0]?.runs[0]?.decision?.quote ?? "";
+  expect(quote, "the quote of a numbered answer ends at its first item's full stop").toMatch(
+    /Keep the old page\.$/
+  );
+});
+
 // R1 and R5: the question line is the question's one line, cut from its first block's words
 // (`lineWordsRaw`) with each reference unnamed: a second block never runs into it, and a name's
 // label ends none of it.
