@@ -588,9 +588,10 @@ test("a press that takes away the row marked last, with the row now at its place
 });
 
 // A row the page is still drawing while the press takes it away is passed over: the focus would
-// drop with it. The row after it is drawn under the window, so the focus goes to the row before
-// it, which the reader can see.
-test("a press still taking away the row marked last passes over it to the nearest row in sight", () => {
+// drop with it. The row after it is drawn under the window until then, and it moves up into the
+// leaving row's place once that row goes, so the place is read from the leaving row, which the
+// reader can see: the focus goes to the row after it, with no scroll.
+test("a press still taking away the row marked last hands the focus to the row after it, which moves up into its place in sight", () => {
   const laidOut = layRowsOut(9);
   const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
   const moves = watchMoves();
@@ -599,7 +600,7 @@ test("a press still taking away the row marked last passes over it to the neares
     view.rerender(
       <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
     );
-    const landing = rowBox("CORE-16");
+    const landing = rowBox("CORE-18");
     expect(landing).toHaveFocus();
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
     expect(moves.scrolled).toEqual([]);

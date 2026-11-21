@@ -93,7 +93,10 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     if (last === null) return false;
     const kept = list.order().filter((id) => list.leaving?.(id) !== true);
     if (kept.includes(last)) return false;
-    const mark = markAtPlace(kept, before.current, last, list.control);
+    // A row a press is still taking away (`leaving`) is drawn until the write's optimistic apply
+    // lands, and the row after it moves up into its place only then: until then that place is
+    // where the row marked last stands, read from its own mark.
+    const mark = markAtPlace(kept, before.current, last, list.control, list.control(last));
     if (mark !== null) {
       mark.focus({ preventScroll: true });
       return true;
@@ -116,15 +119,20 @@ export function focusListStop(stop: HTMLElement | null): null {
 }
 
 /** The mark the focus takes after the row `last` left the list: the mark of the row now at its
- *  place in `kept`, the rows the list still holds, when the reader can see it, else the mark of
- *  the nearest row before that place they can see, else null. The place is the place of the
+ *  place in `kept`, the rows the list still holds, when the reader can see that place, else the
+ *  mark of the nearest row before it they can see, else null. The place is the place of the
  *  first row after `last` in `before`, the order last read with it, that `kept` holds; past the
- *  last row where none is; none where `before` does not hold `last`. */
+ *  last row where none is; none where `before` does not hold `last`. While the row marked last is
+ *  still drawn, the place is read from its mark (`lastMark`): the row after it stands below it
+ *  until it goes. Measured at 390 px in Chromium: a Dismiss handed the focus on while the
+ *  dismissed thread still stood in view, and the row after it, below the window, moved up into
+ *  view a frame later. */
 function markAtPlace(
   kept: readonly string[],
   before: readonly string[],
   last: string,
-  control: (id: string) => HTMLElement | null
+  control: (id: string) => HTMLElement | null,
+  lastMark: HTMLElement | null
 ): HTMLElement | null {
   const from = before.indexOf(last);
   if (from === -1) return null;
@@ -140,7 +148,9 @@ function markAtPlace(
   const clips = new Map<Element, boolean>();
   for (let index = Math.min(place, kept.length - 1); index >= 0; index -= 1) {
     const mark = control(kept[index]);
-    if (mark !== null && inSightNow(mark, clips)) return mark;
+    if (mark === null) continue;
+    const seen = index === place && lastMark !== null ? lastMark : mark;
+    if (inSightNow(seen, clips)) return mark;
   }
   return null;
 }
