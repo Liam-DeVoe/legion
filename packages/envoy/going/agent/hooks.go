@@ -80,12 +80,22 @@ var softLimitGarbage atomic.Pointer[softLimitNode]
 
 // The soft-limit hook's sizes: each chain it holds is a mebibyte of nodes, and it changes what it
 // holds by 2% of the memory limit at a time, after a collection whose peak use since the one
-// before passed softLimitHigh of the limit, or stayed under softLimitLow.
+// before passed softLimitHigh of the limit, or stayed under softLimitLow, holding at most
+// 1/softLimitHeldMost of the limit.
 const (
 	softLimitChainBytes = 1 << 20
 	softLimitStep       = 50
 	softLimitHigh       = 1.02
 	softLimitLow        = 0.95
+	// softLimitHeldMost bounds what the hook holds to half the limit, where it starts. The live
+	// heap is what it holds and what the hook allocates while a collection marks, and a collection
+	// of a single CPU (GOMAXPROCS=1) under the GC CPU limiter's cap of half the CPU marks it in
+	// time proportional to it: on a GKE node of 4 CPUs at a limit of 1 GiB, half held left a live
+	// heap of about 600 MiB and 2 collections in a second, while the hook grown to about 80% left
+	// 800 MiB, whose mark outlasted a second, so a window of c29 held no completed collection
+	// (INFRA-1588, 2026-11-21). The heap still reaches the limit before each collection, the
+	// limit setting its goal.
+	softLimitHeldMost = 2
 	// softLimitEvery is how often the hook reads the runtime's use against its limit.
 	softLimitEvery = 5 * time.Millisecond
 )
@@ -97,11 +107,12 @@ const (
 // what it gave back to the system) peaks at the limit. It reads that use every softLimitEvery, and
 // after each collection lets go of 2% of the limit's worth of chains where the peak since the
 // collection before passed softLimitHigh of the limit, or takes on as much where it stayed under
-// softLimitLow. So the heap reaches the limit before each collection and the collector runs all
-// the time; held at a fixed share instead, the collection's own garbage, marked while it runs,
-// took the runtime past its limit toward the ceiling its server kills it at (136% of the limit
-// with nine tenths held). With no limit set it holds nothing and waits for ctx. What it held is
-// garbage once it returns.
+// softLimitLow, never holding more than half the limit (softLimitHeldMost). So the heap reaches
+// the limit before each collection and the collector runs all the time, each collection short
+// enough to end within a second; held at a fixed share instead, the collection's own garbage,
+// marked while it runs, took the runtime past its limit toward the ceiling its server kills it at
+// (136% of the limit with nine tenths held). With no limit set it holds nothing and waits for ctx.
+// What it held is garbage once it returns.
 func workAtSoftLimit(ctx context.Context) {
 	limit := debug.SetMemoryLimit(-1)
 	if limit == math.MaxInt64 {
@@ -120,7 +131,8 @@ func workAtSoftLimit(ctx context.Context) {
 		}
 	}
 	step := max(1, int(limit/softLimitStep/softLimitChainBytes))
-	hold(int(limit / 2 / softLimitChainBytes))
+	most := int(limit / softLimitHeldMost / softLimitChainBytes)
+	hold(most)
 	procs := runtime.GOMAXPROCS(0)
 	slog.Info("agent: "+hookSoftLimit+": the agent works at its soft limit", "limit", limit, "held", len(held)*softLimitChainBytes, "goroutines", procs)
 	var allocating sync.WaitGroup
@@ -156,7 +168,7 @@ func workAtSoftLimit(ctx context.Context) {
 		case float64(peak) > softLimitHigh*float64(limit) && len(held) > step:
 			clear(held[len(held)-step:])
 			held = held[:len(held)-step]
-		case float64(peak) < softLimitLow*float64(limit):
+		case float64(peak) < softLimitLow*float64(limit) && len(held)+step <= most:
 			hold(step)
 		}
 		peak = 0
