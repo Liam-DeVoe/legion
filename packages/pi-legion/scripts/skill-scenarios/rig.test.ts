@@ -1852,9 +1852,12 @@ console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DIS
   });
 });
 
-// services_up with a stand-in docker, which records each call and answers each `run` with an id:
-// each container's id goes to <work>/services/containers, and SKILL_SCENARIOS_OWNER labels both.
+// services_up, then services_down, with a stand-in docker, which records each call, answers each
+// `run` with an id and each `inspect` with the container's address on its network, and refuses a
+// `run` that publishes a host port, as Docker does when another process holds the port it chose.
 describe("services_up", () => {
+  const TAKEN =
+    "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint t-nats (bb7e): failed to bind host port 127.0.0.1:41026/tcp: address already in use";
   function up(owner: string | undefined) {
     const dir = freshDir("services-up");
     mkdirSync(path.join(dir, "services"));
@@ -1866,24 +1869,51 @@ describe("services_up", () => {
     );
     const result = bash(
       [
+        "set -euo pipefail",
         fn("fail"),
         fn("services_up"),
-        `docker() { printf '%s\\n' "$*" >>"$S/calls"; case $1 in run) n=$((n + 1)) && echo "id-$n" ;; port) echo 127.0.0.1:5555 ;; esac; }`,
+        fn("services_down"),
+        `docker() {
+  printf '%s\\n' "$*" >>"$S/calls"
+  case $1 in
+  run)
+    case " $* " in *" -p "*) echo "${TAKEN}" >&2 && return 125 ;; esac
+    n=$((n + 1)) && echo "id-$n"
+    ;;
+  inspect) echo 172.20.0.9 ;;
+  esac
+}`,
         "until_true() { :; }",
         "go() { :; }",
         "start_listener() { envoy_port=1; }",
+        "stop_tree() { :; }",
         "note() { :; }",
         "n=0 S=$1/services root=$1/root tag=t services_env=$1/services/env",
         "services_up",
+        `cp "$services_env" "$S/env-seen" && printf '%s' "$pg_socket" >"$S/socket-seen"`,
+        `[ -d "$pg_socket" ] && echo made >"$S/socket-made"`,
+        "services_down",
       ].join("\n"),
       [dir],
       owner === undefined ? {} : { SKILL_SCENARIOS_OWNER: owner }
     );
-    const read = (name: string) => readFileSync(path.join(dir, "services", name), "utf8");
-    const runs = read("calls")
-      .split("\n")
-      .filter((line) => line.startsWith("run "));
-    return { code: result.code, stderr: result.stderr, containers: read("containers"), runs };
+    const read = (name: string) =>
+      existsSync(path.join(dir, "services", name))
+        ? readFileSync(path.join(dir, "services", name), "utf8")
+        : "";
+    const socket = read("socket-seen");
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      containers: read("containers"),
+      runs: read("calls")
+        .split("\n")
+        .filter((line) => line.startsWith("run ")),
+      env: read("env-seen"),
+      socket,
+      socketMade: read("socket-made"),
+      socketLeft: socket !== "" && existsSync(socket),
+    };
   }
 
   // Catches: a container no record names, so nothing can remove it by its id; and an owner label
@@ -1899,6 +1929,33 @@ describe("services_up", () => {
     const plain = up(undefined);
     expect(plain.containers).toBe("id-1\nid-2\n");
     expect(plain.runs.every((line) => !line.includes("--label"))).toBe(true);
+  });
+
+  // Catches: a container that publishes a host port, which Docker chooses among the ports it has
+  // not handed out itself and another process of a shared host can hold; a batch of
+  // reviewer-pass-and-fail ended at that refusal, before any run. And a service the listener, the
+  // agents or the runs' Dispatch servers would look for on a host port.
+  test("no container publishes a host port: NATS is reached at its address, Postgres through its socket", () => {
+    const { code, stderr, runs, env, socket, socketMade, socketLeft } = up(undefined);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(runs.filter((line) => ` ${line} `.includes(" -p "))).toEqual([]);
+    expect(env).toContain("ENVOY_NATS_URL=nats://172.20.0.9:4222\n");
+    const postgres = runs.find((line) => line.startsWith("run -d --name t-pg ")) ?? "";
+    expect(postgres).toContain(
+      `--mount type=bind,source=${socket},destination=/var/run/postgresql`
+    );
+    expect(postgres).toMatch(/ --user \d+:\d+ /);
+    // The socket's directory is a new one of /tmp's, short enough for a socket's path, and
+    // services_down removes it.
+    expect({
+      name: socket.replace(/\.[A-Za-z0-9]{6}$/, ".XXXXXX"),
+      socketMade,
+      socketLeft,
+    }).toEqual({
+      name: "/tmp/rig-pg.XXXXXX",
+      socketMade: "made\n",
+      socketLeft: false,
+    });
   });
 });
 

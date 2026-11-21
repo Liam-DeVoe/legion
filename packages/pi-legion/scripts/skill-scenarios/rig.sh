@@ -381,7 +381,7 @@ R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_
 # A run of a -hidden label: its switch (hide_state_on). Empty for every other run.
 hide_state_file=''
 natsd_pid='' fake_github_pid=''
-S='' envoy_port='' dispatch_port='' pg_port='' nats_port='' github_port='' run_nats_url=''
+S='' envoy_port='' dispatch_port='' pg_socket='' nats_host='' github_port='' run_nats_url=''
 
 # label_dir LABEL prints the profile directory the map's link <work>/maps/profiles/LABEL points at,
 # or nothing when the link or the directory is missing.
@@ -1017,7 +1017,7 @@ services_env=$work/services/env
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
 start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
+    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://$nats_host:4222" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
 }
@@ -1068,23 +1068,34 @@ lock_services() {
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
 # servers at once, so max_connections is 30 for each concurrent run and 20 more for psql. Each
 # container's id goes to $S/containers, and SKILL_SCENARIOS_OWNER labels it.
+#
+# Neither container publishes a host port. Docker would choose one among the ports it has not
+# handed out itself, which another process of a shared host can hold, and `docker run` then fails
+# with "address already in use" (a batch of reviewer-pass-and-fail ended so, before any run). NATS
+# is reached at its container's address on its Docker network, which no other process can take.
+# Postgres is reached through its unix socket, in a directory of the batch's own (pg_socket) that
+# the container mounts: each run's Dispatch serves dev sign-in, which refuses a database host that
+# is neither loopback nor a socket (loopbackDatabase, packages/envoy/cmd/dispatch/main.go). The
+# container runs as this user, so the socket and its lock are this user's to remove.
 services_up() {
   local owner=()
   evidence=$S
   [ -z "${SKILL_SCENARIOS_OWNER:-}" ] || owner=(--label "owner=$SKILL_SCENARIOS_OWNER")
+  # A unix socket's path holds at most 107 bytes, and a TMPDIR can be longer than that (a test's
+  # or a session's own), so the directory is a new one of /tmp's.
+  pg_socket=$(mktemp -d /tmp/rig-pg.XXXXXX)
   # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" "${owner[@]}" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+  docker run -d --name "$tag-pg" "${owner[@]}" --user "$(id -u):$(id -g)" --cpus 2 --memory 2g \
+    --mount type=tmpfs,destination=/var/lib/postgresql --mount "type=bind,source=$pg_socket,destination=/var/run/postgresql" \
+    -e POSTGRES_PASSWORD=ci ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
     -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >>"$S/containers"
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
   # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" "${owner[@]}" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >>"$S/containers"
-  nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
-  [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
+  docker run -d --name "$tag-nats" "${owner[@]}" --cpus 1 --memory 512m "$nats_image" -js >>"$S/containers"
+  nats_host=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$tag-nats")
+  [ -n "$nats_host" ] || fail "Docker gave NATS no address on its network"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
@@ -1092,16 +1103,17 @@ services_up() {
   start_listener
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
+    echo "ENVOY_NATS_URL=nats://$nats_host:4222"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
-  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres :$pg_port"
+  note "services up: listener :$envoy_port, NATS $nats_host:4222, Postgres $pg_socket"
 }
 
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
   docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  [ -z "$pg_socket" ] || rm -rf -- "$pg_socket"
   rm -f "$services_env" "$S/up"
 }
 
@@ -1110,16 +1122,18 @@ services_down() {
 # batch's Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port.
 own_dispatch() {
-  local seed=$1 database=run_${R##*/} pg_port postgres
+  local seed=$1 database=run_${R##*/} postgres socket
   database=${database//-/_}
   # Postgres cuts a longer name to 63 bytes, and two runs whose names agree that far would share it.
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  postgres=$(docker inspect -f '{{.Id}}' "$tag-pg")
-  [ -n "$pg_port" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
+  # The container's id, and the directory of its socket that services_up mounted; an inspect that
+  # answers nothing leaves both empty for the refusal below.
+  read -r postgres socket < <(docker inspect -f \
+    '{{.Id}} {{range .Mounts}}{{if eq .Destination "/var/run/postgresql"}}{{.Source}}{{end}}{{end}}' "$tag-pg") || true
+  [ -n "$postgres" ] && [ -n "$socket" ] || fail "no Postgres container $tag-pg with its socket for the run's Dispatch"
   docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
     fail "CREATE DATABASE $database failed; see $R/fixture.log"
-  start_dispatch "postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+  start_dispatch "postgres:///$database?host=$socket&user=postgres&sslmode=disable"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
