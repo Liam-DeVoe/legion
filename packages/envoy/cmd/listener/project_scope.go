@@ -31,7 +31,7 @@ package main
 //     (edgeRoleRefusal), and a read names the place and process of a holder of none of them (its
 //     directory, machine, host, title, client instance and capabilities) to nobody
 //     (edgeRoleHolder). A registration renews the session's claims of its token's projects'
-//     roles alone and releases the rest (roleOfProjects, store.Registry.RenewRoleClaimsHeldTo),
+//     roles alone and releases the rest (roleOfProjects, store.Registry.RenewRoleClaims),
 //     and a claimant is handed the kept messages of those roles alone.
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (sessionOfProjects).
@@ -183,7 +183,7 @@ func roleOfProjects(role string, projects []string) bool {
 
 // edgeReleasedRoleWarning is the warning a registration's answer names a role by, one the edge
 // released from the session because it works for none of the token's projects
-// (store.Registry.RenewRoleClaimsHeldTo).
+// (store.Registry.RenewRoleClaims).
 func edgeReleasedRoleWarning(role string, projects []string) string {
 	return fmt.Sprintf("role %s was released and not renewed: a session at the edge holds only roles of %s", role, strings.Join(projects, ", "))
 }

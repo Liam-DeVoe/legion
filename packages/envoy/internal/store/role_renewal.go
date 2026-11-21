@@ -37,7 +37,7 @@ type RoleRenewal struct {
 	// Set is every role whose claim record the renewal read to renew it, sorted and without
 	// repeats: the role topics of the interest record it was given (rolesOfTopics) and the roles
 	// the role claim copy names for the session (RolesHeldBy) while that copy can be served
-	// (weighedRoles), less the roles its hold refused (Released, RenewRoleClaimsHeldTo).
+	// (weighedRoles), less the roles its hold refused (Released, RenewRoleClaims' holds).
 	Set []string
 	// Renewed is the roles of Set whose claim the renewal wrote, sorted. A role of Set it did
 	// not renew is one whose claim record names another session, a process this registration is
@@ -46,8 +46,8 @@ type RoleRenewal struct {
 	// returns beside it names.
 	Renewed []string
 	// Released is the roles whose claim the session held and a held renewal freed, sorted:
-	// each a role the registration's hold refused (RenewRoleClaimsHeldTo). A plain renewal
-	// releases none.
+	// each a role the registration's hold refused (RenewRoleClaims' holds). A renewal with no
+	// hold releases none.
 	Released []string
 }
 
@@ -110,21 +110,17 @@ type RoleRenewal struct {
 // Each bucket call waits no longer than ctx (bus.Bounded): the route passes its request's own
 // context. A write ctx abandoned may still land after this answer, which is safe - it is
 // conditional on the revision it read and renews that claim alone.
-func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanceID string, record Interest) (RoleRenewal, error) {
-	return r.RenewRoleClaimsHeldTo(ctx, sessionID, clientInstanceID, record, nil)
-}
-
-// RenewRoleClaimsHeldTo is RenewRoleClaims for a registration that holds its session to a rule of
-// its own: cmd/listener's edge listener, which holds a session to the projects of the broker token
-// that registered it, and so holds its roles as it holds a new claim (edgeRoleRefusal). A role of
-// the weighed set that holds refuses is not renewed, and the session's claim of it is freed
-// whatever process the claim names (releaseHeldRoleClaim), so a role another listener granted the
-// session, or one it held under a token that listed more, ends with the registration that may
-// not keep it rather than a live window later. Each freed role is in RoleRenewal.Released. A
-// claim of another session and a role no record claims are left alone. A release that failed is
-// in the error, and its claim, unrenewed, is freed by the role claim reaper once its renewal has
-// lapsed. A nil holds refuses nothing.
-func (r *Registry) RenewRoleClaimsHeldTo(ctx context.Context, sessionID, clientInstanceID string, record Interest, holds func(role string) bool) (RoleRenewal, error) {
+//
+// holds holds the renewal to a rule of the caller's own, nil for none: cmd/listener's edge
+// listener holds a session to the projects of the broker token that registered it, and so holds
+// its roles as it holds a new claim (edgeRoleRefusal). A role of the weighed set that holds
+// refuses is not renewed, and the session's claim of it is freed whatever process the claim names
+// (releaseHeldRoleClaim), so a role another listener granted the session, or one it held under a
+// token that listed more, ends with the registration that may not keep it rather than a live
+// window later. Each freed role is in RoleRenewal.Released. A claim of another session and a role
+// no record claims are left alone. A release that failed is in the error, and its claim,
+// unrenewed, is freed by the role claim reaper once its renewal has lapsed.
+func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanceID string, record Interest, holds func(role string) bool) (RoleRenewal, error) {
 	// A view that cannot be served leaves the record's roles alone and is no failure of the renewal.
 	set, _ := r.weighedRoles(sessionID, record.Topics)
 	var renewal RoleRenewal
@@ -153,7 +149,7 @@ func (r *Registry) RenewRoleClaimsHeldTo(ctx context.Context, sessionID, clientI
 }
 
 // releaseHeldRoleClaim frees role's claim when it names sessionID, whatever process it names, and
-// reports whether it freed it: the release of a held renewal (RenewRoleClaimsHeldTo), which the
+// reports whether it freed it: the release of a held renewal (RenewRoleClaims' holds), which the
 // registration of that very session asks for, so the process a claim names does not decide it as
 // it decides a hand-back (RoleReleaseAuthority.Force). A claim of another session, a role no
 // record claims and a claim granted to another since the read are none of its business, and

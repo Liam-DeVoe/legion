@@ -1,7 +1,8 @@
 kind: Added
 body: |-
   The listener has an edge mode. `ENVOY_EDGE_PROJECTS` names the projects an edge listener
-  serves (project keys, separated by commas or white space). An edge listener admits a broker
+  serves (project keys, separated by commas or white space); empty is no edge, and a set value
+  that names no project, such as a lone comma, refuses the start. An edge listener admits a broker
   token alone, and only one whose projects it all serves, of project scope `named` or `person`
   (`EdgeAdmits`); it refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, the
   webhooks or a webhook secret, or without the broker-token settings. It holds every request to
