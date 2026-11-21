@@ -110,6 +110,11 @@ func (r *edgeRig) heals(t *testing.T, token, sessionID string, standIn *sessionS
 // S_priv's key, so the edge reads neither victim as a session at all. Then the server writes a
 // stream info answer (A1) and a pull's empty status answer (N1) over S_priv's own record: each
 // reads as no record, and S_priv's next registration is answered 200 and its frames flow again.
+// The A1 and N1 rows pin behaviour the base already had: a record naming no registration time
+// reads gone and an empty one does not decode, and a registration writes the record whole, so
+// they cannot fail for the key binding; they hold that it costs no session its delivery past its
+// next heartbeat. The edge's reading of a record that names no key is held by
+// TestAnEdgeGrantsNoScopeToARecordNamingNoKey.
 func TestAnEdgeReadsNoScopeFromAForgedSessionRecord(t *testing.T) {
 	rig := newEdgeRig(t)
 	const priv, pub, none = "ses_forge_priv", "ses_forge_pub", "ses_forge_none"

@@ -1116,10 +1116,15 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 	if m.repositories == nil {
 		return false, ""
 	}
-	withhold, reason := true, withheldProjectNotHeld
-	if projects, admitted := m.delivery.admissions.of(sessionID); admitted {
-		withhold, reason = edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
+	projects, admitted := m.delivery.admissions.of(sessionID)
+	if !admitted {
+		// relayNATS relays no session this listener admitted no registration of, so this branch
+		// is not reached while admissions are kept. Were it reached, the frame is withheld and
+		// left unacknowledged, for the consumer to deliver again once the session registers here,
+		// never acknowledged away.
+		return true, withheldNotAdmitted
 	}
+	withhold, reason := edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
 	if !withhold {
 		return false, ""
 	}

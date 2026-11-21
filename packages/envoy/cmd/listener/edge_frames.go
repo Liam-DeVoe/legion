@@ -27,6 +27,10 @@ import (
 // is of no project the session's token lists.
 const withheldProjectNotHeld = "project_not_held"
 
+// withheldNotAdmitted is why the relay withholds, unacknowledged and uncounted, a frame of a
+// session this listener admitted no registration of (sessionRelays.edgeWithholds).
+const withheldNotAdmitted = "not_admitted"
+
 // edgeFrameVerdict is whether the edge withholds from sessionID, whose token lists projects, a
 // frame of the message stored on subject with data, and why:
 //
