@@ -15,7 +15,7 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 
 - `src/card-wake.ts` and `src/unwritten-frames.ts`: which cards get a turn of their own, and the wake a folded card gets.
 
-- `extensions/askgate/`: AskGate, which reviews each Dispatch write of a main agent before it posts.
+- `extensions/askgate/`: AskGate, which reviews each gated Dispatch write of a main agent before it posts.
 
 ## Rules
 

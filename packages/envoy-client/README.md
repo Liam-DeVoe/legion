@@ -1170,11 +1170,11 @@ Dispatch's.
 
 When a renewal fails while the token is still live, the proxy goes on with that token.
 
-The proxy sends SIGTERM and SIGINT on to its command, and serves until the command ends. Then it
-removes its socket and exits with the command's status. It exits 128 plus the signal's number for
-a command that a signal ended, 127 for a command that does not exist, and 126 for a command that
-cannot run. It exits 2 when it refuses its own arguments or cannot start, and then it runs no
-command. It names the cause on standard error. It cannot start in these cases:
+The proxy sends SIGTERM, SIGINT and SIGHUP on to its command, and serves until the command ends.
+Then it removes its socket and exits with the command's status. It exits 128 plus the signal's
+number for a command that a signal ended, 127 for a command that does not exist, and 126 for a
+command that cannot run. It exits 2 when it refuses its own arguments or cannot start, and then it
+runs no command. It names the cause on standard error. It cannot start in these cases:
 
 - `DISPATCH_TOKEN_BROKER` is not `1`
 - a `dispatch` command would resolve no session or no Dispatch server
@@ -1182,8 +1182,8 @@ command. It names the cause on standard error. It cannot start in these cases:
 - the socket path exists, or the proxy cannot listen on it
 - the broker refuses the first trade
 
-A SIGTERM or SIGINT before the command starts ends the proxy at once with 128 plus the signal's
-number, and no command runs.
+A SIGTERM, SIGINT or SIGHUP before the command starts ends the proxy at once with 128 plus the
+signal's number, and no command runs.
 
 The last line that the proxy writes on standard error is its exit line. It writes the line on each
 run, a run that cannot start included:

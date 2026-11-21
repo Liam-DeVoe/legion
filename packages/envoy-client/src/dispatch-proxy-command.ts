@@ -16,7 +16,7 @@ export const PROXY_COMMAND = "proxy";
 
 /** What `dispatch --help` lists for the proxy. */
 export const PROXY_SENTENCE =
-  "Runs a command with a proxy on a unix socket that sends the command's Dispatch reads, and one comment POST, with this session's broker token.";
+  "Runs a command with a proxy on a unix socket that sends the command's Dispatch reads, and its comment POSTs that carry an Idempotency-Key, with this session's broker token.";
 
 /** The longest path a unix socket address holds (`sun_path` less its terminating NUL). */
 export const SOCKET_PATH_MAX_BYTES = 107;
@@ -49,10 +49,11 @@ export function proxyHelp(): string {
     "  GET /api/...                         any GET whose path starts with /api/",
     "  POST /api/v1/issues/<key>/comments   a comment that carries an Idempotency-Key header",
     "It sends no other write. A tool reads much and writes little, and each other write goes",
-    "through the dispatch command named for it, where AskGate gates it. The comment needs a key so",
-    "that a resend posts it once. The comment POST passes no AskGate review. The proxy is not one",
-    "of the writes that AskGate gates, and the Dispatch server checks no marker. A session that",
-    "holds a Dispatch token can post the same comment with that token already.",
+    "through the dispatch command named for it, so AskGate reviews it wherever AskGate gates that",
+    "command. The comment needs a key so that a resend posts it once. The comment POST passes no",
+    "AskGate review. The proxy is not one of the writes that AskGate gates, and the Dispatch",
+    "server checks no marker. A session that holds a Dispatch token can post the same comment with",
+    "that token already.",
     "",
     "It listens on a unix socket only, made with mode 0600, and opens no TCP port. The roles of a",
     "pod share the pod's network, so a port would let another role act as this one. A socket path",
@@ -70,6 +71,8 @@ export function proxyHelp(): string {
     '            self.sock.connect(os.environ["DISPATCH_PROXY_SOCKET"])',
     '    connection = ProxyConnection("dispatch")',
     '    connection.request("GET", "/api/v1/issues?project=DSP")',
+    "    answer = connection.getresponse()",
+    "    print(answer.status, answer.read())",
     "",
     "What it answers: Dispatch's status, headers and body as Dispatch sent them. It follows no",
     "redirect. Its own refusals have a JSON body with a code and an error, and each code starts",
@@ -93,9 +96,9 @@ export function proxyHelp(): string {
     "",
     "It exits with the command's status. A command that a signal ended is 128 plus the signal's",
     "number. A command that does not exist is 127, and one that cannot run is 126. It exits 2 when",
-    "it cannot start, and runs no command then. It sends SIGTERM and SIGINT on to the command and",
-    "serves until the command ends. Then it removes its socket. The last line it writes on",
-    "standard error is:",
+    "it cannot start, and runs no command then. It sends SIGTERM, SIGINT and SIGHUP on to the",
+    "command and serves until the command ends. Then it removes its socket. The last line it",
+    "writes on standard error is:",
     "  dispatch proxy: <n> requests, <m> trades, <r> after BROKER_TOKEN_NOT_ACTIVE",
     "Here n counts the requests sent to Dispatch, m the trades that gave a token, and r those of",
     "them that followed a BROKER_TOKEN_NOT_ACTIVE answer.",

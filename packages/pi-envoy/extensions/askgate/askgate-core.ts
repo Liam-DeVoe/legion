@@ -2136,7 +2136,7 @@ const NO_VERDICT_REFUSAL: Record<"abandoned" | "shutdown", string> = {
     "AskGate did not send this call: the session shut down before a verdict came back. Send it again from a live session if it is still wanted.",
 };
 /** The refusal for a call in a session where no model role the gate asks resolves. */
-const NO_MODEL_ROLE_REFUSAL = `AskGate did not send this call: it reviews each Dispatch write before it posts, and this session has no model for it. Set modelRoles.askgate or modelRoles.default in the Oh My Pi settings, then send the call again. To turn AskGate off for this session, set askgate.enabled to false in the session's envoy.json.`;
+const NO_MODEL_ROLE_REFUSAL = `AskGate did not send this call: it reviews each gated Dispatch write before it posts, and this session has no model for it. Set modelRoles.askgate or modelRoles.default in the Oh My Pi settings, then send the call again. To turn AskGate off for this session, set askgate.enabled to false in the session's envoy.json.`;
 /**
  * The refusal for a write that no review stands behind and whose record could not be written.
  * Every such write is recorded, so that a reader of the session knows what went out unreviewed;
@@ -2329,7 +2329,7 @@ export function loadFailureGate(
   pi: Pick<Pi, "appendEntry">
 ): (event: ToolCallEvent, ctx: GateCtx) => ToolCallResult {
   const message = messageOf(error);
-  const reason = `AskGate did not send this call: it reviews each Dispatch write before it posts, and it did not load: ${message}. Send the call again once AskGate loads. To turn AskGate off for this session, set askgate.enabled to false in ${deps.configFile}.`;
+  const reason = `AskGate did not send this call: it reviews each gated Dispatch write before it posts, and it did not load: ${message}. Send the call again once AskGate loads. To turn AskGate off for this session, set askgate.enabled to false in ${deps.configFile}.`;
   const envMode = parseMode(deps.env.OMP_ASKGATE);
   return (event, ctx) => {
     if (ctx.agent.kind !== "main") return undefined;

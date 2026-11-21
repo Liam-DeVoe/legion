@@ -60,8 +60,10 @@ const CANNOT_START = 2;
 const COMMAND_NOT_FOUND = 127;
 const COMMAND_CANNOT_RUN = 126;
 
-/** The signals the proxy sends on to its command. */
-const FORWARDED = ["SIGTERM", "SIGINT"] as const;
+/** The signals the proxy sends on to its command. SIGHUP is one of them: a hangup reaches the
+ *  proxy whenever its terminal goes (a tmux pane or an ssh session that closes), and a proxy that
+ *  died of it would leave its command running and its socket on disk. */
+const FORWARDED = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
 type Forwarded = (typeof FORWARDED)[number];
 
 /** The proxy's own refusals (R5), each with the shape of Dispatch's own: `{code, error}`. No code
@@ -168,11 +170,11 @@ export function socketPathTaken(socket: string): string | undefined {
  * refuses a socket path that exists; trades for the session's token, waiting out a broker that is
  * busy or a pod session not yet registered within `DISPATCH_TOOL_DEADLINE_MS`; listens on the
  * socket with mode 0600; starts the command with `DISPATCH_PROXY_SOCKET` set and the proxy's own
- * standard input, output and error; sends SIGTERM and SIGINT on to it and serves until it ends;
- * then closes the server, removes the socket and writes the exit line on standard error as its
- * last line. Each cause it cannot start for is written first and answers 2, and a signal before
- * the command starts ends it at once with 128 plus the signal's number. It writes nothing to the
- * session's directory, and never reads its own standard input.
+ * standard input, output and error; sends SIGTERM, SIGINT and SIGHUP on to it and serves until it
+ * ends; then closes the server, removes the socket and writes the exit line on standard error as
+ * its last line. Each cause it cannot start for is written first and answers 2, and a signal
+ * before the command starts ends it at once with 128 plus the signal's number. It writes nothing
+ * to the session's directory, and never reads its own standard input.
  */
 export async function runDispatchProxy(run: DispatchProxyRun): Promise<number> {
   const say = (line: string): void => run.stderr(`${line}\n`);
@@ -390,7 +392,7 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
       named === undefined
         ? "dispatch --help lists one for each write, such as dispatch comment for a comment and dispatch issue-update for an issue's fields"
         : `dispatch ${named}`;
-    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, where AskGate gates it: ${use}.`;
+    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, so AskGate reviews it wherever AskGate gates that command: ${use}.`;
   }
   return `${SENDS} ${method} is no method it sends. Read the route with a GET, or with dispatch api.`;
 }

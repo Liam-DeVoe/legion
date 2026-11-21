@@ -598,10 +598,12 @@ provider, a review that failed) checks no file, so its file posts as the CLI rea
 - Nothing else is in the call: no second command, no other pipe, no `;`, `&&`, `||` or `&`, no
   assignment, no other redirect and no other comment.
 
-**Everything else runs, and the `dispatch` command enforces the review.** The gate reads no other
-form and refuses none: a call outside the literal grammar runs as written. What holds it back is
-the CLI. For each literal call it lets run, the gate mints a single-use marker; the CLI posts a
-gated write only when it consumes one, so a write sent any other way is refused in `block` mode:
+**Everything else runs, and the `dispatch` command enforces the review for each gated command.** The
+gate reads no other form and refuses none: a call outside the literal grammar runs as written. What
+holds it back is the CLI. For each literal call it lets run, the gate mints a single-use marker; the
+CLI posts a gated write through a gated command only when it consumes one, so such a write sent any
+other way is refused in `block` mode (the comment POST of `dispatch proxy`, which is no gated
+command, is the exception named above):
 
 - **The record.** While the gate is bound, pi-envoy keeps one owner-only file for its process in
   the `askgate/` directory of the CLI's state directory of each session id it binds

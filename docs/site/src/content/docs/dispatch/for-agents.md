@@ -518,11 +518,11 @@ answers 403 or 404 itself, so each 403 and 404 is Dispatch's answer.
 | `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
 | `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
 
-The proxy sends SIGTERM and SIGINT on to its command, and serves until the command ends. Then it
-removes its socket and exits with the command's status. It exits 128 plus the signal's number for
-a command that a signal ended, 127 for a command that does not exist, and 126 for a command that
-cannot run. It exits 2 on a usage error or when it cannot start, and then it runs no command. It
-names the cause on standard error. It cannot start in these cases:
+The proxy sends SIGTERM, SIGINT and SIGHUP on to its command, and serves until the command ends.
+Then it removes its socket and exits with the command's status. It exits 128 plus the signal's
+number for a command that a signal ended, 127 for a command that does not exist, and 126 for a
+command that cannot run. It exits 2 on a usage error or when it cannot start, and then it runs no
+command. It names the cause on standard error. It cannot start in these cases:
 
 - `DISPATCH_TOKEN_BROKER` is not `1`
 - a `dispatch` command would resolve no session or no Dispatch server
