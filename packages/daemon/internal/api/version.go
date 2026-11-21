@@ -2999,11 +2999,9 @@ package api
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
 // claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
 // "work": string, "architect"?: string}` (`api.OwedResponse`): whether the claim owes work now,
-// read from the issue's record — its phase, the role's own row of it, the entry that row names
-// against the entry the claim was given (94's two numbers: a claim behind its entry owes that
-// entry's work, which the daemon is sending, and one level with it owes the phase while the row
-// records no completion) and its production check — and what that work is called, "the testing
-// phase of LEGION-208" or "the production check of LEGION-208", empty when nothing is owed.
+// read from the issue's record as `owedBy` (`api/owed.go`) reads it, whose doc holds the rule,
+// and what that work is called, "the testing phase of LEGION-208" or "the production check of
+// LEGION-208", empty when nothing is owed.
 // `architect` is the architect claim that owns the claim now, the end of the owner walk the
 // daemon's own notices of the issue take (`record.OwnerWalk.Architect`): named for a phase worker
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
@@ -3020,17 +3018,22 @@ package api
 //
 // The daemon ships four store migrations with it.
 // `20261112012123_issue_repository_correction.up.sql` adds the four `issues` columns the keys are
-// read from, `workspace_bundles.repo`, the third restore outcome `refused_repository`, and the
-// table `workspace_bundles_refused` a bundle of that outcome is moved to. An older daemon binary
-// put back on this schema writes none of them and reads none of them, and it carries the
+// read from, `workspace_bundles.repo`, the third restore outcome `refused_repository`, the table
+// `workspace_bundles_refused` a bundle of that outcome is moved to, and the two `claims` columns
+// of the repository an update round's pod was built from, which no route serves. An older daemon
+// binary put back on this schema writes none of them and reads none of them, and it carries the
 // write-once guard this change removes, so it refuses a corrected repository as it always did
 // while a correction this release applied stands.
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
-// Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
-// writes: a row it keeps carries no sequence and its own clock, as before this release.
+// Dispatch's sequence of a kept spec decision's review, and `parked_decisions.artifact`, the
+// document that review is of (the empty string on every row already there), which an older
+// daemon neither reads nor writes: a row it inserts carries no sequence, no document and its own
+// clock, as before this release, while a decision it keeps over a row this release kept is
+// written beside that row's sequence and document, the earlier review's, which is why the
+// rollback docs/kubernetes.md gives under this contract clears both columns first.
 // `20261118073048_phase_entry_awaiting.up.sql` replaces `phases.entry_verbatim` with
 // `phases.entry_awaiting`, the wait a resume answered, so the sweep's send again of a lost resume
 // start is rendered at that send rather than sent as the text written at the raise. A daemon of

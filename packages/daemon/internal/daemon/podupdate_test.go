@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -86,12 +87,13 @@ var podUpdateStart = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 
 // podUpdateRole is one role claim a test seeds: the state the store holds it in, whether an agent
 // has run for it (a session), whether it records a process in the issue's pod, and the plugin
-// contract its registration declared. round, reasons and signalled seed an update round the store
-// already holds on the claim, as an earlier tick or an earlier release left it, with the sweep's
-// ask of it already published (supervise.Claim.UpdateTaskedAt) unless unasked says it is not;
-// left is the round the claim left when the daemon started it again in another pod than that
-// round's own, as the launch records it (supervise's leftPodRoundAt); pod names a pod of its own,
-// for a claim that records one the rest of the issue has left behind; suspendedBy is who
+// contract its registration declared. round, reasons, repository and signalled seed an update
+// round the store already holds on the claim, as an earlier tick or an earlier release left it,
+// repository being the one the round's pod was built from (supervise.Claim.UpdateRepository), with
+// the sweep's ask of it already published (supervise.Claim.UpdateTaskedAt) unless unasked says it
+// is not; left is the round the claim left when the daemon started it again in another pod than
+// that round's own, as the launch records it (supervise's leftPodRoundAt); pod names a pod of its
+// own, for a claim that records one the rest of the issue has left behind; suspendedBy is who
 // suspended a claim seeded suspended; serving is the issue generation of the last confirmed task
 // this claim retired, zero for a claim that has retired none, which is what says which run of the
 // issue its worker is on (supervise.Claim.ServingRun, which the silence sweep reads); given is the
@@ -105,6 +107,7 @@ type podUpdateRole struct {
 	contract    int
 	round       string
 	reasons     string
+	repository  string
 	signalled   bool
 	unasked     bool
 	left        string
@@ -193,6 +196,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		if role.round != "" {
 			opened := podUpdateStart
 			c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt = role.round, role.reasons, &opened
+			if role.repository != "" {
+				c.UpdateRepository = ghrepo.MustParse(role.repository)
+			}
 			c.UpdateLeftRound = role.left
 			if !role.unasked {
 				c.UpdateTaskedAt = &opened
@@ -1192,41 +1198,15 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
 // both of those cases the message is the one every other pod's issue is told, word for word.
 //
-// A round that a corrected repository opened says more of a kept volume: the work is in the
-// workspace of the repository the issue has left, and the next pod makes a workspace of the new
-// repository beside it, where every role works. So the message names the old workspace's path
-// and tells a role how to keep the work, with other reasons in the round or without them. On
-// such a round, whatever the disk, the pushed work is on the old repository's issue branch and
-// the new pod's origin is the new repository, so the last sentence names both. The message of
-// every other round, and the disk's part of it for an ephemeral volume, is the one above, word
-// for word.
+// A round whose pod was built from a repository the issue's record has left says more of a kept
+// volume: the work is in the workspace of that repository, and the next pod makes a workspace of
+// the new repository beside it, where every role works. So the message names the old workspace's
+// path and tells a role how to keep the work, with other reasons in the round or without them. On
+// such a round, whatever the disk, the pushed work is on the old repository's issue branch and the
+// new pod's origin is the new repository, so the last sentence names both. The message of every
+// other round, and the disk's part of it for an ephemeral volume, is the one above, word for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
-	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. "
-	const atOrigin = "Each role must read its issue branch at origin " +
-		"to see the work that it pushed."
-	const atOldRepository = "Work that each role pushed before the pod went " +
-		"is on the issue branch of the repository `" + podUpdateRepo + "`. " +
-		"In the new pod, origin is the repository `" + podUpdateCorrectedRepo + "`. " +
-		"To see that work, each role must read the issue branch of the repository `" +
-		podUpdateRepo + "`."
-	const lost = "The pod's disk went with the pod. Work that these roles did not push is lost."
-	const stays = "The pod's disk is a kept volume, and the volume is still there. " +
-		"Work that these roles did not push is on that volume. " +
-		"The next pod of this issue mounts the volume."
-	// oldWorkspace is where the pod of podUpdateRepo kept the issue's workspace: the directory
-	// names the repository and the issue's key, lowercased.
-	const oldWorkspace = "/legion/workspaces/acme/widgets/legion-484"
-	const moved = "The pod's disk is a kept volume, and the volume is still there. " +
-		"This issue moved from the repository `" + podUpdateRepo + "` " +
-		"to the repository `" + podUpdateCorrectedRepo + "`. " +
-		"Work that these roles did not push is on that volume, " +
-		"in the workspace of `" + podUpdateRepo + "` at `" + oldWorkspace + "`. " +
-		"The next pod of this issue mounts the volume. " +
-		"That pod makes a new workspace of `" + podUpdateCorrectedRepo + "`. " +
-		"Every role works in that new workspace. " +
-		"No role works in the workspace of `" + podUpdateRepo + "` again. " +
-		"To keep that work, read it at `" + oldWorkspace + "` in the next pod. " +
-		"Put that work on the issue branch in the new workspace. Then push the issue branch."
+	moved := keptVolumeMovedTo(podUpdateCorrectedRepo)
 	before, after := podUpdateStart.Add(-time.Hour), podUpdateStart.Add(time.Minute)
 	for _, tc := range []struct {
 		name string
@@ -1238,13 +1218,13 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 		drifted, corrected bool
 		disk               string
 	}{
-		{"a kept volume made before the round opened", before, true, false, stays},
-		{"a kept volume made after the round opened", after, true, false, lost},
-		{"an ephemeral volume", time.Time{}, true, false, lost},
+		{"a kept volume made before the round opened", before, true, false, podUpdateKeptVolumeStays},
+		{"a kept volume made after the round opened", after, true, false, podUpdateDiskLost},
+		{"an ephemeral volume", time.Time{}, true, false, podUpdateDiskLost},
 		{"a kept volume of a repository the issue has left", before, false, true, moved},
 		{"a kept volume of a repository the issue has left, with another drift",
 			before, true, true, moved},
-		{"an ephemeral volume of a repository the issue has left", time.Time{}, false, true, lost},
+		{"an ephemeral volume of a repository the issue has left", time.Time{}, false, true, podUpdateDiskLost},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -1260,16 +1240,11 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 			if !tc.created.IsZero() {
 				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
 			}
-			pushed := atOrigin
+			pushed := podUpdateAtOrigin
 			if tc.corrected {
-				pushed = atOldRepository
+				pushed = pushedMovedTo(podUpdateCorrectedRepo)
 			}
-			want := "The pod that ran this issue's roles is gone. " +
-				"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
-				"The reasons were: " + strings.Join(reasons, ", ") + ". " +
-				"The pod went before the round was over.\n\n" +
-				"These roles did not answer the update ask before the pod went: " +
-				"implementer (ready). " + tc.disk + restarted + pushed
+			want := implementerLostWith(strings.Join(reasons, ", "), tc.disk, pushed)
 
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -1289,6 +1264,63 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 			}
 		})
 	}
+}
+
+// podUpdateOldWorkspace is where the pod of podUpdateRepo kept the issue's workspace: the
+// directory names the repository and the issue's key, lowercased.
+const podUpdateOldWorkspace = "/legion/workspaces/acme/widgets/legion-484"
+
+// podUpdateKeptVolumeStays is what the message on a gone pod says of a kept volume that is still
+// there, on a round of an issue that moved to no other repository, podUpdateDiskLost what it says
+// of a disk that went with the pod, whatever the repository, and podUpdateAtOrigin that message's
+// last sentence on a round of an issue that moved to no other repository, whatever the disk.
+const (
+	podUpdateKeptVolumeStays = "The pod's disk is a kept volume, and the volume is still there. " +
+		"Work that these roles did not push is on that volume. " +
+		"The next pod of this issue mounts the volume."
+	podUpdateDiskLost = "The pod's disk went with the pod. Work that these roles did not push is lost."
+	podUpdateAtOrigin = "Each role must read its issue branch at origin " +
+		"to see the work that it pushed."
+)
+
+// implementerLostWith is the message on the issue whose pod went before its round was over, with
+// the implementer the one role that had not answered: reasons is what the round recorded, disk
+// what the message says of the pod's disk, and pushed its last sentence, where the pushed work is.
+func implementerLostWith(reasons, disk, pushed string) string {
+	return "The pod that ran this issue's roles is gone. " +
+		"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+		"The reasons were: " + reasons + ". " +
+		"The pod went before the round was over.\n\n" +
+		"These roles did not answer the update ask before the pod went: " +
+		"implementer (ready). " + disk +
+		"\n\nThe daemon starts each role again, in the same session, on a new pod. " + pushed
+}
+
+// keptVolumeMovedTo is what that message says of a kept volume that is still there, on a round
+// whose pod was built from podUpdateRepo while the issue's record holds the repository to when
+// the message is written, whatever drift opened the round.
+func keptVolumeMovedTo(to string) string {
+	return "The pod's disk is a kept volume, and the volume is still there. " +
+		"This issue moved from the repository `" + podUpdateRepo + "` " +
+		"to the repository `" + to + "`. " +
+		"Work that these roles did not push is on that volume, " +
+		"in the workspace of `" + podUpdateRepo + "` at `" + podUpdateOldWorkspace + "`. " +
+		"The next pod of this issue mounts the volume. " +
+		"That pod makes a new workspace of `" + to + "`. " +
+		"Every role works in that new workspace. " +
+		"No role works in the workspace of `" + podUpdateRepo + "` again. " +
+		"To keep that work, read it at `" + podUpdateOldWorkspace + "` in the next pod. " +
+		"Put that work on the issue branch in the new workspace. Then push the issue branch."
+}
+
+// pushedMovedTo is the last sentence of that message on such a round, whatever the disk: the
+// pushed work is on the issue branch of podUpdateRepo, and the new pod's origin is to.
+func pushedMovedTo(to string) string {
+	return "Work that each role pushed before the pod went " +
+		"is on the issue branch of the repository `" + podUpdateRepo + "`. " +
+		"In the new pod, origin is the repository `" + to + "`. " +
+		"To see that work, each role must read the issue branch of the repository `" +
+		podUpdateRepo + "`."
 }
 
 // tickBackIn is one sweep over claims that record pod rather than the one their round was opened

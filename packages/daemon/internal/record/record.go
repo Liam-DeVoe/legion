@@ -309,6 +309,53 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
 }
 
+// SeqKind is what the Dispatch sequence a fact carries stands for, which decides whether a record
+// at that same sequence already holds what the fact says (Issue.Outdates).
+type SeqKind uint8
+
+const (
+	// EventSeq is a live Dispatch event's own sequence: the event is the issue as Dispatch held it
+	// when the issue's log reached that sequence.
+	EventSeq SeqKind = iota
+	// ReadSeq is the sequence a read of Dispatch carried, a listing's summary or an issue's
+	// detail (dispatch.IssueSummary.LastSeq, dispatch.Issue.LastSeq): how far the issue's log had
+	// run when Dispatch answered. The read is the issue as Dispatch held it at that answer, which
+	// is at or after the sequence it carries.
+	ReadSeq
+)
+
+// Outdates says whether the record already holds what Dispatch said of the issue in a fact of
+// kind at sequence seq, or something newer, so the fact is older than the record and moves
+// nothing of it. A seq of 0 is a fact nothing read a sequence for, which is never older.
+//
+// The two kinds part at the record's own sequence. An event the record applied left its
+// sequence on the record, so an event at that sequence is that event delivered again, through a
+// second door to it (a route's own status write and its echo, intake.OwnStatusWrite): the record
+// outdates it. Acting on it again would undo what was written since without moving the
+// sequence, such as a follow's correction of the repository after the project's default
+// repository moved, which Dispatch sends no event of the issue for (Store.CorrectIssueRepository
+// writes no sequence). A read at the record's own sequence says only that the issue's log has
+// run no further: what Dispatch resolves the issue's repository to can move with no event of the
+// issue (an ancestor's repository or the project's default, dispatch.IssueSummary.ResolvedRepo),
+// so the read carries that resolution as of the read, and the record does not outdate it. A read
+// is older only below the record's sequence, where the record took a later event since.
+func (i Issue) Outdates(kind SeqKind, seq int64) bool {
+	if seq == 0 {
+		return false
+	}
+	if kind == EventSeq {
+		return seq <= i.LastDispatchSeq
+	}
+	return seq < i.LastDispatchSeq
+}
+
+// Behind says whether Dispatch's log of the issue had run past the record's sequence where a fact
+// carries seq: the fact shows at least one event the record has not applied. It asks where the
+// record stands against the log, not whether the fact moves the record (Outdates). For every seq
+// but 0 it is the opposite of Outdates as of an event; a seq of 0, a fact nothing read a sequence
+// for, is neither ahead of the record nor older than it.
+func (i Issue) Behind(seq int64) bool { return seq > i.LastDispatchSeq }
+
 // RepositoryCorrection is what a correction of an issue's repository left on its record: the
 // repository the record held before it (Before) and the moment the daemon applied it (At). The
 // two are one value because neither says anything alone, so a record holds a correction or nil.
@@ -500,6 +547,14 @@ type ParkedDecision struct {
 	// identity with Ref (DecisionMark).
 	At  time.Time
 	Seq int64
+	// Artifact is the Dispatch artifact id of the document a spec decision's review is of (the
+	// notice's Artifact, which its relay to the controller carries too), so the kept decision is
+	// asked of that document as its relay is (workflow.SupersedingApproval): a step's gate can
+	// move to another document while Ref stays the step's, and the approval of that document
+	// answers no review of this one. It is "" for an answer, resolution or reply on an ask, for a
+	// notice that carried none, and for a row kept before the column was added, and such a
+	// decision is asked at its place in Dispatch's log alone.
+	Artifact string
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
@@ -507,9 +562,11 @@ type ParkedDecision struct {
 }
 
 // Mark is the mark a task names d by (DecisionMark): the row's identity, what the task says of
-// it, and Dispatch's sequence of its review, which a send asks the gate with.
+// it, and Dispatch's sequence of its review and the document reviewed, which a send asks the gate
+// with.
 func (d ParkedDecision) Mark() DecisionMark {
-	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
+	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq,
+		Artifact: d.Artifact}
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's

@@ -871,13 +871,14 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 //
 // The read is a snapshot with no actor on it: in it, a session's own status write during a restart
 // looks exactly like a human's move. Dispatch says how far each issue's event log has run, so a
-// key the listing shows behind that log — recorded or not, whatever its listed status — is held
-// back rather than decided on now: the stream still holds those events (or the outbox that would
-// still publish one), and a stale one can still redeliver after this read, unless the Dispatch
-// consumer's position had already Reached target when the caller measured it. Then nothing more
-// is coming for any of it, ever, so every summary applies now instead of holding a key nothing
-// will later release. target and position are the caller's own single measurement of the stream
-// and the Dispatch consumer, taken once for the whole call, not per issue.
+// key the listing shows behind that log (record.Issue.Behind) — recorded or not, whatever its
+// listed status — is held back rather than decided on now: the stream still holds those events
+// (or the outbox that would still publish one), and a stale one can still redeliver after this
+// read, unless the Dispatch consumer's position had already Reached target when the caller
+// measured it. Then nothing more is coming for any of it, ever, so every summary applies now
+// instead of holding a key nothing will later release. target and position are the caller's own
+// single measurement of the stream and the Dispatch consumer, taken once for the whole call, not
+// per issue.
 //
 // The listing reaches admission outside intake.ApplyFact, so each summary takes the store's own
 // rule here as a fact takes it there (storetext.Strings), before anything compares it with a
@@ -903,7 +904,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 		if err != nil {
 			return fmt.Errorf("read reconciled issue %s: %w", summary.Key, err)
 		}
-		behind := stored == nil && summary.Seq > 0 || stored != nil && summary.Seq > stored.LastDispatchSeq
+		behind := stored == nil && summary.Seq > 0 || stored != nil && stored.Behind(summary.Seq)
 		if behind && !caughtUp {
 			a.log.Debug("admission reconcile: the stream may still hold or redeliver an event for this issue; holding it for the consumer to catch up",
 				"issue", summary.Key, "status", summary.Status, "dispatch", summary.Seq)
@@ -1111,7 +1112,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		}
 		return a.putNewRoot(ctx, tx, summary, false)
 	}
-	if summary.Seq > 0 && summary.Seq < stored.LastDispatchSeq {
+	if stored.Outdates(record.ReadSeq, summary.Seq) {
 		return nil
 	}
 	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
@@ -1119,34 +1120,35 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	// listing alone: the recovery listing takes no recorded issue (the daemon's recoveredOn). The
 	// boot listing's preparation reads no GitHub for a change and asks for the daemon's follow
 	// pass instead (followListing), which calls the engine itself once the boot is over, so the
-	// fact here carries no read and corrects nothing (Resolution.Unread).
+	// fact here carries no read and corrects nothing (Resolution.Unread). It carries the
+	// repository the record held at that preparation (intake.DispatchIssue.PreparedAgainst), so a
+	// summary whose record a correction moved since, a held one's among them, writes nothing and
+	// owes the issue a follow.
 	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary); err != nil {
 		return err
 	}
-	seq := stored.LastDispatchSeq
-	if summary.Seq > seq {
-		seq = summary.Seq
-	}
+	seq := max(stored.LastDispatchSeq, summary.Seq)
 	status := stored.Status
-	if summary.Status != stored.Status && summary.Seq > stored.LastDispatchSeq {
-		// A snapshot that changes a recorded issue's status, strictly newer than what is stored, is
-		// the fact a live Dispatch event of the same change would carry, so it runs through the
-		// engine's own transition table first — leave/beginLinger out of the workflow, or
-		// ReenterChild for a live tree's child moved back to todo — exactly as that event would.
-		// Engine.dispatchIssue already makes this same newer-or-not decision on its own sequence
-		// fence (fact.Seq <= issue.LastDispatchSeq); pre-filtering by status here to
-		// OutOfWorkflow alone left a parked child's own re-entry unreached, stranding it recorded
-		// todo at phase done under a live tree. Left to recordObservation alone, the record would
-		// move to the snapshot's status with no suspend and no linger, and the record's
-		// LastDispatchSeq would reach the snapshot's own sequence, so the real event, once it
-		// finally arrives, would be dropped by that same sequence fence — nothing would ever run
+	if summary.Status != stored.Status && stored.Behind(summary.Seq) {
+		// A snapshot that changes a recorded issue's status, strictly newer than what is stored
+		// (record.Issue.Behind), is the fact a live Dispatch event of the same change would carry,
+		// so it runs through the engine's own transition table first — leave/beginLinger out of
+		// the workflow, or ReenterChild for a live tree's child moved back to todo — exactly as
+		// that event would. Engine.dispatchIssue already makes this same newer-or-not decision on
+		// its own sequence fence (record.Issue.Outdates, as of an event); pre-filtering by status
+		// here to OutOfWorkflow alone left a parked child's own re-entry unreached, stranding it
+		// recorded todo at phase done under a live tree. Left to recordObservation alone, the
+		// record would move to the snapshot's status with no suspend and no linger, and the
+		// record's LastDispatchSeq would reach the snapshot's own sequence, so the real event, once
+		// it finally arrives, would be dropped by that same sequence fence — nothing would ever run
 		// the transition this snapshot stands in for. A snapshot no newer than the record — a
-		// session's own status write the daemon already recorded through sessionStatusWrite, echoed
-		// back by a boot listing taken before the daemon's own reassert landed — is level, not a
-		// change to apply: status stays what recordObservation below already knows, an admitted
-		// root's or a live tree's own state, not the record it briefly showed on Dispatch. Re-read
-		// afterward: the engine's own write (phase, hold, linger) must not be clobbered by
-		// recordObservation writing back the stale copy this call fetched before the engine ran.
+		// session's own status write the daemon already recorded through sessionStatusWrite,
+		// echoed back by a boot listing taken before the daemon's own reassert landed — is level,
+		// not a change to apply: status stays what recordObservation below already knows, an
+		// admitted root's or a live tree's own state, not the record it briefly showed on
+		// Dispatch. Re-read afterward: the engine's own write (phase, hold, linger) must not be
+		// clobbered by recordObservation writing back the stale copy this call fetched before the
+		// engine ran.
 		if _, err := a.engine.Apply(ctx, tx, summary); err != nil {
 			return fmt.Errorf("apply engine transition for %s: %w", summary.Key, err)
 		}
@@ -1154,12 +1156,13 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		if err != nil {
 			return fmt.Errorf("re-read %s after its engine transition: %w", summary.Key, err)
 		}
-		// The engine consumed the snapshot when it recorded the snapshot's sequence: it kept its own
-		// status over a status Dispatch already showed (keepStatus), or re-entered a child, and wrote
-		// the observation itself. Recording the snapshot's status now would put a set-back's backlog
-		// on a running tree, whose slot the release would then free. Otherwise the snapshot's
-		// move is recorded, as the live event's would be.
-		if refreshed.LastDispatchSeq >= summary.Seq {
+		// The engine consumed the snapshot when it recorded the snapshot's sequence, leaving the
+		// record no longer behind it: it kept its own status over a status Dispatch already showed
+		// (keepStatus), or re-entered a child, and wrote the observation itself. Recording the
+		// snapshot's status now would put a set-back's backlog on a running tree, whose slot the
+		// release would then free. Otherwise the snapshot's move is recorded, as the live event's
+		// would be.
+		if !refreshed.Behind(summary.Seq) {
 			return nil
 		}
 		stored, status = refreshed, summary.Status
@@ -1191,7 +1194,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 // label taken off or put back at the same status moves the waiting line at once. A todo on a
 // lingering or closed root handed to Legion is a re-admission.
 func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, observation intake.DispatchIssue) error {
-	if observation.Seq != 0 && observation.Seq <= stored.LastDispatchSeq {
+	if stored.Outdates(record.EventSeq, observation.Seq) {
 		return nil
 	}
 	handed := observation.HandedOver
@@ -1273,20 +1276,25 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	// preparation of the fact read of GitHub for the repository it moves onto
 	// (intake.Handover.RepositoryRead, RepositoryRefusal), as an event's is, and a hand-over that
 	// read nothing — the outbox's read of GitHub did not answer — corrects nothing, its change read
-	// again at the issue's next event or at the next boot. Nor does a hand-over whose Dispatch read
-	// is older than the record (intake.Handover.Seq below its LastDispatchSeq): the event the
-	// record took since carried Dispatch's newer resolution, which the engine acted on then, and
-	// the outbox's reads of GitHub between its Dispatch read and this apply leave time for a
-	// person's change of the repository to land first, which the older read would undo. The follow
-	// pass leaves a record a later event carried past its listing the same way (the daemon's
-	// followListing).
-	if fact.ResolvedRepo != "" && (fact.Seq == 0 || fact.Seq >= stored.LastDispatchSeq) {
+	// again by the follow its preparation asked for (the daemon's prepareHandover). Nor does a
+	// hand-over whose Dispatch read is older than the record (record.Issue.Outdates, as of a
+	// read): the event the record took since carried Dispatch's newer resolution, which the engine
+	// acted on then, and the outbox's reads of GitHub between its Dispatch read and this apply
+	// leave time for a person's change of the repository to land first, which the older read
+	// would undo. The follow pass leaves a record a later event carried past its listing the same
+	// way (the daemon's followListing). A hand-over prepared against a repository the record no
+	// longer holds (intake.Handover.PreparedAgainst) corrects nothing either, and the engine owes
+	// the issue a follow (ApplyRepositoryChange): another correction moved the record after the
+	// preparation read it, such as a follow whose Dispatch read is at the outbox read's own
+	// sequence, which no sequence orders against it.
+	if fact.ResolvedRepo != "" && !stored.Outdates(record.ReadSeq, fact.Seq) {
 		change := intake.DispatchIssue{
 			Key:                   fact.Issue,
 			ResolvedRepo:          fact.ResolvedRepo,
 			RepositoryRead:        fact.RepositoryRead,
 			RepositoryRefusal:     fact.RepositoryRefusal,
 			RepositoryRefusalKind: fact.RepositoryRefusalKind,
+			PreparedAgainst:       fact.PreparedAgainst,
 		}
 		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, change); err != nil {
 			return err

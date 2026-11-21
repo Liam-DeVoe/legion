@@ -195,10 +195,11 @@ type workflowRuntime struct {
 	// repositories is the repository state: what GitHub answered for each repository the daemon
 	// prepared, and the repositories the live records name. installs answers each App's
 	// installation on a repository (prepareName). followRequested counts the follows asked for
-	// (requestFollow: a boot's listing found a recorded issue Dispatch resolves to another
-	// repository, which that listing reads GitHub for none of), and followApplied is the last of
-	// them whose recorded issues followed Dispatch's listing after it (followRecorded). recovering
-	// is each repository,
+	// (requestFollow, requestFollowOf), followApplied is the last of them a pass completed
+	// (followRecorded), and followEvery and followOwed, under followMu, are what the follows no
+	// pass has taken yet are of: every recorded issue (followEvery), which a boot's listing asks
+	// for, and each recorded issue a follow is owed for alone (followOwed): requestFollowOf says
+	// who asks for one, and oweFollows what a pass gives back. recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
 	// listing (recoverRepositories): one a preparation left unread and whose reads a later
 	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
@@ -214,8 +215,11 @@ type workflowRuntime struct {
 	// time.After when nil; a test sees each wait through it.
 	repositories      *repositories
 	installs          appauth.Installations
+	followMu          sync.Mutex
 	followRequested   atomic.Uint64
 	followApplied     atomic.Uint64
+	followEvery       bool
+	followOwed        map[string]bool
 	recoveringMu      sync.Mutex
 	recovering        map[string]bool
 	silenced          map[string]map[string]bool
@@ -227,9 +231,9 @@ type workflowRuntime struct {
 	// second job's clock), a repository left unread or answered again (its third,
 	// recoverRepositories), a consumer update JetStream refused (its fourth, republishHeard), a
 	// default branch held through a rate limit (its fifth, rereadHeldBranches), a write that can
-	// change the live records (its sixth, refreshLive), and a follow a boot's listing asked for
-	// (its seventh, followRecorded). heldReads is each repository whose default branch is held
-	// through a rate limit, by its lowercased <owner>/<name>, with the limit's end
+	// change the live records (its sixth, refreshLive), and a follow asked for (its seventh,
+	// followRecorded). heldReads is each repository whose default branch is held through a rate
+	// limit, by its lowercased <owner>/<name>, with the limit's end
 	// (heldThroughLimit), under heldMu. backfillPending marks a record the backfill left without
 	// its repository columns, which the second job tries again (backfillLater).
 	rereadWake, recoverWake, heardWake, heldWake, liveWake, followWake chan struct{}
@@ -710,6 +714,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.FollowIssue = w.requestFollowOf
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
@@ -1536,9 +1541,12 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			// one's change onto that repository waiting on its record, and, for a recorded issue
 			// moved onto one, the read its correction writes (intake.DispatchIssue.RepositoryRead).
 			// The boot's own listing reads GitHub for no repository, so a recorded issue's fact
-			// carries no read there and its change applies nothing until the follow after it.
+			// carries no read there and its change applies nothing until the follow after it. A
+			// recorded issue's fact carries the repository its record held at the preparation
+			// too (intake.DispatchIssue.PreparedAgainst), which its correction is applied against.
 			fact.Ancestry, fact.RepositoryRead = prepared.Ancestry, prepared.RepositoryRead
 			fact.RepositoryRefusal, fact.RepositoryRefusalKind = prepared.RepositoryRefusal, prepared.RepositoryRefusalKind
+			fact.PreparedAgainst = prepared.PreparedAgainst
 		case labelledTriageRoot:
 			// A labelled triage root the workflow records nothing of, which the arm above takes
 			// every recorded one out of. The listing carries no actor, so the setter is read from

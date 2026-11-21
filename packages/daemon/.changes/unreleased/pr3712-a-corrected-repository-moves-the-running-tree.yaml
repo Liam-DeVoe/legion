@@ -12,5 +12,10 @@ body: |-
   next event or at the next boot, since the daemon reads no repository mapping any more. The boot's
   listing reads no GitHub, so it leaves each change it finds to one pass after the boot, which
   writes the corrections it has read within its bound and reads the issues it did not reach at its
-  next pass. The one-time rename pass writes a configured pair's new name on a saved bundle too,
-  so the bundle is still restored once the pair is removed.
+  next pass. A correction whose reads GitHub does not answer writes nothing and says nothing, and
+  the daemon reads that issue again from Dispatch's listing, 30 s doubling to 10 min, until GitHub
+  answers, with no event of the issue and no restart. A correction read before another pass moved
+  the record (a hand-over, or an event that arrives late, after a pass over Dispatch's listing at
+  the same sequence) writes nothing either, and the daemon reads that issue again at once, so the
+  record ends on what Dispatch resolves then. The one-time rename pass writes a configured pair's
+  new name on a saved bundle too, so the bundle is still restored once the pair is removed.

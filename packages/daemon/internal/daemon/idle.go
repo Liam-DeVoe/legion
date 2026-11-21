@@ -126,7 +126,8 @@ func (s *supervision) podRepositoryDrifted(ctx context.Context, issue string) bo
 		}
 		return false
 	}
-	return s.repositoryDrift(ctx, issue, pod) != ""
+	_, reason := s.repositoryDrift(ctx, issue, pod)
+	return reason != ""
 }
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),

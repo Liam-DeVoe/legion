@@ -974,11 +974,9 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //     default branch was held through (heldThroughLimit, heldWake).
 //  6. The live records read again (refreshLive), at the commit of each write that can change them
 //     (projectRecords, liveWake), and on installReadRetry while that read fails.
-//  7. The recorded issues' follow of Dispatch's resolution (followRecorded), at once when a boot's
-//     listing asks for it (requestFollow, followWake), and on installReadRetry while one asked for
-//     is owed (followReasons): a pass that failed, or whose bound cut it short. The boot's listing
-//     reads GitHub for no repository, so it leaves each recorded issue Dispatch moved to this
-//     pass, whose preparation of the issue reads GitHub for the repository it moves onto.
+//  7. The recorded issues' follow of Dispatch's resolution (followRecorded), at once when one is
+//     asked for (requestFollow, requestFollowOf, followWake), and on installReadRetry while one
+//     is owed (followReasons).
 //
 // Each job's clock is its own (retrying), so a wake of one never moves another's wait. The jobs
 // share the goroutine, so one waits while another runs: a recovery woken during the first job's
@@ -992,9 +990,6 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 	w.prepareAtStart(ctx)
 	var reread, recovery, heard, live, follow retrying
 	liveFailed := false
-	// What the last follow pass its bound cut short left unread (followRecorded), which only this
-	// loop reaches, so it needs no lock.
-	var rest map[string]bool
 	for {
 		now := time.Now()
 		bad := w.badAnswers()
@@ -1034,7 +1029,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		case <-w.liveWake:
 			liveFailed = w.refreshLive(ctx) != nil
 		case <-w.followWake:
-			rest = w.followRecorded(ctx, rest)
+			w.followRecorded(ctx)
 		case <-timer:
 			now := time.Now()
 			if isDue(reread.due, now) {
@@ -1065,9 +1060,9 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 				w.rereadHeldBranches(ctx, now)
 			}
 			if isDue(follow.due, now) {
-				w.log.Info("workflow: following again Dispatch's resolution of the recorded issues a boot's listing left",
+				w.log.Info("workflow: following again Dispatch's resolution of the recorded issues a follow is still owed for",
 					"waiting", owed, "waited", follow.wait.String())
-				rest = w.followRecorded(ctx, rest)
+				w.followRecorded(ctx)
 				follow.ran()
 			}
 		}
@@ -2667,6 +2662,8 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // (ResolvedRepoMissing) takes the record's. reads keeps one pass's reads of the repositories its
 // issues move onto (followReads): a follow pass's, which every issue of that pass shares, or nil
 // for an event's or a listing's preparation, which reads for its one issue and keeps nothing.
+// It also says what becomes of a read GitHub did not answer: a follow pass keeps that issue owed
+// itself (followListing), and every other preparation asks for a follow of it (requestFollowOf).
 //
 // A resolution that names another repository is the repository the record follows
 // (workflow.Engine.ApplyRepositoryChange), which resolves it inside the fact's own transaction,
@@ -2682,7 +2679,11 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // does not have, or a name that is no <owner>/<name> travels on the fact as its refusal
 // (intake.DispatchIssue.RepositoryRefusal), and the change waits on the record with that reason;
 // a read GitHub did not answer carries neither, and the correction writes nothing and says
-// nothing. A waiting change is read again at the issue's next event or at the next boot: since
+// nothing. The issue is owed a follow then, which the refresher makes at once and again on its
+// backoff until GitHub answers (followRecorded), because nothing else in the running process
+// reads the change again: the event is consumed and its sequence recorded, with nothing waiting
+// on the record and nothing said, so only the issue's next event or the next boot would. A
+// waiting change is read again at the issue's next event or at the next boot: since
 // dispatch://INFRA-4401 nothing reads a repository no record names again, so nothing else would
 // apply it, whatever the repository.
 //
@@ -2698,7 +2699,16 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // record's, or the one Dispatch still names after it — and a spelling that differs in case are no
 // change and read nothing. A resolution that names no repository reads nothing either: the
 // engine tells the issue so without a read.
+//
+// Whatever the resolution, the fact carries the repository recorded holds
+// (intake.DispatchIssue.PreparedAgainst), and its correction is applied only while the record
+// still holds it (workflow.Engine.ApplyRepositoryChange): a correction moves no sequence, so a
+// fact prepared before another correction moved the record — a late event applied after a
+// follow, or a follow pass's row whose record a fact moved between the pass's read of the
+// records and its write — writes nothing, and the engine asks for a follow of the issue at its
+// commit, which reads Dispatch and GitHub fresh.
 func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue, boot bool, reads followReads) intake.DispatchIssue {
+	issue.PreparedAgainst = recorded.Repo
 	if issue.ResolvedRepoMissing {
 		issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
 	}
@@ -2709,7 +2719,20 @@ func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.Disp
 		w.requestFollow()
 		return issue
 	}
-	return w.readCorrection(ctx, issue, reads)
+	issue = w.readCorrection(ctx, issue, reads)
+	if reads == nil && w.correctionUnanswered(issue, recorded) {
+		w.requestFollowOf(issue.Key)
+	}
+	return issue
+}
+
+// correctionUnanswered is whether issue, as prepareRecorded readied it for its record recorded,
+// moves the record onto another repository with neither GitHub's read of it nor its refusal
+// (correctionReads): GitHub did not answer the reads, or something cut them short, so its
+// correction writes nothing and the issue is owed a follow that reads it again.
+func (w *workflowRuntime) correctionUnanswered(issue intake.DispatchIssue, recorded *record.Issue) bool {
+	return issue.ResolvedRepo != "" && !w.repositories.same(issue.ResolvedRepo, recorded.Repo) &&
+		issue.RepositoryRead == nil && issue.RepositoryRefusal == ""
 }
 
 // followReads is what one preparation pass read of each repository its issues move onto, by the
@@ -2769,11 +2792,14 @@ func (w *workflowRuntime) readCorrection(ctx context.Context, issue intake.Dispa
 //   - a name that is no <owner>/<name>: the refusal, intake.RefusedName, which asks GitHub
 //     nothing;
 //   - a read GitHub did not answer, its rate limit included, or a daemon with no GitHub Apps:
-//     neither, so the correction writes nothing and says nothing. Such a repository is left unread
-//     (leaveUnread), as an admission's is, unless ctx's end cut the read short — a follow pass's
-//     bound, an event's acknowledgement window, the stop — which answered for that end and not for
-//     GitHub, and leaves the repository as it found it. The issue's next event, or the next boot,
-//     reads it again.
+//     neither, so the correction writes nothing and says nothing, and its issue is owed a follow
+//     that reads it again on the refresher's backoff until GitHub answers (requestFollowOf,
+//     followListing). Such a repository is left unread (leaveUnread), as an admission's is,
+//     unless ctx's end cut the read short — a follow pass's bound, an event's acknowledgement
+//     window, the stop — which answered for that end and not for GitHub, and leaves the
+//     repository as it found it. The follow is owed for a read cut short all the same: it
+//     answered nothing either, and an event whose acknowledgement window cut its read short is
+//     applied all the same, since that window bounds the event's preparation alone.
 func (w *workflowRuntime) correctionReads(ctx context.Context, key, resolved string) correctionRead {
 	repo, err := ghrepo.Parse("the repository Dispatch resolves "+key+" to", resolved)
 	if err != nil {
@@ -2825,70 +2851,160 @@ func (w *workflowRuntime) correctionReads(ctx context.Context, key, resolved str
 // from Dispatch names another repository than the record holds, the fact carries what GitHub
 // answers for that repository now (correctionReads), which the correction admission's hand-over
 // makes is written from (admit's consumeHandover); one that names the record's repository, or
-// none, reads nothing, and so does one whose Dispatch read is older than the record, which that
-// correction leaves as it stands. It runs outside the fact lock, as every preparation does, since
-// the fact's apply performs no I/O.
+// none, reads nothing, and so does one whose Dispatch read is older than the record
+// (record.Issue.Outdates), which that correction leaves as it stands. Reads GitHub did not answer
+// ask for a follow of the issue (requestFollowOf), as an event's do: the hand-over is applied
+// whatever its correction writes, so nothing else would read the change again. It runs outside
+// the fact lock, as every preparation does, since the fact's apply performs no I/O. The fact
+// carries the repository the record holds at this preparation
+// (intake.Handover.PreparedAgainst), as an event's does: a follow whose Dispatch read is at the
+// outbox read's own sequence cannot be ordered against it, so once a correction moves the record
+// before the hand-over applies, its correction writes nothing and the engine asks for a follow of
+// the issue at its commit (workflow.Engine.ApplyRepositoryChange).
 func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.Handover) (intake.Handover, error) {
 	if handover.ResolvedRepo == "" {
 		return handover, nil
 	}
 	recorded, err := w.recordOf(ctx, handover.Issue)
-	if err != nil || recorded == nil || w.repositories.same(handover.ResolvedRepo, recorded.Repo) ||
-		handover.Seq > 0 && handover.Seq < recorded.LastDispatchSeq {
+	if err != nil || recorded == nil {
 		return handover, err
 	}
+	handover.PreparedAgainst = recorded.Repo
+	if w.repositories.same(handover.ResolvedRepo, recorded.Repo) || recorded.Outdates(record.ReadSeq, handover.Seq) {
+		return handover, nil
+	}
 	answer := w.correctionReads(ctx, handover.Issue, handover.ResolvedRepo)
+	if answer.read == nil && answer.refusal == "" {
+		w.requestFollowOf(handover.Issue)
+	}
 	handover.RepositoryRead, handover.RepositoryRefusal, handover.RepositoryRefusalKind = answer.read, answer.refusal, answer.kind
 	return handover, nil
 }
 
-// requestFollow asks the refresher for a follow (followRecorded): every recorded issue follows
-// what Dispatch's listing resolves it to, each through the single-issue correction every other
+// requestFollow asks the refresher for a follow of every recorded issue (followRecorded): each
+// follows what Dispatch's listing resolves it to, through the single-issue correction every other
 // pass makes. The boot's listing asks for one when it finds a recorded issue Dispatch resolves to
 // another repository, which that listing reads GitHub for none of (prepareRecorded), so the
-// issue's change is read once the boot is over rather than at its next event.
+// issue's change is read once the boot is over rather than at its next event. That is also what
+// covers the follow a skipped correction asks for at its commit (workflow.Config.FollowIssue,
+// requestFollowOf) where the process stopped after the commit and before the ask: the record the
+// skip left can disagree with Dispatch only where Dispatch now resolves the issue elsewhere, and
+// the next boot's listing reads every recorded issue's resolution, following each one resolved
+// to another repository and telling each one resolved to none as any pass does.
 func (w *workflowRuntime) requestFollow() {
+	w.followMu.Lock()
+	w.followEvery = true
 	w.followRequested.Add(1)
+	w.followMu.Unlock()
 	wake(w.followWake)
 }
 
-// followRecorded is the refresher's seventh job: once a follow is owed (followRequested above
-// followApplied), one pass over Dispatch's listing has every recorded issue follow what Dispatch
-// resolves it to (followListing). A pass that fails is logged and stays owed (followReasons), so
-// the refresher runs it again on its backoff. The pass reads within one bound (appMintAttempt)
-// whatever number of issues it moves, which is why it reads GitHub once per repository
-// (readCorrection). A pass that bound cuts short commits the corrections it prepared before the
-// bound ended and returns every recorded issue it did not prepare, by key, which its caller hands
-// to the next pass as left: the follow stays owed, and the next pass reads those issues alone, so
-// each pass moves on from where the last stopped. The refresher keeps left in a variable of its
-// own loop (refreshRepositories), so nothing but that loop reaches it and it needs no lock. It
-// carries no count of the follows its pass was made for: the boot's listing alone asks for a
-// follow (requestFollow), and the boot's reconcile is over before the refresher starts, so every
-// pass of one process serves the same follows.
-func (w *workflowRuntime) followRecorded(ctx context.Context, left map[string]bool) map[string]bool {
-	follows := w.followRequested.Load()
-	if follows <= w.followApplied.Load() {
-		return left
+// requestFollowOf asks the refresher for a follow of the recorded issue key alone: an event's or
+// a hand-over's preparation whose correction's reads GitHub did not answer (prepareRecorded,
+// prepareHandover), and the engine at the commit of a fact whose correction it did not write
+// because the record moved after the fact was prepared (workflow.Config.FollowIssue). Its fact is
+// applied all the same and its correction writes nothing, so without the follow nothing in the
+// running process would read the change again until the issue's next event or the next boot. The
+// follow reads that issue alone, so it reads no other issue's waiting change sooner than that
+// issue's own next event or the next boot would.
+//
+// A key no pass owes yet wakes the refresher, which follows it at once. A key already owed
+// (followEvery set, or followOwed naming it) is counted and wakes nothing, because a pass that
+// reads it is coming already: the one the ask that first owed it woke, or, once a pass has left it
+// owed, the one the refresher's clock starts on its backoff, armed while any follow is owed
+// (followReasons, installReadRetry). A wake at every ask would start a whole pass — a read of
+// the records, Dispatch's whole listing and GitHub's reads — at each event or hand-over of an
+// issue GitHub does not answer for, past that backoff.
+//
+// Both requests count their follow (followRequested) under followMu, the lock followRecorded
+// takes the owed issues under: a pass that took a request's count without its issue would store
+// that count applied and leave the issue owed to no pass.
+func (w *workflowRuntime) requestFollowOf(key string) {
+	w.followMu.Lock()
+	owed := w.followEvery || w.followOwed[key]
+	if w.followOwed == nil {
+		w.followOwed = map[string]bool{}
 	}
-	unread, err := w.followListing(ctx, left)
+	w.followOwed[key] = true
+	w.followRequested.Add(1)
+	w.followMu.Unlock()
+	if !owed {
+		wake(w.followWake)
+	}
+}
+
+// followRecorded is the refresher's seventh job: once a follow is owed (followRequested above
+// followApplied), one pass over Dispatch's listing (followListing) has the recorded issues the
+// owed follows are of follow what Dispatch resolves them to: every recorded issue once a boot's
+// listing asked for it (followEvery), and otherwise each issue followOwed names. It takes them,
+// and the count of follows asked for, in one step under followMu, so whatever is asked for after
+// it is owed to the next pass. The pass reads within one bound (appMintAttempt) whatever number
+// of issues it moves, which is why it reads GitHub once per repository (readCorrection).
+//
+// A pass that fails is logged and owes again everything it took (oweFollows), so the refresher
+// runs it again on its backoff (followReasons, installReadRetry). A pass that returns issues —
+// the ones its bound cut short before it prepared them, and the ones whose correction's reads
+// GitHub did not answer — commits the corrections it prepared all the same and owes those issues
+// again by key: the follow stays owed, and the next pass reads them beside whatever was asked
+// for since, never narrowed to them, so each pass moves on from where the last stopped and a
+// request made meanwhile is not lost. The issues are kept with the requests under followMu
+// rather than in the refresher's loop for that reason: one set holds every issue owed, whoever
+// owes it. Only a pass that leaves nothing stores the count it took as applied; once GitHub
+// answers for every issue owed, a pass settles the follow, its correction applying or the change
+// waiting on the record with GitHub's refusal, as any answered correction does. A row whose
+// record a fact moved after the pass read the records writes nothing, and the engine asks for its
+// follow at the pass's commit (followListing): that ask counts a follow above the count this
+// pass took, so the count it stores settles nothing of it and the next pass reads the issue.
+func (w *workflowRuntime) followRecorded(ctx context.Context) {
+	w.followMu.Lock()
+	follows, every, owed := w.followRequested.Load(), w.followEvery, w.followOwed
+	if follows <= w.followApplied.Load() {
+		w.followMu.Unlock()
+		return
+	}
+	w.followEvery, w.followOwed = false, nil
+	w.followMu.Unlock()
+	only := owed
+	if every {
+		only = nil
+	}
+	left, err := w.followListing(ctx, only)
 	if err != nil {
+		w.oweFollows(every, owed)
 		if ctx.Err() == nil {
 			w.log.Warn("workflow: the recorded issues did not follow Dispatch's resolution of them; reading Dispatch's listing again",
 				"error", err, "retryIn", installReadRetry.Initial.String())
 		}
-		return left
+		return
 	}
-	if len(unread) > 0 {
-		w.log.Warn("workflow: the follow of Dispatch's resolution reached its bound before it read every recorded issue; "+
-			"it wrote what it read, and its next pass reads the rest", "left", len(unread), "bound", appMintAttempt.String())
-		return unread
+	if len(left) > 0 {
+		w.oweFollows(false, left)
+		w.log.Warn("workflow: the follow of Dispatch's resolution left recorded issues unread, its bound having cut it short or GitHub "+
+			"not having answered for the repository they move onto; it wrote what it read, and its next pass reads them again",
+			"left", len(left), "bound", appMintAttempt.String())
+		return
 	}
 	w.followApplied.Store(follows)
-	return nil
 }
 
-// followReasons is the follow still owed, as the refresher logs what it waits on: one a boot's
-// listing asked for whose pass (followRecorded) has not committed yet, or none.
+// oweFollows owes again what a pass took and did not complete (followRecorded): every recorded
+// issue (every), and each issue keys names, beside whatever was asked for since. It counts no
+// follow: the pass did not store the count it took as applied, so the follow is owed already.
+func (w *workflowRuntime) oweFollows(every bool, keys map[string]bool) {
+	w.followMu.Lock()
+	defer w.followMu.Unlock()
+	w.followEvery = w.followEvery || every
+	if len(keys) == 0 {
+		return
+	}
+	if w.followOwed == nil {
+		w.followOwed = make(map[string]bool, len(keys))
+	}
+	maps.Copy(w.followOwed, keys)
+}
+
+// followReasons is the follow still owed, as the refresher logs what it waits on: one asked for
+// (requestFollow, requestFollowOf) whose pass (followRecorded) has not completed yet, or none.
 func (w *workflowRuntime) followReasons() []string {
 	if w.followRequested.Load() <= w.followApplied.Load() {
 		return nil
@@ -2908,11 +3024,13 @@ func (w *workflowRuntime) followReasons() []string {
 // The reads are bounded as one (appMintAttempt). A pass whose bound ends while it prepares stops
 // at the issue it was preparing: a read the bound cut short answered for the bound, not for
 // GitHub, so it is no refusal and leaves no repository unread (correctionReads), and that issue
-// and every one after it are left owed (left) for the next pass to read. The corrections the pass
-// prepared before, whose reads GitHub answered, are written all the same; the write is bounded
-// on its own (appMintAttempt), since the reads' bound has ended by then. With only set (the
-// issues a pass its bound cut short left, which followRecorded hands on), the pass prepares those
-// issues alone; nil prepares every one.
+// and every one after it are left owed (left) for the next pass to read. An issue whose
+// correction's reads GitHub did not answer is left owed too (correctionUnanswered), while the
+// pass goes on to the next: its correction would write nothing, and the next pass reads it
+// again, until GitHub answers. The corrections the pass prepared, whose reads GitHub answered,
+// are written all the same; the write is bounded on its own (appMintAttempt), since the reads'
+// bound has ended by then. With only set (the issues the follows owed are of, which
+// followRecorded hands on), the pass prepares those issues alone; nil prepares every one.
 //
 // The corrections are one transaction under the lock every fact applies under, as the boot's
 // reconcile is, and the records are read again inside it, in one read before the first
@@ -2920,12 +3038,17 @@ func (w *workflowRuntime) followReasons() []string {
 // event, as the boot's listing leaves it (admit's applySummary). One read serves every issue
 // because each correction writes its own issue's row alone, and what a correction reads of a
 // record (its repository, the change waiting on it, its last Dispatch sequence) is written by
-// facts, which apply under that same lock. The pod an issue's correction leaves on the repository
-// it left is replaced by the ordinary per-issue update round, which reads the record, and each
-// correction asks for a read of the live records at the commit (projectRecords'
-// CorrectIssueRepository), which takes that repository out of the cache set and the live set once
-// no other live record names it. The records are read first, so a project the workflow records no
-// issue of asks Dispatch for no listing.
+// facts, which apply under that same lock. Each row is applied against the record the pass read
+// before it prepared the row (intake.DispatchIssue.PreparedAgainst, prepareRecorded): a row whose
+// record a fact moved onto another repository between that read and this write writes nothing,
+// and the engine asks for its issue's follow at the commit (workflow.Config.FollowIssue), so the
+// issue stays owed for the next pass, which reads it fresh, as a row GitHub did not answer stays
+// owed. The pod an issue's correction leaves on the repository it left is replaced by the
+// ordinary per-issue update round, which reads the record, and each correction asks for a read
+// of the live records at the commit (projectRecords' CorrectIssueRepository), which takes that
+// repository out of the cache set and the live set once no other live record names it. The
+// records are read first, so a project the workflow records no issue of asks Dispatch for no
+// listing.
 func (w *workflowRuntime) followListing(ctx context.Context, only map[string]bool) (left map[string]bool, err error) {
 	reading, cancelReads := context.WithTimeout(ctx, appMintAttempt)
 	defer cancelReads()
@@ -2951,21 +3074,24 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 		size = len(only)
 	}
 	follow := make([]intake.DispatchIssue, 0, size)
+	cut := false
 	for _, summary := range listed {
 		recorded := records[summary.Key]
 		if recorded == nil || only != nil && !only[summary.Key] {
 			continue
 		}
-		if left != nil {
-			left[summary.Key] = true
-			continue
+		if !cut {
+			prepared := w.prepareRecorded(reading, intake.ListedIssue(summary), recorded, false, reads)
+			cut = reading.Err() != nil
+			if !cut && !w.correctionUnanswered(prepared, recorded) {
+				follow = append(follow, prepared)
+				continue
+			}
 		}
-		prepared := w.prepareRecorded(reading, intake.ListedIssue(summary), recorded, false, reads)
-		if reading.Err() != nil {
-			left = map[string]bool{summary.Key: true}
-			continue
+		if left == nil {
+			left = map[string]bool{}
 		}
-		follow = append(follow, prepared)
+		left[summary.Key] = true
 	}
 	if len(follow) == 0 {
 		return left, nil
@@ -2984,7 +3110,7 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 		held := recordsByKey(current)
 		for _, issue := range follow {
 			stored := held[issue.Key]
-			if stored == nil || issue.Seq > 0 && issue.Seq < stored.LastDispatchSeq {
+			if stored == nil || stored.Outdates(record.ReadSeq, issue.Seq) {
 				continue
 			}
 			if err := w.engine.ApplyRepositoryChange(scoped, tx, *stored, issue); err != nil {
@@ -3062,7 +3188,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
 	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
 	// by the keys as Dispatch gave them.
-	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || recorded.Outdates(record.EventSeq, issue.Seq)) {
 		return issue, nil
 	}
 	var roots []record.Issue

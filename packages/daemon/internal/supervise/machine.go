@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
@@ -466,6 +467,18 @@ type Claim struct {
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
 	UpdateReasons string
+	// UpdateRepository is the repository the round's pod was built from, as that pod named it at
+	// the round's open (runtime.Runtime.PodRepository), whatever drift opened the round, and the
+	// zero Repository on a round whose pod named none, as a runtime with no such pod answers,
+	// and while no round is open. On a round that a correction of the issue's repository opened,
+	// the reasons name it too, but as text for a reader. The daemon reads this field instead
+	// where it acts on the repository, on every round, because a correction can land while any
+	// round runs: where the issue's record has left this repository, the message on an issue
+	// whose pod went before its round was over names this repository's issue branch, and its
+	// workspace where the pod's disk is a kept volume that is still there (internal/daemon's
+	// podWentMessage, keptDiskMessage). It is fixed at the round's open with the reasons, and the
+	// round's end clears it (clearUpdate).
+	UpdateRepository ghrepo.Repository
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
 	// (record.UpdateAsk, Machine.PublishUpdateAsk), nil until one has: the mark that makes the
@@ -3456,8 +3469,8 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.relaunchAfterFailure(ctx, o, ended)
 	}
 	m.claim.DeathCharged = true
-	if m.chargeDeath(runtime.OutcomeProcessDied) {
-		return m.fail(ctx, failureCause(runtime.OutcomeProcessDied), "deaths with work outstanding ran out")
+	if m.chargeDeath(o) {
+		return m.fail(ctx, failureCause(o), "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the

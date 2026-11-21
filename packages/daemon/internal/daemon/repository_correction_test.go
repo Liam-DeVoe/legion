@@ -361,9 +361,11 @@ func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
 
 			issue := r.issue()
 			r.correctedOn(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
-			// The run the re-admission opens is the issue's next generation, which the pass's own
-			// promotion then starts on the corrected repository: the status it leaves is that
-			// start's, not the todo the re-admission wrote.
+			// The run the re-admission opens is the issue's next generation, and the status it
+			// leaves is that run's start, not the todo the re-admission wrote. A live event's
+			// re-admission reads GitHub for the change, so that start is on the corrected
+			// repository; the boot's listing reads none, so admission promotes the root on the
+			// repository it left, and the follow after the boot corrects it.
 			if issue.Generation != correctionGeneration+1 || issue.Phase != phase.Admitted {
 				t.Fatalf("the re-admitted root is at generation %d in %s, want generation %d admitted: the re-admission is the daemon's own",
 					issue.Generation, issue.Phase, correctionGeneration+1)
@@ -408,8 +410,9 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionCannotWork(t *t
 }
 
 // A resolution GitHub has not answered for writes nothing and says nothing: no correction, no
-// waiting change and no note. The daemon reads GitHub for it at the issue's next preparation
-// (prepareRecorded).
+// waiting change and no note. The daemon's own preparation of such a fact asks for a follow of the
+// issue (prepareRecorded, requestFollowOf), which reads GitHub again until it answers
+// (TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers).
 func TestRepositoryCorrectionWritesNothingForARepositoryGitHubHasNotAnsweredFor(t *testing.T) {
 	r := newCorrectionRig(t)
 	r.event(2, "stranger/tools")

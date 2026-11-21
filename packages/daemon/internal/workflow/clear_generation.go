@@ -71,10 +71,11 @@ func (e *Engine) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree string, o
 // person's approval followed (Store.DropQueuedChanges), asked as its delivery would ask it
 // (NoticeSuperseded) of the gates of the issue it was made on, read in one read, and writes one
 // line for each once tx commits, naming the approved version. A request no approval followed
-// stays, and is delivered as it would have been. A runner that holds the lease of a row it deletes
-// reads the row gone in the snapshot it asks the gates in, and finishes it unpublished (the
-// daemon's readNoticeTree and controllerNotice); one already past that read publishes, as it
-// would publish a request whose approval committed after its read.
+// stays, and is delivered as it would have been, asked again then of the gates as they stand. A
+// runner that holds the lease of a row it deletes reads the row gone in the snapshot it asks the
+// gates in, and finishes it unpublished (the daemon's stillOwed, which its readNoticeTree and
+// controllerNotice read); one already past that read publishes, as it would publish a request
+// whose approval committed after its read.
 func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree string, queued []record.QueuedChanges) error {
 	if len(queued) == 0 {
 		return nil
