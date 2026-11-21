@@ -16,6 +16,8 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -107,13 +109,23 @@ func serviceRequest(raw string) Request {
 	return Request{UserNkey: "UUSER", ServerID: "NSERVER", Nonce: "nonce", User: natscred.ServiceUser, Password: raw, Host: "10.0.0.7"}
 }
 
-var exampleServices = []ServiceEntry{
-	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: KindWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, AllProjects: true},
-	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
-	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+// The platform accounts this package's tests list in BROKER_NATS_SERVICES.
+const (
+	listenerAccount        = "system:serviceaccount:example-ns:example-listener"
+	webhookListenerAccount = "system:serviceaccount:example-ns:example-webhook-listener"
+	daemonAccount          = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount         = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount            = "system:serviceaccount:example-ns:example-edge-listener"
+)
+
+var exampleServices = []config.NATSService{
+	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
+	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
+	{Kind: config.NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
+	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -185,6 +197,32 @@ func TestAServiceKindsGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
 	}
 }
 
+// Check l16 of dispatch://INFRA-3589 (R18) at the auth service: a listener whose machine id is a
+// fully qualified host name is listed under that id, as the listener starts with it
+// (bus.CheckListenerMachineID), and the grant the service answers it with names the durable and
+// the queue group the listener creates, each with its dots escaped into one subject token
+// (bus.ListenerDurable, bus.ListenerQueue). cmd/listener's test of this name runs that listener.
+func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
+	const machineID = "host.example.internal"
+	for _, kind := range []config.NATSServiceKind{config.NATSListener, config.NATSWebhookListener, config.NATSDispatch} {
+		t.Run(string(kind), func(t *testing.T) {
+			text := string(kind) + "/" + machineID + "/*=" + listenerAccount
+			services, err := config.ParseNATSServices(text)
+			require.NoError(t, err)
+			require.Equal(t, []config.NATSService{{Kind: kind, MachineID: machineID, Account: listenerAccount, AllProjects: true, Text: text}}, services)
+			require.Equal(t, string(kind)+"/"+machineID, services[0].Name())
+			grant := serviceGrant(services[0])
+			durable, queue := bus.ListenerDurable(machineID), bus.ListenerQueue(machineID)
+			require.False(t, strings.ContainsAny(durable, ".*> "), "the durable %q is not one token", durable)
+			require.Contains(t, grant.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."+durable)
+			require.Contains(t, grant.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS."+durable+".>")
+			require.Contains(t, grant.Subscribe, "notifications.role.> "+queue)
+			_, found := natsgrant.NamesSystemSubject(grant)
+			require.False(t, found)
+		})
+	}
+}
+
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
 // its own fixed label, the decision counter's reason. A row whose ctx is set decides under that
 // context instead of the test's: a spent one is a decision past its budget.
@@ -214,6 +252,7 @@ func TestRefusals(t *testing.T) {
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
@@ -257,6 +296,9 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
+		// An edge listener's entry parses, so that the broker's API reads its projects, and this
+		// build has no grant to answer its connection with.
+		{"an edge listener, whose grant this broker does not have", deps, nil, serviceRequest("edge-token"), labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx
