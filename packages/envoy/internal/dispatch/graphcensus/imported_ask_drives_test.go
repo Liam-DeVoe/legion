@@ -495,7 +495,10 @@ func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, mark
 	if err != nil {
 		t.Fatalf("index the decisions document's version 1: %v", err)
 	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, indexed, graphstore.NoEvent) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexed, graphstore.NoEvent)
+		return nil
+	}); err != nil {
 		t.Fatalf("queue the cause of the decisions document's index: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {

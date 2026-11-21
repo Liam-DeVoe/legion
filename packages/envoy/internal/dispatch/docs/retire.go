@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -59,8 +60,8 @@ var retirementEvents = events.NewBroker()
 //
 // It takes the document's owner row first (lockArtifactOwner), then writes the store's lock order
 // as a create writes it: the node, its projection row, the event, and the node's facts under that
-// event (graphstore.WriteUncaused, graphstore.Caused). A document already retired is refused with
-// ErrDocumentRetired, and a reason that is blank with errRetirementReason.
+// event (graphstore.PlanUncaused and QueueNodes, then graphstore.Caused). A document already
+// retired is refused with ErrDocumentRetired, and a reason that is blank with errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -148,7 +149,14 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 	}
 	node.State = graphstore.StateGone
 	node.SourceEvent = graphstore.NoEvent
-	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, nil)
+	write := graphstore.PlanUncaused([]graphstore.Node{node}, nil)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, write)
+		return nil
+	}); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return write, nil
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves

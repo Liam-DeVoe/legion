@@ -675,7 +675,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
+	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
 	if err != nil {
 		t.Fatalf("plan the reworded question's references: %v", err)
 	}
@@ -1373,7 +1373,8 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		), func(model.Event) {}); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return fmt.Errorf("queue the source's close: %w", err)
 	}

@@ -551,8 +551,7 @@ func (s *server) completeCommentDelivery(
 			if settled.SessionID != nil {
 				session = *settled.SessionID
 			}
-			_, err := graphstore.QueueReached(b, settled.State, session, actor, settled.CreatedAt, graphstore.LatestEvent)
-			return err
+			return graphstore.QueueReached(b, settled.State, session, actor, settled.CreatedAt, graphstore.LatestEvent)
 		},
 	)
 }
@@ -1273,7 +1272,7 @@ func (s *server) planCommentReply(
 	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
 		return plan, err
 	}
-	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, refs.ItemComment, plan.id, body, refs.PendingSource{
+	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
 	}, plan.createdAt, true)
 	return plan, err
@@ -1520,12 +1519,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The row's id and created_at were taken above, so the reply's own index and references
 	// could be planned for them with nothing held; both are written explicitly here, as the
 	// comments route writes them (comment_create.go). The reply's node goes in before the row,
-	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite).
+	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite), and
+	// a reply left out of the store writes none.
 	var reply model.Comment
 	nodeKind, nodeAddress := plan.stored.rowNode()
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
-		if err := plan.stored.writeNode(b); err != nil {
-			return err
+		if !plan.stored.unprojected {
+			graphstore.QueueNodes(b, plan.stored.written)
 		}
 		b.Queue("", `
 			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
@@ -1589,23 +1589,21 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The stamp of the reply's references and everything the reply states in the node and tuple
 	// store, in one batch right after its event: the reply's node's cause, its two base
 	// attributes and the artifact it is owned by; who wrote it, which for a session answering a
-	// mention is the first write that records that session (graphstore.Authored), skipped with
-	// the rest for a reply left out of the store; the follow of the ask a session replies in the
-	// thread of, which comes after the author's own write for the reason the comment path takes
-	// them in that order - that write takes the author's person node and their session node in
-	// one statement in ascending (kind, id), and a follow before it would take the pair in the
-	// other order (R17); and what the answer makes of the attempt it answers, which the flip above
-	// records sent, an attempt the store owes its session a node for.
+	// mention is the first write that records that session (graphstore.QueueAuthored), skipped
+	// with the rest for a reply left out of the store; the follow of the ask a session replies
+	// in the thread of, which comes after the author's own write for the reason the comment
+	// path takes them in that order - that write takes the author's person node and their
+	// session node in one statement in ascending (kind, id), and a follow before it would take
+	// the pair in the other order (R17); and what the answer makes of the attempt it answers,
+	// which the flip above records sent, an attempt the store owes its session a node for.
 	answered := answeredDelivery{was: attempt.State, itemKind: graphstore.KindComment, itemID: comment.ID}
 	if attempt.SessionID != nil {
 		answered.session = *attempt.SessionID
 	}
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		refs.QueueStamp(b, graphstore.KindComment, reply.ID)
-		if err := plan.stored.caused(b, event.ID); err != nil {
-			return err
-		}
 		if !plan.stored.unprojected {
+			graphstore.QueueCaused(b, plan.stored.written, event.ID)
 			if err := graphstore.QueueAuthored(b, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 				return err
 			}
@@ -1650,9 +1648,9 @@ type answeredDelivery struct {
 // graphcensus's recordedSessions), and this answer is the write that moves the attempt into
 // that set: without it the census holds the store to a node no writer ever wrote, for good.
 //
-// The node is written as a settle writes one (graphstore.Reached): `do nothing`, so a session
-// another write recorded keeps that write's cause, and nothing at all for a session past the
-// store's address bound. The event is in hand here, so the node states its own two base
+// The node is written as a settle writes one (graphstore.QueueReached): `do nothing`, so a
+// session another write recorded keeps that write's cause, and nothing at all for a session past
+// the store's address bound. The event is in hand here, so the node states its own two base
 // attributes under it and no fact of this write waits for a cause.
 //
 // The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.
@@ -1673,18 +1671,16 @@ func queueAnsweredDelivery(
 	if session == "" {
 		return nil
 	}
-	if _, err := graphstore.QueueSessionRecorded(b, session, actor, at, event); err != nil {
+	if err := graphstore.QueueSessionRecorded(b, session, actor, at, event); err != nil {
 		return fmt.Errorf("record the session the answered attempt reached: %w", err)
 	}
 	if answered.itemID == "" || model.DeliveryTaken(answered.was) || !graphstore.AddressFits(session) {
 		return nil
 	}
-	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
+	graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
 		FromKind: answered.itemKind, FromID: answered.itemID, Kind: graphstore.TupleDeliveredTo,
 		ToKind: graphstore.KindSession, ToID: session,
 		At: at, Who: actor, SourceEvent: event, Asserted: true,
-	}}); err != nil {
-		return fmt.Errorf("record what the answered attempt delivered: %w", err)
-	}
+	}})
 	return nil
 }

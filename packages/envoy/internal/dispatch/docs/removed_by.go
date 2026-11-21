@@ -178,7 +178,10 @@ func queueRemovals(ctx context.Context, tx pgx.Tx, artifactID string) (graphstor
 	if len(removals.Nodes) == 0 && len(removals.Tuples) == 0 {
 		return graphstore.Uncaused{}, nil
 	}
-	if err := write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, removals) }); err != nil {
+	if err := write(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, removals)
+		return nil
+	}); err != nil {
 		return graphstore.Uncaused{}, fmt.Errorf("state the removals of the answered asks of %s: %w", artifactID, err)
 	}
 	return removals, nil

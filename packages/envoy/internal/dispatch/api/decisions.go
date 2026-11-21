@@ -903,9 +903,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	keep := model.DecisionKeep{ArtifactID: document.ID}
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueNodes(b, held); err != nil {
-			return err
-		}
+		graphstore.QueueNodes(b, held)
 		b.Queue("", `
 			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
 			values ($1::uuid, $2, $3, $4, $5, $6)
@@ -923,7 +921,8 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 		}), func(written model.Event) { event = written }); err != nil {
 			return err
 		}
-		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}

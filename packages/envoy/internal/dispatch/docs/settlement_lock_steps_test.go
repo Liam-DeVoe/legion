@@ -161,7 +161,8 @@ func (r *docsWriterRig) settledRetraction() docsWriter {
 			docsVersionEventStep(holdDocsTableWrites("events")),
 			docsCausedTuplesStep("the block index's tuple append", docsVersionEvent, holdDocsTableWrites("graph_tuples")),
 			docsGatedEventStep(r, "the retraction's event", "ask.resolved"),
-			docsCausedTuplesStep("the retraction's facts", "the retraction's event", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
+			// The retraction writes no node, so its facts are graphstore's plain tuple append.
+			docsCausedPlainTuplesStep("the retraction's facts", "the retraction's event", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
 				return docsAnswerStateTuples(ask)
 			})),
 		},

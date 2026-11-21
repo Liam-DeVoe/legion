@@ -885,7 +885,10 @@ func (s *server) openApprovalAsk(
 	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
 	askNode := graphstore.PlanUncaused(nodes, facts)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	nodeKind, nodeAddress := graphstore.AskRowNode(ask.ID, marked)
@@ -921,9 +924,7 @@ func (s *server) openApprovalAsk(
 	// (asks.PlanFollowNewAsk), dated by the request's created_at.
 	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		_, err := follow.Queue(b, graphstore.LatestEvent)
 		return err
 	}); err != nil {
@@ -1041,7 +1042,8 @@ func (s *server) renewApprovalAsk(
 		heldCause = graphstore.LatestEvent
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueCaused(b, held, heldCause)
+		return nil
 	}); err != nil {
 		return nil, err
 	}

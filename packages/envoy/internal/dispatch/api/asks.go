@@ -274,7 +274,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
 	askNode := graphstore.PlanUncaused(nodes, facts)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -348,10 +351,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		return graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -615,7 +617,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
+	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -571,10 +571,10 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 // and that node is live and states its two base attributes. A comment that names nobody holds
 // none.
 //
-// The seed states its author through its batch write and not through graphstore.Authored, so
-// Authored is run again over one seeded comment, in a transaction rolled back, and held to
-// adding nothing but that comment's authored_by: no node, since the seed already made the
-// author's, and no alias the seed left out.
+// The seed states its author through its batch write and not through graphstore.QueueAuthored,
+// so QueueAuthored is run again over one seeded comment, as a batch of its own in a transaction
+// rolled back, and held to adding nothing but that comment's authored_by: no node, since the
+// seed already made the author's, and no alias the seed left out.
 func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -677,45 +677,49 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("open the transaction Authored runs in: %v", err)
+		t.Fatalf("open the transaction QueueAuthored runs in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var lastSeq, nodesBefore, nodesAfter int64
 	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0), (select count(*) from graph_nodes) from graph_tuples`).
 		Scan(&lastSeq, &nodesBefore); err != nil {
-		t.Fatalf("read the store before Authored: %v", err)
+		t.Fatalf("read the store before QueueAuthored: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
-		graphstore.NoEvent); err != nil {
-		t.Fatalf("state the author of comment %s through Authored: %v", sample.id, err)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
+			graphstore.NoEvent)
+	}); err != nil {
+		t.Fatalf("state the author of comment %s through QueueAuthored: %v", sample.id, err)
 	}
 	if err := tx.QueryRow(ctx, `select count(*) from graph_nodes`).Scan(&nodesAfter); err != nil {
-		t.Fatalf("count the nodes after Authored: %v", err)
+		t.Fatalf("count the nodes after QueueAuthored: %v", err)
 	}
 	rows, err = tx.Query(ctx, `
 		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id
 		from graph_tuples where seq > $1 order by seq`, lastSeq)
 	if err != nil {
-		t.Fatalf("read what Authored appended: %v", err)
+		t.Fatalf("read what QueueAuthored appended: %v", err)
 	}
 	appended, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("read what Authored appended: %v", err)
+		t.Fatalf("read what QueueAuthored appended: %v", err)
 	}
 	kind, id, _ := graphstore.AuthorOf(sample.author)
 	want := []string{graphstore.KindComment + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
 	if nodesAfter != nodesBefore || !slices.Equal(appended, want) {
-		t.Errorf("Authored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
-			" states less of its author than Authored does", sample.id, nodesAfter-nodesBefore, appended, want)
+		t.Errorf("QueueAuthored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
+			" states less of its author than QueueAuthored does", sample.id, nodesAfter-nodesBefore, appended, want)
 	}
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261109215947_graph_edges_tuples, the last migration to restate graph_edges: the 27 arms
-// 20261105014808 restated it with, the comment answers arm among them, and the one arm over the
-// store's current tuples that migration adds. Each of the four arms over a kind the store now
+// 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
+// answers arm among them, and the one arm over the store's current tuples that migration adds.
+// 20261121034242_graph_edges_asks_and_tuple_arm_filter, the last migration to restate
+// graph_edges, keeps that list, with 20261116094101's tests on the asks and ask_followers arms
+// and 20261120122700's filter of the tuple arm. Each of the seven arms over a kind the store now
 // writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those four answer nothing here (armGatedPerRow).
+// every row it writes, so those seven answer nothing here (armGatedPerRow).
 const graphArmCount = 28
 
 var (
@@ -723,7 +727,7 @@ var (
 	armToKindLiteral = regexp.MustCompile(`'([a-z_]+)'::text AS to_kind`)
 )
 
-// armGatedPerRow matches one of the four arms over a kind the node and tuple store writes: the
+// armGatedPerRow matches one of the seven arms over a kind the node and tuple store writes: the
 // test that keeps it to the rows of its own table that name no node.
 var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
 
