@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The leads of the runbook's reset after a Dispatch database restored or made again alone
@@ -432,8 +433,8 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	}
 
 	raised := r.resetSessions(t)
-	if reset := strings.Join(runbookBlockAfter(t, resetSessionsLead).lines, "\n"); !strings.Contains(reset, "lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations in exclusive mode") {
-		t.Errorf("the reset's transaction does not lock broker_revocations beside its other rows:\n%s", reset)
+	if reset := strings.Join(runbookBlockAfter(t, resetSessionsLead).lines, "\n"); !strings.Contains(reset, "lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations, deployment_resets in exclusive mode") {
+		t.Errorf("the reset's transaction does not lock broker_revocations and deployment_resets beside its other rows:\n%s", reset)
 	}
 	var revoked bool
 	if err := r.dispatch.Pool.QueryRow(ctx, `select revoked_at is not null from agent_tokens where id = $1::uuid`, token).Scan(&revoked); err != nil || !revoked {
@@ -721,12 +722,21 @@ func (r *recoveryRig) closeReset(t *testing.T, env ...string) (string, error) {
 	return r.runResetBlock(t, resetCloseLead, env...)
 }
 
-// runResetBlock runs the runbook's block after lead through bash and psql: the runbook's step that
-// makes the broker's libpq URL, then the block, against Dispatch's database and the broker's. A
-// stand-in kubectl prints a token, so a block that mints one runs as far as its first read. env,
-// each NAME=value, goes after the block's own environment, so a test can give it a database that
-// cannot be read. It answers the block's output and its status.
+// runResetBlock runs the runbook's block after lead (resetBlockCommand) and answers the block's
+// output and its status.
 func (r *recoveryRig) runResetBlock(t *testing.T, lead string, env ...string) (string, error) {
+	t.Helper()
+	output, err := r.resetBlockCommand(t, lead, env...).CombinedOutput()
+	return string(output), err
+}
+
+// resetBlockCommand is the command that runs the runbook's block after lead through bash and psql:
+// the runbook's step that makes the broker's libpq URL, then the block, against Dispatch's database
+// and the broker's. A stand-in kubectl prints a token, so a block that mints one runs as far as its
+// first read. env, each NAME=value, goes after the block's own environment, so a test can give it a
+// database that cannot be read. Nothing of the command calls t, so a test may run it off its own
+// goroutine.
+func (r *recoveryRig) resetBlockCommand(t *testing.T, lead string, env ...string) *exec.Cmd {
 	t.Helper()
 	for _, tool := range []string{"bash", "psql"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -752,8 +762,7 @@ func (r *recoveryRig) runResetBlock(t *testing.T, lead string, env ...string) (s
 		"PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BROKER_DATABASE_URL="+psqlURL(t, r.rig.Store.Pool),
 		"DATABASE_URL="+psqlURL(t, r.dispatch.Pool)), env...)
-	output, err := command.CombinedOutput()
-	return string(output), err
+	return command
 }
 
 // unreadableDatabase is a database URL nothing answers at, for a block's failed read.
@@ -839,8 +848,9 @@ func (r *recoveryRig) resetMarks(t *testing.T, mark string) []time.Time {
 }
 
 // resetWait is how long after step 1 the runbook's close waits: an hour, the life of a Google ID
-// token issued before an address moved, and ten minutes for the broker's clock and its own expiry
-// check, which are not Dispatch's database's.
+// token issued before an address moved, and ten minutes for the broker's two clocks against
+// Dispatch's database's: the broker process's, which checks a token's expiry, and the broker
+// database's, which stamps each credential's creation.
 const resetWait = time.Hour + 10*time.Minute
 
 // ageReset moves the reset this database records, and what the broker recorded since, back by by,
@@ -1020,6 +1030,80 @@ exec "$REAL_PSQL" "$@"
 	}
 	if starts, ends := r.resetMarks(t, "start"), r.resetMarks(t, "end"); len(starts) != 2 || len(ends) != 0 {
 		t.Errorf("deployment_resets holds the starts %v and the ends %v; want two starts and no end", starts, ends)
+	}
+}
+
+// TestTheResetCloseWaitsForAStepOneStillOpen: step 1 run again while the close runs. Step 1's
+// transaction, the runbook's own statements, has recorded its start and not committed when the
+// close, run from the runbook, reads the wait, reads the broker and records the end. An end
+// recorded then would take an id above that start's, which the close cannot see yet, so once step
+// 1 commits the newest mark would be that end, and the newer reset would read as closed without
+// its wait. Step 1 and the close both lock deployment_resets, so the close queues behind step 1,
+// then finds its start the newest mark and says NOT CLOSED.
+//
+// Controls in the runbook: step 1's lock and the close's both dropped (the close answers `the
+// reset ended at` while step 1 is open, and the newest mark is then its end). Either lock alone
+// orders the two, so dropping one of them passes.
+func TestTheResetCloseWaitsForAStepOneStillOpen(t *testing.T) {
+	ctx := context.Background()
+	r := newRecoveryRig(t)
+	r.resetSessions(t)
+	r.ageReset(t, resetWait+time.Minute)
+
+	block := runbookBlockAfter(t, resetSessionsLead)
+	transaction := block.statements[1:]
+	if len(transaction) < 3 || transaction[0] != "begin" || transaction[len(transaction)-1] != "commit" {
+		t.Fatalf("the runbook's reset of sessions is %q; want the broker's read, then one transaction on Dispatch's database", block.statements)
+	}
+	var greatest int64
+	if err := r.rig.Store.Pool.QueryRow(ctx, block.statements[0]).Scan(&greatest); err != nil {
+		t.Fatalf("the reset's read of the broker's greatest generation: %v", err)
+	}
+	stepOne, err := r.dispatch.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stepOne.Rollback(ctx)
+	for _, statement := range transaction[1 : len(transaction)-1] {
+		if _, err := stepOne.Exec(ctx, statement, pgx.NamedArgs{"broker_greatest": greatest}); err != nil {
+			t.Fatalf("the runbook's %q: %v", statement, err)
+		}
+	}
+
+	type answer struct {
+		output string
+		err    error
+	}
+	closing := r.resetBlockCommand(t, resetCloseLead)
+	answered := make(chan answer, 1)
+	go func() {
+		output, err := closing.CombinedOutput()
+		answered <- answer{string(output), err}
+	}()
+	early, answeredFirst := storetest.WaitForAnyQueuedBehind(t, stepOne, answered, 2*time.Minute)
+	if answeredFirst {
+		t.Errorf("the close answered while step 1 was open, without waiting for it:\n%s", early.output)
+	}
+	if err := stepOne.Commit(ctx); err != nil {
+		t.Fatalf("step 1's commit: %v", err)
+	}
+	closed := early
+	if !answeredFirst {
+		select {
+		case closed = <-answered:
+		case <-time.After(2 * time.Minute):
+			t.Fatal("the close did not answer within two minutes of step 1's commit")
+		}
+	}
+	if closed.err == nil || !strings.Contains(closed.output, "NOT CLOSED: step 1 ran again since this close read the wait") {
+		t.Errorf("the close beside step 1 answered %v:\n%s\nwant NOT CLOSED for the newer reset", closed.err, closed.output)
+	}
+	var newest string
+	if err := r.dispatch.Pool.QueryRow(ctx, `select mark from deployment_resets order by id desc limit 1`).Scan(&newest); err != nil {
+		t.Fatal(err)
+	}
+	if starts, ends := r.resetMarks(t, "start"), r.resetMarks(t, "end"); len(starts) != 2 || len(ends) != 0 || newest != "start" {
+		t.Errorf("deployment_resets holds the starts %v and the ends %v, the newest mark by id %q; want two starts, no end, and the newer start newest", starts, ends, newest)
 	}
 }
 

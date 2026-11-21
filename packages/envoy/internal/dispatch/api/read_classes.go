@@ -90,9 +90,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credentials/capabilities": reads("the secrets broker's own metadata, relayed whole", nil, readclass.None),
 
 	// Whether Dispatch's App is installed on a repository, which the Legion daemon asks for every
-	// repository it serves, whatever its token lists.
-	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, which is no project's content",
-		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.None),
+	// repository it serves: held to the GitHub proxy's rule (refs.RepositoryClause), so a repository
+	// the caller may not see answers as one the App is not installed on.
+	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository the caller may see by the GitHub proxy's rule; any other repository answers as not installed",
+		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.Project),
 
 	// The caller's own rows, keyed on its credential or its person.
 	"GET /api/v1/whoami":                 reads("who the caller's own credential names", nil, readclass.Caller),

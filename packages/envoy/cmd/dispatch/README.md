@@ -316,7 +316,8 @@ A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose 
 what it writes belongs to no project such a viewer could be held to.
 A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
-`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the App-installation route then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
+`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
+Any other caller's `repo`, and a mapping `PUT` that leaves the mapping its project's default, is `403 REPOSITORY_NOT_AVAILABLE` (`this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch`) when the GitHub proxy would hide that repository from the caller (`refs.RepositoryHidden`, with the caller as the viewer): a repository an issue the caller sees already resolves to stays open to the write, and with no private project nothing is refused.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
@@ -752,7 +753,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   after reading the session generation the callback checks that the row still records its `sub`.
   Group mode neither reads nor writes `sub`, so there the old holder of a reassigned address keeps the cookies they have until their cookie expires, 30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or disabled, and keeps their personal tokens until someone revokes them.
 
-  The refresh token is stored sealed (`people.refresh_token`):
+- The refresh token is stored sealed (`people.refresh_token`):
   AES-256-GCM under a key derived from the current key of `DISPATCH_SIGNING_KEY` with HKDF and a fixed purpose label, bound to the person's email, in a format whose `v1:` prefix names its version.
   A value is opened under each key of the set in turn, the GCM tag refusing a key it was not sealed under;
   it names no key, so the `v1:` format is byte for byte the one earlier releases write and read.
@@ -878,16 +879,19 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 - Under `iap`, IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispatch; it follows each person's Google Workspace account in the Directory instead, through the reader `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` configure (`identity.Membership.Directory`).
   A check reads `users.get` for the person's address and has three outcomes, which share one 15-second deadline with the database write of the outcome: Active, the person's own account not suspended, confirms them, releases a hold, and fixes `not_held_until` 24 hours later; Held, an account suspended or missing, or an answer whose `primaryEmail` is another address (the asked address made an alias of a colleague's account), records a hold; and Failed, any other answer, a timeout or a write that missed the deadline, changes nothing but the time of the check, and logs `msg="dispatch: a Workspace Directory check failed; ..."` at WARN.
   The membership pass checks each full member's row about once an hour, held rows and rows that never made a request included, and runs no sign-out step (its line counts an Active outcome `confirmed`, a Held one `held` and a Failed one `unasked`).
-  A personal token asks at every use, and the person route the secrets broker reads answers the same: a recorded hold is `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the token's owner; an Active answer younger than an hour is served; an older one makes the request check the Directory, waiting at most 2 seconds, and starts no new check for a minute after a Failed one; and while no Active answer is younger than 24 hours (`not_held_until`), the token is `503 IDENTITY_UNAVAILABLE`, never served and never held.
+
+- Under `iap`, a personal token asks at every use, and the person route the secrets broker reads answers the same: a recorded hold is `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the token's owner; an Active answer younger than an hour is served; an older one makes the request check the Directory, waiting at most 2 seconds, and starts no new check for a minute after a Failed one; and while no Active answer is younger than 24 hours (`not_held_until`), the token is `503 IDENTITY_UNAVAILABLE`, never served and never held.
   So an outage of the Directory longer than 24 hours stops every personal token until it answers again, and a person whom IAP admits but whose row has no Active answer yet waits for the first check.
   Only an Active answer releases a hold: IAP's assertion, however valid, records the person and nothing more.
   The person route carries `not_held_until` on every answer that is not held: the last Active answer plus 24 hours, or `as_of` itself for a person no Active answer confirmed in 24 hours or no row holds, which the broker refuses as a deadline passed; a held answer carries none.
   At Dispatch a broker token whose person is held is `401 MEMBERSHIP_HELD` in the words a personal token gets here, and so is a held person's approve or deny of a machine login; the Envoy listener refuses such a token `401 MEMBERSHIP_HELD` in its own words, which name the person and hold under every rule.
   At both, a broker token whose introspection answered its person not held past that deadline is `503 BROKER_UNAVAILABLE` with `Retry-After: 60`.
-  A Held outcome logs `msg="dispatch: the Workspace Directory reports a person's account suspended, missing or another's; their credentials are held"` at INFO with the email, and an Active or Held outcome whose write fails logs `msg="dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed"` (or `Held`) at WARN.
+
+- Under `iap`, a Held outcome logs `msg="dispatch: the Workspace Directory reports a person's account suspended, missing or another's; their credentials are held"` at INFO with the email, and an Active or Held outcome whose write fails logs `msg="dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed"` (or `Held`) at WARN.
   A people store that records no Directory outcome fails every check and logs `msg="dispatch: a Workspace Directory check cannot record its outcome; the person is not confirmed"` at ERROR.
   At boot an `iap` server logs `msg="dispatch: naming people from Identity-Aware Proxy's signed assertion"` at INFO with `audience`, `keys`, `domain`, `directory_account` and `directory_admin`, and one that cannot build its Directory reader logs `msg="dispatch: build the request identity"` at ERROR and exits 1.
-  The person's own account is the one whose id the row stores from its first Active answer, or, before one is stored, the one whose `primaryEmail` is the address, letter case ignored.
+
+- Under `iap`, the person's own account is the one whose id the row stores from its first Active answer, or, before one is stored, the one whose `primaryEmail` is the address, letter case ignored.
   An answer for the address itself, not suspended, with another account's id (an address the Workspace deleted and created again for another person) asks the question a sign-out asks (`agentsecrets.OutlivingAccess`, above), inside the check's 15 seconds: while the address still has an unrevoked personal token, or at the broker a live machine login, an unrevoked sign-in on a machine or an exchange entry that names it, or the question fails, the answer is Held and the stored id stays; once it has none, the answer is Active, the row stores the new account's id, and the person is confirmed and released with no request of their own.
   A question or a write that runs past the 15 seconds makes the check Failed, which leaves the stored id, the confirmation, `not_held_until` and the hold as they were.
   An answer whose `primaryEmail` is another address is Held whatever the address holds, and an answer with the stored id asks the broker nothing.
@@ -4540,9 +4544,12 @@ Each item below names a path with its method and identity, then its purpose.
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
   A person reads a repository when an issue of a project the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the person does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
   A repository mapping and a recorded rename give no project a repository.
+  An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
   A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
   A person who is not an open viewer reads only a repository an issue of a project the person sees resolves to.
   Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
+  While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
+  With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
 
@@ -4873,6 +4880,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
+  A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
@@ -4897,8 +4905,9 @@ Each item below names a path with its method and identity, then its purpose.
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  Every caller reads the same answer, whatever projects it sees: a repository's name is no project's content.
-  The Legion daemon asks it for every repository it serves, for `legion state`.
+  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it: a rate limit already held on the App answers that limit.
+  With no private project every open viewer reads every repository's answer from GitHub, as before.
+  The Legion daemon asks it for every repository it serves, for `legion state`, so a daemon whose credential does not see a private project reads that project's repositories as not installed.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
 
@@ -5165,6 +5174,7 @@ Each item below names a path with its method and identity, then its purpose.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
   A restricted member, or a credential acting for one, names no `repo`: a create that names it, a string or `null`, is `403 RESTRICTED_MEMBER` (`a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository`) before the body's project, parent or external ref is read and before anything is written, so their issue takes the repository it resolves to, its nearest parent's or its project's default.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the body's project is read as the caller reads it, so a hidden project still answers `404`; `null` is never refused.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -5180,6 +5190,7 @@ Each item below names a path with its method and identity, then its purpose.
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); `AGENTS.md` gives each field's rules.
   A restricted member, or a credential acting for one, sets, changes and clears no issue's `repo`: a patch that names it, a string or `null`, is `403 RESTRICTED_MEMBER` in the create's words, before the issue is read and before anything is written, so it answers alike for an issue the caller does not see and for one nobody holds.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the issue is read as the caller reads it, so a hidden issue still answers `404`; `null` is never refused.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
