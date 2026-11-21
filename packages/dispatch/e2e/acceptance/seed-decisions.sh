@@ -81,9 +81,13 @@
 #     - "The census runs before the view", which cites no ask and carries a standing Keep a
 #       person recorded through the Keep route (section_kept);
 #     - "Which reader reads the corpus first", holding ask block #q-doc-plain (ask_doc_plain), an
-#       answered ask whose row names the decisions document, the second shape of the restore;
+#       answered ask whose row names the decisions document, the second shape of the restore,
+#       whose question cites dispatch://<B>;
 #     - "Which line names a moved block", holding ask block #q-doc-collide (ask_doc_collide),
-#       answered, whose block id the spec holds too;
+#       answered, whose block id the spec holds too, and whose question cites dispatch://<D>;
+#       the base release indexes each of those two citations as a block_refs row of the
+#       question's paragraph, a block the ask block holds (document_blocks.parent_block_id), so
+#       each of the two asks holds an edge of its own, which the restore moves with it;
 #     - `## Replaced`, holding one `###` section (section_replaced).
 #   A third document, notes.md (notes_a), holds one block citing
 #   dispatch://<A>/artifact/decisions-md#b-q-doc-plain, which a comment (comment_decisions_block)
@@ -570,7 +574,7 @@ The census reads the corpus before any view of it is drawn.
 ## Which reader reads the corpus first
 
 :::ask{#q-doc-plain urgency="med"}
-Which reader reads the corpus first?
+Which reader reads the corpus first, as dispatch://$b asks too?
 
 - The census: it counts.
 - The decisions view: it shows.
@@ -579,7 +583,7 @@ Which reader reads the corpus first?
 ## Which line names a moved block
 
 :::ask{#q-doc-collide urgency="low"}
-Which line names a block that moved?
+Which line names a block that moved, as dispatch://${seed_ids[issue_d]} asks too?
 :::
 
 ## Replaced
