@@ -40,6 +40,7 @@ import {
   loadRun,
   offWorldAllowed,
   offWorldReach,
+  unmergedHead,
   workflowUses,
 } from "./health";
 import {
@@ -3264,7 +3265,8 @@ test("a comparison of two commits is read from the run's own remote", () => {
 
 // Catches: a comparison answered out of the run's world for refs the remote has not got, which
 // would hand an agent counts of a comparison nobody made. GitHub answers 404 for a comparison of
-// commits a repository does not hold, and so does the stand-in, through the routes.
+// commits a repository does not hold, and so does the stand-in, itself (gh-standin.ts's
+// `comparison`), with GitHub's 404 body of a comparison; the row of two dots holds that body.
 test("a comparison the run's remote cannot resolve is 404, as GitHub answers it", () => {
   const { dir } = runDir({ fixture: true });
   const call = spawnChecked(
@@ -3306,6 +3308,490 @@ test("a commit is read from the run's own remote, as GitHub answers one", () => 
     `gh: No commit found for SHA: ${"deadbeef".repeat(5)} (HTTP 422)`
   );
 });
+
+/** The answer GitHub's description requires of the world's REST route `route`, from
+ * rest-required.json: the operation it is held to (its key) and the fields `answer` lacks. */
+function heldTo(route: string, answer: unknown): [string | undefined, string[]] {
+  const operation = restOperation(route);
+  if (operation?.schema === undefined) throw new Error(`the extract holds no schema of ${route}`);
+  return [operation.key, absentFields(answer, operation.schema)];
+}
+
+// Catches: a read of one commit that is not GitHub's "Get a commit" whole: short of a field its
+// description requires (its `stats`, a file's `blob_url`), its files other than the diff from its
+// first parent, a root commit answered with no files where GitHub lists each file it adds, a
+// branch whose name holds a slash (or that slash written `%2F`) read as no ref where GitHub
+// answers its tip, and the 422 of a ref the remote has not got answered without GitHub's body on
+// stdout. Each was measured on 2026-11-21 against cybermonklabs/legion, and gh-standin.ts's
+// `commitOf` names each read and its `Date:`.
+test("a commit's read is GitHub's whole, by any ref GitHub reads, its files the diff from its first parent", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const repo = "repos/example/widgets";
+  const read = (ref: string) => JSON.parse(ghCall(dir, "api", `${repo}/commits/${ref}`).out);
+  const filesOf = (commit: { files: Record<string, unknown>[] }) =>
+    commit.files.map((file) => [
+      file.filename,
+      file.status,
+      file.additions,
+      file.deletions,
+      file.changes,
+      file.patch,
+    ]);
+  const fix = read(second);
+  expect(heldTo("GET repos/{owner}/{repo}/commits/{ref+}", fix)).toEqual([
+    "GET /repos/{owner}/{repo}/commits/{ref}",
+    [],
+  ]);
+  expect([fix.stats, filesOf(fix)]).toEqual([
+    { total: 1, additions: 1, deletions: 0 },
+    [["docs.md", "added", 1, 0, 1, "@@ -0,0 +1 @@\n+the text fix"]],
+  ]);
+  const root = read(first);
+  expect([root.parents, root.stats, filesOf(root)]).toEqual([
+    [],
+    { total: 1, additions: 1, deletions: 0 },
+    [["greet.ts", "added", 1, 0, 1, "@@ -0,0 +1 @@\n+export const greet = () => 1;"]],
+  ]);
+  expect([read("legion/LWEVAL-1").sha, read("legion%2FLWEVAL-1").sha]).toEqual([first, first]);
+  const remote = path.join(dir, "remote.git");
+  const media = (type: string, ref: string) =>
+    ghRaw(dir, "api", "-H", `Accept: application/vnd.github.${type}`, `${repo}/commits/${ref}`).out;
+  expect(media("sha", second.slice(0, 8))).toBe(second);
+  expect(media("diff", second)).toBe(`${git(remote, "diff", "--no-renames", first, second)}\n`);
+  for (const ref of [first, second])
+    expect([ref, media("patch", ref)]).toEqual([
+      ref,
+      `${git(remote, "format-patch", "--stdout", "-1", "--no-signature", "--no-renames", ref)}\n`,
+    ]);
+  expect(media("patch", second)).toStartWith(`From ${second} Mon Sep 17 00:00:00 2001\n`);
+  // A commit of two files, pushed over the branch, its files paged and its stats whole.
+  const work = path.join(dir, "two-files");
+  git(dir, "clone", "-q", "-b", "legion/LWEVAL-1", remote, work);
+  writeFileSync(path.join(work, "a.md"), "a\n");
+  writeFileSync(path.join(work, "b.md"), "b\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-qm", "two files");
+  git(work, "push", "-q", "origin", "legion/LWEVAL-1");
+  const two = git(work, "rev-parse", "HEAD");
+  const page = (...argv: string[]) =>
+    ghCall(dir, "api", ...argv, "--jq", '"\\(.stats.total) \\([.files[].filename] | join(","))"')
+      .out;
+  expect(page(`${repo}/commits/${two}`)).toBe("2 a.md,b.md");
+  expect(page(`${repo}/commits/${two}?per_page=1`)).toBe("2 a.md");
+  expect(page(`${repo}/commits/${two}?per_page=1&page=2`)).toBe("2 b.md");
+  expect(page(`${repo}/commits/${two}?page=2`)).toBe("2");
+  expect(page("--paginate", `${repo}/commits/${two}?per_page=1`)).toBe("2 a.md\n2 b.md");
+  // A commit's own endpoints are not the commit: its pull requests, which the gh world serves
+  // no answer for, stay the 404 of no route, and its check runs and its status their own routes'.
+  expect(ghCall(dir, "api", `${repo}/commits/${second}/pulls`)).toEqual({
+    code: 1,
+    out: GITHUB_404,
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  for (const own of ["check-runs", "status"])
+    ghCall(dir, "api", `${repo}/commits/${second}/${own}`);
+  expect(
+    recordedCalls(dir)
+      .slice(-3)
+      .map((call) => call.handler)
+  ).toEqual(["unrouted", "check-runs", "combined-status"]);
+  expect(ghCall(dir, "api", `${repo}/commits/nosuchref`)).toEqual({
+    code: 1,
+    out: JSON.stringify({
+      message: "No commit found for SHA: nosuchref",
+      documentation_url: "https://docs.github.com/rest/commits/commits#get-a-commit",
+      status: "422",
+    }),
+    err: "gh: No commit found for SHA: nosuchref (HTTP 422)\n",
+  });
+});
+
+// Catches: a list of commits that is not GitHub's "List commits": read from another ref than the
+// one `sha` names (in the query string, or as the field gh sends there on a GET), or from no
+// default branch where it names none; oldest first; not paged by `per_page` and `page`; an item
+// short of a field GitHub requires, or carrying the `files` a list item has not got; a ref the
+// remote has not got answered anything but GitHub's 404 of the list; and a filter the world does
+// not model (`path`) answered as though the list were filtered, where it is refused as a call
+// the world does not model. gh-standin.ts's `commitList` names the reads of 2026-11-21.
+test("the commits a ref reaches are listed newest first from the run's own remote, paged as GitHub pages them", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  git(path.join(dir, "remote.git"), "update-ref", "refs/heads/main", first);
+  const repo = "repos/example/widgets";
+  const shas = (...argv: string[]) =>
+    ghCall(dir, "api", ...argv, "--jq", '[.[].sha] | join(" ")').out;
+  expect(shas(`${repo}/commits?sha=${second}`)).toBe(`${second} ${first}`);
+  expect(shas(`${repo}/commits?sha=${second.slice(0, 8)}&per_page=1&page=2`)).toBe(first);
+  expect(shas("--paginate", `${repo}/commits?sha=${second}&per_page=1`)).toBe(
+    `${second}\n${first}`
+  );
+  expect(shas("-X", "GET", `${repo}/commits`, "-f", `sha=${second}`)).toBe(`${second} ${first}`);
+  expect(shas(`${repo}/commits`)).toBe(first);
+  const listed = JSON.parse(ghCall(dir, "api", `${repo}/commits?sha=${second}`).out);
+  expect(heldTo("GET repos/{owner}/{repo}/commits", listed)).toEqual([
+    "GET /repos/{owner}/{repo}/commits",
+    [],
+  ]);
+  expect(listed.map((item: Record<string, unknown>) => "files" in item)).toEqual([false, false]);
+  expect(ghCall(dir, "api", `${repo}/commits?sha=nosuchref`)).toEqual({
+    code: 1,
+    out: notFoundOf("https://docs.github.com/rest/commits/commits#list-commits"),
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  expect(ghCall(dir, "api", `${repo}/commits?sha=${second}&path=docs.md`)).toEqual({
+    code: 1,
+    out: GITHUB_404,
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  expect(recordedCalls(dir).map((call) => call.handler)).toEqual([
+    ...Array(7).fill("commits"),
+    "unrouted",
+  ]);
+});
+
+// Catches: a commit's git data that is not GitHub's "Get a commit object": short of a field its
+// description requires, in another order of keys than GitHub's, its parents linked to the commits
+// API rather than the git-data one, and a short SHA or a branch answered as the commit, where
+// GitHub reads a full SHA there alone and answers 404 for anything else: measured on 2026-11-21
+// with `gh api -i` against cybermonklabs/legion, `git/commits/bbf697` (`Date: Sat, 21 Nov 2026
+// 08:42:59 GMT`) and `git/commits/main` (08:43:00 GMT) each answered `HTTP/2.0 404 Not Found`,
+// its body naming "Get a commit object", where the full SHA answered 200 (08:42:58 GMT).
+test("a commit's git data is read by its full SHA alone, as GitHub reads it", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const remote = path.join(dir, "remote.git");
+  git(remote, "update-ref", "refs/heads/main", first);
+  const repo = "repos/example/widgets";
+  const api = "https://api.github.com/repos/example/widgets";
+  const got = JSON.parse(ghCall(dir, "api", `${repo}/git/commits/${second}`).out);
+  expect(heldTo("GET repos/{owner}/{repo}/git/commits/{sha}", got)).toEqual([
+    "GET /repos/{owner}/{repo}/git/commits/{commit_sha}",
+    [],
+  ]);
+  const tree = git(remote, "rev-parse", `${second}^{tree}`);
+  // The message's first line: a pod's git configuration may add trailers below it.
+  const subject = String(got.message).split("\n")[0];
+  expect([Object.keys(got), got.sha, got.url, got.tree, subject, got.parents]).toEqual([
+    [
+      ...["sha", "node_id", "url", "html_url", "author", "committer", "tree", "message"],
+      ...["parents", "verification"],
+    ],
+    second,
+    `${api}/git/commits/${second}`,
+    { sha: tree, url: `${api}/git/trees/${tree}` },
+    "docs: the text fix",
+    [
+      {
+        sha: first,
+        url: `${api}/git/commits/${first}`,
+        html_url: `https://github.com/example/widgets/commit/${first}`,
+      },
+    ],
+  ]);
+  for (const ref of [second.slice(0, 8), "main", "deadbeef".repeat(5)])
+    expect([ref, ghCall(dir, "api", `${repo}/git/commits/${ref}`)]).toEqual([
+      ref,
+      {
+        code: 1,
+        out: notFoundOf("https://docs.github.com/rest/git/commits#get-a-commit-object"),
+        err: "gh: Not Found (HTTP 404)\n",
+      },
+    ]);
+});
+
+// Catches: refs that are not GitHub's: `git/refs/<ref>` answered as a list where it names one ref
+// whole (GitHub answers that ref), or as 404 where it is a prefix of names (GitHub lists the refs
+// it starts); a ref of the run's remote missing from `git/refs`; the two refs GitHub keeps for the
+// pull request missing, `refs/pull/<n>/head` at the branch's tip and `refs/pull/<n>/merge` at the
+// pull request's test merge; a 404 whose body names another page than GitHub's; and a ref or a
+// list short of a field GitHub's description requires, a prefix's list held to the list
+// operation (rest-required.ts's ANSWERED_AS names the reads of 2026-11-21 behind each).
+test("the refs are GitHub's, the remote's and the pull request's, one by its name and a list by a prefix", () => {
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const head = builtHead(dir);
+  const remote = path.join(dir, "remote.git");
+  const base = git(remote, "rev-parse", "refs/heads/main");
+  const repo = "repos/example/widgets";
+  const merge = ghCall(dir, "api", `${repo}/pulls/1001`, "--jq", ".merge_commit_sha").out;
+  expect(merge).toMatch(/^[0-9a-f]{40}$/);
+  const refs = (path: string) =>
+    JSON.parse(ghCall(dir, "api", `${repo}/${path}`, "--jq", "[.[] | [.ref, .object.sha]]").out);
+  expect(refs("git/refs")).toEqual([
+    ["refs/heads/legion/LWEVAL-1", head],
+    ["refs/heads/main", base],
+    ["refs/pull/1001/head", head],
+    ["refs/pull/1001/merge", merge],
+  ]);
+  expect(refs("git/refs/heads")).toEqual([
+    ["refs/heads/legion/LWEVAL-1", head],
+    ["refs/heads/main", base],
+  ]);
+  expect(refs("git/refs/heads/ma")).toEqual([["refs/heads/main", base]]);
+  const one = (path: string) => JSON.parse(ghCall(dir, "api", `${repo}/${path}`).out);
+  for (const path of ["git/refs/heads/main", "git/ref/heads/main"])
+    expect([path, one(path)]).toEqual([
+      path,
+      {
+        ref: "refs/heads/main",
+        node_id: `REF_kwDOAAAAAc${Buffer.from("refs/heads/main").toString("base64url")}`,
+        url: "https://api.github.com/repos/example/widgets/git/refs/heads/main",
+        object: {
+          sha: base,
+          type: "commit",
+          url: `https://api.github.com/repos/example/widgets/git/commits/${base}`,
+        },
+      },
+    ]);
+  expect([
+    one("git/ref/pull/1001/head").object.sha,
+    one("git/refs/pull/1001/merge").object.sha,
+  ]).toEqual([head, merge]);
+  expect(heldTo("GET repos/{owner}/{repo}/git/refs/{ref+}", one("git/refs/heads/main"))).toEqual([
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    [],
+  ]);
+  for (const path of ["git/refs", "git/refs/heads"])
+    expect([path, heldTo("GET repos/{owner}/{repo}/git/refs", one(path))]).toEqual([
+      path,
+      ["GET /repos/{owner}/{repo}/git/matching-refs/{ref}", []],
+    ]);
+  const refused = (docs: string) => ({
+    code: 1,
+    out: notFoundOf(`https://docs.github.com/rest/git/refs#${docs}`),
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  expect(ghCall(dir, "api", `${repo}/git/refs/heads/nosuch`)).toEqual(
+    refused("get-all-references-in-a-namespace")
+  );
+  expect(ghCall(dir, "api", `${repo}/git/ref/heads/ma`)).toEqual(refused("get-a-reference"));
+}, 60_000);
+
+// Catches: a list of the branches that is not GitHub's "List branches": a branch of the remote
+// missing, one short of a field GitHub's description requires, every branch protected or none
+// where the world's base alone is (by its ruleset), and a `protected` parameter that filters
+// nothing. gh-standin.ts's `branchList` names the reads of 2026-11-21.
+test("the branches are the remote's, the base alone protected, filtered by `protected` as GitHub filters them", () => {
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const head = builtHead(dir);
+  const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
+  const repo = "repos/example/widgets";
+  const branches = (query: string) =>
+    JSON.parse(
+      ghCall(
+        dir,
+        "api",
+        `${repo}/branches${query}`,
+        "--jq",
+        "[.[] | [.name, .commit.sha, .protected]]"
+      ).out
+    );
+  expect(branches("")).toEqual([
+    ["legion/LWEVAL-1", head, false],
+    ["main", base, true],
+  ]);
+  expect(branches("?protected=true")).toEqual([["main", base, true]]);
+  expect(branches("?protected=false")).toEqual([["legion/LWEVAL-1", head, false]]);
+  expect(branches("?per_page=1&page=2")).toEqual([["main", base, true]]);
+  const listed = JSON.parse(ghCall(dir, "api", `${repo}/branches`).out);
+  expect(heldTo("GET repos/{owner}/{repo}/branches", listed)).toEqual([
+    "GET /repos/{owner}/{repo}/branches",
+    [],
+  ]);
+  expect(listed[1]).toEqual({
+    name: "main",
+    commit: { sha: base, url: `https://api.github.com/repos/example/widgets/commits/${base}` },
+    protected: true,
+  });
+}, 60_000);
+
+// Catches: a tree that is not GitHub's "Get a tree": its `sha` the tree's where the path names a
+// commit (GitHub answers the commit's), a short SHA answered as written (GitHub answers the full
+// one), a branch with a slash read as no tree, entries short of a field GitHub's description
+// requires or with a size on a tree, `recursive` read as off for `0` (GitHub recurses for any
+// value) or recursing without the trees on the way, an object that is no tree answered, and a
+// 404 naming another page than GitHub's. gh-standin.ts's `treeOf` names the reads of 2026-11-21.
+test("a tree is read from the run's own remote by any object GitHub reads, recursive for any value", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const remote = path.join(dir, "remote.git");
+  const repo = "repos/example/widgets";
+  const api = "https://api.github.com/repos/example/widgets";
+  const read = (named: string) => JSON.parse(ghCall(dir, "api", `${repo}/git/trees/${named}`).out);
+  const tree = git(remote, "rev-parse", `${second}^{tree}`);
+  const blob = (file: string) => git(remote, "rev-parse", `${second}:${file}`);
+  const whole = read(second);
+  expect(heldTo("GET repos/{owner}/{repo}/git/trees/{sha+}", whole)).toEqual([
+    "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
+    [],
+  ]);
+  expect(whole).toEqual({
+    sha: second,
+    url: `${api}/git/trees/${second}`,
+    tree: ["docs.md", "greet.ts"].map((file) => ({
+      path: file,
+      mode: "100644",
+      type: "blob",
+      sha: blob(file),
+      size: file === "docs.md" ? 13 : 30,
+      url: `${api}/git/blobs/${blob(file)}`,
+    })),
+    truncated: false,
+  });
+  expect([read(tree.slice(0, 8)).sha, read("legion/LWEVAL-1").sha]).toEqual([tree, first]);
+  const world = worldDir("approved_world", "", { threadsCase: "correct" });
+  const paths = (query: string) =>
+    ghCall(
+      world,
+      "api",
+      `${repo}/git/trees/${builtHead(world)}${query}`,
+      "--jq",
+      '[.tree[] | select(.path | startswith(".github")) | "\\(.type) \\(.path) \\(has("size"))"]'
+    ).out;
+  expect(JSON.parse(paths(""))).toEqual(["tree .github false"]);
+  for (const query of ["?recursive=1", "?recursive=0"])
+    expect([query, JSON.parse(paths(query))]).toEqual([
+      query,
+      [
+        "tree .github false",
+        "tree .github/workflows false",
+        "blob .github/workflows/greet.yml true",
+      ],
+    ]);
+  for (const named of ["deadbeef".repeat(5), blob("docs.md")])
+    expect([named, ghCall(dir, "api", `${repo}/git/trees/${named}`)]).toEqual([
+      named,
+      {
+        code: 1,
+        out: notFoundOf("https://docs.github.com/rest/git/trees#get-a-tree"),
+        err: "gh: Not Found (HTTP 404)\n",
+      },
+    ]);
+}, 60_000);
+
+// Catches: a list of the tags that is not GitHub's "List repository tags": anything but an empty
+// list for a remote that holds none, as no world's does; a tag of the remote missing; an
+// annotated tag naming its tag object where GitHub names the commit; another order than GitHub's,
+// newest version first (`v1.10` before `v1.9`); an item short of a field GitHub's description
+// requires; and an annotated tag's ref read as its commit, where GitHub's refs name the tag
+// object. gh-standin.ts's `tagList` names the reads of 2026-11-21.
+test("the tags are the remote's, newest version first, each with the commit it names", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const remote = path.join(dir, "remote.git");
+  const repo = "repos/example/widgets";
+  expect(ghCall(dir, "api", `${repo}/tags`)).toEqual({ code: 0, out: "[]", err: "" });
+  git(remote, "tag", "v1.0", first);
+  git(remote, "tag", "v1.9", first);
+  git(remote, "tag", "-a", "v1.10", "-m", "a release", second);
+  const listed = JSON.parse(ghCall(dir, "api", `${repo}/tags`).out);
+  expect(heldTo("GET repos/{owner}/{repo}/tags", listed)).toEqual([
+    "GET /repos/{owner}/{repo}/tags",
+    [],
+  ]);
+  expect(
+    listed.map((tag: { name: string; commit: { sha: string } }) => [tag.name, tag.commit.sha])
+  ).toEqual([
+    ["v1.10", second],
+    ["v1.9", first],
+    ["v1.0", first],
+  ]);
+  expect(listed[0]).toMatchObject({
+    zipball_url: "https://api.github.com/repos/example/widgets/zipball/refs/tags/v1.10",
+    tarball_url: "https://api.github.com/repos/example/widgets/tarball/refs/tags/v1.10",
+  });
+  expect(
+    JSON.parse(
+      ghCall(dir, "api", `${repo}/git/ref/tags/v1.10`, "--jq", "[.object.type, .object.sha]").out
+    )
+  ).toEqual(["tag", git(remote, "rev-parse", "refs/tags/v1.10")]);
+});
+
+// Catches: a comparison GitHub does not read answered otherwise than GitHub answers it: two dots
+// (`<base>..<head>`) and a ref the remote has not got each answered by no route, with the 404 body
+// of an endpoint GitHub does not serve, where GitHub answers its 404 of a comparison, its body
+// naming "Compare two commits": measured on 2026-11-21, `gh api -i
+// repos/cybermonklabs/legion/compare/446a02fb..bbf69791` answered `HTTP/2.0 404 Not Found` (`Date:
+// Sat, 21 Nov 2026 08:43:19 GMT`) where the same two commits written with three dots answered 200
+// (08:43:20 GMT), and `compare/nosuchbranch-xyz...main` answered that 404 (08:43:22 GMT).
+test("a comparison of two dots, or of a ref the remote has not got, is GitHub's 404 of a comparison", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const refused = {
+    code: 1,
+    out: notFoundOf("https://docs.github.com/rest/commits/commits#compare-two-commits"),
+    err: "gh: Not Found (HTTP 404)\n",
+  };
+  const baseheads = [
+    `${first}..${second}`,
+    "legion/LWEVAL-1..legion/LWEVAL-1",
+    "deadbeef...cafed00d",
+  ];
+  for (const basehead of [...baseheads, `${first}...deadbeef`])
+    expect([basehead, ghCall(dir, "api", `repos/example/widgets/compare/${basehead}`)]).toEqual([
+      basehead,
+      refused,
+    ]);
+  expect(recordedCalls(dir).map((call) => call.handler)).toEqual(Array(4).fill("comparison"));
+  expect(
+    ghCall(dir, "api", `repos/example/widgets/compare/${first}...${second}`, "--jq", ".status").out
+  ).toBe("ahead");
+});
+
+// Catches: a health that reads GitHub's own refusal of a read of the run's remote as the world
+// missing an answer, which voids the run: the 422 of a commit the remote has not got, the 404 of
+// a short SHA's git data, of a tree, of a ref, of a list from a ref the remote has not got and of
+// a comparison of two dots, each GitHub's answer, and a `--jq` that fails over a commit the world
+// answered. In INFRA-764's round 29 the world-health check voided run 94caf2e09844 on the
+// reviewer's read of a commit its remote held (calls.jsonl:8). A call a route matched is judged by
+// its route, and a comparison by health.ts's OWN_READ, which takes two dots as it takes three.
+test("health reads GitHub's refusals of the remote's commits, trees, refs and comparisons as GitHub's", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const repo = "repos/example/widgets";
+  const reads = [
+    ["api", `${repo}/commits/${second}`, "--jq", ".sha"],
+    ["api", `${repo}/commits/${"deadbeef".repeat(5)}`],
+    ["api", `${repo}/commits/${second}`, "--jq", ".files[0] | error"],
+    ["api", `${repo}/commits?sha=nosuchref`],
+    ["api", `${repo}/git/commits/${second.slice(0, 8)}`],
+    ["api", `${repo}/git/trees/${"deadbeef".repeat(5)}`],
+    ["api", `${repo}/git/refs/heads/nosuch`],
+    ["api", `${repo}/git/ref/heads/nosuch`],
+    ["api", `${repo}/compare/${first}..${second}`],
+  ];
+  for (const by of ["reviewer", "implementer"]) for (const argv of reads) asked(dir, by, argv);
+  expect(recordedCalls(dir).map((call) => [call.exit, call.handler])).toEqual(
+    ["reviewer", "implementer"].flatMap(() => [
+      [0, "commit"],
+      [1, "commit"],
+      [1, "commit"],
+      [1, "commits"],
+      [1, "git-commit"],
+      [1, "git-tree"],
+      [1, "git-ref"],
+      [1, "git-ref"],
+      [1, "comparison"],
+    ])
+  );
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect([scenario, ghUndeclared({ dir, scenario })]).toEqual([scenario, undefined]);
+});
+
+// Catches: a health that reads a run whose push left the issue branch at another history as
+// healthy, where GitHub keeps a test merge of a head that does not merge and the world answers
+// none (class-search.json's residual, health.ts's rule 24); and one that calls a fix pushed over
+// the branch, which holds the base's tip, unhealthy. The world's remote takes the force-push of
+// such a head: measured on 2026-11-21 against a copy of run 94caf2e09844's remote (health.ts's
+// `unmergedHead` names the command and its answer); here the push's line is written as the
+// remote's post-receive hook writes one.
+test("health names a push that leaves the issue branch without the base's tip, and passes a fix pushed over it", () => {
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const remote = path.join(dir, "remote.git");
+  const log = path.join(dir, "pushes.log");
+  const fix = pushFix(dir, "docs/cli.md", "a fix\n");
+  expect(readFileSync(log, "utf8")).toContain(` refs/heads/legion/LWEVAL-1 `);
+  expect(unmergedHead({ dir })).toBeUndefined();
+  const orphan = git(remote, "commit-tree", `${fix}^{tree}`, "-m", "another history");
+  appendFileSync(log, `2026-11-21T09:29:09.375Z refs/heads/legion/LWEVAL-1 ${fix} ${orphan}\n`);
+  const pushed = readFileSync(log, "utf8").trimEnd().split("\n").length;
+  expect(unmergedHead({ dir })).toBe(
+    `unmerged head: pushes.log:${pushed} pushed ${orphan} to refs/heads/legion/LWEVAL-1, whose history does not hold main's tip, so it may not merge, and GitHub keeps the last test merge of such a head where the world answers none`
+  );
+}, 60_000);
 
 // Catches: a comparison read off the path alone, whatever verb the call names. The comparison
 // is GitHub's read of two refs, and a call that writes to that path is another call: GitHub
@@ -6277,6 +6763,14 @@ function restCalls(head: string, base: string): [string, string[], string?][] {
     ["GET repos/{owner}/{repo}/contents/{path+}", ["api", `${repo}/contents/greet.ts?ref=${head}`]],
     ["GET repos/{owner}/{repo}/contents/{path+}", ["api", `${repo}/contents/docs?ref=${head}`]],
     ["GET user", ["api", "user"], refused],
+    ["GET repos/{owner}/{repo}/commits/{ref+}", ["api", `${repo}/commits/${head}`]],
+    ["GET repos/{owner}/{repo}/commits", ["api", `${repo}/commits?sha=${head}`]],
+    ["GET repos/{owner}/{repo}/git/commits/{sha}", ["api", `${repo}/git/commits/${head}`]],
+    ["GET repos/{owner}/{repo}/git/refs", ["api", `${repo}/git/refs`]],
+    ["GET repos/{owner}/{repo}/git/refs/{ref+}", ["api", `${repo}/git/refs/heads/main`]],
+    ["GET repos/{owner}/{repo}/branches", ["api", `${repo}/branches`]],
+    ["GET repos/{owner}/{repo}/git/trees/{sha+}", ["api", `${repo}/git/trees/${head}?recursive=1`]],
+    ["GET repos/{owner}/{repo}/tags", ["api", `${repo}/tags`]],
   ];
 }
 

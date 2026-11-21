@@ -7139,6 +7139,63 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
           out: JSON.stringify(["refs/heads/legion/LWEVAL-1", head]),
         }),
     },
+    "GET repos/{owner}/{repo}/git/refs": {
+      argv: () => [
+        "api",
+        `${REPO}/git/refs`,
+        "--jq",
+        '[.[] | select(.ref == "refs/pull/1001/head") | .object.sha]',
+      ],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify([head]) }),
+    },
+    "GET repos/{owner}/{repo}/git/refs/{ref+}": {
+      argv: () => ["api", `${REPO}/git/refs/heads/legion/LWEVAL-1`, "--jq", "[.ref, .object.sha]"],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify(["refs/heads/legion/LWEVAL-1", head]),
+        }),
+    },
+    "GET repos/{owner}/{repo}/git/commits/{sha}": {
+      argv: (head) => ["api", `${REPO}/git/commits/${head}`, "--jq", "[.sha, .tree.sha != null]"],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify([head, true]) }),
+    },
+    "GET repos/{owner}/{repo}/git/trees/{sha+}": {
+      argv: (head) => [
+        "api",
+        `${REPO}/git/trees/${head}?recursive=1`,
+        "--jq",
+        '[.sha, ([.tree[].path] | index("greet.ts") != null)]',
+      ],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify([head, true]) }),
+    },
+    "GET repos/{owner}/{repo}/commits/{ref+}": {
+      argv: (head) => ["api", `${REPO}/commits/${head}`, "--jq", '[.sha, (.stats | has("total"))]'],
+      answers: (got, _, head) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify([head, true]) }),
+    },
+    "GET repos/{owner}/{repo}/commits": {
+      argv: (head) => ["api", `${REPO}/commits?sha=${head}&per_page=1`, "--jq", ".[0].sha"],
+      answers: (got, _, head) => expect(got).toMatchObject({ code: 0, out: head }),
+    },
+    "GET repos/{owner}/{repo}/branches": {
+      argv: () => ["api", `${REPO}/branches`, "--jq", "[.[] | [.name, .protected]]"],
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify([
+            ["legion/LWEVAL-1", false],
+            ["main", true],
+          ]),
+        }),
+    },
+    "GET repos/{owner}/{repo}/tags": {
+      argv: () => ["api", `${REPO}/tags`],
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[]" }),
+    },
     "GET user": {
       argv: () => ["api", "user", "--jq", ".login"],
       answers: (got) =>

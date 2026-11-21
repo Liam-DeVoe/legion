@@ -1020,6 +1020,24 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     answer: "the world's commit statuses, none, so `state` pending; the ref resolved on the remote",
   },
   {
+    route: "GET repos/{owner}/{repo}/commits/{ref+}",
+    answer:
+      "the remote: the commit the ref resolves to, its parents, files and stats, or GitHub's 422",
+    evidence: {
+      run: "round29-world-health/94caf2e09844/calls.jsonl:8",
+      reason: "a reviewer reads the commit the implementer pushed, for its author and parents",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/commits",
+    answer:
+      "the remote: the commits the `sha` parameter's ref reaches, newest first, paged, or GitHub's 404",
+    evidence: {
+      world:
+        "GitHub's list of the commits a branch reaches, the REST form of the history beside the read of one commit",
+    },
+  },
+  {
     route: "GET repos/{owner}/{repo}/actions/runs",
     answer: "the world's workflow runs: none, its checks being check runs of no Actions workflow",
   },
@@ -1063,12 +1081,58 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
       "the remote: the base branch at its head, protected by its ruleset alone, so no classic protection and no check of its own required",
   },
   {
+    route: "GET repos/{owner}/{repo}/branches",
+    answer:
+      "the remote's branches, each with its tip, the base alone protected, filtered by `protected`, paged",
+    evidence: {
+      world: "GitHub's list of the branches, beside the read of one branch the world serves",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/tags",
+    answer: "the remote's tags, newest version first: none in any world, so an empty list",
+    evidence: {
+      world: "GitHub's list of the tags, which it answers empty for a repository with none",
+    },
+  },
+  {
     route: "GET repos/{owner}/{repo}/compare/{basehead+}",
-    answer: "the remote: the comparison of the two refs",
+    answer:
+      "the remote: the comparison of the two refs, or GitHub's 404 for a ref it cannot resolve and for `<base>..<head>`",
   },
   {
     route: "GET repos/{owner}/{repo}/git/ref/{ref+}",
-    answer: "the remote: the ref and the commit it points at, or 404",
+    answer: "the remote's refs and the pull request's two: the ref and the object it names, or 404",
+  },
+  {
+    route: "GET repos/{owner}/{repo}/git/refs",
+    answer: "the remote's refs and the pull request's two, by name",
+    evidence: {
+      world: "GitHub's list of every ref, the plural form of the ref read the world serves",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/git/refs/{ref+}",
+    answer:
+      "the ref the path names, or the list of the refs its name starts, or GitHub's 404, as GitHub answers `git/refs/<ref>`",
+    evidence: {
+      world:
+        "GitHub's read of one ref or of the refs under a name, the plural form of the ref read the world serves",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/git/commits/{sha}",
+    answer: "the remote: the commit's git data for a full SHA, or GitHub's 404",
+    evidence: {
+      world: "GitHub's git-data read of one commit, which it serves beside the read of a commit",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/git/trees/{sha+}",
+    answer: "the remote: the tree of the object the path names, recursive where asked, or 404",
+    evidence: {
+      world: "GitHub's read of a commit's tree, the files of a head listed without a checkout",
+    },
   },
   {
     route: "GET repos/{owner}/{repo}/contents/{path+}",

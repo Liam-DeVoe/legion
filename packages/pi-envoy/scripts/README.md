@@ -756,7 +756,10 @@ later line is another command's), which the run's line names ahead of the world'
 call (`credential printed`, a residual of *Which of the world's answers are pinned*, below); no
 claim of the run sent a `claims/ready` after its boot's, by the daemon stand-in's own log,
 `<run>/daemon.log`, the call and the claim named (`capability report`, a residual of the same
-section: the stand-in keeps a capability report's rows as the session sent them); no
+section: the stand-in keeps a capability report's rows as the session sent them); no push of
+`<run>/pushes.log` left the issue branch at a head whose history lacks the base's tip, on the
+run's remote (`unmerged head`, a residual of the same section: GitHub keeps a test merge of such a
+head that the world does not); no
 call reaches a host other than the loopback, the hosts
 its pane's URLs name and the model gateway its profile's `models.yml` names, but a GET or a HEAD
 with no body, or a `git ls-remote` (which reads refs alone; a fetch, a clone and a push stay off the
@@ -1253,7 +1256,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Eight differences are named
+rule-violation lines of a refused push beyond the three measured. Nine differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -1306,6 +1309,13 @@ residuals rather than defects, each an answer the world cannot give as productio
   answered `public` (`fixture_write`); a write naming another owner is refused exit 2 before any
   route reads it; and the world's repository is no fork (`fork:false`), so the credential helper's
   answer for a fork (`forkUpstreamDir`) is never asked.
+- GitHub's test merge (`refs/pull/<n>/merge`) of a head that does not merge into its base, which
+  GitHub keeps from the last time the head merged (`git/ref/pull/4532/merge` answered 200 while
+  `pulls/4532` gave `merge_commit_sha` null, 08:45:31Z on 2026-11-21) and the world answers
+  none of. The base never moves, but the world's remote takes a force-push of another history to
+  the issue branch, as GitHub does for an unprotected branch. A run whose push leaves a head
+  without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule
+  24, `unmerged head`), and the run is replaced.
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**
@@ -1336,6 +1346,22 @@ are reported on the commit read (its `head_sha`, its App — GitHub Actions for 
 GitHub Advanced Security for `CodeQL` — and their times counted
 from when that commit reached the run's remote). A `contents` read answers the file or directory
 at the ref it names, or on the default branch where it names none, raw or as GitHub's JSON.
+The run's remote answers GitHub's other reads of its objects too, each a route of `fixture_write`
+read in `gh-standin.ts`'s `fromRun`: a commit by any ref GitHub reads, a branch with a slash in
+its name among them and a short SHA answered with the full one, with its stats and its files
+(the diff from its first parent, paged 300 a page), or its diff, patch or SHA under those media
+types, and GitHub's 422 `No commit found for SHA: <ref>` with its body for a ref the remote
+cannot resolve; the commits a ref reaches, newest first and paged (a filter by path, author,
+committer or time is refused as a read the world does not model); a commit's git data, by its
+full SHA alone; a tree, recursive for any value of `recursive`; the branches, the base alone
+protected; the tags, none in any world; and the refs, the remote's and the two GitHub keeps for
+the pull request (`refs/pull/<n>/head` at its head, `refs/pull/<n>/merge` at its test merge),
+one by its name and a list by a prefix of names. A ref, a tree or a list the remote cannot answer
+is GitHub's 404, its body naming GitHub's page of the read, and so is a comparison of two dots
+(`<base>..<head>`), which GitHub does not read as one, or of a ref the remote has not got. Each
+answer is the one GitHub gave on 2026-11-21, read with `gh api -i` against cybermonklabs/legion;
+`gh-standin.ts` names each read and its `Date:`. GitHub's test merge of a head that does not
+merge into its base is a residual (*Which of the world's answers are pinned*, above).
 A call naming an owner outside the world's project is refused as the Legion gh wrapper of the
 run's label refuses it, for every role: exit 2 and the line the wrapper prints for the form that
 names the owner, never a 404. The world reads the call by the wrapper's own selector table
@@ -1785,7 +1811,10 @@ of github/rest-api-description at commit `c9c95fe34ced05fe076001f5c55704742bc8e7
 written by hand. To regenerate it, fetch that file at that commit (`curl -fsSLO
 https://raw.githubusercontent.com/github/rest-api-description/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.json`)
 and run `bun rest-required.ts api.github.com.json`, which writes the extract and formats it; a
-route the description has no operation of fails it, naming the route. An answer is read against
+route the description has no operation of fails it, naming the route, unless `rest-required.ts`'s
+`ANSWERED_AS` names the operation GitHub answers it as: `git/refs` and `git/refs/<ref>`, whose
+reads GitHub serves and the description lists none of, are held to "List matching references"
+and "Get a reference", as GitHub answered them on 2026-11-21. An answer is read against
 it as INFRA-764's read search reads one (`absentFields`): through `$ref`, every part of an
 `allOf`, the closest of a `oneOf` or an `anyOf`, and every item of an array. `gh-standin.test.ts`
 calls every REST route of `WORLD_ROUTES` in a world and holds its answer to its operation, and
@@ -1825,6 +1854,17 @@ repos/cybermonklabs/legion/installation` exited 1 with `gh: A JSON web token cou
 the installation is held to `rest-required.json` alone. A REST read the pin does not hold — the
 installation, the answer of a write — is held to the fields GitHub requires and no more, and is
 not claimed to answer in production's whole shape.
+
+The reads of the run's remote that no pin holds are held to the fields GitHub requires
+(`rest-required.json`) and to the answers GitHub gave on 2026-11-21, which a row of
+`gh-standin.test.ts` holds for each, and to no more, and are not claimed to answer in
+production's whole shape:
+
+- `GET repos/<o>/<r>/commits/<ref>`, one commit, and `GET repos/<o>/<r>/commits`, the list;
+- `GET repos/<o>/<r>/git/commits/<sha>`, a commit's git data;
+- `GET repos/<o>/<r>/git/refs` and `GET repos/<o>/<r>/git/refs/<ref>`, the refs;
+- `GET repos/<o>/<r>/git/trees/<sha>`, a tree;
+- `GET repos/<o>/<r>/branches`, the branches, and `GET repos/<o>/<r>/tags`, the tags.
 
 gh's own reads of the pull request — `gh pr view`, `gh pr list` and `gh pr diff` — are the gh
 stand-in's reading of the world as gh 2.98.0 prints it (`gh-standin.ts`'s `prRead`, `gh-view.ts`),

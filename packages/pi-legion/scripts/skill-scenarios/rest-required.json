@@ -4,20 +4,27 @@
   "file": "descriptions/api.github.com/api.github.com.json",
   "routes": {
     "GET /repos/{owner}/{repo}": "GET /repos/{owner}/{repo}",
-    "GET /repos/{owner}/{repo}/commits/{sha}": "GET /repos/{owner}/{repo}/commits/{ref}",
+    "GET /repos/{owner}/{repo}/commits/{sha}": "GET /repos/{owner}/{repo}/commits/{ref} application/vnd.github.sha",
     "GET /repos/{owner}/{repo}/commits/{sha}/pulls": "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
     "GET /repos/{owner}/{repo}/installation": "GET /repos/{owner}/{repo}/installation",
     "GET /repos/{owner}/{repo}/pulls/{number}": "GET /repos/{owner}/{repo}/pulls/{pull_number}",
     "GET repos/{owner}/{repo}": "GET /repos/{owner}/{repo}",
     "GET repos/{owner}/{repo}/actions/runs": "GET /repos/{owner}/{repo}/actions/runs",
     "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": "GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+    "GET repos/{owner}/{repo}/branches": "GET /repos/{owner}/{repo}/branches",
     "GET repos/{owner}/{repo}/branches/{branch+}": "GET /repos/{owner}/{repo}/branches/{branch}",
     "GET repos/{owner}/{repo}/branches/{branch}/protection": "GET /repos/{owner}/{repo}/branches/{branch}/protection",
+    "GET repos/{owner}/{repo}/commits": "GET /repos/{owner}/{repo}/commits",
+    "GET repos/{owner}/{repo}/commits/{ref+}": "GET /repos/{owner}/{repo}/commits/{ref}",
     "GET repos/{owner}/{repo}/commits/{ref}/check-runs": "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
     "GET repos/{owner}/{repo}/commits/{ref}/status": "GET /repos/{owner}/{repo}/commits/{ref}/status",
     "GET repos/{owner}/{repo}/compare/{basehead+}": "GET /repos/{owner}/{repo}/compare/{basehead}",
     "GET repos/{owner}/{repo}/contents/{path+}": "GET /repos/{owner}/{repo}/contents/{path}",
+    "GET repos/{owner}/{repo}/git/commits/{sha}": "GET /repos/{owner}/{repo}/git/commits/{commit_sha}",
     "GET repos/{owner}/{repo}/git/ref/{ref+}": "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    "GET repos/{owner}/{repo}/git/refs": "GET /repos/{owner}/{repo}/git/matching-refs/{ref}",
+    "GET repos/{owner}/{repo}/git/refs/{ref+}": "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    "GET repos/{owner}/{repo}/git/trees/{sha+}": "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
     "GET repos/{owner}/{repo}/issues/{number}/comments": "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
     "GET repos/{owner}/{repo}/pulls/{number}": "GET /repos/{owner}/{repo}/pulls/{pull_number}",
     "GET repos/{owner}/{repo}/pulls/{number}/comments": "GET /repos/{owner}/{repo}/pulls/{pull_number}/comments",
@@ -27,6 +34,7 @@
     "GET repos/{owner}/{repo}/rules/branches/{branch+}": "GET /repos/{owner}/{repo}/rules/branches/{branch}",
     "GET repos/{owner}/{repo}/rulesets": "GET /repos/{owner}/{repo}/rulesets",
     "GET repos/{owner}/{repo}/rulesets/{id}": "GET /repos/{owner}/{repo}/rulesets/{ruleset_id}",
+    "GET repos/{owner}/{repo}/tags": "GET /repos/{owner}/{repo}/tags",
     "GET user": "GET /user",
     "PATCH repos/{owner}/{repo}/pulls/{number}": "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
     "POST /app/installations/{id}/access_tokens": "POST /app/installations/{installation_id}/access_tokens",
@@ -76,6 +84,16 @@
         }
       }
     },
+    "GET /repos/{owner}/{repo}/branches": {
+      "operation_id": "repos/list-branches",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "short-branch"
+        }
+      }
+    },
     "GET /repos/{owner}/{repo}/branches/{branch}": {
       "operation_id": "repos/get-branch",
       "status": 200,
@@ -92,6 +110,16 @@
         "ref": "branch-protection"
       }
     },
+    "GET /repos/{owner}/{repo}/commits": {
+      "operation_id": "repos/list-commits",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "commit"
+        }
+      }
+    },
     "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls": {
       "operation_id": "repos/list-pull-requests-associated-with-commit",
       "status": 200,
@@ -103,6 +131,14 @@
       }
     },
     "GET /repos/{owner}/{repo}/commits/{ref}": {
+      "operation_id": "repos/get-commit",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "commit"
+      }
+    },
+    "GET /repos/{owner}/{repo}/commits/{ref} application/vnd.github.sha": {
       "operation_id": "repos/get-commit",
       "status": 200,
       "media": "application/vnd.github.sha",
@@ -160,12 +196,38 @@
         ]
       }
     },
+    "GET /repos/{owner}/{repo}/git/commits/{commit_sha}": {
+      "operation_id": "git/get-commit",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "git-commit"
+      }
+    },
+    "GET /repos/{owner}/{repo}/git/matching-refs/{ref}": {
+      "operation_id": "git/list-matching-refs",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "git-ref"
+        }
+      }
+    },
     "GET /repos/{owner}/{repo}/git/ref/{ref}": {
       "operation_id": "git/get-ref",
       "status": 200,
       "media": "application/json",
       "schema": {
         "ref": "git-ref"
+      }
+    },
+    "GET /repos/{owner}/{repo}/git/trees/{tree_sha}": {
+      "operation_id": "git/get-tree",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "ref": "git-tree"
       }
     },
     "GET /repos/{owner}/{repo}/installation": {
@@ -258,6 +320,16 @@
       "media": "application/json",
       "schema": {
         "ref": "repository-ruleset"
+      }
+    },
+    "GET /repos/{owner}/{repo}/tags": {
+      "operation_id": "repos/list-tags",
+      "status": 200,
+      "media": "application/json",
+      "schema": {
+        "items": {
+          "ref": "tag"
+        }
       }
     },
     "GET /user": {
@@ -754,11 +826,54 @@
         }
       }
     },
+    "git-commit": {
+      "required": [
+        "sha",
+        "node_id",
+        "url",
+        "html_url",
+        "author",
+        "committer",
+        "tree",
+        "message",
+        "parents",
+        "verification"
+      ],
+      "properties": {
+        "author": {
+          "required": ["email", "name", "date"]
+        },
+        "committer": {
+          "required": ["email", "name", "date"]
+        },
+        "tree": {
+          "required": ["sha", "url"]
+        },
+        "parents": {
+          "items": {
+            "required": ["sha", "url", "html_url"]
+          }
+        },
+        "verification": {
+          "required": ["verified", "reason", "signature", "payload", "verified_at"]
+        }
+      }
+    },
     "git-ref": {
       "required": ["ref", "node_id", "url", "object"],
       "properties": {
         "object": {
           "required": ["type", "sha", "url"]
+        }
+      }
+    },
+    "git-tree": {
+      "required": ["sha", "tree", "truncated"],
+      "properties": {
+        "tree": {
+          "items": {
+            "required": ["path", "mode", "type", "sha"]
+          }
         }
       }
     },
@@ -2460,6 +2575,17 @@
         }
       }
     },
+    "short-branch": {
+      "required": ["name", "commit", "protected"],
+      "properties": {
+        "commit": {
+          "required": ["sha", "url"]
+        },
+        "protection": {
+          "ref": "branch-protection"
+        }
+      }
+    },
     "simple-commit-status": {
       "required": [
         "description",
@@ -2495,6 +2621,14 @@
         "type",
         "url"
       ]
+    },
+    "tag": {
+      "required": ["name", "node_id", "commit", "zipball_url", "tarball_url"],
+      "properties": {
+        "commit": {
+          "required": ["sha", "url"]
+        }
+      }
     },
     "team": {
       "required": [

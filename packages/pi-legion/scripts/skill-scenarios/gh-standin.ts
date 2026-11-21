@@ -550,26 +550,30 @@ function branchDiff(...options: string[]): string | undefined {
   if (world === undefined) return undefined;
   return fromRemote("diff", ...options, `${world.base}...${world.branch}`);
 }
-/** `repos/<owner>/<repo>/compare/<base>...<head>`, with the query string `gh api` lets a caller
- * append. A ref may carry dots, and `...` is the separator, so each side is everything up to the
- * last `...`. */
-const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?$/;
+/** `repos/<owner>/<repo>/compare/<basehead>`, with the query string `gh api` lets a caller
+ * append, where the basehead holds two dots or more: `<base>...<head>`, the comparison GitHub
+ * reads, and `<base>..<head>`, which GitHub answers 404 (`comparison`). */
+const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]*\.\.[^?]*)(?:\?.*)?$/;
+/** The two refs of a basehead GitHub compares, `<base>...<head>`. A ref may carry dots, and `...`
+ * is the separator, so the base is everything up to the last `...`. */
+const BASEHEAD = /^(.+)\.\.\.(.+)$/;
+/** The page of GitHub's REST reference its 404 of a comparison names (`notFoundBody`). */
+const COMPARE_DOCS = "https://docs.github.com/rest/commits/commits#compare-two-commits";
 /** Whether the call asks for the comparison as a diff rather than as JSON: `gh api -H "Accept:
  * application/vnd.github.v3.diff"`, the media type the API documents for a diff, and the
  * `vnd.github.diff` spelling GitHub takes for the same answer. */
 const DIFF_MEDIA_TYPE = /application\/vnd\.github(?:\.v3)?\.diff/;
-/** A ref this stand-in will hand `git`. A compare ref is argv the caller wrote, and `git` reads
- * a leading `-` as an option wherever it falls, so a ref such as `--output=<path>...main` would
- * write a file; `--end-of-options`, which `git diff` does not take, cannot close that, so a ref
- * that starts with `-` is refused instead. There is no privilege boundary in this rig — the
- * agent that writes the ref already runs shell commands of its own — so this is a guard against
- * a ref that reads as an option and no sandbox. A refused ref is no comparison of this world,
- * and the call falls through to the routes, whose 404 is GitHub's answer for a ref it has
- * not got. */
+/** A ref this stand-in will hand `git`. A ref is argv the caller wrote, and `git` reads a leading
+ * `-` as an option wherever it falls, so a ref such as `--output=<path>...main` would write a
+ * file; `--end-of-options`, which `git diff` does not take, cannot close that, so a ref that
+ * starts with `-` is refused instead. There is no privilege boundary in this rig — the agent that
+ * writes the ref already runs shell commands of its own — so this is a guard against a ref that
+ * reads as an option and no sandbox. A refused ref is one the remote does not hold, and each read
+ * answers it as GitHub answers a ref it has not got. */
 const REF = /^[^-]/;
 /** What GitHub answers for `gh api repos/<o>/<r>/compare/<base>...<head>`, read from the run's
- * own remote at the call, or undefined when this call is no such comparison or the remote cannot
- * resolve both refs. The rule has the implementer read that comparison to show its push changes
+ * own remote at the call, or undefined when this call is no such comparison or the run has no
+ * world. The rule has the implementer read that comparison to show its push changes
  * no code that runs (`skills/legion-worker/references/review-threads.md`, step 2), and the real
  * GitHub API answers it: measured on 2026-11-10, `gh api
  * repos/cybermonklabs/legion/compare/756789f8...main` printed `status`, `ahead_by`, `behind_by`
@@ -584,15 +588,18 @@ const REF = /^[^-]/;
  * reviewer reads a change out of a comparison with and which this answered as `null` through
  * the recorded batch of 2026-11-10: a reviewer that asked for `.patch` got nothing and one fell
  * back to `jj file show`, working around the rig on the read step 3 of review-threads.md rests
- * on. The patch of each file is read with a `git diff` of its own path, since splitting one
- * combined diff on its `diff --git` headers would have to undo git's own quoting of a path; a
- * world of this rig holds four changed files. A call that asks for the diff media type
- * (DIFF_MEDIA_TYPE) is answered with the unified diff itself, as the API answers that `Accept`
- * header, and never with the JSON. Renames are not detected, so a moved file reads as one
- * added and one removed, as
- * GitHub's own answer does when it finds no rename. A ref the remote cannot resolve is no
- * comparison of this world, and the call falls through to the routes, whose 404 is GitHub's own
- * answer for a comparison of refs a repository has not got. */
+ * on. The files are the comparison's diff from the merge base (`diffFiles`). A call that asks for
+ * the diff media type (DIFF_MEDIA_TYPE) is answered with the unified diff itself, as the API
+ * answers that `Accept` header, and never with the JSON.
+ *
+ * A comparison the remote cannot answer is GitHub's 404 of one, its body naming "Compare two
+ * commits" (COMPARE_DOCS): a ref the remote cannot resolve, one REF refuses, and a basehead of two
+ * dots, which GitHub does not read as a comparison. Measured on 2026-11-21, `gh api -i
+ * repos/cybermonklabs/legion/compare/446a02fb..bbf69791` answered `HTTP/2.0 404 Not Found` (its
+ * `Date: Sat, 21 Nov 2026 08:43:19 GMT`) with that body, where the same two commits written
+ * `446a02fb...bbf69791` answered 200 (08:43:20 GMT), and `compare/nosuchbranch-xyz...main`
+ * answered the same 404 (08:43:22 GMT). The world answered the first and the last from no route,
+ * `unrouted`, with the 404 body of an endpoint GitHub does not serve. */
 function comparison(): string | Record<string, unknown> | undefined {
   if (as !== "gh" || args[0] !== "api") return undefined;
   // A comparison is GitHub's read of two refs, so a call that writes to that path is another
@@ -601,28 +608,30 @@ function comparison(): string | Record<string, unknown> | undefined {
   // method was answered here with the two refs' diff, which told its caller a write it never
   // made had succeeded.
   if (verb !== "GET") return undefined;
-  const named = args.map((arg) => COMPARE.exec(arg)).find((match) => match !== null);
-  const [, base = "", head = ""] = named ?? [];
-  if (base === "" || head === "") return undefined;
-  if (!REF.test(base) || !REF.test(head)) return undefined;
+  const basehead = args.map((arg) => COMPARE.exec(arg)?.[1]).find((named) => named !== undefined);
+  if (basehead === undefined || world === undefined) return undefined;
+  const unanswered: () => never = () => {
+    handler = "comparison";
+    refuse(NOT_FOUND, COMPARE_DOCS);
+  };
+  const [, base = "", head = ""] = BASEHEAD.exec(basehead) ?? [];
+  if (!REF.test(base) || !REF.test(head)) unanswered();
   const range = [`${base}...${head}`];
   // The diff media type asks for the comparison as the diff itself, which is what the run's own
   // remote prints for the range, to its last line end, as GitHub's body ends (measured on
   // 2026-11-18: the diff media type of a compare and of a pull request of cybermonklabs/legion each
   // ended in `\n`, which gh printed as it came); a remote that cannot resolve the two refs prints
-  // nothing and the call falls through to the routes.
+  // nothing, and the call is GitHub's 404.
   if (DIFF_MEDIA_TYPE.test(joined))
-    return remoteBytes("diff", "--no-renames", ...range)?.toString();
+    return remoteBytes("diff", "--no-renames", ...range)?.toString() ?? unanswered();
   const ahead = fromRemote("rev-list", "--count", `${base}..${head}`);
   const behind = fromRemote("rev-list", "--count", `${head}..${base}`);
-  const counts = fromRemote("diff", "--numstat", "--no-renames", ...range);
-  const letters = fromRemote("diff", "--name-status", "--no-renames", ...range);
-  if (ahead === undefined || behind === undefined) return undefined;
-  if (counts === undefined || letters === undefined) return undefined;
   const baseSha = fromRemote("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
   const headSha = fromRemote("rev-parse", "--verify", "--quiet", `${head}^{commit}`);
   const mergeBase = fromRemote("merge-base", base, head);
-  if (baseSha === undefined || headSha === undefined || mergeBase === undefined) return undefined;
+  if (ahead === undefined || behind === undefined) unanswered();
+  if (baseSha === undefined || headSha === undefined || mergeBase === undefined) unanswered();
+  const files = diffFiles(range, headSha, mergeBase) ?? unanswered();
   const aheadBy = Number(ahead);
   const behindBy = Number(behind);
   const status =
@@ -633,47 +642,8 @@ function comparison(): string | Record<string, unknown> | undefined {
         : aheadBy === 0
           ? "behind"
           : "diverged";
-  const words: Record<string, string> = { A: "added", M: "modified", D: "removed" };
-  const statusOf = new Map(
-    letters
-      .split("\n")
-      .filter((line) => line !== "")
-      .map((line) => {
-        const [letter = "", file = ""] = line.split("\t");
-        return [file, words[letter.slice(0, 1)] ?? "modified"] as const;
-      })
-  );
-  const repo = world?.repo ?? "";
+  const repo = world.repo;
   const owner = repo.split("/")[0] ?? "";
-  const files = counts
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => {
-      const [added = "", deleted = "", filename = ""] = line.split("\t");
-      // A binary file's counts are `-` in numstat, and GitHub reports 0 for one.
-      const additions = Number(added) || 0;
-      const deletions = Number(deleted) || 0;
-      // GitHub's `patch` is the file's hunks alone, with no `diff --git` or `index` header, and
-      // it is absent for a file git prints no hunk for, as GitHub leaves it out for a binary.
-      const diff = fromRemote("diff", "--no-renames", ...range, "--", filename) ?? "";
-      const hunks = diff.search(/^@@/m);
-      const fileStatus = statusOf.get(filename) ?? "modified";
-      // The blob the file is at the head, or, for a file the head removed, the one it was.
-      const side = fileStatus === "removed" ? mergeBase : headSha;
-      const encoded = filename.split("/").map(encodeURIComponent).join("/");
-      return {
-        sha: fromRemote("rev-parse", `${side}:${filename}`) ?? "",
-        filename,
-        status: fileStatus,
-        additions,
-        deletions,
-        changes: additions + deletions,
-        blob_url: `https://github.com/${repo}/blob/${headSha}/${encoded}`,
-        raw_url: `https://github.com/${repo}/raw/${headSha}/${encoded}`,
-        contents_url: `https://api.github.com/repos/${repo}/contents/${encoded}?ref=${headSha}`,
-        ...(hunks < 0 ? {} : { patch: diff.slice(hunks) }),
-      };
-    });
   // The two refs as the call named them, as GitHub's own URLs name them, and its permalink by the
   // two commits, each its owner's and seven digits long.
   const html = `https://github.com/${repo}/compare/${base}...${head}`;
@@ -695,6 +665,58 @@ function comparison(): string | Record<string, unknown> | undefined {
     commits: commits.map(commitJson),
     files,
   };
+}
+/** The files of the diff `range` (`git diff`'s arguments: `<base>...<head>` for a comparison, a
+ * commit's first parent and the commit for a commit) on the run's own remote, as GitHub's
+ * `diff-entry` lists each, with the blob it is at `at`, or for a file the range removed the one it
+ * was at `before`; undefined where the remote cannot read the range. Each file carries the hunks
+ * of its own diff as `patch`, read with a `git diff` of its own path, since splitting one combined
+ * diff on its `diff --git` headers would have to undo git's own quoting of a path; a world of this
+ * rig holds four changed files. Renames are not detected, so a moved file reads as one added and
+ * one removed, as GitHub's own answer does when it finds no rename. */
+function diffFiles(range: readonly string[], at: string, before: string): Json[] | undefined {
+  const counts = fromRemote("diff", "--numstat", "--no-renames", ...range);
+  const letters = fromRemote("diff", "--name-status", "--no-renames", ...range);
+  if (counts === undefined || letters === undefined) return undefined;
+  const words: Record<string, string> = { A: "added", M: "modified", D: "removed" };
+  const statusOf = new Map(
+    letters
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => {
+        const [letter = "", file = ""] = line.split("\t");
+        return [file, words[letter.slice(0, 1)] ?? "modified"] as const;
+      })
+  );
+  const repo = world?.repo ?? "";
+  return counts
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [added = "", deleted = "", filename = ""] = line.split("\t");
+      // A binary file's counts are `-` in numstat, and GitHub reports 0 for one.
+      const additions = Number(added) || 0;
+      const deletions = Number(deleted) || 0;
+      // GitHub's `patch` is the file's hunks alone, with no `diff --git` or `index` header, and
+      // it is absent for a file git prints no hunk for, as GitHub leaves it out for a binary.
+      const diff = fromRemote("diff", "--no-renames", ...range, "--", filename) ?? "";
+      const hunks = diff.search(/^@@/m);
+      const fileStatus = statusOf.get(filename) ?? "modified";
+      const side = fileStatus === "removed" ? before : at;
+      const encoded = filename.split("/").map(encodeURIComponent).join("/");
+      return {
+        sha: fromRemote("rev-parse", `${side}:${filename}`) ?? "",
+        filename,
+        status: fileStatus,
+        additions,
+        deletions,
+        changes: additions + deletions,
+        blob_url: `https://github.com/${repo}/blob/${at}/${encoded}`,
+        raw_url: `https://github.com/${repo}/raw/${at}/${encoded}`,
+        contents_url: `https://api.github.com/repos/${repo}/contents/${encoded}?ref=${at}`,
+        ...(hunks < 0 ? {} : { patch: diff.slice(hunks) }),
+      };
+    });
 }
 /** The comparison this call asks for, when it asks for one the run's remote can answer. It is
  * read before the route check, since no route answers a comparison and a 404 there reads to the
@@ -763,6 +785,24 @@ const REVIEW_UPDATE_DOCS =
   "https://docs.github.com/rest/pulls/reviews#update-a-review-for-a-pull-request";
 const REF_DOCS = "https://docs.github.com/rest/git/refs#get-a-reference";
 const CONTENTS_DOCS = "https://docs.github.com/rest/repos/contents#get-repository-content";
+const COMMITS_DOCS = "https://docs.github.com/rest/commits/commits#list-commits";
+const GIT_COMMIT_DOCS = "https://docs.github.com/rest/git/commits#get-a-commit-object";
+const REFS_DOCS = "https://docs.github.com/rest/git/refs#get-all-references-in-a-namespace";
+const TREE_DOCS = "https://docs.github.com/rest/git/trees#get-a-tree";
+/** GitHub's 422 of a commit its repository does not hold, as `gh api -i
+ * repos/cybermonklabs/legion/commits/<forty deadbeef digits>` answered it on 2026-11-21 (`Date:
+ * Sat, 21 Nov 2026 08:42:54 GMT`): its body on stdout and gh's line on stderr (`refuseWith`). */
+function noCommit(ref: string): never {
+  refuseWith(
+    {
+      message: `No commit found for SHA: ${ref}`,
+      documentation_url: "https://docs.github.com/rest/commits/commits#get-a-commit",
+      status: "422",
+    },
+    `gh: No commit found for SHA: ${ref} (HTTP 422)\n`,
+    1
+  );
+}
 /** GitHub's own text for the submit of a review that is no longer pending. */
 const NOT_PENDING =
   "gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n";
@@ -1809,6 +1849,10 @@ const RAW_MEDIA_TYPE = /application\/vnd\.github(?:\.v3)?\.raw/;
 /** Whether this call's answer is a file's own bytes, which gh prints as GitHub sent them: no
  * newline is added to a file that ends without one. */
 let verbatim = false;
+/** The list inside this call's answer that GitHub pages by `per_page` and `page`, with the size
+ * of its page where the call names none, where the answer's own read names one (`commitOf`: a
+ * commit's `files`, 300 a page); undefined for every other answer, whose list PAGED names. */
+let pagedList: { key: string; size: number } | undefined;
 /** GitHub's `GET repos/<o>/<r>/contents/<path>`, read on the run's own remote at the call: the
  * ref the query string names (`?ref=`, or a `-f ref=` gh sends there on a GET), the base branch
  * where it names none, resolved to a commit, and the path at that commit. A file is its own
@@ -2000,6 +2044,290 @@ function commitJson(sha: string): Record<string, unknown> {
       })),
   };
 }
+/** The commit `ref` names on the run's own remote, as GitHub reads the ref of a commit: a SHA,
+ * full or short, a branch, a tag or any other revision git reads; undefined where it names none
+ * (and for a ref REF refuses). */
+function commitAt(ref: string): string | undefined {
+  if (!REF.test(ref)) return undefined;
+  return fromRemote("rev-parse", "--verify", "--quiet", `${ref}^{commit}`) || undefined;
+}
+/** `text`, a part of the call's path, as GitHub reads it, each escape decoded (`%2F` a slash), or
+ * undefined where an escape decodes to nothing. */
+function decoded(text: string): string | undefined {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return undefined;
+  }
+}
+/** The parameters this GET sends, as GitHub reads them: the query string's, then each field gh
+ * sends in it on a GET (`gh api -X GET … -f sha=main`), as `contentsAt` reads its `ref`. */
+function parameters(): Map<string, string> {
+  const sent = new Map(new URLSearchParams((endpointOf(args) ?? "").split("?")[1] ?? ""));
+  for (const [name, value] of Object.entries(sentBody({ argv: args, stdin, files }) ?? {}))
+    if (!sent.has(name)) sent.set(name, String(value));
+  return sent;
+}
+/** GitHub's read of one commit, `GET repos/<o>/<r>/commits/<ref>`: the commit (`commitJson`), its
+ * `stats` and its `files`, the diff from its first parent, or from no tree for a root commit
+ * (`diffFiles`), each a file's `diff-entry`. The ref is any GitHub reads (`commitAt`), a branch
+ * with slashes among them and one written with `%2F`; a short SHA is answered with the full one,
+ * and a ref the remote cannot resolve is GitHub's 422 (`noCommit`). Measured on 2026-11-21 with
+ * `gh api -i` against cybermonklabs/legion: `commits/bbf69791` answered 200 with the full SHA,
+ * `stats` (`total`, `additions`, `deletions`) and 3 files (`Date: Sat, 21 Nov 2026 08:42:52 GMT`),
+ * and forty `deadbeef` digits that 422 (08:42:54 GMT); `commits/INFRA-3353/survive` and
+ * `commits/INFRA-3353%2Fsurvive` each answered the branch's tip (read at 2026-11-21T08:47:33Z).
+ * Its files are paged by `per_page` and `page`, 300 a page where the call names none, as the
+ * description says, and its `stats` are the whole commit's on every page (`restPages`): measured
+ * with `gh api -i` on 2026-11-21, `commits/bbf69791?per_page=1` answered its first file of 3
+ * (`Date: Sat, 21 Nov 2026 09:10:02 GMT`), `&page=2` its second (09:10:03 GMT), `?per_page=2&page=2`
+ * its third (09:10:04 GMT) and `?page=2` none (09:10:05 GMT), each with the stats of all 3.
+ *
+ * Under the media types the description names for the read, the answer is text, as gh prints it:
+ * the diff (DIFF_MEDIA_TYPE), the patch, and the SHA alone. Measured on 2026-11-21 with `gh api -i
+ * -H 'Accept: application/vnd.github.<type>' repos/cybermonklabs/legion/commits/bbf69791`: the
+ * diff (`Date: Sat, 21 Nov 2026 09:08:15 GMT`) and the patch (09:08:17 GMT) each ended in the last
+ * line's `\n`, the patch the bytes of `git format-patch --stdout -1 --no-signature --no-renames`
+ * of that commit but for its `index` lines' SHAs, cut to 11 digits where git cut them to 10, and
+ * the SHA (09:08:19 GMT) was the forty digits with no line end. */
+function commitOf(ref: string): Json | string {
+  const sha = commitAt(ref) ?? noCommit(ref);
+  const parent = fromRemote("rev-parse", "--verify", "--quiet", `${sha}^1`);
+  const root = parent ?? fromRemote("hash-object", "-t", "tree", "/dev/null") ?? "";
+  if (/application\/vnd\.github(?:\.v3)?\.sha/.test(joined)) return sha;
+  if (DIFF_MEDIA_TYPE.test(joined))
+    return remoteBytes("diff", "--no-renames", root, sha)?.toString() ?? "";
+  if (/application\/vnd\.github(?:\.v3)?\.patch/.test(joined))
+    return (
+      remoteBytes(
+        "format-patch",
+        "--stdout",
+        "-1",
+        "--no-signature",
+        "--no-renames",
+        sha
+      )?.toString() ?? ""
+    );
+  const files = diffFiles([root, sha], sha, parent ?? sha) ?? [];
+  const sum = (key: "additions" | "deletions") =>
+    files.reduce((total, file) => total + Number(file[key]), 0);
+  const stats = {
+    total: sum("additions") + sum("deletions"),
+    additions: sum("additions"),
+    deletions: sum("deletions"),
+  };
+  pagedList = { key: "files", size: 300 };
+  return { ...commitJson(sha), stats, files };
+}
+/** GitHub's list of the commits `GET repos/<o>/<r>/commits` reads: newest first, from the ref its
+ * `sha` parameter names, the default branch where it names none, each item the commit as GitHub
+ * lists it (`commitJson`), paged by `per_page` and `page` (`restPages`); a ref the remote cannot
+ * resolve is GitHub's 404 of the list (COMMITS_DOCS). GitHub filters the list by `path`,
+ * `author`, `committer`, `since` and `until` too, and a call naming one is refused as a call the
+ * world does not model (`unrouted`). Measured on 2026-11-21 with `gh api -i` against
+ * cybermonklabs/legion: `commits?sha=bbf69791&per_page=2` listed bbf69791 and its parent, each with
+ * the keys of `commitJson` and no `files` (`Date: Sat, 21 Nov 2026 08:42:55 GMT`), `&page=2` the
+ * two after them (08:42:56 GMT), and `commits?sha=nosuchref` answered 404 with that body (08:42:57
+ * GMT). */
+function commitList(): Json[] {
+  const sent = parameters();
+  if ([...sent.keys()].some((name) => !["sha", "per_page", "page"].includes(name))) {
+    handler = "unrouted";
+    refuse(NOT_FOUND);
+  }
+  const sha = commitAt(sent.get("sha") ?? world?.base ?? "") ?? refuse(NOT_FOUND, COMMITS_DOCS);
+  return (fromRemote("rev-list", sha) ?? "")
+    .split("\n")
+    .filter((one) => one !== "")
+    .map(commitJson);
+}
+/** GitHub's git-data read of one commit, `GET repos/<o>/<r>/git/commits/<sha>`: its author and
+ * committer as git holds them, its tree, its message, its parents and its verification, read as
+ * `commitJson` reads them, with the git-data URLs GitHub gives. GitHub reads a full SHA there
+ * alone: measured on 2026-11-21 with `gh api -i` against cybermonklabs/legion,
+ * `git/commits/bbf69791ebdb755876801e270cd37d6f38696984` answered 200 (`Date: Sat, 21 Nov 2026
+ * 08:42:58 GMT`), and its short SHA `bbf697` (08:42:59 GMT) and `main` (08:43:00 GMT) each its 404
+ * (GIT_COMMIT_DOCS), as forty `deadbeef` digits, a commit it does not hold, did (09:00:45 GMT). */
+function gitCommitOf(sha: string): Json {
+  if (!/^[0-9a-f]{40}$/.test(sha) || fromRemote("cat-file", "-t", sha) !== "commit")
+    refuse(NOT_FOUND, GIT_COMMIT_DOCS);
+  const api = `https://api.github.com/repos/${world?.repo ?? ""}`;
+  const { node_id, commit, html_url, parents } = commitJson(sha);
+  const { author, committer, tree, message, verification } = isObject(commit) ? commit : {};
+  return {
+    sha,
+    node_id,
+    url: `${api}/git/commits/${sha}`,
+    html_url,
+    author,
+    committer,
+    tree,
+    message,
+    parents: (Array.isArray(parents) ? parents : []).map((parent) => ({
+      sha: isObject(parent) ? parent.sha : "",
+      url: `${api}/git/commits/${isObject(parent) ? parent.sha : ""}`,
+      html_url: isObject(parent) ? parent.html_url : "",
+    })),
+    verification,
+  };
+}
+/** One ref as GitHub's refs API answers it (`git-ref`): its name, its node id, its URL, and the
+ * object it names with that object's git-data URL. */
+function refJson(ref: string, sha: string, type: string): Json {
+  const api = `https://api.github.com/repos/${world?.repo ?? ""}`;
+  return {
+    ref,
+    node_id: `REF_kwDOAAAAAc${Buffer.from(ref).toString("base64url")}`,
+    url: `${api}/git/${ref}`,
+    object: { sha, type, url: `${api}/git/${type}s/${sha}` },
+  };
+}
+/** Every ref GitHub holds for the world's repository, by name, as its refs API lists them: each
+ * ref of the run's own remote at the object it names (a branch at its commit, an annotated tag at
+ * its tag object), and the two refs GitHub keeps for the world's pull request beside them,
+ * `refs/pull/<n>/head` at the tip of its branch and `refs/pull/<n>/merge` at its test merge (the
+ * pull request's `merge_commit_sha`, rest-objects.ts's `pullRequestJson`) where it has one.
+ * Measured on 2026-11-21 against cybermonklabs/legion: `gh api
+ * 'repos/cybermonklabs/legion/git/refs?per_page=100&page=29'` listed `refs/pull/1/head`,
+ * `refs/pull/10/head`, … after its last branch (read at 2026-11-21T08:40:07Z), and `gh api -i
+ * repos/cybermonklabs/legion/git/ref/pull/4532/merge` answered 200 (`Date: Sat, 21 Nov 2026
+ * 08:45:31 GMT`). The test merge of a head that does not merge into its base is not modelled:
+ * GitHub keeps the last test merge it made, as it kept #4532's while the read of `pulls/4532` in
+ * the same command answered `merge_commit_sha` null, and the world holds none. The base never
+ * moves, but the remote takes a force-push of another history to the issue branch, so a run can
+ * reach it, and a run whose push leaves a head without the base's tip is unhealthy from that push
+ * on (health.ts's rule 24, `unmergedHead`; a residual of class-search.json). */
+function heldRefs(): Json[] {
+  const own = (
+    fromRemote("for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)") ?? ""
+  )
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [ref = "", sha = "", type = ""] = line.split("\0");
+      return refJson(ref, sha, type);
+    });
+  const tip = branchTip();
+  const merge = world === undefined ? undefined : pullRest().merge_commit_sha;
+  const pull = `refs/pull/${world?.pr}`;
+  return [
+    ...own,
+    ...(world === undefined || tip === undefined ? [] : [refJson(`${pull}/head`, tip, "commit")]),
+    ...(typeof merge === "string" ? [refJson(`${pull}/merge`, merge, "commit")] : []),
+  ].sort((one, other) => (String(one.ref) < String(other.ref) ? -1 : 1));
+}
+/** GitHub's list of the branches, `GET repos/<o>/<r>/branches`: each branch of the run's own
+ * remote with the commit it points at and whether it is protected, which the world's base is, by
+ * its ruleset, and no other branch; its `protected` parameter keeps the protected ones (`true`) or
+ * the others (`false`); paged by `per_page` and `page` (`restPages`). GitHub orders them by name,
+ * a number in a name read as one: measured on 2026-11-21 with `gh api
+ * 'repos/cybermonklabs/legion/branches?per_page=100'` (read at 2026-11-21T08:43:47Z), `INFRA-840-…`
+ * stood before `INFRA-3353/survive` and `…-u9` before `…-u12`, each item `name`, `commit` (`sha`,
+ * `url`) and `protected` (`Date: Sat, 21 Nov 2026 08:43:08 GMT` for `?per_page=2`), as git's
+ * version sort orders them. */
+function branchList(): Json[] {
+  const api = `https://api.github.com/repos/${world?.repo ?? ""}`;
+  const kept = parameters().get("protected");
+  return (
+    fromRemote(
+      "for-each-ref",
+      "--sort=version:refname",
+      "--format=%(refname:lstrip=2)%00%(objectname)",
+      "refs/heads"
+    ) ?? ""
+  )
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [name = "", sha = ""] = line.split("\0");
+      return {
+        name,
+        commit: { sha, url: `${api}/commits/${sha}` },
+        protected: name === world?.base,
+      };
+    })
+    .filter((branch) => kept === undefined || String(branch.protected) === kept);
+}
+/** GitHub's read of a tree, `GET repos/<o>/<r>/git/trees/<sha>`: the tree of the object the path
+ * names — a tree's SHA, full or short, a commit's, or a ref — on the run's own remote, its `sha`
+ * that object's, each entry its path, mode, type, SHA, a blob's size and the git-data URL of a blob
+ * or a tree (no world's tree holds a submodule's `commit` entry: rig.sh writes no `.gitmodules` and
+ * no gitlink); with a `recursive` parameter of any value, every entry below it too, each tree before
+ * what it holds; never `truncated`, which GitHub is past 100,000 entries, more than any world's
+ * tree holds. An object that is no tree and names none is GitHub's 404 (TREE_DOCS). Measured on
+ * 2026-11-21 with `gh api -i` against cybermonklabs/legion: tree `5c3793be…` answered its 27
+ * entries (`Date: Sat, 21 Nov 2026 08:43:09 GMT`) and so did its short SHA `5c3793be`, as its full
+ * SHA (08:43:11 GMT); its commit `bbf69791…` answered them with the commit's SHA (08:43:12 GMT);
+ * `?recursive=1` (08:43:13 GMT) and `?recursive=0` (08:43:15 GMT) each answered all 15055 entries;
+ * forty `deadbeef` digits answered that 404 (08:43:17 GMT); and `git/trees/INFRA-3353/survive`
+ * answered the branch's tip's tree (read at 2026-11-21T08:47:33Z). */
+function treeOf(named: string): Json {
+  const repo = world?.repo ?? "";
+  const object = REF.test(named)
+    ? fromRemote("rev-parse", "--verify", "--quiet", named)
+    : undefined;
+  const tree =
+    object === undefined
+      ? undefined
+      : fromRemote("rev-parse", "--verify", "--quiet", `${object}^{tree}`);
+  if (object === undefined || tree === undefined) refuse(NOT_FOUND, TREE_DOCS);
+  const recursive = parameters().has("recursive") ? ["-r", "-t"] : [];
+  const entries = (fromRemote("ls-tree", ...recursive, "-l", "-z", tree) ?? "")
+    .split("\0")
+    .flatMap((line) => {
+      const [, mode = "", type = "", sha = "", size = "", path = ""] =
+        /^(\d+) (\w+) ([0-9a-f]+) +(\S+)\t(.*)$/s.exec(line) ?? [];
+      if (path === "") return [];
+      const linked = type === "blob" || type === "tree";
+      return [
+        {
+          path,
+          mode,
+          type,
+          sha,
+          ...(type === "blob" ? { size: Number(size) } : {}),
+          ...(linked ? { url: `https://api.github.com/repos/${repo}/git/${type}s/${sha}` } : {}),
+        },
+      ];
+    });
+  return {
+    sha: object,
+    url: `https://api.github.com/repos/${repo}/git/trees/${object}`,
+    tree: entries,
+    truncated: false,
+  };
+}
+/** GitHub's list of the tags, `GET repos/<o>/<r>/tags`: each tag of the run's own remote with the
+ * commit it names and its archives, an empty list where the remote holds none, as no world's
+ * does; paged by `per_page` and `page` (`restPages`). GitHub lists them newest version first:
+ * measured on 2026-11-21 with `gh api -i 'repos/cybermonklabs/legion/tags?per_page=12'` (`Date:
+ * Sat, 21 Nov 2026 09:00:44 GMT`), `v0.16.1`, `v0.16.0`, `v0.15.0`, …, `v0.13.10`, `v0.13.9`, as
+ * git's version sort descending orders them, each item `name`, `zipball_url`, `tarball_url`,
+ * `commit` (`sha`, `url`) and `node_id` (`Date: Sat, 21 Nov 2026 08:43:18 GMT` for `?per_page=2`). */
+function tagList(): Json[] {
+  const api = `https://api.github.com/repos/${world?.repo ?? ""}`;
+  return (
+    fromRemote(
+      "for-each-ref",
+      "--sort=-version:refname",
+      "--format=%(refname:lstrip=2)%00%(objectname)%00%(*objectname)",
+      "refs/tags"
+    ) ?? ""
+  )
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [name = "", object = "", peeled = ""] = line.split("\0");
+      const sha = peeled === "" ? object : peeled;
+      return {
+        name,
+        zipball_url: `${api}/zipball/refs/tags/${name}`,
+        tarball_url: `${api}/tarball/refs/tags/${name}`,
+        commit: { sha, url: `${api}/commits/${sha}` },
+        node_id: `REF_kwDOAAAAAc${Buffer.from(`refs/tags/${name}`).toString("base64url")}`,
+      };
+    });
+}
 /** A route's answer read from what the run did (rig.sh's fixture_write names which, as `answer`),
  * with `held` the route's own `stdout`, what the world held before the run:
  *   - `repository`: the world's repository (`held`, its settings) as GitHub answers it whole
@@ -2018,7 +2346,17 @@ function commitJson(sha: string): Record<string, unknown> {
  *   - `combined-status`: GitHub's combined status of the ref the path names, resolved on the run's
  *     own remote — the world's statuses, `state` `pending` where there are none, and 422 for a ref
  *     the remote has not got;
- *   - `git-ref`: the ref the path names on the run's own remote, or GitHub's 404;
+ *   - `git-ref`: GitHub's refs (`heldRefs`): for `git/ref/<ref>` the ref the path names, or
+ *     GitHub's 404; for `git/refs/<ref>` that ref where one is named so, and otherwise the list of
+ *     the refs whose names start with it, or GitHub's 404 where none does; for `git/refs`, every
+ *     ref;
+ *   - `commit`: GitHub's read of one commit (`commitOf`), or its 422 for a ref the remote cannot
+ *     resolve (`noCommit`);
+ *   - `commits`: GitHub's list of the commits a ref reaches (`commitList`);
+ *   - `git-commit`: GitHub's git-data read of one commit (`gitCommitOf`), or its 404;
+ *   - `branches`: GitHub's list of the branches (`branchList`);
+ *   - `git-tree`: GitHub's read of a tree (`treeOf`), or its 404;
+ *   - `tags`: GitHub's list of the tags (`tagList`);
  *   - `check-runs`: the world's check runs of the commit the path names, resolved on the run's own
  *     remote and reported on it as GitHub reports them (`reportedRuns`), and 422 for a ref the
  *     remote has not got;
@@ -2114,22 +2452,31 @@ function fromRun(kind: string, held: unknown): unknown {
       };
     }
     case "git-ref": {
-      const ref = /\/git\/ref\/(.+)$/.exec(path)?.[1] ?? "";
-      const sha = REF.test(ref)
-        ? fromRemote("rev-parse", "--verify", "--quiet", `refs/${ref}^{commit}`)
-        : undefined;
-      if (sha === undefined || sha === "") refuse(NOT_FOUND, REF_DOCS);
-      return {
-        ref: `refs/${ref}`,
-        node_id: `REF_kwDOAAAAAc${Buffer.from(`refs/${ref}`).toString("base64url")}`,
-        url: `https://api.github.com/repos/${repo}/git/refs/${ref}`,
-        object: {
-          sha,
-          type: "commit",
-          url: `https://api.github.com/repos/${repo}/git/commits/${sha}`,
-        },
-      };
+      const [, plural = "", ref = ""] = /\/git\/ref(s?)(?:\/(.*))?$/.exec(path) ?? [];
+      const refs = heldRefs();
+      const named = refs.find((one) => one.ref === `refs/${ref}`);
+      if (plural === "") return named ?? refuse(NOT_FOUND, REF_DOCS);
+      if (ref === "") return refs;
+      const matching = refs.filter((one) => String(one.ref).startsWith(`refs/${ref}`));
+      if (named === undefined && matching.length === 0) refuse(NOT_FOUND, REFS_DOCS);
+      return named ?? matching;
     }
+    case "commit": {
+      const ref = /^repos\/[^/]+\/[^/]+\/commits\/(.+)$/.exec(path)?.[1] ?? "";
+      return commitOf(decoded(ref) ?? ref);
+    }
+    case "commits":
+      return commitList();
+    case "git-commit":
+      return gitCommitOf(/\/git\/commits\/([^/]+)$/.exec(path)?.[1] ?? "");
+    case "branches":
+      return branchList();
+    case "git-tree": {
+      const named = /^repos\/[^/]+\/[^/]+\/git\/trees\/(.+)$/.exec(path)?.[1] ?? "";
+      return treeOf(decoded(named) ?? named);
+    }
+    case "tags":
+      return tagList();
     case "check-runs": {
       const ref = /\/commits\/([^/]+)\/check-runs$/.exec(path)?.[1] ?? "";
       const sha = REF.test(ref)
@@ -2690,14 +3037,21 @@ function graphAnswer(
  * a combined status's statuses and a run's jobs. */
 const PAGED = ["check_runs", "workflow_runs", "statuses", "jobs"];
 /** A REST read's answer, paged as GitHub pages it: `per_page` items (30 unless the query string
- * names another, at most 100) from the page the query string names (1 unless it names another),
- * of the list the answer is or the one list it holds (`PAGED`); with `--paginate`, that page and
- * every page after it, which gh asks for in turn. An answer that is no list is its one page. */
+ * names another, at most 100; for the list `pagedList` names, its size, and at most that) from the
+ * page the query string names (1 unless it names another),
+ * of the list the answer is or the one list it holds (`PAGED`, or `pagedList`'s); with
+ * `--paginate`, that page and every page after it, which gh asks for in turn. An answer that is no
+ * list is its one page. */
 function restPages(answer: unknown): unknown[] {
   const query = new URLSearchParams((endpointOf(args) ?? "").split("?")[1] ?? "");
-  const perPage = Math.min(100, Math.max(1, Number(query.get("per_page") ?? 30) || 30));
+  const size = pagedList?.size ?? 30;
+  const perPage = Math.min(
+    Math.max(size, 100),
+    Math.max(1, Number(query.get("per_page") ?? size) || size)
+  );
   const first = Math.max(1, Number(query.get("page") ?? 1) || 1);
-  const key = isObject(answer) ? PAGED.find((name) => Array.isArray(answer[name])) : undefined;
+  const keys = pagedList === undefined ? PAGED : [pagedList.key];
+  const key = isObject(answer) ? keys.find((name) => Array.isArray(answer[name])) : undefined;
   const list = Array.isArray(answer)
     ? answer
     : isObject(answer) && key !== undefined

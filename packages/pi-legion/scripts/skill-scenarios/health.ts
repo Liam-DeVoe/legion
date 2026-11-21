@@ -236,6 +236,13 @@
  *      system configurations, and the batch's arms in two worlds. A run with no record, or whose
  *      services-from holds no such line (one recorded before 2026-11-19), is compared with no
  *      other. It is read right after rule 14;
+ *  24. unmerged head: every push of pushes.log to the issue branch leaves a head whose history
+ *      holds the base's tip on the run's remote (`unmergedHead`), so the head merges into the base
+ *      and the world's test merge is GitHub's. A head without it (a force-push of another
+ *      history, which the remote takes as GitHub takes one on an unprotected branch) may not
+ *      merge, and for one that does not GitHub keeps the last test merge it made, where the world
+ *      answers none (gh-standin.ts's `heldRefs`, a residual of the class search). It is read right
+ *      after rule 19;
  * Rules 6, 8 to 13, 17 and 21 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each
  * agent's and each subagent's) through score.ts's readers. The run's own directory is the one its
  * record names (run-names.ts's `ran`; for a run recorded before the names left the world, the one
@@ -727,8 +734,12 @@ const Route = z.looseObject({
 type Route = z.infer<typeof Route>;
 const Fixtures = z.looseObject({ routes: z.array(Route) });
 /** A comparison of two refs, and the read of one review, the gh stand-in answers itself (its
- * `comparison` and `reviewRead`). */
-const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
+ * `comparison` and `reviewRead`). A comparison is a basehead of two dots or of three: the stand-in
+ * answers `<base>..<head>` with GitHub's 404 of a comparison, as GitHub answers it, measured on
+ * 2026-11-21: `gh api -i repos/cybermonklabs/legion/compare/446a02fb..bbf69791` answered `HTTP/2.0
+ * 404 Not Found` with `Date: Sat, 21 Nov 2026 08:43:19 GMT`, where `446a02fb...bbf69791` answered
+ * 200 (08:43:20 GMT), so a run that meets that 404 met GitHub's own. */
+const OWN_READ = /\/compare\/[^?]+\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 
 /** The refusal the gh stand-in gave `call`, which exited with a status other than 0, or undefined
  * when that status is no refusal of the world's. The record keeps the status and not the text, so
@@ -1492,6 +1503,36 @@ export function headUnmoved(run: Pick<Run, "dir" | "scenario">): string | undefi
   const at = tip.exitCode === 0 ? tip.stdout.toString().trim() : "";
   if (at === "" || at === head || stored(at)) return undefined;
   return `head: remote.git's refs/heads/${branch} stands at ${at}, not world.json's seeded head ${head}, and ${HEADS_LOG} holds no line storing it, so a push the record missed left the run's Dispatch comparing results with the head before it`;
+}
+
+/** Rule 24: the first push of pushes.log to the issue branch (world.json's `branch`) whose head
+ * does not hold the base's tip in its history on the run's own remote, or undefined. The base
+ * never moves during a run (its ruleset refuses every push to it, rig.sh's fixture_first_commit),
+ * so a head that holds its tip merges into it, and the world's test merge of it is the one GitHub
+ * makes; a head that does not (another history, force-pushed: the remote takes it, measured on
+ * 2026-11-21 against a copy of run 94caf2e09844's remote, `git push --force <remote>
+ * orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced
+ * update)`, exit 0, and `git merge-tree --write-tree` of it and the base `fatal: refusing to merge
+ * unrelated histories`) may merge with none, and GitHub keeps the last test merge it made of such
+ * a head where the world answers none. Read with `git merge-base --is-ancestor`, which writes
+ * nothing into the run's archive; a deletion of the branch is no head. */
+export function unmergedHead(run: Pick<Run, "dir">): string | undefined {
+  const pushes = path.join(run.dir, "pushes.log");
+  const read = existsSync(path.join(run.dir, "world.json")) ? readWorld(run.dir) : undefined;
+  if (!existsSync(pushes) || read === undefined || !("world" in read)) return undefined;
+  const { base, branch } = read.world;
+  for (const [index, line] of readFileSync(pushes, "utf8").split("\n").entries()) {
+    const [, ref = "", , pushed = ""] = line.split(" ");
+    if (ref !== `refs/heads/${branch}` || /^0+$/.test(pushed)) continue;
+    const holds = Bun.spawnSync([
+      ...["git", "-C", path.join(run.dir, "remote.git"), "merge-base", "--is-ancestor"],
+      `refs/heads/${base}`,
+      pushed,
+    ]);
+    if (holds.exitCode !== 0)
+      return `unmerged head: pushes.log:${index + 1} pushed ${pushed} to ${ref}, whose history does not hold ${base}'s tip, so it may not merge, and GitHub keeps the last test merge of such a head where the world answers none`;
+  }
+  return undefined;
 }
 
 /** A string argument of a tool call, or undefined. */
@@ -5312,6 +5353,8 @@ const RULES: readonly {
   // Rule 19, read right after rule 18: each push's head, which the run's Dispatch compares the
   // check's results with for every agent that reads them after it.
   { name: "head", judge: (run) => headUnmoved(run) },
+  // Rule 24, read right after rule 19: each push's head, which the world's test merge is made of.
+  { name: "unmerged head", judge: unmergedHead },
   { name: "another run", judge: otherRunReach },
   { name: "another run's write", judge: otherRunWrite },
   { name: "outside its world", judge: outsideWorld },

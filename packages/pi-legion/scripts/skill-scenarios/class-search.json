@@ -71,6 +71,14 @@
       "ruled": "2026-11-20T10:05Z",
       "words": "`legion gh`'s refusal of a write whose repository GitHub answers 404 to the leak guard's read of its visibility, exit 2 before gh runs (main's since #4551, leakguard's `NotFound`). A write naming another repository of the world's owner passes the world's owner refusal, meets no route and is answered `unrouted`, `gh: Not Found (HTTP 404)` and exit 1. A run that makes one is unhealthy (`rig.sh health`'s rule 20, `unmodelled write`), and the run is replaced. No other write meets the refusal: the world's own repository exists, a write naming another owner is refused exit 2 before any route reads it, and the world's repository is no fork.",
       "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 20"
+    },
+    {
+      "name": "the pull request's test merge of a head that does not merge into its base",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-standin\\.ts:\\d+ The test merge of a head that does not merge into its base is not modelled: ",
+      "ruled": "the implementer at 2026-11-21T09:31:11Z, on Main's instruction after the force-push read below; the architect may overrule it",
+      "words": "GitHub's test merge (`refs/pull/<n>/merge`) of a head that does not merge into its base. GitHub keeps the last one it made: `gh api -i repos/cybermonklabs/legion/git/ref/pull/4532/merge` answered 200 at 815c2362 (Date: Sat, 21 Nov 2026 08:45:31 GMT) while the read of `pulls/4532` in the same command answered `merge_commit_sha` null; GitHub lists the pull refs after the branches (`git/refs?per_page=100&page=29`, read at 2026-11-21T08:40:07Z). The world answers none. The base never moves, but the world's remote takes a force-push of another history to the issue branch: on a copy of run 94caf2e09844's remote, `git push --force <remote> orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced update)`, exit 0, and `git merge-tree --write-tree` of the base and it answered `fatal: refusing to merge unrelated histories`, exit 128. A run whose push leaves a head without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule 24, `unmerged head`), and the run is replaced.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 24"
     }
   ],
   "unreachable": [

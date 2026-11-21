@@ -21,7 +21,7 @@
 // github/rest-api-description at DESCRIPTION_COMMIT (fetch it with `curl -fsSLO
 // https://raw.githubusercontent.com/github/rest-api-description/<commit>/descriptions/api.github.com/api.github.com.json`),
 // then formats it as the repository's biome does. A route the description has no operation for
-// fails the derivation, naming it.
+// fails the derivation, naming it, unless ANSWERED_AS names the operation GitHub answers it as.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -183,6 +183,23 @@ function pathOf(paths: Json, method: string, template: string): string | undefin
   return found[0];
 }
 
+/** The world's REST routes GitHub serves that its description holds no operation of, each with
+ * the description's path whose operation GitHub answers it as. The description at
+ * DESCRIPTION_COMMIT holds `/repos/{owner}/{repo}/git/refs` and `/git/refs/{ref}` for their writes
+ * alone (POST; PATCH and DELETE), and GitHub serves both reads still, as the refs of a namespace:
+ * measured on 2026-11-21 with `gh api -i` against cybermonklabs/legion, `git/refs/heads/main`, a
+ * ref named whole, answered one ref (`Date: Sat, 21 Nov 2026 08:43:03 GMT`), as `git/ref/heads/main`
+ * did (08:43:02 GMT), `git/refs/heads/mai`, a prefix of names, a list of the refs it starts
+ * (08:43:04 GMT), `git/refs?per_page=2` a list of two (08:43:07 GMT), and
+ * `git/refs/heads/nosuchbranch-xyz` a 404 whose body names "get all references in a namespace"
+ * (08:43:05 GMT). So `git/refs` is the list "List matching references" answers, and
+ * `git/refs/{ref}` is held to "Get a reference", the one ref a name read whole answers; its list
+ * of a prefix is held to the list's operation by gh-standin.test.ts's row of the refs. */
+const ANSWERED_AS: Readonly<Record<string, string>> = {
+  "GET repos/{owner}/{repo}/git/refs": "/repos/{owner}/{repo}/git/matching-refs/{ref}",
+  "GET repos/{owner}/{repo}/git/refs/{ref+}": "/repos/{owner}/{repo}/git/ref/{ref}",
+};
+
 /** The extract of `description` (GitHub's REST API description, parsed) for `served`. */
 export function derive(description: Json, served = servedRoutes()): Extract {
   const paths = description.paths;
@@ -227,9 +244,19 @@ export function derive(description: Json, served = servedRoutes()): Extract {
   for (const { route, accept } of served) {
     const [verb = "", template = ""] = route.split(" ");
     const method = verb.toLowerCase();
-    const found = pathOf(paths, method, template);
+    const own = pathOf(paths, method, template);
+    const aliased = ANSWERED_AS[route];
+    if (own !== undefined && aliased !== undefined)
+      throw new Error(`the description holds ${verb} ${own}, so ${route} needs no ANSWERED_AS`);
+    if (aliased !== undefined && !isObject((paths[aliased] as Json | undefined)?.[method]))
+      throw new Error(`ANSWERED_AS names ${aliased} for ${route}, and it has no ${verb}`);
+    const found = own ?? aliased;
     if (found === undefined) throw new Error(`no operation of the description is ${route}`);
-    const key = `${verb} ${found}`;
+    // One operation answered in two media types is two answers, each with its own tree: the gh
+    // world reads a commit as JSON and the HTTP stand-in as its SHA, and one key for both let the
+    // last route served leave the other's answer held to nothing.
+    const media = accept ?? JSON_MEDIA;
+    const key = media === JSON_MEDIA ? `${verb} ${found}` : `${verb} ${found} ${media}`;
     routes[route] = key;
     const operation = (paths[found] as Json)[method] as Json;
     const answered = Object.entries(isObject(operation.responses) ? operation.responses : {})
@@ -238,7 +265,6 @@ export function derive(description: Json, served = servedRoutes()): Extract {
     if (answered === undefined) throw new Error(`${key} has no success answer`);
     const response = deref(answered[1], responses);
     const content = isObject(response) && isObject(response.content) ? response.content : {};
-    const media = accept ?? JSON_MEDIA;
     const body = content[media];
     const schema = isObject(body) ? body.schema : undefined;
     reach(schema);
