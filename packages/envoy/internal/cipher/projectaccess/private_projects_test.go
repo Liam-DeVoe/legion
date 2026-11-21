@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
@@ -84,7 +85,7 @@ func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 			client := projectaccess.New(url, fixedAccount, nil)
 			for call := 1; call <= 2; call++ {
 				projects, err := read.read(client, t.Context())
-				if err == nil || errors.Is(err, projectaccess.ErrBrokerRefused) || projects != nil {
+				if err == nil || errors.Is(err, dispatchread.ErrBrokerRefused) || projects != nil {
 					t.Errorf("%s call %d on %d %s = %#v, %v; want a nil list and an error that is not ErrBrokerRefused", read.name, call, row.status, row.body, projects, err)
 				}
 				if got := calls.Load(); got != int64(call) {
@@ -99,7 +100,7 @@ func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 		}
 		url, _ = fixedAnswer(t, http.StatusForbidden, `{"code":"ACCESS_ACCOUNT_REQUIRED"}`)
 		client = projectaccess.New(url, fixedAccount, nil)
-		if projects, err := read.read(client, t.Context()); !errors.Is(err, projectaccess.ErrBrokerRefused) || projects != nil {
+		if projects, err := read.read(client, t.Context()); !errors.Is(err, dispatchread.ErrBrokerRefused) || projects != nil {
 			t.Errorf("%s on 403 = %#v, %v; want ErrBrokerRefused and a nil list", read.name, projects, err)
 		}
 	}
@@ -142,7 +143,7 @@ func TestThePrivateProjectsListReadsEveryPrivateRow(t *testing.T) {
 		t.Fatalf("PrivateProjects = %#v, want %#v", projects, want)
 	}
 	stranger := projectaccess.New(server.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
-	if _, err := stranger.PrivateProjects(t.Context()); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+	if _, err := stranger.PrivateProjects(t.Context()); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 		t.Fatalf("PrivateProjects with a bearer Dispatch refuses = %v, want ErrBrokerRefused", err)
 	}
 }

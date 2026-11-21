@@ -470,8 +470,8 @@ path, and the key is missing altogether on a listener older than the field.
 
 Legion's daemon reads Dispatch, GitHub and listener events from the stream through a durable
 consumer per project for each: `legion-go-<project>-dispatch` (filtering
-`notifications.dispatch.issue.>` and the project's repository-mapping subject),
-`legion-go-<project>-github` (filtering each of the project's repositories) and
+`notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
+the project works in) and
 `legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake).
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
@@ -571,10 +571,11 @@ without case.
 
 `/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
 `credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
-credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request
-admitted on the shared token or with no credential also logs a warning, at most once a minute
-each, naming the route and the caller's address, so callers that still use either can be found
-and moved to a token of their own.
+credential), `none_broker_token` (that listener, taking no broker token, admitting a request that
+presents one, unverified), `oidc`, `google` or `broker` — and by `path`, the route that served it.
+A request admitted on the shared token, with no credential or on an unverified broker token also
+logs a warning, at most once a minute each, naming the route and the caller's address, so callers
+that still use one of them can be found and moved to a credential the listener verifies.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the
