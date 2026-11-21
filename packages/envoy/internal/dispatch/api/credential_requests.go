@@ -18,6 +18,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -254,7 +255,10 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // transaction has ended, since Standing reads through the pool itself; for a broker token, the
 // hold Dispatch records for its person, where a Google rule signs people in (brokerPersonAdmitted's,
 // recordedHoldSQL), since there is no introspection answer to read here; for a cookie, the session
-// generation a hold advances. A revocation answers before a hold.
+// generation a hold advances. Under IAP identity (Standing.ChecksDirectory) a person deciding at
+// their browser presents only the assertion IAP signs for the request, which no hold ends, so their
+// standing is read from Standing once the transaction has ended (browserDeciderHeld). A revocation
+// answers before a hold.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
@@ -267,8 +271,7 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	var hold ownerHold
 	unread := func(err error) (string, int64, error) {
 		slog.Warn("dispatch: a credential decision was refused: whether its caller still holds the address could not be read", "error", err)
-		return "", 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
-			"whether this caller may still decide could not be read; try again in a minute")
+		return "", 0, errDeciderUnreadable()
 	}
 	tx, err := s.deps.Store.Pool.Begin(r.Context())
 	if err != nil {
@@ -320,7 +323,46 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 			return "", 0, err
 		}
 	}
+	if actor.Act == nil && s.deps.Standing != nil && s.deps.Standing.ChecksDirectory() {
+		if err := s.browserDeciderHeld(r.Context(), actor.ID); err != nil {
+			return "", 0, err
+		}
+	}
 	return subject, generation, nil
+}
+
+// membershipHeldDeciderDirectoryText is the refusal of a decision at a browser under IAP identity
+// whose person the Workspace Directory holds (browserDeciderHeld).
+const membershipHeldDeciderDirectoryText = "Google's Workspace Directory no longer confirms this caller; their decisions work again once it does"
+
+// errDeciderUnreadable is a decision whose caller's standing could not be read: the statement of
+// approverStanding failed, or under IAP identity Standing failed or answered unavailable. It is
+// never an accept.
+func errDeciderUnreadable() error {
+	return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+		"whether this caller may still decide could not be read; try again in a minute")
+}
+
+// browserDeciderHeld answers nil while login, a person deciding a credential request at their
+// browser under IAP identity, may decide. IAP signs a fresh assertion for each request and keeps no
+// session that a hold could end, and the Directory, not a sign-in, records and ends a hold, so the
+// decision asks Standing, as a personal token's use does there (personalTokenHeld): a held answer
+// is 401 MEMBERSHIP_HELD in the Directory's words, and one it cannot give, or an unavailable one
+// (identity.Standing.Unavailable: no Active Directory answer in 24 hours), 503
+// IDENTITY_UNAVAILABLE. IAP itself still admits the person's browser; only the decision is refused.
+func (s *server) browserDeciderHeld(ctx context.Context, login string) error {
+	standing, err := s.deps.Standing.Standing(ctx, login)
+	if err != nil {
+		slog.Warn("dispatch: a credential decision at a browser was refused: whether Dispatch holds its caller could not be read", "error", err)
+		return errDeciderUnreadable()
+	}
+	switch {
+	case standing.Unavailable():
+		return errDeciderUnreadable()
+	case standing.Held:
+		return errMembershipHeld(membershipHeldDeciderDirectoryText)
+	}
+	return nil
 }
 
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {

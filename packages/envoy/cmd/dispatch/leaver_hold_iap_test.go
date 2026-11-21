@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,78 @@ func TestIAPLeaverHoldThroughTheRealBroker(t *testing.T) {
 	if unserved := r.iapUnserved(t, bob); len(unserved) != 0 {
 		t.Errorf("bob@example.com's credentials past ada's deadline: %s, want each served", strings.Join(unserved, "; "))
 	}
+}
+
+// iapBrowserDecisionHeldText and iapBrowserDecisionUnavailableText are Dispatch's words for a
+// machine-login decision at a browser under IAP whose person the Workspace Directory holds, and
+// whose standing cannot be read (approverStanding, browserDeciderHeld).
+const (
+	iapBrowserDecisionHeldText        = "Google's Workspace Directory no longer confirms this caller; their decisions work again once it does"
+	iapBrowserDecisionUnavailableText = "whether this caller may still decide could not be read; try again in a minute"
+)
+
+// TestIAPHeldPersonDecidesNothingAtHerBrowser (R2's "a held person cannot approve", R9;
+// approverStanding): under IAP a person decides a pending machine login at their browser with the
+// assertion IAP signs for that request, which carries no personal token, no broker token and no
+// session that a hold ends. Once the membership pass finds ada's account suspended, her approval
+// and her deny of her pending login at her browser are 401 MEMBERSHIP_HELD in the Directory's
+// words, though IAP still admits her browser (GET /auth/whoami 200), and the login stays pending.
+// Once a later pass finds her account active, her approval of a second pending login at her browser
+// serves. Once her last active answer and its deadline are 25 hours old and the Directory fails each
+// check of her account, her approval of the first at her browser is 503 IDENTITY_UNAVAILABLE. Bob,
+// whom the Directory answers active, approves his own pending login at his browser throughout.
+//
+// Control: read no standing for a decision at a browser (approverStanding as it was); ada's
+// approval while the Directory holds her is relayed and answered 200, and the test fails there.
+func TestIAPHeldPersonDecidesNothingAtHerBrowser(t *testing.T) {
+	r := newLeaverRig(t, withBrokerGate(), withIAP())
+	r.directoryAccount(adaEmail, false)
+	r.directoryAccount(bobEmail, false)
+	ada, bob := r.signIn(t, adaEmail), r.signIn(t, bobEmail)
+	// IAP's sign-in records each person and checks no Directory: the first pass answers both
+	// accounts active, as the hourly pass does after a person's first request.
+	if err := r.membershipPass(nil).Run(context.Background()); err != nil {
+		t.Fatalf("the first membership pass: %v", err)
+	}
+	first, firstCode := r.pendingMachineLogin(t, ada)
+	second, secondCode := r.pendingMachineLogin(t, ada)
+	bobsFirst, bobsFirstCode := r.pendingMachineLogin(t, bob)
+	bobsSecond, bobsSecondCode := r.pendingMachineLogin(t, bob)
+
+	r.directoryAccount(adaEmail, true)
+	r.directoryPass(t, adaEmail)
+	approve := r.decideAtBrowser(t, ada, "approve", first, firstCode)
+	expectRefusal(t, "ada@example.com's approval at her browser while the Directory holds her", approve.Code, approve.Body.Bytes(), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapBrowserDecisionHeldText)
+	deny := r.decideAtBrowser(t, ada, "deny", first, firstCode)
+	expectRefusal(t, "ada@example.com's deny at her browser while the Directory holds her", deny.Code, deny.Body.Bytes(), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapBrowserDecisionHeldText)
+	if whoami := r.browser(t, ada, http.MethodGet, "/auth/whoami", ""); whoami.Code != http.StatusOK {
+		t.Errorf("GET /auth/whoami with ada@example.com's valid assertion while the Directory holds her answered %d %s, want 200: IAP admits her browser", whoami.Code, whoami.Body.String())
+	}
+	expectAnswer(t, "bob@example.com's approval at his browser while the Directory holds ada", http.StatusOK, "").got(dispatchAnswer(r.decideAtBrowser(t, bob, "approve", bobsFirst, bobsFirstCode)))
+	if t.Failed() {
+		return
+	}
+
+	r.directoryAccount(adaEmail, false)
+	r.directoryPass(t, adaEmail)
+	expectAnswer(t, "ada@example.com's approval at her browser after the release", http.StatusOK, "").got(dispatchAnswer(r.decideAtBrowser(t, ada, "approve", second, secondCode)))
+	if t.Failed() {
+		return
+	}
+
+	r.directory.AnswerUser(adaEmail, directorytest.Answer{Status: http.StatusInternalServerError, Body: `{"error":{"code":500}}`})
+	r.ageDirectory(t, adaEmail, 25*time.Hour)
+	approve = r.decideAtBrowser(t, ada, "approve", first, firstCode)
+	expectRefusal(t, "ada@example.com's approval at her browser past her deadline", approve.Code, approve.Body.Bytes(), http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", iapBrowserDecisionUnavailableText)
+	expectAnswer(t, "bob@example.com's approval at his browser past ada's deadline", http.StatusOK, "").got(dispatchAnswer(r.decideAtBrowser(t, bob, "approve", bobsSecond, bobsSecondCode)))
+}
+
+// decideAtBrowser decides (approve or deny) the pending machine login recordID, whose
+// confirmation code is code, on Dispatch's decision route from p's browser: under withIAP, the
+// assertion IAP signs for that request and no other credential.
+func (r *leaverRig) decideAtBrowser(t *testing.T, p *leaverPerson, decision, recordID, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	return r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/"+recordID+"/"+decision, leaverBody(t, map[string]string{"code": code}))
 }
 
 // directoryAccount makes the fake Directory answer email's own Workspace account, suspended as
