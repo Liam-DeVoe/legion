@@ -32,11 +32,12 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04-arm
-    # The step's --timeout 70m must fire before the runner cancels the job, so a hung test prints
+    # The step's --timeout 75m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
-    # twice the longest measured run: the package took 32.6 minutes under the race detector on a
-    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
+    # binaries, then the step's own 75 minutes, which is 81, under the job's 90. 75 minutes is
+    # twice the longest run: this job took 32 minutes 48 seconds (the package 32.6 minutes under
+    # the race detector on a dev box), and the HNSW switch row's 25,000 nearer vectors add up to
+    # 4 minutes 33 seconds to it, the longest of its 20 runs in a cluster Job, so about 37.4 minutes.
     timeout-minutes: 90
     services:
       postgres:
@@ -74,7 +75,7 @@ jobs:
       # database variable above is unset, and on a failed run prints the failed tests' output, a
       # timed-out binary's goroutine dump among it.
       - name: Race-test the Dispatch API
-        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 75m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

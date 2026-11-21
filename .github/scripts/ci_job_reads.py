@@ -1635,7 +1635,7 @@ ENVOY_RACE_LANE = (
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
                     RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "75m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
