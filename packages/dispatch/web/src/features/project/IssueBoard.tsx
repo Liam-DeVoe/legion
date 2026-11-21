@@ -526,7 +526,8 @@ export function IssueBoard({
     // Both move functions place the card in the cache synchronously before their request goes
     // out, so the announcement reads the optimistic position - the one the user sees. A move the
     // rule's question checks first places nothing yet: it is announced once the move functions
-    // place it, after the dry run or a choice of the question (`announce`, their `onPlaced`).
+    // place it, after the dry run or a choice of the question (`announce`, their `onPlaced`); after
+    // a choice, each other issue it moved is already in its cell, so the count holds them.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
     /** Says where the card stands now: its position and count in the visible cell - the one the
      *  user sees - or nothing while it is not in that cell yet. */

@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
-import type { Issue, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { Issue, IssueSummary, StatusChangeAnswer, UpdateIssueInput } from "../../api/types";
 import {
   cardHasParentOrOpenChild,
   isParentStatusConflict,
@@ -36,9 +36,10 @@ type MovePlan = (
 type MoveWrite = (variables: BoardMoveVariables) => Promise<Issue | null>;
 
 /** Told when a move places its card later than the call that made it: once the rule's dry run
- *  answered that it asks nothing, or once a choice of the rule's question landed. A move placed
- *  at once, in the call itself, does not tell it: its caller reads the place when the call
- *  returns. A keyboard move says where the card landed then, as it says it at once otherwise. */
+ *  answered that it asks nothing, or once a choice of the rule's question landed, with each other
+ *  issue that choice moved already in its cell. A move placed at once, in the call itself, does
+ *  not tell it: its caller reads the place when the call returns. A keyboard move says where the
+ *  card landed then, as it says it at once otherwise. */
 type OnPlaced = () => void;
 
 /** What the board says of the move of `key` that did not land. One the reader stopped may have
@@ -54,6 +55,25 @@ function moveFailure(cause: unknown, key: string): string {
     return cause.code === "RANK_INPUT" ? staleBoardMessage : cause.message;
   }
   return "Could not move the card.";
+}
+
+/** `issues` with each issue a status change moved but the card `key` at the status and under the
+ *  parent Dispatch answered for it, each where it stands in the list, so the list keeps its rank
+ *  order. The card is left to its move's plan, which places it among them. An answer of null, or
+ *  one that moved no other issue, leaves the list as it is. */
+function withStatusChange(
+  issues: readonly IssueSummary[],
+  key: string,
+  answer: StatusChangeAnswer | null
+): readonly IssueSummary[] {
+  const moved = new Map(
+    (answer?.changed ?? []).filter((entry) => entry.key !== key).map((entry) => [entry.key, entry])
+  );
+  if (moved.size === 0) return issues;
+  return issues.map((issue) => {
+    const entry = moved.get(issue.key);
+    return entry === undefined ? issue : { ...issue, parent: entry.parent, status: entry.status };
+  });
 }
 
 /**
@@ -184,14 +204,19 @@ export function useBoardMoves(
     [queryClient, queryKey]
   );
   /** Once a chosen status change landed: the card's place - its `rank`, and its `priority` for a
-   *  lane move - as a PATCH of its own, with the status taken out. Its refusal leaves the status
-   *  as Dispatch changed it. No read here is awaited: the list waits for the check this runs in. */
+   *  lane move - as a PATCH of its own, with the status taken out. The card is placed among each
+   *  other issue the change moved (`answer`), put in its new cell first: the PATCH then names the
+   *  card's neighbours as Dispatch now holds the cell, so the read that follows leaves the card
+   *  where it is drawn, and `onPlaced` reads the cell with every issue the change moved. Waiting
+   *  for that read instead would leave those issues in their old cells until it lands, and place
+   *  the card among neighbours that lack them. Its refusal leaves the status as Dispatch changed
+   *  it. No read here is awaited: the list waits for the check this runs in. */
   const placeAfterChange = useCallback(
-    async (key: string, plan: MovePlan, onPlaced?: OnPlaced) => {
+    async (key: string, plan: MovePlan, answer: StatusChangeAnswer | null, onPlaced?: OnPlaced) => {
       const { landed } = await place(
         key,
         (issues) => {
-          const moved = plan(issues);
+          const moved = plan(withStatusChange(issues, key, answer));
           if (moved === undefined) return undefined;
           const { status: _status, ...input } = moved.input;
           return { ...moved, input };
@@ -214,7 +239,7 @@ export function useBoardMoves(
       onPlaced?: OnPlaced
     ) => {
       const end = await ask({ key, status }, conflict);
-      if (end.kind === "changed") await placeAfterChange(key, plan, onPlaced);
+      if (end.kind === "changed") await placeAfterChange(key, plan, end.answer, onPlaced);
     },
     [ask, placeAfterChange]
   );
@@ -232,7 +257,7 @@ export function useBoardMoves(
         status,
       });
       if (end.kind === "refused") setError(moveFailure(end.refusal, key));
-      if (end.kind === "changed") await placeAfterChange(key, plan, onPlaced);
+      if (end.kind === "changed") await placeAfterChange(key, plan, end.answer, onPlaced);
     },
     [asked, move, place, placeAfterChange, placedMove, refetch]
   );

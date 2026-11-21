@@ -1146,8 +1146,12 @@ the full text written to a file the output names, and the picture lines and foll
 The one exception is a call whose whole output is one JSON object (`dispatch issues --json`,
 `printsJson`): a cut object is no JSON object, so it is printed whole on every host, and the CLI
 prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
-prints the refusal, then each issue that holds the rule as `KEY [status] title`, then the flags of
-`dispatch issue-update` that move them, and exits 1, as a near copy's refusal does.
+prints the refusal, then each issue that holds the rule as `KEY [status] title`, then what to do
+next, and exits 1, as a near copy's refusal does. A create (`dispatch issue`) is refused only under
+a done parent and takes no flag that moves it, so it prints how to reopen that parent first
+(`dispatch issue-update --issue <PARENT> --status <a status in work>`) or file the issue under an
+open parent or none. Every other command prints the flags of `dispatch issue-update` that move
+the issues.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
