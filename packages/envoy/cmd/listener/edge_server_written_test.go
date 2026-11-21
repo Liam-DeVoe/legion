@@ -130,3 +130,52 @@ func TestAServerWrittenRecordReadsAsAbsent(t *testing.T) {
 		t.Errorf("O's first frame after its registration is %s on %s, want its PRIV event %s (the PUB event was %s)", frames[0].item.EventID, frames[0].item.Topic, own.EventID, pub.EventID)
 	}
 }
+
+// A role claim's refresh of the claimant's registration (roleSetHandler) writes back the stored
+// record's projects. A RePublish of another stream stores, at the claimant's own session key, a
+// record that names that key (so its binding holds and the session cache takes it) and lists a
+// project the claimant's token does not. Before the leader-read confirmation the refresh keeps
+// those projects and writes them back as a writer's record, laundering a project the server wrote
+// into one the edge then grants; the fix confirms the stored record by the stream's leader
+// (session.SessionRegistry.StoredByWriter), finds the server's message, and refreshes the entry
+// with the projects of the token this claim was made with (registeringProjects).
+func TestAnEdgeRoleClaimWritesNoForgedProjectsBack(t *testing.T) {
+	rig := newEdgeRig(t)
+	if !rig.edgeOn() {
+		t.Skip("the listener serves no project, so no edge confirmation applies")
+	}
+	project := rig.projects[0]
+	const forged = "ses_role_forge_other_project"
+	const outside, role = "ses_role_forge_outside", "legion-priv-priv-1-tester"
+	token := rig.personToken(outside, project)
+	if recorder := rig.subscribe(t, token, outside); recorder.Code != http.StatusOK {
+		t.Fatalf("O's registration: status %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	conn := rig.harness.client.Conn
+	body, err := json.Marshal(map[string]any{"session_id": outside, "machine_id": "shared-listener", "updated_at": time.Now().UnixMilli(),
+		"projects": []string{project, forged}, "self_subscribed": true})
+	if err != nil {
+		t.Fatalf("encode the republished record: %v", err)
+	}
+	testnats.RepublishesKey(t, conn, bus.SessionBucket, outside, body)
+	testwait.Eventually(t, "the session cache to take the republished record of "+outside, func() bool {
+		entry, _ := rig.deps.sessions.Lookup(outside)
+		return slices.Contains(entry.Projects, forged)
+	})
+	if recorder := rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, outside, role)); recorder.Code != http.StatusOK {
+		t.Fatalf("O's role claim: status %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	stored, err := rig.deps.sessions.Refresh(context.Background(), outside)
+	if err != nil {
+		t.Fatalf("read O's record after the claim: %v", err)
+	}
+	if slices.Contains(stored.Projects, forged) {
+		t.Errorf("O's record after the role claim lists %v, which holds the forged project %q: the server-written record's projects were written back as O's own registration", stored.Projects, forged)
+	}
+	if !slices.Equal(stored.Projects, []string{project}) {
+		t.Errorf("O's record after the role claim lists %v, want only its token's project [%s]", stored.Projects, project)
+	}
+	if own, err := rig.deps.sessions.StoredByWriter(context.Background(), outside); err != nil || !own {
+		t.Errorf("StoredByWriter(O) after the claim = %t, %v; want true (the refresh wrote a writer's record)", own, err)
+	}
+}

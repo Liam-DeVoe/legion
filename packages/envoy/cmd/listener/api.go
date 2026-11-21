@@ -2101,14 +2101,27 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// (listenerwire.SessionInfo.Port) for as long as the claims keep refreshing the entry,
 		// where writing it out lets it lapse with the entry it came on.
 		entry.Port = 0
-		// The refresh names the key it writes (session.SessionRegistry.PutWithin), so it keeps
-		// the entry's projects only where the entry names that key already. An entry naming no
-		// key, which an earlier build wrote, may be another session's record the server copied
-		// under this one, and the edge grants no project on it (edgeScope.shows); written
-		// back as it is, its projects would read as this session's own registration of them.
-		// Such an entry is refreshed with the projects of the token this claim was made with,
-		// as a registration records them (registeringProjects).
-		if entry.SessionID != body.SessionID {
+		// The refresh names the key it writes (session.SessionRegistry.PutWithin), so it keeps the
+		// stored record's projects only where that record is this session's own registration: it
+		// names this key, and the stream's leader confirms its newest message is a writer's
+		// (session.SessionRegistry.StoredByWriter), not one the server wrote at the key. A RePublish
+		// of another stream naming the key's subject can read as a record of this session
+		// (session.DecodeEntry) naming this very key and any projects it likes, so the binding alone
+		// does not tell it from a registration; only the leader read does. A record that names
+		// another key, one an earlier build wrote naming no key, one the server wrote, and one the
+		// leader read could not confirm are each refreshed with the projects of the token this claim
+		// was made with (registeringProjects), so a forged record's projects are never written back
+		// as this session's own, and a token that lists none leaves the entry unbound. Only an edge
+		// claim pays for the confirmation; a shared listener keeps the entry's projects as it read
+		// them, as it always has.
+		keepProjects := entry.SessionID == body.SessionID
+		if keepProjects && edgeScopeOf(r, nil) != nil {
+			readCtx, readCancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+			stored, storedErr := d.sessions.StoredByWriter(readCtx, body.SessionID)
+			readCancel()
+			keepProjects = storedErr == nil && stored
+		}
+		if !keepProjects {
 			entry.Projects = registeringProjects(r)
 		}
 		// The refresh names this machine as the session's relay, so a claim made through
