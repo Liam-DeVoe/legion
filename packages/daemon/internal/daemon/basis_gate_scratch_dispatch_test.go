@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -693,9 +694,16 @@ func insertAtEnd(markdown string) map[string]string {
 // contract 212 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
+//
+// Dispatch's parent status rule (R24 of dispatch://INFRA-3320) is off for this test alone. The
+// second repeat of step 9 stands R, in work, under P on the backlog: a child in work under a
+// parent that is not, a world the rule refuses to write and that stands only before Dispatch's
+// boot fix (R25) runs with the rule on, so the daemon reads it where Dispatch serves with the
+// rule off. Every other step keeps the rule: each other P is admitted, and so in progress, before
+// R is linked under it.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	pause, held := &registrationPause{}, &outboxHold{}
-	r := newPersonHandoverRig(t, 8)
+	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t), env: []string{parentStatusRule + "=off"}}, 8)
 	r.tune = func(o *overrides) {
 		o.gateRegistrationRead = pause.hook
 		o.holdOutbox = held.holds
@@ -979,12 +987,19 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 // TestBasisGateRefusals and TestBasisGateOpenings (internal/api), where the view is judged at the
 // approved version and not at the live text.
 //
+// Dispatch's parent status rule (R24 of dispatch://INFRA-3320) is off for this test alone. The
+// cases of the ancestor's status stand R, in work, under P on the backlog, in icebox and done: a
+// parent that is not in work over a child that is, and a done parent over a child that is not,
+// worlds the rule refuses to write and that stand only before Dispatch's boot fix (R25) runs with
+// the rule on. Every other step keeps the rule as a person would: each issue R is linked under is
+// moved into work first.
+//
 // The drop seam (overrides.dropConsumedEvent) is used once: the person's approval of R's latest
 // version reaches the daemon as an event it drops, and the registration's own read carries that
 // approval, opening the step on it and recording no basis.
 func TestBasisGateRefusals(t *testing.T) {
 	drop := &consumerDrop{}
-	r := newPersonHandoverRig(t, 3)
+	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t), env: []string{parentStatusRule + "=off"}}, 3)
 	r.tune = func(o *overrides) { o.dropConsumedEvent = drop.drops }
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
@@ -1067,8 +1082,10 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "k2"}))
 	cases.refused("a check of R that serves nothing", call(), http.StatusConflict, "VIEW_CHECK_SERVES_NOTHING", "check k2 of "+root.Key)
 
-	// Checks Dispatch would refuse under P: S's requirement is written while R stands under S.
+	// Checks Dispatch would refuse under P: S's requirement is written while R stands under S, which
+	// the person moves into work first, as R24 asks of the parent of an issue in work.
 	s1 := specBlock(sibling.Key, "s1")
+	r.setStatus(sibling.Key, "in_progress")
 	r.patch(root.Key, asPerson, map[string]any{"parent": sibling.Key})
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "k2", serves: []string{s1}}))
 	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
@@ -1160,10 +1177,14 @@ func TestBasisGateRefusals(t *testing.T) {
 		return onBasis(parent.Key, pv, pinned("p2"))(gate) && kept != nil && kept.Version == rv-1
 	})
 
-	// The chain: R under P under G, where only G is approved and marks requirements.
+	// The chain: R under P under G, where only G is approved and marks requirements. The person
+	// moves G and then P into work before R is linked under P, as R24 asks of the parents of an
+	// issue in work; a session labelled both, so neither move is a person's handover.
 	grandparent := r.create(asSession, "Maritime safety initiative", map[string]any{"labels": []string{"legion"}, "spec": requirementsMarkdown("Safety", "g1", "g2")})
 	gv := r.approve(grandparent.PrimaryArtifactID).Version
 	middle := r.create(asSession, "Buoy maintenance roster", map[string]any{"labels": []string{"legion"}, "parent": grandparent.Key})
+	r.setStatus(grandparent.Key, "in_progress")
+	r.setStatus(middle.Key, "in_progress")
 	chainRoot := r.create(asSession, "Foghorn volume limiter", labelled)
 	chainGrant := r.admit(chainRoot.Key)
 	r.patch(chainRoot.Key, asPerson, map[string]any{"parent": middle.Key})
