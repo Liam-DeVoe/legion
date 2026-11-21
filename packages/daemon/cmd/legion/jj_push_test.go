@@ -1530,10 +1530,9 @@ func TestARevisionJJMovesToTheRewrittenCommitGoesToThePushAsWritten(t *testing.T
 }
 
 // `jj git push -c latest(<C>, <D>)`, where D is a number that the id of C, the commit the push
-// sends, alone starts with: the step follows D as C, rewrites C, and jj refuses the argument with
-// the new C in D's place. The commit id C the role wrote is still a commit the step rewrote, so the
-// real push gets the new C in C's place, and D as the role wrote it: the remote's commit has its
-// trailer's author, and -c makes no bookmark on the old, hidden C, so no change is divergent.
+// sends, alone starts with, so jj could also read D as a commit id. The argument names C, a commit
+// the step rewrites, so the real push sends the rewritten C: the remote's commit has its trailer's
+// author, and -c makes no bookmark on the old, hidden C, so no change is divergent.
 func TestACommitIDBesideARefusedNumberSendsTheRewrittenCommit(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
