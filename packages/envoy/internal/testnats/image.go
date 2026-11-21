@@ -11,6 +11,7 @@ package testnats
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -60,10 +61,41 @@ func StartImageConfig(t testing.TB, image, config string, serverArgs []string, a
 // no user the probe could be). Such a test starts the container on its final configuration rather
 // than stop it and start it again on another: Docker publishes the client port again at each
 // start, and while the container is stopped another process can take that port, so the start is
-// refused, "address already in use".
-func StartImageReady(t testing.TB, image, config string, serverArgs []string) (*tcnats.NATSContainer, string) {
+// refused, "address already in use". options go after the start's own (startImageAt): a volume
+// mount, say, for a store a later container of the same test reads again.
+func StartImageReady(t testing.TB, image, config string, serverArgs []string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, string) {
 	t.Helper()
-	return startImage(t, image, config, serverArgs)
+	return startImage(t, image, config, serverArgs, options...)
+}
+
+// imageStoreDir is where an image server given a store of its own (ImageStore) keeps JetStream.
+const imageStoreDir = "/data"
+
+// ImageStore is a Docker volume of t's own, removed when t ends, as the options that make an image
+// server keep its JetStream store there (StartImageReady's options). A test that changes a
+// server's configuration over the same store stops the first container and starts a fresh one on
+// the same store, on a fresh address, rather than start the stopped one again, whose client port
+// Docker would publish again at the same address and port another process could have taken
+// meanwhile.
+func ImageStore(t testing.TB) []testcontainers.ContainerCustomizer {
+	t.Helper()
+	name := "testnats-store-" + rand.Text()
+	// Registered before any container on the volume starts, so it runs after their removal.
+	t.Cleanup(func() {
+		provider, err := testcontainers.NewDockerProvider()
+		if err != nil {
+			t.Errorf("remove the store volume %s: %v", name, err)
+			return
+		}
+		defer provider.Close()
+		if err := provider.Client().VolumeRemove(context.Background(), name, true); err != nil {
+			t.Errorf("remove the store volume %s: %v", name, err)
+		}
+	})
+	return []testcontainers.ContainerCustomizer{
+		testcontainers.WithMounts(testcontainers.VolumeMount(name, imageStoreDir)),
+		testcontainers.WithCmdArgs("-sd", imageStoreDir),
+	}
 }
 
 // startImage runs the container StartImageConfig runs and returns it with its client URL, before
@@ -76,14 +108,14 @@ func StartImageReady(t testing.TB, image, config string, serverArgs []string) (*
 // every refusal before it. A daemon on another machine publishes on that machine, whose loopback
 // this one does not reach, so there the port takes Docker's default binding and the URL names the
 // daemon's host.
-func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnats.NATSContainer, string) {
+func startImage(t testing.TB, image, config string, serverArgs []string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, string) {
 	t.Helper()
 	local, err := localDaemon(context.Background())
 	if err != nil {
 		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
 	}
 	if !local {
-		ctr, err := startImageAt(image, config, serverArgs, "", 0)
+		ctr, err := startImageAt(image, config, serverArgs, "", 0, options)
 		testcontainers.CleanupContainer(t, ctr)
 		if err != nil {
 			t.Fatalf("start NATS on %s: %v", image, err)
@@ -104,7 +136,7 @@ func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnat
 			t.Fatalf("choose a loopback port to publish NATS on: %v%s", err, before())
 		}
 		address := net.JoinHostPort(host, strconv.Itoa(ports[0]))
-		ctr, err := startImageAt(image, config, serverArgs, host, ports[0])
+		ctr, err := startImageAt(image, config, serverArgs, host, ports[0], options)
 		if testport.AddressInUse(err) {
 			refused = append(refused, fmt.Sprintf("%s: %v", address, errors.Join(err, testcontainers.TerminateContainer(ctr))))
 			continue
@@ -120,9 +152,11 @@ func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnat
 }
 
 // startImageAt is one start of startImage's container, its client port published at host:port,
-// or at Docker's default binding when host is "".
-func startImageAt(image, config string, serverArgs []string, host string, port int) (*tcnats.NATSContainer, error) {
-	return tcnats.Run(context.Background(), image,
+// or at Docker's default binding when host is "", with options after its own: a volume mount, say
+// (testcontainers.WithMounts), never a host config modifier, of which a request keeps only the last
+// and this one holds the port's binding.
+func startImageAt(image, config string, serverArgs []string, host string, port int, options []testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+	return tcnats.Run(context.Background(), image, append([]testcontainers.ContainerCustomizer{
 		testcontainers.WithCmd(append([]string{"-c", imageConfigPath}, serverArgs...)...),
 		testcontainers.WithFiles(testcontainers.ContainerFile{
 			Reader:            strings.NewReader(config),
@@ -146,7 +180,7 @@ func startImageAt(image, config string, serverArgs []string, host string, port i
 		// wait, a dial of the client port at localhost, where the port is not published; each
 		// caller's own wait (awaitAuth) is the proof a client reaches the server.
 		testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
-	)
+	}, options...)...)
 }
 
 // localDaemon reports whether the Docker daemon testcontainers reaches runs on this machine
