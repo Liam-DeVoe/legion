@@ -789,10 +789,12 @@ export default function envoyExtension(hostApi: PiApi): void {
     }
     return config;
   };
-  // Inbound messages arrive over NATS: an Envoy with no NATS server, or whose seed was refused,
-  // takes none, and its tools, which call the listener, still work. The start notice says so
-  // (`sessionSettings`), with why a section is off, once, and `envoy_subscribe` and the Legion
-  // interface's `claim` and `subscribe` refuse naming why (`requireInbound`).
+  // Inbound messages arrive over NATS, or through the listener's relay socket where the settings
+  // say `ENVOY_INBOUND=listener`: an Envoy with neither (no NATS server, a seed that was refused, or
+  // a relay socket its settings cannot open) takes none, and its tools, which call the listener,
+  // still work. The start notice says so (`sessionSettings`), with why a section is off, once, and
+  // `envoy_subscribe` and the Legion interface's `claim` and `subscribe` refuse naming why
+  // (`requireInbound`).
   const inbound = envoy.enabled && !("off" in envoy.inbound);
   const startNotice = atStart.notice ?? "";
   // AskGate (extensions/askgate/) reviews each Dispatch write before it posts, in a session that

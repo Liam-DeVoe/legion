@@ -6,7 +6,9 @@ body: |-
   `envoySettings`' `inbound` then carries `{ relaySetting, relayCredential }`, the session's broker
   credential, and the choice is refused, turning off inbound messages alone and naming why, beside
   a NATS server (`ENVOY_NATS_URL` or `envoy.natsUrls`, naming both), with a bearer for the listener,
-  with no broker route, for a caller that names no session, and for any other value. The start
+  with no broker route, for a caller that names no session, for a listener at a plain http address
+  of another machine (the socket would carry the token unencrypted), and for any other value. The
+  start
   notice says the socket carries no live view. `connectListenerRelay`
   (`@legion/envoy-client/listener-relay`) opens `<ENVOY_URL>/v1/sessions/<session>/relay`
   (subprotocol `envoy-relay.v1`) with a fresh DPoP proof of the session's broker token and answers a
@@ -15,15 +17,18 @@ body: |-
   `subscription_limit` past four on one socket) ends that subscription alone and is logged once;
   `flush` waits on a WebSocket ping's pong, which the listener sends after it handled every `sub`
   before it, and rejects when its socket closes or is replaced first; a `msg`'s headers keep each
-  name's case and every value in order (`RelaySocketHeaders.values`). A close is opened again as
+  name's case and every value in order (`RelaySocketHeaders.values`), and a frame past 2 MiB, larger
+  than any the listener sends, is dropped unread. A close is opened again as
   the listener's code says, each cause doubling its own waits: 4401 and 1012 at once however often
   they come, 4403 after 1 s doubling to a minute and 1013 after 5 s doubling to a minute, 1001 and
   1006 at once and then after 1 s doubling, and any other close, 1008 `bad_frame` included, after
-  1 s doubling. An upgrade refused 401 or 403 (its status read from Bun's `error` event) waits as
+  1 s doubling; a 1008 is logged naming the ops of the frames sent since the listener last answered
+  a ping. An upgrade refused 401 or 403 (its status read from Bun's `error` event) waits as
   4403 does, one refused 503 after a 1013 goes on with the 1013's waits, and an upgrade not answered
   within 20 s is dropped and tried again. Only 4401, 4403 and an upgrade refused 401 or 403 trade
   for a fresh token; every open signs a fresh DPoP proof. A refused trade is told to the session
-  once per outage (`inboundUnavailable`). A registration an edge listener refuses for a topic of
+  once per outage (`inboundUnavailable`), and the socket's next open ends that outage alone, never
+  one a refused registration told. A registration an edge listener refuses for a topic of
   no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
   naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
   and tell the session which, once, with the reason (`registerWithRelay`'s `drop`,

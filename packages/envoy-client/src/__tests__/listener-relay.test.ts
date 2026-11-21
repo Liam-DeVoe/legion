@@ -414,12 +414,60 @@ describe("a relay socket", () => {
     expect(waited[1]).toBeLessThan(2_900);
     expect(new Set(opens(server).map((upgrade) => upgrade.token)).size).toBe(1);
     expect(logs).toContain(
-      "the listener's relay socket for ses_a closed (1008 bad_frame); it opens again in 1000 ms"
+      "the listener's relay socket for ses_a closed (1008 bad_frame: one of the frames sent since its last pong, none); it opens again in 1000 ms"
     );
     expect(logs.filter((line) => line.includes("answered bad_frame"))).toEqual([
       "the listener's relay socket for ses_a answered bad_frame",
     ]);
   }, 30_000);
+
+  test("a 1008 bad_frame close names the ops of the frames sent since the listener last answered a ping", async () => {
+    // The listener's `bad_frame` names no op: the frame it could not read is one of those this
+    // client sent since its last pong, which the listener had answered only after every earlier one.
+    const server = standIn();
+    const logs: string[] = [];
+    const relay = await opened(server, "ses_a", { logs });
+    // A `sub` and an `unsub` the pong below answers, so neither is named for them.
+    relay.subscribe(standInDeliverSubject("ses_a")).unsubscribe();
+    await relay.flush();
+    // Both go out after the pong above, and no ping follows them.
+    relay.subscribe(standInDeliverSubject("ses_a"));
+    relay.publish("notifications.envoy.relayreply.unknown", new Uint8Array());
+    server.refuseFrame("ses_a");
+    await until(
+      () => logs.some((line) => line.includes("1008 bad_frame")),
+      5_000,
+      () => `no 1008 close was logged; the log holds ${JSON.stringify(logs)}`
+    );
+    expect(logs.filter((line) => line.includes("1008 bad_frame"))).toEqual([
+      "the listener's relay socket for ses_a closed (1008 bad_frame: one of the frames sent since its last pong, sub, pub); it opens again in 1000 ms",
+    ]);
+  });
+
+  test("a frame carrying a 1 MiB body is handed over, and one past 2 MiB is dropped and logged once", async () => {
+    // A relay frame carries one NATS message, at most 1 MiB, as base64 inside its JSON: about
+    // 1.4 MiB. A frame past 2 MiB is no listener's, and is dropped unread; its message comes again
+    // after the session consumer's ack wait, as any frame left unanswered does.
+    const server = standIn();
+    const logs: string[] = [];
+    const relay = await opened(server, "ses_a", { logs });
+    const subscription = relay.subscribe(standInDeliverSubject("ses_a"));
+    await relay.flush();
+    const iterator = subscription[Symbol.asyncIterator]();
+    server.deliver("ses_a", { headers: frame("ses_a", 1).headers, data: "x".repeat(1 << 20) });
+    const first = await iterator.next();
+    expect(first.value?.data.byteLength).toBe(1 << 20);
+
+    for (const seq of [2, 3]) {
+      server.deliver("ses_a", { headers: frame("ses_a", seq).headers, data: "y".repeat(2 << 20) });
+    }
+    server.deliver("ses_a", frame("ses_a", 4));
+    const next = await iterator.next();
+    expect(next.value?.headers.get("Envoy-Stream-Seq")).toBe("4");
+    expect(logs.filter((line) => line.includes("past"))).toEqual([
+      "the listener's relay socket for ses_a sent a frame past 2 MiB, which no relay frame is; it is dropped, and its message comes again after the consumer's ack wait",
+    ]);
+  });
 
   test("after a 1013, upgrades refused 503 wait 5 s doubling on the token it holds, the status logged", async () => {
     // While the listener cannot ask the broker it refuses every upgrade 503. Bun names the status
@@ -1027,6 +1075,21 @@ describe("which inbound a session takes", () => {
       off: "ENVOY_INBOUND is listener, but this process names no session for its relay socket's token",
       noSessionNamed: true,
     });
+  });
+
+  test("ENVOY_INBOUND=listener with a plain http listener off this machine is refused naming why; on this machine it is taken", () => {
+    // The socket carries the session's token and every frame: over plain http to another machine
+    // anyone on the path reads them.
+    expect(
+      settings({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: "http://envoy.example:9020" })
+        .inbound
+    ).toEqual({
+      off: "ENVOY_INBOUND is listener, but the listener's address is plain http to envoy.example, which is not this machine, so the relay socket would carry the session's token unencrypted: use an https address",
+    });
+    for (const url of ["http://127.0.0.1:9020", "http://localhost:9020", "http://[::1]:9020"]) {
+      const { inbound } = settings({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: url });
+      expect({ url, relay: "relaySetting" in inbound }).toEqual({ url, relay: true });
+    }
   });
 
   test("another value is refused naming the setting and its two values, not the value", () => {

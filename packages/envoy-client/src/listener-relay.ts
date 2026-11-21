@@ -80,6 +80,12 @@ const CLOSE_EXPIRED = 4401;
 const CLOSE_REFUSED = 4403;
 const CLOSE_TRY_AGAIN_LATER = 1013;
 const CLOSE_STOPPING = 1012;
+/** The listener could not read a frame this client sent (`bad_frame`). */
+const CLOSE_BAD_FRAME = 1008;
+/** The largest frame a listener sends: one NATS message, at most 1 MiB (the hub's `max_payload`),
+ *  as base64 inside the frame's JSON, about 1.4 MiB, with room for its headers. A larger frame is
+ *  no listener's, and is dropped unread. The listener's own bound, 1 MiB, is on what it reads. */
+const RELAY_MAX_FRAME_BYTES = 2 * 1024 * 1024;
 /** Opened again at once however often they come: the token lapsed (4401) or the listener is
  *  stopping (1012), which the listener sends at most once a check and once a stop. */
 const AT_ONCE: ReadonlySet<number> = new Set([CLOSE_EXPIRED, CLOSE_STOPPING]);
@@ -377,6 +383,10 @@ export class ListenerRelay implements InboundConnection {
   #reopenTimer: ReturnType<typeof setTimeout> | undefined;
   #livenessTimer: ReturnType<typeof setInterval> | undefined;
   #pingSeq = 0;
+  /** The ops of the frames sent since the listener last answered a ping, each with the ping
+   *  sequence it went out after: a pong past it says the listener read it. A `bad_frame` close
+   *  names these, since the listener's answer names no op. */
+  readonly #sentSincePong = new Map<string, number>();
   #pongSeen = 0;
   #pongs: Pong[] = [];
   #openWaiters: { readonly resolve: () => void; readonly reject: (error: Error) => void }[] = [];
@@ -583,6 +593,7 @@ export class ListenerRelay implements InboundConnection {
     const socket = this.#socket;
     if (socket?.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(frame));
+    if (typeof frame.op === "string") this.#sentSincePong.set(frame.op, this.#pingSeq);
   }
 
   #unsubscribe(sid: number): void {
@@ -626,6 +637,7 @@ export class ListenerRelay implements InboundConnection {
       "the listener's relay socket was opened again before it answered the flush"
     );
     for (const pong of this.#pongs.splice(0)) pong.reject(dropped);
+    this.#sentSincePong.clear();
     const session = sessionName(this.#options.session);
     this.#socketSession = session;
     void this.#upgradeHeaders(session).then((upgrade) => {
@@ -687,7 +699,8 @@ export class ListenerRelay implements InboundConnection {
     }
     this.#socket = socket;
     let opened = false;
-    // Why this socket closed before it opened, where this file knows better than its close code.
+    // Why this socket closed before it opened, where this file knows better than its close code:
+    // an upgrade not answered in time.
     let refusal: string | undefined;
     // What Bun said of a socket that failed before it opened: the status an upgrade was refused
     // with (`UPGRADE_STATUS`), or why it could not be made.
@@ -698,15 +711,12 @@ export class ListenerRelay implements InboundConnection {
       socket.close();
     }, RELAY_HANDSHAKE_MS);
     handshake.unref?.();
+    // Bun refuses an upgrade answered with no subprotocol or another one itself, before `open`
+    // ("Missing client protocol", "Mismatch client protocol", then a close 1006), so a socket that
+    // opens speaks `envoy-relay.v1`.
     socket.addEventListener("open", () => {
       clearTimeout(handshake);
       if (generation !== this.#generation) return;
-      if (socket.protocol !== RELAY_SUBPROTOCOL) {
-        // Something that is not a relay socket answered the upgrade: it is no listener's.
-        refusal = `the listener answered the upgrade without the subprotocol ${RELAY_SUBPROTOCOL}`;
-        socket.close(1002, "no relay subprotocol");
-        return;
-      }
       opened = true;
       this.#opened(generation, session, socket);
     });
@@ -779,9 +789,26 @@ export class ListenerRelay implements InboundConnection {
     const answered = this.#pongs.filter((pong) => pong.seq <= seq);
     this.#pongs = this.#pongs.filter((pong) => pong.seq > seq);
     for (const pong of answered) pong.resolve();
+    for (const [op, after] of this.#sentSincePong) {
+      if (after < seq) this.#sentSincePong.delete(op);
+    }
   }
 
   #message(session: string, raw: unknown): void {
+    const bytes =
+      typeof raw === "string"
+        ? Buffer.byteLength(raw)
+        : raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)
+          ? raw.byteLength
+          : 0;
+    if (bytes > RELAY_MAX_FRAME_BYTES) {
+      // Left unanswered, a frame's message comes again after the session consumer's ack wait.
+      this.#logOnce(
+        `${session}\u0000size`,
+        `the listener's relay socket for ${session} sent a frame past 2 MiB, which no relay frame is; it is dropped, and its message comes again after the consumer's ack wait`
+      );
+      return;
+    }
     let frame: unknown;
     try {
       frame = JSON.parse(frameText(raw));
@@ -859,8 +886,12 @@ export class ListenerRelay implements InboundConnection {
     const delay = this.#reopenAfter(end);
     if ("closed" in end) {
       this.#closedWith = end.closed;
+      const closed =
+        end.closed === CLOSE_BAD_FRAME
+          ? `${why}: one of the frames sent since its last pong, ${[...this.#sentSincePong.keys()].join(", ") || "none"}`
+          : why;
       this.#options.log(
-        `the listener's relay socket for ${session} closed (${why}); it opens again in ${delay} ms`
+        `the listener's relay socket for ${session} closed (${closed}); it opens again in ${delay} ms`
       );
       return;
     }

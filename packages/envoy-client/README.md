@@ -296,13 +296,17 @@ is open: a connection of the shape a session plugin holds over NATS (`InboundCon
 `subscribe`, `publish`, `flush`, `isClosed`, `drain`, `close`, `status` and `closed`), so the
 plugin's consumer delivery runs on either. Each open is `GET <listener>/v1/sessions/<session>/relay`,
 a WebSocket of subprotocol `envoy-relay.v1`, with a fresh proof of the session's broker token
-(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). The frames are JSON: the
+(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). The setting is refused
+for a listener at a plain http address of another machine, where the socket would carry the token
+unencrypted; this machine's own listener may be plain http. The frames are JSON: the
 session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay receipt on a frame's
 reply, which is all the socket takes; the listener sends `msg`, whose `headers` map each name, case
 kept, to the list of its values in order (`RelaySocketHeaders.get` and `values`), and `err`. A
+frame past 2 MiB, larger than any the listener sends, is dropped unread. A
 `sub` the listener refuses (`subject_not_granted`, or `subscription_limit` past the four
 subscriptions a socket holds) ends that subscription alone and is logged once; a frame it cannot
-read it answers `bad_frame` and closes the socket 1008.
+read it answers `bad_frame` and closes the socket 1008, which the client logs naming the ops of the
+frames it sent since the listener last answered a ping, since the answer names none.
 The listener reads a socket's frames one at a time and answers no `sub` it grants, so `flush` sends
 a WebSocket ping and resolves at its pong, after every `sub` before it is held; a flush whose
 socket closes or is replaced first rejects. The socket carries
@@ -318,7 +322,8 @@ goes on with the 1013's waits, and any other status, an upgrade not answered wit
 listener that cannot be reached and a failed trade are tried again after 1 s doubling to a minute.
 Each cause doubles its own waits, and a socket open a minute starts them all afresh. Every other
 open presents the token in hand, with a fresh proof. A trade that failed is told to the session
-once per outage (`inboundUnavailable`), and a repeated
+once per outage (`inboundUnavailable`), and the socket that opens next ends that outage, and no
+other: an outage a refused registration told ends only once a registration is accepted. A repeated
 failure is logged once until its words change. Each reopen takes every live subscription again and
 reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
 acknowledged. `follow()` opens the socket again for the session the name reads now, which a host

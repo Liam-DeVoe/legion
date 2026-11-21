@@ -345,19 +345,25 @@ function natsCredential(
   return { kind: "broker", broker: brokerNatsCredential(env, session, auth.source) };
 }
 
+/** A URL host on this machine: `localhost`, an address of 127.0.0.0/8, or `[::1]`. */
+const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
+
 /**
  * The relay socket's inbound, which `source` chose (`ENVOY_INBOUND`, or `envoy.inbound in
  * <file>`), or why it is off. Refused beside a NATS server named for the session (`natsSetting`,
  * the setting that named it), naming both rather than one of the two silently winning; for a
  * listener credential that is not the session's broker token, which is the only one the socket
- * admits; and for a caller that names no session, whose token would be the machine's or the
- * signed-in person's, not the session the socket is for.
+ * admits; for a caller that names no session, whose token would be the machine's or the
+ * signed-in person's, not the session the socket is for; and for a listener at a plain http
+ * address (`url`) of another machine, where the socket would carry the token and every frame
+ * unencrypted. This machine's own listener (`localhost`, 127.0.0.0/8, `::1`) may be plain http.
  */
 function listenerInbound(
   source: string,
   natsSetting: string | undefined,
   credential: RequestCredential | { readonly noBrokerRoute: string },
-  session: BrokerSessionName | undefined
+  session: BrokerSessionName | undefined,
+  url: string
 ): EnvoyInbound {
   if (natsSetting !== undefined) {
     return {
@@ -376,6 +382,12 @@ function listenerInbound(
     return {
       off: `${source} is listener, but this process names no session for its relay socket's token`,
       noSessionNamed: true,
+    };
+  }
+  const host = URL.canParse(url) ? new URL(url) : undefined;
+  if (host?.protocol === "http:" && !LOOPBACK_HOST.test(host.hostname)) {
+    return {
+      off: `${source} is listener, but the listener's address is plain http to ${host.hostname}, which is not this machine, so the relay socket would carry the session's token unencrypted: use an https address`,
     };
   }
   return { relaySetting: source, relayCredential: credential };
@@ -513,7 +525,8 @@ export function envoySettings(
       choice.source,
       natsSetting,
       credential ?? { noBrokerRoute },
-      options.session
+      options.session,
+      url
     );
   } else if (natsUrls.length === 0) inbound = { off: NO_NATS_SERVER };
   else {
