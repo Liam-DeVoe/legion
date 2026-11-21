@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/metrics"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -112,6 +113,54 @@ func collectAgentOnSignal(stderr io.Writer) {
 					break
 				}
 			}
+		}
+	}()
+}
+
+// agentFigureNames are the runtime/metrics samples reportAgentFiguresOnSignal writes, in order:
+// the collections, the scavenger's and the collector's CPU, the heap the runtime gave back to the
+// system, all the memory it has mapped, the live heap, the heap goal, the memory limit, and the
+// last collection the GC CPU limiter capped.
+var agentFigureNames = []string{
+	"/gc/cycles/total:gc-cycles",
+	"/cpu/classes/scavenge/assist:cpu-seconds",
+	"/cpu/classes/scavenge/background:cpu-seconds",
+	"/cpu/classes/gc/total:cpu-seconds",
+	"/memory/classes/heap/released:bytes",
+	"/memory/classes/total:bytes",
+	"/gc/heap/live:bytes",
+	"/gc/heap/goal:bytes",
+	"/gc/gomemlimit:bytes",
+	"/gc/limiter/last-enabled:gc-cycle",
+}
+
+// reportAgentFiguresOnSignal is the agent's runtime figures on demand under its test hooks
+// (DISPATCH_TEST_AGENT_HOOKS=1), which the test of the agent's CPU (agent_load_test.go) reads
+// around each window it times: each SIGUSR2 writes to stderr, which the server logs, one line of
+// agentFigureNames' values, read as they stand, with no collection, so the reading changes nothing
+// of what it reads.
+func reportAgentFiguresOnSignal(stderr io.Writer) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR2)
+	go func() {
+		samples := make([]metrics.Sample, len(agentFigureNames))
+		for index, name := range agentFigureNames {
+			samples[index].Name = name
+		}
+		for range signals {
+			metrics.Read(samples)
+			values := make([]string, len(samples))
+			for index, sample := range samples {
+				switch sample.Value.Kind() {
+				case metrics.KindUint64:
+					values[index] = strconv.FormatUint(sample.Value.Uint64(), 10)
+				case metrics.KindFloat64:
+					values[index] = strconv.FormatFloat(sample.Value.Float64(), 'f', 6, 64)
+				default:
+					values[index] = "0"
+				}
+			}
+			fmt.Fprintf(stderr, "agent: runtime figures %s\n", strings.Join(values, " "))
 		}
 	}()
 }

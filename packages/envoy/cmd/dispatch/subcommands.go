@@ -107,8 +107,9 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 // when it exits 0. It exits 2 when started with no socket to call, and 1 when its secret or its
 // settings cannot be read or its loop fails, which the server answers by starting it again.
 // DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
-// turns the loop's test hooks on and makes each SIGUSR1 collect the agent's heap and log what it
-// found (collectAgentOnSignal), and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way, makes
+// turns the loop's test hooks on, makes each SIGUSR1 collect the agent's heap and log what it
+// found (collectAgentOnSignal) and each SIGUSR2 log its runtime figures as they stand
+// (reportAgentFiguresOnSignal), and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way, makes
 // it allocate at full speed that long after its start (growAgentHeap).
 func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
 	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
@@ -158,6 +159,7 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 	hooks := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"
 	if hooks {
 		collectAgentOnSignal(stderr)
+		reportAgentFiguresOnSignal(stderr)
 	}
 	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots, Hooks: hooks}
 	// The chat model's first token is read now, beside the hello and the first claim, so a

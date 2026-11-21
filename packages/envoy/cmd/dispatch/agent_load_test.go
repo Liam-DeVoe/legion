@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -525,13 +526,14 @@ func tookOf(reads []cpuRead) []time.Duration {
 
 // procFigures is what /proc tells of a set of processes, their threads summed: the time they ran on
 // a CPU and the time they waited on a run queue for one (each thread's schedstat), the times the
-// kernel took a CPU from them (nonvoluntary_ctxt_switches), their minor page faults (each
-// process's stat) and their resident memory (VmRSS).
+// kernel took a CPU from them (nonvoluntary_ctxt_switches), their minor page faults, their CPU time
+// in user space and in the kernel (each process's stat) and their resident memory (VmRSS).
 type procFigures struct {
-	ran, waited time.Duration
-	preempted   int64
-	faults      int64
-	resident    int64
+	ran, waited  time.Duration
+	preempted    int64
+	faults       int64
+	user, system time.Duration
+	resident     int64
 }
 
 // readProcFigures reads the figures of processes pids now. A process or a thread gone between two
@@ -555,12 +557,18 @@ func readProcFigures(pids ...int) procFigures {
 			}
 		}
 		// The fields of a stat after the command's closing parenthesis start at the state, the
-		// third, so the minor faults, the tenth, are the eighth of them.
+		// third, so the minor faults, the tenth, are the eighth of them, and the CPU time in user
+		// space and in the kernel, the fourteenth and fifteenth, in the kernel's ticks of 10 ms
+		// (USER_HZ), the twelfth and thirteenth.
 		if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
 			text := string(stat)
-			if fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:]); len(fields) > 7 {
+			if fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:]); len(fields) > 12 {
 				faults, _ := strconv.ParseInt(fields[7], 10, 64)
+				user, _ := strconv.ParseInt(fields[11], 10, 64)
+				system, _ := strconv.ParseInt(fields[12], 10, 64)
 				figures.faults += faults
+				figures.user += time.Duration(user) * 10 * time.Millisecond
+				figures.system += time.Duration(system) * 10 * time.Millisecond
 			}
 		}
 		if status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
@@ -587,11 +595,90 @@ func statusValue(status, name string) int64 {
 // since is what the processes did from earlier to f, and their resident memory at f.
 func (f procFigures) since(earlier procFigures) procFigures {
 	return procFigures{ran: f.ran - earlier.ran, waited: f.waited - earlier.waited, preempted: f.preempted - earlier.preempted,
-		faults: f.faults - earlier.faults, resident: f.resident}
+		faults: f.faults - earlier.faults, user: f.user - earlier.user, system: f.system - earlier.system, resident: f.resident}
 }
 
 func (f procFigures) String() string {
-	return fmt.Sprintf("ran %v, waited %v to run, lost a CPU %d times, %d minor faults", f.ran.Round(time.Microsecond), f.waited.Round(time.Microsecond), f.preempted, f.faults)
+	return fmt.Sprintf("ran %v (%v in user space, %v in the kernel, in 10 ms ticks), waited %v to run, lost a CPU %d times, %d minor faults",
+		f.ran.Round(time.Microsecond), f.user, f.system, f.waited.Round(time.Microsecond), f.preempted, f.faults)
+}
+
+// agentFigures is the agent's runtime figures as its test hook writes them at a SIGUSR2
+// (reportAgentFiguresOnSignal), in the order of agentFigureNames.
+type agentFigures struct {
+	cycles                       uint64
+	scavengeAssist, scavengeBack float64
+	collector                    float64
+	released, total, live, goal  uint64
+	limit, limiterLast           uint64
+}
+
+// agentFiguresLine is the line the agent writes at a SIGUSR2.
+var agentFiguresLine = regexp.MustCompile(`agent: runtime figures ([0-9. ]+)\n`)
+
+// agentRuntime asks agent pid for its runtime figures and answers them once the server has logged
+// them.
+func (s agentServer) agentRuntime(t *testing.T, pid int) agentFigures {
+	t.Helper()
+	from := len(s.Output.String())
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		t.Fatalf("ask the agent for its runtime figures: %v", err)
+	}
+	var fields []string
+	s.eventually(t, 30*time.Second, "the agent's runtime figures", func() bool {
+		match := agentFiguresLine.FindStringSubmatch(s.Output.String()[from:])
+		if match != nil {
+			fields = strings.Fields(match[1])
+		}
+		return match != nil
+	})
+	if len(fields) != len(agentFigureNames) {
+		t.Fatalf("the agent wrote %d runtime figures, want %d: %v", len(fields), len(agentFigureNames), fields)
+	}
+	whole := func(index int) uint64 { value, _ := strconv.ParseUint(fields[index], 10, 64); return value }
+	seconds := func(index int) float64 { value, _ := strconv.ParseFloat(fields[index], 64); return value }
+	return agentFigures{cycles: whole(0), scavengeAssist: seconds(1), scavengeBack: seconds(2), collector: seconds(3),
+		released: whole(4), total: whole(5), live: whole(6), goal: whole(7), limit: whole(8), limiterLast: whole(9)}
+}
+
+// used is what the agent's runtime counts against its memory limit, as its claim gate does
+// (going/agent's overMemory): all it has mapped less what it gave back to the system, as a share
+// of the limit.
+func (f agentFigures) used() float64 {
+	return float64(f.total-f.released) / float64(f.limit)
+}
+
+// describeAgentRuntime writes what the agent's runtime did from before to after, for the test's
+// log: its collections, the CPU its scavenger and its collector took, the heap it gave back to the
+// system, and where it stood against its memory limit and its claim gate at each end.
+func describeAgentRuntime(before, after agentFigures) string {
+	limiter := "did not cap a collection in it"
+	if after.limiterLast > before.cycles {
+		limiter = fmt.Sprintf("last capped collection %d, within it", after.limiterLast)
+	}
+	return fmt.Sprintf("%d collections; the scavenger's CPU %.3fs assisting and %.3fs in the background, the collector's %.3fs; the GC CPU limiter %s; given back to the system %d -> %d MiB, mapped %d -> %d MiB, live %d MiB, heap goal %d MiB; against its limit of %d MiB it used %.0f%% -> %.0f%% (the claim gate at %.0f%%)",
+		after.cycles-before.cycles, after.scavengeAssist-before.scavengeAssist, after.scavengeBack-before.scavengeBack, after.collector-before.collector,
+		limiter, before.released>>20, after.released>>20, before.total>>20, after.total>>20, after.live>>20, after.goal>>20, after.limit>>20,
+		100*before.used(), 100*after.used(), 100*loadClaimGate)
+}
+
+// kernelFacts is the kernel's release and build line, and the build's tick rate and preemption
+// model and the system's transparent huge pages where this machine lets the test read them.
+func kernelFacts() string {
+	release, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	version, _ := os.ReadFile("/proc/version")
+	facts := []string{strings.TrimSpace(string(version))}
+	if config, err := os.ReadFile("/boot/config-" + strings.TrimSpace(string(release))); err == nil {
+		for line := range strings.Lines(string(config)) {
+			if strings.HasPrefix(line, "CONFIG_HZ=") || strings.HasPrefix(line, "CONFIG_PREEMPT") {
+				facts = append(facts, strings.TrimSpace(line))
+			}
+		}
+	}
+	if huge, err := os.ReadFile("/sys/kernel/mm/transparent_hugepage/enabled"); err == nil {
+		facts = append(facts, "transparent huge pages "+strings.TrimSpace(string(huge)))
+	}
+	return strings.Join(facts, "; ")
 }
 
 // processesNamed is the id of each process whose command is name, as /proc/<pid>/comm writes it:
@@ -668,12 +755,15 @@ type cpuWindow struct {
 	server, test, database, agent procFigures
 	databaseProcesses             int
 	agentResidentBefore           int64
+	agentBefore, agentAfter       agentFigures
 }
 
-// watchWindow times count reads of path and reads what went on around them.
+// watchWindow times count reads of path and reads what went on around them, the agent's runtime
+// figures included.
 func (s agentServer) watchWindow(t *testing.T, profiler string, agentPid int, path string, count int) cpuWindow {
 	t.Helper()
 	database := processesNamed("postgres")
+	agentRuntimeBefore := s.agentRuntime(t, agentPid)
 	gcBefore := readServerGC(t, profiler)
 	serverBefore, testBefore := readProcFigures(s.Cmd.Process.Pid), readProcFigures(os.Getpid())
 	databaseBefore, agentBefore := readProcFigures(database...), readProcFigures(agentPid)
@@ -686,8 +776,10 @@ func (s agentServer) watchWindow(t *testing.T, profiler string, agentPid int, pa
 		agent:               readProcFigures(agentPid).since(agentBefore),
 		databaseProcesses:   len(database),
 		agentResidentBefore: agentBefore.resident,
+		agentBefore:         agentRuntimeBefore,
 	}
 	window.pauses = readServerGC(t, profiler).since(gcBefore)
+	window.agentAfter = s.agentRuntime(t, agentPid)
 	return window
 }
 
@@ -724,9 +816,10 @@ func (w cpuWindow) describe(slow time.Duration) string {
 	for index, pause := range w.pauses {
 		pauses[index] = pause.took
 	}
-	return fmt.Sprintf("%d reads in %v, %d of them above %v; the 8 slowest: %s; the server's collector paused %d times in it (%v); the server's threads %s; the test's %s; the database's %d processes %s; the agent's %s, its resident memory %d MiB at the start and %d MiB at the end",
+	return fmt.Sprintf("%d reads in %v, %d of them above %v; the 8 slowest: %s; the server's collector paused %d times in it (%v); the server's threads %s; the test's %s; the database's %d processes %s; the agent's %s, its resident memory %d MiB at the start and %d MiB at the end; the agent's runtime around it: %s",
 		len(w.reads), end.Sub(start).Round(time.Millisecond), above, slow, strings.Join(notes, ", "), len(w.pauses), pauses,
-		w.server, w.test, w.databaseProcesses, w.database, w.agent, w.agentResidentBefore>>20, w.agent.resident>>20)
+		w.server, w.test, w.databaseProcesses, w.database, w.agent, w.agentResidentBefore>>20, w.agent.resident>>20,
+		describeAgentRuntime(w.agentBefore, w.agentAfter))
 }
 
 // span is when the window's first read started and its last ended.
@@ -911,9 +1004,8 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	idleReads, busyReads := tookOf(idleWindow.reads), tookOf(busyWindow.reads)
 	idle, busy := percentile(idleReads, 0.99), percentile(busyReads, 0.99)
 	slowest := slices.Max(append(tookOf(livez), 0))
-	kernel, _ := os.ReadFile("/proc/sys/kernel/osrelease")
-	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) under kernel %s and the agent with GOMAXPROCS=%s; the agent's threads by scheduling policy, idle %v and at its soft limit %v",
-		runtime.NumCPU(), runtime.GOMAXPROCS(0), strings.TrimSpace(string(kernel)), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads)
+	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) and the agent with GOMAXPROCS=%s; the agent's threads by scheduling policy, idle %v and at its soft limit %v; the kernel: %s",
+		runtime.NumCPU(), runtime.GOMAXPROCS(0), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads, kernelFacts())
 	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times, the p99 of %d reads being the %d-th slowest); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
 		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), cpuReads, cpuReads-int(math.Ceil(0.99*cpuReads))+1,
 		spread(idleDatabase), spread(busyDatabase), len(livez), slowest)
