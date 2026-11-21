@@ -1705,7 +1705,9 @@ func (w *workflowRuntime) markLocked(repo string) {
 
 // readAnswered drops repo from the repositories left unread: GitHub answered the preparation's
 // reads, whether the answer recorded the issue or refused it, so nothing waits on a read of it
-// any longer. A repository that was left unread is moved to the repositories to recover
+// any longer. deferUnreadIssues calls it with no read, for a repository an entry already answers
+// for (lookup): that entry is GitHub's answer, and no read of the repository would ever come to
+// drop the marker. A repository that was left unread is moved to the repositories to recover
 // (recovering), and the refresher's recovery is woken to recover it (recoverRepositories). The
 // issues the earlier preparations left said nothing and recorded nothing,
 // and the preparation that got the answer may be another issue's event: dropping the marker
