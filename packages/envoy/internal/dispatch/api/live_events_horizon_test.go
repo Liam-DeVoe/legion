@@ -33,11 +33,12 @@ const relayStartSettle = 300 * time.Millisecond
 // on Horizon.Await by then and cannot finish until the caller lets it.
 func awaitRelayStart(t *testing.T, relay *eventStreamRelay) {
 	t.Helper()
-	pollUntil(t, eventFeedWait, "the subscription reaches the relay's first start", func() bool {
+	waitUntil(t, "the subscription reaches the relay's first start", func() bool {
 		relay.mu.Lock()
 		defer relay.mu.Unlock()
 		return relay.starting != nil
 	})
+
 	time.Sleep(relayStartSettle)
 }
 
@@ -75,7 +76,7 @@ const liveHorizonHeartbeat = time.Second
 // subscription is owed nothing yet, its events_start included.
 func awaitHeartbeat(t *testing.T, client *socketClient, within time.Duration, while string) {
 	t.Helper()
-	data := client.take(t, within, "a heartbeat "+while)
+	data := client.take(t, "a heartbeat "+while)
 	if _, beat := decodeSocketFrame(t, data).(LiveHeartbeat); !beat {
 		t.Fatalf("the socket sent %.200s %s, want nothing but its heartbeat", data, while)
 	}
@@ -433,7 +434,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 		release = holdEventWriterTransactionID(t, database)
 		return nil
 	}}, nil)
-	pollUntil(t, eventFeedWait, "the server's boot mark is taken", func() bool {
+	waitUntil(t, "the server's boot mark is taken", func() bool {
 		select {
 		case <-rig.served.bootMark:
 			return true
@@ -441,6 +442,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 			return false
 		}
 	})
+
 	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	if _, err := rig.database.Pool.Exec(t.Context(), `
 		insert into events (seq, type, actor, payload, notify, published_at)
@@ -546,7 +548,7 @@ func TestShutdownEndsAnEventsSubscriptionWaitingOnTheHorizon(t *testing.T) {
 	awaitHeartbeat(t, client, eventFeedWait, "while the horizon is held")
 
 	rig.stop()
-	if code, _ := client.closeCode(t, time.Second); code != 1012 {
+	if code, _ := client.closeCode(t); code != 1012 {
 		t.Fatalf("the socket of a subscription waiting on the horizon closed with %d, want 1012", code)
 	}
 }

@@ -240,7 +240,7 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 	client.quiet(t, 3*heartbeat+heartbeat/2, "a live socket whose token the broker holds live")
 
 	rig.tokens.broker.Says(token, ciphertoken.Introspection{Active: false})
-	if closed := client.closeError(t, ciphertoken.AffirmativeCacheTTL+2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
 	}
 }

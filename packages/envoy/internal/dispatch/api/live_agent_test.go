@@ -30,7 +30,7 @@ const agentFeedWait = 5 * time.Second
 // answers its data.
 func (c *socketClient) agentFrame(t *testing.T, sub, event string) string {
 	t.Helper()
-	frame := c.next(t, agentFeedWait, "the "+event+" of "+sub)
+	frame := c.next(t, "the "+event+" of "+sub)
 	agent, ok := frame.(LiveAgentFrame)
 	if !ok || agent.Sub != sub || agent.Event != event {
 		t.Fatalf("frame = %+v, want the %s of %s", frame, event, sub)
@@ -41,7 +41,7 @@ func (c *socketClient) agentFrame(t *testing.T, sub, event string) string {
 // endedAs reads the next frame but a heartbeat, which must end sub, and answers its reason.
 func (c *socketClient) endedAs(t *testing.T, sub string) string {
 	t.Helper()
-	frame := c.next(t, agentFeedWait, "the end of "+sub)
+	frame := c.next(t, "the end of "+sub)
 	ended, ok := frame.(LiveEnded)
 	if !ok || ended.Sub != sub {
 		t.Fatalf("frame = %+v, want the end of %s", frame, sub)
@@ -117,7 +117,7 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":false}` {
 		t.Fatalf("the first frame's data is %s, want the no-responder verdict", data)
 	}
-	pollUntil(t, 5*time.Second, "the view re-arms the session", func() bool { return source.Watches(plannerSessionID) >= 3 })
+	waitUntil(t, "the view re-arms the session", func() bool { return source.Watches(plannerSessionID) >= 3 })
 
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"late-replay"}`))
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
@@ -205,7 +205,7 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 	} {
 		client := rig.dial(t, withBearer(token))
 		client.subscribeAgent(t, "agent", reviewerSessionID)
-		refusal := client.refusal(t, agentFeedWait, "agent", codeScopeRequired)
+		refusal := client.refusal(t, "agent", codeScopeRequired)
 		if !strings.Contains(refusal.Message, model.ScopePerson) {
 			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
 		}
@@ -223,7 +223,7 @@ func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
-	client.refusal(t, agentFeedWait, "agent", "STREAM_UNAVAILABLE")
+	client.refusal(t, "agent", "STREAM_UNAVAILABLE")
 }
 
 // A session id goes straight into a NATS subject, where `*` and `>` are wildcards: one view
@@ -238,10 +238,10 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 	for index, id := range ids {
 		sub := fmt.Sprintf("agent-%d", index)
 		client.subscribeAgent(t, sub, id)
-		client.refusal(t, agentFeedWait, sub, "SESSION_ID_INPUT")
+		client.refusal(t, sub, "SESSION_ID_INPUT")
 	}
 	client.send(t, liveSubscribe("no-session", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView}}, ""))
-	client.refusal(t, agentFeedWait, "no-session", "SESSION_ID_INPUT")
+	client.refusal(t, "no-session", "SESSION_ID_INPUT")
 	client.quiet(t, 300*time.Millisecond, "after every refused session id")
 	for _, id := range ids {
 		if got := source.Watches(id); got != 0 {
@@ -265,7 +265,7 @@ func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
 		liveSubscribe("c", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView, At: &at}, SessionID: &session}, ""),
 	} {
 		client.send(t, frame)
-		client.refusal(t, agentFeedWait, frame.Sub, "INVALID_FRAME")
+		client.refusal(t, frame.Sub, "INVALID_FRAME")
 	}
 	if got := source.Watches(plannerSessionID); got != 0 {
 		t.Fatalf("a refused agent view armed the session %d times, want 0", got)
@@ -311,7 +311,7 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 			stream := newGatedStream()
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 			t.Cleanup(running.stop)
-			pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+			waitUntil(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 			for index := range test.frames {
 				source.Publish(plannerSessionID, paddedFrame(index, test.size))
@@ -339,7 +339,7 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 	stream := newGatedStream()
 	running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 	t.Cleanup(running.stop)
-	pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+	waitUntil(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 	// The whole budget, and then one frame more than it holds.
 	frames := agentStreamBufferBytes / (1 << 20)
@@ -370,7 +370,7 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 		}
 		break
 	}
-	pollUntil(t, 5*time.Second, "the view that fell behind leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	waitUntil(t, "the view that fell behind leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // The relay ending a viewer, as a connection lost on the way to the page does, ends the
@@ -389,7 +389,7 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 	if reason := client.endedAs(t, "agent"); reason != "dropped" {
 		t.Fatalf("the dropped view ended %q, want dropped", reason)
 	}
-	pollUntil(t, 5*time.Second, "the dropped view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	waitUntil(t, "the dropped view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 	source.Publish(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":1}`))
 	client.quiet(t, 300*time.Millisecond, "after the relay dropped the view")
 	if !client.open() {
@@ -435,7 +435,7 @@ func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "agent"})
 	const message = "dispatch: skipped agent frames that are not JSON"
-	pollUntil(t, 5*time.Second, "the ended view logs what it skipped", func() bool { return logs.Lines(message) != "" })
+	waitUntil(t, "the ended view logs what it skipped", func() bool { return logs.Lines(message) != "" })
 	lines := logs.Lines(message)
 	if strings.Count(lines, message) != 1 || !strings.Contains(lines, "level=WARN") || !strings.Contains(lines, "skipped=3") {
 		t.Fatalf("the view logged %q, want one WARN counting 3 skipped frames", lines)
@@ -463,7 +463,7 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 		"reviewer": {`responder {"v":1,"responding":true}`},
 	}
 	for len(want["planner"])+len(want["reviewer"]) > 0 {
-		frame, ok := client.next(t, agentFeedWait, "the views' opening frames").(LiveAgentFrame)
+		frame, ok := client.next(t, "the views' opening frames").(LiveAgentFrame)
 		if !ok || len(want[frame.Sub]) == 0 || want[frame.Sub][0] != frame.Event+" "+string(frame.Data) {
 			t.Fatalf("frame = %+v, want the next of %v", frame, want)
 		}
@@ -480,7 +480,7 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 	}
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
-	pollUntil(t, 5*time.Second, "the unsubscribed view leaves the planner's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	waitUntil(t, "the unsubscribed view leaves the planner's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 	if got := source.Viewers(reviewerSessionID); got != 1 {
 		t.Fatalf("the reviewer's frames have %d viewers after the planner's view stopped, want 1", got)
 	}
@@ -544,7 +544,7 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 
 	stopped := time.Now()
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
-	pollUntil(t, agentStreamReplayTimeout/2, "the unsubscribed view ends while its replay waits", func() bool { return memory.Viewers(plannerSessionID) == 0 })
+	waitUntil(t, "the unsubscribed view ends while its replay waits", func() bool { return memory.Viewers(plannerSessionID) == 0 })
 	t.Logf("the waiting view ended %s after its unsubscribe", time.Since(stopped))
 	client.quiet(t, 300*time.Millisecond, "after the waiting view was unsubscribed")
 }
@@ -586,9 +586,10 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 			began := time.Now()
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 			t.Cleanup(running.stop)
-			pollUntil(t, agentStreamRetry/2, "the failed view leaves the session's frames before its end", func() bool {
+			waitUntil(t, "the failed view leaves the session's frames before its end", func() bool {
 				return source.Viewers(plannerSessionID) == 0
 			})
+
 			ended, ok := stream.next(t, "agent's end").(LiveEnded)
 			if !ok || ended.Sub != "agent" || ended.Reason != "dropped" {
 				t.Fatalf("the first frame of a view whose relay failed = %+v, want its end, dropped", ended)
@@ -596,9 +597,10 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 			if waited := time.Since(began); waited < agentStreamRetry {
 				t.Fatalf("the view ended %s after it started, before the relay's retry (%s)", waited, agentStreamRetry)
 			}
-			pollUntil(t, 5*time.Second, "the failed view leaves the session's frames", func() bool {
+			waitUntil(t, "the failed view leaves the session's frames", func() bool {
 				return source.Viewers(plannerSessionID) == 0
 			})
+
 		})
 	}
 }

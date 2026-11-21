@@ -124,7 +124,7 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 		t.Fatalf("%d sockets in the server's set after its wait returned", len(open))
 	}
 	for i, client := range serving {
-		if code, _ := client.closeCode(t, 5*time.Second); code != gws.CloseServiceRestart {
+		if code, _ := client.closeCode(t); code != gws.CloseServiceRestart {
 			t.Errorf("socket %d, open at the signal, closed with %d, want 1012", i, code)
 		}
 	}

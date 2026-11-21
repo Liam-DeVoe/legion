@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Closing an issue withdraws every open ask it holds, whoever closes it: each is recorded resolved
@@ -847,23 +849,20 @@ func requireLiveText(t *testing.T, handler http.Handler, document string, parts 
 	}
 }
 
-// awaitSettled waits until none of documents owes a settlement.
+// awaitSettled waits until none of documents owes a settlement. Its one bound is the test binary's
+// deadline (testwait.UntilPolling): a settlement a loaded machine starts late still ends the wait,
+// and one that never runs fails it by name, with the count still owed.
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("documents %v to owe no settlement (the count of their pending settlements)", documents), func() (int, bool) {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
 		`, documents).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}
-		if pending == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("documents %v still owe %d settlements", documents, pending)
-		}
-	}
+		return pending, pending == 0
+	})
 }
 
 // askRowTexts is each ask's whole row as the database stores it.

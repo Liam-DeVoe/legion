@@ -74,7 +74,7 @@ func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
 	}
 
 	const passes = 6
-	waitUntil(t, 30*time.Second, "six completed passes across the two runners", func() bool { return resumes.Load() >= passes })
+	waitUntil(t, "six completed passes across the two runners", func() bool { return resumes.Load() >= passes })
 	if elapsed, least := time.Since(started), (passes-1)*maintenanceTestInterval; elapsed < least {
 		t.Fatalf("%d passes over %v across the two runners; one pass per period of %v takes at least %v: both processes are sweeping every period",
 			resumes.Load(), elapsed, maintenanceTestInterval, least)

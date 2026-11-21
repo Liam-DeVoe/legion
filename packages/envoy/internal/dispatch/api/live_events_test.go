@@ -788,10 +788,10 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 
 	subscribeEvents(t, client, "feed", nil)
 	subscribeEvents(t, client, "feed", nil)
-	pollUntil(t, 5*time.Second, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
+	waitUntil(t, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "feed"})
-	pollUntil(t, 5*time.Second, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
+	waitUntil(t, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
 	renameIssue(t, rig.handler, issue.Key, "Renamed after the unsubscribe")
 	client.quiet(t, 500*time.Millisecond, "after the page unsubscribed")
 	if !client.open() {
@@ -818,7 +818,7 @@ func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
 		{"an empty since", liveSubscribe("g", eventsView(), `{"since":""}`)},
 	} {
 		client.send(t, test.frame)
-		client.refusal(t, 3*time.Second, test.frame.Sub, "INVALID_FRAME")
+		client.refusal(t, test.frame.Sub, "INVALID_FRAME")
 	}
 	client.quiet(t, 300*time.Millisecond, "after every refused events view")
 	if subscribers := relaySubscribers(rig.served.eventRelay); subscribers != 0 {
@@ -851,7 +851,7 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	if disconnect := agentRequest(t, rig.handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "agent-token"); disconnect.Code != http.StatusOK {
 		t.Fatalf("disconnect hook: status=%d body=%s", disconnect.Code, disconnect.Body.String())
 	}
-	if code, _ := client.closeCode(t, 5*time.Second); code != gws.CloseServiceRestart {
+	if code, _ := client.closeCode(t); code != gws.CloseServiceRestart {
 		t.Fatalf("the disconnect hook closed the socket with %d, want 1012", code)
 	}
 	// The close frame reaches the page before the handler's deferred teardown has ended its

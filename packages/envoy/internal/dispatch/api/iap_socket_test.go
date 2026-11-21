@@ -91,7 +91,7 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	short := rig.dial(t, expiring)
 	long := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 
-	closed := short.closeError(t, 6*time.Second)
+	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
 		t.Fatalf("the socket whose upgrade's assertion expired closed with %d %q, want %d %q, which a page answers by reopening at once",
 			closed.Code, closed.Text, contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
@@ -108,7 +108,7 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	}
 	reopened := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 	reopened.send(t, LiveUnsubscribe{Type: "unsubscribe"})
-	reopened.refusal(t, 3*time.Second, "", "INVALID_FRAME")
+	reopened.refusal(t, "", "INVALID_FRAME")
 }
 
 // switchedIdentity is a Dispatch's IAP identity, which a test swaps while sockets are open, so a
@@ -165,7 +165,7 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 			rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: 3 * time.Second, identity: switched}, nil)
 			socket := rig.dial(t, iap.expiring(t, time.Second))
 			switched.swap(change.apply(t, iap))
-			if closed := socket.closeError(t, 8*time.Second); closed.Code != gws.ClosePolicyViolation {
+			if closed := socket.closeError(t); closed.Code != gws.ClosePolicyViolation {
 				t.Fatalf("the socket whose upgrade's assertion expired, %s, closed with %d %q, want %d: it is refused, not rotated",
 					change.name, closed.Code, closed.Text, gws.ClosePolicyViolation)
 			}

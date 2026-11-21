@@ -578,7 +578,7 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	// The subscription open across the reset ends without an event of the new log, whose ids it has
 	// already seen stand for other events.
 	for ended := false; !ended; {
-		switch frame := across.next(t, eventFeedWait, "the end of the subscription open across the reset").(type) {
+		switch frame := across.next(t, "the end of the subscription open across the reset").(type) {
 		case LiveEventFrame:
 			if id := mustEventFrameID(t, frame); id <= head {
 				t.Fatalf("the subscription open across the reset was sent event %d of the new log", id)

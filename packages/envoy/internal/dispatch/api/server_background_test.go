@@ -85,9 +85,10 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
 		running.stop()
-		pollUntil(t, 5*time.Second, "the stopped subscription leaves the relay", func() bool {
+		waitUntil(t, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})
+
 	})
 }
 
@@ -100,7 +101,7 @@ func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
 	if !served.deliveryHub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, ""))) {
 		t.Fatal("the hub refused the view")
 	}
-	pollUntil(t, 10*time.Second, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
+	waitUntil(t, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the delivery hub", func() {
 		served.deliveryHub.Close(conn)
 	})
