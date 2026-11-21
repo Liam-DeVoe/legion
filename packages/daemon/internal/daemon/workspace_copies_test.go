@@ -294,26 +294,27 @@ func (r *copyRig) awaitAsks(t *testing.T, count int) {
 // own memory next is not racing the goroutine that holds it.
 func (r *copyRig) awaitQuiet(t *testing.T) {
 	t.Helper()
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		r.w.copies.mu.Lock()
-		defer r.w.copies.mu.Unlock()
-		return !r.w.copies.issues[r.issue.Key].inFlight()
-	}) {
-		t.Fatalf("a copy of %s is still in flight; the daemon logged:\n%s", r.issue.Key, r.logs.String())
-	}
+	r.awaitPlace(t, func(c runningCopy) bool { return !c.inFlight() }, "a copy of "+r.issue.Key+" is still in flight")
 }
 
-// awaitOwed waits for ask to be owed behind what holds the issue's place — behind, a copy in
+// awaitCopyOwed waits for ask to be owed behind what holds the issue's place — behind, a copy in
 // flight or a release's save — which is how a test reads that a copy refused the place is owed
 // rather than dropped.
-func (r *copyRig) awaitOwed(t *testing.T, ask, behind string) {
+func (r *copyRig) awaitCopyOwed(t *testing.T, ask, behind string) {
+	t.Helper()
+	r.awaitPlace(t, func(c runningCopy) bool { return c.owed != nil }, ask+" was never owed behind "+behind)
+}
+
+// awaitPlace waits until ready holds of the cadence's memory of the issue, read under its lock,
+// and fails with failure and the daemon's log when it never does.
+func (r *copyRig) awaitPlace(t *testing.T, ready func(runningCopy) bool, failure string) {
 	t.Helper()
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		r.w.copies.mu.Lock()
 		defer r.w.copies.mu.Unlock()
-		return r.w.copies.issues[r.issue.Key].owed != nil
+		return ready(r.w.copies.issues[r.issue.Key])
 	}) {
-		t.Fatalf("%s was never owed behind %s; the daemon logged:\n%s", ask, behind, r.logs.String())
+		t.Fatalf("%s; the daemon logged:\n%s", failure, r.logs.String())
 	}
 }
 

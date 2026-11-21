@@ -93,7 +93,7 @@ func (c *runningCopies) startsOwedWith(start func(owed copyAsk)) {
 	c.startOwed = start
 }
 
-// runPhase is where the daemon's run stands for its copies (runningCopies.phase).
+// runPhase is where the daemon's run stands for its copies (runningCopies.runState).
 type runPhase int
 
 const (
@@ -102,10 +102,10 @@ const (
 	runEnded
 )
 
-// phase is where the daemon's run stands: not started until runUnder has made a context the
+// runState is where the daemon's run stands: not started until runUnder has made a context the
 // run, running while that context lasts, and ended once it has ended. It is the one statement of
 // that rule, which running and startUnderRun both read. The caller holds c.mu.
-func (c *runningCopies) phase() runPhase {
+func (c *runningCopies) runState() runPhase {
 	switch {
 	case c.run == nil:
 		return runNotStarted
@@ -115,12 +115,12 @@ func (c *runningCopies) phase() runPhase {
 	return runRunning
 }
 
-// running is whether the daemon's run runs (phase): false before it has started and once it has
+// running is whether the daemon's run runs (runState): false before it has started and once it has
 // ended.
 func (c *runningCopies) running() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.phase() == runRunning
+	return c.runState() == runRunning
 }
 
 // startUnderRun hands start the daemon's run's context: at once while the run runs, or as the run
@@ -129,7 +129,7 @@ func (c *runningCopies) running() bool {
 // stopping, and the next daemon takes the issue's copies again.
 func (c *runningCopies) startUnderRun(start func(run context.Context)) bool {
 	c.mu.Lock()
-	switch c.phase() {
+	switch c.runState() {
 	case runNotStarted:
 		c.beforeRun = append(c.beforeRun, start)
 		c.mu.Unlock()

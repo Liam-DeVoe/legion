@@ -509,9 +509,9 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 // suspendPoll is how often claimsSuspend reads the claims while a suspension is held.
 const suspendPoll = 250 * time.Millisecond
 
-// claimsSuspend suspends --claim. The daemon suspends at once (200) a claim whose agent is in no
-// turn and whose last turn's end started no copy of the issue's workspace that is still being
-// taken. It holds the suspension of one in a turn (202; supervise's holdSuspension), of one
+// claimsSuspend suspends --claim. The daemon suspends at once (200) a ready or idle claim whose
+// last turn's end started no copy of the issue's workspace that is still being taken. It holds the
+// suspension of one in a turn (202; supervise's holdSuspension), of one
 // launching or shim_connected until its agent is ready (202; supervise's holdSuspendUntilReady),
 // and of one idle or ready while that copy is still being taken (202; supervise's suspend), which
 // the command then waits out (awaitSuspended) inside its --wait. It prints the claim as it ends,

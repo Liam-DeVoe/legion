@@ -73,7 +73,7 @@ func TestTheCopyOwedToATurnsEndAsksTheRoleWhoseTurnEndedAndItsHeldStopWaitsForIt
 
 	rig.turnEnd(t)
 
-	rig.awaitOwed(t, "the turn's end", "the copy in flight")
+	rig.awaitCopyOwed(t, "the turn's end", "the copy in flight")
 	rig.waitsForTheCopy(t)
 
 	release()

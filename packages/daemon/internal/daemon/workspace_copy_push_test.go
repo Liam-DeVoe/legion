@@ -185,7 +185,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 		// The push lands while the save holds the issue's place, and its copy is refused the
 		// place and owed behind it.
 		apply("c0", "c2")
-		rig.awaitOwed(t, "the push's copy", "the save")
+		rig.awaitCopyOwed(t, "the push's copy", "the save")
 	}
 
 	rig.w.releaseIdlePods(ctx)
@@ -214,7 +214,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresIts
 		// push lands while the save holds the issue's place: its copy is owed behind the save.
 		rig.setLocatorPod(t, releasedPodUID)
 		apply("c0", "c2")
-		rig.awaitOwed(t, "the push's copy", "the save")
+		rig.awaitCopyOwed(t, "the push's copy", "the save")
 	}
 
 	rig.saveRelease(t)
