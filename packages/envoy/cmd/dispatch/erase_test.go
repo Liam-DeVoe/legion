@@ -452,19 +452,21 @@ func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
 		t.Fatalf("after the edit comment %s reads %q (err %v), want a body with no secret, so that no erased text is the first body or its cut", comment, now, err)
 	}
 	// The create stores the first body's display tree on a goroutine of its own (api.storeOf),
-	// bounded by api.StoreTreesTimeout, so the control waits for it.
+	// bounded by api.StoreTreesTimeout, so the control waits for it: the tree keyed by the whole
+	// first body (pmdoc.TextSum of the body the create stored, which pmdoc.LineFeeds leaves as it
+	// is here), and not any tree holding the secret, which the cut head's or a block's could be.
 	var firstTrees int
 	for deadline := time.Now().Add(api.StoreTreesTimeout); ; time.Sleep(50 * time.Millisecond) {
-		if err := database.Pool.QueryRow(ctx, `select count(*) from text_trees where position(convert_to($1, 'UTF8') in tree) > 0`,
-			secret).Scan(&firstTrees); err != nil {
-			t.Fatalf("read the display trees holding comment %s's secret: %v", comment, err)
+		if err := database.Pool.QueryRow(ctx, `select count(*) from text_trees where sum = sha256(convert_to($1, 'UTF8'))`,
+			body).Scan(&firstTrees); err != nil {
+			t.Fatalf("read the display tree of comment %s's first body: %v", comment, err)
 		}
 		if firstTrees > 0 || time.Now().After(deadline) {
 			break
 		}
 	}
 	if firstTrees == 0 {
-		t.Fatalf("no display tree holds comment %s's secret within %s of its create, so this test would prove nothing of the tree of its first body",
+		t.Fatalf("no display tree is keyed by comment %s's first body within %s of its create, so this test would prove nothing of the tree of its first body",
 			comment, api.StoreTreesTimeout)
 	}
 
