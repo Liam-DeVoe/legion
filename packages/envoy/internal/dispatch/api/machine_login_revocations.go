@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -116,7 +116,7 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 //
 // It asks mayCall before every broker call, the list and each revoke, and stops with
 // errRevocationWindowSpent when it answers false.
-func revokeMachineLoginsOf(ctx context.Context, client *agentsecrets.Client, revocation store.OwedMachineLoginRevocation, mayCall func() (bool, error)) (int, error) {
+func revokeMachineLoginsOf(ctx context.Context, client *cipher.Client, revocation store.OwedMachineLoginRevocation, mayCall func() (bool, error)) (int, error) {
 	next := func() error {
 		ok, err := mayCall()
 		if err != nil {

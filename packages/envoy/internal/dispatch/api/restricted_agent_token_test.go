@@ -14,19 +14,19 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/exchange"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// restrictedTokenRig is one deployment end to end: the real broker (brokertest.Rig, on
+// restrictedTokenRig is one deployment end to end: the real broker (ciphertest.Rig, on
 // BROKER_TEST_DATABASE_URL), whose token exchange asks a stand-in of Dispatch's project-access
 // routes what kind of member each person is, behind Dispatch's own routes, which relay the
 // credential pages to that broker and decide every broker token by asking it. Dispatch holds ACC,
@@ -34,8 +34,8 @@ import (
 // server is Dispatch's registered server, whose broker revocation pass a row runs itself
 // (revokeBrokerDebts), as the loop runs it after a removal commits.
 type restrictedTokenRig struct {
-	broker   *brokertest.Rig
-	client   *brokertest.Client
+	broker   *ciphertest.Rig
+	client   *ciphertest.Client
 	dispatch http.Handler
 	database *store.Store
 	server   *server
@@ -54,14 +54,14 @@ func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
 // at the rig's broker, and that broker as its secrets broker.
 func newRestrictedTokenRigWith(t *testing.T, access projectaccess.Access, options testServerOptions) restrictedTokenRig {
 	t.Helper()
-	broker := brokertest.NewRig(t, brokertest.WithProjectAccess(access))
-	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
-	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
+	broker := ciphertest.NewRig(t, ciphertest.WithProjectAccess(access))
+	client := ciphertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
+	client.DPoP, client.UIToken = cipherclient.NewDPoPTransport, broker.UIToken
 	dispatchAccount := accountTokenFile(t, broker.UIToken)
 	options.signInOutside = true
-	options.brokerTokens = func(database *store.Store) *brokertoken.Verifier {
-		verifier, err := brokertoken.New(brokertoken.Options{
-			BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origins: []string{testServerURL},
+	options.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
+		verifier, err := ciphertoken.New(ciphertoken.Options{
+			BrokerURL: broker.URL, Account: ciphertoken.NewAccountToken(dispatchAccount), Origins: []string{testServerURL},
 			Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
 		})
 		if err != nil {
@@ -86,7 +86,7 @@ type machineLogin struct {
 
 func (r restrictedTokenRig) startLogin(t *testing.T, person, host string) machineLogin {
 	t.Helper()
-	key := brokertest.NewSigningKey(t)
+	key := ciphertest.NewSigningKey(t)
 	return machineLogin{key: key, device: r.client.DeviceLogin(t, key, person, host)}
 }
 
@@ -144,7 +144,7 @@ func (r restrictedTokenRig) exchange(t *testing.T, machine machineLogin, machine
 		oauthwire.FormSession:  {session},
 		oauthwire.FormProjects: {projects},
 	}
-	client := &http.Client{Transport: brokerclient.NewDPoPTransport(machine.key, http.DefaultTransport), Timeout: 30 * time.Second}
+	client := &http.Client{Transport: cipherclient.NewDPoPTransport(machine.key, http.DefaultTransport), Timeout: 30 * time.Second}
 	response, err := client.PostForm(r.broker.URL+"/v1/oauth/token", form)
 	if err != nil {
 		t.Fatalf("POST /v1/oauth/token: %v", err)
@@ -158,9 +158,9 @@ func (r restrictedTokenRig) exchange(t *testing.T, machine machineLogin, machine
 }
 
 // introspect is the broker's own answer about token, asked as Dispatch asks it.
-func (r restrictedTokenRig) introspect(t *testing.T, token string) brokertoken.Introspection {
+func (r restrictedTokenRig) introspect(t *testing.T, token string) ciphertoken.Introspection {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodPost, r.broker.URL+brokertoken.IntrospectPath, strings.NewReader(url.Values{"token": {token}}.Encode()))
+	request, err := http.NewRequest(http.MethodPost, r.broker.URL+ciphertoken.IntrospectPath, strings.NewReader(url.Values{"token": {token}}.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,13 +168,13 @@ func (r restrictedTokenRig) introspect(t *testing.T, token string) brokertoken.I
 	request.Header.Set("Authorization", "Bearer "+r.broker.UIToken)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		t.Fatalf("POST %s: %v", brokertoken.IntrospectPath, err)
+		t.Fatalf("POST %s: %v", ciphertoken.IntrospectPath, err)
 	}
 	defer response.Body.Close()
 	raw, _ := io.ReadAll(response.Body)
-	var answer brokertoken.Introspection
+	var answer ciphertoken.Introspection
 	if response.StatusCode != http.StatusOK || json.Unmarshal(raw, &answer) != nil {
-		t.Fatalf("POST %s = %d %s, want the broker's answer", brokertoken.IntrospectPath, response.StatusCode, raw)
+		t.Fatalf("POST %s = %d %s, want the broker's answer", ciphertoken.IntrospectPath, response.StatusCode, raw)
 	}
 	return answer
 }
@@ -183,7 +183,7 @@ func (r restrictedTokenRig) introspect(t *testing.T, token string) brokertoken.I
 // DPoP scheme with a fresh proof of that key, on method and path with body.
 func (r restrictedTokenRig) presenting(t *testing.T, machine machineLogin, token, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
-	caller := brokertokentest.NewCallerWith(t, machine.key)
+	caller := ciphertokentest.NewCallerWith(t, machine.key)
 	presented := (&brokerCaller{caller: caller, jkt: caller.JKT()}).presenting(t, method, path, token, body)
 	response := httptest.NewRecorder()
 	r.dispatch.ServeHTTP(response, presented)
@@ -225,9 +225,9 @@ func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testin
 	}
 	token, _ := body["access_token"].(string)
 	answer := r.introspect(t, token)
-	if !answer.Active || answer.ProjectScope != brokertoken.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{"ACC"}) || answer.Person != accessErin {
+	if !answer.Active || answer.ProjectScope != ciphertoken.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{"ACC"}) || answer.Person != accessErin {
 		t.Fatalf("erin's agent's token introspects as %+v, want a live token of project scope %s listing exactly [ACC], acting for %s",
-			answer, brokertoken.ProjectScopeNamed, accessErin)
+			answer, ciphertoken.ProjectScopeNamed, accessErin)
 	}
 	if expiresIn, _ := body["expires_in"].(float64); expiresIn <= 0 || time.Duration(expiresIn)*time.Second > exchange.RestrictedLifetime {
 		t.Fatalf("erin's agent's token expires_in %v, want at most %s", body["expires_in"], exchange.RestrictedLifetime)
@@ -276,8 +276,8 @@ func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testin
 		t.Fatalf("carol's machine's trade = %d %v, want 200", status, body)
 	}
 	carolsToken, _ := body["access_token"].(string)
-	if answer := r.introspect(t, carolsToken); !answer.Active || answer.ProjectScope != brokertoken.ProjectScopePerson || answer.Projects != nil {
-		t.Fatalf("carol's agent's token introspects as %+v, want a live token of project scope %s naming no project", answer, brokertoken.ProjectScopePerson)
+	if answer := r.introspect(t, carolsToken); !answer.Active || answer.ProjectScope != ciphertoken.ProjectScopePerson || answer.Projects != nil {
+		t.Fatalf("carol's agent's token introspects as %+v, want a live token of project scope %s naming no project", answer, ciphertoken.ProjectScopePerson)
 	}
 	if read := r.presenting(t, carols, carolsToken, http.MethodGet, "/api/v1/inbox", nil); read.Code != http.StatusOK {
 		t.Errorf("GET /api/v1/inbox under carol's agent's token = %d %s, want 200", read.Code, read.Body.String())

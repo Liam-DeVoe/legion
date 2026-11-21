@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -23,7 +23,7 @@ import (
 // Control: send with no check, and the stopped pass revokes all four, named.
 func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testing.T) {
 	rig := newFakeBrokerRig(t)
-	client := agentsecrets.New(rig.server.URL, accountTokenFile(t, credentialTestAccountToken))
+	client := cipher.New(rig.server.URL, accountTokenFile(t, credentialTestAccountToken))
 	removal := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	login := func(id, issued, service string) string {
 		svc := "null"
