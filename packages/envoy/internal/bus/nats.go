@@ -400,6 +400,10 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// marker is the fixed mode's gate on the selection bucket's cutover marker (GateOnMarker), nil
+	// on a client that has none: every client of the fresh mode, and one a test or a host's
+	// listener connects.
+	marker atomic.Pointer[markerGate]
 
 	// recovery state
 	recovering int32

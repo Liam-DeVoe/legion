@@ -1606,7 +1606,8 @@ func main() {
 			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
 			os.Exit(1)
 		}
-		if err := guardFixedNaming(context.Background(), cfg.HostListener, delivery.consumers, logger, fixedNamingRetry, stop); err != nil {
+		gated := []gatedConnection{{name: "session consumers", connection: delivery.consumers}, {name: "durable", connection: client}}
+		if err := guardFixedNaming(context.Background(), cfg.HostListener, gated, logger, fixedNamingRetry, stop); err != nil {
 			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
 			delivery.close()
 			client.Conn.Close()

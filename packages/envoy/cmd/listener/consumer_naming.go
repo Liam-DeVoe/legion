@@ -15,31 +15,50 @@ import (
 // marker again after a read that answered nothing (awaitFixedNaming).
 const fixedNamingRetry = 2 * time.Second
 
+// markerGated is a connection with the fixed mode's gate on the selection bucket's cutover marker:
+// the session consumers' (bus.SessionConsumers) and the listener's main client, on which its durable
+// is created and bound (bus.Client).
+type markerGated interface {
+	GateOnMarker(converted func(error))
+	ReadMarker(ctx context.Context) error
+}
+
+// gatedConnection is one connection guardFixedNaming gates, and the name its lines give it.
+type gatedConnection struct {
+	name       string
+	connection markerGated
+}
+
 // guardFixedNaming is the fixed mode's guard against running today's names over a selection
-// bucket the cutover converted: it reads the marker before the start (awaitFixedNaming), and once
-// the start goes on has every later connection read it again (WatchConversion), calling converted
-// when a reconnect finds the store converted. A host's listener (ENVOY_LISTENER_ROLE=host) skips
-// both and reads nothing: it runs fixed names for good. Its NATS user, the one its host's sessions
-// share (natsgrant.Host), holds no read of the bucket, so each read would only have the server log
-// a permissions violation at every start and connect; natsgrant.Host is retiring (plan E's t-e-59
-// deletes it), no production connection holds it, and the cutover's window has the precondition
-// that no host listener runs at or after it, so a host listener never meets a converted bucket and
-// its durable is never converted.
-func guardFixedNaming(ctx context.Context, host bool, consumers *bus.SessionConsumers, logger *logging.Logger, interval time.Duration, converted func(error)) error {
+// bucket the cutover converted. It shuts each connection's marker gate (bus.Client.GateOnMarker),
+// so no consumer call, durable create or bind runs on it until a read of the marker on that very
+// connection answers that the cutover did not convert the store, then reads the marker on each
+// before the start goes on (awaitFixedNaming). From then on every reconnect shuts the gate and reads
+// again, calling converted when the marker says done. A host's listener (ENVOY_LISTENER_ROLE=host)
+// skips both and reads nothing: it runs fixed names for good. Its NATS user, the one its host's
+// sessions share (natsgrant.Host), holds no read of the bucket, so each read would only have the
+// server log a permissions violation at every start and connect; natsgrant.Host is retiring (plan
+// E's t-e-59 deletes it), no production connection holds it, and the cutover's window has the
+// precondition that no host listener runs at or after it, so a host listener never meets a
+// converted bucket and its durable is never converted.
+func guardFixedNaming(ctx context.Context, host bool, connections []gatedConnection, logger *logging.Logger, interval time.Duration, converted func(error)) error {
 	if host {
 		logger.Info("a host's listener runs fixed consumer names for good and reads no cutover marker",
 			slog.String("role", bus.ListenerRoleHost), slog.String("bucket", consumernames.SessionBucket))
 		return nil
 	}
-	if err := awaitFixedNaming(ctx, consumers, logger, interval); err != nil {
-		return err
+	for _, gated := range connections {
+		gated.connection.GateOnMarker(converted)
+		if err := awaitFixedNaming(ctx, gated, logger, interval); err != nil {
+			return err
+		}
 	}
-	consumers.WatchConversion(converted)
 	return nil
 }
 
-// awaitFixedNaming reads, in the fixed mode, the selection bucket's cutover marker before the
-// listener runs today's names (bus.SessionConsumers.RefuseConvertedStore), and answers:
+// awaitFixedNaming reads, in the fixed mode, the selection bucket's cutover marker on gated's
+// connection before the listener runs today's names there (bus.Client.ReadMarker), which opens
+// that connection's marker gate when the store is not converted, and answers:
 //   - nil when there is no marker: no bucket, a sentinel whose marker is not done, or a read the
 //     connection's grant refuses, which is logged as a warning (the listener beside Dispatch and a
 //     listener whose hub never gave it the window's grants read no bucket at all, and neither can
@@ -51,18 +70,18 @@ func guardFixedNaming(ctx context.Context, host bool, consumers *bus.SessionCons
 // Any other failed read tells nothing, so it is logged and read again every interval: a start that
 // cannot read the marker waits rather than run today's names unread. That includes no connection
 // and a timeout, and a bucket that exists with no sentinel or with a value under the sentinel's key
-// that is not the sentinel, which is never no marker (bus.SessionConsumers.RefuseConvertedStore).
-func awaitFixedNaming(ctx context.Context, consumers *bus.SessionConsumers, logger *logging.Logger, interval time.Duration) error {
+// that is not the sentinel, which is never no marker (bus.Client.ReadMarker).
+func awaitFixedNaming(ctx context.Context, gated gatedConnection, logger *logging.Logger, interval time.Duration) error {
 	for logged := false; ; {
 		readCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-		err := consumers.RefuseConvertedStore(readCtx)
+		err := gated.connection.ReadMarker(readCtx)
 		cancel()
 		switch {
 		case err == nil:
 			return nil
 		case consumerGrantRefused(err):
 			logger.Warn("the NATS user may not read the session consumers' selection bucket; the fixed naming mode runs, as on a hub that holds no converted bucket",
-				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
+				slog.String("connection", gated.name), slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
 			return nil
 		case errors.Is(err, bus.ErrConvertedStore):
 			return err
@@ -72,7 +91,7 @@ func awaitFixedNaming(ctx context.Context, consumers *bus.SessionConsumers, logg
 		if !logged {
 			logged = true
 			logger.Warn("the fixed naming mode waits to read the session consumers' selection bucket before it runs today's names",
-				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()), slog.String("retry", interval.String()))
+				slog.String("connection", gated.name), slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()), slog.String("retry", interval.String()))
 		}
 		if err := waitUnlessDone(ctx, interval); err != nil {
 			return err

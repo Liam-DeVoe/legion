@@ -803,22 +803,32 @@ func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal 
 			slog.String("session_id", sessionID), slog.String("stream", bus.Stream), slog.String("error", err.Error()))
 		return consumerLimitRefusal(sessionID)
 	}
-	if errors.Is(err, consumernames.ErrCutoverNotRun) || consumernames.IsSelectionStateLost(err) || errors.Is(err, consumernames.ErrNoSafeStart) {
+	switch {
+	case errors.Is(err, consumernames.ErrCutoverNotRun) || consumernames.IsSelectionStateLost(err) || errors.Is(err, consumernames.ErrNoSafeStart):
 		// The fresh mode refuses a session whose selection state is lost or unproven rather than
 		// create its consumer from a guess: an ERROR, since an operator's recovery is what ends it
 		// (consumernames' README, "Recovery").
 		m.logger.Error("session consumer selection refused; the registration is refused",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-	} else {
+	case errors.Is(err, bus.ErrMarkerUnread):
+		// The fixed mode's gate: the connection has not read the cutover marker since it last
+		// connected. Its reconnect hook reads it, and the next registration is answered then.
+		m.logger.Warn("session consumer naming has not read the cutover marker on this connection; the registration is refused",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	default:
 		m.logger.Warn("session consumer call failed; the registration is refused",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	}
 	refusal := "the session consumer of " + sessionID + " could not be read or created"
-	if errors.Is(err, consumernames.ErrMalformedRecord) {
+	switch {
+	case errors.Is(err, consumernames.ErrMalformedRecord):
 		// The key holds something other than its record, which only an operator's repair ends:
 		// name the key and the bucket, so the session's transcript says what to repair.
 		refusal = "the key " + sessionID + " of the selection bucket " + consumernames.SessionBucket +
 			" holds no selection record of its own, so " + sessionID + " gets no consumer until an operator repairs that key"
+	case errors.Is(err, bus.ErrMarkerUnread):
+		refusal = "the cutover marker " + consumernames.SentinelKey + " of the selection bucket " + consumernames.SessionBucket +
+			" has not been read on this listener's NATS connection since it connected, so " + sessionID + " gets no consumer until it is"
 	}
 	return &deliveryRefusal{
 		status: http.StatusServiceUnavailable,

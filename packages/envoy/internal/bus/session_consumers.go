@@ -893,6 +893,9 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 	if s.fresh != nil {
 		return s.freshKeepListed(ctx, sessionID, subjects, info)
 	}
+	if err := s.client.MarkerUnread(); err != nil {
+		return SessionConsumerStart{}, false, err
+	}
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
@@ -1221,7 +1224,8 @@ func (s *SessionConsumers) delete(ctx context.Context, name string) error {
 
 // consumerRequest sends request, JSON or nothing when nil, to a consumer API subject and decodes the
 // answer into response. A request the server refuses under the connection's grant is
-// ErrConsumerNotGranted.
+// ErrConsumerNotGranted. On a client with a marker gate (GateOnMarker) a request the gate does not
+// admit on the connection it would go out on is ErrMarkerUnread, unsent.
 func (s *SessionConsumers) consumerRequest(ctx context.Context, subject string, request, response any) error {
 	var data []byte
 	if request != nil {
@@ -1230,7 +1234,7 @@ func (s *SessionConsumers) consumerRequest(ctx context.Context, subject string, 
 			return err
 		}
 	}
-	reply, err := s.client.requestConfirmed(ctx, subject, data)
+	reply, err := s.client.requestGated(ctx, &nats.Msg{Subject: subject, Data: data})
 	if errors.Is(err, ErrPublishDenied) {
 		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
 	}

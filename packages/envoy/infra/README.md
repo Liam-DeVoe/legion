@@ -3938,7 +3938,8 @@ receives nothing until that user's grant carries the session consumers.
 Last in those two sets come the reads and writes of the session consumers' selection bucket,
 `envoy_session_consumers`, which a listener in the fresh consumer naming mode
 (`ENVOY_CONSUMER_NAMES=fresh`) keeps each session's current consumer name in, and which a listener
-in the default fixed mode reads once at its start to refuse a bucket the cutover converted: the
+in the default fixed mode reads at its start and on every new connection, making no consumer call
+on that connection until the read says the cutover has not converted the bucket: the
 stream info, direct and stream message gets of `KV_envoy_session_consumers`, writes to
 `$KV.envoy_session_consumers.>`, its watchers' consumer create and delete, and their flow-control
 replies (`natsgrant.KVWriteExisting`). They hold no create or update of the bucket's stream, so no

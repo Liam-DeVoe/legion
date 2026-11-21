@@ -36,7 +36,7 @@ func TestAFixedModeStartRefusedTheBucketsReadStartsAndAGrantedReadOfAConversionS
 		t.Fatal(err)
 	}
 	t.Cleanup(granted.Close)
-	if err := awaitFixedNaming(ctx, granted, logger, time.Second); !errors.Is(err, bus.ErrConvertedStore) {
+	if err := awaitFixedNaming(ctx, sessionGated(granted), logger, time.Second); !errors.Is(err, bus.ErrConvertedStore) {
 		t.Fatalf("a granted fixed-mode start over a converted bucket = %v, want bus.ErrConvertedStore", err)
 	}
 
@@ -47,12 +47,17 @@ func TestAFixedModeStartRefusedTheBucketsReadStartsAndAGrantedReadOfAConversionS
 	}
 	t.Cleanup(refused.Close)
 	// Control: the refused read is an error, so a start that ended on every failed read would stop.
-	if err := refused.RefuseConvertedStore(ctx); err == nil || !consumerGrantRefused(err) {
+	if err := refused.ReadMarker(ctx); err == nil || !consumerGrantRefused(err) {
 		t.Fatalf("the refused read = %v, want the grant's refusal", err)
 	}
-	if err := awaitFixedNaming(ctx, refused, logger, time.Second); err != nil {
+	if err := awaitFixedNaming(ctx, sessionGated(refused), logger, time.Second); err != nil {
 		t.Fatalf("a fixed-mode start whose grant refuses the bucket's read = %v, want the start to go on", err)
 	}
+}
+
+// sessionGated is the session consumers as the connection guardFixedNaming gates.
+func sessionGated(consumers *bus.SessionConsumers) gatedConnection {
+	return gatedConnection{name: "session consumers", connection: consumers}
 }
 
 // A fixed-mode start over a server with no selection bucket starts at once; one whose server does
@@ -66,7 +71,7 @@ func TestAFixedModeStartThatCannotReadTheMarkerWaits(t *testing.T) {
 	t.Cleanup(consumers.Close)
 	logger := logging.NewWithWriter("test", io.Discard)
 	// Control: with the server answering and no bucket on it, the start goes on.
-	if err := awaitFixedNaming(context.Background(), consumers, logger, 100*time.Millisecond); err != nil {
+	if err := awaitFixedNaming(context.Background(), sessionGated(consumers), logger, 100*time.Millisecond); err != nil {
 		t.Fatalf("a fixed-mode start with no bucket = %v, want the start to go on", err)
 	}
 	srv.Stop(t)
@@ -74,7 +79,7 @@ func TestAFixedModeStartThatCannotReadTheMarkerWaits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	started := time.Now()
-	err = awaitFixedNaming(ctx, consumers, logger, 100*time.Millisecond)
+	err = awaitFixedNaming(ctx, sessionGated(consumers), logger, 100*time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) < wait-100*time.Millisecond {
 		t.Fatalf("a fixed-mode start with no server = %v after %s, want it to wait out %s unread", err, time.Since(started), wait)
 	}
@@ -84,9 +89,9 @@ func TestAFixedModeStartThatCannotReadTheMarkerWaits(t *testing.T) {
 // share (natsgrant.Host), which holds no read of the bucket, so a read would only have the server
 // log a permissions violation at every start and connect, and it runs fixed names for good.
 // Proved over a converted bucket and a user the server lets read it: the host role's guard lets
-// the start go on where a read would have refused it, and so returns before it adds the reconnect
-// check (WatchConversion), which only a start that read the marker reaches. The control is the
-// same guard for a listener of no role, which reads the marker and refuses.
+// the start go on where a read would have refused it, and so returns before it shuts the marker
+// gate (GateOnMarker), which only a listener of no role gets. The control is the same guard for a
+// listener of no role, which reads the marker and refuses.
 func TestAHostListenerReadsNoSelectionMarker(t *testing.T) {
 	_, uri := testnats.Start(t)
 	ctx := context.Background()
@@ -103,10 +108,10 @@ func TestAHostListenerReadsNoSelectionMarker(t *testing.T) {
 	logger := logging.NewWithWriter("test", io.Discard)
 	converted := func(err error) { t.Errorf("the reconnect check stopped the listener: %v", err) }
 
-	if err := guardFixedNaming(ctx, false, consumers, logger, time.Second, converted); !errors.Is(err, bus.ErrConvertedStore) {
+	if err := guardFixedNaming(ctx, false, []gatedConnection{sessionGated(consumers)}, logger, time.Second, converted); !errors.Is(err, bus.ErrConvertedStore) {
 		t.Fatalf("control: the guard of a listener of no role over a converted bucket = %v, want bus.ErrConvertedStore", err)
 	}
-	if err := guardFixedNaming(ctx, true, consumers, logger, time.Second, converted); err != nil {
+	if err := guardFixedNaming(ctx, true, []gatedConnection{sessionGated(consumers)}, logger, time.Second, converted); err != nil {
 		t.Fatalf("the guard of a host listener = %v, want the start to go on with no marker read", err)
 	}
 }

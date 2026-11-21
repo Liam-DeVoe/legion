@@ -133,7 +133,10 @@ func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, e
 // consumers created before the threshold existed.
 //
 // In the fresh consumer naming mode the durable is created and corrected through its selection
-// record (ensureFreshDurable), and the physical name it names is bound.
+// record (ensureFreshDurable), and the physical name it names is bound. In the fixed mode a client
+// whose marker gate is shut (bus.Client.GateOnMarker) creates, corrects and binds nothing:
+// bus.ErrMarkerUnread until a read of the cutover marker on its connection says the store is not
+// converted.
 func startListenerSubscription(client *bus.Client, consumer string, handler nats.MsgHandler) (*nats.Subscription, error) {
 	subjects := bus.StreamSubjects()
 	if client.ConsumerNames() == consumernames.ModeFresh {
@@ -143,6 +146,8 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		}
 		consumer = physical
 	} else if err := ensureFixedDurable(client, consumer, subjects); err != nil {
+		return nil, err
+	} else if err := client.MarkerUnread(); err != nil {
 		return nil, err
 	}
 	return client.Subscribe(
@@ -154,7 +159,8 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 }
 
 // ensureFixedDurable is startListenerSubscription's create in the fixed naming mode: the durable
-// named consumer, created or its policy corrected in place.
+// named consumer, created or its policy corrected in place. Each write first asks the client's
+// marker gate (bus.Client.MarkerUnread), so a shut gate creates and corrects nothing.
 func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) error {
 	info, err := listenerDurable(client, consumer)
 	switch {
@@ -170,6 +176,9 @@ func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) 
 			DeliverSubject: nats.NewInbox(),
 		}
 		applyListenerConsumerPolicy(&config, subjects)
+		if err := client.MarkerUnread(); err != nil {
+			return err
+		}
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
 			return err
 		}
@@ -180,6 +189,9 @@ func ensureFixedDurable(client *bus.Client, consumer string, subjects []string) 
 		corrected := info.Config
 		applyListenerConsumerPolicy(&corrected, subjects)
 		if !reflect.DeepEqual(corrected, info.Config) {
+			if err := client.MarkerUnread(); err != nil {
+				return err
+			}
 			if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected); err != nil {
 				return err
 			}

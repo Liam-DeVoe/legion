@@ -113,61 +113,26 @@ func (c *Client) ConsumerNames() consumernames.Mode {
 	return consumernames.ModeFixed
 }
 
-// ErrConvertedStore is RefuseConvertedStore's answer for a selection bucket the cutover converted.
-var ErrConvertedStore = errors.New("bus: the selection bucket says the cutover converted every session consumer to a fresh name")
-
-// RefuseConvertedStore is, in the fixed mode, the refusal of a selection bucket the cutover
-// converted (ErrConvertedStore, naming ENVOY_CONSUMER_NAMES): a bucket whose sentinel says the
-// cutover is done holds the sessions' fresh names, and today's fixed names must not run over it.
-// Only a bucket that does not exist is no marker, with a sentinel whose marker is not done (none,
-// or rolled back), and a read the connection's user may not make, which answers
-// ErrConsumerNotGranted for its caller to log: a hub whose listener grant has no read of the bucket
-// was never given the window's grants, which come before the bucket's creation, and the listener
-// beside Dispatch holds no such read at all. A bucket that exists with no sentinel, or with a value
-// under the sentinel's key that is not the sentinel (consumernames.ErrNoSentinel: a server answer
-// stored there through a request's reply subject, another key's record, a delete marker), is never
-// no marker: it is its error, as any other failed read (no connection, a timeout) is, and the
-// caller reads again rather than run today's names over a bucket whose marker it cannot read. In
-// the fresh mode it answers nil: that mode refuses every call until the marker says done.
-func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
+// ReadMarker is, in the fixed mode, the read of the selection bucket's cutover marker on the
+// session consumers' connection (Client.ReadMarker), which opens their marker gate (GateOnMarker)
+// for that connection when the cutover did not convert the store. In the fresh mode it answers nil:
+// that mode refuses every call until the marker says done.
+func (s *SessionConsumers) ReadMarker(ctx context.Context) error {
 	if s.fresh != nil {
 		return nil
 	}
-	state, err := s.client.SelectionStore().State(ctx)
-	switch {
-	case errors.Is(err, consumernames.ErrNoStore):
-		return nil
-	case errors.Is(err, ErrPublishDenied):
-		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
-	case err != nil:
-		return fmt.Errorf("bus: read the session consumers' selection bucket %s before running fixed names: %w", consumernames.SessionBucket, err)
-	case state.Cutover == consumernames.CutoverDone:
-		return fmt.Errorf("%w: %s=%s runs today's fixed names, and the bucket %s holds fresh ones: set %s=%s", ErrConvertedStore, consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
-	}
-	return nil
+	return s.client.ReadMarker(ctx)
 }
 
-// WatchConversion has, in the fixed mode, every NATS connection of s read the selection bucket's
-// marker again (RefuseConvertedStore) once it is made, a reconnect in place or a connection dialled
-// to replace a closed one, and calls converted with the refusal when the marker says done: a
-// conversion run while this process was cut off must not have today's names run over it once it is
-// back. No marker and a read the grant refuses change nothing; any other failed read fails the
-// connection's hook run, which the client's recovery runs again. It does nothing in the fresh mode.
-func (s *SessionConsumers) WatchConversion(converted func(error)) {
-	if s.fresh != nil || converted == nil {
-		return
+// GateOnMarker gives the session consumers' connection, in the fixed mode, its gate on the
+// selection bucket's cutover marker (Client.GateOnMarker): every consumer call of theirs (Ensure,
+// UpdateFilter, RestartAtFloor, Delete, Info and the listing), and KeepListed, is refused with
+// ErrMarkerUnread until a read of the marker on the connection it would go out on answers that the
+// cutover did not convert the store. It does nothing in the fresh mode.
+func (s *SessionConsumers) GateOnMarker(converted func(error)) {
+	if s.fresh == nil {
+		s.client.GateOnMarker(converted)
 	}
-	s.client.AddReconnectHook(func(ctx context.Context, _ *nats.Conn) error {
-		err := s.RefuseConvertedStore(ctx)
-		switch {
-		case err == nil, errors.Is(err, ErrPublishDenied):
-			return nil
-		case errors.Is(err, ErrConvertedStore):
-			converted(err)
-			return nil
-		}
-		return err
-	})
 }
 
 // Fresh reports whether s runs in the fresh mode.

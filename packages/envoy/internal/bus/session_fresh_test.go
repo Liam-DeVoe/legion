@@ -486,19 +486,19 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 					t.Fatalf("control: today's reading of %s = %+v, %v; want a sentinel with no marker, on which the start went on", data, lenient, err)
 				}
 			}
-			err := consumers.RefuseConvertedStore(ctx)
+			err := consumers.ReadMarker(ctx)
 			switch {
 			case tc.refused:
 				if err == nil || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
-					t.Fatalf("RefuseConvertedStore over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
+					t.Fatalf("ReadMarker over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
 				}
 			case tc.unread:
 				if err == nil || errors.Is(err, ErrConvertedStore) || !errors.Is(err, consumernames.ErrNoSentinel) {
-					t.Fatalf("RefuseConvertedStore over a bucket whose marker it cannot read = %v; want the unread sentinel's error, no conversion, so the start reads again", err)
+					t.Fatalf("ReadMarker over a bucket whose marker it cannot read = %v; want the unread sentinel's error, no conversion, so the start reads again", err)
 				}
 			default:
 				if err != nil {
-					t.Fatalf("RefuseConvertedStore over a store the cutover did not convert = %v; want the start to go on", err)
+					t.Fatalf("ReadMarker over a store the cutover did not convert = %v; want the start to go on", err)
 				}
 			}
 		})
@@ -611,7 +611,7 @@ func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(granted.Close)
-	if err := granted.RefuseConvertedStore(ctx); err == nil || errors.Is(err, ErrConsumerNotGranted) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+	if err := granted.ReadMarker(ctx); err == nil || errors.Is(err, ErrConsumerNotGranted) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
 		t.Fatalf("a granted read of a converted bucket = %v, want the start refused naming %s", err, consumernames.ModeEnvVar)
 	}
 
@@ -621,7 +621,7 @@ func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(refused.Close)
-	if err := refused.RefuseConvertedStore(ctx); !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
+	if err := refused.ReadMarker(ctx); !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a read the grant refuses = %v, want ErrConsumerNotGranted, on which the listener warns and starts", err)
 	}
 }
@@ -637,8 +637,8 @@ func TestAFixedModeReconnectReadsTheMarkerAgainAndStopsOnAConversion(t *testing.
 	}
 	t.Cleanup(consumers.Close)
 	converted := make(chan error, 4)
-	consumers.WatchConversion(func(err error) { converted <- err })
-	// runs counts the reconnect hook runs, each after the conversion watch's hook of the same run.
+	consumers.GateOnMarker(func(err error) { converted <- err })
+	// runs counts the reconnect hook runs, each after the marker gate's hook of the same run.
 	runs := make(chan struct{}, 16)
 	consumers.client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		runs <- struct{}{}
