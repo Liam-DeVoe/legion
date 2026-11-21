@@ -22,6 +22,7 @@ import path from "node:path";
 import { RULES } from "./label-rules";
 import { chainOf, readersTexts } from "./role-texts";
 import { headSentences, search, searchCut } from "./rule-search";
+import { type Sentence, sentences } from "./sentences";
 import { fileRowLimit } from "./test-limit";
 
 // Each row and hook copies or removes the checkout's prompts and skills: each test and hook gets
@@ -248,6 +249,64 @@ describe("rule-search", () => {
       expect(faults[0]).toContain(`${only}:`);
     }
   });
+
+  // Catches: a states-read search whose patterns miss a form of the sentences that send a reader
+  // to the state of its head, so the label's checkout keeps such a sentence. The ablated architects
+  // of one final batch still sent the issue back citing the kept rule "A pass and a fail at any
+  // open head make the check not known", and the control could not score below head for them. Each
+  // sentence below is one such form, planted in a text both roles read one link deep.
+  test.each([
+    [
+      "a head's not-known state",
+      "Where one head holds a pass and a fail of a check, that check is not known there.",
+    ],
+    [
+      "the state of a check at a head",
+      "The state of each check at the head you read decides your next step.",
+    ],
+    ["a check's derived result", "Before you decide, read each CI-proved check's derived result."],
+    ["what that command prints", "Decide by what that command prints under each check."],
+  ])("ablate-states-read: %s, planted where both roles read it, is a fault naming that text", (_kind, sentence) => {
+    const dir = copy();
+    const file = "skills/legion-worker/references/tools.md";
+    expect(readersTexts(dir, ["reviewer", "architect"]).depth.get(file)).toBe(1);
+    appendFileSync(path.join(dir, file), `\n${sentence}\n`);
+    const faults = search(dir, tree, "ablate-states-read").faults;
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain(`${file}:`);
+    expect(faults[0]).toContain("no entry classifies it");
+  });
+
+  // Catches: a sentence of the two roles' own prompt parts that sends them to the state of their
+  // head and that the label keeps, or never finds: the not-known rules of both roles, the testing
+  // move by each check's state that the architect's prompts state, and the architect's read of a
+  // CI-proved check's derived result. The list is never empty: it holds the architect's not-known
+  // rule, which the ablated architects of that batch followed.
+  test.if(tree === "head")(
+    "ablate-states-read cuts each sentence of the two roles' prompt parts that names a check's state at a head",
+    () => {
+      const dir = copy();
+      const state =
+        /\bnot known\b|\bstates? of each check\b|\bstates? at (that|the) (\w+ )?head\b|\bderived result\b/i;
+      const where = (sentence: Sentence) => `${sentence.file}:${sentence.line} ${sentence.text}`;
+      const cut = new Set(
+        [...headSentences(dir, "ablate-states-read").cuts.values()].flat().map(where)
+      );
+      const named = readersTexts(dir, ["reviewer", "architect"])
+        .files.filter((file) => file.startsWith("packages/daemon/internal/prompts/"))
+        .flatMap((file) => sentences(file, readFileSync(path.join(dir, file), "utf8")))
+        .filter((sentence) => !sentence.fenced && state.test(sentence.text))
+        .map(where);
+      expect(
+        named.some(
+          (sentence) =>
+            sentence.startsWith("packages/daemon/internal/prompts/roles/architect-root.md:") &&
+            sentence.includes("make the check not known")
+        )
+      ).toBe(true);
+      expect(named.filter((sentence) => !cut.has(sentence))).toEqual([]);
+    }
+  );
 
   test("a checkout with no texts is UNKNOWN for each label, never clean", () => {
     const empty = path.join(scratch, "empty");

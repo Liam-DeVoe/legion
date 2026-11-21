@@ -275,10 +275,15 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
 ];
 
 // A sentence that sends a reader to `dispatch results`, or to the state of a check at a head, which
-// that command prints on the head's line under each check.
+// that command prints on the head's line under each check: a pass standing there, the `not known` of
+// a pass and a fail at one head, the result it derives for a check CI proves, the state of each check
+// that the daemon's move follows, and what "that command" prints, in a sentence after one that named
+// it.
 const STATES_READ: readonly RegExp[] = [
   /dispatch results/i,
   /\bline (of|for) (your|its|the|this|that) head\b|\bhead's line\b|\bstate line\b|\bpass_stands\b|\ba pass (stands|standing)\b|\bpass stands for\b/i,
+  /\bnot known\b|\bderived result\b|\b(that|the) command (still )?(prints|derives)\b/i,
+  /\bstates? of (each|a|the|every) check\b|\beach check's state\b|\bstates? at (the|that|this|its|your) (\w+ )?head\b/i,
 ];
 
 const ENTRIES_STATES_READ: readonly Entry[] = [
@@ -288,9 +293,24 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
     cut: "Remove the read of the head's results from the evidence of the acceptance.",
   },
   {
+    file: "packages/daemon/internal/prompts/go/architect-common.md",
+    has: "From the tester's phase, its `reason` says what the testing move did",
+    cut: "Delete what a tester's notice says of the testing move, which each check's state at the tested head decides.",
+  },
+  {
     file: "packages/daemon/internal/prompts/go/reviewer.md",
     has: "the evidence of each check is the line of your head in `dispatch results`",
     cut: "Delete the sentence on the reviewer's evidence.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "the command prints the version it recorded",
+    keep: "What `dispatch handoff-write` prints, not the state of a check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "without `--version` the command prints the phase's newest version",
+    keep: "What `dispatch handoff-read` prints, not the state of a check.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
@@ -303,14 +323,44 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
     cut: "Delete the acceptance's gate on each check's pass at the head.",
   },
   {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "A pass and a fail at any open head make the check not known",
+    cut: "Delete the architect's rule for a head whose line reads not known.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "At acceptance, read each CI-proved check's derived result",
+    cut: "Delete the read of each CI-proved check's derived result at the acceptance.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "The tester's completion carries no verdict: the daemon decides the move by the state of each check",
+    cut: "Remove the testing move by each check's state at the tested head from the sentence on the tester's completion.",
+  },
+  {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "Verify as forge facts, never from reports",
     cut: "Remove each check's pass at the head and that head's line from the facts the reviewer verifies.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "That answer leaves out a pass at another commit",
+    cut: "Delete what the head's line leaves out.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "results from CI stand for both roles: the one that command derives from its CI run",
+    cut: "Remove the results `dispatch results` prints under a check CI proves from the sentence on that check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "Until that run concludes, wait for it by its name, unless that head's line reads not known",
     cut: "Remove the head's line from the wait for a CI run.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "A pass and a fail at one head, from any role, leave that head not known",
+    cut: "Delete the reviewer's rule for a head whose line reads not known.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
@@ -321,6 +371,16 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
     has: "Your approval is gated by the `before_merge` checks of this issue's own Verification document",
     cut: "Delete the approval's gate on each check's pass at the reviewed head.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "A pass and a fail at one head leave it not known, whoever recorded them",
+    cut: "Delete the reviewer's rule for a head whose line reads not known.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "A pass and a fail at any open head make the check not known",
+    cut: "Delete the reviewer's rule for a head whose line reads not known.",
   },
   {
     file: "skills/legion-architect/SKILL.md",
@@ -348,6 +408,16 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
     keep: "Retro's read after the sign-off, not a decision of the reviewer or the architect.",
   },
   {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A check carrying `ci_check` is CI's: its derived result is the pass it needs",
+    keep: "Retro's read after the sign-off, not a decision of the reviewer or the architect.",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A `ci_check` check has no pass standing at that head when its derived result is a fail",
+    keep: "Retro's read after the sign-off, not a decision of the reviewer or the architect.",
+  },
+  {
     file: "skills/legion-worker/references/ci-checks.md",
     has: "reads the named run at the head of the issue's pull request and prints the one result it derives",
     keep: "What the command prints for a check CI proves, not where a role decides.",
@@ -356,6 +426,11 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "The next role that writes the body reads `dispatch results` again",
     keep: "Who writes the PR body's line again, not where a role decides.",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "A `ci_check` check goes in `failures` only when its derived result is a fail",
+    keep: "What the tester's handoff lists in `failures`, not where the reviewer or the architect decides.",
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
