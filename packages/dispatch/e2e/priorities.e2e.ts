@@ -1348,13 +1348,16 @@ test("a priority's own page writes its title and description and lists only its 
     // A selection in it offers no comment, suggestion or ask, since a priority takes none: the
     // documents' selection bar, which their editor draws as it is built, is not drawn at all.
     // The selection is the keyboard's, made once the click has put the caret in the editor:
-    // ProseMirror writes its own selection back over the page's just after it takes the focus.
-    await editor.getByText("Nothing waits on the old build").click();
-    await page.keyboard.press("End");
-    await page.keyboard.press("Shift+Home");
-    await expect
-      .poll(() => page.evaluate(() => String(window.getSelection())))
-      .toBe("Nothing waits on the old build");
+    // ProseMirror writes its own selection back over the page's just after it takes the focus,
+    // so the gesture is retried until the run is selected.
+    await expect(async () => {
+      await editor.getByText("Nothing waits on the old build").click();
+      await page.keyboard.press("End");
+      await page.keyboard.press("Shift+Home");
+      expect(await page.evaluate(() => String(window.getSelection()))).toBe(
+        "Nothing waits on the old build"
+      );
+    }).toPass();
     await expect(actionBar(page)).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^(Comment|Suggest|Ask)$/ })).toHaveCount(0);
 
