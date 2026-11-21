@@ -3121,11 +3121,11 @@ func pauseHeldRows(ctx context.Context, tx pgx.Tx, statement, project string, no
 	held := []PauseHeldRow{}
 	for rows.Next() {
 		var row PauseHeldRow
-		var role string
-		if row.OutboxRow, err = scanOutbox(rows, &role); err != nil {
+		var role, named string
+		if row.OutboxRow, err = scanOutbox(rows, &role, &named); err != nil {
 			return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 		}
-		row.Claim = pauseHeldClaim(token, row.OutboxRow, role)
+		row.Claim = pauseHeldClaim(token, row.OutboxRow, role, claim.Token(named))
 		row.WaitedSeconds = max(0, int64(now.Sub(row.NextAt).Seconds()))
 		held = append(held, row)
 	}
@@ -3144,22 +3144,27 @@ var pauseHeld = `split_part(outbox.issue, '-', 1) = $2 and ` + outboxUnleasedDue
 // writes the pause $3 on each row it answers; both are built once from the rows a pause holds
 // (pauseHeld).
 var (
-	pauseHeldRowsSQL = `select ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') from outbox
+	pauseHeldRowsSQL = `select ` + outboxColumns + `, coalesce(outbox.payload->>'role', ''), coalesce(outbox.payload->>'claim', '') from outbox
 		where ` + pauseHeld + `
 		order by next_at, id`
 	markPauseHeldRowsSQL = `with held as (update outbox set held_by_pause = $3 where ` + pauseHeld + `
-			returning ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') as role)
+			returning ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') as role, coalesce(outbox.payload->>'claim', '') as named)
 		select * from held order by next_at, id`
 )
 
 // pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
-// none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
-// hook's words, an update ask and a merge forward's message name the role of the row's own issue,
-// as the executors read it (the daemon's roleToken); the merge-queue message goes to the issue's merger;
-// a role message names the claim's token itself (record.RoleMessage.Role).
-func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
+// none (PauseHeldRow). project is the project token, role the payload's `role` and named its
+// `claim`. A start, a hook's words, an update ask and a merge forward's message are for the claim
+// they name, which their producer read as the worker of the role's step, a keyed agent's among
+// them; one the release before wrote names none and is for the claim of its role's own token on the
+// row's issue. The merge-queue message goes to the issue's merger; a role message names the claim's
+// token itself (record.RoleMessage.Role).
+func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Token) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
+		if named != "" {
+			return named
+		}
 	case OutboxKindMergeQueueRemoval:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
