@@ -119,10 +119,14 @@ func (r DomainRule) End(ctx context.Context, people auth.PeopleStore, email stri
 // words for what ended it, and answers ended, whether the store wrote. When another account has
 // signed in to the address since, or the same account again with a new refresh token, the failure
 // was the refresh token the confirmation read, which no longer stands for the address, so it
-// writes nothing and the request is simply not signed in.
+// writes nothing and the request is simply not signed in. A write that fails ends nothing and is
+// logged at WARN, as a Directory check's failed write is: the row keeps its sign-in and its lapsed
+// confirmation, so the request is refused with the write's error and the next confirmation tries
+// again.
 func endSubject(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode, ended string) (bool, error) {
 	done, err := people.EndSubject(ctx, email, read.Subject, read.RefreshToken, mode)
 	if err != nil {
+		slog.Warn("dispatch: a failed confirmation could not end the sign-in, as its write failed; the request is refused and the next confirmation tries again", "email", email, "reason", reason, "error", err)
 		return false, err
 	}
 	if !done {

@@ -268,11 +268,12 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 
 // TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead: an Active outcome and a rebind rest on
 // the check's read of the row (readAt), made before its Directory read. On a row whose hold was
-// recorded after that read, or at its very time, which is a later check's Held, each writes
-// nothing and answers the zero time: the whole row, the hold included, stays as it was. That holds
-// too for a row that was already held when the check read it and is held again after: the later
-// Held outcome stamps held_since with its own time, so the guard compares the read with the latest
-// hold, not the first. The same write resting on a read made after the hold releases it.
+// recorded after that read, or at its very time, which is the Held of a check whose span overlaps
+// this one's, each writes nothing and answers the zero time: the whole row, the hold included,
+// stays as it was. That holds too for a row that was already held when the check read it and is
+// held again after: the later Held outcome stamps held_since with its own time, so the guard
+// compares the read with the latest hold, not the first. The same write resting on a read made
+// after the hold releases it.
 //
 // Controls: drop the held_since guard from either write; its first case fails, naming the row.
 // Keep a held row's first held_since on a later Held outcome (coalesce); the re-held cases fail,
@@ -341,6 +342,53 @@ func TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead(t *testing.T) {
 				t.Fatalf("%s resting on a read after the hold answered %s, %v and left the row at %v; want its deadline, and the hold released", write.name, until, err, released)
 			}
 		})
+	}
+}
+
+// TestPgPeopleStoreRecordsAHeldOutcomeOverAnOverlappingActiveOne: two checks of one person whose
+// spans overlap, each reading the row before the other writes, cannot be ordered by their
+// Directory reads, and the Held outcome stands whichever writes last. Here the Held check reads the
+// row, the Active check reads it after and writes its Active outcome, and the Held write lands
+// last: it records a hold later than that confirmation, which Membership reads as DirectoryHeld,
+// and keeps the confirmation and the deadline the Active write set. The other order, the Held
+// write first, is TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead's. An overlap so fails
+// closed: a person the Directory restored during it stays held until a later check answers Active,
+// and a leaver it suspended during it is never served on an Active answer read before the
+// suspension.
+//
+// Control: a Held write that yields to an Active outcome confirmed since its check's read, as the
+// Active write yields to a hold, fails this row, naming the row the Held write left unheld.
+func TestPgPeopleStoreRecordsAHeldOutcomeOverAnOverlappingActiveOne(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	const ada = "ada@example.com"
+	if err := people.Record(ctx, ada); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := people.RecordDirectoryActive(ctx, ada, "directory-ada", databaseNow(t, database)); err != nil {
+		t.Fatal(err)
+	}
+	heldRead := databaseNow(t, database)
+	until, err := people.RecordDirectoryActive(ctx, ada, "directory-ada", databaseNow(t, database))
+	if err != nil || until.IsZero() {
+		t.Fatalf("the Active outcome of the check that read the row after the Held check answered %s, %v; want its deadline", until, err)
+	}
+	active := readDirectoryRow(t, database, ada)
+	if active.confirmedAt == nil || !active.confirmedAt.After(heldRead) || active.notHeldUntil == nil {
+		t.Fatalf("the Active outcome left the row at %v; want a confirmation and deadline later than the Held check's read at %s", active, heldRead)
+	}
+	if err := people.RecordDirectoryHeld(ctx, ada); err != nil {
+		t.Fatal(err)
+	}
+	held := readDirectoryRow(t, database, ada)
+	if held.heldSince == nil || !held.heldSince.After(*active.confirmedAt) ||
+		!sameInstant(held.confirmedAt, *active.confirmedAt) || !sameInstant(held.notHeldUntil, *active.notHeldUntil) {
+		t.Fatalf("the Held write of a check that read the row at %s, landing after an Active outcome confirmed at %s, left the row at %v; want a hold later than that confirmation, and the confirmation and its deadline kept",
+			heldRead, *active.confirmedAt, held)
+	}
+	if membership, _, err := people.Membership(ctx, ada); err != nil || !membership.DirectoryHeld {
+		t.Fatalf("Membership reads %s, %v after the overlapping Held write landed last; want DirectoryHeld", directoryMembership(membership), err)
 	}
 }
 

@@ -233,7 +233,10 @@ func outcomeOf(result singleflight.Result) (RefreshOutcome, error) {
 
 // refresh renews email's confirmation with the issuer and answers what it did. It records its
 // start in m.started while it runs, and, as it ends, stores its outcome in m.unavailable when it
-// is ErrSignInUnavailable or ErrMembershipUnreadable, and deletes any entry otherwise.
+// is ErrSignInUnavailable or ErrMembershipUnreadable, and deletes any entry otherwise. A write of
+// its outcome that fails, the confirmation's (SignInRule.WriteConfirm) or an end's (endSubject), is
+// logged at WARN, as a Directory check's is, and answers RefreshFailed with the write's error: the
+// membership pass counts that unasked and drops the error, so there the log line is its one record.
 func (m *Membership) refresh(ctx context.Context, email string) (outcome RefreshOutcome, err error) {
 	m.started.Store(email, time.Now())
 	defer func() {
@@ -297,6 +300,7 @@ func (m *Membership) refresh(ctx context.Context, email string) (outcome Refresh
 		return m.end(ctx, email, membership, err.Error(), m.endMode(membership, err))
 	}
 	if err := m.Rule.WriteConfirm(ctx, m.People, membership, person, subject, session.RefreshToken); err != nil {
+		slog.Warn("dispatch: the sign-in issuer confirmed a lapsed membership, and its write failed; the request is refused and the confirmation stays lapsed", "email", email, "error", err)
 		return RefreshFailed, err
 	}
 	return RefreshConfirmed, nil

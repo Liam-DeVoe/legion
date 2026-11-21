@@ -24,8 +24,9 @@ import (
 // store.PgPeopleStore's writes of an Active, a Held and a Failed outcome, and of an Active one that
 // stores a recreated address's new account (RecordDirectoryRebound). The two Active writes take
 // readAt, the database time of the check's own read of the row, and write nothing, answering the
-// zero time, while the row holds a hold recorded at or after it. Under IAP identity
-// Membership.People must be one.
+// zero time, while the row holds a hold recorded at or after it. The Held write takes no read time
+// and always records its hold (checkDirectory says why). Under IAP identity Membership.People must
+// be one.
 type DirectoryPeople interface {
 	RecordDirectoryActive(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error)
 	RecordDirectoryRebound(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error)
@@ -117,13 +118,25 @@ func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan s
 // not answering. It records its start in m.started while it runs, and, as it ends, its end in
 // m.unavailable when it was Failed, deleting any entry otherwise, as a refresh does.
 //
-// An Active outcome rests on a Directory read made after the row read, at its ReadAt, and checks of
-// one person in other processes run beside this one, so a check that read the Directory later may
-// have recorded Held before this one writes. The Active writes are guarded by that ReadAt: one that
-// finds a hold recorded at or after it writes nothing, so the later read's Held stands, and the
-// check counts RefreshHeld, since the person stays held (activeUnwritten). Every Held outcome stamps
-// the hold with its own time (RecordDirectoryHeld), so this holds as well for a row that was already
-// held when this check read it and is held again by the later check.
+// Each check reads the row, at its ReadAt, then the Directory, then writes its outcome, so its
+// Directory read falls between its row read and its write, and checks of one person in other
+// processes run beside this one. Of two checks where one wrote before the other read the row, the
+// later one's Directory read is the later, and its outcome stands: an Active write is guarded by
+// its ReadAt and releases only a hold recorded before it, and a Held write records its hold over
+// any Active outcome. Two checks whose spans overlap, each reading the row before the other wrote,
+// cannot be ordered by their Directory reads, and the Held outcome stands whichever writes last: a
+// Held write landing after the Active one records its hold all the same (RecordDirectoryHeld), and
+// an Active write landing after the Held one finds a hold recorded at or after its ReadAt and
+// writes nothing, counting RefreshHeld, since the person stays held (activeUnwritten). Every Held
+// outcome stamps the hold with its own time, so this holds as well for a row that was already held
+// when the Active check read it. An overlap so fails closed: a person the Directory restored during
+// it stays held until a later check answers Active, which the membership pass makes once the row's
+// last check is MembershipMaxAge old (store.PgPeopleStore.ClaimDirectoryDue). A Held write guarded
+// by its own ReadAt, writing nothing over an Active outcome confirmed since, would fail open
+// instead: an Active check that read the Directory before a suspension and wrote between the Held
+// check's row read and its write would keep the leaver's hold from being recorded, and the leaver
+// would be served on that Active answer until its confirmation is MembershipMaxAge old and a check
+// after it answers Held.
 //
 // An answer for the address itself under another account (DirectoryRecreated: the address deleted
 // and created again for another person) is the earlier person's row, keyed by the address, so every
@@ -207,8 +220,9 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 // activeUnwritten is the outcome of an Active answer whose write wrote nothing. The check found the
 // person's row before it asked the Directory, and no statement deletes a people row, so the write
 // found the row holding a hold another check recorded at or after this one's read: a Held outcome
-// resting on a later Directory read than this answer, which stands. The person stays held, so it
-// counts RefreshHeld, which the membership pass counts held.
+// of a check whose span overlaps this one's, which may rest on a later Directory read than this
+// answer or an earlier one, and stands either way (checkDirectory says why). The person stays
+// held, so it counts RefreshHeld, which the membership pass counts held.
 func activeUnwritten(email string) RefreshOutcome {
 	slog.Info("dispatch: a Workspace Directory check answered Active, and wrote nothing: the person's row holds a hold another check recorded after this one read it; they stay held", "email", email)
 	return RefreshHeld

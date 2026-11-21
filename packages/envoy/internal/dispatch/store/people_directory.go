@@ -56,10 +56,12 @@ const recordDirectoryReboundSQL = `
 // after which a not-held answer is no longer served, and held_since to null, which releases a
 // recorded hold; it stores userID, the answer's Directory user id, in directory_user_id when that
 // is null and keeps a stored one otherwise, so later answers are compared with the id of the
-// first. It writes nothing while the row holds a hold recorded at or after readAt: a Held outcome
-// of a check that read the Directory after this one did, which this older answer must not
-// release. It answers the deadline it fixed, and the zero time when it wrote nothing: for a login
-// with no row, or a row held since readAt.
+// first. It writes nothing while the row holds a hold recorded at or after readAt: the Held outcome
+// of another check that wrote after this check read the row. The two checks' spans overlap, each
+// reading the row before the other wrote, so the order of their Directory reads is unknown, and an
+// overlap is resolved as held (RecordDirectoryHeld says why): this answer must not release it. It
+// answers the deadline it fixed, and the zero time when it wrote nothing: for a login with no row,
+// or a row held since readAt.
 func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error) {
 	err = s.pool.QueryRow(ctx, recordDirectoryActiveSQL, email, userID, readAt).Scan(&notHeldUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -78,6 +80,15 @@ func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID
 // made before this outcome writes nothing, whether or not the row was already held when that read
 // was made. Every reader of held_since compares it with signed_in_at or directory_confirmed_at,
 // which a later time keeps true. It leaves directory_confirmed_at and not_held_until as they are.
+//
+// It takes no read time and records its hold over any Active outcome, one confirmed after this
+// check read the row included. Of two checks whose spans overlap, each reading the row before the
+// other wrote, the database cannot tell which read the Directory later, and the Held outcome stands
+// whichever writes last, which fails closed: a person the Directory restored during the overlap
+// stays held until a later check answers Active. A guard on the check's read time, as the Active
+// write has, would fail open instead: an Active check that read the Directory before a suspension
+// and wrote between this check's read of the row and this write would keep the leaver's hold from
+// being recorded.
 func (s *PgPeopleStore) RecordDirectoryHeld(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, recordDirectoryHeldSQL, email); err != nil {
 		return fmt.Errorf("record a Held Directory answer for %q: %w", email, err)
