@@ -9,11 +9,39 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // fixedNamingRetry is how long a fixed-mode start waits before it reads the selection bucket's
 // marker again after a read that answered nothing (awaitFixedNaming).
 const fixedNamingRetry = 2 * time.Second
+
+// startConsumerNaming runs the start's steps of the consumer naming mode, once the session
+// consumers have connected and before the relay and the durable's bind. In the fixed mode it gates
+// the session consumers' connection and the main client, on which the durable is created and bound,
+// on the selection bucket's cutover marker (guardFixedNaming), and converted ends the process when a
+// reconnect finds the store converted. In the fresh mode it counts the selection steps in
+// envoy_session_consumer_names_total and checks the selection bucket once: a refusal there is
+// logged, not the start's end, since every session-consumer call refuses until the bucket, its
+// sentinel and the cutover are there, and /healthz names what is missing meanwhile. An error ends
+// the start.
+func startConsumerNaming(host bool, consumers *bus.SessionConsumers, client *bus.Client, met *metrics.Registry, logger *logging.Logger, converted func(error)) error {
+	if !consumers.Fresh() {
+		gated := []gatedConnection{{name: "session consumers", connection: consumers}, {name: "durable", connection: client}}
+		return guardFixedNaming(context.Background(), host, gated, logger, fixedNamingRetry, converted)
+	}
+	names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
+	consumers.ObserveNames(func(op consumernames.Operation, outcome consumernames.Outcome) {
+		names.Inc([2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})
+	})
+	checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
+	defer cancel()
+	if err := consumers.CheckSelection(checkCtx); err != nil {
+		logger.Error("session consumer selection refuses every registration: "+err.Error(),
+			slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
+	}
+	return nil
+}
 
 // markerGated is a connection with the fixed mode's gate on the selection bucket's cutover marker:
 // the session consumers' (bus.SessionConsumers) and the listener's main client, on which its durable

@@ -1630,32 +1630,15 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	if !delivery.consumers.Fresh() {
-		stop := func(err error) {
-			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		gated := []gatedConnection{{name: "session consumers", connection: delivery.consumers}, {name: "durable", connection: client}}
-		if err := guardFixedNaming(context.Background(), cfg.HostListener, gated, logger, fixedNamingRetry, stop); err != nil {
-			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
-			delivery.close()
-			client.Conn.Close()
-			os.Exit(1)
-		}
+	converted := func(err error) {
+		logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
+		os.Exit(1)
 	}
-	if delivery.consumers.Fresh() {
-		names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
-		delivery.consumers.ObserveNames(func(op consumernames.Operation, outcome consumernames.Outcome) {
-			names.Inc([2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})
-		})
-		checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
-		if err := delivery.consumers.CheckSelection(checkCtx); err != nil {
-			// Not the start's end: every session-consumer call refuses until the bucket, its
-			// sentinel and the cutover are there, and /healthz names what is missing meanwhile.
-			logger.Error("session consumer selection refuses every registration: "+err.Error(),
-				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
-		}
-		cancel()
+	if err := startConsumerNaming(cfg.HostListener, delivery.consumers, client, met, logger, converted); err != nil {
+		logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
+		delivery.close()
+		client.Conn.Close()
+		os.Exit(1)
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below).
