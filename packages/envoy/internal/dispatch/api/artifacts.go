@@ -650,8 +650,9 @@ func (s *server) storeArtifact(
 	checksum := sha256.Sum256(input.content)
 	sha := hex.EncodeToString(checksum[:])
 	// A file's object is written before the transaction opens, once the refusals the transaction
-	// would make have been made (putUploadedFile, artifact_files.go).
-	if !s.putUploadedFile(w, r, kind, sha, input, target) {
+	// would make, the check of who writes the issue's Verification document among them, have been
+	// made (putUploadedFile, artifact_files.go).
+	if !s.putUploadedFile(w, r, writer, kind, sha, input, target) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -761,7 +762,9 @@ func (s *server) storeArtifact(
 	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
 	// before the first document call, so an upload that would change nothing is refused too. It
 	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
-	// role, is the issue's Verification document by that slug (specWriterDocumentName).
+	// role, is the issue's Verification document by that slug (specWriterDocumentName). Where a
+	// file store holds files, the same check answered a file first, before its object was written
+	// (refuseUploadBeforeItsObject); this one decides, under the owner's lock.
 	if target.IssueKey != nil {
 		if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
 			s.writeHandlerError(w, err)

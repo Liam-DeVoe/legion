@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -1470,6 +1471,69 @@ func TestSpecWriteChecksAMoveOnBothChains(t *testing.T) {
 	}
 }
 
+// TestSpecWriteChecksTheLabelledIssuesOfAMovedSubtree: a move under a parent in a tree Legion runs
+// of an issue that Legion does not run is checked, as it stands, on the chain of each labelled
+// issue under it, so no architect takes a labelled issue by moving its unlabelled parent under
+// itself. On a rig with R and its child C, V, a second labelled root whose own architect the daemon
+// of P publishes, and U2, a root with no label that holds Y, a labelled child whose own architect
+// the daemon publishes: R's architect's move of U2 under C and V's architect's move of U2 under V
+// are each refused naming Y, U2 stays a root, and each architect's edit of Y's spec after its move
+// is refused too. Y's architect's move of U2 under C is refused on C's chain: it is at or above Y
+// but not at or above C. A person's move of U2 under C is taken.
+func TestSpecWriteChecksTheLabelledIssuesOfAMovedSubtree(t *testing.T) {
+	server := newSpecWriterServer(t, testServerOptions{})
+	rig := server.rig(t, specWriterRigShape{unlabelled: true, unclaimed: true})
+	y := rig.file(t, "labelled", rig.u2.key, []string{"legion"})
+	vArchitect := "ses-v-architect-" + strings.ToLower(rig.project)
+	yArchitect := "ses-y-architect-" + strings.ToLower(rig.project)
+	rig.publish(t, rig.v.key, []issueRoleHolder{{Role: "architect", Session: vArchitect}})
+	rig.publish(t, y.key, []issueRoleHolder{{Role: "architect", Session: yArchitect}})
+	rig.quiet(t)
+	move := func(writer string, parent specWriterIssue) func(t *testing.T) *httptest.ResponseRecorder {
+		return func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.sendAs(t, writer, http.MethodPatch, "/api/v1/issues/"+rig.u2.key, map[string]any{"parent": parent.key})
+		}
+	}
+	// onY is what a refusal on Y's chain names: Y, its spec, the writer and Y's architect.
+	onY := func(writer string) specWriteRefusal {
+		return specWriteRefusal{issues: []string{y.key}, document: "spec.md", writer: writer, architects: []string{yArchitect}}
+	}
+	requireRoot := func(t *testing.T, what string) {
+		t.Helper()
+		if parent := rig.issueRow(t, rig.u2.key).parent; parent != nil {
+			t.Errorf("%s left %s under %s, want it still a root", what, rig.u2.key, *parent)
+		}
+	}
+
+	for _, architect := range []struct {
+		name, session string
+		parent        specWriterIssue
+	}{
+		{"R's architect", rig.rArchitect, rig.c},
+		{"V's architect", vArchitect, rig.v},
+	} {
+		what := fmt.Sprintf("%s's move of %s under %s", architect.name, rig.u2.key, architect.parent.key)
+		edit := rig.editAttempt(architect.session, y, "spec.md")
+		edit.refusal = onY(architect.session)
+		rig.requireRefused(t, specWriteAttempt{what: what, send: move(architect.session, architect.parent), refusal: onY(architect.session)}, edit)
+		requireRoot(t, "the refused "+what)
+	}
+	ysMove := rig.refusalOn(rig.c, "spec.md", yArchitect)
+	ysMove.issues = []string{rig.u2.key, rig.c.key}
+	rig.requireRefused(t, specWriteAttempt{
+		what:    "Y's architect's move of " + rig.u2.key + " under " + rig.c.key,
+		send:    move(yArchitect, rig.c),
+		refusal: ysMove,
+	})
+	requireRoot(t, "Y's architect's refused move")
+
+	what := "a person's move of " + rig.u2.key + " under " + rig.c.key
+	rig.requireTaken(t, what, http.StatusOK, move(specWriterPerson, rig.c))
+	if parent := rig.issueRow(t, rig.u2.key).parent; parent == nil || *parent != rig.c.key {
+		t.Errorf("%s left %s under %s, want it under %s", what, rig.u2.key, specWriterParentName(parent), rig.c.key)
+	}
+}
+
 // TestSpecWriteChecksAWriteThatTakesAnIssueOutOfLegion: a write of the labels or the parent after
 // which a Legion-run issue is no longer one is checked as a close is. C's tester's removal of
 // legion from R, its clear of D's parent, its move of D under U2, and its call of the status route
@@ -1714,6 +1778,35 @@ func TestSpecWriteKeepsNotAuthorFirst(t *testing.T) {
 			return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/asks/"+ask, map[string]any{"question": "Which way does the tester go?"})
 		},
 	})
+}
+
+// TestSpecWriteRefusesAWorkersFileUploadBeforeItsObject: where a file store holds files, an
+// upload's object is written before its transaction opens, and nothing deletes an object that no
+// row names (putUploadedFile). So the check refuses a worker's file upload of a first
+// verification.md before its object is written: C's tester's upload is refused with 403
+// DOCUMENT_WRITER_NOT_ARCHITECT and the file store holds no object more after it. The same upload
+// by C's architect is taken and writes its object.
+func TestSpecWriteRefusesAWorkersFileUploadBeforeItsObject(t *testing.T) {
+	memory := filestest.NewMemory()
+	server := newSpecWriterServer(t, testServerOptions{files: memory})
+	rig := server.rig(t, specWriterRigShape{noVerification: true})
+	before := memory.Len()
+	rig.requireRefused(t, specWriteAttempt{
+		what: rig.cTester + "'s first upload of " + rig.c.key + "'s verification.md as a file",
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.uploadFile(t, rig.cTester, rig.c, "verification.md", "text/plain", "A worker's verification.\n")
+		},
+		refusal: rig.refusalOn(rig.c, "verification.md", rig.cTester),
+	})
+	if objects := memory.Len(); objects != before {
+		t.Errorf("the file store holds %d objects after C's tester's refused upload, want the %d it held before", objects, before)
+	}
+	rig.requireTaken(t, "C's architect's first upload of "+rig.c.key+"'s verification.md as a file", http.StatusCreated, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.uploadFile(t, rig.cArchitect, rig.c, "verification.md", "text/plain", "C's architect's verification.\n")
+	})
+	if objects := memory.Len(); objects != before+1 {
+		t.Errorf("the file store holds %d objects after C's architect's upload, want %d", objects, before+1)
+	}
 }
 
 // specWriteTakenRows is the inventory's rows that write a version of an issue's document, run by a

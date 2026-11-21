@@ -114,10 +114,15 @@ const legionOnChainSQL = `exists (
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
-// above the issue, are read as they stand and are not held still by any lock the caller takes. The
-// answer is advisory in both callers, so a chain that moves under the walk costs a sentence of
-// guidance and never a write. Both claim routes (issue_claim.go) and a session's write advice
-// (write_advice.go) read it.
+// above the issue, are read as they stand and are not held still by any lock the caller takes.
+// Both claim routes (issue_claim.go) and a session's write advice (write_advice.go) read the
+// answer as advice, so there a chain that moves under the walk costs a sentence of guidance and
+// never a write. The check of who writes a Legion-run issue's spec (refuseSpecWriterOfIssueWrite
+// and refuseSpecWriterOfMovedSubtree, spec_writer.go) decides a 403 on it: whether a write of the
+// labels or the parent takes the issue out of Legion, and whether a move is checked on the issue's
+// own chain or on those of the labelled issues under it. The ancestors' labels it reads are held
+// by no lock, so a concurrent label write on an ancestor can change the answer between this read
+// and the write's commit, and the check then judges the chain as it stood at the read.
 func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {
