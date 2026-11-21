@@ -2,11 +2,12 @@
 # packages/envoy/scripts/lib/rig-banner.sh
 #
 # The readers of a local rig's banner. dev-stack.sh, dev-broker.sh and dev-airlock.sh each print one
-# block in one write once they are up, from its first line to its last, and print it once. The log
+# block once they are up, from its first line to its last, and print it once. The log
 # a caller keeps holds other text around that block: the build, the processes' own output, and in
 # dev-airlock.sh's log dev-broker.sh's whole log. A line there that looks like an export is no
 # export of the banner's, and a process that prints `  export X=$(...)` must reach no eval. So each
-# reader takes the lines of the banner's own block alone, and only once its last line is written.
+# reader takes the lines of the banner's own block alone, and only once its last line is written,
+# however many writes the block took.
 # A log that holds the banner's first line more than once holds a block that is not the rig's, and
 # nothing tells the two apart, so such a log is refused: each reader says so, by name, on standard
 # error, reads nothing and returns 3. A rig prints each path an export names with printf %q, so an
