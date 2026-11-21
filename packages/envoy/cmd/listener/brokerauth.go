@@ -12,6 +12,7 @@ package main
 // to, so a write that acts as a session is held to that one (sessionNotBound).
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -114,10 +115,11 @@ func resolveListenerBrokerConfig(getenv func(string) string) (listenerBrokerConf
 	return config, nil
 }
 
-// errBrokerTokensStarting is a DPoP presentation that arrives after /v1 is mounted and before the
-// spent-proof bucket is open, which is the window between the listening socket and NATS. It is
-// the starting gate's 503 rather than a 401: the credential is configured and the listener cannot
-// judge it yet, and a caller told its token was refused would discard a live one.
+// errBrokerTokensStarting is a DPoP presentation that reaches apiAuth before the spent-proof
+// bucket is open. It is the starting gate's 503 rather than a 401: the credential is configured
+// and the listener cannot judge it yet, and a caller told its token was refused would discard a
+// live one. main's /v1 answers the closed gate before apiAuth (v1API) and opens the bucket before
+// the gate, so there it is not reached; wherever it is, it spends no proof.
 var errBrokerTokensStarting = errors.New("the listener is still opening the store this credential needs")
 
 // brokerTokens is the listener's broker-token credential as apiAuth reads it: nil on a listener
@@ -252,7 +254,11 @@ type spentProofs struct {
 // bucket answers by itself: a create of a key that is there is nats.ErrKeyExists, and the key is
 // gone once the bucket's TTL has outlived the proof's window. Two listeners creating one key at
 // the same moment therefore see one success and one ErrKeyExists, as two Dispatch pods see one
-// insert and one conflict.
+// insert and one conflict. A key whose last record is the delete marker a release leaves
+// (proofSpend.release) is created again by nats.go in a second write against that marker's
+// revision, and the one of two such creates that loses gets the server's wrong-last-sequence
+// error rather than ErrKeyExists; it is the same answer, that another presentation holds the
+// proof (wrongLastSequence).
 //
 // The key is the proof's 'jti' and normalized target URI hashed together, for the reason
 // Dispatch's store keys on the same two: jkt, nonce and htm only ever widen the key, and this
@@ -263,15 +269,22 @@ type spentProofs struct {
 //
 // exp is not read: it dates the end of one proof's window on the clock of the listener that
 // checked it, and every key here lives spentProofRetention, which is that window's longest.
+//
+// A create this request's own presentation made is written into the request's proofSpend, when
+// apiAuth gave it one (withProofSpend), so a 503 the route answers before serving anything can
+// give the proof back. Only a create the bucket answered as made is: one that did not answer may
+// or may not have landed, and a record the request cannot prove it wrote may be the record of an
+// earlier presentation that was served.
 func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, _ time.Time) (bool, error) {
-	key := sha256.Sum256([]byte(jti + "\x00" + htu))
+	sum := sha256.Sum256([]byte(jti + "\x00" + htu))
+	key := hex.EncodeToString(sum[:])
 	// Bounded ends the wait with the request, as every other bucket call this listener makes
 	// does; the abandoned create may still land, which is the right way round for a record whose
 	// whole purpose is to be there.
-	_, _, err := bus.Bounded(ctx, func() (uint64, error) {
-		return s.kv.Create(hex.EncodeToString(key[:]), nil)
+	revision, _, err := bus.Bounded(ctx, func() (uint64, error) {
+		return s.kv.Create(key, nil)
 	})
-	if errors.Is(err, nats.ErrKeyExists) {
+	if errors.Is(err, nats.ErrKeyExists) || wrongLastSequence(err) {
 		return true, nil
 	}
 	if err != nil {
@@ -280,8 +293,119 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 		// than as a refusal of the caller.
 		return false, fmt.Errorf("record the spent DPoP proof in %s: %w", bus.DPoPProofBucket, err)
 	}
+	if spend, ok := ctx.Value(proofSpendKey{}).(*proofSpend); ok {
+		*spend = proofSpend{kv: s.kv, key: key, revision: revision}
+	}
 	return false, nil
 }
+
+// wrongLastSequence reports whether err is the server refusing a write made against a revision
+// the key is no longer at: 10071 on a bucket of one copy, 10164 on a replicated one.
+func wrongLastSequence(err error) bool {
+	var apiErr *nats.APIError
+	return errors.As(err, &apiErr) &&
+		(apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence || apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequenceConstant)
+}
+
+// proofReleaseBudget bounds the delete that gives a proof back (proofSpend.release). A 503 waits
+// for it, and a route answers a bus that does not answer within sendRequestBudget, so the two
+// together stay inside the 5 s the client gives each attempt (packages/envoy-client/src/transport.ts).
+const proofReleaseBudget = time.Second
+
+// proofSpend is the spent-proof record one request's own presentation wrote: the key and the
+// revision its create made, and the bucket it is in. It is empty until CheckAndSetDPoPProofUsed
+// fills it, and stays empty when the create did not answer as made.
+type proofSpend struct {
+	kv       bus.KeyValue
+	key      string
+	revision uint64
+}
+
+// proofSpendKey is the context key a request's proofSpend is carried under (withProofSpend).
+type proofSpendKey struct{}
+
+// withProofSpend carries spend to the spent-proof store the request's presentation is recorded
+// in, which fills it.
+func withProofSpend(ctx context.Context, spend *proofSpend) context.Context {
+	return context.WithValue(ctx, proofSpendKey{}, spend)
+}
+
+// release gives the proof back: it deletes the record this request's create made, and no other,
+// since the delete is made against that create's revision. The proof can then be presented once
+// more inside its window, as the first presentation could. It runs on a context the request's own
+// end does not cancel, bounded by proofReleaseBudget, and a spend with no record is no call.
+func (s *proofSpend) release(ctx context.Context) error {
+	if s.key == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
+	defer cancel()
+	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
+		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
+	})
+	s.key = ""
+	return err
+}
+
+// proofReleasingWriter is the writer a body-less request admitted on a broker token is served
+// through. The first status it writes, when that status is 503, releases the request's proof
+// (proofSpend.release) before the status is written, so the balancer in front of an edge listener
+// cannot send its retry before the record is gone. Every other status keeps the proof spent: the
+// request was served, or refused, and a proof reused after that is a replay.
+//
+// A 503 from this listener says nothing of the request was served: a route answers it for a fault
+// it met before it served the request (a list copy refilling, a bus that did not answer, a broker
+// answer it could not get, a replica with no room for a relay socket), and the client sends the
+// request again on it (packages/envoy-client/src/transport.ts retries every status at or past
+// 500). Google's load balancer sends such a request again too, once, after a 502, 503 or 504, when
+// it carries no body, and it sends the same headers, the proof among them. A body-less request is
+// all a proof signs: its method, its URL and its token, and nothing else that request could carry,
+// so the retry the release admits is the request its client signed, and a proof presented once
+// more after the retry was served is refused as a replay. A request that carries a body keeps its
+// proof spent whatever its status, since a proof does not sign the body: a proof given back there
+// would let whoever holds it send another body under it. Its client sends it again with a fresh
+// proof, and the balancer does not retry it.
+//
+// What a release cannot give back is a proof whose 503 came from the spent-proof store itself
+// (refuseBrokerToken's check_failed), whose create did not answer and so recorded nothing this
+// request can prove it wrote, or a proof whose release did not reach the bucket. The retry of
+// either is the 401 of a replay, once, and the client's own next attempt carries a fresh proof.
+//
+// It passes Hijack through, which the relay socket's WebSocket upgrade takes the connection by,
+// and Unwrap, which http.ResponseController reads.
+type proofReleasingWriter struct {
+	http.ResponseWriter
+	r       *http.Request
+	spend   *proofSpend
+	logger  *logging.Logger
+	decided bool
+}
+
+func (w *proofReleasingWriter) WriteHeader(status int) {
+	if !w.decided && status >= http.StatusOK {
+		w.decided = true
+		if status == http.StatusServiceUnavailable {
+			if err := w.spend.release(w.r.Context()); err != nil {
+				w.logger.Warn("listener: a 503 could not give its request's DPoP proof back; the load balancer's retry of it is refused as a replay",
+					slog.String("path", w.r.URL.Path),
+					slog.String("error", err.Error()))
+			}
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *proofReleasingWriter) Write(body []byte) (int, error) {
+	w.decided = true
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *proofReleasingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.decided = true
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+func (w *proofReleasingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // brokerCallerKey is the context key the decided caller is carried under. It is an unexported
 // zero-size type, so nothing outside this package can read or write the value, and no other

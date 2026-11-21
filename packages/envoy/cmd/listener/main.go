@@ -847,19 +847,42 @@ func (g *startingGate) route(r *http.Request) string {
 func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := g.mux.Load()
 	if mux == nil {
-		g.logger.Warn("request refused while starting",
-			slog.String("gate", g.name),
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-		)
-		if isListRead(r) {
-			writeListRefilling(w)
-			return
-		}
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		g.refuse(w, r)
 		return
 	}
 	mux.ServeHTTP(w, r)
+}
+
+// refuse is the closed gate's answer to r, and the log line that records it.
+func (g *startingGate) refuse(w http.ResponseWriter, r *http.Request) {
+	g.logger.Warn("request refused while starting",
+		slog.String("gate", g.name),
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+	)
+	if isListRead(r) {
+		writeListRefilling(w)
+		return
+	}
+	writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+}
+
+// ahead is next behind the gate's own answer: while the gate is closed, a request gets the closed
+// gate's 503 before next reads anything of it, and once the gate is open, next serves every
+// request. It is what keeps a starting listener from spending a request's DPoP proof: in front of
+// apiAuth (v1API), the 503 a closed /v1 answers comes before any credential is judged, so the one
+// retry Google's load balancer sends of a body-less request after a 503, with the same proof, is
+// not refused as a replay (TestEdgeRetryOfAProofAfterAPreAuth503IsServed). A request it refuses
+// is admitted by no credential, so envoy_listener_requests_total counts none of them; the gate's
+// own log line records each.
+func (g *startingGate) ahead(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g.mux.Load() == nil {
+			g.refuse(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // isListRead reports whether r is one of the two list reads, GET /v1/sessions or GET
@@ -868,9 +891,10 @@ func isListRead(r *http.Request) bool {
 	return r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions" || r.URL.Path == "/v1/interests/")
 }
 
-// v1API is /v1 as main mounts it: apiAuth in front of the /v1 gate.
+// v1API is /v1 as main mounts it: the closed gate's answer first (startingGate.ahead), then apiAuth
+// in front of the gate's routes.
 func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
-	return apiAuth(auth, gate)
+	return gate.ahead(apiAuth(auth, gate))
 }
 
 // openWebhooks builds the webhook routes over the publisher they publish through and the CI store
@@ -1170,7 +1194,9 @@ func main() {
 	// (the two /v1 list reads the refilling answer, startingGate), each behind its own gate: the
 	// webhooks once NATS and, for the GitHub route, the CI store are (Phase 5), /v1 once the
 	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
-	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
+	// only /healthz reads. The webhook paths reach their gate bare. /v1 reaches its gate through
+	// v1API, which answers the closed gate before apiAuth judges any credential, so a starting
+	// listener spends no request's DPoP proof.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
 	hooks := webhookRoutes(webhookCfg)
 	for _, hook := range hooks {

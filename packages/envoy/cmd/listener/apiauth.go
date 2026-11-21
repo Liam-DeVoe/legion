@@ -314,6 +314,8 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			}
 		}
 		if _, presented := brokertoken.Presented(r); auth.brokers != nil && presented {
+			spend := &proofSpend{}
+			r = r.WithContext(withProofSpend(r.Context(), spend))
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
@@ -330,6 +332,11 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 					return
 				}
 				ctx = withEdgeHold(ctx)
+			}
+			// A body-less request gets its proof back on a 503 (proofReleasingWriter), so the one
+			// retry Google's load balancer sends of it is not refused as a replay.
+			if r.ContentLength == 0 {
+				w = &proofReleasingWriter{ResponseWriter: w, r: r, spend: spend, logger: auth.logger}
 			}
 			admit(w, r.WithContext(ctx), credentialBroker)
 			return
@@ -387,6 +394,13 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 // wait it must come back after; nothing of it reached the broker. Every other outcome is the
 // same 401 and the same body every other refused credential gets here, so the answer tells an
 // unauthenticated caller nothing about which credentials this listener takes.
+//
+// None of the 503s here comes after the proof is spent, so a retry of the same request with the
+// same proof, the one Google's load balancer sends after a 503, is judged afresh: the broker is
+// asked before the proof is checked (brokertoken.Verify), and a spent-proof store that did not
+// answer recorded nothing the listener knows of. That store's create may still land after it
+// stopped waiting, and the retry then meets it as a replay; proofReleasingWriter says why no
+// release follows it.
 func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, brokers *brokerTokens, err error) {
 	reason := brokerTokenReason(err)
 	logger.Warn("listener: broker token rejected",

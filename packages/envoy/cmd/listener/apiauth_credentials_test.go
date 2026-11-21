@@ -719,8 +719,9 @@ func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
 }
 
 // The outer mux handles path cleaning before authentication. CONNECT skips that cleaning, but
-// every admitted request still uses one of the registered patterns, including slash redirects
-// and refusals while the gate is closed. An empty Host keeps the open listener's Host refusal.
+// every admitted request still uses one of the registered patterns, including slash redirects.
+// An empty Host keeps the open listener's Host refusal. The handler is /v1 as main mounts it
+// (v1API), so a request the closed gate refuses is refused before admission and counts nothing.
 func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, host, token string
@@ -738,7 +739,7 @@ func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 		{name: "CONNECT leaves a dot segment alone", method: http.MethodConnect, path: "/v1/registry/../ses_one", host: "localhost", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
 		{name: "an empty Host is refused when open", method: http.MethodGet, path: "/v1/registry/ses_one", wantStatus: http.StatusMisdirectedRequest},
 		{name: "an empty Host is unused beside a bearer", method: http.MethodGet, path: "/v1/registry/ses_one", token: "shared-example", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
-		{name: "a closed gate counts under the outer pattern", method: http.MethodGet, path: "/v1/registry/ses_one", host: "localhost", closed: true, wantStatus: http.StatusServiceUnavailable, wantPath: "/v1/"},
+		{name: "a closed gate refuses before admission", method: http.MethodGet, path: "/v1/registry/ses_one", host: "localhost", closed: true, wantStatus: http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			met := metrics.New()
@@ -749,7 +750,7 @@ func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 				routes.Handle("/v1/registry/", served)
 				gate.open(routes)
 			}
-			handler := apiAuth(listenerAPIAuth{token: tc.token, logger: logger, requests: newListenerRequests(met), route: gate.route}, gate)
+			handler := v1API(listenerAPIAuth{token: tc.token, logger: logger, requests: newListenerRequests(met), route: gate.route}, gate)
 			outer := http.NewServeMux()
 			outer.Handle("/v1", handler)
 			outer.Handle("/v1/", handler)
