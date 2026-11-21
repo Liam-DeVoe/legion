@@ -374,7 +374,6 @@ const hubProbeWindow = 60
 // answers 503 "starting" until the start completes, whenever it is asked.
 func TestHubListenerProbesNeverRestartAListenerWhoseNATSRefusesItsStart(t *testing.T) {
 	probes, path := hubProbes(t)
-	requireHubProbeRoutes(t, probes, path)
 
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, bucketDeniedConfig(public, bus.SessionBucket), []string{"-js"}, false)

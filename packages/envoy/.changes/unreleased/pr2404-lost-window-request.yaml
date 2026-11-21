@@ -2,8 +2,8 @@ kind: Fixed
 body: |-
     A request of Dispatch's outbox window whose NATS connection is lost now answers
     unavailable as soon as the connection it was sent on ends. Before, its wait could wake on
-    the disconnect while the connection still read current and then wait out its 30 s
-    timeout. The listener's read of the takeover records and of the kept role lanes now fails
+    the disconnect while the connection still read current and then wait out its whole
+    timeout (a role forward's 5 s ack wait, `roleForwardAckTimeout`). The listener's read of the takeover records and of the kept role lanes now fails
     when its connection is lost, instead of waiting out its bound, and a role frame the relay
     reaches after its term ended is left for the next holder, neither copied nor acknowledged.
 time: 2026-11-20T23:37:50.000000000Z

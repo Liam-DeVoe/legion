@@ -79,7 +79,8 @@ export function subjectsOverlap(a: string, b: string): boolean {
  * (`notifications.envoy.exceptions.notifications.agent.<id>`, the session's own included, and the
  * team lane beside it), another project's controller lane, the kept lane
  * (`notifications.envoy.kept.role.<role>`, `notifications.envoy.kept.cursor.<role>`), the resume
- * lane (`notifications.envoy.resume.<id>`, the session's own included), and every wildcard
+ * lane (`notifications.envoy.resume.<id>`, the session's own included), the takeover lane
+ * (`notifications.envoy.takeover.<role>.<previous holder>.<attempt>`), and every wildcard
  * reaching any of them (`notifications.agent.*`, `notifications.>`, `notifications.*.<x>`,
  * `notifications.envoy.>`) count. Two literal subjects are this session's own: `ownAgentSubject`,
  * in either form (its new form under a project, `NO_PROJECT` or a wildcard over every project,
