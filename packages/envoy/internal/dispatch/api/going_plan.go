@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -462,17 +463,126 @@ func goingRowArguments(raw json.RawMessage) (map[string]any, error) {
 	return arguments, nil
 }
 
+// goingNewIssueRef reads value as the name of the issue a create of the same plan makes: a string
+// that is "$" and a number, "$N", names the key of the issue change N of the plan creates. named is
+// false for any other value; a number too large to read is -1, which names no change.
+func goingNewIssueRef(value any) (change int, named bool) {
+	text, isText := value.(string)
+	digits, cut := strings.CutPrefix(text, "$")
+	if !isText || !cut || digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return 0, false
+	}
+	change, err := strconv.Atoi(digits)
+	if err != nil {
+		return -1, true
+	}
+	return change, true
+}
+
+// goingArgumentItems is what of an argument's value may name a new issue (goingNewIssueRef): the
+// value itself, or each item of the list it is.
+func goingArgumentItems(value any) []any {
+	if list, isList := value.([]any); isList {
+		return list
+	}
+	return []any{value}
+}
+
+// goingInnerNewIssueRef is the first "$N" (goingNewIssueRef) within value's objects and lists, ""
+// for none.
+func goingInnerNewIssueRef(value any) string {
+	switch value := value.(type) {
+	case string:
+		if _, named := goingNewIssueRef(value); named {
+			return value
+		}
+	case []any:
+		for _, item := range value {
+			if found := goingInnerNewIssueRef(item); found != "" {
+				return found
+			}
+		}
+	case map[string]any:
+		for _, name := range slices.Sorted(maps.Keys(value)) {
+			if found := goingInnerNewIssueRef(value[name]); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+// goingNewIssueProblem is a value of a row's arguments that names a new issue of its plan
+// (goingNewIssueRef) where the row may not name one: the argument, the value, and why, in the
+// model's words, which name each change by its index as the model's plan does.
+type goingNewIssueProblem struct {
+	argument, value, why string
+}
+
+// goingNewIssueRefusal is the first value of arguments that names a new issue the row may not
+// name, nil for none; the row is row index of a plan whose rows are rows, runs a tool of entry and
+// needs the rows needs. A row names, as "$N", the key of the issue row N creates, as an argument's
+// value or an item of an argument's list, where row N is a row before it that creates an issue
+// (dispatch_issue) and is among the rows it needs, so it runs only once that issue is made and
+// the server puts the issue's key in its place (AgentListener.resolveNewIssues). The item a row
+// changes, an argument a route of its tool takes into its path, is never a new issue: the plan
+// reads that item before anything runs. A "$N" deeper in a value - in an object, or in a list
+// within a list - is refused too, since no key is put in there and it would be sent as written.
+func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any, needs []int, rows []goingPlanRowStored) *goingNewIssueProblem {
+	items := map[string]bool{}
+	for _, route := range entry.Routes {
+		for _, argument := range route.path {
+			items[argument] = true
+		}
+	}
+	for _, argument := range slices.Sorted(maps.Keys(arguments)) {
+		for _, value := range goingArgumentItems(arguments[argument]) {
+			change, named := goingNewIssueRef(value)
+			if !named {
+				if inner := goingInnerNewIssueRef(value); inner != "" {
+					return &goingNewIssueProblem{argument: argument, value: inner, why: fmt.Sprintf(
+						"argument %q holds %q inside it, where no key is put in: name a new issue as an argument's value or an item of an argument's list",
+						argument, inner)}
+				}
+				continue
+			}
+			problem := &goingNewIssueProblem{argument: argument, value: value.(string)}
+			at := slices.IndexFunc(rows, func(row goingPlanRowStored) bool { return row.row == change })
+			switch {
+			case items[argument]:
+				problem.why = fmt.Sprintf("argument %q is %q, but %q names the item this change changes, which the plan reads before anything runs: "+
+					"a new issue may only be a value a change writes, such as parent or blocked_by; propose a change of the new issue itself once it exists",
+					argument, problem.value, argument)
+			case change < 0 || change >= index || at < 0:
+				problem.why = fmt.Sprintf("argument %q is %q, which names change %d, and that is no change before change %d: "+
+					"\"$N\" names the issue an earlier change of this plan creates", argument, problem.value, change, index)
+			case rows[at].tool != goingIssueCreateTool:
+				problem.why = fmt.Sprintf("argument %q is %q, which names change %d, and change %d is %s, which creates no issue: "+
+					"\"$N\" names only the issue a %s change of this plan creates", argument, problem.value, change, change, rows[at].tool, goingIssueCreateTool)
+			case !slices.Contains(needs, change):
+				problem.why = fmt.Sprintf("argument %q is %q, the issue change %d creates, but change %d does not need change %d: "+
+					"add %d to its needs, so it runs once that issue is made", argument, problem.value, change, index, change, change)
+			default:
+				continue
+			}
+			return problem
+		}
+	}
+	return nil
+}
+
 // planCall is a plan call (agentwire.KindPlan): the run's model proposes its plan, which the
 // server keeps with its rows waiting. Each change must name a write tool, need only changes before
-// it, and hold arguments its tool's schema and translation take, over an item the person may read;
-// the first that does not refuses the plan CALL_REFUSED, naming the change and why, which the
-// model is told. A send to an agent session is kept naming the session by its id and showing the
-// issue it is posted on (goingPlaceSend). A run whose latest plan still waits for its person, or
-// has rows to run, is refused another. A new-issue run's plan is one create of an issue, with the
-// deployment's settings for a new issue put on it, and the Enter that started the run approved
-// it, so it is kept approved and answered as the row to run now (going_new_issue.go); such a run
-// keeps one plan. A second try of the call's step answers the plan its first try made. The plan
-// is kept in one transaction that holds the run's lease, with a plan frame on the run's events.
+// it, name a new issue of the plan ("$N") only where it may (goingNewIssueRefusal), and hold
+// arguments its tool's schema and translation take, over an item the person may read; the first
+// that does not refuses the plan CALL_REFUSED, naming the change and why, which the model is told.
+// A send to an agent session is kept naming the session by its id and showing the issue it is
+// posted on (goingPlaceSend). A run whose latest plan still waits for its person, or has rows to
+// run, is refused another. A new-issue run's plan is one create of an issue, with the deployment's
+// settings for a new issue put on it, and the Enter that started the run approved it, so it is
+// kept approved and answered as the row to run now (going_new_issue.go); such a run keeps one
+// plan. A second try of the call's step answers the plan its first try made. The plan is kept in
+// one transaction that holds the run's lease, with a plan frame on the run's events.
 func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequest, run goingCallRun, doer GoingDoer) (agentwire.CallAnswer, *agentwire.Error) {
 	proposal := request.Proposal
 	if proposal == nil || len(proposal.Changes) == 0 {
@@ -506,7 +616,8 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
 				"change %d names %q, which is no tool of Dispatch that changes something; find_tools names them", index, change.Tool)
 		}
-		if _, held := a.s.going.Lookup(change.Tool); !held {
+		entry, held := a.s.going.Lookup(change.Tool)
+		if !held {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d names %q, which this server does not run", index, change.Tool)
 		}
 		needs := slices.Clone(change.Needs)
@@ -521,6 +632,9 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		arguments, err := goingRowArguments(change.Arguments)
 		if err != nil {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %v", index, change.Tool, err)
+		}
+		if problem := goingNewIssueRefusal(entry, index, arguments, needs, rows); problem != nil {
+			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, problem.why)
 		}
 		var route string
 		if newIssue {
@@ -874,8 +988,9 @@ type goingPlanRejectInput struct {
 // 409 GOING_PLAN_NOT_CURRENT, and a run or a plan that does not wait 409 GOING_PLAN_NOT_WAITING; a
 // version that is not the plan's now - another page read the plan again since, and the rows it
 // shows moved - is 409 GOING_PLAN_CHANGED, with nothing written, so a person approves only what
-// their page showed; a row the body names that is no waiting row of the plan, or a value its tool's
-// schema refuses, 400 GOING_PLAN_VALUES.
+// their page showed; a row the body names that is no waiting row of the plan, a value its tool's
+// schema refuses, or a value naming a new issue of the plan ("$N") that the row may not name
+// (goingNewIssueRefusal), 400 GOING_PLAN_VALUES.
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -951,6 +1066,12 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 			sendIssue, err = s.goingEditSend(r.Context(), doer, run.id, arguments, edited, sendIssue)
 		} else {
 			maps.Copy(arguments, edited)
+		}
+		if entry, held := s.going.Lookup(row.tool); err == nil && held {
+			if problem := goingNewIssueRefusal(entry, row.row, arguments, row.needs, plan.rows); problem != nil {
+				err = GoingArgumentError{Action: row.tool, Reason: fmt.Sprintf("%s is %q, which names no new issue that a change it needs creates",
+					problem.argument, problem.value)}
+			}
 		}
 		var now goingRowShown
 		if err == nil {

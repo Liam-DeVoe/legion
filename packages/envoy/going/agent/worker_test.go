@@ -383,6 +383,44 @@ func TestFindToolsTellsACloseItsReasonIsThePersonsWhy(t *testing.T) {
 	}
 }
 
+// TestProposePlanTellsHowAChangeNamesANewIssue: change-01 of the eval asked to split an epic and
+// move its sub-issues under the new issues, and the model, told nothing of it, named each new
+// issue as "$0", which the server sent as a parent no issue holds. propose_plan's description and
+// its schema's arguments say a change may name the issue an earlier create makes as "$N", with N
+// in its needs, and the system prompt's rule on a split says the same.
+func TestProposePlanTellsHowAChangeNamesANewIssue(t *testing.T) {
+	tools := (&worker{agent: &agent{}}).tools(0)
+	at := slices.IndexFunc(tools, func(tool agentloop.Tool) bool { return tool.Name == toolProposePlan })
+	if at < 0 {
+		t.Fatalf("the run's tools hold no %s", toolProposePlan)
+	}
+	var schema struct {
+		Properties struct {
+			Changes struct {
+				Items struct {
+					Properties map[string]struct {
+						Description string `json:"description"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"changes"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(tools[at].Schema, &schema); err != nil {
+		t.Fatalf("%s's schema does not read: %v", toolProposePlan, err)
+	}
+	for name, told := range map[string]string{
+		"propose_plan's description":          tools[at].Description,
+		"propose_plan's arguments":            schema.Properties.Changes.Items.Properties["arguments"].Description,
+		"the system prompt's rule on a split": systemPrompt,
+	} {
+		for _, said := range []string{`"$N"`, "needs", "dispatch_issue", "never the item a change changes"} {
+			if !strings.Contains(told, said) {
+				t.Errorf("%s says nothing of %q: %q", name, said, note(told))
+			}
+		}
+	}
+}
+
 // TestAnUploadedTextFileReadsAsItsBytes: dispatch_doc_read of an uploaded file, whose text route
 // answers 400 NOT_DOCUMENT, reads the bytes of its latest version, which its summary names, as
 // the person's own `dispatch doc-read` does, and the model is given them where they are text; of

@@ -31,12 +31,49 @@ export function rowLabel(row: GoingPlanRow): string {
   );
 }
 
-/** A value as one line of the row: a string as it is, anything else as its JSON. */
-export function valueText(value: unknown): string {
+/** The title of each new issue a plan's rows make, by the row's number, with the person's edits of
+ *  it in `draft`: what a value naming that issue shows. */
+export function newIssueTitles(
+  rows: readonly GoingPlanRow[],
+  draft: PlanDraft | undefined
+): ReadonlyMap<number, string> {
+  return new Map(
+    rows
+      .filter(makesIssue)
+      .map((row) => [row.row, textOf({ ...argumentsOf(row), ...draft?.edits.get(row.row) }.title)])
+  );
+}
+
+/** A value naming the issue a create of the same plan makes: "$N", N that create's number. */
+const NEW_ISSUE = /^\$(\d+)$/u;
+
+/** A string as the row shows it: a value naming a new issue of the plan as its title and "(new)",
+ *  any other as it is. */
+function issueText(value: string, newIssues: ReadonlyMap<number, string>): string {
+  const named = NEW_ISSUE.exec(value);
+  const title = named === null ? undefined : newIssues.get(Number(named[1]));
+  return title === undefined ? value : `${title} (new)`;
+}
+
+/** A value as one line of the row: a string as it is, anything else as its JSON. A string, or an
+ *  item of a list, naming a new issue of the plan ("$N", `newIssues`' row N) shows that issue's
+ *  title and "(new)", as the issue has no key before the plan runs. */
+export function valueText(
+  value: unknown,
+  newIssues: ReadonlyMap<number, string> = new Map()
+): string {
   if (value === undefined || value === null) {
     return "none";
   }
-  return typeof value === "string" ? value : JSON.stringify(value);
+  if (typeof value === "string") {
+    return issueText(value, newIssues);
+  }
+  if (Array.isArray(value)) {
+    return JSON.stringify(
+      value.map((item: unknown) => (typeof item === "string" ? issueText(item, newIssues) : item))
+    );
+  }
+  return JSON.stringify(value);
 }
 
 /** One field a row writes: its name, its value now and the value the row writes, the person's

@@ -215,6 +215,71 @@ test("unticking a row unticks the row that needs it, and the approval carries ea
   }
 });
 
+// A move under a new issue of the plan names that issue "$0", the number of the row that creates
+// it, which the server puts the new issue's key in place of when the move runs: the row shows the
+// issue by its title and "(new)", the person's edit of that title included, and the person can
+// replace the value with an issue's key, which the approval carries.
+test("a value naming a new issue of the plan shows its title and (new), and Edit replaces it with a key", async () => {
+  const user = userEvent.setup();
+  const split: GoingPlanAnswer = {
+    ...plan,
+    rows: (plan.rows ?? []).map((planned) =>
+      planned.row === 1 ? { ...planned, arguments: { issue: "CORE-3", parent: "$0" } } : planned
+    ),
+  };
+  const { restore } = await openPlan("over", async () => split);
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  approve.mockImplementation(async () => ({ ...split, state: "running" }));
+  const move = (): HTMLElement =>
+    within(screen.getByTestId("going-plan-card-rows")).getAllByTestId(
+      "going-plan-row"
+    )[1] as HTMLElement;
+  try {
+    renderWithQueries(<Card />);
+    const card = await screen.findByTestId("going-plan-card-rows");
+    expect(within(move()).getByTestId("going-plan-now")).toHaveTextContent("CORE-1");
+    expect(within(move()).getByTestId("going-plan-next")).toHaveTextContent(
+      "The second half (new)"
+    );
+
+    // The new issue's title edited, the move names it so.
+    await user.click(within(card).getByRole("button", { name: "Edit title" }));
+    const title = within(card).getByRole("textbox", { name: "New title" });
+    await user.clear(title);
+    await user.type(title, "The other half{Enter}");
+    expect(within(move()).getByTestId("going-plan-next")).toHaveTextContent("The other half (new)");
+
+    // The move's parent replaced with an issue's key: its edit box starts from the value itself.
+    await user.click(within(move()).getByRole("button", { name: "Edit parent" }));
+    const parent = within(move()).getByRole("textbox", { name: "New parent" });
+    expect(parent).toHaveValue("$0");
+    await user.clear(parent);
+    await user.type(parent, "CORE-2{Enter}");
+    expect(within(move()).getByTestId("going-plan-next")).toHaveTextContent("CORE-2");
+    await user.click(screen.getByTestId("going-plan-approve"));
+
+    await waitFor(() =>
+      expect(approve).toHaveBeenCalledWith(
+        "run-1",
+        {
+          plan: 1,
+          rows: [
+            { row: 0, tick: true, values: { title: "The other half" } },
+            { row: 1, tick: true, values: { parent: "CORE-2" } },
+            { row: 2, tick: true },
+          ],
+          version: "5be1c0",
+        },
+        keyedAttempt
+      )
+    );
+  } finally {
+    restore();
+  }
+});
+
 // A plan that could not be read is said to be, with its Retry, in the card that would show it:
 // the conversation's plan waits, and the card is the one place the person can answer it.
 test("a plan that cannot be read says so in the card, and Retry reads it again", async () => {

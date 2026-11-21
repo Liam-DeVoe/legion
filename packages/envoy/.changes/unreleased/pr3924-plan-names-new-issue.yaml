@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  A change of a command-bar plan can name the issue an earlier create of the same plan makes, as
+  `"$N"` with `N` that create's index: a split of an issue is one plan, the new issues and the
+  moves of its sub-issues under them (`dispatch_issue_update` with `parent` `"$0"` and `needs`
+  `[0]`). The server puts the new issue's key in place of `"$N"` when the change runs, so the
+  write, the read of its item before it and its Undo name the issue itself, and the plan keeps
+  the `"$N"` the person approved. `"$N"` is an argument's value or an item of an argument's list;
+  the plan is refused `CALL_REFUSED` where change `N` is no create of an issue before it, is not
+  among the change's needs, or where `"$N"` names the item a change changes or sits inside an
+  object, and the model is told which change, which argument and why. A change whose create
+  failed is skipped, and nothing of it is sent. The plan shows such a value as the new issue's
+  title and "(new)", which the person can replace with an issue's key.

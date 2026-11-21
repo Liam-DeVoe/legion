@@ -138,6 +138,12 @@ var drawBlockTool = contracts.DispatchTool{
 	},
 }
 
+// newIssueArgument is what propose_plan tells the model of a change that names the issue an
+// earlier create of the same plan makes: the server refuses the plan where change N creates no
+// issue or is not among the change's needs, and puts the issue's key in place of "$N" when the
+// change runs. The system prompt's rule on a split says the same.
+const newIssueArgument = `An argument's value, or an item of an argument's list, may be "$N": the key of the issue change N of this plan creates with dispatch_issue, which the server puts in its place when the change runs; N must be in the change's needs. "$N" is a value a change writes, such as parent or an item of blocked_by, and never the item a change changes, such as the issue of an update, a claim or a comment: propose a change of a new issue itself once it exists.`
+
 // tools is the run's tools for the step whose model call is numbered base, each a Run of w's.
 func (w *worker) tools(base int) []agentloop.Tool {
 	searchSchema := schemaOf([]contracts.ToolField{
@@ -145,6 +151,7 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		{Name: "project", Kind: contracts.ToolFieldString, Description: "A project key to search within."},
 	})
 	readSpec, _ := dispatchTool(dispatchRead)
+	planArguments, _ := json.Marshal("The tool's arguments. " + newIssueArgument)
 	tools := []agentloop.Tool{
 		{
 			Name:        toolSearch,
@@ -178,11 +185,14 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		{
 			Name: toolProposePlan,
 			Description: "Propose the changes the person's words ask for, for the person to approve: each change is a tool of Dispatch that changes something, " +
-				"its arguments, and the indexes (from 0) of the changes it needs first. The run then waits for the person.",
+				"its arguments, and the indexes (from 0) of the changes it needs first. The run then waits for the person. " +
+				newIssueArgument,
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"summary":{"type":"string","description":"What the plan does, in one or two sentences."},` +
 				`"changes":{"type":"array","items":{"type":"object","properties":{` +
-				`"tool":{"type":"string"},"arguments":{"type":"object"},"needs":{"type":"array","items":{"type":"integer"}}},` +
+				`"tool":{"type":"string"},` +
+				`"arguments":{"type":"object","description":` + string(planArguments) + `},` +
+				`"needs":{"type":"array","items":{"type":"integer"},"description":"The indexes (from 0) of the earlier changes this change needs first."}},` +
 				`"required":["tool","arguments"]}}},` +
 				`"required":["summary","changes"]}`),
 			Run: w.toolRun(base, toolProposePlan, w.proposePlan),
@@ -525,7 +535,8 @@ type planChange struct {
 // runs now (agentwire.PlanAnswer.Run), and the step is saved with it. A plan of no change, of a
 // tool Dispatch has no spec of, or one that needs a change it does not hold, is refused back to
 // the model, and so is one the server refuses: a change whose arguments its tool's schema refuses,
-// or over an item the person may not read.
+// over an item the person may not read, or naming as "$N" a new issue it may not name
+// (newIssueArgument).
 func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var plan struct {
 		Summary string       `json:"summary"`

@@ -23,6 +23,7 @@ import {
   documentChange,
   editedDraft,
   makesIssue,
+  newIssueTitles,
   rowChanges,
   rowLabel,
   rowResultMessage,
@@ -73,12 +74,15 @@ function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
 }
 
 /** One field a row writes: its name, the value now and the new value, which the person can edit
- *  where it is text and the row still waits. Its edit box starts from the new value of the plan it
+ *  where it is text and the row still waits. A new value naming a new issue of the plan shows that
+ *  issue's title and "(new)" (`newIssues`), and its edit box holds the value itself, which the
+ *  person may replace with an issue's key. Its edit box starts from the new value of the plan it
  *  is drawn for, and its caller keys it to that plan, so a revised plan or a new run's never opens
  *  with an earlier plan's value or the person's unsaved typing. */
 function FieldChange({
   editable,
   field,
+  newIssues,
   next,
   now,
   onEdit,
@@ -86,6 +90,7 @@ function FieldChange({
 }: {
   readonly editable: boolean;
   readonly field: string;
+  readonly newIssues: ReadonlyMap<number, string>;
   readonly next: unknown;
   readonly now: unknown;
   readonly onEdit: (value: string) => void;
@@ -135,7 +140,7 @@ function FieldChange({
       ) : (
         <>
           <span className={textPrimaryOnSurface} data-testid="going-plan-next">
-            {valueText(next)}
+            {valueText(next, newIssues)}
           </span>
           {editable ? (
             <button
@@ -175,6 +180,7 @@ export function PlanRowView({
   const document = documentChange(row, plan.summary);
   const changes = rowChanges(row, edits);
   const rows = plan.rows ?? [];
+  const newIssues = newIssueTitles(rows, draft);
   const label = rowLabel(row);
   const resultMessage = rowResultMessage(row);
   return (
@@ -206,6 +212,7 @@ export function PlanRowView({
             editable={waiting && change.editable}
             field={change.field}
             key={`${plan.run}:${plan.plan}:${change.field}`}
+            newIssues={newIssues}
             next={change.next}
             now={change.now}
             onEdit={(value) => setDraft(editedDraft(draft, row.row, change.field, value))}

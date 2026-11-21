@@ -405,16 +405,18 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 
 // routeCall makes a call of kind route: the tool's rows, by its name and arguments, through the
 // route table in-process as the run's person (login). A write runs only as the row of the run's
-// plan it names, held to it by rowGate under the call key's lock, posted on the issue the row names
-// where it is a send to an agent session (going_messages.go), and what it came to is kept on that
-// row (recordRow), a panic of its route as a failure of the server's (recordRowPanicked), which
-// then goes on to runCall. A second try of the call key sends only what its earlier tries did not
-// land, and reads the row's item again before it sends the rest of a call that landed partly
-// (rowItemChanged); a row's try under a key that has landed nothing takes over what an earlier try
-// of the row landed before the row waited again (adoptLandings), before a translation that reads
-// what of its first requests landed refuses, so the refusal says what landed. A refusal of the
-// tool's after the call's own request landed is answered as that request landed; one after only
-// requests it sends before its own (a close's reason) is the call's refusal, which says they stand.
+// plan it names, held to it by rowGate under the call key's lock, with the row's arguments as
+// rowGate answers them, each new issue of the plan they name by its key (resolveNewIssues), posted
+// on the issue the row names where it is a send to an agent session (going_messages.go), and what
+// it came to is kept on that row (recordRow), a panic of its route as a failure of the server's
+// (recordRowPanicked), which then goes on to runCall. A second try of the call key sends only what
+// its earlier tries did not land, and reads the row's item again before it sends the rest of a
+// call that landed partly (rowItemChanged); a row's try under a key that has landed nothing takes
+// over what an earlier try of the row landed before the row waited again (adoptLandings), before
+// a translation that reads what of its first requests landed refuses, so the refusal says what
+// landed. A refusal of the tool's after the call's own request landed is answered as that request
+// landed; one after only requests it sends before its own (a close's reason) is the call's
+// refusal, which says they stand.
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -451,6 +453,9 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 			}
 			a.recordRow(ctx, request, answer, refusal)
 		}()
+		if arguments, err = goingRowArguments(row.arguments); err != nil {
+			return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+		}
 	}
 	// resumed is this key's landings, with what an earlier try of the row landed of first, the
 	// requests the call sends before its own, taken over (adoptLandings).

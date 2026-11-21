@@ -776,6 +776,158 @@ func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
 	}
 }
 
+// TestAChangeNamesTheIssueAnEarlierCreateMakes: a change names the issue a create of its plan
+// makes as "$N". A split - a new issue, and a move of a sub-issue under it that needs the create -
+// is kept, approved and run, and the move lands under the new issue's key, while the plan keeps
+// the "$0" the person approved; Undo puts the old parent back and closes the new issue. A move
+// whose create failed is skipped, and no write of it is sent. And a "$N" the move may not hold is
+// refused when the plan is made, and the model is told which change, which argument and why.
+func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	// split is an epic with a sub-issue, and the create and the move under the new issue that
+	// split it.
+	split := func(t *testing.T, title string) (epic, child string, changes []map[string]any) {
+		t.Helper()
+		epic = rig.issue(t, "Epic of "+title)
+		child = decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "DEMO", "title": "Sub-issue of " + title, "parent": epic, "force": true,
+		})).Key
+		return epic, child, []map[string]any{
+			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": title, "parent": epic, "force": true}),
+			goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$0"}, 0),
+		}
+	}
+	parent := func(t *testing.T, issue string) string {
+		t.Helper()
+		if held := rig.issueRead(t, issue).Parent; held != nil {
+			return *held
+		}
+		return ""
+	}
+
+	t.Run("a move under a new issue lands under its key, and Undo puts the old parent back", func(t *testing.T) {
+		epic, child, changes := split(t, "CSV export")
+		run := rig.ran(t, "split the epic of CSV export", changes...)
+		var created string
+		if err := rig.database.Pool.QueryRow(context.Background(), `select key from issues where title = 'CSV export'`).Scan(&created); err != nil {
+			t.Fatalf("read the issue the run made: %v", err)
+		}
+		plan := rig.plan(t, run)
+		if states := rowStates(plan); !slices.Equal(states, []string{"done", "done"}) {
+			t.Fatalf("the rows are %v, want both done; the calls were told %q", states, rig.toolResults(t, run))
+		}
+		if moved := parent(t, child); moved != created {
+			t.Fatalf("the sub-issue's parent is %q, want %s, the issue the plan made", moved, created)
+		}
+		if arguments := string(plan.Rows[1].Arguments); !strings.Contains(arguments, `"$0"`) {
+			t.Errorf("the move's arguments read %s, want the \"$0\" the person approved", arguments)
+		}
+		lines := rig.undone(t, run, "dispatch_issue_update", "dispatch_issue")
+		if !lines[0].Outcome.OK || !lines[1].Outcome.OK {
+			t.Fatalf("Undo answered %+v, want the move and the create undone", lines)
+		}
+		if back := parent(t, child); back != epic || rig.issueRead(t, created).Status != "done" {
+			t.Fatalf("after Undo the sub-issue's parent is %q and %s is %s, want %s back and the new issue closed",
+				back, created, rig.issueRead(t, created).Status, epic)
+		}
+	})
+
+	t.Run("a move whose create failed is skipped, and nothing of it is sent", func(t *testing.T) {
+		epic, child, changes := split(t, "PDF export")
+		const words = "split the epic of PDF export"
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(changes...)
+			}
+			return answered("The create failed.")
+		})
+		rig.hooks.set(t, http.MethodPost, "/api/v1/issues", func(w http.ResponseWriter, _ *http.Request, _ http.Handler) {
+			writeError(w, "CREATE_REFUSED", http.StatusConflict, "the create is refused for this test")
+		})
+		var sent atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+child, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			sent.Add(1)
+			inner.ServeHTTP(w, r)
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		rig.waiting(t, run)
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+		}
+		plan := rig.plan(t, run)
+		if states := rowStates(plan); !slices.Equal(states, []string{"failed", "skipped"}) {
+			t.Fatalf("the rows are %v, want failed, skipped", states)
+		}
+		if skipped := plan.Rows[1].Result; skipped == nil || skipped.Code != agentwire.CodeRowSkipped || !strings.Contains(skipped.Message, "issue PDF export") {
+			t.Errorf("the move's result is %+v, want ROW_SKIPPED naming the create it needs, issue PDF export", skipped)
+		}
+		if sent.Load() != 0 || parent(t, child) != epic {
+			t.Errorf("the move sent %d writes and the sub-issue's parent is %q, want none sent and %s kept", sent.Load(), parent(t, child), epic)
+		}
+	})
+
+	for _, refused := range []struct {
+		name    string
+		changes func(epic, child string) []map[string]any
+		says    string
+	}{
+		{
+			name: "a new issue the move does not need",
+			changes: func(epic, child string) []map[string]any {
+				return []map[string]any{
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "First half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Second half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$1"}, 0),
+				}
+			},
+			says: `change 2 (dispatch_issue_update): argument "parent" is "$1", the issue change 1 creates, but change 2 does not need change 1`,
+		},
+		{
+			name: "a change that creates no issue",
+			changes: func(epic, child string) []map[string]any {
+				return []map[string]any{
+					goingChange("dispatch_issue_update", retitle(epic, "Renamed epic")),
+					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$0"}, 0),
+				}
+			},
+			says: `change 1 (dispatch_issue_update): argument "parent" is "$0", which names change 0, and change 0 is dispatch_issue_update, which creates no issue`,
+		},
+		{
+			name: "a change the plan does not hold",
+			changes: func(epic, child string) []map[string]any {
+				return []map[string]any{
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Only half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$5"}, 0),
+				}
+			},
+			says: `change 1 (dispatch_issue_update): argument "parent" is "$5", which names change 5, and that is no change before change 1`,
+		},
+	} {
+		t.Run("a plan naming "+refused.name+" is refused", func(t *testing.T) {
+			epic, child, _ := split(t, refused.name)
+			words := "split the epic of " + refused.name
+			rig.loop.script.set(words, func(n int) agenttest.Reply {
+				if n == 1 {
+					return proposing(refused.changes(epic, child)...)
+				}
+				return answered("The plan was refused.")
+			})
+			run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+			if record := rig.ended(t, run, time.Minute); record.state != "done" {
+				t.Fatalf("the run ended %s with %q, want done with the plan refused", record.state, record.reason)
+			}
+			told := rig.toolResults(t, run)
+			if len(told) != 1 || !strings.Contains(told[0], "the call was refused ("+agentwire.CodeCallRefused+")") || !strings.Contains(told[0], refused.says) {
+				t.Fatalf("the model was told %q, want CALL_REFUSED saying %q", told, refused.says)
+			}
+			if plans := rig.count(t, `select count(*) from going_plans where run_id = $1::uuid`, run); plans != 0 {
+				t.Errorf("the run kept %d plans, want none", plans)
+			}
+		})
+	}
+}
+
 // TestARowWhoseItemChangedWaitsAgain: a value another person changed after the approval and
 // before the row's write makes the row wait again, showing the new value, while the other rows
 // run; the person's approval of it again runs it. And where two rows of a plan write one item,

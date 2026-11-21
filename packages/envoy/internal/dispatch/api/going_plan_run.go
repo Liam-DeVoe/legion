@@ -16,7 +16,10 @@ package api
 // or the server between the write's commit and its answer - answers what the first landed and
 // sends nothing twice, and no other key runs the row; the next try of a row that waited again
 // after part of its call landed takes over what landed, by its digest, and sends only the rest.
-// A row's words name each row by its action and item, as the page does (goingRowLabel).
+// A row's words name each row by its action and item, as the page does (goingRowLabel). A row that
+// names the issue an earlier create of its plan makes, as "$N", runs with that issue's key put in
+// its place by the server (resolveNewIssues), while the row as approved, which the agent's call
+// names, keeps "$N".
 //
 // Auto-review (going_modes.go) is a review call of the agent's (agentwire.KindReview), once its
 // model call named the rows the person's words ask for: the server lets through those its mode
@@ -48,8 +51,10 @@ func goingRowNotApproved(tool, why string) *agentwire.Error {
 // did at its approval and whose needed rows ran, which it marks running under the call's key; or a
 // row that key already ran, whose second try answers what it landed, and whose item is read again
 // first where nothing of the key landed (landed), since that try writes (rowItemChanged); routeCall
-// reads it again where part of the call landed and the rest is to be sent. A row the key marked
-// waiting or skipped is answered that refusal again. doer reads the row's item as the run's person
+// reads it again where part of the call landed and the rest is to be sent. The call names the row
+// as approved, a new issue of the plan as "$N", and the row answered holds the key of each such
+// issue in its place (resolveNewIssues), which the call is sent with. A row the key marked waiting
+// or skipped is answered that refusal again. doer reads the row's item as the run's person
 // (login).
 func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallRequest, login string, doer GoingDoer,
 	landed []*goingLandedRequest,
@@ -75,10 +80,14 @@ func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallReque
 	ours := row.result != nil && row.result.Step == request.Step && row.result.Call == request.Call
 	switch row.state {
 	case "approved":
-		return row, a.beforeRowWrite(ctx, request, plan, row, login, doer)
+		return a.beforeRowWrite(ctx, request, plan, row, login, doer)
 	case "running", "done", "failed":
 		if !ours {
 			return row, goingRowNotApproved(request.Tool, fmt.Sprintf("row %d of plan %d ran under another call", row.row, plan.plan))
+		}
+		var refusal *agentwire.Error
+		if row, refusal = a.resolveNewIssues(ctx, request, plan, row); refusal != nil {
+			return row, refusal
 		}
 		if goingLastLanded(landed) == nil {
 			// Nothing of the key landed - its earlier try failed in the server, or its route
@@ -96,14 +105,16 @@ func (a *AgentListener) rowGate(ctx context.Context, request agentwire.CallReque
 }
 
 // beforeRowWrite is the gate of an approved row's first try: a needed row that failed or was
-// skipped skips it, and one that waits makes it wait; its item read again as the person that no
-// longer reads as it did at its approval makes it wait again (rowItemChanged); and otherwise it is
-// marked running under the call's key, in a statement that holds the run's lease, keeping the keys
-// of the row's earlier tries whose landings stay the row's (goingRowRecord.Resumes). Its words name
-// each row it needs as the page names it (goingRowLabel), never by its number.
+// skipped skips it, and one that waits makes it wait; each new issue it names is put in as its key
+// (resolveNewIssues), and its item read again as the person that no longer reads as it did at its
+// approval makes it wait again (rowItemChanged); and otherwise it is marked running under the
+// call's key, in a statement that holds the run's lease, keeping the keys of the row's earlier
+// tries whose landings stay the row's (goingRowRecord.Resumes). It answers the row with its keys
+// put in. Its words name each row it needs as the page names it (goingRowLabel), never by its
+// number.
 func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.CallRequest, plan *goingPlanStored, row goingPlanRowStored,
 	login string, doer GoingDoer,
-) *agentwire.Error {
+) (goingPlanRowStored, *agentwire.Error) {
 	key := goingRowRecord{Step: request.Step, Call: request.Call}
 	for _, need := range row.needs {
 		at := slices.IndexFunc(plan.rows, func(stored goingPlanRowStored) bool { return stored.row == need })
@@ -119,16 +130,20 @@ func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.Ca
 				why += ": " + needed.result.Message
 			}
 			key.Code, key.Message = agentwire.CodeRowSkipped, why
-			return a.settleRow(ctx, request, row, "skipped", key, nil)
+			return row, a.settleRow(ctx, request, row, "skipped", key, nil)
 		case "waiting":
 			key.Code, key.Message = agentwire.CodeRowWaits, fmt.Sprintf("this change waits for approval: it needs %s, which waits for approval", goingRowLabel(needed))
-			return a.settleRow(ctx, request, row, "waiting", key, nil)
+			return row, a.settleRow(ctx, request, row, "waiting", key, nil)
 		default:
-			return goingRowNotApproved(request.Tool, fmt.Sprintf("row %d needs row %d, which has not run", row.row, need))
+			return row, goingRowNotApproved(request.Tool, fmt.Sprintf("row %d needs row %d, which has not run", row.row, need))
 		}
 	}
+	row, refusal := a.resolveNewIssues(ctx, request, plan, row)
+	if refusal != nil {
+		return row, refusal
+	}
 	if refusal := a.rowItemChanged(ctx, request, row, login, doer, nil); refusal != nil {
-		return refusal
+		return row, refusal
 	}
 	tag, err := a.s.deps.Store.Pool.Exec(ctx, `
 		update going_plan_rows set state = 'running', result = jsonb_strip_nulls(jsonb_build_object('resumes', result->'resumes')) || $4::jsonb
@@ -136,15 +151,124 @@ func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.Ca
 		  and exists (select 1 from going_runs where id = $1::uuid and lease_token = $5::uuid and state = 'working')
 	`, request.Run, plan.plan, row.row, goingRecordJSON(key), request.LeaseToken)
 	if err != nil {
-		return goingAgentFailed(agentwire.CallCall, err)
+		return row, goingAgentFailed(agentwire.CallCall, err)
 	}
 	if tag.RowsAffected() == 0 {
 		if _, stale := a.callRun(ctx, request); stale != nil {
-			return stale
+			return row, stale
 		}
-		return goingAgentRefusal(agentwire.CodeCallUnknown, "row %d of plan %d was taken by another call meanwhile", row.row, plan.plan)
+		return row, goingAgentRefusal(agentwire.CodeCallUnknown, "row %d of plan %d was taken by another call meanwhile", row.row, plan.plan)
 	}
-	return a.refreshPlanState(ctx, request.Run, plan.plan)
+	return row, a.refreshPlanState(ctx, request.Run, plan.plan)
+}
+
+// goingCreatedKeysSQL reads the key of the issue each row $3 of plan $2 of run $1 made, each a
+// create of an issue that is done: what its route answered, as the landing of the row's call key
+// recorded it beside the create's one request, POST /api/v1/issues (goingRecordAnswer).
+const goingCreatedKeysSQL = `
+	select r.row, l.answer->'body'->>'key'
+	from going_plan_rows r
+	join going_landings l on l.run_id = r.run_id and l.phase = 'do'
+	  and l.step = (r.result->>'step')::int and l.call = (r.result->>'call')::int
+	  and l.method = 'POST' and l.path = '/api/v1/issues'
+	where r.run_id = $1::uuid and r.plan = $2 and r.row = any($3) and r.state = 'done'
+	  and r.change->>'tool' = '` + goingIssueCreateTool + `' and l.answer->'body'->>'key' is not null
+`
+
+// resolveNewIssues is row with the key of each new issue its arguments name as "$N"
+// (goingNewIssueRef) - an argument's value, or an item of an argument's list - in place of the
+// name: the issue row N of plan created, read off that create's landing (goingCreatedKeysSQL). The
+// server puts the key in, so the read of the row's item before its write, the write, its landings
+// and its undo all name the issue itself, while the row as the person approved it keeps "$N",
+// which the agent's call names (rowGate). A row that names none is answered as it is. A key the
+// record does not hold - row N made no issue, which the plan's own refusals (goingNewIssueRefusal)
+// and the gate of the rows a row needs already keep from coming here - skips the row, ROW_SKIPPED,
+// so no write is sent with a "$N" in it.
+func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.CallRequest, plan *goingPlanStored, row goingPlanRowStored,
+) (goingPlanRowStored, *agentwire.Error) {
+	arguments, err := goingRowArguments(row.arguments)
+	if err != nil {
+		return row, goingAgentFailed(agentwire.CallCall, err)
+	}
+	named := goingNewIssuesNamed(arguments)
+	if len(named) == 0 {
+		return row, nil
+	}
+	read, err := a.s.deps.Store.Pool.Query(ctx, goingCreatedKeysSQL, request.Run, plan.plan, named)
+	if err != nil {
+		return row, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues %s names: %w", goingRowLabel(row), err))
+	}
+	keys := map[int]string{}
+	for read.Next() {
+		var created int
+		var key string
+		if err := read.Scan(&created, &key); err != nil {
+			read.Close()
+			return row, goingAgentFailed(agentwire.CallCall, err)
+		}
+		keys[created] = key
+	}
+	if err := read.Err(); err != nil {
+		return row, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues %s names: %w", goingRowLabel(row), err))
+	}
+	for _, created := range named {
+		if keys[created] != "" {
+			continue
+		}
+		creates := "an issue of this plan"
+		if at := slices.IndexFunc(plan.rows, func(stored goingPlanRowStored) bool { return stored.row == created }); at >= 0 {
+			creates = goingRowLabel(plan.rows[at])
+		}
+		skipped := goingRowRecord{Step: request.Step, Call: request.Call, Code: agentwire.CodeRowSkipped,
+			Message: fmt.Sprintf("this change was skipped: it needs the key of %s, which this run did not record", creates)}
+		return row, a.settleRow(ctx, request, row, "skipped", skipped, nil)
+	}
+	resolved, err := json.Marshal(goingWithNewIssues(arguments, keys))
+	if err != nil {
+		return row, goingAgentFailed(agentwire.CallCall, err)
+	}
+	row.arguments = resolved
+	return row, nil
+}
+
+// goingNewIssuesNamed is each row whose new issue arguments name as "$N" (goingNewIssueRef), as an
+// argument's value or an item of an argument's list, in order.
+func goingNewIssuesNamed(arguments map[string]any) []int {
+	var named []int
+	for _, value := range arguments {
+		for _, item := range goingArgumentItems(value) {
+			if created, held := goingNewIssueRef(item); held {
+				named = append(named, created)
+			}
+		}
+	}
+	slices.Sort(named)
+	return slices.Compact(named)
+}
+
+// goingWithNewIssues is arguments with each "$N" goingNewIssuesNamed reads replaced by keys[N];
+// arguments itself is left as it is.
+func goingWithNewIssues(arguments map[string]any, keys map[int]string) map[string]any {
+	put := func(value any) any {
+		if created, held := goingNewIssueRef(value); held {
+			return keys[created]
+		}
+		return value
+	}
+	resolved := make(map[string]any, len(arguments))
+	for argument, value := range arguments {
+		list, isList := value.([]any)
+		if !isList {
+			resolved[argument] = put(value)
+			continue
+		}
+		items := make([]any, len(list))
+		for index, item := range list {
+			items[index] = put(item)
+		}
+		resolved[argument] = items
+	}
+	return resolved
 }
 
 // rowItemChanged reads the item of row, an approved row, again as the person (login, through doer)
