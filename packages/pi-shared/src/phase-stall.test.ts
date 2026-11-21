@@ -1,10 +1,16 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { LegionOwedResponse } from "@legion/contracts/legion-api";
+import { z } from "zod";
+import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
 import {
   assistantRanTool,
   assistantText,
-  isInbound,
+  inboundOf,
   LAST_MESSAGE_LIMIT,
   phaseStallEntryFrom,
+  quietReminderText,
   recordedPhaseStall,
   stepPhaseStall,
   turnEndOf,
@@ -147,12 +153,25 @@ test("a record's last message reads back no longer than the notice quotes", () =
 // news (an Envoy delivery, a person's direct message) and a daemon prompt (its task, the update
 // round's) each start the count again, and neither says anything of what the claim owes. The two
 // differ in whether they end a wait the worker declared, which is the reminder's to report
-// (`src/phase-reminder.ts`), not the rhythm's.
+// (`src/phase-reminder.ts`), not the rhythm's. A message's kind says which it is: a user message
+// is a daemon prompt, and an Envoy card is news under the card's own key, where it carries one.
 test("news and a daemon prompt each start the count again, and the reminder's own message is neither", () => {
-  expect(isInbound({ role: "user", content: "Run the update." })).toBe(true);
-  expect(isInbound({ role: "custom", customType: "envoy-message", details: {} })).toBe(true);
-  expect(isInbound({ role: "custom", customType: "legion-phase-reminder" })).toBe(false);
-  expect(isInbound({ role: "assistant", content: [] })).toBe(false);
+  expect(inboundOf({ role: "user", content: "Run the update." })).toEqual({ kind: "prompt" });
+  expect(inboundOf({ role: "custom", customType: "envoy-message", details: {} })).toEqual({
+    kind: "news",
+  });
+  expect(
+    inboundOf({
+      role: "custom",
+      customType: "envoy-message",
+      details: { event_id: "evt-1", dedupe_key: "publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6" },
+    })
+  ).toEqual({ kind: "news", deliveryKey: "publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6" });
+  expect(
+    inboundOf({ role: "custom", customType: "envoy-message", details: LOCAL_ENVOY_NOTICE })
+  ).toBeUndefined();
+  expect(inboundOf({ role: "custom", customType: "legion-phase-reminder" })).toBeUndefined();
+  expect(inboundOf({ role: "assistant", content: [] })).toBeUndefined();
   for (const kind of ["news", "prompt"] as const) {
     for (const state of ["active", "waiting", "awaiting-update"] as const) {
       expect(stepPhaseStall({ state, count: 3 }, { kind })).toEqual({
@@ -294,4 +313,35 @@ test("a settle in a quiet wait earns none, and the wait ends on a reminder", () 
   expect(stepPhaseStall({ state: "waiting", count: 2 }, { kind: "reminded" })).toEqual({
     state: { state: "active", count: 3 },
   });
+});
+
+/** `packages/contracts/fixtures/daemon-api/merger-closed-note.json`: one tree, the closed gate
+ * that holds its merger as the owed answer gives it, and the note the daemon builds from them
+ * (`mergerClosedNote` in `packages/daemon/internal/workflow/gate.go`). */
+const MergerClosedNote = z.object({
+  tree: z.string().min(1),
+  hold: LegionOwedResponse.shape.hold.unwrap(),
+  note: z.string().min(1),
+});
+
+// D15 of dispatch://INFRA-2040's plan: the reminder a held merger gets for a tool call written as
+// text ends with the daemon's own closed note, word for word. The daemon's test
+// (TestMergerClosedGateNoteIsTheContractFixturesNote in `packages/daemon/internal/workflow`) holds
+// its sentence to the same fixture, so a change to the sentence on one side alone fails a test.
+test("the reminder during a hold ends with the daemon's own closed note, word for word", () => {
+  const fixture = MergerClosedNote.parse(
+    JSON.parse(
+      readFileSync(
+        path.resolve(
+          import.meta.dir,
+          "../../contracts/fixtures/daemon-api/merger-closed-note.json"
+        ),
+        "utf8"
+      )
+    )
+  );
+  const call = '<invoke name="legion"><parameter name="op">handoff_complete</parameter>';
+
+  expect(quietReminderText(call, fixture.tree, fixture)).toEndWith(` ${fixture.note}`);
+  expect(quietReminderText("Pushed.", fixture.tree, fixture)).toBeUndefined();
 });

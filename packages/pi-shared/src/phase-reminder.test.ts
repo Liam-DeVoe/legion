@@ -1,6 +1,4 @@
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import { afterEach, expect, test } from "bun:test";
 import { LEGION_PHASES, type LegionOwed } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
@@ -8,8 +6,13 @@ import {
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
-import { z } from "zod";
-import { createLegionDaemonClient, type LegionDaemonClient, type OwedInput } from "./daemon-client";
+import { UPDATE_ASK_KEY, type WaitStandIn, waitStandIn } from "../test/wait-stand-in";
+import {
+  createLegionDaemonClient,
+  type LegionDaemonClient,
+  type OwedInput,
+  type WaitNewsInput,
+} from "./daemon-client";
 import { type ClaimCapability, executePhaseOp, PHASE_OPS } from "./legion-phase-ops";
 import {
   createPhaseReminder,
@@ -55,11 +58,20 @@ function phasesAndOperations(text: string): string[] {
   return [...LEGION_PHASES, ...PHASE_OPS, "phase"].filter((word) => words.has(word));
 }
 
-/** The news report of a case that reports none: a report the reminder sends there fails the
- * case. */
-const NO_NEWS: PhaseReminderDeps["reportNews"] = async () => {
+/** Every report of news a case that reports none was asked to send. The reminder catches a
+ * report's failure and only logs it, so a throw here would fail nothing: the hook below holds
+ * the list empty at the end of each case. */
+const unexpectedReports: WaitNewsInput[] = [];
+
+/** The news report of a case that reports none. */
+const NO_NEWS: PhaseReminderDeps["reportNews"] = async (input) => {
+  unexpectedReports.push(input);
   throw new Error("this case reports no news");
 };
+
+afterEach(() => {
+  expect(unexpectedReports.splice(0), "the reports of news a case without news sent").toEqual([]);
+});
 
 // A daemon that never answers the owed check: the check fails open once its bound passes, and the
 // request it started is aborted then rather than left open, one request per reminder.
@@ -994,22 +1006,6 @@ test("a turn that ends with a WAITING line and nothing else gets the same remind
 // route ends the wait a report names as the daemon does.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The update round's ask as a card carries its key: the daemon's key for the implementer's round
- * (`update-ask-key.json`, which the daemon's golden test writes), behind the listener's
- * role-forward prefix. The daemon answers a report with it `ended: false`. */
-const UPDATE_ASK_KEY = `envoy.role.forward.${
-  z
-    .object({ key: z.string() })
-    .parse(
-      JSON.parse(
-        readFileSync(
-          path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/update-ask-key.json"),
-          "utf8"
-        )
-      )
-    ).key
-}`;
-
 /** Another delivery's key, which is news the daemon ends the wait for. */
 const DELIVERY_KEY = "publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6";
 
@@ -1035,79 +1031,27 @@ const TEXT_CALL = '<invoke name="legion"><parameter name="op">handoff_complete</
 /** The build a host hands the `legion` tool's executor. */
 const BUILD = { name: "@sjawhar/pi-legion", version: "18.14.1", pluginContract: CONTRACT } as const;
 
-/** What a stand-in daemon answers, which a case moves: whether the claim owes its work, the wait
- * that stands, the closed gate that holds the claim, and how many of the next reports of news fail. */
-interface StandInState {
-  owes: boolean;
-  wait: LegionOwed["wait"];
-  hold: LegionOwed["hold"];
-  failReports: number;
-}
-
-/** A stand-in daemon, the real client over it, every route it was asked and every report of news
- * it was posted, in order. */
-interface StandIn {
-  readonly state: StandInState;
+/** A stand-in daemon (`waitStandIn`) behind the real client, which fails the next
+ * `state.failReports` reports of news with a 503 and 404s every route it does not serve. */
+interface StandIn extends WaitStandIn {
   readonly client: LegionDaemonClient;
-  readonly routes: string[];
-  readonly reports: Record<string, unknown>[];
 }
 
-/** A stand-in daemon behind the real client. It answers the owed route with `work` while `owes`,
- * the wait while one stands and the hold while `hold` is set; mints a wait for each declaration;
- * and answers each report of news as the daemon does — `ended: false` for the update ask's key,
- * `ended: true` for the wait that stands, which ends it, and `ended: false` for any other — after
- * failing the next `failReports` reports with a 503. */
 function standInDaemon(work: string = WORK): StandIn {
-  const routes: string[] = [];
-  const reports: Record<string, unknown>[] = [];
-  const state: StandInState = { owes: true, wait: undefined, hold: undefined, failReports: 0 };
-  let minted = 0;
+  const standIn = waitStandIn(work);
   const fetchFn = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
-    routes.push(route);
-    const body: Record<string, unknown> =
-      typeof init?.body === "string" ? JSON.parse(init.body) : {};
-    if (route === "/legion/v1/claims/owed") {
-      return Response.json({
-        owes: state.owes,
-        work: state.owes ? work : "",
-        ...(state.wait === undefined ? {} : { wait: state.wait }),
-        ...(state.hold === undefined ? {} : { hold: state.hold }),
-      });
-    }
-    if (route === "/legion/v1/claims/wait") {
-      minted += 1;
-      state.wait = {
-        id: `wait-${minted}`,
-        waitingOn: String(body.waitingOn),
-        wakeAt: String(body.wakeAt),
-        declaredAt: "2026-11-21T09:00:00.123456Z",
-      };
-      return Response.json({ wait: state.wait });
-    }
-    if (route === "/legion/v1/claims/wait-news") {
-      reports.push(body);
-      if (state.failReports > 0) {
-        state.failReports -= 1;
-        return Response.json({ error: "the daemon is restarting" }, { status: 503 });
-      }
-      if (body.deliveryKey === UPDATE_ASK_KEY) {
-        return Response.json({ ended: false, updateAsk: true });
-      }
-      if (state.wait !== undefined && body.waitId === state.wait.id) {
-        state.wait = undefined;
-        return Response.json({ ended: true });
-      }
-      return Response.json({ ended: false });
-    }
-    return Response.json({ error: `no route ${route}` }, { status: 404 });
+    const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    if (route === "/legion/v1/claims/owed") return standIn.owed();
+    return (
+      standIn.answer(route, body) ?? Response.json({ error: `no route ${route}` }, { status: 404 })
+    );
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
     pluginContract: CONTRACT,
     fetch: fetchFn,
   });
-  return { state, client, routes, reports };
+  return { ...standIn, client };
 }
 
 /** The body of a report of news the claim sends for `waitId`, with `deliveryKey` when given. */
@@ -1370,6 +1314,95 @@ test("a report the process could not send is sent again by the relaunched proces
   }
 });
 
+// News that reaches the session while a pass of reports is out goes in the one pass queued behind
+// it, however much of it arrives. Over a daemon that answers no report, each pass stops at the
+// oldest kept report once the bound passes, so a burst of news costs two bounds, and a turn's end
+// then sends one pass of its own before it reads the owed answer. The bound is the reminder's own
+// timer, so the case runs on the clock with a short one, as the owed check's case above does.
+test("news that arrives while a report is out is sent in one pass queued behind it", async () => {
+  const reported: WaitNewsInput[] = [];
+  const firstOut = Promise.withResolvers<void>();
+  const entries: PhaseStallEntry[] = [];
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: (entry) => entries.push(entry),
+    claim: () => implementer,
+    readOwed: async () => OWES,
+    reportNews: (input) => {
+      reported.push(input);
+      firstOut.resolve();
+      return new Promise(() => {});
+    },
+    publisher: () => undefined,
+    project: "LEGION",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: () => {}, warn: () => {} },
+    owedBoundMs: 50,
+  });
+  reminder.waitDeclared("wait-1");
+  reminder.turnStarted();
+
+  const first = reminder.news("publish.first");
+  await firstOut.promise;
+  const burst = ["publish.second", "publish.third", "publish.fourth"].map((key) =>
+    reminder.news(key)
+  );
+  await Promise.all([first, ...burst]);
+
+  expect(reported.map((report) => report.deliveryKey)).toEqual(["publish.first", "publish.first"]);
+  expect(entries.at(-1)?.unsentNews).toEqual(
+    ["publish.first", "publish.second", "publish.third", "publish.fourth"].map((deliveryKey) => ({
+      waitId: "wait-1",
+      deliveryKey,
+    }))
+  );
+
+  await reminder.settle(said("Read the news."));
+  expect(reported.map((report) => report.deliveryKey)).toEqual([
+    "publish.first",
+    "publish.first",
+    "publish.first",
+  ]);
+});
+
+/** A second delivery's key: news the daemon ends a wait for, as `DELIVERY_KEY` is. */
+const SECOND_KEY = "publish.0b8e4d2f6a1c49e7b3d5f8a2c4e6b0d1";
+
+// The daemon applies the news of one wait under one event id (`(*server).waitNews` in
+// `packages/daemon/internal/api/wait.go`). Once it has answered a report of the wait that is not
+// its update ask, it answers each later report of that wait `ended: false`, as a duplicate. So
+// the plugin drops every other kept report of that wait and reports no later news against it. An
+// answer of `ended: false` still leaves the wait standing in the plugin (D8).
+test("once the daemon has answered a report of a wait that is not its update ask, no other report of that wait goes out", async () => {
+  // The kept report ends the wait, and the report kept behind it is dropped.
+  const standIn = standInDaemon();
+  const worker = waitRig(standIn);
+  await worker.declareWait();
+  standIn.state.failReports = 1;
+  worker.reminder.turnStarted();
+  await worker.reminder.news(DELIVERY_KEY);
+  await worker.reminder.news(SECOND_KEY);
+  const delivery = reportOf(implementer, "wait-1", DELIVERY_KEY);
+  expect(standIn.reports).toEqual([delivery, delivery]);
+  expect(standIn.state.wait).toBeUndefined();
+  expect(worker.entries.at(-1)).not.toHaveProperty("unsentNews");
+
+  // The daemon ended the wait itself (its time came), so it answers the first report
+  // `ended: false`. The wait stands in the plugin, and later news reports nothing.
+  const timedOut = standInDaemon();
+  const waiting = waitRig(timedOut);
+  await waiting.declareWait();
+  timedOut.state.wait = undefined;
+  waiting.reminder.turnStarted();
+  await waiting.reminder.news(DELIVERY_KEY);
+  await waiting.reminder.news(SECOND_KEY);
+  await waiting.reminder.news();
+  expect(timedOut.reports).toEqual([delivery]);
+  expect(waiting.entries.at(-1)).toMatchObject({ waitId: "wait-1" });
+  expect(waiting.entries.at(-1)).not.toHaveProperty("unsentNews");
+});
+
 // R1 and R5: owed work with no wait and no hold, and no completion, is reminded at every turn's
 // end, and the reminder names `declare_wait` and no WAITING line. The architect is told after 3
 // reminders that change nothing, naming the work.
@@ -1380,7 +1413,8 @@ test("owed work with no wait and no hold is reminded, the text names declare_wai
   const continuation = await worker.reminder.settle(said("Pushed."));
   expect(continuation).toBe(reminderText("Pushed.", WORK));
   expect(continuation).toContain("op `declare_wait`");
-  expect(continuation).toContain("a message whose wake is lost waits until the wait's time");
+  expect(continuation).toContain("The update round's message does not end the wait.");
+  expect(continuation).toContain("A message whose wake is lost waits until the wait's time.");
   expect(continuation).not.toContain("WAITING");
   for (const reminders of [2, 3]) {
     expect(await worker.reminder.settle(said("Still here."))).toBeUndefined();

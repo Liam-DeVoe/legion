@@ -338,6 +338,19 @@ export const PHASE_OP_SENTENCES = {
     "read_build reads no project state. ",
 } as const;
 
+/** The sentences every host's `legion` tool states around `handoff_complete`'s contract, as
+ * `legionToolDescription` takes them: `read_record` and `read_release_records` before it, and
+ * `request_backward_move`, `declare_wait` and `read_build` after it, in that order. A host with
+ * more operations states its own after these (`createLegionTool` in
+ * `packages/pi-legion/src/tools.ts`). */
+export const SHARED_PHASE_OP_SENTENCES = {
+  before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
+  after:
+    PHASE_OP_SENTENCES.requestBackwardMove +
+    PHASE_OP_SENTENCES.declareWait +
+    PHASE_OP_SENTENCES.readBuild,
+} as const;
+
 /**
  * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
  * daemon ends that refusal with (`staleEntryInstruction` in

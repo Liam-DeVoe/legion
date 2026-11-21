@@ -285,7 +285,7 @@ const legionWait = z.object({
 /** `api.HoldView` — the closed design gate that holds a merger while the hold stands: the gated
  * step whose row holds it, the document registered for that step, and the version of that document
  * that is with its reviewer. The daemon writes all three, and all three are required: the phase
- * reminder builds the closed note's sentence from them (`heldReminderText` in
+ * reminder builds the closed note's sentence from them (`quietReminderText` in
  * `pi-shared/src/phase-stall.ts`, LEGION_ANSWER_READS). */
 const legionHold = z.object({
   step: legionDesignStep,
@@ -1587,8 +1587,6 @@ export const LegionWaitResponse = z.object({
   wait: legionWait,
 });
 
-export type LegionWait = z.output<typeof LegionWaitResponse>;
-
 /** `api.WaitNewsRequest`, the body of `POST /legion/v1/claims/wait-news`: a phase worker's plugin
  * reporting that news reached its session after the declaration of the wait `waitId` names — an
  * Envoy delivery, a message to its role, or a person's message — so the daemon ends that wait.
@@ -1617,14 +1615,16 @@ export type LegionWaitNewsRequestBody = z.output<typeof LegionWaitNewsRequest>;
  * ask end no wait. Every other report, with any other key or none, is news, whether or not an
  * update round is open. `updateAsk` is absent from every other answer. The daemon always writes
  * `ended`, and it is required: the phase reminder ends the wait in the plugin on `true` and keeps
- * it standing on `false` (`pi-shared/src/phase-reminder.ts`, LEGION_ANSWER_READS). No plugin code
- * reads `updateAsk`, so it stays optional. */
+ * it standing on `false` (`pi-shared/src/phase-reminder.ts`, LEGION_ANSWER_READS). The phase
+ * reminder reads `updateAsk` too: an answer without it drops every other kept report of the wait.
+ * `updateAsk` stays optional, since the daemon writes it only for the update ask. */
 export const LegionWaitNewsResponse = z.object({
   ended: z.boolean(),
   updateAsk: z.literal(true).optional(),
 });
 
 export type LegionWaitNews = z.output<typeof LegionWaitNewsResponse>;
+
 /** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 206): a live role's
  * session asking, at the end of its turn, what its claim owes now. It carries what
  * `claims/activity` carries — the claim, the session the claim records, and the registration's
@@ -1676,6 +1676,7 @@ export const LegionOwedResponse = z
   });
 
 export type LegionOwed = z.output<typeof LegionOwedResponse>;
+
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
  * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
@@ -2497,7 +2498,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206). From contract 213 it
   // holds every reminder but the one for a tool call written as text while the answer's `wait`
   // stands, which it tells by the wait's `id`, or while its `hold` stands, whose step, document
-  // and version that reminder names (`heldReminderText` in `pi-shared/src/phase-stall.ts`).
+  // and version that reminder names (`quietReminderText` in `pi-shared/src/phase-stall.ts`).
   LegionOwedResponse: [
     "owes",
     "work",
@@ -2513,6 +2514,6 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // hands its `id` to its host, which tells the phase reminder.
   LegionWaitResponse: ["wait", "wait.id"],
   // The phase reminder's report of news ends the wait in the plugin on `ended` true and keeps it
-  // standing on false.
-  LegionWaitNewsResponse: ["ended"],
+  // standing on false. An answer without `updateAsk` drops every other kept report of its wait.
+  LegionWaitNewsResponse: ["ended", "updateAsk"],
 };

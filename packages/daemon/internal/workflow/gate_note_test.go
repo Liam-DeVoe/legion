@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,5 +100,39 @@ func TestMergerGateNoteGivesAMergerInMergingTheGatesStateAndNobodyElseANote(t *t
 	note := MergerGateNote(merging, claim.RoleMerger, closedSpecGate(root))
 	if words := gateClosedWords(root, record.DesignStepSpec, "spec-artifact", 2); !strings.HasPrefix(note.Text, words) {
 		t.Errorf("the closed note %q does not open with the closing message's words %q", note.Text, words)
+	}
+}
+
+// mergerClosedNoteFixture is packages/contracts/fixtures/daemon-api/merger-closed-note.json: one
+// tree, the closed gate that holds its merger as the owed answer gives it (api.HoldView), and the
+// note the daemon builds from them.
+type mergerClosedNoteFixture struct {
+	Tree string `json:"tree"`
+	Hold struct {
+		Step       record.DesignStep `json:"step"`
+		ArtifactID string            `json:"artifactId"`
+		Version    int               `json:"version"`
+	} `json:"hold"`
+	Note string `json:"note"`
+}
+
+// The closed note the daemon builds for the fixture's tree and hold is the fixture's note, word
+// for word. The plugin's reminder during a hold carries the same sentence (quietReminderText in
+// packages/pi-shared/src/phase-stall.ts), and its test reads the same fixture, so a change to the
+// sentence on one side alone fails a test.
+func TestMergerClosedGateNoteIsTheContractFixturesNote(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "merger-closed-note.json"))
+	if err != nil {
+		t.Fatalf("read the merger closed note fixture: %v", err)
+	}
+	var fixture mergerClosedNoteFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the merger closed note fixture: %v", err)
+	}
+	if fixture.Tree == "" || fixture.Hold.Step == "" || fixture.Hold.ArtifactID == "" || fixture.Hold.Version == 0 || fixture.Note == "" {
+		t.Fatalf("the merger closed note fixture is %+v, want a tree, a hold and a note", fixture)
+	}
+	if got := mergerClosedNote(fixture.Tree, fixture.Hold.Step, fixture.Hold.ArtifactID, fixture.Hold.Version); got != fixture.Note {
+		t.Fatalf("mergerClosedNote = %q, want the fixture's note %q", got, fixture.Note)
 	}
 }

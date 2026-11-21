@@ -56,13 +56,13 @@ import { configuredValue } from "./claude-session"
  * are the daemon's owed answer to give (dispatch://INFRA-2040). While either stands, the machine
  * continues no turn, arms no timer and sends no reminder but the one for a tool call written as
  * text, and every activity report says that no reminder is due, so the daemon can release the
- * pod. A WAITING line in the worker's reply buys nothing: only the worker's own background work
- * buys a quiet wait (`${background_tasks}` at `Stop`). News is what this server's channel writes
- * into the session after the declaration: each relayed Envoy delivery, under the frame's own key,
- * and each person's message, with none (D8 of dispatch://INFRA-2040's plan). The channel server
- * reports it through `news`, from its own process, whichever turn Claude Code takes it into: the
- * bridge's inbox and these hooks never see the frame's key. The CallTool handler of the same
- * server tells this endpoint the wait a `declare_wait` recorded (`waitDeclared`).
+ * pod. Only the worker's own background work buys a quiet wait (`${background_tasks}` at `Stop`).
+ * News is what this server's channel writes into the session after the declaration: each relayed
+ * Envoy delivery, under the frame's own key, and each person's message, with none (D8 of
+ * dispatch://INFRA-2040's plan). The channel server reports it through `news`, from its own
+ * process, whichever turn Claude Code takes it into: the bridge's inbox and these hooks never see
+ * the frame's key. The CallTool handler of the same server tells this endpoint the wait a
+ * `declare_wait` recorded (`waitDeclared`).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -551,10 +551,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // decides nothing: the count is what bounds a run of reminders. `background_tasks` does
           // decide: a turn that ends with a background task of the worker's own still running is
           // a worker waiting to be woken by it, not a stalled one, and that is the one quiet wait
-          // a turn's end buys. A WAITING line in the worker's reply buys nothing. A wait the worker
-          // declared and the design gate's hold are the daemon's owed answer to give, which the
-          // settle reads: while either stands it continues nothing and arms nothing, but for a
-          // tool call written as text.
+          // a turn's end buys. A wait the worker declared and the design gate's hold are the
+          // daemon's owed answer to give, which the settle reads: while either stands it
+          // continues nothing and arms nothing, but for a tool call written as text.
           const backgroundWork = backgroundWorkRunning(event.backgroundTasks)
           deps.log.debug("legion: a Claude Code phase worker's turn is settling", {
             issue: claim.issue,

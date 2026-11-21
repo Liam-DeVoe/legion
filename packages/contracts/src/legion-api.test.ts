@@ -340,6 +340,16 @@ const schemas: Record<string, z.ZodType> = {
     openedAt: LegionInstant,
     key: z.string().regex(/^publish\.[0-9a-f]{32}$/),
   }),
+  // Nor this one: one tree and the closed design gate that holds its merger, as the owed answer
+  // gives it (`api.HoldView`), with the note the daemon builds from them (`mergerClosedNote` in
+  // `internal/workflow/gate.go`). `internal/workflow`'s
+  // TestMergerClosedGateNoteIsTheContractFixturesNote holds the daemon's sentence to it, and
+  // `packages/pi-shared/src/phase-stall.test.ts` holds the reminder a held merger gets to it.
+  "merger-closed-note.json": z.strictObject({
+    tree: z.string().min(1),
+    hold: LegionOwedResponse.shape.hold.unwrap(),
+    note: z.string().min(1),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -1918,7 +1928,7 @@ const waitNewsRequest = {
  * `update-ask-key.json`, behind the listener's role-forward mark as a host may hand it on. */
 const waitNewsDeliveryRequest = {
   ...waitNewsRequest,
-  deliveryKey: "envoy.role.forward.publish.26d039781ce852c069c5873a1f1d3ab7",
+  deliveryKey: `envoy.role.forward.${z.object({ key: z.string() }).parse(fixture("update-ask-key.json")).key}`,
 };
 
 // What only a real body can prove, route by route: the body each route sends parses, and a body
@@ -2779,16 +2789,6 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// A plugin below 202 reads the repositories block with contract 152's schema
-// (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
-// block this contract writes refuses there, and with it the whole state, so the route serves that
-// caller the block in 152's shape, written from the same entries, and leaves every other key as
-// the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
-// served to a caller that states 201 (`internal/api`'s TestStateNarrowedRepositoriesGolden), and
-// the drift gate above holds every key of it to that copy. The entries land where 152 put them:
-// `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
-// served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
-// is this contract's own list.
 /** `body` with no claim view carrying `wait` or `hold`, the two keys contract 213 added, as the
  * daemon serves a caller below 213 (`api.withoutWaitAndHold`): every issue's architect and every
  * worker's claim. The body it is given is left as it was. */
@@ -2813,6 +2813,16 @@ function withoutWaitAndHold<T extends Record<string, unknown>>(body: T): T {
   return copy;
 }
 
+// A plugin below 202 reads the repositories block with contract 152's schema
+// (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
+// block this contract writes refuses there, and with it the whole state, so the route serves that
+// caller the block in 152's shape, written from the same entries, and leaves every other key as
+// the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
+// served to a caller that states 201 (`internal/api`'s TestStateNarrowedRepositoriesGolden), and
+// the drift gate above holds every key of it to that copy. The entries land where 152 put them:
+// `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
+// served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
+// is this contract's own list.
 test("a reader at contract 152 parses the repositories block served below 202", () => {
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;

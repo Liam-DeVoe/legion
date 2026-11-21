@@ -19,10 +19,10 @@ import {
   isPhaseOp,
   legionToolDescription,
   mintClaimGrant,
-  PHASE_OP_SENTENCES,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
+  SHARED_PHASE_OP_SENTENCES,
   unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
@@ -488,11 +488,9 @@ export function createLegionTool(deps: {
     // agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
-      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
+      before: SHARED_PHASE_OP_SENTENCES.before,
       after:
-        PHASE_OP_SENTENCES.requestBackwardMove +
-        PHASE_OP_SENTENCES.declareWait +
-        PHASE_OP_SENTENCES.readBuild +
+        SHARED_PHASE_OP_SENTENCES.after +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +

@@ -25,9 +25,6 @@ import {
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
-  type LegionOwed,
-  LegionWaitNewsRequest,
-  LegionWaitRequest,
 } from "@legion/contracts/legion-api";
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -68,6 +65,11 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import {
+  UPDATE_ASK_KEY,
+  type WaitStandIn,
+  waitStandIn,
+} from "@legion/pi-shared/test/wait-stand-in";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -949,7 +951,7 @@ async function claimPane(options: {
     url: URL,
     body: unknown,
     init: RequestInit | undefined
-  ) => Response | undefined;
+  ) => Response | Promise<Response> | undefined;
   readonly ensureOnDisk?: () => Promise<void>;
   readonly branch?: readonly unknown[];
   readonly title?: { readonly name: string; readonly source: "auto" | "user" };
@@ -1846,6 +1848,30 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.tools.slice(toolsBeforeBoot).map((tool) => tool.name)).toEqual(["legion"]);
     expect(pane.activeTools).toContain("legion");
   });
+  // A phase worker's boot asks the daemon what its claim owes before it arms the resume reminder
+  // (`armResumeReminder`). The `legion` tool does not wait for that answer: it is registered and
+  // active while the read is still out, and the answer arms the reminder when it comes.
+  test("registers and activates the legion tool before the daemon answers what a phase worker's claim owes", async () => {
+    const asked = Promise.withResolvers<void>();
+    const owed = Promise.withResolvers<Response>();
+    const pane = await claimPane({
+      role: "implementer",
+      sessionId: "ses_owed_late",
+      extraRoutes: (url) => {
+        if (url.pathname !== "/legion/v1/claims/owed") return undefined;
+        asked.resolve();
+        return owed.promise;
+      },
+    });
+    const started = pane.start();
+    await asked.promise;
+    expect(pane.tools.map((tool) => tool.name)).toContain("legion");
+    expect(pane.activeTools).toContain("legion");
+
+    owed.resolve(Response.json({ owes: true, work: "the implementing phase of REPO-43" }));
+    await started;
+    expect(pane.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
+  });
   test("leaves the repository-scoped jj config untouched at worker boot: identity is the pane's environment, not config", async () => {
     // Every issue workspace is a workspace of one shared clone, and `--repo` config is one file
     // for all of them: a boot that wrote its identity there would set the author for every other
@@ -2005,7 +2031,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
       /** The stand-in daemon's answer to a route the case serves itself, tried before every other
-       * route: the wait's declaration and its news (`waitDaemon`). */
+       * route: the wait's declaration and its news (`waitStandIn`). */
       readonly routes?: (url: URL, body: unknown) => Response | undefined;
     }) => {
       let owed = options.owed ?? owesWork;
@@ -2615,7 +2641,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     test("a daemon that does not answer what the claim owes still nudges, and says it could not read the record", async () => {
       // An unreachable daemon is exactly when a stalled worker must still be nudged; the nudge
-      // names no phase and no operation, since it read neither.
+      // names no phase and no work, since it read neither, and the one operation it names is
+      // `declare_wait`.
       const worker = await bootStalling({
         owed: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
       });
@@ -2783,28 +2810,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     // ─── A wait the worker declared, and the design gate's hold (dispatch://INFRA-2040) ───────
 
-    /** The update round's ask as its card carries its key: the daemon's key for a round
-     * (`update-ask-key.json`, which the daemon's golden test writes), behind the listener's
-     * role-forward prefix (D9 of dispatch://INFRA-2040's plan). The daemon answers a report with it
-     * `ended: false`. */
-    const UPDATE_ASK_KEY = (() => {
-      const fixture: unknown = JSON.parse(
-        readFileSync(
-          path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/update-ask-key.json"),
-          "utf8"
-        )
-      );
-      if (
-        typeof fixture !== "object" ||
-        fixture === null ||
-        !("key" in fixture) ||
-        typeof fixture.key !== "string"
-      ) {
-        throw new Error("update-ask-key.json names no key");
-      }
-      return `envoy.role.forward.${fixture.key}`;
-    })();
-    /** Another delivery's key behind the same prefix: news the daemon ends the wait for. */
+    /** Another delivery's key behind the listener's role-forward prefix, as `UPDATE_ASK_KEY`'s
+     * is: news the daemon ends the wait for. */
     const DELIVERY_KEY = "envoy.role.forward.publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6";
     /** An Envoy card as pi-envoy hands it (`handCard`): the frame's own key in its `details`. */
     const cardWith = (deliveryKey: string, content = "envoy:\n  notice: the review is in") => ({
@@ -2834,86 +2841,17 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     const TEXT_CALL_SENTENCE =
       "Your last message holds a tool call written as text, so it did not run: make it a real tool call.";
 
-    /** What a stand-in daemon's owed answer and wait routes hold (`waitDaemon`), which a case
-     * moves: whether the claim owes its work, the wait that stands, the closed gate that holds the
-     * claim, and how many of the next reports of news fail with a 503. */
-    interface WaitStandInState {
-      owes: boolean;
-      wait: LegionOwed["wait"];
-      hold: LegionOwed["hold"];
-      failReports: number;
-    }
-    /** A stand-in daemon's owed answer and wait routes, and every report of news posted to it. */
-    interface WaitStandIn {
-      readonly state: WaitStandInState;
-      readonly reports: unknown[];
-      readonly owed: () => Response;
-      readonly routes: (url: URL, body: unknown) => Response | undefined;
-    }
-    /**
-     * A stand-in daemon that answers the owed route with `work` while the claim owes it, the wait
-     * while one stands and the hold while one is set. Each declaration mints a wait (`wait-1`,
-     * `wait-2`, …) that replaces the one standing. Each report is answered as the daemon answers
-     * it (`claimWaitNews` in `packages/daemon/internal/api/wait.go`): `ended: false` with
-     * `updateAsk` for the update ask's key, `ended: true` for the wait that stands, which ends it,
-     * and `ended: false` for any other. `reports` holds the body of every report posted, in order,
-     * each one the contract's request shape.
-     */
-    const waitDaemon = (work = STALL_WORK): WaitStandIn => {
-      const state: WaitStandInState = {
-        owes: true,
-        wait: undefined,
-        hold: undefined,
-        failReports: 0,
-      };
-      const reports: unknown[] = [];
-      let minted = 0;
-      return {
-        state,
-        reports,
-        owed: () =>
-          Response.json({
-            owes: state.owes,
-            work: state.owes ? work : "",
-            ...(state.wait === undefined ? {} : { wait: state.wait }),
-            ...(state.hold === undefined ? {} : { hold: state.hold }),
-          }),
-        routes: (url: URL, body: unknown): Response | undefined => {
-          if (url.pathname === "/legion/v1/claims/wait") {
-            const declared = LegionWaitRequest.parse(body);
-            minted += 1;
-            state.wait = {
-              id: `wait-${minted}`,
-              waitingOn: declared.waitingOn,
-              wakeAt: declared.wakeAt,
-              declaredAt: "2026-11-21T09:00:00.123456Z",
-            };
-            return Response.json({ wait: state.wait });
-          }
-          if (url.pathname !== "/legion/v1/claims/wait-news") return undefined;
-          const report = LegionWaitNewsRequest.parse(body);
-          reports.push(body);
-          if (state.failReports > 0) {
-            state.failReports -= 1;
-            return Response.json({ error: "the daemon is restarting" }, { status: 503 });
-          }
-          if (report.deliveryKey === UPDATE_ASK_KEY) {
-            return Response.json({ ended: false, updateAsk: true });
-          }
-          if (state.wait !== undefined && report.waitId === state.wait.id) {
-            state.wait = undefined;
-            return Response.json({ ended: true });
-          }
-          return Response.json({ ended: false });
-        },
-      };
-    };
-    /** A phase worker whose daemon is `standIn`: a process the daemon has just started, restored
-     * from `branch` when given. */
+    /** A phase worker whose daemon is `standIn` (`waitStandIn`): a process the daemon has just
+     * started, restored from `branch` when given. */
     const bootWaiting = (
       standIn: WaitStandIn,
       options: { readonly role?: LegionRole; readonly branch?: readonly unknown[] } = {}
-    ) => bootStalling({ ...options, owed: standIn.owed, routes: standIn.routes });
+    ) =>
+      bootStalling({
+        ...options,
+        owed: standIn.owed,
+        routes: (url, body) => standIn.answer(url.pathname, body),
+      });
     /** The body of the report of news `pane` sends for `waitId`, with `deliveryKey` when given. */
     const reportOf = (
       pane: { readonly claimToken: string; readonly registration: { readonly secret: string } },
@@ -2961,7 +2899,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a person's direct message ends the wait the worker declared: it is reported with no key, and that turn's end gets the reminder", async () => {
-      const standIn = waitDaemon();
+      const standIn = waitStandIn(STALL_WORK);
       const worker = await bootWaiting(standIn);
       await worker.arrives(assignment);
       await worker.declares();
@@ -2982,7 +2920,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // user message. It is the person's message all the same: it ends the wait the worker declared,
     // as their Send does.
     test("a person's /skill: ends the wait the worker declared, as their Send does", async () => {
-      const standIn = waitDaemon();
+      const standIn = waitStandIn(STALL_WORK);
       const worker = await bootWaiting(standIn);
       await worker.arrives(assignment);
       await worker.declares();
@@ -3009,7 +2947,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // `declare_wait` call. A delivery and a person's message the session took earlier in the
       // same turn name no wait, so they report nothing, and the wait stands.
       test("a delivery and a person's message before the declaration in the same turn report nothing and leave the wait standing", async () => {
-        const standIn = waitDaemon();
+        const standIn = waitStandIn(STALL_WORK);
         const worker = await bootWaiting(standIn);
         await worker.arrives(assignment);
         await worker.arrives(cardWith(DELIVERY_KEY));
@@ -3037,7 +2975,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // wait, and that turn's end gets the reminder.
       for (const when of ["in the declaring turn", "in a later turn"] as const) {
         test(`a delivery after the declaration ${when} is reported with its details.dedupe_key, and that turn's end gets the reminder`, async () => {
-          const standIn = waitDaemon();
+          const standIn = waitStandIn(STALL_WORK);
           const worker = await bootWaiting(standIn);
           await worker.arrives(assignment);
           await worker.declares();
@@ -3058,7 +2996,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // R3: a prompt of the daemon's after the declaration (the wait's own task, the resume task,
       // the update task) is no news: it reports nothing and leaves the wait standing.
       test("a daemon prompt after the declaration reports nothing and leaves the wait standing", async () => {
-        const standIn = waitDaemon();
+        const standIn = waitStandIn(STALL_WORK);
         const worker = await bootWaiting(standIn);
         await worker.arrives(assignment);
         await worker.declares();
@@ -3089,7 +3027,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // included. The daemon knows that key for its own ask and answers `ended: false`, which
       // keeps the wait standing in the plugin: nothing is reminded and nothing is armed.
       test("the update ask is reported with its exact key, and the daemon's ended:false keeps the wait standing", async () => {
-        const standIn = waitDaemon();
+        const standIn = waitStandIn(STALL_WORK);
         const worker = await bootWaiting(standIn);
         await worker.arrives(assignment);
         await worker.declares();
@@ -3116,7 +3054,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // it arms no resume reminder, its first activity report says no reminder is due, and news
       // that reaches it then is reported against that wait.
       test("a relaunch learns the wait from the owed answer: it arms nothing, and news then is reported against that wait", async () => {
-        const standIn = waitDaemon();
+        const standIn = waitStandIn(STALL_WORK);
         standIn.state.wait = {
           id: "wait-7",
           waitingOn: "CI on the pull request",
@@ -3141,7 +3079,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // relaunches restores the record and sends the report at its boot, before it reads the
       // owed answer: the daemon takes it and ends the wait, so the resume reminder is armed.
       test("a failed report gets the reminder, and the relaunched process sends it again", async () => {
-        const standIn = waitDaemon();
+        const standIn = waitStandIn(STALL_WORK);
         const worker = await bootWaiting(standIn);
         await worker.arrives(assignment);
         await worker.declares();
@@ -3176,7 +3114,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // daemon's answer gives no hold, and the next turn's end with no completion gets the
       // reminder.
       test("a held merger is reminded of nothing and arms nothing, at its boot and at each turn's end; after the gate opens the reminder returns", async () => {
-        const standIn = waitDaemon(MERGER_WORK);
+        const standIn = waitStandIn(MERGER_WORK);
         standIn.state.hold = HOLD;
         const merger = await bootWaiting(standIn, { role: "merger" });
         expect(merger.timers).toEqual([]);
@@ -3205,7 +3143,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // run's continuation first, then the reminder's own timer.
       test("a tool call written as text is reminded during a wait and during a hold, and a hold's reminder names the closed gate", async () => {
         for (const held of ["wait", "hold"] as const) {
-          const standIn = waitDaemon(held === "hold" ? MERGER_WORK : STALL_WORK);
+          const standIn = waitStandIn(held === "hold" ? MERGER_WORK : STALL_WORK);
           if (held === "hold") standIn.state.hold = HOLD;
           const worker = await bootWaiting(standIn, held === "hold" ? { role: "merger" } : {});
           await worker.arrives(assignment);

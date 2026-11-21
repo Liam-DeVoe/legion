@@ -19,8 +19,7 @@ export interface StallLimits {
    * the first reminder of the run has gone out as the `session_stop` continuation. */
   readonly reminderMs: number;
   /** How long the worker's own background work, still running as its turn ends, buys before the
-   * reminder comes again. A WAITING reply buys nothing: a worker that waits on something outside
-   * its own work declares the wait (`declare_wait`), and no reminder comes while it stands. */
+   * reminder comes again. */
   readonly waitingMs: number;
   /** How long after a resume the plugin waits before it asks the daemon whether the claim owes
    * work, and reminds the worker if it does. */

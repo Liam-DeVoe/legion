@@ -72,6 +72,17 @@ const noBranchHead = async (): Promise<string> => {
   throw new Error("branchHead is not expected in this test");
 };
 
+type LegionToolDeps = Parameters<typeof createLegionTool>[0];
+
+/** `createLegionTool` for a case: `onWaitDeclared` does nothing unless the case gives its own. */
+function legionTool(
+  deps: Omit<LegionToolDeps, "onWaitDeclared"> & {
+    readonly onWaitDeclared?: LegionToolDeps["onWaitDeclared"];
+  }
+): RegisteredTool {
+  return createLegionTool({ onWaitDeclared: () => undefined, ...deps });
+}
+
 /** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
 const CLAIM_SECRET = fixtureSecret("claim");
 
@@ -335,12 +346,11 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
 ];
 
 const toolFor = (active: LegionToolSession) =>
-  createLegionTool({
+  legionTool({
     pi,
     daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -491,12 +501,11 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   };
   const { calls, daemon } = recordingDaemon({ state });
   const run = async (session: LegionToolSession, parameters: Record<string, unknown>) =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -504,12 +513,11 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     }).execute("", parameters, undefined, undefined, context());
   const architect = claimSession("architect");
   const worker = claimSession("implementer");
-  const phaseWorkerTool = createLegionTool({
+  const phaseWorkerTool = legionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -675,12 +683,11 @@ test("retry_or_escalate takes a reason", async () => {
   const { calls, daemon } = recordingDaemon({});
   const architect = claimSession("architect");
   const run = async (parameters: Record<string, unknown>) =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -735,12 +742,11 @@ test("retry_or_escalate takes a reason", async () => {
 // fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
 test("park_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
-  const tool = createLegionTool({
+  const tool = legionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -810,12 +816,11 @@ test("read_release_records reads the window with this session's claim, and repor
   };
   const { calls, daemon } = recordingDaemon({ answers: { releaseRecords: records } });
   const toolFor = (session: LegionToolSession, answering = daemon) =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon: answering,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -889,12 +894,11 @@ test("read_release_records reads the window with this session's claim, and repor
 // (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer from its own instructions that
 // it reports one.
 test("the legion tool's description gives a verdict to the tester alone", () => {
-  const tool = createLegionTool({
+  const tool = legionTool({
     pi,
     daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -914,7 +918,7 @@ test("a workflow refusal tells the agent both its code and message", async () =>
       detail: "LEGION-208 is in phase reviewing, not accepting; this sign-off changed nothing",
     }
   );
-  const tool = createLegionTool({
+  const tool = legionTool({
     pi,
     daemon: (() => ({
       grant: async () => ({ grantId: "grant-208" }),
@@ -922,7 +926,6 @@ test("a workflow refusal tells the agent both its code and message", async () =>
     })) as never,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -951,12 +954,11 @@ test("register_gate takes the document reference the Dispatch tools take, and re
       },
     }) as never;
   const run = (artifactId: string, issue = "LEGION-208", sessionIssue = "LEGION-208") =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: async (issue: string, reference: string) => {
@@ -1055,12 +1057,11 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
     jj: JjRunner = paneJj(),
     latestHandoff: LatestHandoff = paneDispatch(reads)
   ) =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: (phase, role) =>
         findHandoffReport({ phase, role, env: paneEnv, jj, latestHandoff }),
       branchHead: noBranchHead,
@@ -1225,12 +1226,11 @@ test("the planner, the tester and the reviewer post their phase's handoff record
   ] as const) {
     const reads: string[] = [];
     const { calls, daemon } = recordingDaemon({ state: stateAt(phase) });
-    const result = await createLegionTool({
+    const result = await legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
           phase: issuePhase,
@@ -1278,12 +1278,11 @@ test("the retro's handoff_complete posts its rating of the plan as planRating an
   const reads: string[] = [];
   const { calls, daemon } = recordingDaemon({ state: stateAt("retro") });
   const reason = "The plan's tester step caught the regression the review would have missed.";
-  const result = await createLegionTool({
+  const result = await legionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1335,12 +1334,11 @@ test("a completion once the issue moved on posts the role's own newest record of
     const { calls, daemon } = recordingDaemon({
       state: { issues: { [issue]: { key: issue, phase } } },
     });
-    const result = await createLegionTool({
+    const result = await legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
           phase: issuePhase,
@@ -1387,12 +1385,11 @@ test("an implementer whose issue is in testing posts its implement record, thoug
   const asked: string[] = [];
   const workspace = paneJj(STANDING, false);
   const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
-  const result = await createLegionTool({
+  const result = await legionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1440,12 +1437,11 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     state: stateAt("held"),
     answers: { handoffComplete: refusal },
   });
-  const result = await createLegionTool({
+  const result = await legionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1508,12 +1504,11 @@ test("a report on its closed issue's production check carries a verdict and no c
     },
   });
   const run = (session: LegionToolSession, parameters: Record<string, unknown>) =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       // A check report resolves no record and no commit: the report is never asked.
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1579,12 +1574,11 @@ test("a report on its closed issue's production check carries a verdict and no c
       },
     },
   });
-  const testerAtDone = await createLegionTool({
+  const testerAtDone = await legionTool({
     pi,
     daemon: testerDaemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1614,12 +1608,11 @@ test("a report on its closed issue's production check carries a verdict and no c
   const { calls: closedCalls, daemon: closedDaemon } = recordingDaemon({
     state: { issues: { "LEGION-208": { key: "LEGION-208", phase: "done" } } },
   });
-  const implementerAtDone = await createLegionTool({
+  const implementerAtDone = await legionTool({
     pi,
     daemon: closedDaemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1643,12 +1636,11 @@ test("a refused completion surfaces the daemon's code", async () => {
     state: stateAt("implementing"),
     answers: { handoffComplete: refusal },
   });
-  const tool = createLegionTool({
+  const tool = legionTool({
     pi,
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -2004,12 +1996,11 @@ test("read_build answers the package and version this process loaded, both contr
 test("read_build says the daemon stated no contract, and belongs to the controller session too", async () => {
   const { daemon } = recordingDaemon({});
   const toolFor = (active: LegionToolSession) =>
-    createLegionTool({
+    legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -2162,12 +2153,11 @@ test("pause and resume are offered to no architect and no phase worker", async (
   const claims = EVERY_SESSION.filter((session) => session.kind !== "controller");
   expect(claims).toHaveLength(7);
   for (const session of claims) {
-    const tool = createLegionTool({
+    const tool = legionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
-      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,

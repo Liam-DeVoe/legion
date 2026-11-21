@@ -1060,9 +1060,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * listener sends the frame again (from its third delivery on, `done` with a failure notice). The
    * frame stops blocking the next one once it is queued: the write queue keeps the stream's order,
    * and no frame waits on another's write longer than the queue makes it. The frame's own dedupe
-   * key goes with it, verbatim, for the record of written deliveries (`deliveryWritten`): the
-   * update ask's key among them, behind the listener's role-forward prefix, which is how the
-   * daemon tells its own ask from news (D9 of dispatch://INFRA-2040's plan).
+   * key goes with it, verbatim, to `deliveryWritten`, which reports the delivery as news (the
+   * phase endpoint's `news`): the update ask's key among them, behind the listener's role-forward
+   * prefix, which is how the daemon tells its own ask from news (D9 of dispatch://INFRA-2040's
+   * plan).
    */
   const deliverRelayed = async (owner: Relay, frame: ConsumerFrame): Promise<void> => {
     // The session moved to another id (a `/clear`) or is shutting down: whoever takes it next
@@ -2679,11 +2680,11 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // a new turn while the session is idle (`ModSession.show`), since an appended row an idle
   // session never reads would wait for the person to type.
   //
-  // In a Legion pane this server also keeps the record of the deliveries it writes (D8 of
-  // dispatch://INFRA-2040's plan): each relayed Envoy delivery, under the frame's own key
-  // (`deliveryWritten` below), and each person's message, with none (the router's `inbox`), is
-  // news, which the phase endpoint reports to the daemon after a declared wait. Envoy's own
-  // notices, the endpoint's reminders and its recreated-workspace notice go through this
+  // In a Legion pane this server also reports the deliveries it writes as news to the phase
+  // endpoint (`phaseHook.news`, D8 of dispatch://INFRA-2040's plan): each relayed Envoy delivery,
+  // under the frame's own key (`deliveryWritten` below), and each person's message, with none (the
+  // router's `inbox`). The endpoint reports that news to the daemon after a declared wait. Envoy's
+  // own notices, the endpoint's reminders and its recreated-workspace notice go through this
   // notifier or the inbox too, and none of them is news.
   const notifier: ChannelNotifier = inbox ?? {
     notification: async ({ content, blocks, eventId }) => {

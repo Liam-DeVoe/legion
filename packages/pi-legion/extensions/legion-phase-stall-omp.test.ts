@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
@@ -17,6 +16,7 @@ import {
   runLegionPane,
   sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
+import { UPDATE_ASK_KEY, waitStandIn } from "@legion/pi-shared/test/wait-stand-in";
 import { connect, headers, StringCodec } from "nats";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
@@ -146,36 +146,6 @@ async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<
  * (`POST /legion/v1/claims/owed`), which the reminder and the architect notice name. */
 const STALL_WORK = "the implementing phase of STALL-2";
 
-/** The update round's ask as its card carries its key: the daemon's key for a round
- * (`update-ask-key.json`, which the daemon's golden test writes), behind the listener's
- * role-forward prefix (D9 of dispatch://INFRA-2040's plan). The stand-in daemon answers a report
- * with it `ended: false`, as the daemon answers the key of its own update ask. */
-const UPDATE_ASK_KEY = (() => {
-  const fixture: unknown = JSON.parse(
-    readFileSync(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/update-ask-key.json"),
-      "utf8"
-    )
-  );
-  if (
-    typeof fixture !== "object" ||
-    fixture === null ||
-    !("key" in fixture) ||
-    typeof fixture.key !== "string"
-  ) {
-    throw new Error("update-ask-key.json names no key");
-  }
-  return `envoy.role.forward.${fixture.key}`;
-})();
-
-/** The wait the stand-in daemon's record holds once the worker declared it. */
-interface StandInWait {
-  readonly id: string;
-  readonly waitingOn: string;
-  readonly wakeAt: string;
-  readonly declaredAt: string;
-}
-
 /** The daemon's state as the pane's `handoff_complete` reads it: STALL-2 at implementing, the
  * phase whose handoff is the `implement` record. */
 const STALL_STATE = {
@@ -272,15 +242,13 @@ interface PaneOptions
  * and the open-ask snapshot, until its run settles. The stand-in's record holds `STALL_WORK` owed
  * until a completion lands and nothing after it, as the daemon's own record does once the workflow
  * takes a completion (`owedBy` in `packages/daemon/internal/api/owed.go`); a case that answers
- * `claims/owed` itself decides otherwise. The record also holds the wait the worker declared
- * (`claims/wait`, each declaration minting `stall-wait-<n>` in place of the one standing) and gives
- * it in the owed answer while it stands, and a report of news (`claims/wait-news`) is answered as
- * the daemon answers it (`claimWaitNews` in `packages/daemon/internal/api/wait.go`): `ended: false`
- * for the update ask's key, `ended: true` for the wait that stands, which ends it, and
- * `ended: false` for any other. The pane's workspace is a jj repository whose change is committed
- * and pushed to a bare origin's `legion/STALL-2`, and the stand-in Dispatch holds the implement
- * record written to it, as a worker leaves both before completing, so the pane's
- * `handoff_complete` finds the record and the pushed tip.
+ * `claims/owed` itself decides otherwise. The record also holds the wait the worker declared and
+ * answers the two wait routes as the shared stand-in does (`waitStandIn`): each declaration
+ * mints `wait-<n>` in place of the one standing, the owed answer gives it while it stands, and a
+ * report of news is answered as the daemon answers it. The pane's workspace is a jj repository
+ * whose change is committed and pushed to a bare origin's `legion/STALL-2`, and the stand-in
+ * Dispatch holds the implement record written to it, as a worker leaves both before completing,
+ * so the pane's `handoff_complete` finds the record and the pushed tip.
  */
 async function stallPane(
   run: { readonly binary: string; readonly nats: string },
@@ -292,9 +260,8 @@ async function stallPane(
   const records: Array<typeof STALL_RECORD & { body: string }> = [];
   /** Whether the stand-in's record still holds the implementer's work owed. */
   let owes = true;
-  /** The wait the stand-in's record holds, and how many the worker has declared. */
-  let wait: StandInWait | undefined;
-  let declared = 0;
+  /** The wait the stand-in's record holds, and its answers to the two wait routes. */
+  const waits = waitStandIn(STALL_WORK);
   const pane = await runLegionPane(
     run.binary,
     replies,
@@ -359,35 +326,16 @@ async function stallPane(
           return Response.json(STALL_STATE.issues["STALL-2"]);
         }
         if (url.pathname === "/legion/v1/claims/owed") {
-          return Response.json({
-            ...(owes ? { owes: true, work: STALL_WORK } : { owes: false, work: "" }),
-            ...(wait === undefined ? {} : { wait }),
-          });
+          if (owes) return waits.owed();
+          const wait = waits.state.wait;
+          return Response.json({ owes: false, work: "", ...(wait === undefined ? {} : { wait }) });
         }
         if (url.pathname === "/legion/v1/handoff/complete") {
           owes = false;
           return Response.json({});
         }
-        if (url.pathname === "/legion/v1/claims/wait") {
-          declared += 1;
-          wait = {
-            id: `stall-wait-${declared}`,
-            waitingOn: String(body.waitingOn),
-            wakeAt: String(body.wakeAt),
-            declaredAt: "2026-11-21T09:00:00.123456Z",
-          };
-          return Response.json({ wait });
-        }
-        if (url.pathname === "/legion/v1/claims/wait-news") {
-          if (body.deliveryKey === UPDATE_ASK_KEY) {
-            return Response.json({ ended: false, updateAsk: true });
-          }
-          if (wait !== undefined && body.waitId === wait.id) {
-            wait = undefined;
-            return Response.json({ ended: true });
-          }
-          return Response.json({ ended: false });
-        }
+        const waitAnswer = waits.answer(url.pathname, body);
+        if (waitAnswer !== undefined) return waitAnswer;
         if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
           const newest = records.at(-1);
           return newest === undefined
@@ -850,7 +798,7 @@ test.skipIf(skip)(
         wakeAt: WAKE_AT,
       },
     ]);
-    expect(pane.toolResults()[0]?.text).toContain("stall-wait-1");
+    expect(pane.toolResults()[0]?.text).toContain('"wait-1"');
     // The wait held the reminder: no turn started for three reminder delays after the declaring
     // turn, and the turn's end reported that no reminder is due.
     expect(during.quietForMs).toBeGreaterThanOrEqual(3 * REMINDER_MS);
@@ -868,12 +816,12 @@ test.skipIf(skip)(
     expect(pane.newsReports()).toEqual([
       expect.objectContaining({
         claimToken: STALL_CLAIM,
-        waitId: "stall-wait-1",
+        waitId: "wait-1",
         deliveryKey: UPDATE_ASK_KEY,
       }),
       expect.objectContaining({
         claimToken: STALL_CLAIM,
-        waitId: "stall-wait-1",
+        waitId: "wait-1",
         deliveryKey: otherKey,
       }),
     ]);
@@ -988,7 +936,6 @@ test.skipIf(skip)(
         env: {
           LEGION_STALL_REMINDER_MS: "500",
           LEGION_STALL_ARCHITECT_AFTER: "3",
-          LEGION_STALL_WAITING_MS: "600000",
         },
         quietMs: 4_000,
       }
@@ -1077,13 +1024,13 @@ test.skipIf(skip)(
 );
 
 // Where the daemon's answer does not arrive the worker is still nudged, and the nudge says
-// it could not read the record. It names no phase and no operation that ends one, because it read
-// neither. The stand-in answers `claims/owed` as a proxy does for a daemon it cannot reach: a 503
-// whose body is not the daemon's (`daemonUnreachable` in packages/pi-shared/src/daemon-client.ts).
-// The daemon comes back once the third turn has been served, and its answer that nothing is owed
-// ends the reminding there: a WAITING line would buy nothing (dispatch://INFRA-2040).
+// it could not read the record. It names no phase and no owed work, because it read neither, and
+// the one operation it names is `declare_wait`. The stand-in answers `claims/owed` as a proxy
+// does for a daemon it cannot reach: a 503 whose body is not the daemon's (`daemonUnreachable` in
+// packages/pi-shared/src/daemon-client.ts). The daemon comes back once the third turn has been
+// served, and its answer that nothing is owed ends the reminding there.
 test.skipIf(skip)(
-  "with the daemon unreachable the worker is still nudged, by a reminder that names no phase and no operation",
+  "with the daemon unreachable the worker is still nudged, by a reminder that names no phase and no operation but declare_wait",
   async () => {
     const run = setup();
     let served = 0;

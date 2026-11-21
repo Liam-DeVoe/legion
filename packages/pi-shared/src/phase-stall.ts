@@ -29,17 +29,15 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  * The same answer says whether a wait the worker declared with the `legion` tool's
  * `declare_wait` stands, and whether the closed design gate holds a merger
  * (dispatch://INFRA-2040). While either stands, the reminder sends nothing but the one for a tool
- * call written as text (`heldReminderText`). A WAITING line in the worker's reply buys nothing:
- * only the worker's own background work keeps the quiet wait (`waitingMs`).
+ * call written as text (`quietReminderText`). Only the worker's own background work keeps the
+ * quiet wait (`waitingMs`).
  */
 
 /** Where the reminder's rhythm stands:
  * - `active`: a turn that settles now earns a reminder, if the daemon answers that the claim
  *   owes work;
  * - `waiting`: the worker's turn ended with background work of its own still running, which buys
- *   the longer quiet wait `LEGION_STALL_WAITING_MS` before the next reminder. A WAITING line in
- *   the worker's reply buys nothing: a worker that waits on something outside its own work
- *   declares the wait with `declare_wait`, and the daemon's answer says while it stands;
+ *   the longer quiet wait `LEGION_STALL_WAITING_MS` before the next reminder;
  * - `awaiting-update`: the worker has answered the daemon's update message (`ready_for_update`),
  *   so it is to start nothing until the daemon comes back to it. This wait earns no reminder and
  *   no wait of any length, because the daemon is what wakes the worker: a round, once opened,
@@ -119,12 +117,15 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
 
 /** What the reminder tells a worker that waits on something outside its own work: declare the
  * wait with the `legion` tool's `declare_wait`, and what ends it. A message to the worker ends the
- * wait and wakes the worker; one whose wake is lost waits until the wait's time. */
+ * wait and wakes the worker. The update round's message ends no wait (D9 of dispatch://INFRA-2040's
+ * plan), as `declare_wait`'s own sentence says (`PHASE_OP_SENTENCES` in `./legion-phase-ops`). A
+ * message whose wake is lost waits until the wait's time. */
 const DECLARE_WAIT =
   "If you are waiting on something outside your own work (CI, a review, a person), call the " +
   "`legion` tool with op `declare_wait`, `waiting_on` naming what you wait on and `wake_at` the " +
-  "RFC 3339 time to wake you, then end your turn. A message to you ends the wait and wakes you; a " +
-  "message whose wake is lost waits until the wait's time.";
+  "RFC 3339 time to wake you, then end your turn. A message to you ends the wait and wakes you. " +
+  "The update round's message does not end the wait. A message whose wake is lost waits until " +
+  "the wait's time.";
 
 /** What a worker whose turn ended with `work` owed is told, `work` being the daemon's own name for
  * it (`LegionOwed.work`: "the testing phase of LEGION-208", "the production check of
@@ -174,14 +175,18 @@ export type GateHold = NonNullable<LegionOwed["hold"]>;
  * closed design gate holds the claim (the owed `answer`'s `hold`): the reminder for a tool call
  * written as text, which says that the call did not run and asks for a real one, and asks for no
  * `handoff_complete`. Undefined when the message holds no tool call written as text: then nothing
- * is due while the wait or the hold stands.
+ * is due while the wait or the hold stands. It takes the hold off the answer, so the read-set
+ * census (`daemon-client.test.ts`) sees each field of the hold it reads.
  *
  * During a hold it also carries the closed note's sentence (dispatch://INFRA-2040, D15), word for
- * word the closed form of the daemon's `workflow.MergerGateNote`, which every task of a held merger
- * opens with, so a merger told to repeat its call is told in the same words that the gate holds
- * its merge. `tree` is the key of the claim's tree root (`ClaimCapability.tree`), the tree the
- * daemon names: the owed answer names none, and the gate is the tree's. */
-export function heldReminderText(
+ * word the closed form of the daemon's `workflow.MergerGateNote` (`mergerClosedNote` in
+ * `packages/daemon/internal/workflow/gate.go`), which every task of a held merger opens with, so a
+ * merger told to repeat its call is told in the same words that the gate holds its merge. The
+ * fixture `packages/contracts/fixtures/daemon-api/merger-closed-note.json` holds the two to each
+ * other: the daemon's test and this package's test both read it. `tree` is the key of the
+ * claim's tree root (`ClaimCapability.tree`), the tree the daemon names: the owed answer names
+ * none, and the gate is the tree's. */
+export function quietReminderText(
   lastAssistantText: string,
   tree: string,
   answer: Pick<LegionOwed, "hold">
@@ -239,9 +244,7 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // A worker waiting on its own background job is not stalled: the job's own result starts
       // the next turn. That is the one thing that buys the quiet wait, which is also what bounds
       // it — a job that never finishes is a wait the host's waiting delay ends, and the reminder
-      // comes again then rather than never. A WAITING line buys nothing: a worker that waits on
-      // something outside its own work declares it (`declare_wait`), and the daemon's answer
-      // says while that wait stands.
+      // comes again then rather than never.
       if (input.backgroundWork === true) {
         return { state: { state: "waiting", count: state.count } };
       }
@@ -250,33 +253,48 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
   }
 }
 
-/** Whether an arriving message came from outside the session. The daemon delivers its task as the
- * RPC `prompt`, which Oh My Pi records as a user message; an Envoy delivery arrives as an
- * `envoy-message` custom message. A person's direct message from Dispatch that the Envoy extension
- * sent in as the user's own turn is a user message as well, or for a `/skill:` the host's
- * `skill-prompt` custom message, which `extensions/legion.ts` recognises before asking this
- * (`matchInjectedUserTurn`). Anything else (the host's own continuations, this check's reminder
- * among them, the Envoy extension's own notices and its wake for cards the host folded with no
- * turn, both carrying `LOCAL_ENVOY_NOTICE`, tool results, the model's replies) is not.
- * A reminder the plugin sends through `pi.sendMessage` carries its own custom type for that reason:
- * a `role: "user"` message or an `envoy-message` would make the reminder reset its own count. The
- * host tells news from a daemon prompt by kind among these messages (`news` and `prompt` of
- * `PhaseStallInput`), since only news ends a wait the worker declared. */
-export function isInbound(message: unknown): boolean {
-  if (typeof message !== "object" || message === null || !("role" in message)) return false;
-  if (message.role === "user") return true;
-  return (
-    message.role === "custom" &&
-    "customType" in message &&
-    message.customType === "envoy-message" &&
-    !(
-      "details" in message &&
-      typeof message.details === "object" &&
-      message.details !== null &&
-      "localNotice" in message.details &&
-      message.details.localNotice === LOCAL_ENVOY_NOTICE.localNotice
-    )
-  );
+/** What an arriving message from outside the session is (`inboundOf`): a daemon `prompt`, or
+ * `news`, with the delivery's own key where the message carries one. */
+export type Inbound =
+  | { readonly kind: "prompt" }
+  | { readonly kind: "news"; readonly deliveryKey?: string };
+
+/** What an arriving message is, by its kind and never by its text (D8 of dispatch://INFRA-2040's
+ * plan), or undefined when it did not come from outside the session. The daemon delivers its task
+ * as the RPC `prompt`, which Oh My Pi records as a user message: a `prompt`, which ends no wait the
+ * worker declared. An Envoy delivery arrives as an `envoy-message` custom message: `news`, with
+ * the card's `details.dedupe_key` as its key. pi-envoy's `handCard` copies that key from the frame
+ * (`ledgerIdentity` in `@legion/envoy-client/delivery-ledger`) when it names the frame's event, the
+ * update ask's key among them (D9 of the same plan); a card that carries none is news with no key.
+ * A person's direct message from Dispatch that the Envoy extension sent in as the user's own turn
+ * is a user message as well, or for a `/skill:` the host's `skill-prompt` custom message:
+ * `extensions/legion.ts` recognises it before asking this (`matchInjectedUserTurn`), and takes it
+ * as news with no key. Anything else (the host's own continuations, this check's reminder among
+ * them, the Envoy extension's own notices and its wake for cards the host folded with no turn,
+ * both carrying `LOCAL_ENVOY_NOTICE`, tool results, the model's replies) is neither. A reminder
+ * the plugin sends through `pi.sendMessage` carries its own custom type for that reason: a
+ * `role: "user"` message or an `envoy-message` would make the reminder reset its own count. */
+export function inboundOf(message: unknown): Inbound | undefined {
+  if (typeof message !== "object" || message === null || !("role" in message)) return undefined;
+  if (message.role === "user") return { kind: "prompt" };
+  if (
+    message.role !== "custom" ||
+    !("customType" in message) ||
+    message.customType !== "envoy-message"
+  ) {
+    return undefined;
+  }
+  const details =
+    "details" in message && typeof message.details === "object" && message.details !== null
+      ? message.details
+      : undefined;
+  if (details === undefined) return { kind: "news" };
+  if ("localNotice" in details && details.localNotice === LOCAL_ENVOY_NOTICE.localNotice) {
+    return undefined;
+  }
+  return "dedupe_key" in details && typeof details.dedupe_key === "string"
+    ? { kind: "news", deliveryKey: details.dedupe_key }
+    : { kind: "news" };
 }
 
 /** The text blocks of an assistant message, joined; empty for anything else. A text block is

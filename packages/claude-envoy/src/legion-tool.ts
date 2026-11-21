@@ -6,10 +6,10 @@ import {
   type ClaimCapability,
   executePhaseOp,
   legionToolDescription,
-  PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
   pluginBuildOf,
+  SHARED_PHASE_OP_SENTENCES,
 } from "@legion/pi-shared/legion-phase-ops"
 import { z } from "zod"
 import pkg from "../package.json" with { type: "json" }
@@ -26,19 +26,15 @@ export const LEGION_TOOL_NAME = "legion"
 
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
  * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets, `declare_wait`
- * among them. The description states `declare_wait` between `request_backward_move` and
- * `read_build`, as the Oh My Pi host's does (`createLegionTool` in
+ * among them. The description states the sentences every host states
+ * (`SHARED_PHASE_OP_SENTENCES`), as the Oh My Pi host's does (`createLegionTool` in
  * `packages/pi-legion/src/tools.ts`). */
 export function legionToolDefinition() {
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
-      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after:
-        PHASE_OP_SENTENCES.requestBackwardMove +
-        PHASE_OP_SENTENCES.declareWait +
-        PHASE_OP_SENTENCES.readBuild,
+      ...SHARED_PHASE_OP_SENTENCES,
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }

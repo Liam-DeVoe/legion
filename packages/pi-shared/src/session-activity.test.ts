@@ -78,9 +78,11 @@ test("two readings of the same work are the same report, whenever they were read
 const OWES: LegionOwed = { owes: true, work: "the implementing phase of LEGION-208" };
 
 /** The reminder made afresh, over a daemon that answers `owed` (the claim owes work by default)
- * and holds no record, with no timer of its own fired. */
+ * and holds no record, with no timer of its own fired. No case here reports news: `reported` is
+ * every report the reminder sent, which each case holds empty. */
 function reminderRig(owed: LegionOwed = OWES) {
   const timers: { readonly delayMs: number }[] = [];
+  const reported: unknown[] = [];
   const reminder = createPhaseReminder({
     sendReminder: () => {},
     armTimer: (_callback, delayMs) => {
@@ -89,7 +91,8 @@ function reminderRig(owed: LegionOwed = OWES) {
     saveEntry: () => {},
     claim: () => implementer,
     readOwed: async () => owed,
-    reportNews: async () => {
+    reportNews: async (input) => {
+      reported.push(input);
       throw new Error("this case reports no news");
     },
     publisher: () => undefined,
@@ -97,13 +100,13 @@ function reminderRig(owed: LegionOwed = OWES) {
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },
   });
-  return { reminder, timers };
+  return { reminder, timers, reported };
 }
 
 // The one statement of when the next reminder is due is the reminder's own: the worker's own
 // background work buys the waiting limit instead of the ordinary one, and the report says so.
 test("background work moves the reported wake out by the waiting limit", async () => {
-  const { reminder, timers } = reminderRig();
+  const { reminder, timers, reported } = reminderRig();
   expect(reminder.phaseWake(), "no timer is armed before the first settle").toEqual({
     nextReminderAt: null,
   });
@@ -143,6 +146,7 @@ test("background work moves the reported wake out by the waiting limit", async (
   // timer is still armed on the host.
   reminder.turnStarted();
   expect(reminder.phaseWake()).toEqual({ nextReminderAt: null });
+  expect(reported).toEqual([]);
 });
 
 // dispatch://INFRA-2040: while the daemon's answer gives a wait the worker declared, or the closed
@@ -159,12 +163,13 @@ test("a turn's end while a wait or a hold stands reports no reminder due", async
     neither: OWES,
   };
   for (const [held, owed] of Object.entries(standing)) {
-    const { reminder } = reminderRig(owed);
+    const { reminder, reported } = reminderRig(owed);
     await reminder.settle({ kind: "settle", lastAssistantText: "Pushed the branch." });
     await reminder.settle({ kind: "settle", lastAssistantText: "Still here." });
     const report = sessionActivity([], reminder.phaseWake(), AT);
     if (held === "neither") expect(report.phase.nextReminderAt, held).not.toBeNull();
     else expect(report.phase, held).toEqual({ nextReminderAt: null });
+    expect(reported, held).toEqual([]);
   }
 });
 

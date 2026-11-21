@@ -3,11 +3,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  type LegionOwed,
-  LegionWaitNewsRequest,
-  LegionWaitRequest,
-} from "@legion/contracts/legion-api"
-import {
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
@@ -19,9 +14,7 @@ import {
 } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { owedReminder, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall"
-import updateAskKey from "../../contracts/fixtures/daemon-api/update-ask-key.json" with {
-  type: "json",
-}
+import { UPDATE_ASK_KEY, type WaitStandIn, waitStandIn } from "@legion/pi-shared/test/wait-stand-in"
 import { legion } from "../package.json" with { type: "json" }
 import { startChannelSession } from "../src/envoy-channel-server"
 import {
@@ -144,7 +137,7 @@ async function harness(
     /** What the daemon answers `claims/owed`: that the claim owes `WORK`, unless given. */
     readonly owed?: () => Response
     /** The stand-in daemon's answer to a route the case serves itself, tried before every other
-     * route: the wait's declaration and its news (`waitDaemon`). */
+     * route: the wait's declaration and its news (`waitStandIn`). */
     readonly routes?: (path: string, body: unknown) => Response | undefined
   } = {},
 ): Promise<Harness> {
@@ -324,8 +317,9 @@ test("a turn the daemon says owes nothing is blocked by nothing, from the Stop o
 
 // A daemon that does not answer — unreachable, refusing, or answering what the contract does
 // not describe — still has the worker nudged, and the nudge says it could not read the record:
-// it names no phase and no operation, because it read neither.
-test("a daemon that does not say what the claim owes still blocks the Stop, with a reminder that names no phase and no operation", async () => {
+// it names no phase and no owed work, because it read neither, and the one operation it names is
+// `declare_wait`.
+test("a daemon that does not say what the claim owes still blocks the Stop, with a reminder that names no phase and no operation but declare_wait", async () => {
   for (const [failure, answer] of [
     ["a refusal", () => Response.json({ error: "the daemon is restarting" }, { status: 503 })],
     ["an answer the contract refuses", () => Response.json({ owes: true, work: "" })],
@@ -1204,12 +1198,8 @@ test("an inbox write the bridge refused is not counted, and the reminder comes a
 
 // ─── A wait the worker declared, and the design gate's hold (dispatch://INFRA-2040) ───────────
 
-/** The update round's ask as its frame carries its key: the daemon's key for one round
- * (`update-ask-key.json`, which the daemon's golden test writes), behind the listener's
- * role-forward prefix (D9 of dispatch://INFRA-2040's plan). The daemon answers a report with it
- * `ended: false`. */
-const UPDATE_ASK_KEY = `envoy.role.forward.${updateAskKey.key}`
-/** Another delivery's key behind the same prefix: news, which the daemon ends the wait for. */
+/** Another delivery's key behind the listener's role-forward prefix, as `UPDATE_ASK_KEY`'s is:
+ * news, which the daemon ends the wait for. */
 const DELIVERY_KEY = "envoy.role.forward.publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6"
 
 /** The merger of the same tree, the claim the closed design gate holds; what the stand-in daemon
@@ -1237,80 +1227,8 @@ const TEXT_CALL = '<invoke name="legion"><parameter name="op">handoff_complete</
 const TEXT_CALL_SENTENCE =
   "Your last message holds a tool call written as text, so it did not run: make it a real tool call."
 
-/** What a stand-in daemon's owed answer and wait routes hold (`waitDaemon`), which a case moves:
- * whether the claim owes its work, the wait that stands, the closed gate that holds the claim,
- * and how many of the next reports of news fail with a 503. */
-interface WaitStandInState {
-  owes: boolean
-  wait: LegionOwed["wait"]
-  hold: LegionOwed["hold"]
-  failReports: number
-}
-
-/** A stand-in daemon's owed answer and wait routes, and the body of every report of news posted
- * to it, in order. */
-interface WaitStandIn {
-  readonly state: WaitStandInState
-  readonly reports: unknown[]
-  readonly owed: () => Response
-  readonly routes: (path: string, body: unknown) => Response | undefined
-}
-
-/**
- * A stand-in daemon that answers the owed route with `work` while the claim owes it, the wait
- * while one stands and the hold while one is set. Each declaration mints a wait (`wait-1`,
- * `wait-2`, …) that replaces the one standing. Each report is answered as the daemon answers it
- * (`claimWaitNews` in `packages/daemon/internal/api/wait.go`): `ended: false` with `updateAsk`
- * for the update ask's key, `ended: true` for the wait that stands, which ends it, and
- * `ended: false` for any other. Every body is parsed as the contract's request shape.
- */
-function waitDaemon(work = WORK): WaitStandIn {
-  const state: WaitStandInState = { owes: true, wait: undefined, hold: undefined, failReports: 0 }
-  const reports: unknown[] = []
-  let minted = 0
-  return {
-    state,
-    reports,
-    owed: () =>
-      Response.json({
-        owes: state.owes,
-        work: state.owes ? work : "",
-        ...(state.wait === undefined ? {} : { wait: state.wait }),
-        ...(state.hold === undefined ? {} : { hold: state.hold }),
-      }),
-    routes: (path, body) => {
-      if (path === "/legion/v1/claims/wait") {
-        const declared = LegionWaitRequest.parse(body)
-        minted += 1
-        state.wait = {
-          id: `wait-${minted}`,
-          waitingOn: declared.waitingOn,
-          wakeAt: declared.wakeAt,
-          declaredAt: "2026-11-21T09:00:00.123456Z",
-        }
-        return Response.json({ wait: state.wait })
-      }
-      if (path !== "/legion/v1/claims/wait-news") return undefined
-      const report = LegionWaitNewsRequest.parse(body)
-      reports.push(body)
-      if (state.failReports > 0) {
-        state.failReports -= 1
-        return Response.json({ error: "the daemon is restarting" }, { status: 503 })
-      }
-      if (report.deliveryKey === UPDATE_ASK_KEY) {
-        return Response.json({ ended: false, updateAsk: true })
-      }
-      if (state.wait !== undefined && report.waitId === state.wait.id) {
-        state.wait = undefined
-        return Response.json({ ended: true })
-      }
-      return Response.json({ ended: false })
-    },
-  }
-}
-
-/** A phase worker's pane whose daemon is `standIn`: the implementer unless `claim` names another,
- * on a record with no reminder counted unless `record` gives one. */
+/** A phase worker's pane whose daemon is `standIn` (`waitStandIn`): the implementer unless
+ * `claim` names another, on a record with no reminder counted unless `record` gives one. */
 function waitingPane(
   standIn: WaitStandIn,
   options: { readonly claim?: ClaimCapability; readonly record?: string } = {},
@@ -1319,7 +1237,7 @@ function waitingPane(
     record: options.record ?? recorded("active", 0),
     claim: options.claim ?? implementer,
     owed: standIn.owed,
-    routes: standIn.routes,
+    routes: standIn.answer,
   })
 }
 
@@ -1415,7 +1333,7 @@ async function channelOf(endpoint: PhaseHookEndpoint): Promise<Channel> {
 // this one waits out the file's longest delay (the quiet wait's 80 ms) and more.
 test("a standing wait and a standing hold send no reminder, arm no timer and report no reminder due", async () => {
   for (const held of ["wait", "hold"] as const) {
-    const standIn = waitDaemon(held === "hold" ? MERGER_WORK : WORK)
+    const standIn = waitStandIn(held === "hold" ? MERGER_WORK : WORK)
     if (held === "hold") standIn.state.hold = HOLD
     const pane = await waitingPane(standIn, held === "hold" ? { claim: merger } : {})
     try {
@@ -1448,7 +1366,7 @@ test("a standing wait and a standing hold send no reminder, arm no timer and rep
 // wait, and the turn's end that follows gets the reminder.
 for (const taken of ["into the declaring turn", "into a turn of its own"] as const) {
   test(`a delivery the channel server writes after the declaration ends the wait, taken ${taken}`, async () => {
-    const standIn = waitDaemon()
+    const standIn = waitStandIn(WORK)
     const pane = await waitingPane(standIn)
     const channel = await channelOf(pane.endpoint)
     try {
@@ -1487,7 +1405,7 @@ for (const taken of ["into the declaring turn", "into a turn of its own"] as con
 // The daemon knows that key for its own ask and answers `ended: false`, which keeps the wait
 // standing in the plugin: the turn the ask started earns no reminder and arms nothing.
 test("the update ask the channel server writes is reported with the frame's exact key, and the daemon's ended:false keeps the wait standing", async () => {
-  const standIn = waitDaemon()
+  const standIn = waitStandIn(WORK)
   const pane = await waitingPane(standIn)
   const channel = await channelOf(pane.endpoint)
   try {
@@ -1527,7 +1445,7 @@ test("the update ask the channel server writes is reported with the frame's exac
 // D8: a delivery the channel server writes before the declaration, in the declaring turn, names
 // no wait, so it reports nothing, and the wait the worker then declares stands.
 test("a delivery written before the declaration reports nothing and leaves the wait standing", async () => {
-  const standIn = waitDaemon()
+  const standIn = waitStandIn(WORK)
   const pane = await waitingPane(standIn)
   const channel = await channelOf(pane.endpoint)
   try {
@@ -1557,7 +1475,7 @@ test("a delivery written before the declaration reports nothing and leaves the w
 // endpoint's `news` with no key) is news with no key: the daemon ends the wait on it, and that
 // turn's end gets the reminder.
 test("a daemon prompt after the declaration leaves the wait standing, and a person's message is reported with no key", async () => {
-  const standIn = waitDaemon()
+  const standIn = waitStandIn(WORK)
   const pane = await waitingPane(standIn)
   try {
     await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
@@ -1599,7 +1517,7 @@ test("a daemon prompt after the declaration leaves the wait standing, and a pers
 // process the daemon relaunches reads the record file, sends the report at its boot before it
 // reads the owed answer, and the daemon ends the wait: the resume reminder is armed, and comes.
 test("a failed report gets the reminder and is sent again, also by a relaunched process", async () => {
-  const standIn = waitDaemon()
+  const standIn = waitStandIn(WORK)
   const before = await waitingPane(standIn)
   const channel = await channelOf(before.endpoint)
   let carried: string
@@ -1663,7 +1581,7 @@ test("a failed report gets the reminder and is sent again, also by a relaunched 
 // is due, so the daemon can release the pod. News the channel server writes then is reported
 // against that wait.
 test("a boot with a standing wait arms nothing and reports no reminder due, and news then ends that wait", async () => {
-  const standIn = waitDaemon()
+  const standIn = waitStandIn(WORK)
   standIn.state.wait = {
     id: "wait-7",
     waitingOn: "CI on the pull request",
@@ -1715,7 +1633,7 @@ test("a boot with a standing wait arms nothing and reports no reminder due, and 
 // rhythm: the run's continuation first, then the reminder's own timer.
 test("a tool call written as text is reminded during a wait and during a hold, and the hold's reminder names the closed gate", async () => {
   for (const held of ["wait", "hold"] as const) {
-    const standIn = waitDaemon(held === "hold" ? MERGER_WORK : WORK)
+    const standIn = waitStandIn(held === "hold" ? MERGER_WORK : WORK)
     if (held === "hold") standIn.state.hold = HOLD
     const pane = await waitingPane(standIn, held === "hold" ? { claim: merger } : {})
     try {
@@ -1728,7 +1646,7 @@ test("a tool call written as text is reminded during a wait and during a hold, a
       })
       const text = held === "hold" ? `${TEXT_CALL_SENTENCE} ${CLOSED_NOTE}` : TEXT_CALL_SENTENCE
       expect(continued, held).toEqual({ decision: "block", reason: text })
-      expect(text, held).not.toContain("handoff_complete")
+      expect("reason" in continued ? continued.reason : "", held).not.toContain("handoff_complete")
 
       expect(
         await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: TEXT_CALL }),
@@ -1747,7 +1665,7 @@ test("a tool call written as text is reminded during a wait and during a hold, a
 // turns' ends are reminded of nothing while the gate stays closed. Once the gate opens, the
 // daemon's answer gives no hold, and the next turn's end with no completion gets the reminder.
 test("a held merger is reminded of nothing until the gate opens, and the next turn's end then gets the reminder", async () => {
-  const standIn = waitDaemon(MERGER_WORK)
+  const standIn = waitStandIn(MERGER_WORK)
   standIn.state.hold = HOLD
   const pane = await waitingPane(standIn, { claim: merger })
   try {

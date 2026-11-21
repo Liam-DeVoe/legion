@@ -29,9 +29,9 @@ import type { StallWatchdogAborter } from "@legion/pi-shared/stall-watchdog";
  * (`extensions/legion.ts:189-193`).
  *
  * **It carries its own custom type** and is never sent as a user message: a `role: "user"`
- * message is what the phase check reads as a message from outside the session (`isInbound`,
- * `pi-shared/src/phase-stall.ts:208-210`), so a worker restarting itself would reset that check's
- * own count of what it has reminded about.
+ * message is what the phase check reads as a message from outside the session (`inboundOf` in
+ * `pi-shared/src/phase-stall.ts`), so a worker restarting itself would reset that check's own
+ * count of what it has reminded about.
  *
  * **Both halves fail loudly, and the ladder goes on.** A host with no `abort()`, an `abort()`
  * that throws or whose Promise rejects, and a message the host refuses each throw from here; the
