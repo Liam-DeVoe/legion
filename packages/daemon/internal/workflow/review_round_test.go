@@ -63,9 +63,10 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 // last two: the commit its row holds, ` Last reviewed commit: <sha>.`, or ` Last reviewed commit:
 // none.` for a row that holds none, then the entry of its round, ` Review entry: <n>.`, the number
 // the reviewer's row holds at that moment (record.PhaseRow.Entry) while the row holds the task of
-// an entry, or ` Review entry: none.` for a row that holds no entry's task. The reviewer writes the
-// entry into the footer of each review it submits for that task, and only a review that names the
-// entry that stands moves the commit the reviewer read (review). One function gives the reviewer's
+// an entry, or ` Review entry: none.` for a row that holds no entry's task. The reviewer's
+// completion of that task is held to the entry (api's entry fence, staleEntryRefusal), and only its
+// verdict while the row holds that entry's task moves the commit the reviewer read (handoff). One
+// function gives the reviewer's
 // task those sentences (namingTheReviewRound), and the one place every task for a worker is queued
 // through (queuedRow) calls it, so each way the daemon gives the reviewer a task reaches it,
 // whichever composed the task: the cases here are each way there is today, a wake of each kind
@@ -525,8 +526,8 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 // and then that entry (reviewround.EntryLabel), each once: a reviewer that waits for CI is released after
 // the idle period, and the wake is then its newest task. The wake's task is never the phase's
 // work, and it still names the round's commit and entry, as each task of the reviewer in reviewing
-// does: the reviewer writes the number of the newest entry its session was given into its review's
-// footer, and the commit moves only for a review that names the entry that stands. The two
+// does: the reviewer's completion is held to the entry its newest task named, and the commit moves
+// only for its verdict of the entry that stands. The two
 // sentences are the ones the queue of every worker's task appends (queuedRow, namingTheReviewRound),
 // on each kind of wake.
 //

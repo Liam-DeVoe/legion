@@ -351,10 +351,12 @@ func (m *Manager) VerdictToken(ctx context.Context, owner string) (Lease, error)
 	return m.lease(ctx, mintRequest{set: SetVerdict, owner: owner})
 }
 
-// Forgetter drops the leases a token source holds for a set and owner, so the next one is
-// minted: a token GitHub refused (401) is not served again from the cache.
+// Forgetter drops the leases a token source holds, so the next one is minted: a token GitHub
+// refused (401) is not served again from the cache. Forget is for a caller that met the refusal
+// on a write lease of set, ForgetRead for one that met it on the owner's read lease.
 type Forgetter interface {
 	Forget(set TokenSet, owner string)
+	ForgetRead(owner string)
 }
 
 // Forget drops both leases a caller of set may hold for owner, set's write token and the owner's
@@ -364,6 +366,13 @@ type Forgetter interface {
 // kept: its caller meets its own refusal, and forgets it then.
 func (m *Manager) Forget(set TokenSet, owner string) {
 	m.forget(leaseScope(false, set, owner), leaseScope(true, "", owner))
+}
+
+// ForgetRead drops the owner's read lease and the narrowing refusal remembered for it, and no
+// write lease: a caller that met a refusal on the read lease (the daemon's read of a review
+// author's permission) knows which scope it was, so every role's write lease of the owner is kept.
+func (m *Manager) ForgetRead(owner string) {
+	m.forget(leaseScope(true, "", owner))
 }
 
 // forget drops the lease and the narrowing refusal each of scopes holds.

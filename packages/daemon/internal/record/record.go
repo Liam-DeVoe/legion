@@ -656,10 +656,10 @@ type PhaseRow struct {
 	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
 	// in place that the upgrade found with no work handed out, which the completion route reads
 	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
-	// given in reviewing ends naming this number (reviewround.EntryLabel), its review's
-	// footer names it back, and only a review that names the number the row holds moves
-	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
-	// earlier entry can never name the entry that stands.
+	// given in reviewing ends naming this number (reviewround.EntryLabel), and the completion route
+	// holds the reviewer's completion to it (api's entry fence), as the workflow does again under
+	// the fact's lock (workflow's staleEntryRefusal), so a verdict of an earlier entry never decides
+	// the round of the entry that stands, nor moves ReviewedHead.
 	Entry int64
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record
@@ -707,6 +707,18 @@ type PhaseRow struct {
 	EntryMovedBack bool
 }
 
+// BehindEntryTaken says whether a completion of a phase entry the role's row has moved past is
+// taken: a completion of a phase that ends with a handoff record its role writes, at commit,
+// which is the head pr holds, on an entry raised by no move back (PhaseRow.EntryMovedBack). What a
+// worker reports is a fact about a head, so when the phase was entered again at that same head the
+// work the current entry asks for is the work this completion did; a move back asks for the work
+// to be done again, which no verdict on either head answers for. The completion route's entry
+// fence decides it before the fact (api's behindEntryClause) and the workflow again under the
+// fact's lock (workflow's staleEntryRefusal), so the two take the same completions.
+func BehindEntryTaken(commit string, pr *PullRequest, movedBack bool) bool {
+	return !movedBack && commit != "" && pr != nil && commit == pr.HeadSHA
+}
+
 // Completed says whether the role completed its current phase: its completion reported a commit
 // or named a handoff record, both of which clearing the handoff at the next phase's start
 // (workflow's clearHandoff) and a new generation (ClearGeneration) empty.
@@ -746,8 +758,8 @@ type PhaseEntry struct {
 // where it carries none. A person's request for changes writes it too (workflow's review), at the
 // commit its webhook named. The state keeps a GitHub review's spelling, and TestedCommit is a key
 // of its own, because a daemon of the release before the reviewer's verdict reads this same
-// column (spec R15): it decodes the column leniently, so it reads the state and the head as it
-// always has and skips the key it does not know.
+// column: it decodes the column leniently, so it reads the state and the head as it always has and
+// skips the key it does not know.
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // decision said: the head and GitHub's merge state an approval of this decision was last reported

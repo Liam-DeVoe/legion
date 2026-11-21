@@ -16,8 +16,8 @@ import (
 )
 
 // workBackEngine is the engine the work-back proofs drive: the review round cap and the hooks
-// each proof configures, and the review App's login, since a review that requests changes is one
-// of the moves back they make.
+// each proof configures, and the one App's login, which every engine of this package is told
+// (testAppLogin).
 func workBackEngine(reviewRoundCap int, hooks ...Hook) *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: reviewRoundCap,
@@ -115,7 +115,7 @@ func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head str
 // kept rises with all of them.
 //
 // Four moves are driven here, each of a different pair: a tester's fail (testing-implementing),
-// the review App's request for changes (reviewing-implementing), the architect's own move back to
+// the reviewer's request for changes (reviewing-implementing), the architect's own move back to
 // the implementer (accepting-implementing) and the architect's move back to the plan
 // (accepting-planning). Each pair's count is read on its own, so a build that kept one number for
 // every move back reads 4 under the first pair and nothing under the others, and a build that
@@ -155,7 +155,7 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 		by    string
 	}{
 		{pair: "testing-implementing", count: 1, by: "the tester's fail"},
-		{pair: "reviewing-implementing", count: 1, by: "the review App's request for changes"},
+		{pair: "reviewing-implementing", count: 1, by: "the reviewer's request for changes"},
 		{pair: "accepting-implementing", count: 1, by: "the architect's move back to the implementer"},
 		{pair: "accepting-planning", count: 1, by: "the architect's move back to the plan"},
 	} {

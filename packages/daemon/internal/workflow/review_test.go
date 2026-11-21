@@ -448,6 +448,10 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 			Snapshot: "settled", CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1}}, Failing: []string{}, Cancelled: []string{}}, want: true},
 		{name: "a review", fact: intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "commented", CommitID: headOne,
 			HeadSHA: headOne, Author: testAppLogin, Body: "a note"}, want: true},
+		// The reviewer's verdict decides the round with its completion, so the completion is the
+		// fact that leaves an approval waiting on GitHub's answer for the head.
+		{name: "the reviewer's verdict", fact: intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
+			Summary: "approved", Verdict: "approve", Commit: headOne, HandoffRecord: "review-9", HandoffVersion: 9}, want: true},
 		{name: "a push to the base", fact: intake.BasePush{Repo: "sjawhar/legion", Branch: "main", After: "base-2"}, want: true},
 		{name: "a reopen", fact: intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main",
 			HeadSHA: headOne, Reopened: true, UpdatedAt: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)}, want: true},
@@ -1510,12 +1514,12 @@ const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 // seedRoundOneRows seeds LEGION-208's implementer and reviewer rows as a first review round holds
 // them. The implementer's row names the claim its completion carried. The reviewer's row holds the
 // entry the round's start raised, with its task, raised before any review of the round
-// (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row does: only a review
-// submitted after that entry moves the commit the reviewer read (workflow's review). It names no
-// claim yet: the reviewer submits its review before it completes, and only a completion writes a
-// row's claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
-// claim is recorded as the daemon records it, under the token the daemon names it by
-// (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
+// (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row does: only the
+// reviewer's verdict while the row holds that entry's task moves the commit the reviewer read
+// (workflow's handoff). It names no claim yet: only a completion writes a row's claim
+// (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's claim is
+// recorded as the daemon records it, under the token the daemon names it by (reviewClaim) and
+// with the session its agent registered.
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
@@ -1524,9 +1528,8 @@ func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 }
 
-// seedClaimSession records a claims row for token holding session, so the workflow's read of the
-// reviewer's claim (record.Store.ClaimSession) finds it (byReviewer) and the daemon is known to
-// have started the reviewer on the issue (engine's leftItsPhase). A row already seeded takes the
+// seedClaimSession records a claims row for token holding session, so the daemon is known to have
+// started the reviewer on the issue (engine's leftItsPhase). A row already seeded takes the
 // session given, so a fixture that records the claim and a test that then names its session do not
 // collide.
 func seedClaimSession(t *testing.T, pool *pgxpool.Pool, token claim.Token, session string) {

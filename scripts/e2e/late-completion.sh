@@ -5,8 +5,9 @@
 # answered by the daemon and not by the tool's push checks, which a phase the role left runs none
 # of: `409 HANDOFF_NOT_CURRENT_PHASE` in one request, naming its own implement record; a finished
 # tester that completes again, naming its own test record, is refused the same in one request; and
-# a reviewer whose own approval moved the issue to accepting before it completed has its completion
-# taken, naming its own review record. The whole daemon is booted by the function `legion start`
+# a reviewer whose round a person's request for changes ended, moving the issue to implementing
+# before it completed, has its completion taken, naming its own review record. The whole daemon is
+# booted by the function `legion start`
 # calls, over a real PostgreSQL, a real nats-server and the real Dispatch server this checkout
 # builds, and three real `omp --mode rpc` panes run under it — the real `legion worker-shim`, this
 # checkout's `legion`, and this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi
@@ -26,9 +27,9 @@
 # completes testing with verdict pass, which moves the issue to reviewing; the operator's task then
 # gives the finished tester a second turn, which calls `handoff_complete` again. The reviewer the
 # pass started takes its reviewing task, and its turn is held while the driver writes its review
-# record as its own session and publishes the review App's approval of the head, its Legion footer
-# naming that session, as Envoy relays a GitHub review; the daemon moves the issue to accepting, and
-# the turn then completes. Each step records the tool's answer, which comes back to the stand-in as
+# record as its own session and publishes a person's request for changes of the head, as Envoy
+# relays a GitHub review; the daemon moves the issue to implementing, and the turn then completes.
+# Each step records the tool's answer, which comes back to the stand-in as
 # the tool's result, and the daemon's own line for each request each call made (`api: handoff
 # completion answered`, which names the record and the commit the call carried and the status and
 # code it was answered with); the last step holds each repeat refused `409 HANDOFF_NOT_CURRENT_PHASE`

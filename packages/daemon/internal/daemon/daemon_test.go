@@ -1681,8 +1681,8 @@ const workflowAppToken = "workflow-test-token"
 
 // workflowAppLogin is the bot login of the one App a workflowTokenRecorder stands for: every lease
 // it mints carries it, and AppLogin answers it, as a real token manager's do. It is
-// reviewAppLogin, the login the live tests' reviews are authored by.
-const workflowAppLogin = reviewAppLogin
+// appLogin, the login the live tests' reviews are authored by.
+const workflowAppLogin = appLogin
 
 type workflowTokenRecorder struct {
 	mu sync.Mutex
@@ -1716,8 +1716,10 @@ func (r *workflowTokenRecorder) AppLogin(context.Context) (string, error) {
 	return workflowAppLogin, nil
 }
 
-// Forget drops nothing: every lease is minted afresh.
+// Forget and ForgetRead drop nothing: every lease is minted afresh.
 func (r *workflowTokenRecorder) Forget(appauth.TokenSet, string) {}
+
+func (r *workflowTokenRecorder) ForgetRead(string) {}
 
 // InstalledOn answers the App installed on every repository but those missing names, and fails
 // the reads failing names.

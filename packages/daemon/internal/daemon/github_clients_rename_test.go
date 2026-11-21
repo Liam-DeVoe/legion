@@ -66,7 +66,7 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 			call: func(t *testing.T, repos *repositories, api string) {
 				t.Helper()
 				w := &workflowRuntime{tokens: roleTokens{}, repositories: repos, githubAPI: api, log: quietLogger(),
-					reviewAppLogin: "legion-reviewer[bot]"}
+					appLogin: "legion-reviewer[bot]"}
 				canWrite, err := w.readPermission(context.Background(), recorded, "a-writer")
 				if err != nil {
 					t.Fatalf("read a-writer's permission: %v", err)

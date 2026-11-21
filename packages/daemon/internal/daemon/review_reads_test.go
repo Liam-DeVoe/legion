@@ -97,7 +97,7 @@ func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, AppLogin: reviewReadApp}, quietLogger())
 	return &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, engine: engine, handlers: []intake.Handler{engine},
-		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: quietLogger(), githubAPI: api, reviewAppLogin: reviewReadApp, repositories: servedAcme(),
+		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: quietLogger(), githubAPI: api, appLogin: reviewReadApp, repositories: servedAcme(),
 	}
 }
 
@@ -200,10 +200,11 @@ func TestNoReviewGitHubListsDecidesARoundOnTheRead(t *testing.T) {
 
 // The read decodes GitHub's own answer, not just the stand-in's shape:
 // testdata/legion-smoke-pull-550-reviews.json is GET /repos/sjawhar/legion-smoke/pulls/550/reviews
-// as GitHub answered it, formatted, with a review App's comments and its request for changes at
-// an earlier head, two other Apps' comments, and that App's approval of the head last. None is a
-// person's request for changes by webhook, so the read passes every one over: the issue stays in
-// reviewing and the reviewer's row records nothing.
+// as GitHub answered it, formatted, with a review App's comments and its request for changes
+// (5480463470) at an earlier head, two other Apps' comments, and that App's approval of the head
+// last. The request for changes is the one review there that decides anything
+// (intake.PullRequestReview.Decides), so the read judges it and keeps it as refused, and passes
+// every other over unjudged: the issue stays in reviewing and the reviewer's row records nothing.
 func TestTheReviewsReadDecodesGitHubsOwnAnswer(t *testing.T) {
 	const head = "a2cd06879ab30d0e8fbeca82b2970826a2c3b6b3"
 	answer, err := os.ReadFile("testdata/legion-smoke-pull-550-reviews.json")
@@ -214,74 +215,42 @@ func TestTheReviewsReadDecodesGitHubsOwnAnswer(t *testing.T) {
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	captureHeadAt(t, pool, head)
 	var reads atomic.Int64
-	readCapture(t, reviewReadRuntime(pool, reviewsStandIn(t, func() string { return string(answer) }, &reads).URL))
+	w := reviewReadRuntime(pool, reviewsStandIn(t, func() string { return string(answer) }, &reads).URL)
+	readCapture(t, w)
 	if got, _ := capturePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the read the issue is in %s, want reviewing: no listed review decides", got)
 	}
 	if state, _ := reviewerDecision(t, pool); state != "" || reads.Load() != 1 {
 		t.Fatalf("the reviewer's row records the decision %q after %d reads of the reviews, want none after one", state, reads.Load())
 	}
-}
-
-// Within one daemon process the read judges whether a review's author may decide once, as a
-// webhook's review is judged once when it is delivered: an outsider's approval of the head is
-// refused on the first read, and after GitHub starts giving that account write access - past the
-// permission answer's own window - the next read neither asks about it again nor lets the approval
-// end the round. Its webhook, judged at delivery, would not have ended it either.
-func TestTheReadJudgesEachReviewOnce(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-	var reads, outsiderReads atomic.Int64
-	var promoted atomic.Bool
-	api := reviewsStandInWith(t, func() string {
-		return "[" + listedReview(31, "an-outsider", "APPROVED", "code", "2026-10-08T22:15:40Z") + "]"
-	}, &reads, func() string {
-		if promoted.Load() {
-			return "write"
-		}
-		return "read"
-	}, &outsiderReads).URL
-	w := reviewReadRuntime(pool, api)
-	w.permissionTTL = time.Nanosecond
-	readCapture(t, w)
-	if got, _ := capturePhase(t, pool); got != phase.Reviewing || outsiderReads.Load() != 1 {
-		t.Fatalf("after the first read the issue is in %s and the outsider's permission was read %d times, want reviewing and once", got, outsiderReads.Load())
-	}
-	promoted.Store(true)
-	time.Sleep(time.Millisecond)
-	readCapture(t, w)
-	if got, _ := capturePhase(t, pool); got != phase.Reviewing {
-		t.Fatalf("after the account was given write access the issue is in %s, want reviewing: its approval was judged when the account could not write", got)
-	}
-	if got, _ := reviewerDecision(t, pool); got != "" || outsiderReads.Load() != 1 || reads.Load() != 2 {
-		t.Fatalf("the round's decision is %q, the outsider's permission was read %d times and the reviews %d; want none, once and twice", got, outsiderReads.Load(), reads.Load())
+	if !w.refusedReviews[5480463470] || len(w.refusedReviews) != 1 {
+		t.Fatalf("refused reviews = %v, want the review App's request for changes 5480463470 alone: the one review there that decides anything, decoded and judged", w.refusedReviews)
 	}
 }
 
 // Every refusal stands at every head (workflow's RefusesRound turns on no head), so the read keeps
-// each review it refuses as refused, and judges it once in this process: the read after it reads
-// the author's write access no more and logs no second refusal. A person's listed review costs one
-// read of the author's write access; the one App's own review costs none, since a review written
-// with the App's token decides nothing whatever GitHub gives its bot account (reviewerCanWrite).
-// Kept by nothing, either would cost a warning, and the person's a permission read, on every read
-// of the issue.
+// each request for changes it refuses as refused, and judges it once in this process: the read
+// after it logs no second refusal. It reads no author's write access for any of them, a person's
+// or the one App's: a listed review is refused for the list (intake.ResolveAuthorCanWrite reads
+// none for it), even once GitHub gives its author write access, so an account given write access
+// after the read cannot turn a listed review into a decision. An approval is no candidate at all,
+// since it decides no round (intake.PullRequestReview.Decides): it is neither judged nor kept.
 func TestTheReadKeepsEveryReviewItRefuses(t *testing.T) {
 	const passedOver = "this read passes over it and reads the review below it"
 	for _, tc := range []struct {
-		name            string
-		listed          string
-		permissionReads int64
+		name   string
+		listed string
+		kept   bool
 	}{
-		{name: "a person's listed approval", listed: listedReview(50, "an-outsider", "APPROVED", captureHead, "2026-10-08T22:15:40Z"), permissionReads: 1},
-		{name: "the App's approval", listed: listedReview(50, reviewReadApp, "APPROVED", captureHead, "2026-10-08T22:15:40Z")},
+		{name: "a person's listed request for changes", listed: listedReview(50, "an-outsider", "CHANGES_REQUESTED", captureHead, "2026-10-08T22:15:40Z"), kept: true},
+		{name: "the App's request for changes", listed: listedReview(50, reviewReadApp, "CHANGES_REQUESTED", captureHead, "2026-10-08T22:15:40Z"), kept: true},
+		{name: "a person's listed approval", listed: listedReview(50, "an-outsider", "APPROVED", captureHead, "2026-10-08T22:15:40Z")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			captureHeadAt(t, pool, captureHead)
-			// an-outsider has write access here, so the workflow refuses its review for the list
-			// alone; every read of write access asks GitHub, since only an answer of no write
-			// access is kept (reviewPermissionTTL).
+			// an-outsider has write access here: what refuses its review is the list alone.
 			var reads, permissionReads atomic.Int64
 			api := reviewsStandInWith(t, func() string { return "[" + tc.listed + "]" }, &reads,
 				func() string { return "write" }, &permissionReads).URL
@@ -292,23 +261,24 @@ func TestTheReadKeepsEveryReviewItRefuses(t *testing.T) {
 				readCapture(t, w)
 			}
 			if got, pr := capturePhase(t, pool); got != phase.Reviewing || pr.ReviewSeen.ID != 0 {
-				t.Fatalf("after two reads the issue is in %s with %d as its newest deciding review, want reviewing and none: the read refuses the only review GitHub lists",
+				t.Fatalf("after two reads the issue is in %s with %d as its newest deciding review, want reviewing and none: the read applies no review GitHub lists",
 					got, pr.ReviewSeen.ID)
 			}
 			if got, _ := reviewerDecision(t, pool); got != "" {
 				t.Fatalf("the round's recorded decision = %q, want none", got)
 			}
-			if reads.Load() != 2 {
-				t.Fatalf("the reviews were read %d times, want twice", reads.Load())
+			if reads.Load() != 2 || permissionReads.Load() != 0 {
+				t.Fatalf("the reviews were read %d times and the author's write access %d times, want twice and never", reads.Load(), permissionReads.Load())
 			}
-			if got := strings.Count(logs.String(), passedOver); got != 1 {
-				t.Fatalf("the two reads logged the refusal %d times, want once: %s", got, logs.String())
+			want := 0
+			if tc.kept {
+				want = 1
 			}
-			if permissionReads.Load() != tc.permissionReads {
-				t.Fatalf("the author's write access was read %d times, want %d", permissionReads.Load(), tc.permissionReads)
+			if got := strings.Count(logs.String(), passedOver); got != want {
+				t.Fatalf("the two reads logged the refusal %d times, want %d: %s", got, want, logs.String())
 			}
-			if !w.refusedReviews[50] {
-				t.Fatalf("the read keeps review 50 as refused: false, want true")
+			if got := w.refusedReviews[50]; got != tc.kept {
+				t.Fatalf("the read keeps review 50 as refused: %v, want %v", got, tc.kept)
 			}
 		})
 	}
@@ -358,9 +328,8 @@ func TestTheReadPassesOverEveryRefusedReview(t *testing.T) {
 		name   string
 		newest string
 	}{
-		{name: "a person's listed approval", newest: listedReview(61, "a-writer", "APPROVED", captureHead, late)},
 		{name: "a person's listed request for changes", newest: listedReview(61, "a-writer", "CHANGES_REQUESTED", captureHead, late)},
-		{name: "the App's approval", newest: listedReview(61, reviewReadApp, "APPROVED", captureHead, late)},
+		{name: "the App's request for changes", newest: listedReview(61, reviewReadApp, "CHANGES_REQUESTED", captureHead, late)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -368,7 +337,7 @@ func TestTheReadPassesOverEveryRefusedReview(t *testing.T) {
 			captureHeadAt(t, pool, captureHead)
 			var reads atomic.Int64
 			api := reviewsStandIn(t, func() string {
-				return "[" + listedReview(60, reviewReadApp, "APPROVED", captureHead, early) + "," + tc.newest + "]"
+				return "[" + listedReview(60, reviewReadApp, "CHANGES_REQUESTED", captureHead, early) + "," + tc.newest + "]"
 			}, &reads).URL
 			w := reviewReadRuntime(pool, api)
 			readCapture(t, w)

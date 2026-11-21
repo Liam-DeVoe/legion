@@ -423,7 +423,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// is: the first completion the workflow took is what stands, so a retry that rates again is
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
-	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Entry: entry, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: verdict, Commit: req.Commit, TestedCommit: req.TestedCommit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})
 	if err != nil {
@@ -701,12 +701,12 @@ func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	if !recordBacked {
 		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
 	}
+	if record.BehindEntryTaken(commit, pr, movedBack) {
+		return ""
+	}
 	head := ""
 	if pr != nil {
 		head = pr.HeadSHA
-	}
-	if !movedBack && commit != "" && commit == head {
-		return ""
 	}
 	gave := "this completion names no commit"
 	if commit != "" {

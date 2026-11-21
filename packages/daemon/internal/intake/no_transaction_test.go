@@ -131,7 +131,7 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	}{
 		{"a pull request opened on a branch that is no issue's", prSubject, onOtherBranch("pr-opened.json")},
 		{"a push to such a pull request", prSubject, onOtherBranch("pr-synchronized.json")},
-		{"a review of a pull request the daemon does not record", reviewSubject, capturedGitHubEnvelope(t, "review.json")},
+		{"a request for changes of a pull request the daemon does not record", reviewSubject, reviewRequestingChanges(t)},
 		{"a checks settlement of such a pull request", checksSubject, capturedGitHubEnvelope(t, "checks.json")},
 		{"a completed run of a workflow", runSubject, run("ci-run", ".github/workflows/ci.yaml")},
 		{"a completed run of a workflow that deploys", "notifications.github.sjawhar.legion.workflow.deploy_yaml.completed", run("deploy-run", ".github/workflows/deploy.yaml")},
@@ -155,7 +155,7 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 		name, subject string
 		body          []byte
 	}{
-		{"the review of the recorded pull request", reviewSubject, capturedGitHubEnvelope(t, "review.json")},
+		{"the request for changes of the recorded pull request", reviewSubject, reviewRequestingChanges(t)},
 		{"its checks settlement", checksSubject, capturedGitHubEnvelope(t, "checks.json")},
 		{"a pull request opened on an issue's branch", prSubject, capturedGitHubEnvelope(t, "pr-opened.json")},
 	} {

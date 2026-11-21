@@ -175,12 +175,13 @@ func TestAReviewersPermissionIsReadWithTheReadTokenAndOnlyAUserWrites(t *testing
 	}
 }
 
-// GitHub answers 401 for a review App token it has not yet accepted (a token minted moments
-// before) as for one whose installation was removed since. Neither says anything about the
-// author, so a 401 decides nothing and keeps nothing, and GitHub's rate limit is not held for it.
-// A token older than the acceptance window is dropped and the delivery retried with a fresh mint,
-// which either reads the permission or, for a removed App, is refused as not installed; a younger
-// one is kept and tried again once it is that old.
+// GitHub answers 401 for a read token it has not yet accepted (a token minted moments before) as
+// for one whose installation was removed since. Neither says anything about the author, so a 401
+// decides nothing and keeps nothing, and GitHub's rate limit is not held for it. A token older
+// than the acceptance window is dropped, the owner's read lease alone (appauth.Forgetter's
+// ForgetRead), and the delivery retried with a fresh mint, which either reads the permission or,
+// for a removed App, is refused as not installed; a younger one is kept and tried again once it
+// is that old.
 func TestA401ForTheReadTokenIsRetriedWithAFreshOne(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -188,7 +189,7 @@ func TestA401ForTheReadTokenIsRetriedWithAFreshOne(t *testing.T) {
 		wantWait time.Duration
 		forgot   string
 	}{
-		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "implementer acme"},
+		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "read acme"},
 		{"a token moments old is tried again as it is", -time.Second, tokenAcceptWindow - time.Second, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,6 +251,10 @@ func (t *forgettingTokens) ReadToken(ctx context.Context, owner string) (appauth
 
 func (t *forgettingTokens) Forget(set appauth.TokenSet, owner string) {
 	t.forgot = string(set) + " " + owner
+}
+
+func (t *forgettingTokens) ForgetRead(owner string) {
+	t.forgot = "read " + owner
 }
 
 // Any account can review a public repository's pull request, so an account GitHub gives no write
@@ -466,7 +471,7 @@ func reviewPermissionRuntime(pool *store.Pool, githubAPI string, log *slog.Logge
 func reviewPermissionRuntimeRenamed(pool *store.Pool, githubAPI string, log *slog.Logger, renames ghrepo.Renames) *workflowRuntime {
 	tokens := &forgettingTokens{}
 	return &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, tokens: tokens, forget: tokens,
-		githubAPI: githubAPI, log: log, reviewAppLogin: "legion-reviewer[bot]", repositories: newRepositories("LEGION", renames)}
+		githubAPI: githubAPI, log: log, appLogin: "legion-reviewer[bot]", repositories: newRepositories("LEGION", renames)}
 }
 
 // A review on a pull request already open when its repository was transferred finds the record:

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -81,12 +82,116 @@ func TestReviewRoundFromTheReviewersVerdict(t *testing.T) {
 		}
 	})
 
-	t.Run("an approve at H2 carrying the tester's pass at H1 records both", func(t *testing.T) {
+	t.Run("an approve at H2 carrying the tester's pass at H1 records both and ends the round at H2", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedReviewOf(t, pool, headTwo, "green")
 		applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil), reviewerVerdict("approve", headTwo, headOne))
 		if state, head, tested := storedDecision(t, pool); state != "approved" || head != headTwo || tested != headOne {
 			t.Fatalf("the round's decision = %q at %q carrying %q, want approved at %s carrying the tester's pass at %s", state, head, tested, headTwo, headOne)
+		}
+		if got := issuePhase(t, pool); got != phase.Accepting {
+			t.Fatalf("after the approve of the clean head %s the issue is in %s, want accepting: the round settles at the verdict's commit, not the tested one", headTwo, got)
+		}
+		if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
+			t.Fatalf("the commit the reviewer read = %q, want %s, the commit the verdict names", got, headTwo)
+		}
+		if n := len(reviewStuckNotices(t, pool)); n != 0 {
+			t.Fatalf("review-stuck notices = %d, want none", n)
+		}
+	})
+
+	t.Run("an approve of a head the record has not reached stands once that head arrives", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			arrives string
+			want    phase.Phase
+		}{
+			{name: "the approved head arrives", arrives: headTwo, want: phase.Accepting},
+			{name: "a head above the approved one arrives", arrives: headThree, want: phase.Reviewing},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				seedReviewOf(t, pool, headOne, "green")
+				apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+				apply("verdict", reviewerVerdict("approve", headTwo, ""))
+				if got := issuePhase(t, pool); got != phase.Reviewing {
+					t.Fatalf("after the approve of %s while the record holds %s the issue is in %s, want reviewing", headTwo, headOne, got)
+				}
+				if state, head, _ := storedDecision(t, pool); state != "approved" || head != headTwo {
+					t.Fatalf("the round's decision = %q at %q, want approved at %s", state, head, headTwo)
+				}
+				apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: tc.arrives})
+				apply("read", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: tc.arrives,
+					Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
+				if got := issuePhase(t, pool); got != tc.want {
+					t.Fatalf("after %s arrived, read clean, the issue is in %s, want %s with no further verdict", tc.arrives, got, tc.want)
+				}
+				if state, head, _ := storedDecision(t, pool); tc.want == phase.Reviewing && (state != "approved" || head != headTwo) {
+					t.Fatalf("the round's decision = %q at %q, want the approval of %s kept", state, head, headTwo)
+				}
+			})
+		}
+	})
+
+	t.Run("a retry ends a round the reviewer approved before its hold", func(t *testing.T) {
+		pool := migratedPool(t)
+		seedMergeStateRound(t, pool, record.MergeStateUnknown)
+		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+		apply("verdict", reviewerVerdict("approve", headOne, ""))
+		apply("failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer})
+		apply("clean", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
+			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
+		if got := issuePhase(t, pool); got != phase.Held {
+			t.Fatalf("after GitHub's answer while held the issue is in %s, want held", got)
+		}
+		apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision})
+		if got := issuePhase(t, pool); got != phase.Accepting {
+			t.Fatalf("after the retry the issue is in %s, want accepting: the round was decided before the hold", got)
+		}
+		var starts int
+		if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = 'supervise' and payload->>'op' = 'start'
+			and payload->>'role' = 'reviewer' and coalesce(payload->>'task', '') <> ''`).Scan(&starts); err != nil {
+			t.Fatal(err)
+		}
+		if starts != 0 || implementerRounds(t, pool) != 0 {
+			t.Fatalf("the retry started the reviewer %d times and counted %d rounds, want neither: its round had already ended", starts, implementerRounds(t, pool))
+		}
+	})
+
+	t.Run("a completion of an entry the round has left decides nothing unless it is at the head", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			commit    string
+			movedBack bool
+			refused   bool
+		}{
+			{name: "at a head the record has left", commit: headEarlier, refused: true},
+			{name: "at the head, the entry raised by a move back", commit: headOne, movedBack: true, refused: true},
+			{name: "at the head the record holds", commit: headOne},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				seedReviewOf(t, pool, headOne, "green")
+				row := reviewerRow(t, pool)
+				row.Entry, row.EntryMovedBack = 2, tc.movedBack
+				seedPhase(t, pool, row)
+				// The completion passed the route's entry fence while the reviewer's row stood on
+				// entry 1, and reached the workflow after the phase was entered again (entry 2): it
+				// carries entry 1, the entry the claim served when the route held it.
+				stale := reviewerVerdict("changes", tc.commit, "")
+				stale.Entry = 1
+				result := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("stale", stale)
+				if got := refusalCode(result); tc.refused && got != "HANDOFF_STALE_ENTRY" || !tc.refused && got != "" {
+					t.Fatalf("the completion of entry 1 at %s = %+v, want refused %v", tc.commit, result.Refusal, tc.refused)
+				}
+				state, _, _ := storedDecision(t, pool)
+				if tc.refused && (state != "" || issuePhase(t, pool) != phase.Reviewing) {
+					t.Fatalf("after the refused completion the decision is %q and the issue is in %s, want none and reviewing", state, issuePhase(t, pool))
+				}
+				if !tc.refused && (state != "changes_requested" || issuePhase(t, pool) != phase.Implementing) {
+					t.Fatalf("after the completion at the head the decision is %q and the issue is in %s, want changes_requested and implementing", state, issuePhase(t, pool))
+				}
+			})
 		}
 	})
 
@@ -185,13 +290,17 @@ func TestReviewRoundFromTheReviewersVerdict(t *testing.T) {
 		if got := issuePhase(t, pool); got != phase.Implementing {
 			t.Fatalf("after a person's request for changes the issue is in %s, want implementing: a refusal beats the approval", got)
 		}
+		task := startTask(t, pool, claim.RoleImplementer)
+		if !strings.Contains(task, "this breaks the parser") || strings.Contains(task, reviewerVerdictLabel) {
+			t.Fatalf("the implementer's task %q, want the person's request for changes and no reviewer's verdict: the reviewer's approve did not decide the round", task)
+		}
 	})
 }
 
-// decisionBeforeB is record.ReviewDecision as the builds before the reviewer's verdict declare it,
-// which their read of the phases record decodes the decision column into with json.Unmarshal
-// (record's scanPhase), so a key none of them knows is skipped.
-type decisionBeforeB struct {
+// decisionBeforeTheVerdict is record.ReviewDecision as the releases before the reviewer's verdict
+// declare it, which their read of the phases record decodes the decision column into with
+// json.Unmarshal (record's scanPhase), so a key none of them knows is skipped.
+type decisionBeforeTheVerdict struct {
 	State          string `json:"state"`
 	Body           string `json:"body,omitempty"`
 	Head           string `json:"head,omitempty"`
@@ -200,11 +309,12 @@ type decisionBeforeB struct {
 	ToldStuckState string `json:"toldStuckState,omitempty"`
 }
 
-// The decision the reviewer's verdict writes carries testedCommit, a key no build before the
-// verdict knows, and a state of a review's spelling, which that build reads: its read of the phases
-// record decodes the column leniently, so it reads the approval at its head and skips the key. The
-// strict decode beside it is the control: it refuses the same bytes, so the key is there to skip.
-func TestAReviewersVerdictWithTestedCommitDecodesUnderTheBuildBeforeB(t *testing.T) {
+// The decision the reviewer's verdict writes carries testedCommit, a key no release before the
+// verdict knows, and a state of a review's spelling, which that release reads: its read of the
+// phases record decodes the column leniently, so it reads the approval at its head and skips the
+// key. The strict decode beside it is the control: it refuses the same bytes, so the key is there
+// to skip.
+func TestAReviewersVerdictWithTestedCommitDecodesUnderTheReleaseBeforeIt(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateUnread)
 	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil), reviewerVerdict("approve", headTwo, headOne))
@@ -215,13 +325,13 @@ func TestAReviewersVerdictWithTestedCommitDecodesUnderTheBuildBeforeB(t *testing
 	if !strings.Contains(string(stored), `"testedCommit"`) {
 		t.Fatalf("the stored decision %s carries no testedCommit, so this test proves nothing", stored)
 	}
-	var before decisionBeforeB
+	var before decisionBeforeTheVerdict
 	if err := json.Unmarshal(stored, &before); err != nil || before.State != "approved" || before.Head != headTwo {
-		t.Fatalf("the build before B reads the decision %s as %+v, %v; want approved at %s", stored, before, err, headTwo)
+		t.Fatalf("the release before the verdict reads the decision %s as %+v, %v; want approved at %s", stored, before, err, headTwo)
 	}
-	strict := json.NewDecoder(strings.NewReader(string(stored)))
+	strict := json.NewDecoder(bytes.NewReader(stored))
 	strict.DisallowUnknownFields()
-	if err := strict.Decode(&decisionBeforeB{}); err == nil {
+	if err := strict.Decode(&decisionBeforeTheVerdict{}); err == nil {
 		t.Fatalf("a strict decode of %s took it whole, want it to refuse testedCommit", stored)
 	}
 }

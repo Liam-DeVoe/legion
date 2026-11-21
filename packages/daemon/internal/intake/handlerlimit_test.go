@@ -245,12 +245,12 @@ func (r *recordedDeadline) read() (called, hasDeadline bool, remaining time.Dura
 	return r.called, r.hasDeadline, r.remaining
 }
 
-// reviewApproval is the captured review envelope with its payload rewritten to carry a review id;
-// the capture names an author and an approval already, which is what makes the review one that
-// decides (PullRequestReview.Decides) and so makes resolveReviewPermission read. The payload is
-// rewritten the way TestDecodingCarriesTheReviewOrder rewrites it: the envelope carries its
-// payload as JSON text, so the text is parsed, changed and written back.
-func reviewApproval(t *testing.T) []byte {
+// reviewRequestingChanges is the captured review envelope with its payload rewritten to carry a
+// review id and to request changes: the capture names an author already, and a request for changes
+// is the review that decides (PullRequestReview.Decides) and so makes resolveReviewPermission
+// read. The payload is rewritten the way TestDecodingCarriesTheReviewOrder rewrites it: the
+// envelope carries its payload as JSON text, so the text is parsed, changed and written back.
+func reviewRequestingChanges(t *testing.T) []byte {
 	t.Helper()
 	var envelope map[string]any
 	if err := json.Unmarshal(capturedGitHubEnvelope(t, "review.json"), &envelope); err != nil {
@@ -261,6 +261,7 @@ func reviewApproval(t *testing.T) []byte {
 		t.Fatalf("parse the captured review's payload: %v", err)
 	}
 	payload["review_id"] = "5325101010"
+	payload["state"] = "changes_requested"
 	text, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("encode the review's payload: %v", err)
@@ -325,7 +326,7 @@ func TestAReviewFactsBoundedReadsFitTheDerivedLimit(t *testing.T) {
 	}))
 	defer stop()
 
-	published := publishAt(t, js, "notifications.github.sjawhar.legion.pr.42.review", reviewApproval(t))
+	published := publishAt(t, js, "notifications.github.sjawhar.legion.pr.42.review", reviewRequestingChanges(t))
 	waitAcknowledged(t, stream, githubConsumerName(spec.Project), published)
 
 	for _, read := range []struct {

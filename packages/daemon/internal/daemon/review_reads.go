@@ -101,16 +101,16 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // reviewToApply is the review of reviews, GitHub's list of pr's, that the workflow would hold as
 // the pull request's newest deciding review had every webhook arrived, judged by the workflow's
 // own rule rather than by a second one beside it: of the reviews that decide
-// (intake.PullRequestReview.Decides) and are newer (intake.PullRequestReview.Order) than the
-// newest the pull request's record holds (record.PullRequest.ReviewSeen), the newest the
-// workflow refuses nothing in (workflow.Engine.RefusesRound), with the write access GitHub gives
-// its author read as a webhook's review reads it (intake.ResolveAuthorCanWrite with
-// reviewerCanWrite).
+// (intake.PullRequestReview.Decides: requests for changes) and are newer
+// (intake.PullRequestReview.Order) than the newest the pull request's record holds
+// (record.PullRequest.ReviewSeen), the newest the workflow refuses nothing in
+// (workflow.Engine.RefusesRound), its author's write access resolved as a webhook's review's is
+// (intake.ResolveAuthorCanWrite with reviewerCanWrite), which reads none for a listed review.
 //
 // GitHub lists reviews in the order they were created, and a draft keeps its place when it is
 // submitted later, so the list's order decides nothing. It says false when no review qualifies. A
 // deciding review GitHub lists without an id or a submission time, which the workflow could not
-// order, is an error, as is a failed permission read; either applies nothing.
+// order, is an error; it applies nothing.
 //
 // A candidate the judgement refuses is passed over and logged, and the read goes on to the one
 // below it, so a newer review the rule refuses hides no older one it admits. The fact carries
@@ -125,10 +125,10 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // judged once when it is delivered: it is kept as refused (refusedReviews) and not judged again
 // by this process. So an account given write access after the read judged its review cannot turn
 // that review into a later round's decision, which its webhook could not either, and a listed
-// review costs one read of the author's write access and one refusal logged, not one of each per
-// read of the issue. The set is held in memory, so after a restart the first read judges a review
-// not yet recorded again, with the permission GitHub gives then. A read that failed judged
-// nothing, and the next read of the issue asks again.
+// review costs one refusal logged, not one per read of the issue, and no read of its author's
+// write access at all: the rule refuses it for the list before it would read that answer. The
+// set is held in memory, so after a restart the first read judges a review not yet recorded
+// again. A read that failed judged nothing, and the next read of the issue asks again.
 func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.Client, pr record.PullRequest, reviews []githubReview) (intake.PullRequestReview, bool, error) {
 	var candidates []intake.PullRequestReview
 	for _, listed := range reviews {

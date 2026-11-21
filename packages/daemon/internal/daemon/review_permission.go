@@ -66,7 +66,7 @@ type permissionKey struct{ repository, login string }
 // unread - is returned, and intake retries the delivery after its nak delay rather than applying
 // it with a permission nobody read.
 func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.PullRequestReview) (bool, error) {
-	if review.Author == w.reviewAppLogin {
+	if review.Author == w.appLogin {
 		return false, nil
 	}
 	repository, recorded, err := w.reviewedRepository(ctx, review)
@@ -134,16 +134,16 @@ func rateLimitRefusal(left time.Duration, what string) *intake.RetryLater {
 // token it has not yet accepted, one minted moments before, as for one whose installation was
 // removed since, and neither says anything of the author or the review, so the delivery is retried,
 // unheld by the rate limit: a token younger than tokenAcceptWindow is kept and tried again once it
-// is that old, as Octokit's auth-app does; an older one is dropped (appauth.Forgetter, which drops
-// the owner's read lease with the set it names, as the leak check's reader does) and the delivery
-// retried after tokenRefusedWait with a fresh mint, which either reads it or, for a removed App, is
+// is that old, as Octokit's auth-app does; an older one is dropped (appauth.Forgetter's ForgetRead,
+// which drops the owner's read lease and keeps every role's write lease) and the delivery retried
+// after tokenRefusedWait with a fresh mint, which either reads it or, for a removed App, is
 // refused as not installed (appauth.ErrNotInstalled).
 func (w *workflowRuntime) tokenRefused(repository ghrepo.Repository, lease appauth.Lease, err error) error {
 	if age := time.Since(lease.Minted); age < tokenAcceptWindow {
 		return &intake.RetryLater{After: tokenAcceptWindow - age,
 			Err: fmt.Errorf("GitHub has not yet accepted the read token minted %s ago, tried again once it is %s old: %w", age.Round(time.Millisecond), tokenAcceptWindow, err)}
 	}
-	w.forget.Forget(appauth.SetImplementer, repository.Owner())
+	w.forget.ForgetRead(repository.Owner())
 	return &intake.RetryLater{After: tokenRefusedWait,
 		Err: fmt.Errorf("GitHub refused the read token, which is minted again: %w", err)}
 }

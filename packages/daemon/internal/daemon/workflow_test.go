@@ -67,8 +67,10 @@ func (loginTokens) InstalledOwners(context.Context) ([]string, error) {
 	return nil, errors.New("loginTokens lists no owner accounts, which a gh bundle holds one directory per owner of")
 }
 
-// Forget drops nothing: every lease is minted afresh.
+// Forget and ForgetRead drop nothing: every lease is minted afresh.
 func (loginTokens) Forget(appauth.TokenSet, string) {}
+
+func (loginTokens) ForgetRead(string) {}
 
 func (t loginTokens) ReadToken(ctx context.Context, _ string) (appauth.Lease, error) {
 	lease, err := t.Token(ctx, "", "")

@@ -241,10 +241,10 @@ type workflowRuntime struct {
 	// mapping load names each of these the mapping does not hold, which catches a typo
 	// (logUnmappedCommitIssueTrailerRepos); nothing else in the daemon reads it.
 	commitIssueTrailerRepos []ghrepo.Repository
-	// reviewAppLogin is the one App's bot login from its boot read, as the engine holds it
+	// appLogin is the one App's bot login from its boot read, as the engine holds it
 	// (workflow.Config.AppLogin): a review written with the App's token decides no round
 	// (workflow's RefusesRound), so reviewerCanWrite asks GitHub nothing about it.
-	reviewAppLogin string
+	appLogin string
 	// permissions holds, by repository and login, until when reviewerCanWrite's read of GitHub
 	// stands as no write access; permissionTTL is how long one stands, zero, in production, being
 	// reviewPermissionTTL, and a test shortens it. limitedUntil is when GitHub's last rate limit
@@ -346,10 +346,10 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 // appLoginAtBoot reads the one App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows it, as one attempt run again
 // after a failure GitHub reports as its own trouble (appauth.TransientError); any other failure is
-// refused at once. The engine tells the App's reviews from every other account's by the login that
-// authored them, and the reviewer's own among those by the session their Legion footer names, which
-// must be the one the reviewer's claim records (workflow's byReviewer), so an App that names no
-// login is refused. One App serves every role, so the login is read once.
+// refused at once. The engine knows a GitHub review written with the App's token by the login that
+// authored it, and such a review decides no round (workflow's RefusesRound), so an App that names
+// no login is refused: without it, the App's own reviews would be judged as a person's. One App
+// serves every role, so the login is read once.
 func appLoginAtBoot(ctx context.Context, app appauth.Logins, log *slog.Logger) (string, error) {
 	var login string
 	err := bootprobe.Run(ctx, "GitHub App login read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
@@ -361,7 +361,7 @@ func appLoginAtBoot(ctx context.Context, app appauth.Logins, log *slog.Logger) (
 		return "", err
 	}
 	if login == "" {
-		return "", errors.New("the GitHub App names no bot login, which the workflow judges pushes and reviews by")
+		return "", errors.New("the GitHub App names no bot login, which the workflow knows the App's own reviews by")
 	}
 	return login, nil
 }
@@ -435,7 +435,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	logins, ok := tokens.(appauth.Logins)
 	if !ok {
-		return nil, fmt.Errorf("the GitHub App token source answers no App login, which the workflow judges pushes and reviews by")
+		return nil, fmt.Errorf("the GitHub App token source answers no App login, which the workflow knows the App's own reviews by")
 	}
 	forget, ok := tokens.(appauth.Forgetter)
 	if !ok {
@@ -458,7 +458,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.loadMapping(ctx); err != nil {
 		return nil, err
 	}
-	reviewAppLogin, err := appLoginAtBoot(ctx, logins, log)
+	appLogin, err := appLoginAtBoot(ctx, logins, log)
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +493,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.nameMapping(ctx); err != nil {
 		return nil, err
 	}
-	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
+	engineCfg := engineConfig(cfg, appLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
 	// view of this project (store.Store.PodRecordsOf), which derives the claim token's spelling
 	// of the project the tables are keyed by.
@@ -532,7 +532,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// when they look. Neither could write it itself: the engine returns early on an event whose
 	// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
-	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
+	w.handlers, w.appLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, appLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
@@ -775,18 +775,18 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 	return ""
 }
 
-// engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
-// login from its boot lease: its own project's production_check is the role that works the checks
+// engineConfig is the workflow engine's configuration from the daemon's and the one App's bot
+// login from its boot read: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none), and its own project's declared experiments are what each
 // issue the engine records is drawn for. hookPrompts are the words boot read for the hooks that
 // name a file (readBoot), which engineHooks puts in the place of each such hook's path.
-func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
+func engineConfig(cfg config.Config, appLogin string, hookPrompts map[string]string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
-		AppLogin:            reviewAppLogin,
+		AppLogin:            appLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments: cfg.ExperimentsDeclared(),
 	}

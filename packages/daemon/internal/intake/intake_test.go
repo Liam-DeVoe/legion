@@ -1859,13 +1859,15 @@ func TestDecodingCarriesTheReviewOrder(t *testing.T) {
 
 // The workflow decides a review round inside a transaction and performs no I/O, so whether the
 // review's author may write to the repository is read before the fact is applied, and only for a
-// review that decides a round and names its author: a comment costs no GitHub call, and neither
-// does a review the producer gave no author. A request for changes in GitHub's upper case is
-// looked up as the workflow counts it (PullRequestReview.Decides). A read that fails is returned,
-// so the delivery is retried rather than applied with a permission nobody read, and a daemon with
-// no reader leaves every review's write access false.
+// review that decides a round, names its author and came by its webhook: an approval and a
+// comment cost no GitHub call, since neither decides a round whoever writes it, and neither does
+// a review the producer gave no author or one the daemon read from GitHub's list, which the
+// workflow refuses for the list. A request for changes in GitHub's upper case is looked up as the
+// workflow counts it (PullRequestReview.Decides). A read that fails is returned, so the delivery
+// is retried rather than applied with a permission nobody read, and a daemon with no reader
+// leaves every review's write access false.
 func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing.T) {
-	review := PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer", CommitID: "head"}
+	review := PullRequestReview{Repo: "acme/widgets", Number: 42, State: "changes_requested", Author: "a-writer", CommitID: "head"}
 	var asked []string
 	answering := func(canWrite bool, err error) ConsumerSpec {
 		return ConsumerSpec{AckWait: time.Second, ReviewPermission: func(_ context.Context, review PullRequestReview) (bool, error) {
@@ -1877,6 +1879,8 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 		review.Author = author
 		return review
 	}
+	listed := review
+	listed.ReadFromList = true
 	for _, tc := range []struct {
 		name     string
 		fact     Fact
@@ -1884,17 +1888,18 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 		want     bool
 		wantAsks []string
 	}{
-		{name: "an approval by an account with write access", fact: review, spec: answering(true, nil), want: true,
+		{name: "a request for changes by an account with write access", fact: review, spec: answering(true, nil), want: true,
 			wantAsks: []string{"acme/widgets#42 a-writer"}},
-		{name: "an approval by an account without it", fact: review, spec: answering(false, nil),
-			wantAsks: []string{"acme/widgets#42 a-writer"}},
-		{name: "a request for changes", fact: withState(review, "changes_requested"), spec: answering(true, nil), want: true,
+		{name: "a request for changes by an account without it", fact: review, spec: answering(false, nil),
 			wantAsks: []string{"acme/widgets#42 a-writer"}},
 		{name: "a request for changes in upper case", fact: withState(review, "CHANGES_REQUESTED"), spec: answering(true, nil), want: true,
 			wantAsks: []string{"acme/widgets#42 a-writer"}},
+		{name: "an approval, which decides no round whoever writes it", fact: withState(review, "approved"), spec: answering(true, nil),
+			wantAsks: nil},
 		{name: "a comment, which decides nothing whoever writes it", fact: withState(review, "commented"), spec: answering(true, nil),
 			wantAsks: nil},
-		{name: "an approval with no author", fact: withAuthor(review, ""), spec: answering(true, nil), wantAsks: nil},
+		{name: "a request for changes read from the list", fact: listed, spec: answering(true, nil), wantAsks: nil},
+		{name: "a request for changes with no author", fact: withAuthor(review, ""), spec: answering(true, nil), wantAsks: nil},
 		{name: "a daemon with no reader", fact: review, spec: ConsumerSpec{}, wantAsks: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2031,7 +2036,7 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			stop := startConsume(t, js, spec, pool, writeHandler("applied", nil))
 			defer stop()
 
-			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", capturedGitHubEnvelope(t, "review.json"))
+			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", reviewRequestingChanges(t))
 			testwait.Eventually(t, "the review applied once its read passed", func() bool { return writeCount(t, pool) == 1 })
 			mu.Lock()
 			defer mu.Unlock()

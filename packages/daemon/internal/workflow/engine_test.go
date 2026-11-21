@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -268,10 +267,11 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 }
 
 // The captured review's author, `reviewer`, is a person GitHub gives write access to the
-// repository, which the consumer reads before the fact reaches the engine: the review's whole path,
-// decode, permission read and apply, runs through the real consumer. It is an approval, and on a
-// Legion head a person's approval decides nothing (workflow's RefusesRound): the event is
-// processed and the issue stays in reviewing with no decision and nothing written to the outbox.
+// repository, and the review's whole path, decode and apply, runs through the real consumer. It is
+// an approval, and on a Legion head a person's approval decides nothing (workflow's RefusesRound):
+// the consumer asks GitHub nothing about its author (intake.PullRequestReview.Decides), the event
+// is processed, and the issue stays in reviewing with no decision and nothing written to the
+// outbox.
 func TestCapturedApprovedReviewFlowsThroughConsumeAndDecidesNothing(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -306,8 +306,8 @@ func TestCapturedApprovedReviewFlowsThroughConsumeAndDecidesNothing(t *testing.T
 	assertOutboxKinds(t, pool, nil)
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"sjawhar/legion reviewer"}; !slices.Equal(asked, want) {
-		t.Fatalf("the consumer asked GitHub about %v, want %v", asked, want)
+	if len(asked) != 0 {
+		t.Fatalf("the consumer asked GitHub about %v, want nothing: an approval decides no round whoever writes it", asked)
 	}
 }
 
@@ -409,9 +409,7 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 // The reviewer is told the commit its later round reads from, and the entry of each round, by
 // the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
 // skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
-// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
-// reviewer writes the entry into its review's footer, so a prompt that did not name the field
-// would leave every review moving no commit.
+// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here.
 func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
 	body, err := os.ReadFile(mergeGate)

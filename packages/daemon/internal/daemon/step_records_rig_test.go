@@ -341,19 +341,28 @@ func (r *stepRecordsRig) complete(c *stepClaimant, req api.HandoffCompleteReques
 	return status, string(body)
 }
 
-// review is the reviewer taking its task and answering, and then a person submitting state on the
-// walk's pull request (publishReview); the issue then reaches next.
+// review is the reviewer taking its task and answering, and the round ending on state: APPROVED is
+// the reviewer's own verdict, approve at stepRecordsHead, sent with its completion of reviewing
+// under a handoff record of its own (finish); CHANGES_REQUESTED is a person with write access
+// requesting changes on the walk's pull request (publishReview), the one GitHub review that
+// decides a round. The issue then reaches next.
 func (r *stepRecordsRig) review(state string, next phase.Phase) {
 	r.t.Helper()
 	c := r.worker(claim.RoleReviewer)
 	c.take()
+	if state == "APPROVED" {
+		r.finish(c, "review", api.HandoffCompleteRequest{Summary: "the work holds", Verdict: "approve", Commit: stepRecordsHead}, next)
+		return
+	}
 	c.endTurn()
 	r.publishReview(r.number, state)
 	r.waitPhase(next)
 }
 
 // publishReview is a person with write access submitting state on pull request number at
-// stepRecordsHead, as Envoy relays GitHub's review.
+// stepRecordsHead, as Envoy relays GitHub's review. Only CHANGES_REQUESTED decides a round; any
+// other state decides nothing, though the workflow settles the round again on it (workflow's
+// review), which ends a round a recorded approval already decided.
 func (r *stepRecordsRig) publishReview(number int, state string) {
 	t := r.t
 	t.Helper()

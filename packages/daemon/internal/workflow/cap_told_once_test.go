@@ -12,7 +12,7 @@ import (
 )
 
 // capMoves is how many moves back this proof drives past a review round cap of 3, of three
-// kinds. capReviews is how many of them are the review App's request for changes, the one kind
+// kinds. capReviews is how many of them are the reviewer's request for changes, the one kind
 // that opens a round the cap counts (recordRound). The rest are a tester's fail and the merger's
 // own move back to the reviewer, neither of which opens a round. Six counted rounds is enough that
 // a build telling the architect on every counted round at or above the cap tells it four times.
@@ -49,7 +49,7 @@ func clearsGeneration(t *testing.T, pool *pgxpool.Pool) {
 // The architect is told once for each value review_round_cap holds, and not on every round at or
 // above it.
 //
-// Seventeen moves back are driven past a cap of 3: six of them the review App's requests for
+// Seventeen moves back are driven past a cap of 3: six of them the reviewer's requests for
 // changes, which are the rounds the cap counts, six a tester's fail and five the merger's own move
 // back to the reviewer. The architect gets one cap message and one pr-blocked notice out of all of
 // them. The notice is counted by its kind: every move back wakes the architect with a

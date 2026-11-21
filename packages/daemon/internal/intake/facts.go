@@ -631,13 +631,13 @@ type PullRequestReview struct {
 
 func (PullRequestReview) namedIssue() (string, bool) { return "", false }
 
-// Decides says whether the review's state can decide a review round: an approval or a request for
-// changes, in whatever case its producer spelled it. A comment decides nothing, whoever writes it.
-// Intake reads the author's permission only for a review that decides, and the workflow lets only
-// such a review decide, so both ask this.
+// Decides says whether the review's state can decide a review round: a request for changes, in
+// whatever case its producer spelled it. An approval decides none, since only the reviewer's
+// verdict approves a Legion issue's head (workflow's RefusesRound), and a comment decides nothing,
+// whoever writes it. Intake reads the author's permission only for a review that decides, and the
+// workflow lets only such a review decide, so both ask this.
 func (r PullRequestReview) Decides() bool {
-	state := strings.ToLower(r.State)
-	return state == "approved" || state == "changes_requested"
+	return strings.EqualFold(r.State, "changes_requested")
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -865,7 +865,14 @@ type HandoffComplete struct {
 	// issue's own current generation and phase, and refuses a completion it can attribute to no run
 	// at all, so a fact reaching the workflow always names a run.
 	Generation uint64
-	Summary    string
+	// Entry is the phase entry the route held the completion to (api's entryFence): the entry the
+	// claim's worker is on, read from the claim with Generation, 0 where the claim served none. The
+	// route reads it before the fact's own transaction, and a completion can wait on Dispatch's
+	// read of its handoff record between the two while the phase is entered again, so the workflow
+	// holds the completion to the role's row once more under the fact's lock (workflow's
+	// staleEntryRefusal).
+	Entry   int64
+	Summary string
 	// Verdict is the tester's pass or fail, or the reviewer's approve or changes, on the head
 	// Commit names; empty for every other role's completion. A reviewer on the daemon contract
 	// before the reviewer's verdict sends that contract's pass and fail, which the route reads as

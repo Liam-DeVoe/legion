@@ -425,10 +425,10 @@ func lateWebhookPushDecidesNothing(t *testing.T, pool *store.Pool, w *workflowRu
 	}
 }
 
-// reviewAppLogin and implementerLogin are the bot accounts GitHub names the review App's and the
-// implement App's pushes by, in the push webhook's pusher.name and in the branch's activity alike.
+// appLogin and implementerLogin are bot accounts GitHub names in the push webhook's pusher.name and
+// in the branch's activity: appLogin is the one App's, the login every role acts as.
 const (
-	reviewAppLogin   = "legion-review[bot]"
+	appLogin         = "legion-review[bot]"
 	implementerLogin = "legion-implementer[bot]"
 )
 
@@ -522,13 +522,13 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 	}})
 }
 
-// reviewAppRuntime is readRuntime whose workflow knows the one App by reviewAppLogin, as a
+// reviewAppRuntime is readRuntime whose workflow knows the one App by appLogin, as a
 // workflow boot always does.
 func reviewAppRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
 	w := readRuntime(pool, api, log)
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		AppLogin: reviewAppLogin, ProductionCheckRole: claim.RoleTester, ReadMergeState: w.queueMergeState}, log)
-	w.handlers, w.reviewAppLogin = []intake.Handler{w.engine}, reviewAppLogin
+		AppLogin: appLogin, ProductionCheckRole: claim.RoleTester, ReadMergeState: w.queueMergeState}, log)
+	w.handlers, w.appLogin = []intake.Handler{w.engine}, appLogin
 	return w
 }
 
@@ -549,8 +549,8 @@ func TestTheReadRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	github := &activityGitHub{}
 	github.moved("more-red-tests", at,
-		activityEntry("legion/CAPTURE-1", "push", "red-tests", "more-red-tests", reviewAppLogin, at.Add(-time.Minute)),
-		activityEntry("legion/CAPTURE-1", "push", "code", "red-tests", reviewAppLogin, at.Add(-2*time.Minute)),
+		activityEntry("legion/CAPTURE-1", "push", "red-tests", "more-red-tests", appLogin, at.Add(-time.Minute)),
+		activityEntry("legion/CAPTURE-1", "push", "code", "red-tests", appLogin, at.Add(-2*time.Minute)),
 		activityEntry("legion/CAPTURE-1", "push", "base", "code", implementerLogin, at.Add(-time.Hour)))
 	w := reviewAppRuntime(pool, github.serve(t).URL, quietLogger())
 	readCapture(t, w)

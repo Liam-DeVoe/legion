@@ -1,15 +1,14 @@
 kind: Added
 body: |-
-  A later review round's task names the commit that the newest of the reviewer's own deciding
-  reviews read, so the reviewer reads the difference from that commit to the head instead of the
-  whole change. The last two sentences of each task a reviewer is sent are always the daemon's,
-  in every phase and whatever queued the task: ` Last reviewed commit: <sha>.`, or
-  ` Last reviewed commit: none.` where the task names no commit, and
-  then ` Review entry: <n>.`, the round it is for, or ` Review entry: none.`. The reviewer writes
-  that number into its review's Legion footer (`"entry":"<n>"`), and only an approval or a request
-  for changes of the reviewer's own session whose footer names the entry that stands moves the
-  stored commit; any other review decides its round as before and leaves the commit, so the next
-  round reads more. A new generation of an issue clears the commit, and no entry into a phase does.
+  A later review round's task names the commit the reviewer's newest verdict named, so the
+  reviewer reads the difference from that commit to the head instead of the whole change. The
+  last two sentences of each task a reviewer is sent are always the daemon's, in every phase and
+  whatever queued the task: ` Last reviewed commit: <sha>.`, or ` Last reviewed commit: none.`
+  where the task names no commit, and then ` Review entry: <n>.`, the round it is for, or
+  ` Review entry: none.`. Only the reviewer's verdict, sent with its completion of reviewing while
+  the round its task named stands, moves the stored commit; a person's request for changes
+  decides its round and leaves the commit, so the next round reads more. A new generation of an
+  issue clears the commit, and no entry into a phase does.
   A compaction the daemon asks for keeps the entry's sentence word for word. The migration
   `20261116234034_phase_reviewed_head` adds `phases.reviewed_head` with an empty default, so the
   first round after the upgrade names the commit `none`; it appends

@@ -42,8 +42,7 @@ func seedReviveTree(t *testing.T, pool *pgxpool.Pool, rootAt phase.Phase) {
 }
 
 // seedRoleClaim records the claim token of issue's role in state, suspended by by when it is
-// suspended, as the claim store holds it, on the session ses-<role>: the reviewer's is the
-// session its reviews' footer names (reviewBody).
+// suspended, as the claim store holds it, on the session ses-<role>.
 func seedRoleClaim(t *testing.T, pool *pgxpool.Pool, token claim.Token, issue string, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) {
 	t.Helper()
 	session := "ses-" + string(role)

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
@@ -587,14 +588,16 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 	return walk.Owner(issue, false), nil
 }
 
-// RefusesRound is why review, one that decides (intake.PullRequestReview.Decides), must not decide
-// its pull request's review round, "" when nothing refuses it. A round's verdict is the reviewer's,
-// which reaches the daemon with its completion of reviewing (handoff, decisionOf), so the one
-// GitHub review that decides is a person's request for changes, which refuses the head. Two places
-// judge a review - this engine, for the review a webhook delivers, and the daemon's read of
-// GitHub's list of a pull request's reviews (daemon's reviewToApply), which applies only a review
-// this takes - and both ask this one judgement, so neither judges by a narrower rule than the
-// other. The whole rule, in this order:
+// RefusesRound is why review, one that decides (intake.PullRequestReview.Decides: a request for
+// changes), must not decide its pull request's review round, "" when nothing refuses it. A
+// round's verdict is the reviewer's, which reaches the daemon with its completion of reviewing
+// (handoff, decisionOf), so the one GitHub review that decides is a person's request for changes,
+// which refuses the head; no approval decides at all, since on a head a Legion issue owns only the
+// reviewer's verdict approves it, which is what writes its success. Two places judge a review -
+// this engine, for the review a webhook delivers, and the daemon's read of GitHub's list of a pull
+// request's reviews (daemon's reviewToApply), which applies only a review this takes - and both
+// ask this one judgement, so neither judges by a narrower rule than the other. The whole rule, in
+// this order:
 //
 //   - A review written with a token of the one App (Config.AppLogin) decides nothing. Every role
 //     acts as that App, so its login says nothing of who wrote the review, and the reviewer posts
@@ -603,8 +606,6 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 //     (intake.PullRequestReview.ReadFromList) decides nothing. The list answers with GitHub's own
 //     commit_id for every review it holds, and that id moves to the pull request's current head
 //     (dispatch://INFRA-1557), so a listed review is no evidence of the code it read.
-//   - An approval decides nothing: on a head a Legion issue owns, only the reviewer's verdict
-//     approves it, which is what writes its success (spec R4).
 //   - A request for changes from an account with no write access to the repository, or of
 //     another type than User (intake.PullRequestReview.AuthorCanWrite, which the daemon's
 //     reviewerCanWrite reads from GitHub before the fact reaches this transaction), decides
@@ -622,8 +623,6 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview) string {
 		return "the one App wrote it, and no review of the App decides a round"
 	case review.ReadFromList:
 		return "a person's review read from the list"
-	case strings.EqualFold(review.State, "approved"):
-		return "a person's approval decides no round of a Legion issue: only the reviewer's verdict approves its head"
 	case !review.AuthorCanWrite:
 		return "its author is no account of type User with write access to the repository"
 	}
@@ -647,17 +646,17 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// with its completion (handoff). So a review tells the architect only when it changes how the
 	// round is stuck.
 	before := e.reviewRound(*issue, reviewer, pr)
-	// Only changes_requested and approved decide anything, and one judgement says whether such a
-	// review may decide this round (RefusesRound). Any other review orders nothing either, so a
-	// comment written after a decision but delivered before it, or an outsider's review, cannot
-	// make the decision look old.
+	// Only a request for changes decides anything (intake.PullRequestReview.Decides), and one
+	// judgement says whether it may decide this round (RefusesRound). Any other review orders
+	// nothing either, so a comment or an approval written after a decision but delivered before
+	// it, or an outsider's review, cannot make the decision look old.
 	state := strings.ToLower(fact.State)
 	decides := fact.Decides()
 	if decides {
 		if reason := e.RefusesRound(fact); reason != "" {
 			args := []any{"issue", issue.Key, "pull_request", pr.Number, "author", fact.Author, "state", state,
 				"commit_id", fact.CommitID, "head", pr.HeadSHA, "read_from_list", fact.ReadFromList}
-			// A deciding review the App wrote is a role acting as a reviewer did before the
+			// A request for changes the App wrote is a role acting as a reviewer did before the
 			// verdict, which the operator is told of; any other is an account that may not decide.
 			if e.appWrote(fact.Author) {
 				e.warnOnCommit(ctx, "workflow: a review decides nothing: "+reason, args...)
@@ -668,7 +667,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		}
 	}
 	if !decides {
-		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, byOtherReview)
+		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, byReview)
 		return intake.Result{}, err
 	}
 	// Deciding reviews are ordered by when they were submitted, then by GitHub's review id
@@ -701,38 +700,40 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
 	}
-	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, byOtherReview)
+	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, byReview)
 	return intake.Result{}, err
 }
 
 // decisionOf is the round's decision the reviewer's verdict writes on its row (handoff): approve
-// as approved and changes as changes_requested, at commit, the head the reviewer reviewed, with
-// body the summary its completion carried and tested the commit of the tester's pass the verdict
-// carries to commit ("" for none); nil for no verdict, which decides nothing and leaves the round
-// stuck (stuckUndecided). The state keeps a GitHub review's spelling, which a daemon of the release
-// before the verdict reads in the same column (record.ReviewDecision, spec R15).
-func decisionOf(verdict, commit, tested, body string) *record.ReviewDecision {
+// as approved and changes as changes_requested, at the commit the verdict names, the head the
+// reviewer reviewed, with the summary its completion carried as the body and the commit of the
+// tester's pass the verdict carries to that head ("" for none); nil for no verdict, which decides
+// nothing and leaves the round stuck (stuckUndecided). The state keeps a GitHub review's
+// spelling, which a daemon of the release before the verdict reads in the same column
+// (record.ReviewDecision).
+func decisionOf(fact intake.HandoffComplete) *record.ReviewDecision {
 	var state string
-	switch verdict {
-	case "approve":
+	switch store.VerdictWord(fact.Verdict) {
+	case store.VerdictApprove:
 		state = "approved"
-	case "changes":
+	case store.VerdictChanges:
 		state = "changes_requested"
 	default:
 		return nil
 	}
-	return &record.ReviewDecision{State: state, Body: body, Head: commit, TestedCommit: tested}
+	return &record.ReviewDecision{State: state, Body: fact.Summary, Head: fact.Commit, TestedCommit: fact.TestedCommit}
 }
 
 // The fact that wrote a review-stuck notice, its summary. The architect prompt
 // (prompts/go/architect-common.md) reads a notice the reviewer's completion wrote after the
-// architect asked as the reviewer answering, and every other as news about the round.
+// architect asked as the reviewer answering, and every other as news about the round; byReview's
+// words are the ones that prompt reads, so they stay as they are until the prompt names them anew.
 const (
-	byCompletion  = "the reviewer's completion"
-	byOtherReview = "a review that is not the reviewer's answer"
-	byPush        = "a push"
-	byMergeState  = "GitHub's merge state for the head"
-	byMerge       = "the pull request's merge"
+	byCompletion = "the reviewer's completion"
+	byReview     = "a review that is not the reviewer's answer"
+	byPush       = "a push"
+	byMergeState = "GitHub's merge state for the head"
+	byMerge      = "the pull request's merge"
 )
 
 // roundOutcome is what a review round comes to after a fact (reviewRound).
@@ -980,7 +981,7 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // pr its pull request as the fact left them), and says whether it moved the issue. An ended round
 // moves on, its request for changes back to implementing; a stuck round is told to the architect,
 // in a notice whose summary is by, the fact that wrote it - unless it was told already. For the
-// two causes a review decides, that is the round having been stuck the same way (stuckAs) before
+// two causes the reviewer's verdict decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
 // again. The issue stays in reviewing, and the notice names the reviewer's role topic, which the
@@ -998,7 +999,15 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		// The implementer's task names the reviewer's verdict only where that verdict is what
+		// rejected the round: a person's request for changes can reject a round the reviewer
+		// approved, and an approve beside that request's reason would tell the implementer the
+		// opposite of what sent the work back.
+		handoff := row
+		if handoff.Verdict != string(store.VerdictChanges) {
+			handoff.Verdict = ""
+		}
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", handoff, pr, row.Decision.Body)
 	case roundApproved:
 		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
 	case roundStuck:
@@ -1095,7 +1104,8 @@ func told(row record.PhaseRow, r round) bool {
 //
 // Every fact that can change GitHub's answer asks, and the list is this function's switch rather
 // than a sentence in a comment and nine calls spread through the handlers: the pull request's own
-// events, a push to it, a review, a CI settlement, and a push to the base it sits on. The switch
+// events, a push to it, a review, the reviewer's verdict, a CI settlement, and a push to the base
+// it sits on. The switch
 // also names which of them move the head (classify.MergeStateFactHeadMove): the pull request
 // opened or reopened, and a synchronize, which is the fact that moves the head a push to the
 // branch carries (its case says why the push is not one). Apply calls it once, after the handler,
@@ -1133,6 +1143,14 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+	case intake.HandoffComplete:
+		// The reviewer's verdict decides the round with its completion, so its approval is the
+		// fact that leaves the round waiting on GitHub's answer for the head; no other role's
+		// completion changes what GitHub answers.
+		if fact.Role != claim.RoleReviewer {
+			return nil
+		}
+		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).

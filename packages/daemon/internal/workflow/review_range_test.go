@@ -40,15 +40,18 @@ func roleRow(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseRow 
 // which every entry these tests raise is raised.
 var reviewTestedAt = time.Date(2026, 9, 23, 0, 0, 5, 0, time.UTC)
 
-// reviewAt is the reviewer's verdict of the round that stands, sent with its completion of
-// reviewing (workflow's handoff): state in a decision's spelling, approved or changes_requested,
-// which the verdict's own words approve and changes are recorded as, at head, the commit the
-// reviewer read. Each id names a handoff record of its own, so a later round's completion is no
-// earlier record named again (HANDOFF_NOT_NEW).
+// reviewAt is the reviewer's verdict of the round that stands (reviewerVerdict): state in a
+// decision's spelling, approved or changes_requested, which the verdict's own words approve and
+// changes are recorded as, at head, the commit the reviewer read. Each id names a handoff record of
+// its own, so a later round's completion is no earlier record named again (HANDOFF_NOT_NEW).
 func reviewAt(id int64, state, head string) intake.HandoffComplete {
-	verdict := map[string]string{"approved": "approve", "changes_requested": "changes"}[state]
-	return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "the review",
-		Verdict: verdict, Commit: head, HandoffRecord: "review-" + strconv.FormatInt(id, 10), HandoffVersion: int(id)}
+	verdict := "approve"
+	if state == "changes_requested" {
+		verdict = "changes"
+	}
+	fact := reviewerVerdict(verdict, head, "")
+	fact.Summary, fact.HandoffRecord, fact.HandoffVersion = "the review", "review-"+strconv.FormatInt(id, 10), int(id)
+	return fact
 }
 
 // backToReviewing takes LEGION-208 from implementing through testing into reviewing again, as the
