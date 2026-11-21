@@ -614,13 +614,17 @@ func routes() []apiRoute {
 		// row at the gen the floor took (a fork), or whose gen the log already holds (a row put back
 		// below the log), 409 below_floor with no row; a gen the row no longer holds is 409
 		// gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row, and any
-		// other move 400 bad_transition. The move commits before it answers, so every decision of
-		// the auth service that starts after the answer reads the new phase.
+		// other move 400 bad_transition. A row signed more than five minutes from the broker's
+		// clock, or before the latest row the floor took, is 409 clock_skew, judged before the
+		// write, storing nothing. The move commits before it answers, so every decision of the
+		// auth service that starts after the answer reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
-		// deleted, judged by the log's latest entry, which must verify (409 below_floor otherwise,
-		// storing nothing): held with a hold id, only after a prepare or held entry of that hold
-		// id, or released, only after a released entry, a prepare entry of the hold id it names
+		// deleted, signed within five minutes of the broker's clock and the floor's latest row (409
+		// clock_skew otherwise, storing nothing), judged by the log's latest entry, which must
+		// verify (409 below_floor otherwise, storing nothing): held with a hold id, only after a
+		// prepare or held entry of that hold id, or released, only after a released entry, a
+		// prepare entry of the hold id it names
 		// (409 hold_mismatch otherwise, no hold id included, so the prepared hold is not left
 		// where no command reaches it), or a held one whose hold's signed journal shows it ended
 		// (400 bad_transition otherwise, so no restore frees the clients mid-hold, and a hold the

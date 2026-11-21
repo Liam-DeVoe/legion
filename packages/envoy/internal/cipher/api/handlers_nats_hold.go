@@ -131,7 +131,7 @@ func holdRowAnswer(row natshold.Row) holdRow {
 // operator's client read it, and what was refused, with the hold row it was refused against.
 type holdRefusal struct {
 	// The refusal's code: bad_request, too_large, bad_signature, bad_transition, not_operator,
-	// no_row, gen_mismatch, hold_mismatch, row_exists or below_floor.
+	// no_row, gen_mismatch, hold_mismatch, row_exists, below_floor or clock_skew.
 	Error string `json:"error"`
 	// What was refused.
 	Message string `json:"message"`
@@ -308,12 +308,35 @@ type holdMoveBody struct {
 	Sig string `json:"sig"`
 }
 
+// errRowSkewed is a row a move or restore would write whose signed_at the broker refuses: more than
+// signedrecord.SignedAtSkew from the broker's own clock, or more than that before the latest row
+// this broker's floor of the row accepted. It is answered 409 clock_skew, naming both times, and
+// nothing is stored: a row signed by a clock far fast, once stored, would raise the floor past every
+// genuine move until each replica restarts, and one signed far behind would be stored and then read
+// as unknown.
+var errRowSkewed = errors.New("the row's signed_at is outside the clock-skew allowance")
+
+// rowSignedAtAdmitted judges the signed_at of a row a move or restore would write at gen, before
+// the write: against the broker's own clock, and against this broker's floor of the row
+// (signedrecord.Floor.Admits, which moves nothing). It answers errRowSkewed, naming both times.
+func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time) error {
+	if err := signedrecord.WithinSkewOf(signedAt, time.Now()); err != nil {
+		return fmt.Errorf("%w: %w", errRowSkewed, err)
+	}
+	if err := s.holdRowFloor.Admits(gen, signedAt); err != nil {
+		return fmt.Errorf("%w: %w", errRowSkewed, err)
+	}
+	return nil
+}
+
 // moveNATSHold moves the hold row, once its signature verifies over the gen it will store, and
 // only from a row this broker's floor of the row (holdRowFloor) accepts, checked on the row the
 // move's own transaction holds: a move from an older row put back (a replay) is 409 gen_mismatch
 // with no row, and from another row at the gen the floor took (a fork) 409 below_floor with no row,
 // which the operator's client reads as unknown. A move whose gen the log already holds, from a row
 // put back below the log on a replica whose floor never passed it, is 409 below_floor with no row.
+// The new row's signed_at is judged in the same transaction, before the write (rowSignedAtAdmitted):
+// one outside the allowance is 409 clock_skew, and nothing is stored.
 func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdMoveBody
 	if !readHoldBody(w, r, &body) {
@@ -329,12 +352,21 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the gen it would store", nil)
 		return
 	}
+	accept := func(current natshold.Row) error {
+		if err := s.acceptRow(current); err != nil {
+			return err
+		}
+		return s.rowSignedAtAdmitted(gen, signedAt)
+	}
 	row, err := s.holdStore().Move(r.Context(), uint64(body.ExpectedGen), natshold.Row{
 		Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
-	}, s.acceptRow)
+	}, accept)
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
+	case errors.Is(err, errRowSkewed):
+		writeHoldRefusal(w, http.StatusConflict, "clock_skew", "the move stores nothing: "+err.Error(), nil)
+		return
 	case errors.Is(err, signedrecord.ErrReplay):
 		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: an older row put back", err), nil)
 		return
@@ -398,7 +430,8 @@ var errHoldLogUnknown = errors.New("the hold log's latest entry reads as unknown
 // from the log's latest entry, which must verify (restoreTrusted), whether the row may be restored
 // after it (restoreAdmitted). A latest entry that does not verify, or that this broker's floor of
 // the row reads as a replay or a fork (a restore at or below the floor), is 409 below_floor and
-// stores nothing.
+// stores nothing. The row's signed_at is judged before the write (rowSignedAtAdmitted): one outside
+// the allowance is 409 clock_skew, and nothing is stored.
 func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdRestoreBody
 	if !readHoldBody(w, r, &body) {
@@ -413,12 +446,21 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at its gen", nil)
 		return
 	}
+	admit := func(latest *natshold.LogEntry, journalOf func(holdID string) (*natshold.Record, error), next natshold.Row) error {
+		if err := s.rowSignedAtAdmitted(next.Gen, next.SignedAt); err != nil {
+			return err
+		}
+		return s.restoreAdmitted(latest, journalOf, next)
+	}
 	row, err := s.holdStore().Restore(r.Context(), natshold.Row{
 		Gen: uint64(body.Gen), Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
-	}, natshold.RestoreJudge{Trust: s.restoreTrusted, Admit: s.restoreAdmitted})
+	}, natshold.RestoreJudge{Trust: s.restoreTrusted, Admit: admit})
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
+	case errors.Is(err, errRowSkewed):
+		writeHoldRefusal(w, http.StatusConflict, "clock_skew", "the restore stores nothing: "+err.Error(), nil)
+		return
 	case errors.Is(err, errHoldLogUnknown), errors.Is(err, signedrecord.ErrReplay), errors.Is(err, signedrecord.ErrFork), errors.Is(err, signedrecord.ErrBackdated), errors.Is(err, natshold.ErrGenLogged):
 		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the restore stores nothing: "+err.Error(), nil)
 		return

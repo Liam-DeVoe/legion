@@ -137,6 +137,40 @@ func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 	}
 }
 
+// Admits judges a gen and signing time as Accept would, and moves nothing: the hold's routes ask it
+// inside a move's transaction, before they write the row. A higher gen signed within the allowance
+// is admitted and leaves the floor where it was; one signed past it is ErrBackdated, naming both
+// times. And the floor judges by the latest signing time it has accepted, not the last: after gen 3
+// signed 4 minutes before gen 2, gen 4 signed 6 minutes before gen 2 is refused, which a floor that
+// kept gen 3's time (2 minutes before it) would accept, as at d08fb4a866.
+func TestTheFloorAdmitsWithoutMovingAndKeepsTheLatestSigningTime(t *testing.T) {
+	at := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	lines := func(gen uint64) []string { return signedrecord.Record("hold-1", "done", "hold", gen, []byte(`{}`)) }
+	floor := &signedrecord.Floor{}
+	if err := floor.Admits(9, at.Add(-time.Hour)); err != nil {
+		t.Fatalf("the zero floor does not admit a gen: %v", err)
+	}
+	if err := floor.Accept(2, at, lines(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := floor.Admits(3, at.Add(-signedrecord.SignedAtSkew)); err != nil {
+		t.Errorf("Admits refuses a higher gen signed the whole allowance before the accepted record: %v", err)
+	}
+	err := floor.Admits(3, at.Add(-signedrecord.SignedAtSkew-time.Second))
+	if !errors.Is(err, signedrecord.ErrBackdated) || !strings.Contains(err.Error(), "11:54:59") || !strings.Contains(err.Error(), "12:00:00") {
+		t.Errorf("Admits of a higher gen signed past the allowance answered %v, want ErrBackdated naming both times", err)
+	}
+	if !floor.Reached(2) || floor.Reached(3) {
+		t.Errorf("Admits moved the floor: it reaches gen 3 %v, gen 2 %v; want only gen 2", floor.Reached(3), floor.Reached(2))
+	}
+	if err := floor.Accept(3, at.Add(-4*time.Minute), lines(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := floor.Accept(4, at.Add(-6*time.Minute), lines(4)); !errors.Is(err, signedrecord.ErrBackdated) {
+		t.Errorf("after gen 3 signed 4 minutes before gen 2, gen 4 signed 6 minutes before gen 2 was read as %v, want ErrBackdated", err)
+	}
+}
+
 // A value is signed by its meaning, not its bytes: Postgres stores a record's value as jsonb, which
 // reorders keys and drops whitespace, so the value read back verifies against the signature made
 // over the value written.

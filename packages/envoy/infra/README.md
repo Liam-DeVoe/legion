@@ -4094,6 +4094,16 @@ No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
 
+**The operator's clocks.** Every `envoy-infra hold` command signs the row it writes with its own
+machine's clock, and the broker refuses a row signed more than five minutes
+(`signedrecord.SignedAtSkew`) before or after its own clock, or more than five minutes before the
+latest row it has taken: 409 `clock_skew`, naming both times, with nothing stored. So the clocks
+of every machine that runs these commands must agree with each other, and with the broker's,
+within five minutes; two clocks each within five minutes of true time can be ten apart, so keep
+them synchronized (NTP), not merely close. A replica whose floor took a wrong time (a row stored
+before this check, say) reads every row after it as unknown; restarting that replica clears its
+floor, and it reads the row again.
+
 **Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
 command of a hold through the broker's records, one command at a time: while one command's intent
 is pending every other is refused, but its own pending intent admits it again, its rerun after a
@@ -4119,11 +4129,13 @@ The residual: on this path clients reach the restored and proven hub before its 
 
 **The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
 hold row (`holdRowFloor`, a `signedrecord.Floor`, in `internal/cipher/api`): the highest verified
-gen it has served or written, with the digest of that row's signed lines and the time the operator
-signed it. A row put back below that gen, or another row at it, reads as unknown, and so does a row
-at a higher gen signed more than five minutes before it (`signedrecord.SignedAtSkew`, the clock-skew
-allowance between operator processes): a row of an earlier history of the tables, put back after a
-database restore or an emptied log, whose gens started again below the old ones. No move is made
+gen it has served or written, with the digest of that row's signed lines and the latest time the
+operator signed a row it took. A row put back below that gen, or another row at it, reads as
+unknown, and so does a row at a higher gen signed more than five minutes before that time
+(`signedrecord.SignedAtSkew`, the clock-skew allowance between operator processes): a row of an
+earlier history of the tables, put back after a database restore or a log emptied or cut back,
+whose gens started again below the old ones. A move or restore is judged by the same time before
+it is written, so the broker never stores a row it would read as unknown. No move is made
 from such a row, no route's 409 carries it as the row it refused against (it answers `below_floor`
 instead), and a row a write's statement answers changed (a trigger, say) raises no floor, so the
 operator never signs a move from a row a hold has moved past (a prepare row put back mid-hold, say).

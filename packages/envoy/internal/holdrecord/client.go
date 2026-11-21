@@ -112,8 +112,9 @@ type CutoverRow struct {
 
 // RouteError is a route's coded refusal: a hold route's `bad_request`, `too_large`,
 // `bad_signature`, `bad_transition`, `not_operator`, `no_row`, `gen_mismatch`, `hold_mismatch`,
-// `row_exists` or `below_floor`, or the broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is
-// the verified current row a 409 carries.
+// `row_exists`, `below_floor` or `clock_skew` (a row signed further than the five-minute allowance
+// from the broker's clock, or before the latest row the broker took: nothing was stored), or the
+// broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is the verified current row a 409 carries.
 type RouteError struct {
 	Status int
 	Code   string
@@ -683,7 +684,8 @@ const (
 // any route answers, in the `code` field beside its `error` text (the broker's writeError).
 var routeCodes = struct{ hold, broker map[string]bool }{
 	hold: map[string]bool{"bad_request": true, "too_large": true, "bad_signature": true, "bad_transition": true,
-		"not_operator": true, "no_row": true, codeGenMismatch: true, "hold_mismatch": true, "row_exists": true, codeBelowFloor: true},
+		"not_operator": true, "no_row": true, codeGenMismatch: true, "hold_mismatch": true, "row_exists": true, codeBelowFloor: true,
+		"clock_skew": true},
 	broker: map[string]bool{"DATABASE_UNAVAILABLE": true, "INTERNAL": true},
 }
 
