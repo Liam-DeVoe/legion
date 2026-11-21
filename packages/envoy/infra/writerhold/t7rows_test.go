@@ -922,8 +922,11 @@ func (k *t7Kill) Fired() bool {
 }
 
 // killAt kills the command run on the context it answers at the first request to the broker's
-// routes that match picks: just after the routes served that request when after is set, so its
-// write is stored and the kill falls after it; else just before, so it is not. endKill removes the
+// routes that match picks: just after the routes stored that request's write when after is set,
+// so its write lands and the kill falls after it; else just before, so it does not. Either way the
+// command never reads the routes' answer to that request, as a process killed then would not: an
+// after kill serves the request into a recorder and answers the command 503, since a 200 sent while
+// its context is cancelled reaches it or not as the transport's race decides. endKill removes the
 // kill once the command returned.
 func (h *t7Stack) killAt(match func(r *http.Request, body []byte) bool, after bool) (context.Context, *t7Kill) {
 	h.t.Helper()
@@ -948,7 +951,8 @@ func (h *t7Stack) killAt(match func(r *http.Request, body []byte) bool, after bo
 			return false
 		}
 		if after {
-			h.s.Broker.Routes().ServeHTTP(w, r)
+			h.s.Broker.Routes().ServeHTTP(httptest.NewRecorder(), r)
+			http.Error(w, "killed after this write", http.StatusServiceUnavailable)
 		} else {
 			http.Error(w, "killed before this write", http.StatusServiceUnavailable)
 		}
