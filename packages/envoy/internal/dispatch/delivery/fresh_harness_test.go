@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -48,10 +50,15 @@ const freshMachineID = "example-dispatch"
 // dispatchAccount is the platform account the rig's Dispatch connections present.
 const dispatchAccount = "system:serviceaccount:dispatch:dispatch"
 
-// freshHub is a lone nats-server whose connections the auth service admits, an admin user beside
-// them that may publish and subscribe anything, and the files Dispatch's processes connect with.
+// freshHub is the NATS a row runs on: a lone nats-server whose connections the auth service
+// admits, with an admin user beside them that may publish and subscribe anything and the files
+// Dispatch's processes connect with; or a cluster of three, whose clients need no credential and
+// whose stream holds replicas copies. Only the lone hub grants by connection name, so only its rows
+// show the grants; the cluster's show the protocol on a clustered stream.
 type freshHub struct {
 	server    *testnats.Server
+	cluster   *testnats.Cluster
+	replicas  int
 	url       string
 	keys      testnats.CalloutKeys
 	adminSeed string
@@ -62,16 +69,36 @@ type freshHub struct {
 	service *natscallout.Service
 }
 
-// startFreshHub runs a hub and its auth service until the test ends.
+// startFreshHub runs a lone hub and its auth service until the test ends.
 func startFreshHub(t *testing.T) *freshHub {
 	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
 	adminSeed, adminKey := testnats.User(t)
 	server, url := testnats.StartWithCalloutServer(t, keys, testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}})
-	hub := &freshHub{server: server, url: url, keys: keys, adminSeed: adminSeed, dir: t.TempDir()}
+	hub := &freshHub{server: server, replicas: 1, url: url, keys: keys, adminSeed: adminSeed, dir: t.TempDir()}
 	hub.tokenFile = hub.write(t, "dispatch.token", "dispatch-token")
 	hub.startService(t)
 	return hub
+}
+
+// startClusterHub runs a cluster of three until the test ends, its stream at replicas copies.
+func startClusterHub(t *testing.T, replicas int) *freshHub {
+	t.Helper()
+	cluster := testnats.StartCluster(t, 3)
+	return &freshHub{cluster: cluster, replicas: replicas, url: cluster.URL()}
+}
+
+// hubTopology is one of the three a §7 row runs on.
+type hubTopology struct {
+	name  string
+	start func(t *testing.T) *freshHub
+}
+
+// hubTopologies are one copy on a lone hub through the auth service, an R1 cluster and R3.
+var hubTopologies = []hubTopology{
+	{"one copy", startFreshHub},
+	{"R1 cluster", func(t *testing.T) *freshHub { return startClusterHub(t, 1) }},
+	{"R3 cluster", func(t *testing.T) *freshHub { return startClusterHub(t, 3) }},
 }
 
 func (h *freshHub) write(t *testing.T, name, content string) string {
@@ -125,9 +152,13 @@ func (h *freshHub) stopService() {
 	service.Close()
 }
 
-// connect opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus): its
-// service account's token, its name, connecting in the background.
+// connect opens a connection of Dispatch's as envoy-dispatch does (cmd/dispatch serverBus): on the
+// lone hub its service account's token, its name, connecting in the background; on a cluster, no
+// credential.
 func (h *freshHub) connect(name string) (*bus.Client, error) {
+	if h.cluster != nil {
+		return bus.Connect(h.cluster.URLs(), bus.WithName(name), bus.WithConnectInBackground())
+	}
 	token := h.tokenFile
 	return bus.Connect([]string{h.url},
 		bus.WithEnvironment(func(key string) (string, bool) {
@@ -142,9 +173,14 @@ func (h *freshHub) connect(name string) (*bus.Client, error) {
 // admin is a connection of the admin user, closed when the test ends.
 func (h *freshHub) admin(t *testing.T) (*natsgo.Conn, natsgo.JetStreamContext) {
 	t.Helper()
-	conn, err := testnats.ConnectSeed(t, h.url, h.adminSeed)
-	if err != nil {
-		t.Fatalf("connect the admin: %v", err)
+	var conn *natsgo.Conn
+	if h.cluster != nil {
+		conn = testnats.Connect(t, h.url)
+	} else {
+		var err error
+		if conn, err = testnats.ConnectSeed(t, h.url, h.adminSeed); err != nil {
+			t.Fatalf("connect the admin: %v", err)
+		}
 	}
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
@@ -154,14 +190,19 @@ func (h *freshHub) admin(t *testing.T) (*natsgo.Conn, natsgo.JetStreamContext) {
 	return conn, js
 }
 
-// createStream creates ENVOY_NOTIFICATIONS as a one-copy deployment holds it, with at most
-// maxConsumers consumers (0: the server's default).
+// createStream creates ENVOY_NOTIFICATIONS as a deployment of the hub's copies holds it, with at
+// most maxConsumers consumers (0: the server's default).
 func (h *freshHub) createStream(t *testing.T, maxConsumers int) {
 	t.Helper()
-	_, js := h.admin(t)
 	config := bustest.DeployedThreeCopyStream(func(c *natsgo.StreamConfig) {
-		c.Replicas, c.MaxBytes, c.MaxConsumers = 1, 0, maxConsumers
+		c.Replicas, c.MaxBytes, c.MaxConsumers = h.replicas, 0, maxConsumers
 	})
+	if h.cluster != nil {
+		h.cluster.CreateStream(t, config)
+		testnats.AwaitStreamCopies(t, h.cluster.JetStream(t), bus.Stream, h.replicas)
+		return
+	}
+	_, js := h.admin(t)
 	if _, err := js.AddStream(&config); err != nil {
 		t.Fatalf("create the stream: %v", err)
 	}
@@ -294,6 +335,64 @@ func (p *durableProcess) deliverySubject() string {
 	return p.held.delivering.subject
 }
 
+// seedPreviousHolder makes what a holder that is gone leaves: kind's current consumer, created by
+// the admin with this build's config of the durable, delivering from the stream's first message at
+// a deliver subject the returned subscription holds, its name the record's current; and the
+// durable's hold, lapsed, its token naming that subject, so the next holder takes the consumer
+// over as a dead holder's. It answers the consumer's name and the subscription, the gone holder's
+// connection, which the row acknowledges on.
+func seedPreviousHolder(t *testing.T, hub *freshHub, pool *store.Pool, kind durableKind) (string, *natsgo.Subscription) {
+	t.Helper()
+	conn, js := hub.admin(t)
+	name := consumernames.FreshName(kind.logical)
+	config := kind.config()
+	config.Durable, config.DeliverPolicy, config.OptStartSeq = name, natsgo.DeliverAllPolicy, 0
+	config.Metadata[consumernames.LogicalMetadataKey] = kind.logical
+	sub, err := conn.SubscribeSync(config.DeliverSubject)
+	if err != nil {
+		t.Fatalf("subscribe the gone holder's deliver subject: %v", err)
+	}
+	if _, err := js.AddConsumer(bus.Stream, &config); err != nil {
+		t.Fatalf("create the gone holder's consumer %s: %v", name, err)
+	}
+	records := consumernames.NewPGStore(pool)
+	record, revision, err := records.Read(t.Context(), kind.logical)
+	if err != nil {
+		t.Fatalf("read %s's record: %v", kind.logical, err)
+	}
+	record.Current, record.Start = name, 1
+	if _, err := records.Write(t.Context(), kind.logical, record, revision); err != nil {
+		t.Fatalf("select %s: %v", name, err)
+	}
+	lapsedHoldToken(t, pool, kind.logical, config.DeliverSubject)
+	return name, sub
+}
+
+// lapsedHoldToken leaves logical's intake hold lapsed, its token naming subject, as a holder whose
+// process died leaves it.
+func lapsedHoldToken(t *testing.T, pool *store.Pool, logical, subject string) {
+	t.Helper()
+	leases := storetest.Leases(t, storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool)
+	hold, err := duty.TryHold(t.Context(), leases, intakeHoldName(logical), uuid.New(),
+		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: subject})
+	if err != nil || hold == nil {
+		t.Fatalf("take %s's hold: %v", logical, err)
+	}
+	if err := hold.Lapse(t.Context()); err != nil {
+		t.Fatalf("lapse %s's hold: %v", logical, err)
+	}
+}
+
+// successorOf is the consumer a take-over of old made: the record's current once it is another
+// name, "" before.
+func successorOf(t *testing.T, pool *store.Pool, logical, old string) string {
+	t.Helper()
+	if current := currentName(t, pool, logical); current != old {
+		return current
+	}
+	return ""
+}
+
 // selectionRows is how many rows the selection table holds.
 func selectionRows(t *testing.T, pool *store.Pool) int {
 	t.Helper()
@@ -302,6 +401,20 @@ func selectionRows(t *testing.T, pool *store.Pool) int {
 		t.Fatalf("count the selection rows: %v", err)
 	}
 	return n
+}
+
+// endLeaseSession ends the database session that holds the lease named name (duty.Exclusive's
+// session-level advisory lock, keyed by the name's hashtext), as the server ends a session whose
+// client it lost: its lease is free from then on, whatever its process does next.
+func endLeaseSession(t *testing.T, pool *store.Pool, name string) {
+	t.Helper()
+	var ended int
+	if err := pool.QueryRow(context.Background(), `
+		select count(pg_terminate_backend(pid)) from pg_locks
+		where locktype = 'advisory' and granted and objsubid = 2 and objid = hashtext($1)::oid
+		  and database = (select oid from pg_database where datname = current_database())`, name).Scan(&ended); err != nil || ended != 1 {
+		t.Errorf("end the session holding lease %s: ended %d, %v", name, ended, err)
+	}
 }
 
 func (p *durableProcess) handle(delivery *intakeDelivery, message intakeMessage) {

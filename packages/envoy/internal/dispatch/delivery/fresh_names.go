@@ -55,6 +55,30 @@ type IntakeNaming struct {
 	Steps *metrics.Counter
 }
 
+// CheckNamingMode is what a process in mode checks of the selection table at its start, before
+// any intake runs. In the fixed mode it refuses a store the cutover converted: with the table's
+// sentinel reading done, every durable is a fresh generation behind its record, and the fixed
+// names must not run over it. A missing table or sentinel, a cutover not yet run or one rolled
+// back is a store the fixed names own, and the fixed mode starts. A sentinel it cannot read is an
+// error too: it cannot tell which. The fresh mode refuses nothing here; its take-over refuses
+// every call until the cutover is done (consumernames.Admit).
+func CheckNamingMode(ctx context.Context, db consumernames.PGQuerier, mode consumernames.Mode) error {
+	if mode == consumernames.ModeFresh {
+		return nil
+	}
+	state, err := consumernames.NewPGStore(db).State(ctx)
+	switch {
+	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
+		return nil
+	case err != nil:
+		return fmt.Errorf("%s=%s: read the %s cutover row: %w", consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.IntakeConsumersTable, err)
+	case state.Cutover == consumernames.CutoverDone:
+		return fmt.Errorf("%s=%s, but the %s cutover row reads %q: the cutover converted the intakes' durables to fresh names, and the fixed names must not run over them; set %s=%s",
+			consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.IntakeConsumersTable, state.Cutover, consumernames.ModeEnvVar, consumernames.ModeFresh)
+	}
+	return nil
+}
+
 // freshNaming is one intake's durable in the fresh mode: its logical name's protocol, the
 // connection of each generation the take-over under way reserved, and what it read of each.
 type freshNaming struct {

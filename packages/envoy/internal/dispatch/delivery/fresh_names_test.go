@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -58,14 +60,65 @@ func TestTheFixedModeTakesItsFixedDurableAndReadsNoSelectionTable(t *testing.T) 
 	}
 }
 
-// freshRig is one row's hub, database and stream, with what the cutover leaves written.
+// The fixed mode refuses to start over a selection table the cutover converted, naming the
+// setting, and starts over one the fixed names own: no table, no sentinel, a cutover not run or
+// one rolled back. The fresh mode is refused nothing here. The unconverted rows are the control:
+// the same check, on a store it must pass, passes.
+func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
+	for name, row := range map[string]struct {
+		prepare func(t *testing.T, pool *store.Pool)
+		mode    consumernames.Mode
+		refused bool
+	}{
+		"fixed over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFixed, true},
+		"the default over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, "", true},
+		"fixed with no sentinel":             {func(*testing.T, *store.Pool) {}, consumernames.ModeFixed, false},
+		"fixed with no table": {func(t *testing.T, pool *store.Pool) {
+			if _, err := pool.Exec(t.Context(), `drop table intake_consumers`); err != nil {
+				t.Fatalf("drop the table: %v", err)
+			}
+		}, consumernames.ModeFixed, false},
+		"fixed before the cutover":         {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, consumernames.ModeFixed, false},
+		"fixed after a rollback":           {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "rolled_back") }, consumernames.ModeFixed, false},
+		"fresh over a converted store":     {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFresh, false},
+		"fresh over an unconverted store": {func(*testing.T, *store.Pool) {}, consumernames.ModeFresh, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			row.prepare(t, pool)
+			err := CheckNamingMode(ctx, pool, row.mode)
+			switch {
+			case row.refused && (err == nil || !strings.Contains(err.Error(), "ENVOY_CONSUMER_NAMES=fixed") || !strings.Contains(err.Error(), "ENVOY_CONSUMER_NAMES=fresh")):
+				t.Fatalf("CheckNamingMode = %v, want a refusal naming ENVOY_CONSUMER_NAMES=fixed and what to set", err)
+			case !row.refused && err != nil:
+				t.Fatalf("CheckNamingMode = %v, want the process to start", err)
+			}
+		})
+	}
+}
+
+// freshRig is one row's hub, database and stream, with what the cutover leaves written: on one
+// copy, the lone hub through the auth service.
 func freshRig(t *testing.T, maxConsumers int) (*freshHub, *store.Pool) {
 	t.Helper()
+	return freshRigOn(t, hubTopologies[0], maxConsumers)
+}
+
+// freshRigOn is freshRig on topology.
+func freshRigOn(t *testing.T, topology hubTopology, maxConsumers int) (*freshHub, *store.Pool) {
+	t.Helper()
 	pool, _ := deliveryTestPool(t)
-	hub := startFreshHub(t)
+	hub := topology.start(t)
 	hub.createStream(t, maxConsumers)
 	readyForFresh(t, pool)
 	return hub, pool
+}
+
+// onEveryHub runs row on one copy, an R1 cluster and R3, as §7's families run.
+func onEveryHub(t *testing.T, row func(t *testing.T, topology hubTopology)) {
+	for _, topology := range hubTopologies {
+		t.Run(topology.name, func(t *testing.T) { row(t, topology) })
+	}
 }
 
 // Race regression, the fixed-name spy: across a holder's stop, a standby's take-over and a second
@@ -159,6 +212,10 @@ func TestEveryReaderFindsTheCurrentName(t *testing.T) {
 // Once the cutover's records are there, the same process delivers, with no restart. The build
 // before the fresh mode creates its fixed durable whatever the table holds.
 func TestForcedOrderLostSelectionStateRefusesTheTakeOver(t *testing.T) {
+	onEveryHub(t, lostSelectionStateRefusesTheTakeOver)
+}
+
+func lostSelectionStateRefusesTheTakeOver(t *testing.T, topology hubTopology) {
 	for _, kind := range durableKinds {
 		for name, row := range map[string]struct {
 			lose func(t *testing.T, pool *store.Pool)
@@ -186,7 +243,7 @@ func TestForcedOrderLostSelectionStateRefusesTheTakeOver(t *testing.T) {
 		} {
 			t.Run(kind.logical+"/"+name, func(t *testing.T) {
 				records := captureLogs(t)
-				hub, pool := freshRig(t, 0)
+				hub, pool := freshRigOn(t, topology, 0)
 				row.lose(t, pool)
 				spy := spyConsumerCalls(t, hub)
 				startDurableProcess(t, hub, pool, kind, freshNames)
@@ -237,10 +294,14 @@ func readyAgain(t *testing.T, pool *store.Pool, logical string) {
 // in another process: every message published before and during the interruption reaches a
 // process, no name is sent to a create twice, and the record ends with no operation open.
 func TestForcedOrderEveryInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T) {
+	onEveryHub(t, everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder)
+}
+
+func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, topology hubTopology) {
 	for _, kind := range durableKinds {
 		for _, point := range []string{stepReserved, stepSubscribed, stepCreated, stepDelete} {
 			t.Run(kind.logical+"/"+point, func(t *testing.T) {
-				hub, pool := freshRig(t, 0)
+				hub, pool := freshRigOn(t, topology, 0)
 				spy := spyConsumerCalls(t, hub)
 				holder := startDurableProcess(t, hub, pool, kind, freshNames)
 				first := awaitDelivering(t, hub, pool, kind.logical)
@@ -345,13 +406,19 @@ func TestForcedOrderACalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted(t *tes
 }
 
 // Race regression, two processes given one generation: a standby reserves its replace and binds
-// its candidate, then pauses before the create while its hold lapses; the next holder settles the
-// replace in another process, and the paused one, released, sends no create of a candidate it
-// lost the hold over. Each generation is created at most once, and one current delivers.
+// its candidate, then pauses before the create while its hold lapses and its database session
+// ends, releasing the consumer lease as a session a network cut off is in the end; the next holder
+// settles the replace in another process, and the paused one, released, sends no create of a
+// candidate it lost the hold over. Each generation is created at most once, and one current
+// delivers.
 func TestForcedOrderTwoProcessesGivenOneGenerationCreateItOnce(t *testing.T) {
+	onEveryHub(t, twoProcessesGivenOneGenerationCreateItOnce)
+}
+
+func twoProcessesGivenOneGenerationCreateItOnce(t *testing.T, topology hubTopology) {
 	for _, kind := range durableKinds {
 		t.Run(kind.logical, func(t *testing.T) {
-			hub, pool := freshRig(t, 0)
+			hub, pool := freshRigOn(t, topology, 0)
 			spy := spyConsumerCalls(t, hub)
 			holder := startDurableProcess(t, hub, pool, kind, freshNames)
 			awaitDelivering(t, hub, pool, kind.logical)
@@ -364,11 +431,16 @@ func TestForcedOrderTwoProcessesGivenOneGenerationCreateItOnce(t *testing.T) {
 				select {
 				case paused <- name:
 					p.leases.cut.Store(true)
+					endLeaseSession(t, pool, consumerLease(kind.logical))
 					<-resume
 				default:
 				}
 				return nil
 			}))
+			// Registered after the process, so it runs first: a row that fails while the process is
+			// paused still lets its stop return.
+			release := sync.OnceFunc(func() { close(resume) })
+			t.Cleanup(release)
 			holder.stop()
 			var candidate string
 			select {
@@ -382,7 +454,7 @@ func TestForcedOrderTwoProcessesGivenOneGenerationCreateItOnce(t *testing.T) {
 			if current == candidate {
 				t.Fatalf("the next holder selected the paused process's candidate %s, which was never created", candidate)
 			}
-			close(resume)
+			release()
 			awaitHandled(t, sent, holder, slow, next)
 			time.Sleep(2 * durableBindInterval)
 			spy.requireEachNameCreatedOnce(t)
@@ -397,10 +469,14 @@ func TestForcedOrderTwoProcessesGivenOneGenerationCreateItOnce(t *testing.T) {
 // the build before the fresh mode does -- the durable delivers again and its pending messages
 // arrive -- and nothing updates the stream's max_consumers.
 func TestForcedOrderATakeOverAtAFullCapDeliversWithNoCapUpdate(t *testing.T) {
+	onEveryHub(t, aTakeOverAtAFullCapDeliversWithNoCapUpdate)
+}
+
+func aTakeOverAtAFullCapDeliversWithNoCapUpdate(t *testing.T, topology hubTopology) {
 	for _, kind := range durableKinds {
 		t.Run(kind.logical, func(t *testing.T) {
 			const capacity = 3
-			hub, pool := freshRig(t, capacity)
+			hub, pool := freshRigOn(t, topology, capacity)
 			spy := spyConsumerCalls(t, hub)
 			holder := startDurableProcess(t, hub, pool, kind, freshNames, blockingHandlers())
 			awaitDelivering(t, hub, pool, kind.logical)
