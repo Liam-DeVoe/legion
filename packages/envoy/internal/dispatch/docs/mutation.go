@@ -2382,7 +2382,24 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // ErrDocumentUnloadable here as the cold read answers it (parkedPastRoomCaps), whether or not the
 // room budget had an opening for the caller's room: a read that loads a room meets the room's own
 // refusal of it.
+//
+// The load, the merge and the tree share one grant of the pod's load concurrency (withLoadSlot):
+// the grant ctx carries, a socket admission's for one (loadTree), or one of its own, given back
+// once the tree is built. The load takes it on the rows it folds and the state it decodes and
+// leaves it held (LoadDocument), so the document it hands back is counted while unstored is
+// merged into it and its tree is built (treeOf). A heavy unstored (heavyUpdateWeight) raises the
+// grant before the merge decodes any of it, by what its decode costs added to what the load left
+// the grant holding, as the room's persistence worker's read-back of a heavy update takes; a
+// lighter one takes nothing, as a keystroke's apply takes nothing. The raise waits within ctx, and
+// a wait ctx ends is ctx's error. It waits holding nothing the load's take did not: by then the
+// load has ended its read transaction and given back its buffered fold's slot (foldRead), and
+// what the caller holds - the connection and the owner's lock of the transaction it is joined to
+// (joinRead), and docTree's opening of the room budget - it held across that take as well. A
+// version's caller, which holds the document's advisory lock, merges nothing and so never raises
+// it.
 func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored []byte) (*pmdoc.Node, error) {
+	ctx, slot, done := withLoadSlot(ctx)
+	defer done()
 	loaded, err := s.persistence.LoadDocument(ctx, artifactID)
 	if err != nil {
 		if errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -2399,6 +2416,13 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 		doc = newDocumentCopy()
 	}
 	if len(unstored) > 0 {
+		if weight, heavy := heavyUpdateWeight(unstored); heavy {
+			// The sum is capped at one slot, as every copy's weight is (copyWeight): the pool may
+			// hold one slot alone, and a take past it would never be admitted.
+			if err := slot.take(ctx, min(slot.bytes+weight, loadSlotBytes)); err != nil {
+				return nil, err
+			}
+		}
 		if err := crdt.ApplyUpdateV1(doc, unstored, nil); err != nil {
 			return nil, fmt.Errorf("%w: merge a room's not-yet-stored updates into the stored document: %w", ErrServiceUnavailable, err)
 		}

@@ -263,11 +263,17 @@ func updateAge(observed time.Time) time.Duration {
 // The decodes that check makes share one grant of the pod's load concurrency, taken under ctx
 // (storedHistoryHolds), which waits for its bytes on the room's persistence worker
 // (StoreUpdateStored) as in a transaction's flush of a room (AppendRoomUpdatesTx). The worker holds
-// the document's lock and a connection of the room-appends pool while it waits, which no holder
-// of the pool waits for: a heavy apply gives its grant back before its commit reaches the room's
-// queue of updates to store, which this worker alone reads (weighPeerUpdate). The fold takes no
-// slot of the buffered folds (foldSlots), so the pool is what bounds how many such folds a process
-// holds at once.
+// the document's lock and a connection of the room-appends pool while it waits. One holder of the
+// pool waits for that lock: a joined transaction that holds the grant its first document's fork
+// took and waits for its second document's advisory lock (joinLiveWrite, readFork), so the worker
+// can wait for bytes that transaction holds while the transaction waits for the worker's lock.
+// Nothing in that pair gives way; Join's WriteRequestBound ends the transaction's wait for a
+// caller's request, which is answered 503 and gives its grant back, and the worker then takes its
+// bytes (loadSlots, TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). No
+// other holder waits for the lock or the connection: a heavy apply gives its grant back before its
+// commit reaches the room's queue of updates to store, which this worker alone reads
+// (weighPeerUpdate). The fold takes no slot of the buffered folds (foldSlots), so the pool is what
+// bounds how many such folds a process holds at once.
 func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")

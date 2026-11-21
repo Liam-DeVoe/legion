@@ -102,10 +102,12 @@ func (s *Service) roomHeld(room string) bool {
 	return s.srv.GetDoc(room) != nil || slices.Contains(s.srv.Rooms(), room)
 }
 
-// publishedLossTimeout bounds what recordPublishedLoss reads: the other processes' flush, a
-// catch-up of this process's room, or a load of the stored document. The write's writer slot is
-// held until it returns.
-const publishedLossTimeout = 10 * time.Second
+// publishedLossTimeout bounds the whole of what recordPublishedLoss reads: the other processes'
+// flush, a catch-up of this process's room, a load of the stored document, and the wait for the
+// grant of the pod's load concurrency that the stored document's decode takes (lostAtStoredHead).
+// A judgement it ends reaches no verdict, which the caller reports as undetermined
+// (Ledger.LostOps). The write's writer slot is held until it returns.
+var publishedLossTimeout = 10 * time.Second
 
 // recordPublishedLoss judges, once the write is committed and published, which of the write's
 // operations the document at its stored head no longer holds, and records it: the lost-edit
@@ -167,6 +169,23 @@ func (s *Service) recordPublishedLoss(write *liveWrite) {
 // room - caught up through rooms first when others says another process may have stored what it
 // lacks - or the stored document when no room is resident here or its catch-up did not bring it
 // to the head.
+//
+// The stored document is decoded and judged under a grant of the pod's load concurrency of what
+// its copy costs (storedCopyWeight, holdLoad), taken once its state is read and held until the
+// judgement returns. The wait for it ends with ctx, whose deadline is publishedLossTimeout's
+// bound on the whole judgement: a wait that outlasts it is this read's error, so the write is
+// left with no verdict (recordPublishedLoss) and Ledger.LostOps answers false, which its caller
+// reports as undetermined (LEGION-269), as it does after a flush or a load that fails. The
+// goroutine waiting is the publish's (publishLiveWrite, publishedWithoutARoom): the transaction
+// has committed and given its grant back (Ledger.publish), so it holds none of that transaction's
+// grant, connection or locks, and the state's read has ended its own transaction (loadStored).
+// What it holds is this write's writer slot, and the writer slots of the transaction's documents
+// not yet published, until each publish returns (finishLiveWrite). A waiter for a writer slot
+// holds nothing of the pool but for a joined transaction's second document, which waits for it
+// holding the grant its first document's fork took (joinLiveWrite, openLiveWrite; joinRead,
+// awaitLiveWriter): the exception loadSlots names. The bound is what keeps the two from waiting
+// on each other for good: Join's WriteRequestBound ends the transaction's wait for a caller's
+// request alone, and publishedLossTimeout ends this one whoever wrote the transaction.
 func (s *Service) lostAtStoredHead(ctx context.Context, rooms Queryer, write *liveWrite, others bool) ([]int, error) {
 	room := write.artifactID
 	if live := s.srv.GetDoc(room); live != nil {
@@ -192,6 +211,11 @@ func (s *Service) lostAtStoredHead(ctx context.Context, rooms Queryer, write *li
 	}
 	doc := newDocumentCopy()
 	if len(loaded.Update) > 0 {
+		release, err := holdLoad(ctx, storedCopyWeight(loaded.Update))
+		if err != nil {
+			return nil, fmt.Errorf("wait for the decode's grant: %w", err)
+		}
+		defer release()
 		if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
 			return nil, fmt.Errorf("decode the stored document: %w", err)
 		}

@@ -152,8 +152,11 @@ func (p *PgVersioned) AppendRoomFlush(ctx context.Context, room string, flush *R
 // before the next update's and before the transaction takes a connection; a lighter update's, a
 // keystroke or a paste, takes nothing, as a browser's apply of it takes nothing
 // (heavyUpdateWeight). The room's persistence worker makes this call for a room's update no class
-// holds (StoreUpdateStored), and waits there as any decode does, since no holder of the pool waits
-// on that worker (weighPeerUpdate). The grant is taken here and not in the decode
+// holds (StoreUpdateStored), and waits there as any decode does: it holds no connection and no
+// lock of the document yet, so the one holder of the pool that waits on the worker - a joined
+// transaction waiting for the document's lock (gateAppend) - is not waiting on it here, and an
+// apply's grant is given back before its commit reaches the worker (weighPeerUpdate). The grant
+// is taken here and not in the decode
 // (validateUpdate), since a rebuild's check of its seed makes that decode under the grant the
 // rebuild already took for it (RebuildTx).
 func (p *PgVersioned) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {

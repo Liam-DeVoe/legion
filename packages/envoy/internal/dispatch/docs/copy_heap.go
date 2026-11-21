@@ -26,16 +26,20 @@ import (
 //
 // The first is one whole-document decode, held while it decodes: a room's load (its fold of a
 // history of several updates, the copy LoadDoc decodes, the load hook's decode into the room,
-// bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead), the
-// replica's build from a base (renderedReplica.start), the copy a server write's decode-cap count
-// takes (structsAfter), a rebuild's decodes (its check of a resident room and of the stored
-// history, nearACap, rebuildSource, RebuildTx), the read-back of each heavy update a room's
-// persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit, heavyUpdateWeight) and
-// the append gate's fold of a history replaced under a room and its decode of the run onto the
-// document that fold makes (storedHistoryHolds), which share one grant holding that document from
-// its first row until the run has been judged against it. The replica's build may not wait, so it
-// takes its bytes only where they are free at once and otherwise decodes beside the pool's holders
-// (holdFreeLoad); the read-back of a lighter update takes nothing, as its apply takes nothing
+// bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead) - a
+// read of a room behind the stored head keeps its fold's grant while it merges what that room has
+// not stored into the document and builds its tree, raised where that merge is heavy
+// (storedWithUpdates) - the replica's build from a base (renderedReplica.start), the copy a server
+// write's decode-cap count takes (structsAfter), a rebuild's decodes (its check of a resident room
+// and of the stored history, nearACap, rebuildSource, RebuildTx), the read-back of each heavy
+// update a room's persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit,
+// heavyUpdateWeight), a published write's decode of the stored document it judges the write's
+// text on (lostAtStoredHead) and the append gate's fold of a history replaced under a room and
+// its decode of the run onto the document that fold makes (storedHistoryHolds), which share one
+// grant holding that document from its first row until the run has been judged against it. The
+// replica's build may not wait, so it takes its bytes only where they are free at once and
+// otherwise decodes beside the pool's holders (holdFreeLoad); the read-back of a lighter update
+// takes nothing, as its apply takes nothing, and a read's merge of a lighter one nothing more
 // (heavyUpdateWeight); every other decode waits for its bytes. What each leaves behind is its
 // owner's: a room's two copies are charged by the room budget, a fold's state goes back to its
 // caller, and a read-back's copy and the gate's document are dropped once their decodes are done.
@@ -99,10 +103,16 @@ const unslottedApplyStructs = unslottedApplyBytes / bytesOfHeapAStruct
 // takes nothing. A frame of at most twice unslottedApplyStructs bytes cannot declare more structs
 // than that, so a keystroke is not read for them.
 //
-// Both decodes a browser's update gets make this judgement: its apply's, on the frame
+// Two decodes of a browser's update make this judgement: its apply's, on the frame
 // (Service.weighPeerUpdate), and the room's persistence worker's, on the commit it reads back as
-// it stores it (StoreUpdateStored, AppendUpdatesWithCredit). A keystroke takes nothing at either,
-// so its store never waits behind the heavy takers queued for the pool, as its apply never does.
+// it stores it (StoreUpdateStored, AppendUpdatesWithCredit); so does a read's merge of what a room
+// behind the stored head has not stored yet (storedWithUpdates). A keystroke takes nothing at any
+// of them, so its store never waits behind the heavy takers queued for the pool, as its apply
+// never does. The room's replica decodes the commit's update too, and makes no judgement: it
+// applies it to its own document (renderedReplica.applyUpdate) in the room's update observer,
+// which runs once a heavy apply has given its grant back (crdt.ApplyBudget.Integrated), or in a
+// read at an exact commit position that drains the room's log first (renderedReplica.atPoint),
+// and takes nothing of the pool for it, heavy update or not.
 func heavyUpdateWeight(update []byte) (weight int64, heavy bool) {
 	var declared uint64
 	if len(update) > 2*unslottedApplyStructs {
@@ -164,10 +174,16 @@ const loadSlotsName = "load"
 // at ygo's shutdown reaches). So the worker waits for its bytes as every other decode does - its
 // read-back of each heavy update it stores (StoreUpdateStored, AppendUpdatesWithCredit), its gate's
 // decodes of a history replaced under the room (storedHistoryHolds) and its compaction as it exits
-// (servicePersistenceAdapter.Compact) - and no holder waits on it: an apply holds no grant by the
-// time its commit reaches that queue, a live write publishes once its transaction has given its
-// grant back (Ledger.publish), and a server write's decode-cap copy gives its grant back before
-// the write commits (structsAfter).
+// (servicePersistenceAdapter.Compact). Its gate's decodes wait holding the document's lock and a
+// connection of the room-appends pool (AppendRoomFlush), and one holder of the pool waits for that
+// lock: a joined transaction that holds the grant its first document's fork took and waits for its
+// second document's advisory lock (joinLiveWrite, readFork), so the worker can wait for bytes that
+// transaction holds while the transaction waits for the worker's lock. Nothing in that pair gives
+// way; Join's WriteRequestBound ends the transaction's wait for a caller's request, which is
+// answered 503 and gives its grant back, and the worker then takes its bytes (above). No other
+// holder waits on the worker: an apply holds no grant by the time its commit reaches that queue,
+// a live write publishes once its transaction has given its grant back (Ledger.publish), and a
+// server write's decode-cap copy gives its grant back before the write commits (structsAfter).
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
