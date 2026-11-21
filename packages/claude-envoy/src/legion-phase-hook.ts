@@ -220,9 +220,8 @@ export interface PhaseHookDeps {
    * called at each `PostToolUse` of the worker's own, which starts the next read where one is due
    * and does not wait for it; its `turnEnded`, which drops what the turn's reads named and a read
    * still in flight, is called at the worker's turn's end — a `Stop` that blocks nothing, a
-   * `StopFailure`; and its `turnStarted`, at each `UserPromptSubmit`, drops what an earlier read
-   * named where that read started a minute or more ago, a turn that ended with neither among
-   * them, and keeps a fresher answer and a read in flight. */
+   * `StopFailure`; and its `turnStarted` at each `UserPromptSubmit` (`HoldsRead.turnStarted` says
+   * what it drops and keeps, and why). */
   readonly holdsRead: HoldsRead
 }
 
@@ -619,17 +618,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           reminder.turnStarted()
           dropTimer()
           // A turn starts: the holds answer a turn kept is that turn's alone, since the daemon
-          // accepts each take it names at that turn's end. A turn that ended with neither `Stop`
-          // nor `StopFailure` (an interrupted one) dropped nothing, so its answer is dropped here
-          // where its read started a minute or more ago, as Oh My Pi's run start drops it
-          // (`packages/pi-legion/src/claim-session.ts`). A fresher answer and a read still in
-          // flight are kept. After a `Stop` there is neither: the bridge writes a step's next
-          // user message only after that step's `result` (`sendQueued` in
-          // `packages/daemon/internal/claudebridge/bridge.go`), Claude Code runs `Stop` before
-          // that `result`, and the `Stop` handler drops both (`turnEnded`). So what is kept here
-          // comes from a turn that ended with neither `Stop` nor `StopFailure`, a race rather than
-          // the common path, and its cost is one note, within the read's 3 s bound, for a take
-          // that has already started.
+          // accepts each take it names at that turn's end (`HoldsRead.turnStarted` says what it
+          // drops and keeps, and why).
           deps.holdsRead.turnStarted()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}

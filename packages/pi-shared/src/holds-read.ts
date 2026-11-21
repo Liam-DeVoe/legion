@@ -41,11 +41,14 @@ export interface HoldsRead {
    * started a minute or more ago ({@link HOLDS_READ_EVERY_MS}), as is the answer a turn that
    * ended with no `turnEnded` (an interrupted one) kept. A fresher answer is kept, and so is a
    * read still unanswered, its answer returned by the first call after it comes. Claude Code's
-   * phase hook calls it at `UserPromptSubmit`, beside `turnEnded` at `Stop` and `StopFailure`.
-   * Claude Code runs `Stop` before a step's `result`, and the bridge writes the next step's user
-   * message only after that `result`, so after a `Stop` nothing is left to keep: what this keeps
-   * comes from a turn that ended with neither, a race rather than the common path. It does not
-   * move the count of turns `turnEnded` moves.
+   * phase hook calls it at `UserPromptSubmit`, beside `turnEnded` at `Stop` and `StopFailure`
+   * (`packages/claude-envoy/src/legion-phase-hook.ts`). Claude Code runs `Stop` before a step's
+   * `result`, and the bridge writes the next step's user message only after that `result`
+   * (`sendQueued` in `packages/daemon/internal/claudebridge/bridge.go`), so after a `Stop`
+   * nothing is left to keep: what this keeps comes from a turn that ended with neither, a race
+   * rather than the common path. Its cost is one note, from an answer whose read started less than
+   * a minute before, for a take that has already started. It does not move the count of turns
+   * `turnEnded` moves.
    */
   readonly turnStarted: () => void;
 }

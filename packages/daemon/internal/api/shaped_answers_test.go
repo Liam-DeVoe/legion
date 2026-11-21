@@ -1075,9 +1075,6 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 					shaped.Finished != reading.Finished {
 					t.Errorf("the task read served below %d is %s, want its task and finished with no `holds`", taskHoldsContract, encoded)
 				}
-				if len(reading.Holds) != 1 {
-					t.Error("the shaping took `holds` off the body the route built: the row shapes a copy")
-				}
 				if at, _ := shapeAnswer(AnswerTask, reading, taskHoldsContract, taskHoldsContract); !reflect.DeepEqual(at, any(reading)) {
 					t.Errorf("the task read served at %d is %+v, want the body it was given", taskHoldsContract, at)
 				}

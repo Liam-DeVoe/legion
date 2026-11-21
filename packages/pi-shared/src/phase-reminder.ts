@@ -42,8 +42,10 @@ import type { StallLimits } from "./stall-limits";
  * A task the claim's take holds is the worker's next turn, and a reminder says nothing it does not
  * (dispatch://INFRA-4130 R6). So while the take is pending (`taskPending`) no reminder starts a
  * turn ahead of it: the settle that would continue the run arms the timer instead, counting
- * nothing, and a timer that fires sends nothing and arms itself again. A take the daemon refuses
- * for a hold is no longer pending, so the reminding goes on as before.
+ * nothing, and a timer that fires sends nothing and arms itself again. The reminding waits only
+ * while `taskPending` answers true, and goes on as before once it answers false. Which of the
+ * daemon's refusals leave a take pending is said where that answer is made: `TaskTake.pending`,
+ * and the bridge Claude Code's host asks (`taskPending`).
  */
 
 /**
