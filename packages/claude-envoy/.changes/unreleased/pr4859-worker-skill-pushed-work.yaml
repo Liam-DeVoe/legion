@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The worker skill no longer says that the next pod restores a role's unpushed tracked work.
+  It says that only what the role pushed is sure to reach the next pod.
