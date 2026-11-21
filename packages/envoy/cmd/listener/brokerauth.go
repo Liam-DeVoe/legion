@@ -273,10 +273,12 @@ type spentProofs struct {
 // gone once the bucket's TTL has outlived the proof's window. Two listeners creating one key at
 // the same moment therefore see one success and one ErrKeyExists, as two Dispatch pods see one
 // insert and one conflict. A key whose last record is the delete marker a release leaves
-// (proofSpend.release) is created again by nats.go in a second write against that marker's
-// revision, and the one of two such creates that loses gets the server's wrong-last-sequence
-// error rather than ErrKeyExists; it is the same answer, that another presentation holds the
-// proof (wrongLastSequence).
+// (proofSpend.release), which only an edge listener makes, is created again over that marker:
+// the edge's bucket handles read with stream message gets (bus.WithStreamMessageReads), so its
+// create reads the marker from the stream's leader and writes against the marker's revision, and
+// of two such creates the one that loses gets the server's wrong-last-sequence error, the second
+// write's own answer; it is the same answer, that another presentation holds the proof
+// (wrongLastSequence).
 //
 // The key is the proof's 'jti' and normalized target URI hashed together, for the reason
 // Dispatch's store keys on the same two: jkt, nonce and htm only ever widen the key, and this
@@ -394,19 +396,19 @@ func (s *proofSpend) release(ctx context.Context) error {
 // balancer does not retry it. A proof presented once more after the retry was served is refused
 // as a replay.
 //
-// The balancer's retry is still the 401 of a replay in four cases, and the status stays 503 in
+// The balancer's retry is still the 401 of a replay in three cases, and the status stays 503 in
 // each, the status every route documents for a fault it can be asked again about:
 //   - the 503 came from the spent-proof store itself (refuseBrokerToken's check_failed): its create
 //     did not answer, so nothing this request can prove it wrote is there to release, though the
 //     create may have landed;
 //   - the release did not reach the bucket within proofReleaseBudget, which a bus that did not
 //     answer the route makes likely, and which logs a WARN;
-//   - on a replicated bucket, the retry's create meets the delete marker and reads the key again
-//     by direct get, which a copy that has not applied the marker answers with the released record
-//     (bus.KeyValue.Get says why a copy can answer behind the leader), and that reads as a replay;
 //   - the balancer wrote the 502 or 504 itself after the proof was recorded: the pod dropped the
 //     connection (a killed pod, a handler that panicked, a shutdown that ended with the request in
 //     flight) or the request ran past the backend timeout, so no 503 of this listener released it.
+//
+// A copy of a replicated bucket that has not applied the release's delete marker plays no part:
+// the retry's create reads the marker from the stream's leader (CheckAndSetDPoPProofUsed).
 //
 // The relay socket's client reads an upgrade refused 401 as a refused token and opens again after
 // a second with a fresh token and a fresh proof (envoy-client's listener relay). A plain /v1 call

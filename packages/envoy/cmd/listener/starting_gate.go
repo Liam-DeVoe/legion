@@ -105,7 +105,10 @@ func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
 // the gate, so it tells a listener whose /v1 serves from one whose /v1 still answers the closed
 // gate's 503, which /healthz does not: that answers 200 "starting" from the listener's first
 // answer (healthzHandler), since the probes that read it must not take a starting listener out of
-// service, and its bus checks answer for delivery rather than for /v1.
+// service, and its bus checks answer for delivery rather than for /v1. The gate never closes
+// again, so once /v1 opens this answers 200 also while the bus is down and /v1 answers
+// bus-unavailable 503s: the pod's readiness probe stays on /healthz, which answers 503 then, so
+// such a replica still leaves the balancer's backends.
 func readyzHandler(gate *startingGate) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if gate.mux.Load() == nil {

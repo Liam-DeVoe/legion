@@ -145,7 +145,7 @@ skip, except where `CI` is set, where they fail.
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
 It names the projects the edge serves: project keys separated by commas or white space, read as a broker token's own list is (`parseEdgeProjects`, `internal/config/config.go`).
 A list that no token could carry refuses the start, naming the variable, and so does a set value that names no project, such as a lone comma or white space.
-Unset or empty, the listener serves as every other listener does, and nothing in this section applies.
+Unset or empty, the listener serves as every other listener does, and nothing in this section applies to it except what a bullet says holds for every listener: `/readyz` (**Health**) and the closed `/v1` gate's `503` ahead of any credential (**A `503` and the balancer's retry**).
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
 It follows, stores and shows a session no topic of no project, except the GitHub topics of its projects' repositories, and at each registration it releases the session's claims of another project's roles that its view of the role claims shows (see **Roles** below).
@@ -169,10 +169,12 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A request from those ranges with no `X-Forwarded-For`, more than one line, a line of one entry, or an entry there that is no IP address gets `400` before the broker is asked anything, logged as `listener: edge request without the address Google's load balancer forwards`.
   A request from any other address is keyed on its connection, as on every other listener, and its `X-Forwarded-For` chooses nothing (`edgeCallerAddress`, `cmd/listener/edge_forwarded.go`).
   The `400` body is the listener's plain error (`listenerwire.APIError`), since no project rule refused the request.
+  That trust rests on the deployment, not on the code: only Google's Application Load Balancer may front the edge port. Google's proxy Network Load Balancers send from the same ranges and append no `X-Forwarded-For`, and so would a sidecar in front of the edge port; behind either, a client would write the entry the edge keys on.
+  Keying an IPv6 caller by its `/64` hands one host that holds a `/48` 65,536 buckets (read from the code, not measured); a `/56` or `/48` key, or one ceiling shared by every bucket, would bound that.
 
-- **Health**: `GET /readyz` reflects only whether /v1 serves: 503 until the /v1 gate opens, 200 after; a load balancer's health check reads it.
+- **Health**: every listener serves `GET /readyz`, which reflects only whether /v1 serves: 503 until the /v1 gate opens, 200 after; the edge's load balancer health check reads it, and the deployment's health-check policy for the edge names the path.
   It takes no credential, answers `503 {"status":"starting"}` and `200 {"status":"serving"}`, and reads nothing else (`readyzHandler`).
-  Every listener serves it, and the edge's health check is the one that reads it; the deployment's health-check policy for the edge names the path.
+  The gate never closes again, so once /v1 opens `/readyz` answers 200 also while the bus is down and /v1 answers bus-unavailable `503`s: the pod's readiness probe stays on `/healthz`, which answers `503` then, so such a replica still leaves the balancer's backends (an inference: that the edge's backends follow the pod's readiness rests on its Deployment, which is outside this repository).
   `/healthz` is unchanged for its other callers: it answers `200 {"status":"starting"}` from the listener's first answer, before `/v1` serves, so a balancer that read it would send requests to a pod that answers them `503`.
 
 - **A `503` and the balancer's retry**: Google's balancer sends a request that carries no body once more after a `502`, `503` or `504`, with the same headers, its DPoP proof among them, and a proof is good for one request.
@@ -184,11 +186,12 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   So a given-back proof can be presented once more on the same method and path with another query, such as a session's `DELETE` without the conditions its query carried; that takes the token and the proof in plaintext, inside the proof's window.
   TLS covers the client's hop to the balancer alone: the hop from Google's proxy to the pod is HTTP inside Google's network, where the token and the proof travel in plaintext, so whoever reads that hop could replay a given-back proof once; that risk is accepted.
   A request with a body keeps its proof spent whatever its status; the balancer does not retry it, and the client sends it again with a fresh proof.
-  Four cases still answer the balancer's retry `401`, and the status stays `503` in each, the one every route documents for a fault the client can ask again about:
+  Three cases still answer the balancer's retry `401`, and the status stays `503` in each, the one every route documents for a fault the client can ask again about:
   - a spent-proof store that did not answer while its write of the proof landed;
   - a release whose delete did not reach the bucket in its second (`proofReleaseBudget`), which a bus that did not answer the route makes likely, logged as `listener: a 503 could not give its request's DPoP proof back`;
-  - on a replicated bucket (`ENVOY_NATS_REPLICAS` above 1), a retry whose create reads the key from a copy that has not applied the delete yet;
   - a `502` or `504` the balancer wrote itself after the proof was recorded: a connection that ended before an answer (a killed pod, a handler that panicked, a shutdown that ended with the request in flight), or a request past the backend timeout.
+
+  The retry's create reads the delete marker from the stream's leader, since the edge's bucket handles read with stream message gets (`bus.WithStreamMessageReads`), so `ENVOY_NATS_REPLICAS` changes none of this.
 
   The relay socket's client reads an upgrade refused `401` as a refused token and opens the socket again after a second with a fresh token and a fresh proof.
   A plain `/v1` call gets the generic `401` body every refused credential gets, which names nothing, and the client sends no request again on a `401`; the listener logs it as `listener: broker token rejected` with the reason `proof_invalid`, the class a replay is logged under.
